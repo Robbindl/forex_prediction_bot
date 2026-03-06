@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-06T01:19:58.527480",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 25,
+    "di_threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.27120789994209776,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.27120789994209776,
+    "best_profit_factor": 1.727448703361704,
+    "best_win_rate": 0.39215686274509803,
+    "best_return": 18.814514634354037,
+    "avg_sharpe": 0.07424764836697244
+  }
+}

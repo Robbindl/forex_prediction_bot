@@ -1,0 +1,21 @@
+{
+  "asset": "NVDA",
+  "strategy": "PPO",
+  "timestamp": "2026-03-06T00:53:26.410654",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.2346070282191394,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.2346070282191394,
+    "best_profit_factor": 0.6075528789406833,
+    "best_win_rate": 0.25,
+    "best_return": -7.391498311897268,
+    "avg_sharpe": -0.38375100820924185
+  }
+}

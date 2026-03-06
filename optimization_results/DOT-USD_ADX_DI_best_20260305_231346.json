@@ -1,0 +1,21 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-05T23:13:46.516441",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 30,
+    "di_threshold": 25
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.20070977577874485,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.20070977577874485,
+    "best_profit_factor": 1.5965098924478338,
+    "best_win_rate": 0.3611111111111111,
+    "best_return": 56.13446391820729,
+    "avg_sharpe": 0.15600930217535516
+  }
+}

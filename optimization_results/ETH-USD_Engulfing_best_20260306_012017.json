@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-06T01:20:17.204091",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09667666040811877,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.09667666040811877,
+    "best_profit_factor": 1.4837212183589723,
+    "best_win_rate": 0.46153846153846156,
+    "best_return": 9.653429527402785,
+    "avg_sharpe": 0.07923303381200662
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "HMA_Cross",
+  "timestamp": "2026-03-05T22:32:44.462075",
+  "best_params": {
+    "fast_period": 12,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.26032450437241006,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.26032450437241006,
+    "best_profit_factor": 1.8265772555096862,
+    "best_win_rate": 0.41025641025641024,
+    "best_return": 10.291497558017026,
+    "avg_sharpe": 0.046906565471708364
+  }
+}

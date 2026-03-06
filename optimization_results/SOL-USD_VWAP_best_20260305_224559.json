@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "VWAP",
+  "timestamp": "2026-03-05T22:45:59.439429",
+  "best_params": {
+    "period": 5,
+    "std_dev": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 71517563071.2588,
+  "total_combinations": 12,
+  "valid_combinations": 10,
+  "results_summary": {
+    "best_sharpe": 71517563071.2588,
+    "best_profit_factor": 3.6696019930196546,
+    "best_win_rate": 1.0,
+    "best_return": 21.186641365232084,
+    "avg_sharpe": 7151756307.152586
+  }
+}

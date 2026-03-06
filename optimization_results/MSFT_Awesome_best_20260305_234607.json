@@ -1,0 +1,21 @@
+{
+  "asset": "MSFT",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-05T23:46:07.960521",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7985046067294648,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.7985046067294648,
+    "best_profit_factor": 6.852034121491734,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 12.108819666588861,
+    "avg_sharpe": 0.7985046067294648
+  }
+}

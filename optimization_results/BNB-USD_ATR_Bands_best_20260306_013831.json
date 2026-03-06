@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-06T01:38:31.526922",
+  "best_params": {
+    "period": 20,
+    "multiplier": 2.5,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.279994344035398,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 1.279994344035398,
+    "best_profit_factor": 14.824980793840544,
+    "best_win_rate": 0.8888888888888888,
+    "best_return": 233.8151185103298,
+    "avg_sharpe": 0.5166441247260098
+  }
+}

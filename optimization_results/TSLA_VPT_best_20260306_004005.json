@@ -1,0 +1,19 @@
+{
+  "asset": "TSLA",
+  "strategy": "VPT",
+  "timestamp": "2026-03-06T00:40:05.957248",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.003993309754518114,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.003993309754518114,
+    "best_profit_factor": 0.9970005002221282,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": -0.15117628843600914,
+    "avg_sharpe": -0.1074208365833012
+  }
+}

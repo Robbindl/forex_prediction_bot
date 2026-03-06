@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "PPO",
+  "timestamp": "2026-03-05T22:27:50.370507",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 9
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.1704526293058311,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.1704526293058311,
+    "best_profit_factor": 1.4659699768066121,
+    "best_win_rate": 0.38095238095238093,
+    "best_return": 4.280323361240851,
+    "avg_sharpe": -0.021799515353324347
+  }
+}

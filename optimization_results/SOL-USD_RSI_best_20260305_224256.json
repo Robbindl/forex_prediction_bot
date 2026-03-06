@@ -1,0 +1,21 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "RSI",
+  "timestamp": "2026-03-05T22:42:56.461023",
+  "best_params": {
+    "oversold": 25,
+    "overbought": 75,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.15493193807163572,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 0.15493193807163572,
+    "best_profit_factor": 1.3928580310473855,
+    "best_win_rate": 0.39285714285714285,
+    "best_return": 9.338621964567723,
+    "avg_sharpe": 0.027270784317192626
+  }
+}

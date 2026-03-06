@@ -1,0 +1,21 @@
+{
+  "asset": "V",
+  "strategy": "CCI",
+  "timestamp": "2026-03-06T01:42:58.603678",
+  "best_params": {
+    "period": 30,
+    "oversold": -200,
+    "overbought": 150
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.678798278729816,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.678798278729816,
+    "best_profit_factor": 3.6569507322436388,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 17.614242522782302,
+    "avg_sharpe": 0.3575365637449913
+  }
+}

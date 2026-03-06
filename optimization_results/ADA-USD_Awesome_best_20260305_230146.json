@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-05T23:01:46.737087",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.19520229621420698,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.19520229621420698,
+    "best_profit_factor": 1.7744417576358926,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": 6.26402732655948,
+    "avg_sharpe": 0.19520229621420696
+  }
+}

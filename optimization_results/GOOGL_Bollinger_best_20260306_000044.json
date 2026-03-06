@@ -1,0 +1,21 @@
+{
+  "asset": "GOOGL",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T00:00:44.521838",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.049875438665760864,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.049875438665760864,
+    "best_profit_factor": 2.338726916705723,
+    "best_win_rate": 0.27586206896551724,
+    "best_return": 43.33920040552581,
+    "avg_sharpe": -0.11368198617342344
+  }
+}

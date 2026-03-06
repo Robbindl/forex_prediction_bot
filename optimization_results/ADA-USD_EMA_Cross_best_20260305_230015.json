@@ -1,0 +1,20 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T23:00:15.912168",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5645874180420177,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.5645874180420177,
+    "best_profit_factor": 9.917911703826137,
+    "best_win_rate": 0.6,
+    "best_return": 18.36912264845836,
+    "avg_sharpe": 0.34980763508176715
+  }
+}

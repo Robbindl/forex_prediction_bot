@@ -1,0 +1,21 @@
+{
+  "asset": "GOOGL",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-06T00:02:03.187670",
+  "best_params": {
+    "period": 10,
+    "multiplier": 2.5,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 1060728775277.463,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 1060728775277.463,
+    "best_profit_factor": 112.31321250351755,
+    "best_win_rate": 1.0,
+    "best_return": 4795.475697640956,
+    "avg_sharpe": 78572501872.71881
+  }
+}

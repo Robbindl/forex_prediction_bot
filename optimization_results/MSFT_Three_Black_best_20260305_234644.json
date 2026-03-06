@@ -1,0 +1,20 @@
+{
+  "asset": "MSFT",
+  "strategy": "Three_Black",
+  "timestamp": "2026-03-05T23:46:44.444137",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -250045107.5900134,
+  "total_combinations": 9,
+  "valid_combinations": 1,
+  "results_summary": {
+    "best_sharpe": -250045107.5900134,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -0.003621009327697285,
+    "avg_sharpe": -250045107.5900134
+  }
+}

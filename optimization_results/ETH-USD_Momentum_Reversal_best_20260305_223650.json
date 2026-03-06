@@ -1,0 +1,22 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T22:36:50.712200",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 7,
+    "reversal_threshold": 1.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 450332281104.80505,
+  "total_combinations": 27,
+  "valid_combinations": 26,
+  "results_summary": {
+    "best_sharpe": 450332281104.80505,
+    "best_profit_factor": 116.2567623453803,
+    "best_win_rate": 1.0,
+    "best_return": 117.14623100712873,
+    "avg_sharpe": 34640944700.63273
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-06T01:42:06.780459",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 75,
+    "lookback": 7,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 54054716224.879745,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 54054716224.879745,
+    "best_profit_factor": 999.0519769645437,
+    "best_win_rate": 1.0,
+    "best_return": 1042.7307491598337,
+    "avg_sharpe": 14539277576.415989
+  }
+}

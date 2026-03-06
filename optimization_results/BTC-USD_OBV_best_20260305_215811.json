@@ -1,0 +1,19 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "OBV",
+  "timestamp": "2026-03-05T21:58:11.292161",
+  "best_params": {
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.02842819592003883,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": -0.02842819592003883,
+    "best_profit_factor": 0.9263245355095089,
+    "best_win_rate": 0.3018867924528302,
+    "best_return": -3.03805262061829,
+    "avg_sharpe": -0.07052707519746311
+  }
+}

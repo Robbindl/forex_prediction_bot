@@ -1,0 +1,20 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-05T23:34:57.965142",
+  "best_params": {
+    "period": 18,
+    "signal_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5072785426316732,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.5072785426316732,
+    "best_profit_factor": 2.8761394399005735,
+    "best_win_rate": 0.5714285714285714,
+    "best_return": 13.746219660986112,
+    "avg_sharpe": 0.22765955120020373
+  }
+}

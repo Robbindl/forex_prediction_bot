@@ -1,0 +1,23 @@
+{
+  "asset": "^IXIC",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-06T00:46:38.278879",
+  "best_params": {
+    "fast": 12,
+    "slow": 20,
+    "signal": 7,
+    "lookback": 10,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.24617698785965206,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": -0.24617698785965206,
+    "best_profit_factor": 0.5419329511293799,
+    "best_win_rate": 0.25,
+    "best_return": -6.99726422985803,
+    "avg_sharpe": -0.47197549301667796
+  }
+}

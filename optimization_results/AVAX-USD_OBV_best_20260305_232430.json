@@ -1,0 +1,19 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "OBV",
+  "timestamp": "2026-03-05T23:24:30.226094",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.16473493207076462,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.16473493207076462,
+    "best_profit_factor": 1.4337271220519088,
+    "best_win_rate": 0.4258064516129032,
+    "best_return": 36.48897872439449,
+    "avg_sharpe": -0.01280213333333593
+  }
+}

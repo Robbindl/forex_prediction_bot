@@ -1,0 +1,23 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "Stochastic_Full",
+  "timestamp": "2026-03-05T22:49:22.127156",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 5,
+    "slowing": 7,
+    "oversold": 15,
+    "overbought": 80
+  },
+  "best_metric": "sharpe",
+  "best_value": 601249483662.1914,
+  "total_combinations": 324,
+  "valid_combinations": 310,
+  "results_summary": {
+    "best_sharpe": 601249483662.1914,
+    "best_profit_factor": 19.331537839782193,
+    "best_win_rate": 1.0,
+    "best_return": 40.05998705373051,
+    "avg_sharpe": 18092252953.349415
+  }
+}

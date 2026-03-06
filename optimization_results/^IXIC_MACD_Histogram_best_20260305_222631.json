@@ -1,0 +1,22 @@
+{
+  "asset": "^IXIC",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-05T22:26:31.774642",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 9,
+    "histogram_threshold": 0
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.30079117258741545,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.30079117258741545,
+    "best_profit_factor": 2.012406486925612,
+    "best_win_rate": 0.4,
+    "best_return": 11.047283951534288,
+    "avg_sharpe": 0.054513370420460415
+  }
+}

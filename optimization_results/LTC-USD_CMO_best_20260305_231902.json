@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T23:19:02.976947",
+  "best_params": {
+    "period": 20,
+    "oversold": -60,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.38819176370583197,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.38819176370583197,
+    "best_profit_factor": 2.3649432878685093,
+    "best_win_rate": 0.5,
+    "best_return": 3.514879366393682,
+    "avg_sharpe": -0.10408805693636859
+  }
+}

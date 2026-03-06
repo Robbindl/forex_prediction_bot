@@ -1,0 +1,21 @@
+{
+  "asset": "CL=F",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-05T22:56:17.562066",
+  "best_params": {
+    "period": 10,
+    "std_dev": 2,
+    "volume_threshold": 1.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 306392842533.6005,
+  "total_combinations": 27,
+  "valid_combinations": 21,
+  "results_summary": {
+    "best_sharpe": 306392842533.6005,
+    "best_profit_factor": 18.426387906811748,
+    "best_win_rate": 1.0,
+    "best_return": 18.988069011625445,
+    "avg_sharpe": -273343323.3471993
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "GOOGL",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T23:48:00.131430",
+  "best_params": {
+    "rsi_period": 14,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.03912541376453956,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.03912541376453956,
+    "best_profit_factor": 0.9019279182638801,
+    "best_win_rate": 0.288135593220339,
+    "best_return": -3.0133976602254404,
+    "avg_sharpe": -0.4067366663953249
+  }
+}

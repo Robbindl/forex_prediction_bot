@@ -1,0 +1,21 @@
+{
+  "asset": "TSLA",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T00:40:07.858169",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.20812732213136073,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.20812732213136073,
+    "best_profit_factor": 0.6337819019309957,
+    "best_win_rate": 0.25,
+    "best_return": -3.313163296979302,
+    "avg_sharpe": -0.20812732213136073
+  }
+}

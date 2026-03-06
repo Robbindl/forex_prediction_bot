@@ -1,0 +1,19 @@
+{
+  "asset": "^DJI",
+  "strategy": "OBV",
+  "timestamp": "2026-03-06T00:31:42.831704",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09610585016965952,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.09610585016965952,
+    "best_profit_factor": 1.2302009477704174,
+    "best_win_rate": 0.36363636363636365,
+    "best_return": 3.712441846967191,
+    "avg_sharpe": 0.014963562739301254
+  }
+}

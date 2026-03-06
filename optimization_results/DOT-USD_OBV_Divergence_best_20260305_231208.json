@@ -1,0 +1,20 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-05T23:12:08.716419",
+  "best_params": {
+    "lookback": 5,
+    "divergence_threshold": 0.02
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.1869569467637786,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.1869569467637786,
+    "best_profit_factor": 1.6014136829784154,
+    "best_win_rate": 0.42857142857142855,
+    "best_return": 25.257670006957493,
+    "avg_sharpe": 0.1012421379674649
+  }
+}

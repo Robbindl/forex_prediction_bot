@@ -1,0 +1,20 @@
+{
+  "asset": "AMZN",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-06T00:24:12.971272",
+  "best_params": {
+    "period": 8,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.23290692606622002,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.23290692606622002,
+    "best_profit_factor": 1.6358782499832947,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": 10.350819441512686,
+    "avg_sharpe": 0.08243409113603191
+  }
+}

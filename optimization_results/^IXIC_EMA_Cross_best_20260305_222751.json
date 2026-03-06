@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T22:27:51.895874",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 21
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.43604743417028524,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.43604743417028524,
+    "best_profit_factor": 3.2704576312187803,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 2.024750990309212,
+    "avg_sharpe": 0.012389095611439091
+  }
+}

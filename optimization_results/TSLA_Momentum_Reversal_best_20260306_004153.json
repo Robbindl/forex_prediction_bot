@@ -1,0 +1,22 @@
+{
+  "asset": "TSLA",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-06T00:41:53.704055",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 5,
+    "reversal_threshold": 1.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 115829887099.29196,
+  "total_combinations": 27,
+  "valid_combinations": 21,
+  "results_summary": {
+    "best_sharpe": 115829887099.29196,
+    "best_profit_factor": 16.215996899444836,
+    "best_win_rate": 1.0,
+    "best_return": 16.027343449137383,
+    "avg_sharpe": -20191436578.05179
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "AAPL",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-05T23:40:44.332648",
+  "best_params": {
+    "lookback": 5,
+    "divergence_threshold": 0.02
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.00661804633999341,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": -0.00661804633999341,
+    "best_profit_factor": 0.9736128794966231,
+    "best_win_rate": 0.32142857142857145,
+    "best_return": -0.40749827571218517,
+    "avg_sharpe": -0.13825735928758645
+  }
+}

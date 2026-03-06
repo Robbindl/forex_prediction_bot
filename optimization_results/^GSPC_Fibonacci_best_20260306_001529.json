@@ -1,0 +1,24 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-06T00:15:29.711996",
+  "best_params": {
+    "lookback": 50,
+    "levels": [
+      0.382,
+      0.5,
+      0.618
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.7337070455018289,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 1.7337070455018289,
+    "best_profit_factor": 4.285136511472888,
+    "best_win_rate": 1.0,
+    "best_return": 4.624881057965992,
+    "avg_sharpe": 0.5749980782252111
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "GOOGL",
+  "strategy": "VWAP",
+  "timestamp": "2026-03-05T23:59:08.843514",
+  "best_params": {
+    "period": 10,
+    "std_dev": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.47014152275000776,
+  "total_combinations": 12,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.47014152275000776,
+    "best_profit_factor": 3.1187085536778256,
+    "best_win_rate": 0.5,
+    "best_return": 4.4430300116457575,
+    "avg_sharpe": -0.1862994273030455
+  }
+}

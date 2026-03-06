@@ -1,0 +1,20 @@
+{
+  "asset": "WMT",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-06T02:06:57.507686",
+  "best_params": {
+    "period": 10,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.290108348407637,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.290108348407637,
+    "best_profit_factor": 1.8936080731986495,
+    "best_win_rate": 0.4642857142857143,
+    "best_return": 10.164316720178288,
+    "avg_sharpe": 0.06952540056888655
+  }
+}

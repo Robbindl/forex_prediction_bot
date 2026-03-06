@@ -1,0 +1,26 @@
+{
+  "asset": "AAPL",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-05T23:41:13.415425",
+  "best_params": {
+    "lookback": 20,
+    "levels": [
+      0.236,
+      0.382,
+      0.5,
+      0.618,
+      0.786
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.12946597544272528,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 0.12946597544272528,
+    "best_profit_factor": 1.422970061807506,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": 3.915246245502909,
+    "avg_sharpe": -0.2721230845957503
+  }
+}

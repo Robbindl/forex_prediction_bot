@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "Williams_R",
+  "timestamp": "2026-03-05T22:24:11.691393",
+  "best_params": {
+    "period": 7,
+    "oversold": -70,
+    "overbought": -20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.02230542564167019,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.02230542564167019,
+    "best_profit_factor": 0.9221765138824758,
+    "best_win_rate": 0.32558139534883723,
+    "best_return": -1.6137076099977874,
+    "avg_sharpe": -0.2514175981641945
+  }
+}

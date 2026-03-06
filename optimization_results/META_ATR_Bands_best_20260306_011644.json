@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-06T01:16:44.354739",
+  "best_params": {
+    "period": 10,
+    "multiplier": 2.5,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.8919292700293113,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.8919292700293113,
+    "best_profit_factor": 165.05173595917702,
+    "best_win_rate": 1.0,
+    "best_return": 1068.1571513337385,
+    "avg_sharpe": 0.4995721500598252
+  }
+}

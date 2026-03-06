@@ -1,0 +1,20 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T23:17:32.374465",
+  "best_params": {
+    "fast_period": 12,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5104584309816766,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.5104584309816766,
+    "best_profit_factor": 5.201393192356375,
+    "best_win_rate": 0.5714285714285714,
+    "best_return": 13.258260656206723,
+    "avg_sharpe": 0.19275083894551018
+  }
+}

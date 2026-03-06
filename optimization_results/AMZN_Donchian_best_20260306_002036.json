@@ -1,0 +1,19 @@
+{
+  "asset": "AMZN",
+  "strategy": "Donchian",
+  "timestamp": "2026-03-06T00:20:36.215427",
+  "best_params": {
+    "period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": -20115424464.59128,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": -20115424464.59128,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -0.07744650823799251,
+    "avg_sharpe": -20115424464.591286
+  }
+}

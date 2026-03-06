@@ -1,0 +1,22 @@
+{
+  "asset": "WMT",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T01:52:23.724260",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 3,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9780824610520471,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.9780824610520471,
+    "best_profit_factor": 6.97860754838705,
+    "best_win_rate": 0.7,
+    "best_return": 34.333554274488385,
+    "avg_sharpe": 0.4198532170001395
+  }
+}

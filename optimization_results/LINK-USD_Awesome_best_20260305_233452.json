@@ -1,0 +1,21 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-05T23:34:52.642975",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.04328457900323937,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.04328457900323937,
+    "best_profit_factor": 1.0878175065979987,
+    "best_win_rate": 0.3076923076923077,
+    "best_return": 0.6351847946363848,
+    "avg_sharpe": 0.04328457900323937
+  }
+}

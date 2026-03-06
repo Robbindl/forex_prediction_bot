@@ -1,0 +1,22 @@
+{
+  "asset": "AAPL",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-05T23:37:44.624727",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 3,
+    "d_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4887943714077546,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.4887943714077546,
+    "best_profit_factor": 2.7535517668655123,
+    "best_win_rate": 0.5652173913043478,
+    "best_return": 19.647784451866425,
+    "avg_sharpe": 0.0576625590667922
+  }
+}

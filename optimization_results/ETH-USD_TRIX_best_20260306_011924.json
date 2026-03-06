@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-06T01:19:24.263652",
+  "best_params": {
+    "period": 18,
+    "signal_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.22796035293429381,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.22796035293429381,
+    "best_profit_factor": 1.6740466493163075,
+    "best_win_rate": 0.4375,
+    "best_return": 6.876663055127557,
+    "avg_sharpe": 0.10898618892818555
+  }
+}

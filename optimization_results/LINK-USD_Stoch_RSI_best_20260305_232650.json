@@ -1,0 +1,22 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-05T23:26:50.921666",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 7,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2909284568615208,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.2909284568615208,
+    "best_profit_factor": 1.8687296055398201,
+    "best_win_rate": 0.4745762711864407,
+    "best_return": 24.84046538632054,
+    "avg_sharpe": 0.08674928146648792
+  }
+}

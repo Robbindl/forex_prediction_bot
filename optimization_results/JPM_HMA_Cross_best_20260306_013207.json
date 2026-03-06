@@ -1,0 +1,20 @@
+{
+  "asset": "JPM",
+  "strategy": "HMA_Cross",
+  "timestamp": "2026-03-06T01:32:07.843018",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.23927821905712074,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.23927821905712074,
+    "best_profit_factor": 1.7454990032344806,
+    "best_win_rate": 0.44,
+    "best_return": 7.916541526633967,
+    "avg_sharpe": 0.10790368544389575
+  }
+}

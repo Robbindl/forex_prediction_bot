@@ -1,0 +1,20 @@
+{
+  "asset": "WMT",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-06T02:07:39.417291",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.25727658182637375,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.25727658182637375,
+    "best_profit_factor": 2.2661781261924783,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": 16.001267901867557,
+    "avg_sharpe": 0.2280129970214236
+  }
+}

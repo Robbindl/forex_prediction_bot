@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T22:41:46.471014",
+  "best_params": {
+    "period": 21,
+    "threshold": 0.1
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.36156917557281176,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.36156917557281176,
+    "best_profit_factor": 2.0811631713331398,
+    "best_win_rate": 0.5142857142857142,
+    "best_return": 47.50270185091184,
+    "avg_sharpe": 0.27900391231824195
+  }
+}

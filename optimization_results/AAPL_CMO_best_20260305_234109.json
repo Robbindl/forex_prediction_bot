@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T23:41:09.079529",
+  "best_params": {
+    "period": 20,
+    "oversold": -60,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.013818221932018,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 1.013818221932018,
+    "best_profit_factor": 6.201618935911035,
+    "best_win_rate": 0.8,
+    "best_return": 20.38632387586634,
+    "avg_sharpe": 0.16055949421929192
+  }
+}

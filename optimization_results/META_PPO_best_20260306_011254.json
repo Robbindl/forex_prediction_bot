@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "PPO",
+  "timestamp": "2026-03-06T01:12:54.109060",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 9
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.31357845270592544,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.31357845270592544,
+    "best_profit_factor": 2.000948891368343,
+    "best_win_rate": 0.5,
+    "best_return": 9.187105263556363,
+    "avg_sharpe": 0.16288932416241503
+  }
+}

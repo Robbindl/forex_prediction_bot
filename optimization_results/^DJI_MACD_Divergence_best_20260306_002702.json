@@ -1,0 +1,23 @@
+{
+  "asset": "^DJI",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-06T00:27:02.715579",
+  "best_params": {
+    "fast": 12,
+    "slow": 26,
+    "signal": 7,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.093609404918881,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.093609404918881,
+    "best_profit_factor": 1.1962714021136083,
+    "best_win_rate": 0.4666666666666667,
+    "best_return": 1.4169759869337126,
+    "avg_sharpe": -0.22988527760960167
+  }
+}

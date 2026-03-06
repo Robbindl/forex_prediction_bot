@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "CCI",
+  "timestamp": "2026-03-06T01:09:51.808062",
+  "best_params": {
+    "period": 30,
+    "oversold": -150,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.036764915050691835,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.036764915050691835,
+    "best_profit_factor": 0.8897018404304032,
+    "best_win_rate": 0.32,
+    "best_return": -2.9364690424477256,
+    "avg_sharpe": -0.22774458184421148
+  }
+}

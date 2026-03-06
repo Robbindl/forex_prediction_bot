@@ -1,0 +1,23 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "Bollinger_RSI",
+  "timestamp": "2026-03-05T23:07:16.031126",
+  "best_params": {
+    "bb_period": 20,
+    "bb_std": 2.0,
+    "rsi_period": 7,
+    "rsi_oversold": 25,
+    "rsi_overbought": 70
+  },
+  "best_metric": "sharpe",
+  "best_value": -599880023.9952515,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": -599880023.9952515,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -0.028379197875096046,
+    "avg_sharpe": -599880023.9952515
+  }
+}

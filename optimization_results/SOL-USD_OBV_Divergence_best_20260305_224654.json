@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-05T22:46:54.823295",
+  "best_params": {
+    "lookback": 5,
+    "divergence_threshold": 0.02
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.19914877198345976,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.19914877198345976,
+    "best_profit_factor": 1.562945691111748,
+    "best_win_rate": 0.4375,
+    "best_return": 14.908205204375728,
+    "avg_sharpe": -0.001720430865218944
+  }
+}

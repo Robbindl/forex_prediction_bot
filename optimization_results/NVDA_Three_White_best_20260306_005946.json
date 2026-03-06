@@ -1,0 +1,20 @@
+{
+  "asset": "NVDA",
+  "strategy": "Three_White",
+  "timestamp": "2026-03-06T00:59:46.026396",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.4
+  },
+  "best_metric": "sharpe",
+  "best_value": 187566929354.01535,
+  "total_combinations": 9,
+  "valid_combinations": 2,
+  "results_summary": {
+    "best_sharpe": 187566929354.01535,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 1.0,
+    "best_return": 2.3574289881988966,
+    "avg_sharpe": 187566929354.01535
+  }
+}

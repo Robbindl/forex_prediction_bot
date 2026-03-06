@@ -1,0 +1,21 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-05T22:52:15.605483",
+  "best_params": {
+    "fast_period": 7,
+    "slow_period": 10,
+    "threshold": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.34610514053260183,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.34610514053260183,
+    "best_profit_factor": 2.119019721723569,
+    "best_win_rate": 0.5147058823529411,
+    "best_return": 54.391271109274406,
+    "avg_sharpe": 0.16172283681360902
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-05T23:19:24.443971",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 2.5,
+    "price_period": 5,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 424338789245.1187,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 424338789245.1187,
+    "best_profit_factor": 16.651252790643767,
+    "best_win_rate": 1.0,
+    "best_return": 16.001833407034855,
+    "avg_sharpe": 70723131541.05212
+  }
+}

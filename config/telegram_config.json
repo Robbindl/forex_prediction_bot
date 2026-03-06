@@ -1,0 +1,6 @@
+{
+    "enabled": true,
+    "bot_token": "8501557513:AAEwJOOp9Zeq-0-Tt3jXBK-Sy6eMMzayEKY",
+    "chat_id": "5747207752",
+    "alert_levels": ["CRITICAL", "WARNING", "SUCCESS", "INFO"]
+}

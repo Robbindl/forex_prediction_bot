@@ -1,0 +1,20 @@
+{
+  "asset": "TSLA",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-06T00:40:23.541522",
+  "best_params": {
+    "period": 14,
+    "signal_period": 4
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.15155568809157188,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.15155568809157188,
+    "best_profit_factor": 1.377753112534897,
+    "best_win_rate": 0.41304347826086957,
+    "best_return": 8.866629880916788,
+    "avg_sharpe": 0.005199780697482263
+  }
+}

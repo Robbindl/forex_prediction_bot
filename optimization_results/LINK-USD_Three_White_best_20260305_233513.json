@@ -1,0 +1,20 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Three_White",
+  "timestamp": "2026-03-05T23:35:13.892706",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.4
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.6935874370676938,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": -0.6935874370676938,
+    "best_profit_factor": 0.24867078267492257,
+    "best_win_rate": 0.5,
+    "best_return": -1.8002396702971495,
+    "avg_sharpe": -321598376159.08203
+  }
+}

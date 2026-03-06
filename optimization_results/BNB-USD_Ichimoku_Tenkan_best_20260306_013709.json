@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Ichimoku_Tenkan",
+  "timestamp": "2026-03-06T01:37:09.624888",
+  "best_params": {
+    "tenkan_period": 5,
+    "kijun_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 8.063190317010208e-05,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 8.063190317010208e-05,
+    "best_profit_factor": 0.9500712883761407,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": -0.42334980321911303,
+    "avg_sharpe": 8.06319031701021e-05
+  }
+}

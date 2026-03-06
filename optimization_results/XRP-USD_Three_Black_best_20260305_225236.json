@@ -1,0 +1,20 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "Three_Black",
+  "timestamp": "2026-03-05T22:52:36.141099",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.3
+  },
+  "best_metric": "sharpe",
+  "best_value": 16.55529030897596,
+  "total_combinations": 9,
+  "valid_combinations": 6,
+  "results_summary": {
+    "best_sharpe": 16.55529030897596,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 1.0,
+    "best_return": 3.0544932009921286,
+    "avg_sharpe": 16.55529030897596
+  }
+}

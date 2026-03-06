@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-05T22:21:57.612560",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 20,
+    "di_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6859667062491966,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.6859667062491966,
+    "best_profit_factor": 5.457015350262944,
+    "best_win_rate": 0.6428571428571429,
+    "best_return": 11.625918242443527,
+    "avg_sharpe": 0.5869904382238967
+  }
+}

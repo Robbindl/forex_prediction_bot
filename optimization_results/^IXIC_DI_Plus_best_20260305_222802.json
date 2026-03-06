@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-05T22:28:02.266132",
+  "best_params": {
+    "period": 7,
+    "threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.0631670230212542,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 1.0631670230212542,
+    "best_profit_factor": 5.988147028268633,
+    "best_win_rate": 0.8,
+    "best_return": 23.281086598320375,
+    "avg_sharpe": 0.8036938636053033
+  }
+}

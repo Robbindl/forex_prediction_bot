@@ -1,0 +1,22 @@
+{
+  "asset": "AAPL",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T23:41:20.383511",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 5,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.8651675216591845,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.8651675216591845,
+    "best_profit_factor": 7.9848370128305115,
+    "best_win_rate": 0.5,
+    "best_return": 16.21060411710445,
+    "avg_sharpe": 0.12563469999566979
+  }
+}

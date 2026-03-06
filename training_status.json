@@ -1,0 +1,1290 @@
+{
+  "latest_training": {
+    "date": "2026-02-21T11:14:04.924982",
+    "total_assets": 40,
+    "successfully_trained": 0,
+    "failed": 40,
+    "success_rate": 0.0,
+    "total_time_minutes": 9.273084016640981,
+    "model_type": "advanced",
+    "timeframes": [
+      "1d"
+    ],
+    "details": {
+      "EUR/USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:05:02.111023"
+      },
+      "GBP/USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:05:15.770091"
+      },
+      "USD/JPY": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:05:29.140469"
+      },
+      "AUD/USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:05:42.662242"
+      },
+      "USD/CAD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:05:56.169132"
+      },
+      "NZD/USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:06:09.769701"
+      },
+      "USD/CHF": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:06:23.445570"
+      },
+      "EUR/GBP": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:06:37.096256"
+      },
+      "GBP/JPY": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:06:50.221063"
+      },
+      "AUD/JPY": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:07:03.354421"
+      },
+      "BTC-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:07:16.922917"
+      },
+      "ETH-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:07:30.682492"
+      },
+      "BNB-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:07:44.250522"
+      },
+      "XRP-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:07:57.859022"
+      },
+      "ADA-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:08:11.479432"
+      },
+      "SOL-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:08:25.154871"
+      },
+      "DOGE-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:08:38.831729"
+      },
+      "DOT-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:08:52.442958"
+      },
+      "MATIC-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:09:05.464521"
+      },
+      "LTC-USD": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:09:19.075536"
+      },
+      "AAPL": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:09:33.593211"
+      },
+      "MSFT": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:09:47.238641"
+      },
+      "GOOGL": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:10:00.889352"
+      },
+      "AMZN": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:10:13.987705"
+      },
+      "TSLA": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:10:27.363876"
+      },
+      "META": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:10:41.754056"
+      },
+      "NVDA": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:10:56.004396"
+      },
+      "JPM": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:11:12.428181"
+      },
+      "V": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:11:27.128707"
+      },
+      "WMT": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:11:41.942348"
+      },
+      "GC=F": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:11:59.880374"
+      },
+      "SI=F": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:12:15.739265"
+      },
+      "CL=F": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:12:30.797861"
+      },
+      "NG=F": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:12:46.176253"
+      },
+      "HG=F": {
+        "status": "failed",
+        "error": "No data received",
+        "trained_at": "2026-02-21T11:12:59.832872"
+      },
+      "^GSPC": {
+        "status": "failed",
+        "error": "Insufficient data for training after feature engineering",
+        "trained_at": "2026-02-21T11:13:13.394831"
+      },
+      "^DJI": {
+        "status": "failed",
+        "error": "Insufficient data for training after feature engineering",
+        "trained_at": "2026-02-21T11:13:26.130229"
+      },
+      "^IXIC": {
+        "status": "failed",
+        "error": "Insufficient data for training after feature engineering",
+        "trained_at": "2026-02-21T11:13:39.325938"
+      },
+      "^FTSE": {
+        "status": "failed",
+        "error": "Insufficient data for training after feature engineering",
+        "trained_at": "2026-02-21T11:13:51.350273"
+      },
+      "^N225": {
+        "status": "failed",
+        "error": "Insufficient data for training after feature engineering",
+        "trained_at": "2026-02-21T11:14:03.909472"
+      }
+    }
+  },
+  "total_models": 0,
+  "model_ages": {},
+  "training_history": [
+    {
+      "date": "2026-02-21T11:14:04.924982",
+      "total_assets": 40,
+      "successfully_trained": 0,
+      "failed": 40,
+      "success_rate": 0.0,
+      "total_time_minutes": 9.273084016640981,
+      "model_type": "advanced",
+      "timeframes": [
+        "1d"
+      ],
+      "details": {
+        "EUR/USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:05:02.111023"
+        },
+        "GBP/USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:05:15.770091"
+        },
+        "USD/JPY": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:05:29.140469"
+        },
+        "AUD/USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:05:42.662242"
+        },
+        "USD/CAD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:05:56.169132"
+        },
+        "NZD/USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:06:09.769701"
+        },
+        "USD/CHF": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:06:23.445570"
+        },
+        "EUR/GBP": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:06:37.096256"
+        },
+        "GBP/JPY": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:06:50.221063"
+        },
+        "AUD/JPY": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:07:03.354421"
+        },
+        "BTC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:07:16.922917"
+        },
+        "ETH-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:07:30.682492"
+        },
+        "BNB-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:07:44.250522"
+        },
+        "XRP-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:07:57.859022"
+        },
+        "ADA-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:08:11.479432"
+        },
+        "SOL-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:08:25.154871"
+        },
+        "DOGE-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:08:38.831729"
+        },
+        "DOT-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:08:52.442958"
+        },
+        "MATIC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:09:05.464521"
+        },
+        "LTC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:09:19.075536"
+        },
+        "AAPL": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:09:33.593211"
+        },
+        "MSFT": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:09:47.238641"
+        },
+        "GOOGL": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:10:00.889352"
+        },
+        "AMZN": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:10:13.987705"
+        },
+        "TSLA": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:10:27.363876"
+        },
+        "META": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:10:41.754056"
+        },
+        "NVDA": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:10:56.004396"
+        },
+        "JPM": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:11:12.428181"
+        },
+        "V": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:11:27.128707"
+        },
+        "WMT": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:11:41.942348"
+        },
+        "GC=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:11:59.880374"
+        },
+        "SI=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:12:15.739265"
+        },
+        "CL=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:12:30.797861"
+        },
+        "NG=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:12:46.176253"
+        },
+        "HG=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:12:59.832872"
+        },
+        "^GSPC": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:13:13.394831"
+        },
+        "^DJI": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:13:26.130229"
+        },
+        "^IXIC": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:13:39.325938"
+        },
+        "^FTSE": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:13:51.350273"
+        },
+        "^N225": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:14:03.909472"
+        }
+      }
+    },
+    {
+      "date": "2026-02-21T11:01:59.157378",
+      "total_assets": 40,
+      "successfully_trained": 0,
+      "failed": 40,
+      "success_rate": 0.0,
+      "total_time_minutes": 8.931379890441894,
+      "model_type": "advanced",
+      "timeframes": [
+        "1d"
+      ],
+      "details": {
+        "EUR/USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:53:16.952622"
+        },
+        "GBP/USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:53:30.567288"
+        },
+        "USD/JPY": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:53:43.696120"
+        },
+        "AUD/USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:53:57.296982"
+        },
+        "USD/CAD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:54:10.990104"
+        },
+        "NZD/USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:54:24.624632"
+        },
+        "USD/CHF": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:54:38.479255"
+        },
+        "EUR/GBP": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:54:52.078558"
+        },
+        "GBP/JPY": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:55:05.251732"
+        },
+        "AUD/JPY": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:55:18.287370"
+        },
+        "BTC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:55:31.859521"
+        },
+        "ETH-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:55:46.015889"
+        },
+        "BNB-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:55:59.602172"
+        },
+        "XRP-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:56:13.245743"
+        },
+        "ADA-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:56:26.929163"
+        },
+        "SOL-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:56:40.560250"
+        },
+        "DOGE-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:56:54.484966"
+        },
+        "DOT-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:57:08.130643"
+        },
+        "MATIC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:57:21.225724"
+        },
+        "LTC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:57:34.824959"
+        },
+        "AAPL": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:57:48.502005"
+        },
+        "MSFT": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:58:02.089345"
+        },
+        "GOOGL": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:58:15.675668"
+        },
+        "AMZN": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:58:28.791912"
+        },
+        "TSLA": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:58:42.176885"
+        },
+        "META": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:58:55.938215"
+        },
+        "NVDA": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:59:09.517441"
+        },
+        "JPM": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:59:23.111245"
+        },
+        "V": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:59:36.568320"
+        },
+        "WMT": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:59:50.161813"
+        },
+        "GC=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:00:04.769130"
+        },
+        "SI=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:00:18.941071"
+        },
+        "CL=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:00:32.049253"
+        },
+        "NG=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:00:45.419671"
+        },
+        "HG=F": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T11:00:58.975347"
+        },
+        "^GSPC": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:01:11.119185"
+        },
+        "^DJI": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:01:22.857904"
+        },
+        "^IXIC": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:01:34.560262"
+        },
+        "^FTSE": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:01:46.290941"
+        },
+        "^N225": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T11:01:58.151382"
+        }
+      }
+    },
+    {
+      "date": "2026-02-21T10:35:41.989368",
+      "total_assets": 40,
+      "successfully_trained": 0,
+      "failed": 40,
+      "success_rate": 0.0,
+      "total_time_minutes": 8.133865523338319,
+      "model_type": "advanced",
+      "timeframes": [
+        "1d"
+      ],
+      "details": {
+        "EUR/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T10:27:45.520118"
+        },
+        "GBP/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T10:27:57.306355"
+        },
+        "USD/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T10:28:09.075641"
+        },
+        "AUD/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T10:28:20.849847"
+        },
+        "USD/CAD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T10:28:32.638175"
+        },
+        "NZD/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T10:28:44.503600"
+        },
+        "USD/CHF": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T10:28:56.238384"
+        },
+        "EUR/GBP": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T10:29:08.024199"
+        },
+        "GBP/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T10:29:20.363827"
+        },
+        "AUD/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T10:29:32.332850"
+        },
+        "BTC-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:29:44.148658"
+        },
+        "ETH-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:29:56.066528"
+        },
+        "BNB-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:30:08.361064"
+        },
+        "XRP-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:30:21.318791"
+        },
+        "ADA-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:30:38.675885"
+        },
+        "SOL-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:30:50.816397"
+        },
+        "DOGE-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:31:03.023955"
+        },
+        "DOT-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:31:15.062344"
+        },
+        "MATIC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T10:31:28.154515"
+        },
+        "LTC-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:31:41.098195"
+        },
+        "AAPL": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:31:53.190305"
+        },
+        "MSFT": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:32:05.082272"
+        },
+        "GOOGL": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:32:16.817448"
+        },
+        "AMZN": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:32:28.598804"
+        },
+        "TSLA": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:32:40.625698"
+        },
+        "META": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:32:52.325107"
+        },
+        "NVDA": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:33:04.067546"
+        },
+        "JPM": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:33:19.070622"
+        },
+        "V": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:33:30.805304"
+        },
+        "WMT": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:33:42.705963"
+        },
+        "GC=F": {
+          "status": "failed",
+          "error": "Insufficient data: 83 < 150",
+          "trained_at": "2026-02-21T10:33:55.218809"
+        },
+        "SI=F": {
+          "status": "failed",
+          "error": "Insufficient data: 141 < 150",
+          "trained_at": "2026-02-21T10:34:07.031539"
+        },
+        "CL=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T10:34:19.422620"
+        },
+        "NG=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T10:34:31.558404"
+        },
+        "HG=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T10:34:43.985113"
+        },
+        "^GSPC": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:34:55.696823"
+        },
+        "^DJI": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:35:07.019818"
+        },
+        "^IXIC": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:35:18.311898"
+        },
+        "^FTSE": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:35:29.645215"
+        },
+        "^N225": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T10:35:40.983907"
+        }
+      }
+    },
+    {
+      "date": "2026-02-21T09:50:02.220403",
+      "total_assets": 40,
+      "successfully_trained": 0,
+      "failed": 40,
+      "success_rate": 0.0,
+      "total_time_minutes": 7.962607332070669,
+      "model_type": "advanced",
+      "timeframes": [
+        "1d"
+      ],
+      "details": {
+        "EUR/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:42:16.658883"
+        },
+        "GBP/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:42:28.584989"
+        },
+        "USD/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:42:40.547400"
+        },
+        "AUD/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:42:52.410550"
+        },
+        "USD/CAD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:43:04.349252"
+        },
+        "NZD/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:43:16.152134"
+        },
+        "USD/CHF": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:43:27.897009"
+        },
+        "EUR/GBP": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:43:39.697374"
+        },
+        "GBP/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:43:51.813783"
+        },
+        "AUD/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:44:03.586854"
+        },
+        "BTC-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:44:15.402131"
+        },
+        "ETH-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:44:27.280674"
+        },
+        "BNB-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:44:39.069912"
+        },
+        "XRP-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:44:50.878363"
+        },
+        "ADA-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:45:02.663983"
+        },
+        "SOL-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:45:14.436628"
+        },
+        "DOGE-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:45:26.210035"
+        },
+        "DOT-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:45:38.029567"
+        },
+        "MATIC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T09:45:51.131174"
+        },
+        "LTC-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:46:02.997887"
+        },
+        "AAPL": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:46:14.850457"
+        },
+        "MSFT": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:46:26.745937"
+        },
+        "GOOGL": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:46:38.580315"
+        },
+        "AMZN": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:46:50.380512"
+        },
+        "TSLA": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:47:02.141395"
+        },
+        "META": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:47:13.980925"
+        },
+        "NVDA": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:47:25.805329"
+        },
+        "JPM": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:47:37.735696"
+        },
+        "V": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:47:49.717714"
+        },
+        "WMT": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:48:01.704735"
+        },
+        "GC=F": {
+          "status": "failed",
+          "error": "Insufficient data: 83 < 150",
+          "trained_at": "2026-02-21T09:48:14.369331"
+        },
+        "SI=F": {
+          "status": "failed",
+          "error": "Insufficient data: 141 < 150",
+          "trained_at": "2026-02-21T09:48:26.222582"
+        },
+        "CL=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T09:48:38.559506"
+        },
+        "NG=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T09:48:51.097700"
+        },
+        "HG=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T09:49:03.183992"
+        },
+        "^GSPC": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:49:14.956541"
+        },
+        "^DJI": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:49:26.291467"
+        },
+        "^IXIC": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:49:37.625779"
+        },
+        "^FTSE": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:49:49.194590"
+        },
+        "^N225": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:50:00.519915"
+        }
+      }
+    },
+    {
+      "date": "2026-02-21T09:08:32.705387",
+      "total_assets": 40,
+      "successfully_trained": 0,
+      "failed": 40,
+      "success_rate": 0.0,
+      "total_time_minutes": 8.020574076970417,
+      "model_type": "advanced",
+      "timeframes": [
+        "1d"
+      ],
+      "details": {
+        "EUR/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:00:43.630567"
+        },
+        "GBP/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:00:55.566523"
+        },
+        "USD/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:01:07.410675"
+        },
+        "AUD/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:01:19.603199"
+        },
+        "USD/CAD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:01:31.474428"
+        },
+        "NZD/USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:01:43.299191"
+        },
+        "USD/CHF": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:01:55.806044"
+        },
+        "EUR/GBP": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:02:07.804063"
+        },
+        "GBP/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:02:19.765198"
+        },
+        "AUD/JPY": {
+          "status": "failed",
+          "error": "Insufficient data: 98 < 150",
+          "trained_at": "2026-02-21T09:02:31.660554"
+        },
+        "BTC-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:02:43.503786"
+        },
+        "ETH-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:02:55.700013"
+        },
+        "BNB-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:03:07.607956"
+        },
+        "XRP-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:03:19.421952"
+        },
+        "ADA-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:03:31.250652"
+        },
+        "SOL-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:03:43.217920"
+        },
+        "DOGE-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:03:55.027081"
+        },
+        "DOT-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:04:06.954945"
+        },
+        "MATIC-USD": {
+          "status": "failed",
+          "error": "No data received",
+          "trained_at": "2026-02-21T09:04:20.279435"
+        },
+        "LTC-USD": {
+          "status": "failed",
+          "error": "Insufficient data: 99 < 150",
+          "trained_at": "2026-02-21T09:04:32.082021"
+        },
+        "AAPL": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:04:43.988069"
+        },
+        "MSFT": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:04:55.862992"
+        },
+        "GOOGL": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:05:07.759796"
+        },
+        "AMZN": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:05:19.610932"
+        },
+        "TSLA": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:05:31.435002"
+        },
+        "META": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:05:43.247566"
+        },
+        "NVDA": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:05:55.064003"
+        },
+        "JPM": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:06:07.256602"
+        },
+        "V": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:06:19.107170"
+        },
+        "WMT": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:06:31.464921"
+        },
+        "GC=F": {
+          "status": "failed",
+          "error": "Insufficient data: 83 < 150",
+          "trained_at": "2026-02-21T09:06:44.094513"
+        },
+        "SI=F": {
+          "status": "failed",
+          "error": "Insufficient data: 141 < 150",
+          "trained_at": "2026-02-21T09:06:56.180019"
+        },
+        "CL=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T09:07:08.593354"
+        },
+        "NG=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T09:07:21.800834"
+        },
+        "HG=F": {
+          "status": "failed",
+          "error": "Insufficient data for training after feature engineering",
+          "trained_at": "2026-02-21T09:07:34.129087"
+        },
+        "^GSPC": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:07:46.049736"
+        },
+        "^DJI": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:07:57.473249"
+        },
+        "^IXIC": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:08:08.910783"
+        },
+        "^FTSE": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:08:20.271876"
+        },
+        "^N225": {
+          "status": "failed",
+          "error": "Insufficient data: 100 < 150",
+          "trained_at": "2026-02-21T09:08:31.701274"
+        }
+      }
+    }
+  ]
+}

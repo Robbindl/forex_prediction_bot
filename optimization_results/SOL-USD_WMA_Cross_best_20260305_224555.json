@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-05T22:45:55.196821",
+  "best_params": {
+    "fast_period": 10,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4258492370363327,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.4258492370363327,
+    "best_profit_factor": 3.2783149121717003,
+    "best_win_rate": 0.5625,
+    "best_return": 9.537139134892163,
+    "avg_sharpe": 0.23477377028362278
+  }
+}

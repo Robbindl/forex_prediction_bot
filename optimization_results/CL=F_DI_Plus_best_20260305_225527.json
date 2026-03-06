@@ -1,0 +1,20 @@
+{
+  "asset": "CL=F",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-05T22:55:27.410631",
+  "best_params": {
+    "period": 20,
+    "threshold": 25
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7634994964460234,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.7634994964460234,
+    "best_profit_factor": 5.26877155471259,
+    "best_win_rate": 0.6086956521739131,
+    "best_return": 24.586449500630348,
+    "avg_sharpe": 0.47718574176864026
+  }
+}

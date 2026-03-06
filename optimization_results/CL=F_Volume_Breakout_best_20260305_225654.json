@@ -1,0 +1,22 @@
+{
+  "asset": "CL=F",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-05T22:56:54.299868",
+  "best_params": {
+    "volume_period": 20,
+    "volume_multiplier": 2.5,
+    "price_period": 5,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 3.6865416859805804,
+  "total_combinations": 36,
+  "valid_combinations": 30,
+  "results_summary": {
+    "best_sharpe": 3.6865416859805804,
+    "best_profit_factor": 3.860339236688413,
+    "best_win_rate": 1.0,
+    "best_return": 6.060989471903431,
+    "avg_sharpe": 1.040485736561158
+  }
+}

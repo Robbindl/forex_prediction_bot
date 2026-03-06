@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "MACD",
+  "timestamp": "2026-03-06T01:27:57.161068",
+  "best_params": {
+    "fast": 12,
+    "slow": 32,
+    "signal": 9
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2727617761047556,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.2727617761047556,
+    "best_profit_factor": 1.7949760013212428,
+    "best_win_rate": 0.47058823529411764,
+    "best_return": 9.337492793501537,
+    "avg_sharpe": 0.1383400881171354
+  }
+}

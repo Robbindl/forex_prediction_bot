@@ -1,0 +1,21 @@
+{
+  "asset": "NVDA",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-06T00:55:50.462403",
+  "best_params": {
+    "period": 10,
+    "std_dev": 2.5,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 187566929354.01535,
+  "total_combinations": 27,
+  "valid_combinations": 16,
+  "results_summary": {
+    "best_sharpe": 187566929354.01535,
+    "best_profit_factor": 1.5178832356511858,
+    "best_win_rate": 1.0,
+    "best_return": 3.260781408012528,
+    "avg_sharpe": -6854310421.649298
+  }
+}

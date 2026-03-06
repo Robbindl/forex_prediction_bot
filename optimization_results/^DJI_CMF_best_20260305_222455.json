@@ -1,0 +1,20 @@
+{
+  "asset": "^DJI",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T22:24:55.754212",
+  "best_params": {
+    "period": 21,
+    "threshold": 0.1
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.0052730658463551,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 1.0052730658463551,
+    "best_profit_factor": 6.290727536051307,
+    "best_win_rate": 0.7333333333333333,
+    "best_return": 16.062973489004715,
+    "avg_sharpe": 0.5077975455015201
+  }
+}

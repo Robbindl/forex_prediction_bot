@@ -1,0 +1,21 @@
+{
+  "asset": "CL=F",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-05T22:55:35.137334",
+  "best_params": {
+    "period": 30,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2972893993898724,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.2972893993898724,
+    "best_profit_factor": 2.791056830773521,
+    "best_win_rate": 0.5357142857142857,
+    "best_return": 26.097972927837393,
+    "avg_sharpe": 0.2945712439290267
+  }
+}

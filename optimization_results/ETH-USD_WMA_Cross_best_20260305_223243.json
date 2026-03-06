@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-05T22:32:43.055625",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.26870987437205823,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.26870987437205823,
+    "best_profit_factor": 2.009978232878383,
+    "best_win_rate": 0.4,
+    "best_return": 6.277366346032309,
+    "avg_sharpe": 0.060693321138202534
+  }
+}

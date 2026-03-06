@@ -1,0 +1,22 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-05T23:14:40.973882",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 5,
+    "d_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.16652103376384755,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.16652103376384755,
+    "best_profit_factor": 1.3941275314306887,
+    "best_win_rate": 0.4375,
+    "best_return": 8.122184420296207,
+    "avg_sharpe": -0.08907372885942284
+  }
+}

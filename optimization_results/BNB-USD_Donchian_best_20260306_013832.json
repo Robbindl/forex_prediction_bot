@@ -1,0 +1,19 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Donchian",
+  "timestamp": "2026-03-06T01:38:32.984868",
+  "best_params": {
+    "period": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 252398263207.71463,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 252398263207.71463,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 1.0,
+    "best_return": 1.5657240613120829,
+    "avg_sharpe": 252398263207.71463
+  }
+}

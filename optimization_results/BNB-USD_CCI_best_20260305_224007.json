@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "CCI",
+  "timestamp": "2026-03-05T22:40:07.194542",
+  "best_params": {
+    "period": 10,
+    "oversold": -150,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.05193380096655821,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.05193380096655821,
+    "best_profit_factor": 1.0967044122853291,
+    "best_win_rate": 0.3888888888888889,
+    "best_return": 1.928355514635954,
+    "avg_sharpe": -0.3199054138749162
+  }
+}

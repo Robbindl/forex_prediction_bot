@@ -1,0 +1,20 @@
+{
+  "asset": "META",
+  "strategy": "Doji",
+  "timestamp": "2026-03-06T01:18:50.846695",
+  "best_params": {
+    "body_threshold": 0.01,
+    "wick_threshold": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": "0",
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.0,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": 0.0,
+    "avg_sharpe": 0.0
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "CL=F",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-05T22:56:16.135201",
+  "best_params": {
+    "fast_period": 7,
+    "slow_period": 10,
+    "threshold": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.1762512416365708,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.1762512416365708,
+    "best_profit_factor": 1.4739675879718281,
+    "best_win_rate": 0.3939393939393939,
+    "best_return": 9.842836324815801,
+    "avg_sharpe": -0.056591588618061316
+  }
+}

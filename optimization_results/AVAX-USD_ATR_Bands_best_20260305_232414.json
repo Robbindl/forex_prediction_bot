@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-05T23:24:14.675405",
+  "best_params": {
+    "period": 20,
+    "multiplier": 1.5,
+    "band_type": "both"
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9217987634138364,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.9217987634138364,
+    "best_profit_factor": 40.21051430707837,
+    "best_win_rate": 0.8478260869565217,
+    "best_return": 2046.396223095798,
+    "avg_sharpe": 0.5697281008808939
+  }
+}

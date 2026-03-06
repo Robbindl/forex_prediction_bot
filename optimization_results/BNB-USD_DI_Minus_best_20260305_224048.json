@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "DI_Minus",
+  "timestamp": "2026-03-05T22:40:48.423161",
+  "best_params": {
+    "period": 7,
+    "threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.18116437097861962,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.18116437097861962,
+    "best_profit_factor": 1.5075517208674913,
+    "best_win_rate": 0.43902439024390244,
+    "best_return": 24.6529585330427,
+    "avg_sharpe": 0.1519397856247813
+  }
+}

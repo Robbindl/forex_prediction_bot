@@ -1,0 +1,21 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Ichimoku_Cross",
+  "timestamp": "2026-03-05T22:46:21.594273",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "cloud_offset": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2559133096197791,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.2559133096197791,
+    "best_profit_factor": 2.0192973960399394,
+    "best_win_rate": 0.25,
+    "best_return": 3.0720644345010104,
+    "avg_sharpe": 0.2559133096197791
+  }
+}

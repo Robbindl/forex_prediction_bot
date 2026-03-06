@@ -1,0 +1,21 @@
+{
+  "asset": "AMZN",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-06T00:23:15.122480",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "volume_threshold": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.123908942780355,
+  "total_combinations": 27,
+  "valid_combinations": 22,
+  "results_summary": {
+    "best_sharpe": 1.123908942780355,
+    "best_profit_factor": 10.316801276955603,
+    "best_win_rate": 0.8333333333333334,
+    "best_return": 16.345489310208286,
+    "avg_sharpe": 0.4849609905853376
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-05T23:05:38.751800",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5086985586801132,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5086985586801132,
+    "best_profit_factor": 11.904763013113117,
+    "best_win_rate": 0.5238095238095238,
+    "best_return": 2390.068567260894,
+    "avg_sharpe": 0.5086985586801132
+  }
+}

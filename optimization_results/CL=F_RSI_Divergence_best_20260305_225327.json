@@ -1,0 +1,21 @@
+{
+  "asset": "CL=F",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T22:53:27.294069",
+  "best_params": {
+    "rsi_period": 14,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.07100771851073596,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.07100771851073596,
+    "best_profit_factor": 1.221817607712013,
+    "best_win_rate": 0.3888888888888889,
+    "best_return": 6.144023420123877,
+    "avg_sharpe": -0.18544620878353346
+  }
+}

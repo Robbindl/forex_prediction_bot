@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "RSI",
+  "timestamp": "2026-03-06T11:40:19.926998",
+  "best_params": {
+    "oversold": 30,
+    "overbought": 65,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.16460787167865584,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 0.16460787167865584,
+    "best_profit_factor": 1.3876743217344256,
+    "best_win_rate": 0.3717948717948718,
+    "best_return": 17.415385644879837,
+    "avg_sharpe": 0.024652366121045585
+  }
+}

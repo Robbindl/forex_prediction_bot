@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "ADX_Cross",
+  "timestamp": "2026-03-05T22:46:19.782542",
+  "best_params": {
+    "period": 7,
+    "adx_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.024705026921238018,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.024705026921238018,
+    "best_profit_factor": 1.0410588384600772,
+    "best_win_rate": 0.34285714285714286,
+    "best_return": 0.8730961748106552,
+    "avg_sharpe": 0.024705026921238018
+  }
+}

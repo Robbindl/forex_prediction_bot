@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Three_White",
+  "timestamp": "2026-03-06T00:54:20.408358",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.3
+  },
+  "best_metric": "sharpe",
+  "best_value": 291732791512.385,
+  "total_combinations": 9,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 291732791512.385,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 1.0,
+    "best_return": 6.878206667036865,
+    "avg_sharpe": 291732791512.385
+  }
+}

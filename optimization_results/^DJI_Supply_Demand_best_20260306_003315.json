@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "Supply_Demand",
+  "timestamp": "2026-03-06T00:33:15.956949",
+  "best_params": {
+    "zone_period": 20,
+    "strength_bars": 2,
+    "touch_tolerance": 0.001
+  },
+  "best_metric": "sharpe",
+  "best_value": 43922735079.9497,
+  "total_combinations": 27,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 43922735079.9497,
+    "best_profit_factor": 2.0444395276705176,
+    "best_win_rate": 1.0,
+    "best_return": 2.1281016778594326,
+    "avg_sharpe": 9760607795.312521
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-06T02:05:50.239474",
+  "best_params": {
+    "lookback": 50,
+    "levels": [
+      0.382,
+      0.5,
+      0.618
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6137412961336138,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 0.6137412961336138,
+    "best_profit_factor": 7.065786088557511,
+    "best_win_rate": 0.42857142857142855,
+    "best_return": 58.12367767705806,
+    "avg_sharpe": 0.23185220433022158
+  }
+}

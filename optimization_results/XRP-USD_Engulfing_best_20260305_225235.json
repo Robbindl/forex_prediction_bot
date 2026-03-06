@@ -1,0 +1,20 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-05T22:52:35.464446",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.12511412761063564,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.12511412761063564,
+    "best_profit_factor": 2.090661566928446,
+    "best_win_rate": 0.5217391304347826,
+    "best_return": 11.289025684369317,
+    "avg_sharpe": 0.1112686434575656
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "asset": "JPM",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-06T01:36:11.168176",
+  "best_params": {
+    "lookback": 20,
+    "levels": [
+      0.382,
+      0.5,
+      0.618
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4457225638185832,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 0.4457225638185832,
+    "best_profit_factor": 2.584095939605171,
+    "best_win_rate": 0.6190476190476191,
+    "best_return": 13.358869385477345,
+    "avg_sharpe": 0.17830286303611942
+  }
+}

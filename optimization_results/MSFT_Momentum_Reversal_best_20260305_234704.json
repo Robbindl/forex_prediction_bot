@@ -1,0 +1,22 @@
+{
+  "asset": "MSFT",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T23:47:04.896432",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 5,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 87955370042.04492,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 87955370042.04492,
+    "best_profit_factor": 43.520975410081576,
+    "best_win_rate": 1.0,
+    "best_return": 88.96633531585417,
+    "avg_sharpe": 3257606298.8917456
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "OBV",
+  "timestamp": "2026-03-05T23:12:06.393526",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.060588195767456686,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.060588195767456686,
+    "best_profit_factor": 1.1317243449043444,
+    "best_win_rate": 0.3668639053254438,
+    "best_return": 12.26920980396314,
+    "avg_sharpe": -0.04537737764816312
+  }
+}

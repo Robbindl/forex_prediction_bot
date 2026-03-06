@@ -1,0 +1,20 @@
+{
+  "asset": "^GSPC",
+  "strategy": "HMA_Cross",
+  "timestamp": "2026-03-05T22:20:31.593743",
+  "best_params": {
+    "fast_period": 12,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6683119117404431,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.6683119117404431,
+    "best_profit_factor": 4.578589685551729,
+    "best_win_rate": 0.7777777777777778,
+    "best_return": 7.764500033618281,
+    "avg_sharpe": 0.3421799594344192
+  }
+}

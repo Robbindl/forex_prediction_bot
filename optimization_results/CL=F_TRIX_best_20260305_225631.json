@@ -1,0 +1,20 @@
+{
+  "asset": "CL=F",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-05T22:56:31.685188",
+  "best_params": {
+    "period": 15,
+    "signal_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.18199722566081097,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.18199722566081097,
+    "best_profit_factor": 1.6672940835332513,
+    "best_win_rate": 0.38461538461538464,
+    "best_return": 5.371362950753011,
+    "avg_sharpe": -0.023761407646825494
+  }
+}

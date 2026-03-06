@@ -1,0 +1,23 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Stochastic_Full",
+  "timestamp": "2026-03-05T21:55:27.887033",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "slowing": 7,
+    "oversold": 15,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": 431444446277.06775,
+  "total_combinations": 324,
+  "valid_combinations": 318,
+  "results_summary": {
+    "best_sharpe": 431444446277.06775,
+    "best_profit_factor": 27.713114423756217,
+    "best_win_rate": 1.0,
+    "best_return": 29.774830872506953,
+    "avg_sharpe": 5369335404.800382
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "APO",
+  "timestamp": "2026-03-05T22:24:14.401311",
+  "best_params": {
+    "fast": 5,
+    "slow": 13,
+    "signal": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.38736989446754483,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.38736989446754483,
+    "best_profit_factor": 2.2533177209167916,
+    "best_win_rate": 0.5161290322580645,
+    "best_return": 18.06968796431982,
+    "avg_sharpe": 0.15583207253126424
+  }
+}

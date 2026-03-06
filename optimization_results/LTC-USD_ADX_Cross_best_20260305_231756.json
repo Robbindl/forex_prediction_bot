@@ -1,0 +1,20 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "ADX_Cross",
+  "timestamp": "2026-03-05T23:17:56.332069",
+  "best_params": {
+    "period": 7,
+    "adx_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.07744211414330515,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": -0.07744211414330515,
+    "best_profit_factor": 0.8413072782996888,
+    "best_win_rate": 0.32,
+    "best_return": -2.753652275323582,
+    "avg_sharpe": -0.07744211414330515
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "MACD",
+  "timestamp": "2026-03-06T01:03:17.873259",
+  "best_params": {
+    "fast": 12,
+    "slow": 20,
+    "signal": 9
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.285849392924352,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.285849392924352,
+    "best_profit_factor": 1.805317357160601,
+    "best_win_rate": 0.5,
+    "best_return": 10.95579635291419,
+    "avg_sharpe": 0.14061817297054904
+  }
+}

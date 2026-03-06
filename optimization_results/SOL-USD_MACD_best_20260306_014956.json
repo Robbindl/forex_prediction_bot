@@ -1,0 +1,21 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "MACD",
+  "timestamp": "2026-03-06T01:49:56.950124",
+  "best_params": {
+    "fast": 12,
+    "slow": 26,
+    "signal": 11
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3035694025151554,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.3035694025151554,
+    "best_profit_factor": 1.8607422372992921,
+    "best_win_rate": 0.5,
+    "best_return": 14.938845965667127,
+    "avg_sharpe": 0.20400405985870657
+  }
+}

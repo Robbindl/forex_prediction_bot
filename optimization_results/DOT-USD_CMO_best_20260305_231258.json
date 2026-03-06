@@ -1,0 +1,21 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T23:12:58.574891",
+  "best_params": {
+    "period": 14,
+    "oversold": -60,
+    "overbought": 40
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.20026009123175137,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.20026009123175137,
+    "best_profit_factor": 1.5011682445593384,
+    "best_win_rate": 0.45098039215686275,
+    "best_return": 13.950919648226712,
+    "avg_sharpe": -0.011174408344205576
+  }
+}

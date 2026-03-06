@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T00:53:23.618180",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.26573388081014565,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.26573388081014565,
+    "best_profit_factor": 0.5552840831246418,
+    "best_win_rate": 0.375,
+    "best_return": -2.2706819752833973,
+    "avg_sharpe": -0.26573388081014565
+  }
+}

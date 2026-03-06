@@ -1,0 +1,20 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "Ichimoku_Kijun",
+  "timestamp": "2026-03-05T22:51:18.293986",
+  "best_params": {
+    "tenkan_period": 9,
+    "kijun_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3546529099291858,
+  "total_combinations": 5,
+  "valid_combinations": 5,
+  "results_summary": {
+    "best_sharpe": 0.3546529099291858,
+    "best_profit_factor": 2.097056208889985,
+    "best_win_rate": 0.5,
+    "best_return": 4.151362181691266,
+    "avg_sharpe": 0.3546529099291858
+  }
+}

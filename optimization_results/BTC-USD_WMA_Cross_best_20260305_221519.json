@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-05T22:15:19.128577",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.14853220912049173,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.14853220912049173,
+    "best_profit_factor": 1.4186587879145538,
+    "best_win_rate": 0.3684210526315789,
+    "best_return": 3.1597152446690613,
+    "avg_sharpe": -0.05638168192599781
+  }
+}

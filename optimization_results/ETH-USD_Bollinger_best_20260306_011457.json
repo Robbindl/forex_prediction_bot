@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T01:14:57.191649",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5418236414555279,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5418236414555279,
+    "best_profit_factor": 5.464181730801793,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 246.11148152418014,
+    "avg_sharpe": 0.5418236414555279
+  }
+}

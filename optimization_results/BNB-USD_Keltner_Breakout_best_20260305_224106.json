@@ -1,0 +1,22 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-05T22:41:06.844424",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.5,
+    "confirmation_bars": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 141240599885.88272,
+  "total_combinations": 36,
+  "valid_combinations": 33,
+  "results_summary": {
+    "best_sharpe": 141240599885.88272,
+    "best_profit_factor": 7.044781314419683,
+    "best_win_rate": 1.0,
+    "best_return": 16.981900202176973,
+    "avg_sharpe": 3537548437.0670166
+  }
+}

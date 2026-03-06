@@ -1,0 +1,21 @@
+{
+  "asset": "NVDA",
+  "strategy": "CCI",
+  "timestamp": "2026-03-06T00:51:49.979302",
+  "best_params": {
+    "period": 10,
+    "oversold": -200,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.17852657983049,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.17852657983049,
+    "best_profit_factor": 1.424873668169882,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": 2.604164697123017,
+    "avg_sharpe": -0.16671584475303716
+  }
+}

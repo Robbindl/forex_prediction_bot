@@ -1,0 +1,20 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "Ichimoku_Tenkan",
+  "timestamp": "2026-03-05T23:00:57.254251",
+  "best_params": {
+    "tenkan_period": 5,
+    "kijun_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5428455026883175,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.5428455026883175,
+    "best_profit_factor": 5.002485846200008,
+    "best_win_rate": 0.5,
+    "best_return": 8.284746958009809,
+    "avg_sharpe": 0.5428455026883175
+  }
+}

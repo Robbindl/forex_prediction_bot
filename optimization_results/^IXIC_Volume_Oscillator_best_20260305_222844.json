@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-05T22:28:44.269078",
+  "best_params": {
+    "fast_period": 7,
+    "slow_period": 10,
+    "threshold": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.0239557581577379,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 1.0239557581577379,
+    "best_profit_factor": 6.700176073580115,
+    "best_win_rate": 0.8333333333333334,
+    "best_return": 17.275382524983662,
+    "avg_sharpe": 0.19400557269855875
+  }
+}

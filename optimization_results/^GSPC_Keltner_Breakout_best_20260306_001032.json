@@ -1,0 +1,22 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-06T00:10:32.880864",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.5,
+    "confirmation_bars": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9889211964285954,
+  "total_combinations": 36,
+  "valid_combinations": 35,
+  "results_summary": {
+    "best_sharpe": 0.9889211964285954,
+    "best_profit_factor": 15.83913189958243,
+    "best_win_rate": 0.875,
+    "best_return": 18.028351097081412,
+    "avg_sharpe": -19827444626.257343
+  }
+}

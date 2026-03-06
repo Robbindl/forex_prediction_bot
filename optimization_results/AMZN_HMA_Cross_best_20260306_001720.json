@@ -1,0 +1,20 @@
+{
+  "asset": "AMZN",
+  "strategy": "HMA_Cross",
+  "timestamp": "2026-03-06T00:17:20.258494",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.26011210978970634,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.26011210978970634,
+    "best_profit_factor": 1.8039864602494775,
+    "best_win_rate": 0.43478260869565216,
+    "best_return": 9.076494787603476,
+    "avg_sharpe": 0.11716897843855027
+  }
+}

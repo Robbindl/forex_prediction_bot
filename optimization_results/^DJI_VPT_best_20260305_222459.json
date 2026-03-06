@@ -1,0 +1,19 @@
+{
+  "asset": "^DJI",
+  "strategy": "VPT",
+  "timestamp": "2026-03-05T22:24:59.408038",
+  "best_params": {
+    "signal_period": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09460527843436611,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.09460527843436611,
+    "best_profit_factor": 1.2082734312191705,
+    "best_win_rate": 0.43478260869565216,
+    "best_return": 2.6482449165203152,
+    "avg_sharpe": 0.020623566245200557
+  }
+}

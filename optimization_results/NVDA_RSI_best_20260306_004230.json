@@ -1,0 +1,21 @@
+{
+  "asset": "NVDA",
+  "strategy": "RSI",
+  "timestamp": "2026-03-06T00:42:30.946410",
+  "best_params": {
+    "oversold": 25,
+    "overbought": 80,
+    "period": 21
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.028039739243103563,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 0.028039739243103563,
+    "best_profit_factor": 1.055931207277669,
+    "best_win_rate": 0.28,
+    "best_return": 0.4050999983036172,
+    "avg_sharpe": -0.34691434472864535
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Ichimoku_Kijun",
+  "timestamp": "2026-03-06T00:49:43.135402",
+  "best_params": {
+    "tenkan_period": 9,
+    "kijun_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -4.129481228570342,
+  "total_combinations": 5,
+  "valid_combinations": 5,
+  "results_summary": {
+    "best_sharpe": -4.129481228570342,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -2.308054154532339,
+    "avg_sharpe": -4.129481228570342
+  }
+}

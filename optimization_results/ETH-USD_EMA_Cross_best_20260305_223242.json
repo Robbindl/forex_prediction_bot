@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T22:32:42.154250",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9075881871111633,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.9075881871111633,
+    "best_profit_factor": 12.818138435729985,
+    "best_win_rate": 0.8,
+    "best_return": 18.98022916245514,
+    "avg_sharpe": 0.41423693449700927
+  }
+}

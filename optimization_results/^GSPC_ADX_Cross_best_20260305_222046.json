@@ -1,0 +1,20 @@
+{
+  "asset": "^GSPC",
+  "strategy": "ADX_Cross",
+  "timestamp": "2026-03-05T22:20:46.904648",
+  "best_params": {
+    "period": 7,
+    "adx_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.05028137980136732,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": -0.05028137980136732,
+    "best_profit_factor": 0.8908339986136697,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": -0.9944297776096117,
+    "avg_sharpe": -0.05028137980136732
+  }
+}

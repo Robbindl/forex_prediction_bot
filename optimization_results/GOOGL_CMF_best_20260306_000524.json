@@ -1,0 +1,20 @@
+{
+  "asset": "GOOGL",
+  "strategy": "CMF",
+  "timestamp": "2026-03-06T00:05:24.451079",
+  "best_params": {
+    "period": 20,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9908342353088769,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.9908342353088769,
+    "best_profit_factor": 6.267065368182418,
+    "best_win_rate": 0.7333333333333333,
+    "best_return": 38.82952586888271,
+    "avg_sharpe": 0.4824915446038105
+  }
+}

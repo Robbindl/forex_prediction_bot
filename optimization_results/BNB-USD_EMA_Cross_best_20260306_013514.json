@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-06T01:35:14.774688",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 26
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.41397632695558445,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.41397632695558445,
+    "best_profit_factor": 3.106198230498707,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": 12.755300852622659,
+    "avg_sharpe": 0.19672302742539283
+  }
+}

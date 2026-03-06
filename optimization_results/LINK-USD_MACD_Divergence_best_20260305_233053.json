@@ -1,0 +1,23 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-05T23:30:53.920568",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 7,
+    "lookback": 10,
+    "divergence_threshold": 0.03
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5043017680368914,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.5043017680368914,
+    "best_profit_factor": 3.2242096617917535,
+    "best_win_rate": 0.5789473684210527,
+    "best_return": 16.509241204380594,
+    "avg_sharpe": -0.03578961417043045
+  }
+}

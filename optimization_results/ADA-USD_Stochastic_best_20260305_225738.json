@@ -1,0 +1,22 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-05T22:57:38.535596",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 15,
+    "overbought": 80
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.005040485911237365,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": -0.005040485911237365,
+    "best_profit_factor": 0.9706137859040973,
+    "best_win_rate": 0.40625,
+    "best_return": -0.6480999316912232,
+    "avg_sharpe": -0.15794804999826442
+  }
+}

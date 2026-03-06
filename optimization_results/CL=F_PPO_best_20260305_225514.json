@@ -1,0 +1,21 @@
+{
+  "asset": "CL=F",
+  "strategy": "PPO",
+  "timestamp": "2026-03-05T22:55:14.041889",
+  "best_params": {
+    "fast": 16,
+    "slow": 32,
+    "signal": 9
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.13004199146051326,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.13004199146051326,
+    "best_profit_factor": 1.493939365513139,
+    "best_win_rate": 0.3103448275862069,
+    "best_return": 6.054954743668661,
+    "avg_sharpe": 0.00180496665831968
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "asset": "JPM",
+  "strategy": "OBV",
+  "timestamp": "2026-03-06T01:34:04.829422",
+  "best_params": {
+    "signal_period": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.0861233604733794,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.0861233604733794,
+    "best_profit_factor": 1.205296636825917,
+    "best_win_rate": 0.38461538461538464,
+    "best_return": 7.601520971200426,
+    "avg_sharpe": 0.054910714880818175
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T23:18:54.959629",
+  "best_params": {
+    "period": 10,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.1293314325275218,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.1293314325275218,
+    "best_profit_factor": 1.2876926244923281,
+    "best_win_rate": 0.41935483870967744,
+    "best_return": 12.065893966989547,
+    "avg_sharpe": -0.013965309135220408
+  }
+}

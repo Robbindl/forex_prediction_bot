@@ -1,0 +1,22 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-05T22:49:27.572846",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 7,
+    "histogram_threshold": 0
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.32949651264958935,
+  "total_combinations": 108,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.32949651264958935,
+    "best_profit_factor": 2.041405386149554,
+    "best_win_rate": 0.45161290322580644,
+    "best_return": 18.38466487991753,
+    "avg_sharpe": 0.11366131097483766
+  }
+}

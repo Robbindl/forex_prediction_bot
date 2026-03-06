@@ -1,0 +1,20 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "VWAP",
+  "timestamp": "2026-03-05T23:17:41.664727",
+  "best_params": {
+    "period": 20,
+    "std_dev": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7482515089200528,
+  "total_combinations": 12,
+  "valid_combinations": 10,
+  "results_summary": {
+    "best_sharpe": 0.7482515089200528,
+    "best_profit_factor": 4.94588491948202,
+    "best_win_rate": 0.6,
+    "best_return": 17.22217366558336,
+    "avg_sharpe": -21122509431.099957
+  }
+}

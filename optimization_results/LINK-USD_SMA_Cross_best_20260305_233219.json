@@ -1,0 +1,20 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "SMA_Cross",
+  "timestamp": "2026-03-05T23:32:19.293933",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": 481587734336.9613,
+  "total_combinations": 20,
+  "valid_combinations": 19,
+  "results_summary": {
+    "best_sharpe": 481587734336.9613,
+    "best_profit_factor": 11.67474542215098,
+    "best_win_rate": 1.0,
+    "best_return": 15.596109069131034,
+    "avg_sharpe": 49743737013.12147
+  }
+}

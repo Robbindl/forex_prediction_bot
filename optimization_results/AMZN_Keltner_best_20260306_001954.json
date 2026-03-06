@@ -1,0 +1,21 @@
+{
+  "asset": "AMZN",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-06T00:19:54.922208",
+  "best_params": {
+    "ema_period": 20,
+    "atr_period": 20,
+    "atr_multiplier": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.8504600363346607,
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.8504600363346607,
+    "best_profit_factor": 41.436485776190764,
+    "best_win_rate": 0.8518518518518519,
+    "best_return": 1028.9299363339358,
+    "avg_sharpe": 0.6054425075323372
+  }
+}

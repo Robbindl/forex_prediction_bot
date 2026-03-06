@@ -1,0 +1,20 @@
+{
+  "asset": "CL=F",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-05T22:56:10.371031",
+  "best_params": {
+    "lookback": 10,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.08854451015227102,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.08854451015227102,
+    "best_profit_factor": 1.185997237553969,
+    "best_win_rate": 0.4666666666666667,
+    "best_return": 3.6437094307343014,
+    "avg_sharpe": -0.1583794888294781
+  }
+}

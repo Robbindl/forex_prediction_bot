@@ -1,0 +1,21 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T23:26:33.858462",
+  "best_params": {
+    "rsi_period": 21,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.03829358496480369,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.03829358496480369,
+    "best_profit_factor": 1.0691397759870787,
+    "best_win_rate": 0.3793103448275862,
+    "best_return": 2.4876486142269414,
+    "avg_sharpe": -0.16854032528576599
+  }
+}

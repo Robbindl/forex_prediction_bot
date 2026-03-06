@@ -1,0 +1,19 @@
+{
+  "asset": "AAPL",
+  "strategy": "VPT",
+  "timestamp": "2026-03-05T23:41:00.209095",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.13716858648727887,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.13716858648727887,
+    "best_profit_factor": 1.36405604859837,
+    "best_win_rate": 0.36666666666666664,
+    "best_return": 10.136799464669997,
+    "avg_sharpe": 0.056098670057263614
+  }
+}

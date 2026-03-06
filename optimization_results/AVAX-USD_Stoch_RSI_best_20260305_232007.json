@@ -1,0 +1,22 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-05T23:20:07.020610",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 7,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3348801917737032,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.3348801917737032,
+    "best_profit_factor": 4.412970865800133,
+    "best_win_rate": 0.4375,
+    "best_return": 23.01857494214575,
+    "avg_sharpe": -0.12702057047559767
+  }
+}

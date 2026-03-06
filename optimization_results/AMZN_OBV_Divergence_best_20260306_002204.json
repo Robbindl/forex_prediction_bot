@@ -1,0 +1,20 @@
+{
+  "asset": "AMZN",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-06T00:22:04.310208",
+  "best_params": {
+    "lookback": 20,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5024113740964441,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.5024113740964441,
+    "best_profit_factor": 2.9192591013041143,
+    "best_win_rate": 0.6,
+    "best_return": 17.660871960972948,
+    "avg_sharpe": 0.21881504681834946
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-05T23:47:13.382389",
+  "best_params": {
+    "lookback": 20,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.00964625226064968,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": -0.00964625226064968,
+    "best_profit_factor": 0.9615638683768751,
+    "best_win_rate": 0.35,
+    "best_return": -0.8823130975348883,
+    "avg_sharpe": -0.04466420935630033
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Three_White",
+  "timestamp": "2026-03-06T02:05:10.949887",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.4
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.3197820309686342,
+  "total_combinations": 9,
+  "valid_combinations": 6,
+  "results_summary": {
+    "best_sharpe": -0.3197820309686342,
+    "best_profit_factor": 0.3185347325809524,
+    "best_win_rate": 0.75,
+    "best_return": -3.933656660842886,
+    "avg_sharpe": -210732142358.75906
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "PPO",
+  "timestamp": "2026-03-05T23:00:12.287128",
+  "best_params": {
+    "fast": 8,
+    "slow": 32,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5122330055260368,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5122330055260368,
+    "best_profit_factor": 2.8941462621202665,
+    "best_win_rate": 0.5714285714285714,
+    "best_return": 22.503323371583768,
+    "avg_sharpe": 0.07799706947002152
+  }
+}

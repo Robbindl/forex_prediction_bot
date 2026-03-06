@@ -1,0 +1,22 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-05T22:29:32.743756",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 1.5,
+    "price_period": 10,
+    "price_threshold": 0.03
+  },
+  "best_metric": "sharpe",
+  "best_value": 291898870774.49976,
+  "total_combinations": 36,
+  "valid_combinations": 14,
+  "results_summary": {
+    "best_sharpe": 291898870774.49976,
+    "best_profit_factor": 35.60413866113087,
+    "best_win_rate": 1.0,
+    "best_return": 19.078412302523997,
+    "avg_sharpe": 38879075212.783394
+  }
+}

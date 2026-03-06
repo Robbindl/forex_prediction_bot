@@ -1,0 +1,22 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T22:53:18.423180",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 75,
+    "lookback": 3,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 590159960155.8705,
+  "total_combinations": 27,
+  "valid_combinations": 15,
+  "results_summary": {
+    "best_sharpe": 590159960155.8705,
+    "best_profit_factor": 3.9126772568763832,
+    "best_win_rate": 1.0,
+    "best_return": 22.789789814393497,
+    "avg_sharpe": 196719986718.73883
+  }
+}

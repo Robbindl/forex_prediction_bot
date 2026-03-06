@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T22:37:21.651070",
+  "best_params": {
+    "rsi_period": 7,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.10922896835543965,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.10922896835543965,
+    "best_profit_factor": 1.2657564036341893,
+    "best_win_rate": 0.3548387096774194,
+    "best_return": 8.092576958849918,
+    "avg_sharpe": -0.15682758956680154
+  }
+}

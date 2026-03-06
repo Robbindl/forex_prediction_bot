@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Ichimoku",
+  "timestamp": "2026-03-05T22:20:47.875943",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "senkou": 45
+  },
+  "best_metric": "sharpe",
+  "best_value": -1.4231003988878885,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -1.4231003988878885,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -2.0849401711654747,
+    "avg_sharpe": -1.4231003988878885
+  }
+}

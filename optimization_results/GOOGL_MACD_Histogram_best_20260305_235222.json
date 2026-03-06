@@ -1,0 +1,22 @@
+{
+  "asset": "GOOGL",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-05T23:52:22.250245",
+  "best_params": {
+    "fast": 16,
+    "slow": 20,
+    "signal": 7,
+    "histogram_threshold": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 20148169494.783054,
+  "total_combinations": 108,
+  "valid_combinations": 105,
+  "results_summary": {
+    "best_sharpe": 20148169494.783054,
+    "best_profit_factor": 3.4365076690268737,
+    "best_win_rate": 1.0,
+    "best_return": 18.921042229419022,
+    "avg_sharpe": 383774657.2980227
+  }
+}

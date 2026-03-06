@@ -1,0 +1,21 @@
+{
+  "asset": "GOOGL",
+  "strategy": "CMO",
+  "timestamp": "2026-03-06T00:06:29.260601",
+  "best_params": {
+    "period": 14,
+    "oversold": -40,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.074481156533666,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.074481156533666,
+    "best_profit_factor": 1.127503981949934,
+    "best_win_rate": 0.42424242424242425,
+    "best_return": 2.549201548077455,
+    "avg_sharpe": -0.49607824473567774
+  }
+}

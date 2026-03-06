@@ -1,0 +1,21 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "APO",
+  "timestamp": "2026-03-05T23:10:57.455129",
+  "best_params": {
+    "fast": 12,
+    "slow": 26,
+    "signal": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4615258046058665,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.4615258046058665,
+    "best_profit_factor": 2.936061369583819,
+    "best_win_rate": 0.5714285714285714,
+    "best_return": 27.421818717389506,
+    "avg_sharpe": 0.26488182759633794
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "JPM",
+  "strategy": "Chaikin_Volatility",
+  "timestamp": "2026-03-06T01:34:02.116210",
+  "best_params": {
+    "period": 5,
+    "roc_period": 5,
+    "threshold": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": "0",
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.0,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": 0.0,
+    "avg_sharpe": 0.0
+  }
+}

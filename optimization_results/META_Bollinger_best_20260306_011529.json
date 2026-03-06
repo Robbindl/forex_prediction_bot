@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T01:15:29.372040",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5044000856501372,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5044000856501372,
+    "best_profit_factor": 4.202106133880526,
+    "best_win_rate": 0.5769230769230769,
+    "best_return": 40.842037298218436,
+    "avg_sharpe": 0.47813268921647567
+  }
+}

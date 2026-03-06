@@ -1,0 +1,22 @@
+{
+  "asset": "NVDA",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-06T00:48:00.739339",
+  "best_params": {
+    "fast": 12,
+    "slow": 20,
+    "signal": 11,
+    "histogram_threshold": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 354130990207.9842,
+  "total_combinations": 108,
+  "valid_combinations": 97,
+  "results_summary": {
+    "best_sharpe": 354130990207.9842,
+    "best_profit_factor": 2.086670331830956,
+    "best_win_rate": 1.0,
+    "best_return": 17.71009082030123,
+    "avg_sharpe": 14597152308.761255
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "DI_Minus",
+  "timestamp": "2026-03-05T23:00:53.738048",
+  "best_params": {
+    "period": 7,
+    "threshold": 25
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.32874245975806643,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.32874245975806643,
+    "best_profit_factor": 2.082144661281259,
+    "best_win_rate": 0.48484848484848486,
+    "best_return": 66.44773023125111,
+    "avg_sharpe": 0.3201813639569701
+  }
+}

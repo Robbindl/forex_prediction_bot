@@ -1,0 +1,22 @@
+{
+  "asset": "TSLA",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T00:27:40.926946",
+  "best_params": {
+    "rsi_period": 14,
+    "stoch_period": 5,
+    "k_period": 3,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.24535356910559553,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.24535356910559553,
+    "best_profit_factor": 1.6999816317350658,
+    "best_win_rate": 0.4583333333333333,
+    "best_return": 12.609797317583284,
+    "avg_sharpe": 0.01731242471582775
+  }
+}

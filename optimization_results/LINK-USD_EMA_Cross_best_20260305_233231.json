@@ -1,0 +1,20 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T23:32:31.531874",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4218224903791456,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.4218224903791456,
+    "best_profit_factor": 3.0503203748804504,
+    "best_win_rate": 0.5,
+    "best_return": 12.056383146561807,
+    "avg_sharpe": 0.2903745568135031
+  }
+}

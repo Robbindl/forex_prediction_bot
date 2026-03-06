@@ -1,0 +1,20 @@
+{
+  "asset": "^GSPC",
+  "strategy": "SMA_Cross",
+  "timestamp": "2026-03-06T00:08:31.086251",
+  "best_params": {
+    "fast_period": 20,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 7557879004.909531,
+  "total_combinations": 20,
+  "valid_combinations": 11,
+  "results_summary": {
+    "best_sharpe": 7557879004.909531,
+    "best_profit_factor": 48.2180354183628,
+    "best_win_rate": 1.0,
+    "best_return": 2.0175258475354787,
+    "avg_sharpe": 687079909.4899822
+  }
+}

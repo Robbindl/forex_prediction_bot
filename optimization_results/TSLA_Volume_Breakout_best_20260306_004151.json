@@ -1,0 +1,22 @@
+{
+  "asset": "TSLA",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-06T00:41:51.756871",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 1.5,
+    "price_period": 10,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.4781877782942454,
+  "total_combinations": 36,
+  "valid_combinations": 24,
+  "results_summary": {
+    "best_sharpe": -0.4781877782942454,
+    "best_profit_factor": 0.6569319404374305,
+    "best_win_rate": 0.5,
+    "best_return": -0.7372097325371237,
+    "avg_sharpe": -106323554676.66704
+  }
+}

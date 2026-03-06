@@ -1,0 +1,21 @@
+{
+  "asset": "CL=F",
+  "strategy": "Williams_R",
+  "timestamp": "2026-03-05T22:55:07.273597",
+  "best_params": {
+    "period": 10,
+    "oversold": -90,
+    "overbought": -10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.20797205998969226,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.20797205998969226,
+    "best_profit_factor": 1.5526047444888533,
+    "best_win_rate": 0.4230769230769231,
+    "best_return": 27.884643214542308,
+    "avg_sharpe": 0.041421426916667496
+  }
+}

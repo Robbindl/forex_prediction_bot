@@ -1,0 +1,22 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T23:19:25.250762",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 3,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 349217604978.30597,
+  "total_combinations": 27,
+  "valid_combinations": 20,
+  "results_summary": {
+    "best_sharpe": 349217604978.30597,
+    "best_profit_factor": 4.531425620054866,
+    "best_win_rate": 1.0,
+    "best_return": 20.192030756870615,
+    "avg_sharpe": 69843520995.49649
+  }
+}

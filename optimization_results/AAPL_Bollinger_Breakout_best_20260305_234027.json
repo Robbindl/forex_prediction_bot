@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-05T23:40:27.297511",
+  "best_params": {
+    "period": 30,
+    "std_dev": 2.5,
+    "confirmation_bars": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 2.7655319741112714,
+  "total_combinations": 27,
+  "valid_combinations": 17,
+  "results_summary": {
+    "best_sharpe": 2.7655319741112714,
+    "best_profit_factor": 5.059095370615706,
+    "best_win_rate": 1.0,
+    "best_return": 10.1802601953434,
+    "avg_sharpe": -52411034526.14728
+  }
+}

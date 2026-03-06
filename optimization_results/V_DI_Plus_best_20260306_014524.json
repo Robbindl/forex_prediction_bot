@@ -1,0 +1,20 @@
+{
+  "asset": "V",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-06T01:45:24.996284",
+  "best_params": {
+    "period": 20,
+    "threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.20961255789668107,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": -0.20961255789668107,
+    "best_profit_factor": 0.5713260730958916,
+    "best_win_rate": 0.25,
+    "best_return": -7.889910056883491,
+    "avg_sharpe": -0.3792908079089304
+  }
+}

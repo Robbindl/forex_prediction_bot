@@ -1,0 +1,20 @@
+{
+  "asset": "AAPL",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-05T23:41:03.083340",
+  "best_params": {
+    "period": 15,
+    "signal_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.08771052960634924,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.08771052960634924,
+    "best_profit_factor": 1.1991927233636437,
+    "best_win_rate": 0.4117647058823529,
+    "best_return": 2.2038409201224773,
+    "avg_sharpe": -0.009563626118490149
+  }
+}

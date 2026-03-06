@@ -1,0 +1,22 @@
+{
+  "asset": "^DJI",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T00:17:07.722113",
+  "best_params": {
+    "rsi_period": 14,
+    "stoch_period": 5,
+    "k_period": 7,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.8174955010585797,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.8174955010585797,
+    "best_profit_factor": 5.989801852238354,
+    "best_win_rate": 0.6,
+    "best_return": 10.226055209787702,
+    "avg_sharpe": -0.42686130626309077
+  }
+}

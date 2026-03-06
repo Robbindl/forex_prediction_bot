@@ -1,0 +1,22 @@
+{
+  "asset": "META",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-06T01:16:28.411863",
+  "best_params": {
+    "ema_period": 20,
+    "atr_period": 14,
+    "atr_multiplier": 2.5,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.19497723157126903,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.19497723157126903,
+    "best_profit_factor": 1.7194989420872344,
+    "best_win_rate": 0.6842105263157895,
+    "best_return": 4.893083292388526,
+    "avg_sharpe": -0.35585807566275346
+  }
+}

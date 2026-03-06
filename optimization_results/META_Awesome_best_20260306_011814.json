@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T01:18:14.416099",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.15183925471501086,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.15183925471501086,
+    "best_profit_factor": 0.7178747992515689,
+    "best_win_rate": 0.25,
+    "best_return": -2.356499378916067,
+    "avg_sharpe": -0.15183925471501086
+  }
+}

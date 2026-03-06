@@ -1,0 +1,21 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "Ichimoku_Cross",
+  "timestamp": "2026-03-05T23:05:34.941721",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "cloud_offset": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.35913198727844586,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.35913198727844586,
+    "best_profit_factor": 2.120498671297648,
+    "best_win_rate": 0.5,
+    "best_return": 4.1932213654771395,
+    "avg_sharpe": 0.3591319872784458
+  }
+}

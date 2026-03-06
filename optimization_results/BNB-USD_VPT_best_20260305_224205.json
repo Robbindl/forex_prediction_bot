@@ -1,0 +1,19 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "VPT",
+  "timestamp": "2026-03-05T22:42:05.820159",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.08625505779306233,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.08625505779306233,
+    "best_profit_factor": 1.1911391891506762,
+    "best_win_rate": 0.38095238095238093,
+    "best_return": 12.775137533243846,
+    "avg_sharpe": 0.03731361804691354
+  }
+}

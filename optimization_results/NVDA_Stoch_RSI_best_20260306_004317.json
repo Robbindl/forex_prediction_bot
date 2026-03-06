@@ -1,0 +1,22 @@
+{
+  "asset": "NVDA",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T00:43:17.416018",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 5,
+    "d_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9293492056761564,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.9293492056761564,
+    "best_profit_factor": 7.089198281017456,
+    "best_win_rate": 0.75,
+    "best_return": 12.847788593133835,
+    "avg_sharpe": 0.1731041883311332
+  }
+}

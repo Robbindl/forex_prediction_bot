@@ -1,0 +1,20 @@
+{
+  "asset": "GOOGL",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-05T23:58:47.648376",
+  "best_params": {
+    "fast_period": 10,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 36657978360.98268,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 36657978360.98268,
+    "best_profit_factor": 3.4182493888466325,
+    "best_win_rate": 1.0,
+    "best_return": 4.629075740444859,
+    "avg_sharpe": 6311794206.408351
+  }
+}

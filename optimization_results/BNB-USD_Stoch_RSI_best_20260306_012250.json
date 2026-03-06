@@ -1,0 +1,22 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T01:22:50.504235",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 5,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.27706051756011535,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.27706051756011535,
+    "best_profit_factor": 1.7624289459574638,
+    "best_win_rate": 0.4782608695652174,
+    "best_return": 9.710205409898496,
+    "avg_sharpe": -0.032059763146659495
+  }
+}

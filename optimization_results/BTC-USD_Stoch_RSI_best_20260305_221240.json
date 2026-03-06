@@ -1,0 +1,22 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-05T22:12:40.521772",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 5,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3946098403144691,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.3946098403144691,
+    "best_profit_factor": 4.7406217589214386,
+    "best_win_rate": 0.48717948717948717,
+    "best_return": 36.872034757641096,
+    "avg_sharpe": 0.04949406595408094
+  }
+}

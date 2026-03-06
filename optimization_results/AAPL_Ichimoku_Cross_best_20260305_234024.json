@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "Ichimoku_Cross",
+  "timestamp": "2026-03-05T23:40:24.366757",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "cloud_offset": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4752650496574684,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.4752650496574684,
+    "best_profit_factor": 2.445471658836332,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 2.36915787853259,
+    "avg_sharpe": 0.47526504965746835
+  }
+}

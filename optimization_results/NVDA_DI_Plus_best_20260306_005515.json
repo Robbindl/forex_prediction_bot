@@ -1,0 +1,20 @@
+{
+  "asset": "NVDA",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-06T00:55:15.324349",
+  "best_params": {
+    "period": 7,
+    "threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.8289689470355793,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.8289689470355793,
+    "best_profit_factor": 4.501260749001014,
+    "best_win_rate": 0.6875,
+    "best_return": 44.02250217970221,
+    "avg_sharpe": 0.6605074988769183
+  }
+}

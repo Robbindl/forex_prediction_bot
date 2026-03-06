@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-06T00:53:27.465955",
+  "best_params": {
+    "period": 10,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09695219454902974,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.09695219454902974,
+    "best_profit_factor": 1.2382770389113371,
+    "best_win_rate": 0.3684210526315789,
+    "best_return": 4.225008995954591,
+    "avg_sharpe": -0.0008814691612131334
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-05T23:19:22.379978",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 20,
+    "di_threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09965493027716958,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.09965493027716958,
+    "best_profit_factor": 1.2459806460363108,
+    "best_win_rate": 0.30392156862745096,
+    "best_return": 11.923566463573955,
+    "avg_sharpe": 0.04209902257107542
+  }
+}

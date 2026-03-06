@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Williams_R",
+  "timestamp": "2026-03-05T22:20:19.313405",
+  "best_params": {
+    "period": 7,
+    "oversold": -70,
+    "overbought": -20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.04341099749359746,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.04341099749359746,
+    "best_profit_factor": 0.8819655379824584,
+    "best_win_rate": 0.37209302325581395,
+    "best_return": -3.0632634184447407,
+    "avg_sharpe": -0.36727540069517983
+  }
+}

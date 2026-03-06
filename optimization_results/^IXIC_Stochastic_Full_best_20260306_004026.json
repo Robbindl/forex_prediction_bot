@@ -1,0 +1,23 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Stochastic_Full",
+  "timestamp": "2026-03-06T00:40:26.039609",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 7,
+    "slowing": 7,
+    "oversold": 15,
+    "overbought": 80
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.04101534842525384,
+  "total_combinations": 324,
+  "valid_combinations": 324,
+  "results_summary": {
+    "best_sharpe": -0.04101534842525384,
+    "best_profit_factor": 0.8950475684307042,
+    "best_win_rate": 0.42857142857142855,
+    "best_return": -0.27925459950575865,
+    "avg_sharpe": -77586240.25799915
+  }
+}

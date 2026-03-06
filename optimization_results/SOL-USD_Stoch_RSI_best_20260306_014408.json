@@ -1,0 +1,22 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T01:44:08.581457",
+  "best_params": {
+    "rsi_period": 21,
+    "stoch_period": 5,
+    "k_period": 5,
+    "d_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.0015176823937995535,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.0015176823937995535,
+    "best_profit_factor": 0.9785243528964623,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": -0.8633040689920524,
+    "avg_sharpe": -0.14856498551636002
+  }
+}

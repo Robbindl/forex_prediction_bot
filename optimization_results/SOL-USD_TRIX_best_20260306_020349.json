@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-06T02:03:49.827828",
+  "best_params": {
+    "period": 18,
+    "signal_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5244368972118268,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.5244368972118268,
+    "best_profit_factor": 3.261988879700344,
+    "best_win_rate": 0.5833333333333334,
+    "best_return": 13.73157434883447,
+    "avg_sharpe": 0.21740211770327886
+  }
+}

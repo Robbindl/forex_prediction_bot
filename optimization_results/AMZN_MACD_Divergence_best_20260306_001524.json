@@ -1,0 +1,23 @@
+{
+  "asset": "AMZN",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-06T00:15:24.699535",
+  "best_params": {
+    "fast": 16,
+    "slow": 32,
+    "signal": 7,
+    "lookback": 20,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.454610454245764,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.454610454245764,
+    "best_profit_factor": 2.469643491103612,
+    "best_win_rate": 0.6153846153846154,
+    "best_return": 7.451488915763182,
+    "avg_sharpe": 0.09782134201999691
+  }
+}

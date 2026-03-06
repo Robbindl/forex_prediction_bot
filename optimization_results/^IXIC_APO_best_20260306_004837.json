@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "APO",
+  "timestamp": "2026-03-06T00:48:37.586652",
+  "best_params": {
+    "fast": 12,
+    "slow": 26,
+    "signal": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.016215294371233594,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.016215294371233594,
+    "best_profit_factor": 1.023960929118412,
+    "best_win_rate": 0.2962962962962963,
+    "best_return": 0.36087346907273593,
+    "avg_sharpe": -0.11381280431845227
+  }
+}

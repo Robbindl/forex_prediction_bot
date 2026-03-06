@@ -1,0 +1,22 @@
+{
+  "asset": "^GSPC",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-05T22:19:19.754840",
+  "best_params": {
+    "fast": 8,
+    "slow": 32,
+    "signal": 9,
+    "histogram_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.525438054850068,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.525438054850068,
+    "best_profit_factor": 3.4701673641460924,
+    "best_win_rate": 0.5238095238095238,
+    "best_return": 18.567073334621643,
+    "avg_sharpe": 0.11404296060713756
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Ichimoku",
+  "timestamp": "2026-03-05T22:32:59.995843",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "senkou": 45
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.21672326639763254,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.21672326639763254,
+    "best_profit_factor": 1.831547905747186,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": 5.0507496710408315,
+    "avg_sharpe": 0.2167232663976326
+  }
+}

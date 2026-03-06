@@ -1,0 +1,22 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-05T22:36:46.271207",
+  "best_params": {
+    "volume_period": 20,
+    "volume_multiplier": 2.0,
+    "price_period": 5,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7431352379908226,
+  "total_combinations": 36,
+  "valid_combinations": 30,
+  "results_summary": {
+    "best_sharpe": 0.7431352379908226,
+    "best_profit_factor": 5.041615771987443,
+    "best_win_rate": 1.0,
+    "best_return": 8.21893859727643,
+    "avg_sharpe": -67688739641.48903
+  }
+}

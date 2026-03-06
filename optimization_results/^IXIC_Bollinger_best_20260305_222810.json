@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-05T22:28:10.053300",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.05493688844909254,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.05493688844909254,
+    "best_profit_factor": 6.98471683925729,
+    "best_win_rate": 0.30434782608695654,
+    "best_return": 707.3842180967072,
+    "avg_sharpe": -0.0536704801844034
+  }
+}

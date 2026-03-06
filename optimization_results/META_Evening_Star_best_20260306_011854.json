@@ -1,0 +1,20 @@
+{
+  "asset": "META",
+  "strategy": "Evening_Star",
+  "timestamp": "2026-03-06T01:18:54.641212",
+  "best_params": {
+    "body_ratio": 0.5,
+    "gap_threshold": 0.005
+  },
+  "best_metric": "sharpe",
+  "best_value": -122584749176.3991,
+  "total_combinations": 9,
+  "valid_combinations": 1,
+  "results_summary": {
+    "best_sharpe": -122584749176.3991,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -1.6956906467940118,
+    "avg_sharpe": -122584749176.3991
+  }
+}

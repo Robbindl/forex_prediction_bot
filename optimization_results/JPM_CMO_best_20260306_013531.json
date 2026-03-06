@@ -1,0 +1,21 @@
+{
+  "asset": "JPM",
+  "strategy": "CMO",
+  "timestamp": "2026-03-06T01:35:31.978353",
+  "best_params": {
+    "period": 7,
+    "oversold": -40,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.14115078402866732,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.14115078402866732,
+    "best_profit_factor": 1.3553738358537402,
+    "best_win_rate": 0.375,
+    "best_return": 9.100074324145483,
+    "avg_sharpe": -0.6176822231369401
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "asset": "NVDA",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-06T00:59:58.774272",
+  "best_params": {
+    "lookback": 20,
+    "levels": [
+      0.382,
+      0.5,
+      0.618
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2140850123435646,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 0.2140850123435646,
+    "best_profit_factor": 1.7785475081075415,
+    "best_win_rate": 0.2727272727272727,
+    "best_return": 5.190913614080221,
+    "avg_sharpe": -0.2517778295642848
+  }
+}

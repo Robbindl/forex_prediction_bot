@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T21:58:41.346423",
+  "best_params": {
+    "period": 8,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2371147717453196,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.2371147717453196,
+    "best_profit_factor": 1.679250076652937,
+    "best_win_rate": 0.4528301886792453,
+    "best_return": 16.305011033918056,
+    "avg_sharpe": 0.11636024165589988
+  }
+}

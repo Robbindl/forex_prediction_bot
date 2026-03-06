@@ -1,0 +1,20 @@
+{
+  "asset": "^GSPC",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T22:21:27.692898",
+  "best_params": {
+    "period": 21,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 2.2502221747493887,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 2.2502221747493887,
+    "best_profit_factor": 35.45452026988714,
+    "best_win_rate": 0.9230769230769231,
+    "best_return": 20.617434928655257,
+    "avg_sharpe": 0.8905563584006164
+  }
+}

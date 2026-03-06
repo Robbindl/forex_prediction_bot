@@ -1,0 +1,22 @@
+{
+  "asset": "JPM",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T01:21:08.426351",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 3,
+    "d_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4825339221227909,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.4825339221227909,
+    "best_profit_factor": 3.953640067828318,
+    "best_win_rate": 0.43243243243243246,
+    "best_return": 15.47222516118964,
+    "avg_sharpe": -0.00288596877500023
+  }
+}

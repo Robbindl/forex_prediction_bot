@@ -1,0 +1,20 @@
+{
+  "asset": "AMZN",
+  "strategy": "CMF",
+  "timestamp": "2026-03-06T00:23:31.524796",
+  "best_params": {
+    "period": 20,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.247077694520233,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.247077694520233,
+    "best_profit_factor": 1.7257125549188814,
+    "best_win_rate": 0.4375,
+    "best_return": 11.302552707098936,
+    "avg_sharpe": 0.06512882381611168
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Ichimoku_Cross",
+  "timestamp": "2026-03-05T23:46:01.765095",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "cloud_offset": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.3900454318588608,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.3900454318588608,
+    "best_profit_factor": 0.32413878878563124,
+    "best_win_rate": 0.2,
+    "best_return": -8.066058950032486,
+    "avg_sharpe": -0.39004543185886076
+  }
+}

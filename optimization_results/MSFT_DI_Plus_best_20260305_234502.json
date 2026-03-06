@@ -1,0 +1,20 @@
+{
+  "asset": "MSFT",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-05T23:45:02.631878",
+  "best_params": {
+    "period": 7,
+    "threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.3036811028164785,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 1.3036811028164785,
+    "best_profit_factor": 8.61160047857232,
+    "best_win_rate": 0.8421052631578947,
+    "best_return": 30.139237123976585,
+    "avg_sharpe": 0.818266981368454
+  }
+}

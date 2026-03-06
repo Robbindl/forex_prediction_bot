@@ -1,0 +1,22 @@
+{
+  "asset": "JPM",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-06T01:37:02.532625",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 7,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 60053083116.22258,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 60053083116.22258,
+    "best_profit_factor": 15.989417310708598,
+    "best_win_rate": 1.0,
+    "best_return": 18.1666095584806,
+    "avg_sharpe": 2224188269.396467
+  }
+}

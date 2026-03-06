@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T01:19:11.124492",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.20754153093004216,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.20754153093004216,
+    "best_profit_factor": 1.889360999872314,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": 7.318984462652217,
+    "avg_sharpe": 0.20754153093004216
+  }
+}

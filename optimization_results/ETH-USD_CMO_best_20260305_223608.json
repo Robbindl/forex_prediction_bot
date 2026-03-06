@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T22:36:08.345321",
+  "best_params": {
+    "period": 7,
+    "oversold": -40,
+    "overbought": 40
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.033323174551277084,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.033323174551277084,
+    "best_profit_factor": 1.0522329525763636,
+    "best_win_rate": 0.34306569343065696,
+    "best_return": 4.469618304276993,
+    "avg_sharpe": -0.12563985082641477
+  }
+}

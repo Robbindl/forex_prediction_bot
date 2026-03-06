@@ -1,0 +1,24 @@
+{
+  "asset": "GOOGL",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-06T00:06:51.400879",
+  "best_params": {
+    "lookback": 50,
+    "levels": [
+      0.382,
+      0.5,
+      0.618
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 11.287121635059034,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 11.287121635059034,
+    "best_profit_factor": 1220.7461289822513,
+    "best_win_rate": 1.0,
+    "best_return": 26.881404224799866,
+    "avg_sharpe": -0.21541551247960722
+  }
+}

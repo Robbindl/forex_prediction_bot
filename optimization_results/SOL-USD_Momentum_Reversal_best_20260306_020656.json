@@ -1,0 +1,22 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-06T02:06:56.946101",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 7,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 137692168388.94965,
+  "total_combinations": 27,
+  "valid_combinations": 24,
+  "results_summary": {
+    "best_sharpe": 137692168388.94965,
+    "best_profit_factor": 48.56675832460916,
+    "best_win_rate": 1.0,
+    "best_return": 138.5251106009214,
+    "avg_sharpe": 26589249080.784214
+  }
+}

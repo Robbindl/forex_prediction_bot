@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "HMA_Cross",
+  "timestamp": "2026-03-05T22:40:33.579726",
+  "best_params": {
+    "fast_period": 12,
+    "slow_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.17883583789706062,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.17883583789706062,
+    "best_profit_factor": 1.4513852702394323,
+    "best_win_rate": 0.42424242424242425,
+    "best_return": 8.598996932095297,
+    "avg_sharpe": 0.02919439623167302
+  }
+}

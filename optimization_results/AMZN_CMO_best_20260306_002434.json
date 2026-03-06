@@ -1,0 +1,21 @@
+{
+  "asset": "AMZN",
+  "strategy": "CMO",
+  "timestamp": "2026-03-06T00:24:34.749244",
+  "best_params": {
+    "period": 20,
+    "oversold": -50,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 100712747615.28716,
+  "total_combinations": 36,
+  "valid_combinations": 35,
+  "results_summary": {
+    "best_sharpe": 100712747615.28716,
+    "best_profit_factor": 7.182858627730116,
+    "best_win_rate": 1.0,
+    "best_return": 39.688838787046535,
+    "avg_sharpe": 1088312714.2347517
+  }
+}

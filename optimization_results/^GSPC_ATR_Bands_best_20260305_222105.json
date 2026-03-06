@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-05T22:21:05.912944",
+  "best_params": {
+    "period": 14,
+    "multiplier": 2.0,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9149252705922031,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.9149252705922031,
+    "best_profit_factor": 29.401107271002164,
+    "best_win_rate": 0.75,
+    "best_return": 37.87677270917478,
+    "avg_sharpe": -0.08469389133726765
+  }
+}

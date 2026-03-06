@@ -1,0 +1,20 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T23:12:29.250583",
+  "best_params": {
+    "period": 20,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.12115190064743357,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.12115190064743357,
+    "best_profit_factor": 1.27414677126247,
+    "best_win_rate": 0.4444444444444444,
+    "best_return": 15.03764122338492,
+    "avg_sharpe": 0.016692923832678848
+  }
+}

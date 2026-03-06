@@ -1,0 +1,21 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-05T23:12:43.755608",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.30800579281429613,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.30800579281429613,
+    "best_profit_factor": 0.5086627632398736,
+    "best_win_rate": 0.23529411764705882,
+    "best_return": -7.434627737596779,
+    "avg_sharpe": -0.30800579281429613
+  }
+}

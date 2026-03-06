@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-06T01:41:57.791842",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 30,
+    "di_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3833804550969142,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.3833804550969142,
+    "best_profit_factor": 2.2913352092942874,
+    "best_win_rate": 0.4583333333333333,
+    "best_return": 89.41366797740545,
+    "avg_sharpe": 0.32414380200122667
+  }
+}

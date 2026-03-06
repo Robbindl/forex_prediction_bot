@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "CCI",
+  "timestamp": "2026-03-05T22:27:34.813773",
+  "best_params": {
+    "period": 30,
+    "oversold": -200,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.020917811049411403,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.020917811049411403,
+    "best_profit_factor": 1.0148669806294675,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": 0.06753174993827246,
+    "avg_sharpe": -0.4001483202320012
+  }
+}

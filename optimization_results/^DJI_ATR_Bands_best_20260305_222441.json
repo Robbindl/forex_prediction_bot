@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-05T22:24:41.641502",
+  "best_params": {
+    "period": 10,
+    "multiplier": 2.5,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.2598787757491274,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 1.2598787757491274,
+    "best_profit_factor": 294.88476424525436,
+    "best_win_rate": 1.0,
+    "best_return": 307.4722407454005,
+    "avg_sharpe": 0.19444947539765345
+  }
+}

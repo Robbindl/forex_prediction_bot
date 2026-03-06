@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T01:40:12.842107",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.34844134289570855,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.34844134289570855,
+    "best_profit_factor": 2.7769841507830484,
+    "best_win_rate": 0.4444444444444444,
+    "best_return": 9.21866583087743,
+    "avg_sharpe": 0.34844134289570855
+  }
+}

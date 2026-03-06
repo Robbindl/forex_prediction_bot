@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-06T01:18:11.654346",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 20,
+    "threshold": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.14211389897861543,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.14211389897861543,
+    "best_profit_factor": 1.3565373865291768,
+    "best_win_rate": 0.3937007874015748,
+    "best_return": 23.08693727972865,
+    "avg_sharpe": 0.057535387656150676
+  }
+}

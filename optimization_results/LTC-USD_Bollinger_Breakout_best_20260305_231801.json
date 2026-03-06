@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-05T23:18:01.721619",
+  "best_params": {
+    "period": 30,
+    "std_dev": 2.5,
+    "confirmation_bars": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 194974590933.36652,
+  "total_combinations": 27,
+  "valid_combinations": 15,
+  "results_summary": {
+    "best_sharpe": 194974590933.36652,
+    "best_profit_factor": 2.7412982479147683,
+    "best_win_rate": 1.0,
+    "best_return": 6.7474415145331905,
+    "avg_sharpe": 12998306061.884315
+  }
+}

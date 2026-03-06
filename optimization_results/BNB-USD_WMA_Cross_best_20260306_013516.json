@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-06T01:35:16.888418",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6937202348235402,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.6937202348235402,
+    "best_profit_factor": 6.010159433567202,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 10.526639473216553,
+    "avg_sharpe": 0.357664256792918
+  }
+}

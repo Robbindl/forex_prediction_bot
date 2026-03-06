@@ -1,0 +1,19 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "VPT",
+  "timestamp": "2026-03-05T22:35:34.712836",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.16121205795424443,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.16121205795424443,
+    "best_profit_factor": 1.3947576507971717,
+    "best_win_rate": 0.42857142857142855,
+    "best_return": 28.28985191091004,
+    "avg_sharpe": 0.07600246476741417
+  }
+}

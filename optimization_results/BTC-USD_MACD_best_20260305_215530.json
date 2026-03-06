@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "MACD",
+  "timestamp": "2026-03-05T21:55:30.004460",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3108342445446858,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.3108342445446858,
+    "best_profit_factor": 2.0181427647351384,
+    "best_win_rate": 0.4482758620689655,
+    "best_return": 12.92486519387707,
+    "avg_sharpe": 0.15489943179910312
+  }
+}

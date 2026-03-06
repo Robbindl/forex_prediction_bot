@@ -1,0 +1,21 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "APO",
+  "timestamp": "2026-03-05T22:50:46.166871",
+  "best_params": {
+    "fast": 5,
+    "slow": 13,
+    "signal": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.25663726067527215,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.25663726067527215,
+    "best_profit_factor": 1.6899107258961537,
+    "best_win_rate": 0.4838709677419355,
+    "best_return": 19.617894207123683,
+    "avg_sharpe": 0.11653738674839717
+  }
+}

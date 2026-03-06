@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T22:47:12.462841",
+  "best_params": {
+    "period": 20,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.22516256330590956,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.22516256330590956,
+    "best_profit_factor": 1.5970243480048818,
+    "best_win_rate": 0.46296296296296297,
+    "best_return": 20.258739634343893,
+    "avg_sharpe": 0.057741192893671994
+  }
+}

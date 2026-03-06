@@ -1,0 +1,21 @@
+{
+  "asset": "WMT",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-06T02:06:20.195759",
+  "best_params": {
+    "period": 5,
+    "std_dev": 1,
+    "volume_threshold": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 260614510259.51215,
+  "total_combinations": 27,
+  "valid_combinations": 22,
+  "results_summary": {
+    "best_sharpe": 260614510259.51215,
+    "best_profit_factor": 1.2792128805327456,
+    "best_win_rate": 1.0,
+    "best_return": 8.688887772052112,
+    "avg_sharpe": 4833838648.409641
+  }
+}

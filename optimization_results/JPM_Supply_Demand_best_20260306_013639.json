@@ -1,0 +1,21 @@
+{
+  "asset": "JPM",
+  "strategy": "Supply_Demand",
+  "timestamp": "2026-03-06T01:36:39.614777",
+  "best_params": {
+    "zone_period": 20,
+    "strength_bars": 3,
+    "touch_tolerance": 0.002
+  },
+  "best_metric": "sharpe",
+  "best_value": 61926499557.6213,
+  "total_combinations": 27,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 61926499557.6213,
+    "best_profit_factor": 4.914177932258399,
+    "best_win_rate": 1.0,
+    "best_return": 4.011289522658164,
+    "avg_sharpe": 13761444346.507988
+  }
+}

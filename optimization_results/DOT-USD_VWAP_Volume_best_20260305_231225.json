@@ -1,0 +1,21 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-05T23:12:25.517947",
+  "best_params": {
+    "period": 5,
+    "std_dev": 1,
+    "volume_threshold": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.8338469747822759,
+  "total_combinations": 27,
+  "valid_combinations": 22,
+  "results_summary": {
+    "best_sharpe": 0.8338469747822759,
+    "best_profit_factor": 10.920182288453834,
+    "best_win_rate": 0.6,
+    "best_return": 45.07375826947078,
+    "avg_sharpe": -22293993459.46074
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "TSLA",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-06T00:35:10.531651",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.13081450288980304,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.13081450288980304,
+    "best_profit_factor": 1.3199504961025978,
+    "best_win_rate": 0.375,
+    "best_return": 1.320751691641143,
+    "avg_sharpe": -0.2485706225867398
+  }
+}

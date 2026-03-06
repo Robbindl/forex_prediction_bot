@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "CMO",
+  "timestamp": "2026-03-06T01:41:00.704122",
+  "best_params": {
+    "period": 20,
+    "oversold": -60,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.0013595290361259175,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.0013595290361259175,
+    "best_profit_factor": 0.9796559937049393,
+    "best_win_rate": 0.2857142857142857,
+    "best_return": -0.144729820869361,
+    "avg_sharpe": -0.300693027559466
+  }
+}

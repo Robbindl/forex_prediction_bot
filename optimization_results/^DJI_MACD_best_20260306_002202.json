@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "MACD",
+  "timestamp": "2026-03-06T00:22:02.873164",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 11
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2703138141366297,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.2703138141366297,
+    "best_profit_factor": 1.7805344234286447,
+    "best_win_rate": 0.47368421052631576,
+    "best_return": 7.456468461154893,
+    "avg_sharpe": 0.09843460131174588
+  }
+}

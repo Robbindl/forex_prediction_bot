@@ -1,0 +1,20 @@
+{
+  "asset": "NVDA",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-06T00:53:46.333396",
+  "best_params": {
+    "fast_period": 10,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.43166280583371663,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": -0.43166280583371663,
+    "best_profit_factor": 0.381230811443059,
+    "best_win_rate": 0.14285714285714285,
+    "best_return": -6.061066375772765,
+    "avg_sharpe": -0.7449561433137254
+  }
+}

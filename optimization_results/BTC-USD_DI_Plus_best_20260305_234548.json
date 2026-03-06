@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-05T23:45:48.037901",
+  "best_params": {
+    "period": 7,
+    "threshold": 25
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.24670970645550383,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.24670970645550383,
+    "best_profit_factor": 1.6332982968808518,
+    "best_win_rate": 0.5357142857142857,
+    "best_return": 18.130823280222828,
+    "avg_sharpe": 0.1453108439779684
+  }
+}

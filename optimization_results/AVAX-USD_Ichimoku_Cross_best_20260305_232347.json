@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "Ichimoku_Cross",
+  "timestamp": "2026-03-05T23:23:47.556912",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "cloud_offset": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.0958541581786685,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 1.0958541581786685,
+    "best_profit_factor": 12.977598059535348,
+    "best_win_rate": 0.8333333333333334,
+    "best_return": 12.877201227493067,
+    "avg_sharpe": 1.0958541581786685
+  }
+}

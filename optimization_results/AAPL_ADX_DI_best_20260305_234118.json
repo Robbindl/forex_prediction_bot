@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-05T23:41:18.445155",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 25,
+    "di_threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.01640357086032212,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.01640357086032212,
+    "best_profit_factor": 1.0041375015415068,
+    "best_win_rate": 0.3,
+    "best_return": 0.06624675981382996,
+    "avg_sharpe": -0.1906613172902461
+  }
+}

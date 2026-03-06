@@ -1,0 +1,21 @@
+{
+  "asset": "NVDA",
+  "strategy": "APO",
+  "timestamp": "2026-03-06T00:53:18.500716",
+  "best_params": {
+    "fast": 5,
+    "slow": 13,
+    "signal": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09789190508263716,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.09789190508263716,
+    "best_profit_factor": 1.2348890201063953,
+    "best_win_rate": 0.3684210526315789,
+    "best_return": 7.684522007234418,
+    "avg_sharpe": -0.12707153939723959
+  }
+}

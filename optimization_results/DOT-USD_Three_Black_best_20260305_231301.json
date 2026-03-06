@@ -1,0 +1,20 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "Three_Black",
+  "timestamp": "2026-03-05T23:13:01.016119",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.4679157352908188,
+  "total_combinations": 9,
+  "valid_combinations": 1,
+  "results_summary": {
+    "best_sharpe": -0.4679157352908188,
+    "best_profit_factor": 0.34810448702890345,
+    "best_win_rate": 0.5,
+    "best_return": -1.429721522007946,
+    "avg_sharpe": -0.4679157352908188
+  }
+}

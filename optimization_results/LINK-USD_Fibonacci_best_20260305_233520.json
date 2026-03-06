@@ -1,0 +1,24 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-05T23:35:20.086824",
+  "best_params": {
+    "lookback": 100,
+    "levels": [
+      0.382,
+      0.5,
+      0.618
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.30952198643258144,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 0.30952198643258144,
+    "best_profit_factor": 4.9940174037616405,
+    "best_win_rate": 0.29411764705882354,
+    "best_return": 66.07775404474292,
+    "avg_sharpe": 0.15778001237879544
+  }
+}

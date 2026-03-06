@@ -1,0 +1,21 @@
+{
+  "asset": "AMZN",
+  "strategy": "Williams_R",
+  "timestamp": "2026-03-06T00:16:30.965597",
+  "best_params": {
+    "period": 14,
+    "oversold": -90,
+    "overbought": -10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.515207996660396,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.515207996660396,
+    "best_profit_factor": 3.1160899203127155,
+    "best_win_rate": 0.6060606060606061,
+    "best_return": 48.10083186229049,
+    "avg_sharpe": 0.2270724800855305
+  }
+}

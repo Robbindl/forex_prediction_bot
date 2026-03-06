@@ -1,0 +1,20 @@
+{
+  "asset": "CL=F",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-05T22:56:36.166673",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.24935202959438496,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.24935202959438496,
+    "best_profit_factor": 1.8328594488787138,
+    "best_win_rate": 0.3793103448275862,
+    "best_return": 12.575100704272412,
+    "avg_sharpe": 0.23379611477745194
+  }
+}

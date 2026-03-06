@@ -1,0 +1,21 @@
+{
+  "asset": "TSLA",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-06T00:39:33.100133",
+  "best_params": {
+    "period": 5,
+    "std_dev": 1,
+    "volume_threshold": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 423669736829.4269,
+  "total_combinations": 27,
+  "valid_combinations": 23,
+  "results_summary": {
+    "best_sharpe": 423669736829.4269,
+    "best_profit_factor": 10.00859268798084,
+    "best_win_rate": 1.0,
+    "best_return": 24.23925041900062,
+    "avg_sharpe": 87925238223.52872
+  }
+}

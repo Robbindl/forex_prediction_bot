@@ -1,0 +1,19 @@
+{
+  "asset": "^IXIC",
+  "strategy": "VPT",
+  "timestamp": "2026-03-05T22:28:52.557043",
+  "best_params": {
+    "signal_period": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.06599814984366628,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.06599814984366628,
+    "best_profit_factor": 1.156599732297259,
+    "best_win_rate": 0.391304347826087,
+    "best_return": 1.705961371142636,
+    "avg_sharpe": -0.03198723144580203
+  }
+}

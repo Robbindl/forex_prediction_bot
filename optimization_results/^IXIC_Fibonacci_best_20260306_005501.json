@@ -1,0 +1,26 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-06T00:55:01.193549",
+  "best_params": {
+    "lookback": 30,
+    "levels": [
+      0.236,
+      0.382,
+      0.5,
+      0.618,
+      0.786
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.16411593342433825,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 0.16411593342433825,
+    "best_profit_factor": 1.4631767148259782,
+    "best_win_rate": 0.5,
+    "best_return": 2.5977724781300577,
+    "avg_sharpe": -0.39474467741702246
+  }
+}

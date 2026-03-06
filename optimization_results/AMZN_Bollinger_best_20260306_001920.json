@@ -1,0 +1,21 @@
+{
+  "asset": "AMZN",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T00:19:20.488245",
+  "best_params": {
+    "period": 30,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5959414648285928,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5959414648285928,
+    "best_profit_factor": 4.229948930175669,
+    "best_win_rate": 0.6,
+    "best_return": 50.77402213631832,
+    "avg_sharpe": 0.5942310323513667
+  }
+}

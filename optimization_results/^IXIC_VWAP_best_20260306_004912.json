@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "VWAP",
+  "timestamp": "2026-03-06T00:49:12.531014",
+  "best_params": {
+    "period": 20,
+    "std_dev": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3808947357239549,
+  "total_combinations": 12,
+  "valid_combinations": 10,
+  "results_summary": {
+    "best_sharpe": 0.3808947357239549,
+    "best_profit_factor": 2.7859217120045843,
+    "best_win_rate": 0.5842696629213483,
+    "best_return": 4.274431963695145,
+    "avg_sharpe": -954073905.2926438
+  }
+}

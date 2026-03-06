@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "CCI",
+  "timestamp": "2026-03-05T23:44:57.069147",
+  "best_params": {
+    "period": 10,
+    "oversold": -200,
+    "overbought": 100
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.047338451230065796,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.047338451230065796,
+    "best_profit_factor": 1.0819423987702221,
+    "best_win_rate": 0.358974358974359,
+    "best_return": 3.591644188181891,
+    "avg_sharpe": -0.03716082123305939
+  }
+}

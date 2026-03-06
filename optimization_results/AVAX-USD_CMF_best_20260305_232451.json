@@ -1,0 +1,20 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T23:24:51.192835",
+  "best_params": {
+    "period": 21,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.16547219191141624,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.16547219191141624,
+    "best_profit_factor": 1.3999844123797243,
+    "best_win_rate": 0.5,
+    "best_return": 27.96782510428999,
+    "avg_sharpe": 0.07639489398925065
+  }
+}

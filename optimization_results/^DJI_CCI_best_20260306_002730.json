@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "CCI",
+  "timestamp": "2026-03-06T00:27:30.633565",
+  "best_params": {
+    "period": 30,
+    "oversold": -100,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.45694164872225385,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.45694164872225385,
+    "best_profit_factor": 2.9954787683749506,
+    "best_win_rate": 0.46153846153846156,
+    "best_return": 6.237353998930171,
+    "avg_sharpe": -0.10177578134324416
+  }
+}

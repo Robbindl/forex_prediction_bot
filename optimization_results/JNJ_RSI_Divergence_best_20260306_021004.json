@@ -1,0 +1,21 @@
+{
+  "asset": "JNJ",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-06T02:10:04.559167",
+  "best_params": {
+    "rsi_period": 7,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.4243902671703223,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.4243902671703223,
+    "best_profit_factor": 0.37468047657463793,
+    "best_win_rate": 0.1794871794871795,
+    "best_return": -14.09093011235289,
+    "avg_sharpe": -0.6854807573629457
+  }
+}

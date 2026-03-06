@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-06T01:02:06.146781",
+  "best_params": {
+    "rsi_period": 7,
+    "lookback": 20,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09672853012803409,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.09672853012803409,
+    "best_profit_factor": 1.200238417528333,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": 3.4622494532912858,
+    "avg_sharpe": 0.03434544505427634
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "TSLA",
+  "strategy": "Williams_R",
+  "timestamp": "2026-03-06T00:34:09.813733",
+  "best_params": {
+    "period": 7,
+    "oversold": -70,
+    "overbought": -20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.13175120426559633,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.13175120426559633,
+    "best_profit_factor": 1.3013431642493694,
+    "best_win_rate": 0.4065934065934066,
+    "best_return": 21.137391887752553,
+    "avg_sharpe": -0.058879075040047316
+  }
+}

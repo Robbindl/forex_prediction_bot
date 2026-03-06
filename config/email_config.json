@@ -1,0 +1,10 @@
+{
+    "enabled": true,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "username": "griffonstradingbot@gmail.com",
+    "password": "erfo hjsp hmwj pgqc",
+    "from": "griffonstradingbot@gmail.com",
+    "to": "griffonstradingbot@gmail.com",
+    "use_tls": true
+}

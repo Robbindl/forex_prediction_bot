@@ -1,0 +1,20 @@
+{
+  "asset": "V",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-06T01:47:28.289680",
+  "best_params": {
+    "lookback": 10,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.812184481037631,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.812184481037631,
+    "best_profit_factor": 17.009440689000954,
+    "best_win_rate": 0.5555555555555556,
+    "best_return": 21.760020980800686,
+    "avg_sharpe": 0.6109323884400345
+  }
+}

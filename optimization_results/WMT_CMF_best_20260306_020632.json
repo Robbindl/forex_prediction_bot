@@ -1,0 +1,20 @@
+{
+  "asset": "WMT",
+  "strategy": "CMF",
+  "timestamp": "2026-03-06T02:06:32.294991",
+  "best_params": {
+    "period": 21,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3300315341296828,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.3300315341296828,
+    "best_profit_factor": 1.9812688066454907,
+    "best_win_rate": 0.52,
+    "best_return": 11.001326755038704,
+    "avg_sharpe": 0.03828492135968636
+  }
+}

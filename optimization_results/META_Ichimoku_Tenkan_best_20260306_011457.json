@@ -1,0 +1,20 @@
+{
+  "asset": "META",
+  "strategy": "Ichimoku_Tenkan",
+  "timestamp": "2026-03-06T01:14:57.067105",
+  "best_params": {
+    "tenkan_period": 5,
+    "kijun_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.43950270498952604,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": -0.43950270498952604,
+    "best_profit_factor": 0.39887233798217275,
+    "best_win_rate": 0.16666666666666666,
+    "best_return": -2.9317054545640286,
+    "avg_sharpe": -0.4395027049895261
+  }
+}

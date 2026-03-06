@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "PPO",
+  "timestamp": "2026-03-06T00:08:28.520160",
+  "best_params": {
+    "fast": 12,
+    "slow": 32,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.28833014843431476,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.28833014843431476,
+    "best_profit_factor": 1.8345721212615196,
+    "best_win_rate": 0.5217391304347826,
+    "best_return": 10.42089105931225,
+    "avg_sharpe": 0.11708948471795873
+  }
+}

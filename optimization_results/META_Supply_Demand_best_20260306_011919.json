@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "Supply_Demand",
+  "timestamp": "2026-03-06T01:19:19.754581",
+  "best_params": {
+    "zone_period": 30,
+    "strength_bars": 2,
+    "touch_tolerance": 0.005
+  },
+  "best_metric": "sharpe",
+  "best_value": 3.33974758364494,
+  "total_combinations": 27,
+  "valid_combinations": 6,
+  "results_summary": {
+    "best_sharpe": 3.33974758364494,
+    "best_profit_factor": 7.356158482361219,
+    "best_win_rate": 1.0,
+    "best_return": 6.743074685306877,
+    "avg_sharpe": 1.5661918806904673
+  }
+}

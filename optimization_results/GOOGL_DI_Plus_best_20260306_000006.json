@@ -1,0 +1,20 @@
+{
+  "asset": "GOOGL",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-06T00:00:06.406663",
+  "best_params": {
+    "period": 7,
+    "threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6203545021012151,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.6203545021012151,
+    "best_profit_factor": 3.4100827724778795,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 51.437200367646085,
+    "avg_sharpe": 0.5159096068362957
+  }
+}

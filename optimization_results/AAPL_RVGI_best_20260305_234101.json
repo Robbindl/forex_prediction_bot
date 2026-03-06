@@ -1,0 +1,20 @@
+{
+  "asset": "AAPL",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T23:41:01.996171",
+  "best_params": {
+    "period": 14,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.28269491809217595,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.28269491809217595,
+    "best_profit_factor": 1.7913515360067158,
+    "best_win_rate": 0.5135135135135135,
+    "best_return": 13.62291031301793,
+    "avg_sharpe": 0.09250684492388368
+  }
+}

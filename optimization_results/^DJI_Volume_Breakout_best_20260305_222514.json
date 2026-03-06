@@ -1,0 +1,22 @@
+{
+  "asset": "^DJI",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-05T22:25:14.031440",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 1.5,
+    "price_period": 5,
+    "price_threshold": 0.02
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.382761533633001,
+  "total_combinations": 36,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.382761533633001,
+    "best_profit_factor": 7.101334295012023,
+    "best_win_rate": 0.5,
+    "best_return": 6.199754455886114,
+    "avg_sharpe": -7.126239474143573
+  }
+}

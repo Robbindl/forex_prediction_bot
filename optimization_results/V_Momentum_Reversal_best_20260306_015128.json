@@ -1,0 +1,22 @@
+{
+  "asset": "V",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-06T01:51:28.742642",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 70,
+    "lookback": 3,
+    "reversal_threshold": 1.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.517969137725278,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.517969137725278,
+    "best_profit_factor": 9.586105064533765,
+    "best_win_rate": 0.5,
+    "best_return": 346.73993082552755,
+    "avg_sharpe": 0.20200962030852715
+  }
+}

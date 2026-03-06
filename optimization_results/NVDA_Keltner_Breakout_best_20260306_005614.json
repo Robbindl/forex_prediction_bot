@@ -1,0 +1,22 @@
+{
+  "asset": "NVDA",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-06T00:56:14.938021",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 20,
+    "atr_multiplier": 3.0,
+    "confirmation_bars": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 354130990207.98413,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 354130990207.98413,
+    "best_profit_factor": 5.855349768207951,
+    "best_win_rate": 1.0,
+    "best_return": 14.88290824974107,
+    "avg_sharpe": 9836971958.936344
+  }
+}

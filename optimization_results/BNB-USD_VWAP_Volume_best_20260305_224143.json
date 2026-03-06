@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-05T22:41:43.236901",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1,
+    "volume_threshold": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 502838911333.3856,
+  "total_combinations": 27,
+  "valid_combinations": 19,
+  "results_summary": {
+    "best_sharpe": 502838911333.3856,
+    "best_profit_factor": 14.620569910678205,
+    "best_win_rate": 1.0,
+    "best_return": 16.75794478503724,
+    "avg_sharpe": 105860823438.70177
+  }
+}

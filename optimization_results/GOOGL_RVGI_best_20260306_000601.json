@@ -1,0 +1,20 @@
+{
+  "asset": "GOOGL",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-06T00:06:01.783988",
+  "best_params": {
+    "period": 14,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09085671032157185,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.09085671032157185,
+    "best_profit_factor": 1.2171968660804104,
+    "best_win_rate": 0.38,
+    "best_return": 5.406875820419421,
+    "avg_sharpe": 0.004257731597361778
+  }
+}

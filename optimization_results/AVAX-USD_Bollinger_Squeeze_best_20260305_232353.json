@@ -1,0 +1,22 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "Bollinger_Squeeze",
+  "timestamp": "2026-03-05T23:23:53.045852",
+  "best_params": {
+    "period": 20,
+    "bb_std": 2.0,
+    "kc_std": 1.5,
+    "squeeze_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4513100601134305,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.4513100601134305,
+    "best_profit_factor": 5.789132870155541,
+    "best_win_rate": 0.4,
+    "best_return": 14.694805004876383,
+    "avg_sharpe": 0.4513100601134305
+  }
+}

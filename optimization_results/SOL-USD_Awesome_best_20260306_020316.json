@@ -1,0 +1,21 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T02:03:16.201272",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.49806370721695364,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.49806370721695364,
+    "best_profit_factor": 2.8187388124042196,
+    "best_win_rate": 0.5454545454545454,
+    "best_return": 7.942625369544437,
+    "avg_sharpe": 0.49806370721695364
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T21:59:06.506507",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 7,
+    "reversal_threshold": 1.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 800.0402345270724,
+  "total_combinations": 27,
+  "valid_combinations": 26,
+  "results_summary": {
+    "best_sharpe": 800.0402345270724,
+    "best_profit_factor": 39.89400562722731,
+    "best_win_rate": 1.0,
+    "best_return": 54.64023877830703,
+    "avg_sharpe": 30.616013504966965
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "CCI",
+  "timestamp": "2026-03-05T23:04:46.601126",
+  "best_params": {
+    "period": 10,
+    "oversold": -200,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.19207095913945138,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.19207095913945138,
+    "best_profit_factor": 1.9699250095672038,
+    "best_win_rate": 0.2777777777777778,
+    "best_return": 14.421955530330575,
+    "avg_sharpe": -0.22339569799508846
+  }
+}

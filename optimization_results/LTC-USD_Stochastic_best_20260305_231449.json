@@ -1,0 +1,22 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-05T23:14:49.616796",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 20,
+    "overbought": 80
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.18453709815240027,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.18453709815240027,
+    "best_profit_factor": 1.495024884252191,
+    "best_win_rate": 0.42857142857142855,
+    "best_return": 8.570609296725166,
+    "avg_sharpe": -0.07259876601245581
+  }
+}

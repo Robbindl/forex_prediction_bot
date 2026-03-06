@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔴 LIVE Trading Signals - Auto-Refresh Dashboard</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body { font-family: 'Inter', sans-serif; }
+        
+        .signal-card {
+            transition: all 0.5s ease;
+            animation: slideIn 0.5s ease;
+        }
+        
+        .signal-card.expiring {
+            opacity: 0.6;
+            border: 2px dashed #f59e0b;
+        }
+        
+        .signal-card.expired {
+            animation: slideOut 0.5s ease;
+            opacity: 0;
+            transform: translateX(-100%);
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes slideOut {
+            from {
+                opacity: 1;
+                transform: translateX(0);
+            }
+            to {
+                opacity: 0;
+                transform: translateX(-100%);
+            }
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .live-indicator {
+            animation: pulse 2s ease-in-out infinite;
+        }
+        
+        .countdown {
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+        }
+        
+        .badge-buy { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
+        .badge-sell { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
+        .badge-hold { background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%); }
+    </style>
+</head>
+<body class="bg-gray-50">
+    
+    <!-- Header -->
+    <header class="bg-gradient-to-r from-red-600 to-red-700 text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div class="flex justify-between items-center">
+                <div class="flex items-center space-x-3">
+                    <div class="relative">
+                        <i class="fas fa-broadcast-tower text-3xl"></i>
+                        <span class="live-indicator absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full"></span>
+                    </div>
+                    <div>
+                        <h1 class="text-2xl font-bold">🔴 LIVE Trading Signals</h1>
+                        <p class="text-sm text-red-100">Auto-Refresh • Real-Time Analysis</p>
+                    </div>
+                </div>
+                
+                <div class="flex items-center space-x-4">
+                    <div class="text-right">
+                        <p class="text-xs text-red-100">Next Refresh In</p>
+                        <p class="countdown text-lg font-bold" id="next-refresh">--</p>
+                    </div>
+                    <button onclick="manualRefresh()" class="bg-white text-red-600 hover:bg-red-50 px-4 py-2 rounded-lg flex items-center space-x-2 transition font-semibold">
+                        <i class="fas fa-sync-alt"></i>
+                        <span>Refresh Now</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- ===== NEW NAVIGATION MENU ADDED HERE ===== -->
+            <div class="flex items-center justify-center space-x-8 mt-4 border-t border-red-500 pt-4">
+                <a href="/" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="/sentiment" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
+                    <i class="fas fa-newspaper"></i>
+                    <span>Sentiment</span>
+                </a>
+                <a href="/backtest" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
+                    <i class="fas fa-chart-bar"></i>
+                    <span>Backtest</span>
+                </a>
+                <a href="/status" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
+                    <i class="fas fa-heartbeat"></i>
+                    <span>Status</span>
+                </a>
+            </div>
+            <!-- ===== END OF NAVIGATION MENU ===== -->
+            
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        
+        <!-- Disclaimer -->
+        <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6 rounded-r-lg">
+            <div class="flex">
+                <i class="fas fa-exclamation-triangle text-yellow-400 mt-1"></i>
+                <div class="ml-3">
+                    <p class="text-sm text-yellow-700">
+                        <strong>LIVE MODE:</strong> Signals auto-refresh every 60 seconds. Old signals expire after 5 minutes. 
+                        For educational purposes only.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Panel -->
+        <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-gray-900">Live Settings</h2>
+                <div class="flex items-center space-x-2">
+                    <div class="h-3 w-3 bg-green-500 rounded-full live-indicator"></div>
+                    <span class="text-sm text-green-600 font-semibold">LIVE</span>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        <i class="fas fa-clock text-blue-600"></i> Time Interval
+                    </label>
+                    <select id="interval" onchange="updateSettings()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                        <option value="1d">Daily (1D)</option>
+                        <option value="1h">Hourly (1H)</option>
+                        <option value="15m" selected>15 Minutes</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        <i class="fas fa-wallet text-green-600"></i> Account Balance ($)
+                    </label>
+                    <input type="number" id="balance" value="10" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        <i class="fas fa-percentage text-orange-600"></i> Risk Per Trade (%)
+                    </label>
+                    <input type="number" id="risk" value="1.0" step="0.1" min="0.1" max="5" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        <i class="fas fa-filter text-purple-600"></i> Filter Signals
+                    </label>
+                    <select id="filter" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                        <option value="all" selected>All Signals</option>
+                        <option value="buy">Buy Only</option>
+                        <option value="sell">Sell Only</option>
+                        <option value="high-confidence">High Confidence (70%+)</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="mt-4 flex justify-end">
+                <button onclick="updateSettings()" class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg font-semibold transition">
+                    <i class="fas fa-check"></i> Apply & Refresh
+                </button>
+            </div>
+        </div>
+
+        <!-- Stats Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+            <div class="bg-white rounded-lg shadow-sm p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-xs text-gray-500">Active Signals</p>
+                        <p class="text-2xl font-bold text-gray-900" id="total-signals">0</p>
+                    </div>
+                    <div class="bg-blue-100 rounded-full p-3">
+                        <i class="fas fa-signal text-blue-600"></i>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow-sm p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-xs text-gray-500">Buy Signals</p>
+                        <p class="text-2xl font-bold text-green-600" id="buy-signals">0</p>
+                    </div>
+                    <div class="bg-green-100 rounded-full p-3">
+                        <i class="fas fa-arrow-up text-green-600"></i>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow-sm p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-xs text-gray-500">Sell Signals</p>
+                        <p class="text-2xl font-bold text-red-600" id="sell-signals">0</p>
+                    </div>
+                    <div class="bg-red-100 rounded-full p-3">
+                        <i class="fas fa-arrow-down text-red-600"></i>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow-sm p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-xs text-gray-500">Avg Confidence</p>
+                        <p class="text-2xl font-bold text-purple-600" id="avg-confidence">0%</p>
+                    </div>
+                    <div class="bg-purple-100 rounded-full p-3">
+                        <i class="fas fa-chart-bar text-purple-600"></i>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow-sm p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-xs text-gray-500">Last Update</p>
+                        <p class="text-sm font-bold text-gray-700" id="last-update">--:--:--</p>
+                    </div>
+                    <div class="bg-gray-100 rounded-full p-3">
+                        <i class="fas fa-clock text-gray-600"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Signals Grid -->
+        <div id="signals-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Signals will be inserted here -->
+        </div>
+
+        <!-- No Signals Message -->
+        <div id="no-signals" class="bg-white rounded-lg shadow-sm p-12 text-center" style="display: none;">
+            <i class="fas fa-hourglass-half text-gray-300 text-6xl mb-4"></i>
+            <h3 class="text-xl font-semibold text-gray-700 mb-2">Waiting for Signals...</h3>
+            <p class="text-gray-500">Fresh signals will appear shortly</p>
+        </div>
+
+    </main>
+
+    <script>
+        let currentSignals = [];
+        let refreshInterval = null;
+        let countdownInterval = null;
+        let nextRefreshTime = 60;
+
+        // Auto-fetch signals every 10 seconds (backend refreshes every 60)
+        function startAutoRefresh() {
+            console.log('🚀 Starting auto-refresh...');
+            loadSignals();
+            refreshInterval = setInterval(loadSignals, 10000); // Check every 10 seconds
+            countdownInterval = setInterval(updateCountdown, 1000); // Update countdown every second
+        }
+
+        function updateCountdown() {
+            fetch('/api/status')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.last_refresh) {
+                        const lastRefresh = new Date(data.last_refresh);
+                        const now = new Date();
+                        const elapsed = Math.floor((now - lastRefresh) / 1000);
+                        const remaining = Math.max(0, 60 - elapsed);
+                        
+                        const minutes = Math.floor(remaining / 60);
+                        const seconds = remaining % 60;
+                        
+                        document.getElementById('next-refresh').textContent = 
+                            `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                    }
+                })
+                .catch(err => console.error('Countdown error:', err));
+        }
+
+        async function loadSignals() {
+            console.log('📡 Loading signals...');
+            try {
+                const filter = document.getElementById('filter').value;
+                console.log('🔍 Filter:', filter);
+                
+                const response = await fetch(`/api/signals/live?filter=${filter}`);
+                console.log('📊 Response status:', response.status);
+                
+                const data = await response.json();
+                console.log('📦 Data received:', data);
+                
+                if (data.success) {
+                    console.log('✅ Success! Signals count:', data.signals?.length);
+                    
+                    // Filter out CLOSED signals
+                    const activeSignals = data.signals ? data.signals.filter(s => s.signal !== 'CLOSED') : [];
+                    console.log('🎯 Active signals:', activeSignals.length);
+                    
+                    displaySignals(activeSignals);
+                    updateStats(activeSignals);
+                    
+                    if (data.last_refresh) {
+                        const time = new Date(data.last_refresh);
+                        document.getElementById('last-update').textContent = time.toLocaleTimeString();
+                    }
+                } else {
+                    console.error('❌ API returned success=false');
+                }
+            } catch (error) {
+                console.error('❌ Error loading signals:', error);
+            }
+        }
+
+        function displaySignals(signals) {
+            console.log('🎨 Displaying signals:', signals.length);
+            const container = document.getElementById('signals-container');
+            
+            if (!container) {
+                console.error('❌ Container not found!');
+                return;
+            }
+            
+            if (signals.length === 0) {
+                console.log('📭 No signals to display');
+                container.style.display = 'none';
+                document.getElementById('no-signals').style.display = 'block';
+                return;
+            }
+
+            console.log('✅ Showing signals grid');
+            container.style.display = 'grid';
+            document.getElementById('no-signals').style.display = 'none';
+
+            // Clear and rebuild
+            container.innerHTML = '';
+            
+            signals.forEach((signal, index) => {
+                console.log(`📇 Signal ${index}:`, signal.asset, signal.signal);
+                const card = createSignalCard(signal);
+                container.innerHTML += card;
+            });
+
+            currentSignals = signals;
+            console.log('✅ Display complete');
+        }
+
+        function createSignalCard(signal) {
+            const signalClass = signal.signal === 'BUY' ? 'badge-buy' : 
+                              signal.signal === 'SELL' ? 'badge-sell' : 'badge-hold';
+            
+            const signalIcon = signal.signal === 'BUY' ? 'fa-arrow-trend-up' : 
+                              signal.signal === 'SELL' ? 'fa-arrow-trend-down' : 'fa-minus';
+            
+            const confidenceColor = signal.confidence >= 0.75 ? 'text-green-600' :
+                                   signal.confidence >= 0.60 ? 'text-yellow-600' : 'text-gray-600';
+
+            const expiringClass = signal.time_remaining < 2 ? 'expiring' : '';
+            
+            // Safely handle take_profit_levels
+            const tpLevels = signal.take_profit_levels || [];
+            const tp1Price = tpLevels.length > 0 ? tpLevels[0].price : signal.take_profit || 0;
+            
+            return `
+                <div class="signal-card ${expiringClass} bg-white rounded-lg shadow-sm p-6 relative">
+                    <!-- Expiry Timer -->
+                    <div class="absolute top-2 right-2 text-xs font-semibold ${signal.time_remaining < 2 ? 'text-orange-600' : 'text-gray-400'}">
+                        <i class="fas fa-clock"></i> ${(signal.time_remaining || 0).toFixed(1)}m
+                    </div>
+                    
+                    <div class="flex justify-between items-start mb-4 mt-2">
+                        <div>
+                            <h3 class="text-lg font-semibold text-gray-900">${signal.asset || 'Unknown'}</h3>
+                            <p class="text-xs text-gray-500">${signal.category || 'N/A'} • ${signal.generated_at || ''}</p>
+                        </div>
+                        <span class="${signalClass} text-white px-3 py-1 rounded-full text-sm font-semibold flex items-center space-x-1">
+                            <i class="fas ${signalIcon}"></i>
+                            <span>${signal.signal || 'HOLD'}</span>
+                        </span>
+                    </div>
+
+                    ${signal.signal !== 'HOLD' && signal.signal !== 'CLOSED' ? `
+                        <div class="space-y-2 mb-4">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-600">Entry:</span>
+                                <span class="font-semibold">$${(signal.entry_price || 0).toFixed(5)}</span>
+                            </div>
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-600">Stop Loss:</span>
+                                <span class="font-semibold text-red-600">$${(signal.stop_loss || 0).toFixed(5)}</span>
+                            </div>
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-600">TP1:</span>
+                                <span class="font-semibold text-green-600">$${tp1Price.toFixed(5)}</span>
+                            </div>
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-600">Risk:</span>
+                                <span class="font-semibold">${(signal.risk_pct || 0).toFixed(2)}%</span>
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    <div class="border-t pt-3">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm text-gray-600">Confidence</span>
+                            <span class="text-sm font-semibold ${confidenceColor}">${Math.round((signal.confidence || 0) * 100)}%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div class="bg-blue-600 h-2 rounded-full transition-all duration-500" style="width: ${(signal.confidence || 0) * 100}%"></div>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2">${signal.reason || ''}</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function updateStats(signals) {
+            console.log('📊 Updating stats with', signals.length, 'signals');
+            
+            const buyCount = signals.filter(s => s && s.signal === 'BUY').length;
+            const sellCount = signals.filter(s => s && s.signal === 'SELL').length;
+            const total = signals.length;
+            
+            let avgConf = 0;
+            if (total > 0) {
+                const sumConf = signals.reduce((sum, s) => sum + (s.confidence || 0), 0);
+                avgConf = sumConf / total;
+            }
+
+            document.getElementById('total-signals').textContent = total;
+            document.getElementById('buy-signals').textContent = buyCount;
+            document.getElementById('sell-signals').textContent = sellCount;
+            document.getElementById('avg-confidence').textContent = Math.round(avgConf * 100) + '%';
+            
+            console.log(`✅ Stats updated - Total: ${total}, Buy: ${buyCount}, Sell: ${sellCount}, Avg: ${Math.round(avgConf * 100)}%`);
+        }
+
+        async function updateSettings() {
+            const settings = {
+                interval: document.getElementById('interval').value,
+                balance: parseFloat(document.getElementById('balance').value),
+                risk: parseFloat(document.getElementById('risk').value),
+                filter: document.getElementById('filter').value
+            };
+
+            console.log('⚙️ Updating settings:', settings);
+
+            try {
+                const response = await fetch('/api/settings/update', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(settings)
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    alert('✅ Settings updated! Fresh signals will generate shortly.');
+                }
+            } catch (error) {
+                console.error('Error updating settings:', error);
+            }
+        }
+
+        async function manualRefresh() {
+            console.log('🔄 Manual refresh triggered');
+            try {
+                document.getElementById('next-refresh').textContent = 'Refreshing...';
+                
+                const response = await fetch('/api/refresh/manual', {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    console.log('✅ Manual refresh successful');
+                    await loadSignals();
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        // Start auto-refresh when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('📄 Page loaded, starting auto-refresh...');
+            startAutoRefresh();
+        });
+    </script>
+
+</body>
+</html>

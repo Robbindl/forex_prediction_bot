@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "APO",
+  "timestamp": "2026-03-06T00:08:20.085712",
+  "best_params": {
+    "fast": 5,
+    "slow": 13,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.25181875833088135,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.25181875833088135,
+    "best_profit_factor": 1.76063495664734,
+    "best_win_rate": 0.46153846153846156,
+    "best_return": 9.041967747149544,
+    "avg_sharpe": 0.13173231019262974
+  }
+}

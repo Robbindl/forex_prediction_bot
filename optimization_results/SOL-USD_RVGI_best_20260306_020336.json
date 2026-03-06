@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-06T02:03:36.055547",
+  "best_params": {
+    "period": 10,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.12275554893281632,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.12275554893281632,
+    "best_profit_factor": 1.2849715575696492,
+    "best_win_rate": 0.4166666666666667,
+    "best_return": 9.749441599727813,
+    "avg_sharpe": -0.03721643793834033
+  }
+}

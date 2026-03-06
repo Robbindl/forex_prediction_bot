@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "RSI",
+  "timestamp": "2026-03-05T22:22:07.924595",
+  "best_params": {
+    "oversold": 35,
+    "overbought": 80,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2685931165525584,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 0.2685931165525584,
+    "best_profit_factor": 1.759501114302261,
+    "best_win_rate": 0.46153846153846156,
+    "best_return": 4.546382835642575,
+    "avg_sharpe": -0.244804384969615
+  }
+}

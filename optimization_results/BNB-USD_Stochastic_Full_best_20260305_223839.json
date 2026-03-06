@@ -1,0 +1,23 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Stochastic_Full",
+  "timestamp": "2026-03-05T22:38:39.442427",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 7,
+    "slowing": 5,
+    "oversold": 15,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": 501463684137.3314,
+  "total_combinations": 324,
+  "valid_combinations": 319,
+  "results_summary": {
+    "best_sharpe": 501463684137.3314,
+    "best_profit_factor": 16.212485572553266,
+    "best_win_rate": 1.0,
+    "best_return": 29.41246154132817,
+    "avg_sharpe": 2555088472.33954
+  }
+}

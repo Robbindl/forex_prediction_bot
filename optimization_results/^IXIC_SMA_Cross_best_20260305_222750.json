@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "SMA_Cross",
+  "timestamp": "2026-03-05T22:27:50.916392",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 100
+  },
+  "best_metric": "sharpe",
+  "best_value": 19379371822.424217,
+  "total_combinations": 20,
+  "valid_combinations": 15,
+  "results_summary": {
+    "best_sharpe": 19379371822.424217,
+    "best_profit_factor": 27.22165695640485,
+    "best_win_rate": 1.0,
+    "best_return": 3.1961882809515787,
+    "avg_sharpe": 1596919781.3810236
+  }
+}

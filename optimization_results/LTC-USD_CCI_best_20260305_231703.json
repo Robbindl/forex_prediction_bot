@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "CCI",
+  "timestamp": "2026-03-05T23:17:03.792395",
+  "best_params": {
+    "period": 30,
+    "oversold": -150,
+    "overbought": 100
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.14176138862103618,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.14176138862103618,
+    "best_profit_factor": 0.7021991051272161,
+    "best_win_rate": 0.3,
+    "best_return": -5.134336807806222,
+    "avg_sharpe": -0.2326629714677216
+  }
+}

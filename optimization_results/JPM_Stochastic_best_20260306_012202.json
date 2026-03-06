@@ -1,0 +1,22 @@
+{
+  "asset": "JPM",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-06T01:22:01.997510",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 25,
+    "overbought": 75
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.08501189785506541,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.08501189785506541,
+    "best_profit_factor": 1.1850807140274073,
+    "best_win_rate": 0.36363636363636365,
+    "best_return": 3.0760394052901754,
+    "avg_sharpe": -0.29765006390953264
+  }
+}

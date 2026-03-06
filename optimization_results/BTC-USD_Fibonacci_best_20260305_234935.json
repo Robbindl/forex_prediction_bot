@@ -1,0 +1,24 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-05T23:49:35.477562",
+  "best_params": {
+    "lookback": 50,
+    "levels": [
+      0.382,
+      0.5,
+      0.618
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9668922337939069,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 0.9668922337939069,
+    "best_profit_factor": 13.060808558062723,
+    "best_win_rate": 0.7272727272727273,
+    "best_return": 42.351602976481345,
+    "avg_sharpe": 0.25980007661601257
+  }
+}

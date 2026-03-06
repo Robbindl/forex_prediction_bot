@@ -1,0 +1,22 @@
+{
+  "asset": "WMT",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-06T02:03:18.613281",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 20,
+    "atr_multiplier": 3.0,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 197539706772.5752,
+  "total_combinations": 36,
+  "valid_combinations": 28,
+  "results_summary": {
+    "best_sharpe": 197539706772.5752,
+    "best_profit_factor": 12.608741013992555,
+    "best_win_rate": 1.0,
+    "best_return": 14.523842653784651,
+    "avg_sharpe": 4396260372.107882
+  }
+}

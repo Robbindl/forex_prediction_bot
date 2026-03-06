@@ -1,0 +1,21 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "Ichimoku_Cross",
+  "timestamp": "2026-03-05T23:11:21.153786",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "cloud_offset": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.17678597244961625,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.17678597244961625,
+    "best_profit_factor": 1.5187171050907706,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": 2.0744460302630103,
+    "avg_sharpe": 0.17678597244961627
+  }
+}

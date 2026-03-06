@@ -1,0 +1,24 @@
+{
+  "asset": "AMZN",
+  "strategy": "Fibonacci",
+  "timestamp": "2026-03-06T00:25:17.616621",
+  "best_params": {
+    "lookback": 100,
+    "levels": [
+      0.382,
+      0.5,
+      0.618
+    ]
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5581400201718009,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": 0.5581400201718009,
+    "best_profit_factor": 3.3096723252449385,
+    "best_win_rate": 0.5384615384615384,
+    "best_return": 9.485990725374092,
+    "avg_sharpe": -0.05175307161878974
+  }
+}

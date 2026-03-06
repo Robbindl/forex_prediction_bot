@@ -1,0 +1,21 @@
+{
+  "asset": "TSLA",
+  "strategy": "Supply_Demand",
+  "timestamp": "2026-03-06T00:41:26.173051",
+  "best_params": {
+    "zone_period": 10,
+    "strength_bars": 3,
+    "touch_tolerance": 0.002
+  },
+  "best_metric": "sharpe",
+  "best_value": 96178672693.61688,
+  "total_combinations": 27,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 96178672693.61688,
+    "best_profit_factor": 4.241006071345422,
+    "best_win_rate": 1.0,
+    "best_return": 4.39830563851003,
+    "avg_sharpe": -55105302410.72811
+  }
+}

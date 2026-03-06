@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-05T23:41:00.434766",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.051923512894231715,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.051923512894231715,
+    "best_profit_factor": 0.884173716050189,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": -0.8133020690397542,
+    "avg_sharpe": -0.051923512894231715
+  }
+}

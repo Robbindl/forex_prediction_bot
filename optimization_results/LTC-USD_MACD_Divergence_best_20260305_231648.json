@@ -1,0 +1,23 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-05T23:16:48.850209",
+  "best_params": {
+    "fast": 12,
+    "slow": 32,
+    "signal": 7,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.22540853783669346,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.22540853783669346,
+    "best_profit_factor": 1.6173747068304127,
+    "best_win_rate": 0.43243243243243246,
+    "best_return": 12.782324234583573,
+    "avg_sharpe": -0.008210282400588291
+  }
+}

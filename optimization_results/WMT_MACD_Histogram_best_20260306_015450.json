@@ -1,0 +1,22 @@
+{
+  "asset": "WMT",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-06T01:54:50.090902",
+  "best_params": {
+    "fast": 12,
+    "slow": 26,
+    "signal": 7,
+    "histogram_threshold": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 309805322133.0156,
+  "total_combinations": 108,
+  "valid_combinations": 70,
+  "results_summary": {
+    "best_sharpe": 309805322133.0156,
+    "best_profit_factor": 6.277848464508747,
+    "best_win_rate": 1.0,
+    "best_return": 15.493364159872142,
+    "avg_sharpe": 4425790316.366746
+  }
+}

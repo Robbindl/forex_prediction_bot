@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T23:19:57.727087",
+  "best_params": {
+    "rsi_period": 21,
+    "lookback": 5,
+    "divergence_threshold": 0.03
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.05004504657278076,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.05004504657278076,
+    "best_profit_factor": 1.1022338802790743,
+    "best_win_rate": 0.37333333333333335,
+    "best_return": 4.480043990967928,
+    "avg_sharpe": -0.12661434195297117
+  }
+}

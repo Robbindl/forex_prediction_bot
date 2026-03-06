@@ -1,0 +1,180 @@
+{
+  "open_positions": [
+    {
+      "trade_id": "f182f785",
+      "asset": "BTC-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 67653.890625,
+      "position_size": 8.868669554065281e-05,
+      "stop_loss": 67921.9749609375,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 67246.1344140625
+        },
+        {
+          "level": 2,
+          "price": 66908.214140625
+        },
+        {
+          "level": 3,
+          "price": 66232.37359375
+        }
+      ],
+      "confidence": 0.8,
+      "reason": "FAST: Both timeframes DOWN",
+      "entry_time": "2026-02-26T22:15:19.564328",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0,
+      "strategy_id": "FAST",
+      "strategy_emoji": "\u26a1"
+    },
+    {
+      "trade_id": "9446dec3",
+      "asset": "EUR/USD",
+      "category": "forex",
+      "signal": "SELL",
+      "entry_price": 1.1789672374725342,
+      "position_size": 5.089199944913465,
+      "stop_loss": 1.1848620736598967,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 1.1730724012851714
+        },
+        {
+          "level": 2,
+          "price": 1.167177565097809
+        },
+        {
+          "level": 3,
+          "price": 1.1553878927230834
+        }
+      ],
+      "confidence": 0.8,
+      "reason": "FAST: Both timeframes DOWN",
+      "entry_time": "2026-02-26T22:15:27.555407",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0,
+      "strategy_id": "FAST",
+      "strategy_emoji": "\u26a1"
+    },
+    {
+      "trade_id": "f616e8c4",
+      "asset": "GBP/USD",
+      "category": "forex",
+      "signal": "SELL",
+      "entry_price": 1.3473275899887085,
+      "position_size": 4.453259952948996,
+      "stop_loss": 1.3540642279386519,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 1.3405909520387649
+        },
+        {
+          "level": 2,
+          "price": 1.3338543140888215
+        },
+        {
+          "level": 3,
+          "price": 1.3203810381889343
+        }
+      ],
+      "confidence": 0.8,
+      "reason": "FAST: Both timeframes DOWN",
+      "entry_time": "2026-02-26T22:15:35.652849",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0,
+      "strategy_id": "FAST",
+      "strategy_emoji": "\u26a1"
+    },
+    {
+      "trade_id": "62db7081",
+      "asset": "USD/JPY",
+      "category": "forex",
+      "signal": "BUY",
+      "entry_price": 156.35000610351562,
+      "position_size": 0.038375438220498326,
+      "stop_loss": 155.5632762145996,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 157.12672622680662
+        },
+        {
+          "level": 2,
+          "price": 157.90845123291015
+        },
+        {
+          "level": 3,
+          "price": 159.47190124511718
+        }
+      ],
+      "confidence": 0.8,
+      "reason": "FAST: Both timeframes UP",
+      "entry_time": "2026-02-26T22:15:43.383848",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0,
+      "strategy_id": "FAST",
+      "strategy_emoji": "\u26a1"
+    },
+    {
+      "trade_id": "34ba45bb",
+      "asset": "AUD/USD",
+      "category": "forex",
+      "signal": "SELL",
+      "entry_price": 0.7102777361869812,
+      "position_size": 8.447399790693277,
+      "stop_loss": 0.713829124867916,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 0.7067263475060462
+        },
+        {
+          "level": 2,
+          "price": 0.7031749588251114
+        },
+        {
+          "level": 3,
+          "price": 0.6960721814632416
+        }
+      ],
+      "confidence": 0.8,
+      "reason": "FAST: Both timeframes DOWN",
+      "entry_time": "2026-02-26T22:15:50.845548",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0,
+      "strategy_id": "FAST",
+      "strategy_emoji": "\u26a1"
+    }
+  ],
+  "closed_positions": []
+}

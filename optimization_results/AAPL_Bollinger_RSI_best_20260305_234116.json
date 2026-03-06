@@ -1,0 +1,23 @@
+{
+  "asset": "AAPL",
+  "strategy": "Bollinger_RSI",
+  "timestamp": "2026-03-05T23:41:16.352458",
+  "best_params": {
+    "bb_period": 20,
+    "bb_std": 2.0,
+    "rsi_period": 7,
+    "rsi_oversold": 25,
+    "rsi_overbought": 70
+  },
+  "best_metric": "sharpe",
+  "best_value": -600120024.0046793,
+  "total_combinations": 8,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": -600120024.0046793,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -0.007861379614734466,
+    "avg_sharpe": -600120024.0046793
+  }
+}

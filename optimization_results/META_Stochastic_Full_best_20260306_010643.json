@@ -1,0 +1,23 @@
+{
+  "asset": "META",
+  "strategy": "Stochastic_Full",
+  "timestamp": "2026-03-06T01:06:43.181055",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 7,
+    "slowing": 3,
+    "oversold": 15,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": 56854589571.02562,
+  "total_combinations": 324,
+  "valid_combinations": 318,
+  "results_summary": {
+    "best_sharpe": 56854589571.02562,
+    "best_profit_factor": 6.180257995900739,
+    "best_win_rate": 1.0,
+    "best_return": 24.473035281450755,
+    "avg_sharpe": 3971906.906748864
+  }
+}

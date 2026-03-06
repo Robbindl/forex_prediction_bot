@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-06T01:55:21.178631",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6013498015018057,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.6013498015018057,
+    "best_profit_factor": 6.540662486896671,
+    "best_win_rate": 0.5714285714285714,
+    "best_return": 15.614052249480515,
+    "avg_sharpe": 0.3738698784544785
+  }
+}

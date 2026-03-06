@@ -1,0 +1,22 @@
+{
+  "asset": "CL=F",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-05T22:53:40.634502",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 25,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.24622150407456944,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": -0.24622150407456944,
+    "best_profit_factor": 0.4438062679267946,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": -8.751045511754468,
+    "avg_sharpe": -0.4025298779091853
+  }
+}

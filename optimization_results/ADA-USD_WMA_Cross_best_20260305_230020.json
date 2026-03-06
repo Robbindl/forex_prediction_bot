@@ -1,0 +1,20 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-05T23:00:20.217284",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.33274428879983003,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.33274428879983003,
+    "best_profit_factor": 2.3889285056596434,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": 8.692038029310378,
+    "avg_sharpe": 0.15878595466052373
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-06T01:20:56.229964",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 30,
+    "di_threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2568153592293691,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.2568153592293691,
+    "best_profit_factor": 1.6857565731046062,
+    "best_win_rate": 0.41346153846153844,
+    "best_return": 42.10900603768121,
+    "avg_sharpe": 0.16029185337608942
+  }
+}

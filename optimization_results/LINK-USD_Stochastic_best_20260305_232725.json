@@ -1,0 +1,22 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-05T23:27:25.271239",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 15,
+    "overbought": 75
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.0715442064759804,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": -0.0715442064759804,
+    "best_profit_factor": 0.8457918765568896,
+    "best_win_rate": 0.3111111111111111,
+    "best_return": -4.130763191579296,
+    "avg_sharpe": -0.19950334943378512
+  }
+}

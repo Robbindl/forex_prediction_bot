@@ -1,0 +1,20 @@
+{
+  "asset": "^DJI",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-05T22:24:26.199678",
+  "best_params": {
+    "period": 7,
+    "threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.905141584885126,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.905141584885126,
+    "best_profit_factor": 5.096444042315963,
+    "best_win_rate": 0.7272727272727273,
+    "best_return": 17.53346126248439,
+    "avg_sharpe": 0.685304438038933
+  }
+}

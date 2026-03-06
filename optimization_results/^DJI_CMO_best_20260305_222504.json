@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T22:25:04.004037",
+  "best_params": {
+    "period": 14,
+    "oversold": -50,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.014738810547265025,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.014738810547265025,
+    "best_profit_factor": 0.9493379404581241,
+    "best_win_rate": 0.42857142857142855,
+    "best_return": -0.20912533651911658,
+    "avg_sharpe": -9.040637575717314
+  }
+}

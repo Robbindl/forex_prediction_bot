@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-06T01:16:13.392411",
+  "best_params": {
+    "ema_period": 20,
+    "atr_period": 20,
+    "atr_multiplier": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7863498993900684,
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.7863498993900684,
+    "best_profit_factor": 25.22071764057959,
+    "best_win_rate": 0.7580645161290323,
+    "best_return": 690.3250095612167,
+    "avg_sharpe": 0.6093062416733128
+  }
+}

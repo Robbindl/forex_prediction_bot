@@ -1,0 +1,21 @@
+{
+  "asset": "MSFT",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-05T23:47:02.261065",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 20,
+    "di_threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9614632969656683,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.9614632969656683,
+    "best_profit_factor": 8.028992610664009,
+    "best_win_rate": 0.7241379310344828,
+    "best_return": 36.56122892627341,
+    "avg_sharpe": 0.5300992001933258
+  }
+}

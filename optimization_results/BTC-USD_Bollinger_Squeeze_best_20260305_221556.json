@@ -1,0 +1,22 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Bollinger_Squeeze",
+  "timestamp": "2026-03-05T22:15:56.643839",
+  "best_params": {
+    "period": 20,
+    "bb_std": 2.0,
+    "kc_std": 1.5,
+    "squeeze_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.34975505880203406,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.34975505880203406,
+    "best_profit_factor": 0.32135670124716287,
+    "best_win_rate": 0.25,
+    "best_return": -8.230954630129368,
+    "avg_sharpe": -0.3497550588020341
+  }
+}

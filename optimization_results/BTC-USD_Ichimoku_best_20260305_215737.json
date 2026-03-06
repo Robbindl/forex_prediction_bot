@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Ichimoku",
+  "timestamp": "2026-03-05T21:57:37.163719",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "senkou": 45
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.39018591067722785,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.39018591067722785,
+    "best_profit_factor": 0.32105197468692465,
+    "best_win_rate": 0.2,
+    "best_return": -8.180805331548235,
+    "avg_sharpe": -0.3901859106772279
+  }
+}

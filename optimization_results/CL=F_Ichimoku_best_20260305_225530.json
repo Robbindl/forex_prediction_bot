@@ -1,0 +1,21 @@
+{
+  "asset": "CL=F",
+  "strategy": "Ichimoku",
+  "timestamp": "2026-03-05T22:55:30.473016",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "senkou": 45
+  },
+  "best_metric": "sharpe",
+  "best_value": -1.064772123359427,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -1.064772123359427,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -20.344142031246072,
+    "avg_sharpe": -1.0647721233594267
+  }
+}

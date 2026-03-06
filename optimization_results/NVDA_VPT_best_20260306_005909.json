@@ -1,0 +1,19 @@
+{
+  "asset": "NVDA",
+  "strategy": "VPT",
+  "timestamp": "2026-03-06T00:59:09.042881",
+  "best_params": {
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.10034834219535281,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.10034834219535281,
+    "best_profit_factor": 1.2452467887666359,
+    "best_win_rate": 0.4074074074074074,
+    "best_return": 6.553330879789268,
+    "avg_sharpe": 0.049088180702060086
+  }
+}

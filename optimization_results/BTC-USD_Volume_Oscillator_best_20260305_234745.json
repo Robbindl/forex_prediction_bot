@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-05T23:47:45.035276",
+  "best_params": {
+    "fast_period": 7,
+    "slow_period": 20,
+    "threshold": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.056108783549183895,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.056108783549183895,
+    "best_profit_factor": 1.1026669243378462,
+    "best_win_rate": 0.4,
+    "best_return": 7.000866117843518,
+    "avg_sharpe": -0.04845243358789776
+  }
+}

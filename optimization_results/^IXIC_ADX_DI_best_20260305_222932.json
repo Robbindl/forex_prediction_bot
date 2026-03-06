@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-05T22:29:32.181650",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 30,
+    "di_threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7360756102320569,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.7360756102320569,
+    "best_profit_factor": 6.976379600994299,
+    "best_win_rate": 0.6428571428571429,
+    "best_return": 15.410048704145796,
+    "avg_sharpe": 0.5562372432783474
+  }
+}

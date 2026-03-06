@@ -1,0 +1,22 @@
+{
+  "asset": "NVDA",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-06T01:00:47.222530",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 1.5,
+    "price_period": 5,
+    "price_threshold": 0.03
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.23740547344413138,
+  "total_combinations": 36,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.23740547344413138,
+    "best_profit_factor": 2.17678864201907,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 4.357852364384942,
+    "avg_sharpe": -293031391023.88696
+  }
+}

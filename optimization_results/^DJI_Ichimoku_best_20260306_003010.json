@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "Ichimoku",
+  "timestamp": "2026-03-06T00:30:10.744682",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "senkou": 45
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.8254410659691949,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.8254410659691949,
+    "best_profit_factor": 124.20470393533309,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 1.8641230789818042,
+    "avg_sharpe": 0.8254410659691948
+  }
+}

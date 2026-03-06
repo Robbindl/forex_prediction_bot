@@ -1,0 +1,22 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-05T23:20:19.810115",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 20,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.05793693488176808,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.05793693488176808,
+    "best_profit_factor": 1.1082606482495585,
+    "best_win_rate": 0.4,
+    "best_return": 2.207048416179833,
+    "avg_sharpe": -0.04605742710290269
+  }
+}

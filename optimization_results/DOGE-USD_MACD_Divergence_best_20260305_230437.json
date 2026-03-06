@@ -1,0 +1,23 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-05T23:04:37.981116",
+  "best_params": {
+    "fast": 8,
+    "slow": 26,
+    "signal": 7,
+    "lookback": 10,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 641061334202.5361,
+  "total_combinations": 243,
+  "valid_combinations": 30,
+  "results_summary": {
+    "best_sharpe": 641061334202.5361,
+    "best_profit_factor": 18.754413564649006,
+    "best_win_rate": 1.0,
+    "best_return": 21.364437397856513,
+    "avg_sharpe": 192318400261.39062
+  }
+}

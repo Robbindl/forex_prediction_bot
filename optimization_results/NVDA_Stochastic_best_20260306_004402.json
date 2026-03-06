@@ -1,0 +1,22 @@
+{
+  "asset": "NVDA",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-06T00:44:02.231334",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 25,
+    "overbought": 80
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.15464925621573639,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.15464925621573639,
+    "best_profit_factor": 1.4366903509831743,
+    "best_win_rate": 0.4074074074074074,
+    "best_return": 4.380172014139282,
+    "avg_sharpe": -0.40263041701888497
+  }
+}

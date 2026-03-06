@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-06T01:39:05.867321",
+  "best_params": {
+    "lookback": 5,
+    "divergence_threshold": 0.02
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.0003634051038875114,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.0003634051038875114,
+    "best_profit_factor": 0.987151471795091,
+    "best_win_rate": 0.34615384615384615,
+    "best_return": -0.3898142217485466,
+    "avg_sharpe": -0.24228177250001753
+  }
+}

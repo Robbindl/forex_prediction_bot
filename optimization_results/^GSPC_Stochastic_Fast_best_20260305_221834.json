@@ -1,0 +1,22 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Stochastic_Fast",
+  "timestamp": "2026-03-05T22:18:34.229868",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 20,
+    "overbought": 80
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.8127554977041508,
+  "total_combinations": 72,
+  "valid_combinations": 72,
+  "results_summary": {
+    "best_sharpe": -0.8127554977041508,
+    "best_profit_factor": 0.16850289497944895,
+    "best_win_rate": 0.18181818181818182,
+    "best_return": -12.769410808466192,
+    "avg_sharpe": -1.3721018815085761
+  }
+}

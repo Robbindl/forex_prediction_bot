@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "MACD",
+  "timestamp": "2026-03-05T23:21:04.104881",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3583474657702976,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.3583474657702976,
+    "best_profit_factor": 2.1000426699711943,
+    "best_win_rate": 0.5,
+    "best_return": 15.874293120767055,
+    "avg_sharpe": 0.10008071923706853
+  }
+}

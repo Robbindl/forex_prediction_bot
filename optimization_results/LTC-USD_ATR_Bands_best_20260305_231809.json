@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-05T23:18:09.451165",
+  "best_params": {
+    "period": 10,
+    "multiplier": 2.5,
+    "band_type": "upper"
+  },
+  "best_metric": "sharpe",
+  "best_value": 535042390258.2651,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 535042390258.2651,
+    "best_profit_factor": 54.238910701401345,
+    "best_win_rate": 1.0,
+    "best_return": 352.6199407296382,
+    "avg_sharpe": 23372216413.618744
+  }
+}

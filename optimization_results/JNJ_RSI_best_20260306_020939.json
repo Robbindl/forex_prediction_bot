@@ -1,0 +1,21 @@
+{
+  "asset": "JNJ",
+  "strategy": "RSI",
+  "timestamp": "2026-03-06T02:09:39.676891",
+  "best_params": {
+    "oversold": 35,
+    "overbought": 65,
+    "period": 21
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.5067534321781135,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": -0.5067534321781135,
+    "best_profit_factor": 0.30750084752116463,
+    "best_win_rate": 0.16129032258064516,
+    "best_return": -16.002447107486898,
+    "avg_sharpe": -1.4643133166676396
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "DI_Minus",
+  "timestamp": "2026-03-05T22:51:14.382377",
+  "best_params": {
+    "period": 7,
+    "threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.23219985358263132,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.23219985358263132,
+    "best_profit_factor": 1.685484286080949,
+    "best_win_rate": 0.4166666666666667,
+    "best_return": 34.03523508833113,
+    "avg_sharpe": 0.19780276317725745
+  }
+}

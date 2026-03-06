@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T23:48:03.955025",
+  "best_params": {
+    "period": 14,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2256849576843371,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.2256849576843371,
+    "best_profit_factor": 1.5645789114148918,
+    "best_win_rate": 0.4444444444444444,
+    "best_return": 19.041213879063694,
+    "avg_sharpe": 0.08138392264871734
+  }
+}

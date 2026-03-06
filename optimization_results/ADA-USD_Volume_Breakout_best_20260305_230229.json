@@ -1,0 +1,22 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-05T23:02:29.753728",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 2.5,
+    "price_period": 5,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6363619402469409,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.6363619402469409,
+    "best_profit_factor": 2.684475652525647,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 8.558512844267662,
+    "avg_sharpe": 0.1463527900476277
+  }
+}

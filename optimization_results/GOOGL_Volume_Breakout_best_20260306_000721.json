@@ -1,0 +1,22 @@
+{
+  "asset": "GOOGL",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-06T00:07:21.038300",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 2.5,
+    "price_period": 10,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6619830621860673,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.6619830621860673,
+    "best_profit_factor": 8.638468317400338,
+    "best_win_rate": 0.7142857142857143,
+    "best_return": 39.355862303893815,
+    "avg_sharpe": 0.36272961657954916
+  }
+}

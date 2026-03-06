@@ -1,0 +1,22 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-06T00:16:06.232599",
+  "best_params": {
+    "volume_period": 20,
+    "volume_multiplier": 1.5,
+    "price_period": 5,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.46697687355941025,
+  "total_combinations": 36,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.46697687355941025,
+    "best_profit_factor": 5.061334570990964,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": 4.123420989922342,
+    "avg_sharpe": -128.72182432429912
+  }
+}

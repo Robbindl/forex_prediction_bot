@@ -1,0 +1,22 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-05T23:28:57.708031",
+  "best_params": {
+    "fast": 8,
+    "slow": 32,
+    "signal": 11,
+    "histogram_threshold": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9324013468301477,
+  "total_combinations": 108,
+  "valid_combinations": 47,
+  "results_summary": {
+    "best_sharpe": 0.9324013468301477,
+    "best_profit_factor": 31.129245710324692,
+    "best_win_rate": 0.8,
+    "best_return": 31.042162457932402,
+    "avg_sharpe": -52025642940.250916
+  }
+}

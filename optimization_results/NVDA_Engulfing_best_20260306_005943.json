@@ -1,0 +1,20 @@
+{
+  "asset": "NVDA",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-06T00:59:43.825513",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2818501638992429,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.2818501638992429,
+    "best_profit_factor": 3.5019198690759783,
+    "best_win_rate": 0.5294117647058824,
+    "best_return": 17.616851707787173,
+    "avg_sharpe": 0.2818501638992429
+  }
+}

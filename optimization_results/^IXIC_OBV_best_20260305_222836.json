@@ -1,0 +1,19 @@
+{
+  "asset": "^IXIC",
+  "strategy": "OBV",
+  "timestamp": "2026-03-05T22:28:36.981724",
+  "best_params": {
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.055924890613937295,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": -0.055924890613937295,
+    "best_profit_factor": 0.8743172577153291,
+    "best_win_rate": 0.3,
+    "best_return": -2.674368756829228,
+    "avg_sharpe": -0.1449641521466922
+  }
+}

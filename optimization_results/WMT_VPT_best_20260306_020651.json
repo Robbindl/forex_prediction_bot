@@ -1,0 +1,19 @@
+{
+  "asset": "WMT",
+  "strategy": "VPT",
+  "timestamp": "2026-03-06T02:06:51.589197",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.007180691591924861,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.007180691591924861,
+    "best_profit_factor": 1.004080443564598,
+    "best_win_rate": 0.3114754098360656,
+    "best_return": 0.1224328501696465,
+    "avg_sharpe": -0.06432579236040234
+  }
+}

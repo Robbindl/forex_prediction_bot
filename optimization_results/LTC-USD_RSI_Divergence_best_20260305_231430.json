@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T23:14:30.560013",
+  "best_params": {
+    "rsi_period": 7,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.05093648768100334,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.05093648768100334,
+    "best_profit_factor": 1.0990226285560083,
+    "best_win_rate": 0.37662337662337664,
+    "best_return": 4.492968767264613,
+    "avg_sharpe": -0.07052018252938697
+  }
+}

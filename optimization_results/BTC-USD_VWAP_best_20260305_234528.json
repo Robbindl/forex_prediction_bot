@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "VWAP",
+  "timestamp": "2026-03-05T23:45:28.078724",
+  "best_params": {
+    "period": 20,
+    "std_dev": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.32859463690016866,
+  "total_combinations": 12,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.32859463690016866,
+    "best_profit_factor": 2.106098116634718,
+    "best_win_rate": 0.5625,
+    "best_return": 15.008215324820053,
+    "avg_sharpe": 0.060738980006793154
+  }
+}

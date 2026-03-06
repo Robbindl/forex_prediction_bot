@@ -1,0 +1,21 @@
+{
+  "asset": "GOOGL",
+  "strategy": "Supply_Demand",
+  "timestamp": "2026-03-06T00:06:59.504725",
+  "best_params": {
+    "zone_period": 10,
+    "strength_bars": 2,
+    "touch_tolerance": 0.005
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.033048094170702334,
+  "total_combinations": 27,
+  "valid_combinations": 6,
+  "results_summary": {
+    "best_sharpe": -0.033048094170702334,
+    "best_profit_factor": 0.8742633724244936,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": -0.5080570092790435,
+    "avg_sharpe": -0.5382207531541191
+  }
+}

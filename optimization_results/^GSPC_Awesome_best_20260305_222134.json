@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-05T22:21:34.301995",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.11818037538605455,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.11818037538605455,
+    "best_profit_factor": 1.3868737137120535,
+    "best_win_rate": 0.4,
+    "best_return": 0.5668165216146958,
+    "avg_sharpe": 0.11818037538605457
+  }
+}

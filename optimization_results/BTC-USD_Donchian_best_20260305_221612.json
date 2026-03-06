@@ -1,0 +1,19 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Donchian",
+  "timestamp": "2026-03-05T22:16:12.218879",
+  "best_params": {
+    "period": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": -399890854381.922,
+  "total_combinations": 4,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -399890854381.922,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -4.654888077555486,
+    "avg_sharpe": -399890854381.92206
+  }
+}

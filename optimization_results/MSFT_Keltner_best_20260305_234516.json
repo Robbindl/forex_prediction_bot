@@ -1,0 +1,21 @@
+{
+  "asset": "MSFT",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-05T23:45:16.665413",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.35220927135484414,
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.35220927135484414,
+    "best_profit_factor": 6.066846454730769,
+    "best_win_rate": 0.5714285714285714,
+    "best_return": 415.4396287042344,
+    "avg_sharpe": -0.006751466095455992
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-05T22:27:52.306358",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.29277198494137263,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.29277198494137263,
+    "best_profit_factor": 1.9855897279463668,
+    "best_win_rate": 0.6,
+    "best_return": 2.0779364404920195,
+    "avg_sharpe": -0.3688572587096666
+  }
+}

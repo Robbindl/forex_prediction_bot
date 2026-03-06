@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Three_White",
+  "timestamp": "2026-03-05T21:58:50.116271",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -365701264569.7971,
+  "total_combinations": 9,
+  "valid_combinations": 1,
+  "results_summary": {
+    "best_sharpe": -365701264569.7971,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -5.470538387739735,
+    "avg_sharpe": -365701264569.7971
+  }
+}

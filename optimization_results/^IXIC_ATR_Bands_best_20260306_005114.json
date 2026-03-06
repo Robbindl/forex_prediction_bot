@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-06T00:51:14.583397",
+  "best_params": {
+    "period": 14,
+    "multiplier": 2.5,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7716411946888976,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.7716411946888976,
+    "best_profit_factor": 40.580764976884176,
+    "best_win_rate": 0.8,
+    "best_return": 73.09313705416305,
+    "avg_sharpe": 0.12286161738855238
+  }
+}

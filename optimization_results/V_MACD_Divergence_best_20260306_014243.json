@@ -1,0 +1,23 @@
+{
+  "asset": "V",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-06T01:42:43.739066",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 7,
+    "lookback": 20,
+    "divergence_threshold": 0.03
+  },
+  "best_metric": "sharpe",
+  "best_value": 4.780497904215594,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 4.780497904215594,
+    "best_profit_factor": 565.8946864405798,
+    "best_win_rate": 1.0,
+    "best_return": 17.511767132229274,
+    "avg_sharpe": 0.874240403846053
+  }
+}

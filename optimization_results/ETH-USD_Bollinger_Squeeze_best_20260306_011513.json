@@ -1,0 +1,22 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Bollinger_Squeeze",
+  "timestamp": "2026-03-06T01:15:13.390054",
+  "best_params": {
+    "period": 20,
+    "bb_std": 2.0,
+    "kc_std": 1.5,
+    "squeeze_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.16015340335590883,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.16015340335590883,
+    "best_profit_factor": 0.5941539984980446,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": -6.977074838271278,
+    "avg_sharpe": -0.17170476642569796
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "MACD",
+  "timestamp": "2026-03-05T22:58:25.229038",
+  "best_params": {
+    "fast": 12,
+    "slow": 20,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3929587029713844,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.3929587029713844,
+    "best_profit_factor": 2.3919118691658756,
+    "best_win_rate": 0.5,
+    "best_return": 14.960826707750227,
+    "avg_sharpe": 0.07925584147601629
+  }
+}

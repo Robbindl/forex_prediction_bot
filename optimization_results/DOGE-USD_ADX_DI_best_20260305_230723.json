@@ -1,0 +1,21 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-05T23:07:23.473136",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 25,
+    "di_threshold": 25
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.1734932509260359,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.1734932509260359,
+    "best_profit_factor": 1.5251695710609698,
+    "best_win_rate": 0.35751295336787564,
+    "best_return": 58.63288260574663,
+    "avg_sharpe": 0.14975020663273772
+  }
+}

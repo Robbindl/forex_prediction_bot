@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "CCI",
+  "timestamp": "2026-03-06T00:07:37.527773",
+  "best_params": {
+    "period": 30,
+    "oversold": -100,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.23753221484189202,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.23753221484189202,
+    "best_profit_factor": 1.650240617099221,
+    "best_win_rate": 0.5454545454545454,
+    "best_return": 4.070376784305452,
+    "avg_sharpe": -0.47452944649717277
+  }
+}

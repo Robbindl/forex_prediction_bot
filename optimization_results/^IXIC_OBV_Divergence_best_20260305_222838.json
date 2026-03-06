@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-05T22:28:38.463307",
+  "best_params": {
+    "lookback": 20,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.09279060908588233,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": -0.09279060908588233,
+    "best_profit_factor": 0.7728145642357795,
+    "best_win_rate": 0.34615384615384615,
+    "best_return": -3.1268451762776053,
+    "avg_sharpe": -0.42030577913563416
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "OBV",
+  "timestamp": "2026-03-05T23:34:05.764657",
+  "best_params": {
+    "signal_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.024095019570943815,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.024095019570943815,
+    "best_profit_factor": 1.0408943198314016,
+    "best_win_rate": 0.3563218390804598,
+    "best_return": 2.097743540996372,
+    "avg_sharpe": -0.033000168922897304
+  }
+}

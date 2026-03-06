@@ -1,0 +1,22 @@
+{
+  "asset": "WMT",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-06T02:08:34.949831",
+  "best_params": {
+    "volume_period": 20,
+    "volume_multiplier": 2.5,
+    "price_period": 5,
+    "price_threshold": 0.03
+  },
+  "best_metric": "sharpe",
+  "best_value": 152916466799.17184,
+  "total_combinations": 36,
+  "valid_combinations": 35,
+  "results_summary": {
+    "best_sharpe": 152916466799.17184,
+    "best_profit_factor": 5.840583135971459,
+    "best_win_rate": 1.0,
+    "best_return": 7.994522601391661,
+    "avg_sharpe": -18094602834.42189
+  }
+}

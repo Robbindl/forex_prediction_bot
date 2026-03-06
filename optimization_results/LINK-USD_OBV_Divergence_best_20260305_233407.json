@@ -1,0 +1,20 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-05T23:34:07.451284",
+  "best_params": {
+    "lookback": 5,
+    "divergence_threshold": 0.02
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.39393611135912976,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.39393611135912976,
+    "best_profit_factor": 2.1895419482639316,
+    "best_win_rate": 0.5652173913043478,
+    "best_return": 25.52341337206992,
+    "avg_sharpe": 0.1665884073994959
+  }
+}

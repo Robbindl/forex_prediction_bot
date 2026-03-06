@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "PPO",
+  "timestamp": "2026-03-05T22:15:15.015911",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.32411676438921444,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.32411676438921444,
+    "best_profit_factor": 2.0166362261970967,
+    "best_win_rate": 0.5,
+    "best_return": 15.671501717613026,
+    "avg_sharpe": 0.154567961445666
+  }
+}

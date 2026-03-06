@@ -1,0 +1,20 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T22:50:52.945582",
+  "best_params": {
+    "fast_period": 12,
+    "slow_period": 26
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2725979065658329,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.2725979065658329,
+    "best_profit_factor": 1.961755153622158,
+    "best_win_rate": 0.42857142857142855,
+    "best_return": 7.970654549158784,
+    "avg_sharpe": 0.09720522973716732
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-06T00:50:55.665002",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 14,
+    "atr_multiplier": 3.0,
+    "confirmation_bars": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 187440583254.19086,
+  "total_combinations": 36,
+  "valid_combinations": 35,
+  "results_summary": {
+    "best_sharpe": 187440583254.19086,
+    "best_profit_factor": 13.284543189202173,
+    "best_win_rate": 1.0,
+    "best_return": 20.429118609043066,
+    "avg_sharpe": 5355445237.5524
+  }
+}

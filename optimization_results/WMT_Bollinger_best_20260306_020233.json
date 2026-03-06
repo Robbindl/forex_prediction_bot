@@ -1,0 +1,21 @@
+{
+  "asset": "WMT",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T02:02:33.224532",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.10101067999482499,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.10101067999482499,
+    "best_profit_factor": 1.965277533814886,
+    "best_win_rate": 0.12,
+    "best_return": 25.956790700821024,
+    "avg_sharpe": -0.12967217253839375
+  }
+}

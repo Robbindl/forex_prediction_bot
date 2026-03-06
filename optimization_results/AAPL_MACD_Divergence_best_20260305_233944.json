@@ -1,0 +1,23 @@
+{
+  "asset": "AAPL",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-05T23:39:44.880961",
+  "best_params": {
+    "fast": 16,
+    "slow": 32,
+    "signal": 7,
+    "lookback": 5,
+    "divergence_threshold": 0.03
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2536550687588467,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.2536550687588467,
+    "best_profit_factor": 1.681066197185079,
+    "best_win_rate": 0.4827586206896552,
+    "best_return": 9.355743035036896,
+    "avg_sharpe": -0.027114397085052287
+  }
+}

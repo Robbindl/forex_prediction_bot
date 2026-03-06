@@ -1,0 +1,22 @@
+{
+  "asset": "V",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-06T01:46:33.941336",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.5,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 22043179710.81413,
+  "total_combinations": 36,
+  "valid_combinations": 28,
+  "results_summary": {
+    "best_sharpe": 22043179710.81413,
+    "best_profit_factor": 2.6777779213903017,
+    "best_win_rate": 1.0,
+    "best_return": 6.745978128643403,
+    "avg_sharpe": 1574512832.6076484
+  }
+}

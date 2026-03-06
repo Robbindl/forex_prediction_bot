@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "RSI",
+  "timestamp": "2026-03-05T23:37:31.654201",
+  "best_params": {
+    "oversold": 25,
+    "overbought": 80,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.0089660160039988,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 1.0089660160039988,
+    "best_profit_factor": 11.914409127842843,
+    "best_win_rate": 0.7692307692307693,
+    "best_return": 23.034812324491085,
+    "avg_sharpe": 0.37843873899674296
+  }
+}

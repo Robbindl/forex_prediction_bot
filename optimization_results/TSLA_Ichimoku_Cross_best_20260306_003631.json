@@ -1,0 +1,21 @@
+{
+  "asset": "TSLA",
+  "strategy": "Ichimoku_Cross",
+  "timestamp": "2026-03-06T00:36:31.778048",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "cloud_offset": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -1.9790117739670725,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -1.9790117739670725,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -6.620611761622144,
+    "avg_sharpe": -1.9790117739670725
+  }
+}

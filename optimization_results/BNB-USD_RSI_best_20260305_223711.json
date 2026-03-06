@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "RSI",
+  "timestamp": "2026-03-05T22:37:11.631343",
+  "best_params": {
+    "oversold": 35,
+    "overbought": 75,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.17519553527581416,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": -0.17519553527581416,
+    "best_profit_factor": 0.6606025876998539,
+    "best_win_rate": 0.2222222222222222,
+    "best_return": -14.503269898661774,
+    "avg_sharpe": -0.31780311232339686
+  }
+}

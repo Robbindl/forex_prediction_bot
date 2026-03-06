@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "SMA_Cross",
+  "timestamp": "2026-03-06T01:11:52.585734",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 100
+  },
+  "best_metric": "sharpe",
+  "best_value": 476616130236.6405,
+  "total_combinations": 20,
+  "valid_combinations": 19,
+  "results_summary": {
+    "best_sharpe": 476616130236.6405,
+    "best_profit_factor": 5.471284103553543,
+    "best_win_rate": 1.0,
+    "best_return": 9.530416140211875,
+    "avg_sharpe": 126036197364.11896
+  }
+}

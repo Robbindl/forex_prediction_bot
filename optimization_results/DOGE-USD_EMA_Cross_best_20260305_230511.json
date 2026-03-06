@@ -1,0 +1,20 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T23:05:11.944248",
+  "best_params": {
+    "fast_period": 8,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.4954801249083274,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.4954801249083274,
+    "best_profit_factor": 6.060152576867979,
+    "best_win_rate": 0.5714285714285714,
+    "best_return": 16.074169203137156,
+    "avg_sharpe": 0.2583922196462503
+  }
+}

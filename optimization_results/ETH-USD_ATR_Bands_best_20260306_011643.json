@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-06T01:16:43.109265",
+  "best_params": {
+    "period": 20,
+    "multiplier": 2.0,
+    "band_type": "both"
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9420366758239401,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.9420366758239401,
+    "best_profit_factor": 71.57127251414275,
+    "best_win_rate": 0.8285714285714286,
+    "best_return": 1856.007602920507,
+    "avg_sharpe": 0.6591676688108582
+  }
+}

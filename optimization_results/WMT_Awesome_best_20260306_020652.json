@@ -1,0 +1,21 @@
+{
+  "asset": "WMT",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T02:06:52.404235",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5230837564462688,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.5230837564462688,
+    "best_profit_factor": 4.191926127279163,
+    "best_win_rate": 0.5,
+    "best_return": 12.925889094871227,
+    "avg_sharpe": 0.5230837564462688
+  }
+}

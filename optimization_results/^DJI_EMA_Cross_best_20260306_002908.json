@@ -1,0 +1,20 @@
+{
+  "asset": "^DJI",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-06T00:29:08.514464",
+  "best_params": {
+    "fast_period": 10,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5654569991458818,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.5654569991458818,
+    "best_profit_factor": 3.8504262524180852,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 2.9380570349910147,
+    "avg_sharpe": 0.09505280050941539
+  }
+}

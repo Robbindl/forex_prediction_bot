@@ -1,0 +1,21 @@
+{
+  "asset": "JPM",
+  "strategy": "Ichimoku",
+  "timestamp": "2026-03-06T01:32:50.401457",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "senkou": 45
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.019592522110993126,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.019592522110993126,
+    "best_profit_factor": 1.0460251802059268,
+    "best_win_rate": 0.5,
+    "best_return": 0.04716207211068457,
+    "avg_sharpe": 0.01959252211099313
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "RSI",
+  "timestamp": "2026-03-06T00:33:57.418002",
+  "best_params": {
+    "oversold": 30,
+    "overbought": 70,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.22006857904696428,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": -0.22006857904696428,
+    "best_profit_factor": 0.5881934879323444,
+    "best_win_rate": 0.26666666666666666,
+    "best_return": -6.44228004779843,
+    "avg_sharpe": -0.6975604428326166
+  }
+}

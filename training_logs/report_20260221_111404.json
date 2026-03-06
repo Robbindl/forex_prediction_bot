@@ -1,0 +1,214 @@
+{
+  "date": "2026-02-21T11:14:04.924982",
+  "total_assets": 40,
+  "successfully_trained": 0,
+  "failed": 40,
+  "success_rate": 0.0,
+  "total_time_minutes": 9.273084016640981,
+  "model_type": "advanced",
+  "timeframes": [
+    "1d"
+  ],
+  "details": {
+    "EUR/USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:05:02.111023"
+    },
+    "GBP/USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:05:15.770091"
+    },
+    "USD/JPY": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:05:29.140469"
+    },
+    "AUD/USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:05:42.662242"
+    },
+    "USD/CAD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:05:56.169132"
+    },
+    "NZD/USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:06:09.769701"
+    },
+    "USD/CHF": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:06:23.445570"
+    },
+    "EUR/GBP": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:06:37.096256"
+    },
+    "GBP/JPY": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:06:50.221063"
+    },
+    "AUD/JPY": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:07:03.354421"
+    },
+    "BTC-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:07:16.922917"
+    },
+    "ETH-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:07:30.682492"
+    },
+    "BNB-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:07:44.250522"
+    },
+    "XRP-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:07:57.859022"
+    },
+    "ADA-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:08:11.479432"
+    },
+    "SOL-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:08:25.154871"
+    },
+    "DOGE-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:08:38.831729"
+    },
+    "DOT-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:08:52.442958"
+    },
+    "MATIC-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:09:05.464521"
+    },
+    "LTC-USD": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:09:19.075536"
+    },
+    "AAPL": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:09:33.593211"
+    },
+    "MSFT": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:09:47.238641"
+    },
+    "GOOGL": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:10:00.889352"
+    },
+    "AMZN": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:10:13.987705"
+    },
+    "TSLA": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:10:27.363876"
+    },
+    "META": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:10:41.754056"
+    },
+    "NVDA": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:10:56.004396"
+    },
+    "JPM": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:11:12.428181"
+    },
+    "V": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:11:27.128707"
+    },
+    "WMT": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:11:41.942348"
+    },
+    "GC=F": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:11:59.880374"
+    },
+    "SI=F": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:12:15.739265"
+    },
+    "CL=F": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:12:30.797861"
+    },
+    "NG=F": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:12:46.176253"
+    },
+    "HG=F": {
+      "status": "failed",
+      "error": "No data received",
+      "trained_at": "2026-02-21T11:12:59.832872"
+    },
+    "^GSPC": {
+      "status": "failed",
+      "error": "Insufficient data for training after feature engineering",
+      "trained_at": "2026-02-21T11:13:13.394831"
+    },
+    "^DJI": {
+      "status": "failed",
+      "error": "Insufficient data for training after feature engineering",
+      "trained_at": "2026-02-21T11:13:26.130229"
+    },
+    "^IXIC": {
+      "status": "failed",
+      "error": "Insufficient data for training after feature engineering",
+      "trained_at": "2026-02-21T11:13:39.325938"
+    },
+    "^FTSE": {
+      "status": "failed",
+      "error": "Insufficient data for training after feature engineering",
+      "trained_at": "2026-02-21T11:13:51.350273"
+    },
+    "^N225": {
+      "status": "failed",
+      "error": "Insufficient data for training after feature engineering",
+      "trained_at": "2026-02-21T11:14:03.909472"
+    }
+  }
+}

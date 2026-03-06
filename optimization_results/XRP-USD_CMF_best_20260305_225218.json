@@ -1,0 +1,20 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T22:52:18.991609",
+  "best_params": {
+    "period": 21,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.14522390305954933,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.14522390305954933,
+    "best_profit_factor": 1.3626150105231876,
+    "best_win_rate": 0.4,
+    "best_return": 25.497902254978783,
+    "avg_sharpe": 0.09085853683164836
+  }
+}

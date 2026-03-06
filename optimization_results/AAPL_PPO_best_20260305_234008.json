@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "PPO",
+  "timestamp": "2026-03-05T23:40:08.267104",
+  "best_params": {
+    "fast": 12,
+    "slow": 20,
+    "signal": 11
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.03326312488070106,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.03326312488070106,
+    "best_profit_factor": 1.0659708309399325,
+    "best_win_rate": 0.37037037037037035,
+    "best_return": 1.150406503764943,
+    "avg_sharpe": -0.042403341785389244
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-05T22:51:30.209767",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.5417931284155066,
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 1.5417931284155066,
+    "best_profit_factor": 318.1130318259223,
+    "best_win_rate": 0.8529411764705882,
+    "best_return": 333.58134131350596,
+    "avg_sharpe": 0.7184628432597004
+  }
+}

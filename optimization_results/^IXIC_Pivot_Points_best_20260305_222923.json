@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Pivot_Points",
+  "timestamp": "2026-03-05T22:29:23.420118",
+  "best_params": {
+    "pivot_type": "classic",
+    "lookback": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": "0",
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.0,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": 0.0,
+    "avg_sharpe": 0.0
+  }
+}

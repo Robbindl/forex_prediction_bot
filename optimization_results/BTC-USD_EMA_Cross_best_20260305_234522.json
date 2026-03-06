@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T23:45:22.944540",
+  "best_params": {
+    "fast_period": 10,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.28449107600781315,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.28449107600781315,
+    "best_profit_factor": 2.1333649947368873,
+    "best_win_rate": 0.36363636363636365,
+    "best_return": 5.883290942971692,
+    "avg_sharpe": 0.0765512384814644
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Williams_R",
+  "timestamp": "2026-03-05T22:27:44.565035",
+  "best_params": {
+    "period": 7,
+    "oversold": -80,
+    "overbought": -30
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.08233415244080004,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.08233415244080004,
+    "best_profit_factor": 0.8047183188159618,
+    "best_win_rate": 0.3114754098360656,
+    "best_return": -6.552994531444013,
+    "avg_sharpe": -0.31686664696048894
+  }
+}

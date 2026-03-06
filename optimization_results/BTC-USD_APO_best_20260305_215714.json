@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "APO",
+  "timestamp": "2026-03-05T21:57:14.557722",
+  "best_params": {
+    "fast": 5,
+    "slow": 13,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.43229060080647197,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.43229060080647197,
+    "best_profit_factor": 2.4996353679689034,
+    "best_win_rate": 0.525,
+    "best_return": 32.7621470840198,
+    "avg_sharpe": 0.23720009162764857
+  }
+}

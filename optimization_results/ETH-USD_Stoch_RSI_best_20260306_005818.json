@@ -1,0 +1,22 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T00:58:18.788092",
+  "best_params": {
+    "rsi_period": 21,
+    "stoch_period": 5,
+    "k_period": 5,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.17996620459700557,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.17996620459700557,
+    "best_profit_factor": 1.508954801952435,
+    "best_win_rate": 0.4090909090909091,
+    "best_return": 7.513305963945221,
+    "avg_sharpe": -0.055063259265599705
+  }
+}

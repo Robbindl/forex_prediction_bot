@@ -1,0 +1,20 @@
+{
+  "asset": "GOOGL",
+  "strategy": "Morning_Star",
+  "timestamp": "2026-03-06T00:06:32.815192",
+  "best_params": {
+    "body_ratio": 0.3,
+    "gap_threshold": 0.005
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9710794442757851,
+  "total_combinations": 9,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.9710794442757851,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 1.0,
+    "best_return": 18.738460527100365,
+    "avg_sharpe": 0.9710794442757851
+  }
+}

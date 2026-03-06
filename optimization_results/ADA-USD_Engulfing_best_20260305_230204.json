@@ -1,0 +1,20 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-05T23:02:04.485230",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.21960564697674342,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.21960564697674342,
+    "best_profit_factor": 1.831836151504618,
+    "best_win_rate": 0.6206896551724138,
+    "best_return": 8.134731341256336,
+    "avg_sharpe": 0.18943552694134497
+  }
+}

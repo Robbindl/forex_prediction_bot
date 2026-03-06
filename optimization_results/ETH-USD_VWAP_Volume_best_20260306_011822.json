@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-06T01:18:22.297699",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1,
+    "volume_threshold": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 123.4707562073618,
+  "total_combinations": 27,
+  "valid_combinations": 21,
+  "results_summary": {
+    "best_sharpe": 123.4707562073618,
+    "best_profit_factor": 12.05487217624145,
+    "best_win_rate": 1.0,
+    "best_return": 20.8540835685181,
+    "avg_sharpe": 11.793460676965022
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-05T23:18:52.983059",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.11689866591527757,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.11689866591527757,
+    "best_profit_factor": 0.7637835817293624,
+    "best_win_rate": 0.26666666666666666,
+    "best_return": -2.379217344567388,
+    "avg_sharpe": -0.11689866591527757
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "open_positions": [
+    {
+      "trade_id": "2528a4c5",
+      "asset": "GBP/USD",
+      "category": "unknown",
+      "signal": "BUY",
+      "entry_price": 1.3486799999999999,
+      "position_size": 4.448794376723908,
+      "stop_loss": 1.3174307253408433,
+      "take_profit_levels": [],
+      "confidence": 0.6713610431947841,
+      "reason": "Vote: macd: BUY (80%), ma_cross: BUY (70%), ultimate: BUY (30%) +2 more",
+      "entry_time": "2026-02-28T21:14:07.696223",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0,
+      "strategy_id": "VOTING",
+      "strategy_emoji": "\ud83d\uddf3\ufe0f"
+    }
+  ],
+  "closed_positions": []
+}

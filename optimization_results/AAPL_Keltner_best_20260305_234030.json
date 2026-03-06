@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-05T23:40:30.248472",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 14,
+    "atr_multiplier": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5040936221108469,
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.5040936221108469,
+    "best_profit_factor": 5.075177397839078,
+    "best_win_rate": 0.5625,
+    "best_return": 176.0032905553714,
+    "avg_sharpe": 0.319309119335828
+  }
+}

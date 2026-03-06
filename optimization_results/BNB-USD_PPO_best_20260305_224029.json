@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "PPO",
+  "timestamp": "2026-03-05T22:40:29.014144",
+  "best_params": {
+    "fast": 16,
+    "slow": 32,
+    "signal": 11
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.37237388436437946,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.37237388436437946,
+    "best_profit_factor": 2.2485312449556125,
+    "best_win_rate": 0.5,
+    "best_return": 11.803203375644749,
+    "avg_sharpe": 0.10857124226830595
+  }
+}

@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📊 Backtest Visualizer - Trading Bot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .chart-container { transition: all 0.3s ease; }
+        .chart-container:hover { box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body class="bg-gray-50">
+    
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        <!-- Header with navigation -->
+        <div class="mb-8">
+            <div class="flex justify-between items-center">
+                <h1 class="text-3xl font-bold text-gray-900 flex items-center">
+                    <i class="fas fa-chart-line text-blue-600 mr-3"></i>
+                    Backtest Visualizer
+                </h1>
+                <div class="flex space-x-3">
+                    <a href="/" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                        <i class="fas fa-home"></i>
+                        <span>Dashboard</span>
+                    </a>
+                    <a href="/sentiment" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                        <i class="fas fa-newspaper"></i>
+                        <span>Sentiment</span>
+                    </a>
+                    <a href="/status" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                        <i class="fas fa-heartbeat"></i>
+                        <span>Status</span>
+                    </a>
+                </div>
+            </div>
+            <p class="text-gray-600 mt-2">Test and visualize trading strategies on historical data</p>
+        </div>
+
+        <!-- Controls -->
+        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Asset</label>
+                    <select id="asset" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <optgroup label="Crypto">
+                            <option value="BTC-USD">BTC-USD (Bitcoin)</option>
+                            <option value="ETH-USD">ETH-USD (Ethereum)</option>
+                            <option value="BNB-USD">BNB-USD (Binance)</option>
+                            <option value="SOL-USD">SOL-USD (Solana)</option>
+                            <option value="XRP-USD">XRP-USD (Ripple)</option>
+                        </optgroup>
+                        <optgroup label="Forex">
+                            <option value="EUR/USD">EUR/USD</option>
+                            <option value="GBP/USD">GBP/USD</option>
+                            <option value="USD/JPY">USD/JPY</option>
+                            <option value="AUD/USD">AUD/USD</option>
+                        </optgroup>
+                        <optgroup label="Stocks">
+                            <option value="AAPL">AAPL (Apple)</option>
+                            <option value="MSFT">MSFT (Microsoft)</option>
+                            <option value="GOOGL">GOOGL (Google)</option>
+                            <option value="TSLA">TSLA (Tesla)</option>
+                            <option value="NVDA">NVDA (NVIDIA)</option>
+                        </optgroup>
+                        <optgroup label="Commodities">
+                            <option value="GC=F">Gold (GC=F)</option>
+                            <option value="SI=F">Silver (SI=F)</option>
+                            <option value="CL=F">Crude Oil (CL=F)</option>
+                        </optgroup>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Strategy</label>
+                    <select id="strategy" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="rsi">RSI Mean Reversion</option>
+                        <option value="macd">MACD Crossover</option>
+                        <option value="bb">Bollinger Bands</option>
+                        <option value="ma_cross">Moving Average Cross</option>
+                        <option value="ml_ensemble">ML Ensemble</option>
+                        <option value="breakout">Breakout Strategy</option>
+                        <option value="trend_following">Trend Following</option>
+                        <option value="scalping">Scalping Strategy</option>
+                        <option value="day_trading">Day Trading</option>
+                        <option value="ultimate">Ultimate (50+ indicators)</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Period</label>
+                    <select id="period" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="90d">3 Months</option>
+                        <option value="180d">6 Months</option>
+                        <option value="365d">1 Year</option>
+                        <option value="730d">2 Years</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">&nbsp;</label>
+                    <button onclick="runBacktest()" class="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center justify-center space-x-2">
+                        <i class="fas fa-play"></i>
+                        <span>Run Backtest</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div id="loading" class="hidden">
+            <div class="flex justify-center items-center py-12">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                <span class="ml-3 text-gray-600">Running backtest... This may take a moment</span>
+            </div>
+        </div>
+
+        <!-- Results Summary Cards -->
+        <div id="results-summary" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8 hidden">
+            <div class="bg-white rounded-xl shadow-md p-4">
+                <p class="text-sm text-gray-500">Total Trades</p>
+                <p class="text-2xl font-bold" id="total-trades">0</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-4">
+                <p class="text-sm text-gray-500">Win Rate</p>
+                <p class="text-2xl font-bold text-green-600" id="win-rate">0%</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-4">
+                <p class="text-sm text-gray-500">Total Return</p>
+                <p class="text-2xl font-bold text-blue-600" id="total-return">0%</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-4">
+                <p class="text-sm text-gray-500">Profit Factor</p>
+                <p class="text-2xl font-bold text-purple-600" id="profit-factor">0.0</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-md p-4">
+                <p class="text-sm text-gray-500">Max Drawdown</p>
+                <p class="text-2xl font-bold text-red-600" id="max-dd">0%</p>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="grid grid-cols-1 gap-6 mb-8">
+            <div class="bg-white rounded-xl shadow-md p-6 chart-container">
+                <h2 class="text-lg font-semibold mb-4">Equity Curve</h2>
+                <canvas id="equity-chart" height="300"></canvas>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <div class="bg-white rounded-xl shadow-md p-6 chart-container">
+                <h2 class="text-lg font-semibold mb-4">Drawdown</h2>
+                <canvas id="drawdown-chart" height="250"></canvas>
+            </div>
+            
+            <div class="bg-white rounded-xl shadow-md p-6 chart-container">
+                <h2 class="text-lg font-semibold mb-4">Monthly Returns</h2>
+                <canvas id="monthly-chart" height="250"></canvas>
+            </div>
+        </div>
+
+        <!-- Trades Table -->
+        <div class="bg-white rounded-xl shadow-md p-6">
+            <h2 class="text-lg font-semibold mb-4">Recent Trades</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Direction</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Entry</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Exit</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">P&L</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Return %</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Exit Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200" id="trades-body">
+                        <tr>
+                            <td colspan="7" class="px-6 py-4 text-center text-gray-500">Run a backtest to see trades</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        let equityChart = null;
+        let drawdownChart = null;
+        let monthlyChart = null;
+
+        // Load settings from URL on page load
+        function loadSettingsFromUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            
+            const asset = urlParams.get('asset');
+            const strategy = urlParams.get('strategy');
+            const period = urlParams.get('period');
+            
+            if (asset) {
+                document.getElementById('asset').value = asset;
+            }
+            if (strategy) {
+                document.getElementById('strategy').value = strategy;
+            }
+            if (period) {
+                document.getElementById('period').value = period;
+            }
+        }
+
+        // Update URL with current settings
+        function updateUrlWithSettings() {
+            const asset = document.getElementById('asset').value;
+            const strategy = document.getElementById('strategy').value;
+            const period = document.getElementById('period').value;
+            
+            const url = new URL(window.location);
+            url.searchParams.set('asset', asset);
+            url.searchParams.set('strategy', strategy);
+            url.searchParams.set('period', period);
+            window.history.pushState({}, '', url);
+        }
+
+        async function runBacktest() {
+            // Update URL with current settings
+            updateUrlWithSettings();
+            
+            const asset = document.getElementById('asset').value;
+            const strategy = document.getElementById('strategy').value;
+            const period = document.getElementById('period').value;
+
+            // Show loading
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('results-summary').classList.add('hidden');
+
+            // Clear previous results
+            document.getElementById('trades-body').innerHTML = '<tr><td colspan="7" class="px-6 py-4 text-center text-gray-500">Loading trades...</td></tr>';
+
+            try {
+                const response = await fetch(`/api/backtest/run?asset=${encodeURIComponent(asset)}&strategy=${strategy}&period=${period}`);
+                const data = await response.json();
+
+                // Hide loading
+                document.getElementById('loading').classList.add('hidden');
+
+                if (data.success) {
+                    updateSummary(data.results);
+                    updateEquityChart(data.equity_curve);
+                    updateDrawdownChart(data.drawdown);
+                    updateMonthlyChart(data.monthly_returns);
+                    updateTradesTable(data.trades);
+                    document.getElementById('results-summary').classList.remove('hidden');
+                } else {
+                    alert('Error: ' + data.error);
+                    document.getElementById('trades-body').innerHTML = '<tr><td colspan="7" class="px-6 py-4 text-center text-red-500">Error: ' + data.error + '</td></tr>';
+                }
+            } catch (error) {
+                document.getElementById('loading').classList.add('hidden');
+                alert('Error running backtest: ' + error);
+                document.getElementById('trades-body').innerHTML = '<tr><td colspan="7" class="px-6 py-4 text-center text-red-500">Error: ' + error + '</td></tr>';
+            }
+        }
+
+        function updateSummary(results) {
+            document.getElementById('total-trades').textContent = results.trades || 0;
+            
+            // Convert decimal to percentage (0.75 -> 75%)
+            const winRate = results.win_rate ? (results.win_rate * 100).toFixed(1) : '0.0';
+            document.getElementById('win-rate').textContent = winRate + '%';
+            
+            const totalReturn = results.total_return ? results.total_return.toFixed(2) : '0.00';
+            document.getElementById('total-return').textContent = totalReturn + '%';
+            
+            const profitFactor = results.profit_factor ? results.profit_factor.toFixed(2) : '0.00';
+            document.getElementById('profit-factor').textContent = profitFactor;
+            
+            const maxDD = results.max_dd ? (results.max_dd * 100).toFixed(1) : '0.0';
+            document.getElementById('max-dd').textContent = maxDD + '%';
+        }
+
+        function updateEquityChart(equityData) {
+            const ctx = document.getElementById('equity-chart').getContext('2d');
+            
+            if (equityChart) {
+                equityChart.destroy();
+            }
+
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: equityData.dates || [],
+                    datasets: [{
+                        label: 'Portfolio Equity ($)',
+                        data: equityData.values || [],
+                        borderColor: 'rgb(59, 130, 246)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        fill: true,
+                        tension: 0.1,
+                        pointRadius: 2,
+                        pointHoverRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            title: {
+                                display: true,
+                                text: 'Equity ($)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateDrawdownChart(drawdownData) {
+            const ctx = document.getElementById('drawdown-chart').getContext('2d');
+            
+            if (drawdownChart) {
+                drawdownChart.destroy();
+            }
+
+            drawdownChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: drawdownData.dates || [],
+                    datasets: [{
+                        label: 'Drawdown %',
+                        data: drawdownData.values || [],
+                        borderColor: 'rgb(239, 68, 68)',
+                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                        fill: true,
+                        tension: 0.1,
+                        pointRadius: 2,
+                        pointHoverRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Drawdown %'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateMonthlyChart(monthlyData) {
+            const ctx = document.getElementById('monthly-chart').getContext('2d');
+            
+            if (monthlyChart) {
+                monthlyChart.destroy();
+            }
+
+            monthlyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: monthlyData.months || [],
+                    datasets: [{
+                        label: 'Monthly Return %',
+                        data: monthlyData.returns || [],
+                        backgroundColor: (monthlyData.returns || []).map(r => 
+                            r >= 0 ? 'rgba(16, 185, 129, 0.8)' : 'rgba(239, 68, 68, 0.8)'
+                        ),
+                        borderWidth: 0,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Return %'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateTradesTable(trades) {
+            const tbody = document.getElementById('trades-body');
+            tbody.innerHTML = '';
+
+            if (!trades || trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="px-6 py-4 text-center text-gray-500">No trades found</td></tr>';
+                return;
+            }
+
+            trades.slice(0, 20).forEach(trade => {
+                const row = document.createElement('tr');
+                row.className = 'hover:bg-gray-50';
+                
+                const pnlClass = trade.pnl >= 0 ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
+                const directionClass = trade.direction === 'BUY' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+                
+                row.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">${trade.exit_date || trade.entry_date || ''}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        <span class="px-2 py-1 rounded-full text-xs font-semibold ${directionClass}">
+                            ${trade.direction || ''}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">$${trade.entry_price ? trade.entry_price.toFixed(2) : '0.00'}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">$${trade.exit_price ? trade.exit_price.toFixed(2) : '0.00'}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm ${pnlClass}">$${trade.pnl ? trade.pnl.toFixed(2) : '0.00'}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm ${pnlClass}">${trade.return_pct ? trade.return_pct.toFixed(2) : '0.00'}%</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">${trade.exit_reason || ''}</td>
+                `;
+                
+                tbody.appendChild(row);
+            });
+        }
+
+        // Add event listeners for dropdown changes
+        document.getElementById('asset').addEventListener('change', function() {
+            updateUrlWithSettings();
+        });
+        
+        document.getElementById('strategy').addEventListener('change', function() {
+            updateUrlWithSettings();
+        });
+        
+        document.getElementById('period').addEventListener('change', function() {
+            updateUrlWithSettings();
+        });
+
+        // Load settings on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSettingsFromUrl();
+            // Don't auto-run, wait for user to click Run Backtest
+        });
+
+        // Listen for back/forward navigation
+        window.addEventListener('popstate', function() {
+            loadSettingsFromUrl();
+        });
+    </script>
+</body>
+</html>

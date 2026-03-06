@@ -1,0 +1,20 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "VWAP",
+  "timestamp": "2026-03-05T22:50:58.144417",
+  "best_params": {
+    "period": 20,
+    "std_dev": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.47879015643758355,
+  "total_combinations": 12,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.47879015643758355,
+    "best_profit_factor": 4.864210750771977,
+    "best_win_rate": 0.5333333333333333,
+    "best_return": 37.761938771267694,
+    "avg_sharpe": 0.11119596116882421
+  }
+}

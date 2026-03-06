@@ -1,0 +1,22 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-05T23:05:51.696735",
+  "best_params": {
+    "ema_period": 20,
+    "atr_period": 14,
+    "atr_multiplier": 2.0,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.22856327726808176,
+  "total_combinations": 36,
+  "valid_combinations": 33,
+  "results_summary": {
+    "best_sharpe": 0.22856327726808176,
+    "best_profit_factor": 1.842925565780742,
+    "best_win_rate": 0.8333333333333334,
+    "best_return": 5.438520360000928,
+    "avg_sharpe": -78680815720.28111
+  }
+}

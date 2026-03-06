@@ -1,0 +1,20 @@
+{
+  "asset": "AMZN",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-06T00:17:10.425543",
+  "best_params": {
+    "fast_period": 12,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.11892591986059958,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": -0.11892591986059958,
+    "best_profit_factor": 0.776172323842792,
+    "best_win_rate": 0.3,
+    "best_return": -1.1387126477991794,
+    "avg_sharpe": -0.42614207338296856
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "HMA_Cross",
+  "timestamp": "2026-03-05T23:45:25.799457",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.27972989789265595,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.27972989789265595,
+    "best_profit_factor": 1.8832856407476888,
+    "best_win_rate": 0.4166666666666667,
+    "best_return": 14.438036558302992,
+    "avg_sharpe": 0.0944114992360434
+  }
+}

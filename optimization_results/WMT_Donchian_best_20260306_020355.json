@@ -1,0 +1,19 @@
+{
+  "asset": "WMT",
+  "strategy": "Donchian",
+  "timestamp": "2026-03-06T02:03:55.045627",
+  "best_params": {
+    "period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.07699872188656191,
+  "total_combinations": 4,
+  "valid_combinations": 2,
+  "results_summary": {
+    "best_sharpe": -0.07699872188656191,
+    "best_profit_factor": 1.9267117402628098,
+    "best_win_rate": 0.5,
+    "best_return": 3.1934274284728716,
+    "avg_sharpe": -0.07699872188656198
+  }
+}

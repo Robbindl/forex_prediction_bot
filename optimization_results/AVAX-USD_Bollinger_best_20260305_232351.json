@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-05T23:23:51.386440",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5363365389426046,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5363365389426046,
+    "best_profit_factor": 5.0405795550976356,
+    "best_win_rate": 0.5151515151515151,
+    "best_return": 110.58375959511733,
+    "avg_sharpe": 0.5241125418713031
+  }
+}

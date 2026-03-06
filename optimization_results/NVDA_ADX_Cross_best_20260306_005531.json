@@ -1,0 +1,20 @@
+{
+  "asset": "NVDA",
+  "strategy": "ADX_Cross",
+  "timestamp": "2026-03-06T00:55:31.427609",
+  "best_params": {
+    "period": 7,
+    "adx_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.4308795578497274,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": -0.4308795578497274,
+    "best_profit_factor": 0.41143288624822805,
+    "best_win_rate": 0.16129032258064516,
+    "best_return": -13.93982493976402,
+    "avg_sharpe": -0.43087955784972737
+  }
+}

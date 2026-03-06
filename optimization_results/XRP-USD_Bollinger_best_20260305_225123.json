@@ -1,0 +1,21 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-05T22:51:23.131302",
+  "best_params": {
+    "period": 30,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5583765481548922,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5583765481548922,
+    "best_profit_factor": 10.949750607045406,
+    "best_win_rate": 0.6176470588235294,
+    "best_return": 2414.0803676037635,
+    "avg_sharpe": 0.543970545949778
+  }
+}

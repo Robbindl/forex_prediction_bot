@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-05T23:01:31.345338",
+  "best_params": {
+    "fast_period": 7,
+    "slow_period": 14,
+    "threshold": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.27264175102913346,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.27264175102913346,
+    "best_profit_factor": 1.7885125429008728,
+    "best_win_rate": 0.4536082474226804,
+    "best_return": 37.127083157803575,
+    "avg_sharpe": 0.06804201657406549
+  }
+}

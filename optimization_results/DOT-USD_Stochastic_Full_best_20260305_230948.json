@@ -1,0 +1,23 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "Stochastic_Full",
+  "timestamp": "2026-03-05T23:09:48.671896",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "slowing": 7,
+    "oversold": 15,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": 650238724749.5175,
+  "total_combinations": 324,
+  "valid_combinations": 310,
+  "results_summary": {
+    "best_sharpe": 650238724749.5175,
+    "best_profit_factor": 22.610665093547404,
+    "best_win_rate": 1.0,
+    "best_return": 48.55033355201932,
+    "avg_sharpe": 5189056947.119645
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "APO",
+  "timestamp": "2026-03-05T23:17:26.471640",
+  "best_params": {
+    "fast": 12,
+    "slow": 21,
+    "signal": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5359480698557991,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5359480698557991,
+    "best_profit_factor": 3.045516961199777,
+    "best_win_rate": 0.5714285714285714,
+    "best_return": 23.566413494295947,
+    "avg_sharpe": 0.2036928375643061
+  }
+}

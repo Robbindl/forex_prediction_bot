@@ -1,0 +1,20 @@
+{
+  "asset": "AAPL",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-05T23:40:10.809052",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.18505651583928134,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.18505651583928134,
+    "best_profit_factor": 1.4876627537181908,
+    "best_win_rate": 0.5,
+    "best_return": 1.829431728923366,
+    "avg_sharpe": -0.026653953581674147
+  }
+}

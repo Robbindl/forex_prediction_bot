@@ -1,0 +1,19 @@
+{
+  "asset": "MSFT",
+  "strategy": "VPT",
+  "timestamp": "2026-03-05T23:46:07.616796",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.027300313229074107,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.027300313229074107,
+    "best_profit_factor": 1.0537550082799252,
+    "best_win_rate": 0.3870967741935484,
+    "best_return": 1.490463670020143,
+    "avg_sharpe": 0.011331562093336753
+  }
+}

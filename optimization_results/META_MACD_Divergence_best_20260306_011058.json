@@ -1,0 +1,23 @@
+{
+  "asset": "META",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-06T01:10:58.077395",
+  "best_params": {
+    "fast": 8,
+    "slow": 26,
+    "signal": 7,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.15352554098042137,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.15352554098042137,
+    "best_profit_factor": 1.3562176623591606,
+    "best_win_rate": 0.4444444444444444,
+    "best_return": 4.352446297753987,
+    "avg_sharpe": -0.17695809361980644
+  }
+}

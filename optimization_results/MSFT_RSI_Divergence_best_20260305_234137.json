@@ -1,0 +1,21 @@
+{
+  "asset": "MSFT",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T23:41:37.074808",
+  "best_params": {
+    "rsi_period": 14,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.021423049273803618,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.021423049273803618,
+    "best_profit_factor": 0.9225150380453387,
+    "best_win_rate": 0.3111111111111111,
+    "best_return": -1.820485812878025,
+    "avg_sharpe": -0.2943406511020485
+  }
+}

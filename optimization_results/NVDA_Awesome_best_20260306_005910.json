@@ -1,0 +1,21 @@
+{
+  "asset": "NVDA",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T00:59:10.076338",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.12164520560773219,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.12164520560773219,
+    "best_profit_factor": 0.7554172925359135,
+    "best_win_rate": 0.25,
+    "best_return": -1.9017435177439483,
+    "avg_sharpe": -0.12164520560773219
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "TSLA",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-06T00:37:36.947109",
+  "best_params": {
+    "ema_period": 20,
+    "atr_period": 10,
+    "atr_multiplier": 3.0,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6798374885524403,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.6798374885524403,
+    "best_profit_factor": 3.4968642694105445,
+    "best_win_rate": 0.8,
+    "best_return": 4.01705524646978,
+    "avg_sharpe": 0.008854188795896268
+  }
+}

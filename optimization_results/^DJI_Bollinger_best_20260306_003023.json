@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T00:30:23.807405",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3267587025394053,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.3267587025394053,
+    "best_profit_factor": 4.102634949513343,
+    "best_win_rate": 0.52,
+    "best_return": 27.00683516577461,
+    "avg_sharpe": 0.3101451592749819
+  }
+}

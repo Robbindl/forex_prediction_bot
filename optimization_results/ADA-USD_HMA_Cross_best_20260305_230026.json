@@ -1,0 +1,20 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "HMA_Cross",
+  "timestamp": "2026-03-05T23:00:26.149190",
+  "best_params": {
+    "fast_period": 12,
+    "slow_period": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.41140026221094117,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.41140026221094117,
+    "best_profit_factor": 2.36436223134338,
+    "best_win_rate": 0.5142857142857142,
+    "best_return": 22.721363569960573,
+    "avg_sharpe": 0.19806419713310572
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "TSLA",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-06T00:37:56.797265",
+  "best_params": {
+    "period": 10,
+    "multiplier": 2.5,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 423669736829.4268,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 423669736829.4268,
+    "best_profit_factor": 17.18550407298623,
+    "best_win_rate": 1.0,
+    "best_return": 361.380589520407,
+    "avg_sharpe": 15691471735.110487
+  }
+}

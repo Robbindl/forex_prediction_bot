@@ -1,0 +1,21 @@
+{
+  "asset": "GOOGL",
+  "strategy": "Awesome",
+  "timestamp": "2026-03-06T00:05:54.276227",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 34,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.693142957680121,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.693142957680121,
+    "best_profit_factor": 3.9228622302808778,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 5.992995030217884,
+    "avg_sharpe": 0.693142957680121
+  }
+}

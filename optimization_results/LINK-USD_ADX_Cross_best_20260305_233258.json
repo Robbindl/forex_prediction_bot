@@ -1,0 +1,20 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "ADX_Cross",
+  "timestamp": "2026-03-05T23:32:58.477427",
+  "best_params": {
+    "period": 7,
+    "adx_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.030893720671946984,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": -0.030893720671946984,
+    "best_profit_factor": 0.9226313967828387,
+    "best_win_rate": 0.3142857142857143,
+    "best_return": -1.7755596971859788,
+    "avg_sharpe": -0.030893720671946973
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "MSFT",
+  "strategy": "MACD",
+  "timestamp": "2026-03-05T23:42:57.287464",
+  "best_params": {
+    "fast": 8,
+    "slow": 32,
+    "signal": 11
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3901618655935352,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.3901618655935352,
+    "best_profit_factor": 2.272660199638508,
+    "best_win_rate": 0.55,
+    "best_return": 11.787591482243899,
+    "avg_sharpe": 0.1251641280466035
+  }
+}

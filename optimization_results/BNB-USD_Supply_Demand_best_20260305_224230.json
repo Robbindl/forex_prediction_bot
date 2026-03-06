@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Supply_Demand",
+  "timestamp": "2026-03-05T22:42:30.158332",
+  "best_params": {
+    "zone_period": 10,
+    "strength_bars": 3,
+    "touch_tolerance": 0.005
+  },
+  "best_metric": "sharpe",
+  "best_value": 17744385193.506332,
+  "total_combinations": 27,
+  "valid_combinations": 2,
+  "results_summary": {
+    "best_sharpe": 17744385193.506332,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 1.0,
+    "best_return": 0.7845354133209073,
+    "avg_sharpe": 17744385193.506332
+  }
+}

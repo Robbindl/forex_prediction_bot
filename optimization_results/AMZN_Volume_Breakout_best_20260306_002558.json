@@ -1,0 +1,22 @@
+{
+  "asset": "AMZN",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-06T00:25:58.620192",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 1.5,
+    "price_period": 5,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.1275524611163687,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.1275524611163687,
+    "best_profit_factor": 2.1763490269266885,
+    "best_win_rate": 0.4,
+    "best_return": 1.6384825840059087,
+    "avg_sharpe": -1.697159443383323
+  }
+}

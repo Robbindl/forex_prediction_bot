@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T22:21:43.074197",
+  "best_params": {
+    "period": 7,
+    "oversold": -50,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.03035890309581269,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.03035890309581269,
+    "best_profit_factor": 0.8998842298377087,
+    "best_win_rate": 0.3870967741935484,
+    "best_return": -1.7203904386503988,
+    "avg_sharpe": -0.8772930286615727
+  }
+}

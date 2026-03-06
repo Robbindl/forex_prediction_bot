@@ -1,0 +1,20 @@
+{
+  "asset": "NVDA",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-06T00:59:17.986065",
+  "best_params": {
+    "period": 8,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.06306169757075078,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.06306169757075078,
+    "best_profit_factor": 1.1465434614289673,
+    "best_win_rate": 0.3673469387755102,
+    "best_return": 2.603968746390285,
+    "avg_sharpe": -0.06087094527584104
+  }
+}

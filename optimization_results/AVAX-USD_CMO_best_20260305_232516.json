@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T23:25:16.268931",
+  "best_params": {
+    "period": 14,
+    "oversold": -60,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.23074305592140545,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.23074305592140545,
+    "best_profit_factor": 1.706158078849297,
+    "best_win_rate": 0.43478260869565216,
+    "best_return": 9.26530178188665,
+    "avg_sharpe": -0.047819413981193895
+  }
+}

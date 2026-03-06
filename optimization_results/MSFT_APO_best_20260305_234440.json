@@ -1,0 +1,21 @@
+{
+  "asset": "MSFT",
+  "strategy": "APO",
+  "timestamp": "2026-03-05T23:44:40.684525",
+  "best_params": {
+    "fast": 8,
+    "slow": 26,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09257413281820528,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.09257413281820528,
+    "best_profit_factor": 1.2175961932305541,
+    "best_win_rate": 0.375,
+    "best_return": 4.547902557839557,
+    "avg_sharpe": 0.02049256991689397
+  }
+}

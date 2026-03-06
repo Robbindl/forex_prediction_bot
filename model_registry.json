@@ -1,0 +1,21 @@
+{
+  "BTC-USD_ensemble": {
+    "model_name": "ensemble",
+    "asset": "BTC-USD",
+    "model_type": "advanced_ensemble",
+    "created_at": "2026-03-06T02:10:33.045287",
+    "last_updated": "2026-03-06T02:10:33.045287",
+    "total_predictions": 0,
+    "correct_predictions": 0,
+    "accuracy": 0.5,
+    "avg_confidence": 0.0,
+    "trades_followed": 0,
+    "trades_won": 0,
+    "trade_win_rate": 0.0,
+    "metadata": {
+      "data_points": 366,
+      "features": 54,
+      "model_path": "ml_models/BTC-USD_model.pkl"
+    }
+  }
+}

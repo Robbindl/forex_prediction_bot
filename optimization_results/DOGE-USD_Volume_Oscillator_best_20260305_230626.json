@@ -1,0 +1,21 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-05T23:06:26.515611",
+  "best_params": {
+    "fast_period": 3,
+    "slow_period": 20,
+    "threshold": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.23197091296877514,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.23197091296877514,
+    "best_profit_factor": 1.6545964207991635,
+    "best_win_rate": 0.460431654676259,
+    "best_return": 48.26173856677457,
+    "avg_sharpe": 0.1284154579150227
+  }
+}

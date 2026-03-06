@@ -1,0 +1,21 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-05T23:34:19.377730",
+  "best_params": {
+    "fast_period": 3,
+    "slow_period": 20,
+    "threshold": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.11155461125570079,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.11155461125570079,
+    "best_profit_factor": 1.254553708500833,
+    "best_win_rate": 0.39705882352941174,
+    "best_return": 20.461648038464713,
+    "avg_sharpe": 0.030260378613083925
+  }
+}

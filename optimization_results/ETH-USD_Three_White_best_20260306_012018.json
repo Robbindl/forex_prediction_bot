@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Three_White",
+  "timestamp": "2026-03-06T01:20:18.760703",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.6699672143780137,
+  "total_combinations": 9,
+  "valid_combinations": 7,
+  "results_summary": {
+    "best_sharpe": -0.6699672143780137,
+    "best_profit_factor": 0.21100900965490565,
+    "best_win_rate": 0.5,
+    "best_return": -2.036131148709595,
+    "avg_sharpe": -226416289595.586
+  }
+}

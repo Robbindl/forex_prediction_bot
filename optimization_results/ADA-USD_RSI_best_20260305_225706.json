@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "RSI",
+  "timestamp": "2026-03-05T22:57:06.357143",
+  "best_params": {
+    "oversold": 25,
+    "overbought": 65,
+    "period": 14
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.10745026841041531,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 0.10745026841041531,
+    "best_profit_factor": 1.2693851933832372,
+    "best_win_rate": 0.3333333333333333,
+    "best_return": 9.119397907908715,
+    "avg_sharpe": -0.06656463307162701
+  }
+}

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🤖 Trading Bot Status</title>
+    <meta http-equiv="refresh" content="30">
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f0f0f0; }
+        .card { background: white; padding: 20px; margin: 10px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .running { color: green; }
+        .stopped { color: red; }
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    </style>
+</head>
+<body>
+    <h1>🤖 Trading Bot Status Dashboard</h1>
+    <p>Last updated: <span id="timestamp"></span></p>
+    
+    <div class="stats">
+        <div class="card">
+            <h3>💰 Account Balance</h3>
+            <h2 id="balance">$20.00</h2>
+        </div>
+        <div class="card">
+            <h3>📈 Today's P&L</h3>
+            <h2 id="pnl">$0.00</h2>
+        </div>
+        <div class="card">
+            <h3>📊 Open Positions</h3>
+            <h2 id="open">0</h2>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h3>🟢 Running Processes</h3>
+        <div id="processes"></div>
+    </div>
+    
+    <div class="card">
+        <h3>📋 Recent Trades</h3>
+        <table id="trades" style="width:100%">
+            <tr><th>Time</th><th>Asset</th><th>Type</th><th>P&L</th></tr>
+        </table>
+    </div>
+    
+    <script>
+        function updateStatus() {
+            fetch('/api/status')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('timestamp').textContent = new Date().toLocaleString();
+                    document.getElementById('balance').textContent = '$' + data.balance;
+                    document.getElementById('pnl').textContent = '$' + data.pnl;
+                    document.getElementById('open').textContent = data.open_positions;
+                    
+                    // Show processes
+                    let procHtml = '';
+                    for (let [name, running] of Object.entries(data.processes)) {
+                        procHtml += `<p>${name}: <span class="${running ? 'running' : 'stopped'}">${running ? '✅ RUNNING' : '❌ STOPPED'}</span></p>`;
+                    }
+                    document.getElementById('processes').innerHTML = procHtml;
+                });
+        }
+        setInterval(updateStatus, 30000);
+        updateStatus();
+    </script>
+</body>
+</html>

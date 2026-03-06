@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-06T00:53:39.223034",
+  "best_params": {
+    "period": 9,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.17242760121193784,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.17242760121193784,
+    "best_profit_factor": 1.4919115967253316,
+    "best_win_rate": 0.45454545454545453,
+    "best_return": 2.3481514428867283,
+    "avg_sharpe": -0.25214657250527334
+  }
+}

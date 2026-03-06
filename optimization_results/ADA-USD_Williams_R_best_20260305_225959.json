@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "Williams_R",
+  "timestamp": "2026-03-05T22:59:59.837541",
+  "best_params": {
+    "period": 7,
+    "oversold": -90,
+    "overbought": -10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09409481774684295,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.09409481774684295,
+    "best_profit_factor": 1.1971863244227732,
+    "best_win_rate": 0.410958904109589,
+    "best_return": 8.377167569279717,
+    "avg_sharpe": -0.1362221432405198
+  }
+}

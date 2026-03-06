@@ -1,0 +1,22 @@
+{
+  "asset": "MSFT",
+  "strategy": "Bollinger_Squeeze",
+  "timestamp": "2026-03-05T23:45:12.116818",
+  "best_params": {
+    "period": 20,
+    "bb_std": 2.0,
+    "kc_std": 1.5,
+    "squeeze_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.807177001087378,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 0.807177001087378,
+    "best_profit_factor": 6.368379425566761,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 5.582491669818858,
+    "avg_sharpe": 0.807177001087378
+  }
+}

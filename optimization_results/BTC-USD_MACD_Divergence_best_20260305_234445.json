@@ -1,0 +1,23 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-05T23:44:45.962950",
+  "best_params": {
+    "fast": 12,
+    "slow": 32,
+    "signal": 7,
+    "lookback": 10,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.12345017422560065,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.12345017422560065,
+    "best_profit_factor": 1.291219698213207,
+    "best_win_rate": 0.39285714285714285,
+    "best_return": 4.575443309076395,
+    "avg_sharpe": -0.06954293037612122
+  }
+}

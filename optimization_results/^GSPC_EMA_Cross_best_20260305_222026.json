@@ -1,0 +1,20 @@
+{
+  "asset": "^GSPC",
+  "strategy": "EMA_Cross",
+  "timestamp": "2026-03-05T22:20:26.694688",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.25488685803059563,
+  "total_combinations": 25,
+  "valid_combinations": 25,
+  "results_summary": {
+    "best_sharpe": 0.25488685803059563,
+    "best_profit_factor": 1.9257692536458164,
+    "best_win_rate": 0.6,
+    "best_return": 0.9539546549970003,
+    "avg_sharpe": 0.0358510517628931
+  }
+}

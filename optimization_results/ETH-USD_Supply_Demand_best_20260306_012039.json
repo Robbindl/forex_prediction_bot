@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Supply_Demand",
+  "timestamp": "2026-03-06T01:20:39.136759",
+  "best_params": {
+    "zone_period": 10,
+    "strength_bars": 2,
+    "touch_tolerance": 0.005
+  },
+  "best_metric": "sharpe",
+  "best_value": 336652730331.3179,
+  "total_combinations": 27,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 336652730331.3179,
+    "best_profit_factor": 14.749354030443559,
+    "best_win_rate": 1.0,
+    "best_return": 15.273256691055897,
+    "avg_sharpe": 64397274571.68436
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T22:57:13.418849",
+  "best_params": {
+    "rsi_period": 21,
+    "lookback": 10,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.06075228163580791,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.06075228163580791,
+    "best_profit_factor": 1.1210457473146747,
+    "best_win_rate": 0.4146341463414634,
+    "best_return": 2.918654122557547,
+    "avg_sharpe": -0.1856313555157394
+  }
+}

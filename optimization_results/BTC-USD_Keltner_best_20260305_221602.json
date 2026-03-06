@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-05T22:16:02.972700",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.0273222828117035,
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 1.0273222828117035,
+    "best_profit_factor": 64.89264370697775,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 314.5725742807473,
+    "avg_sharpe": 0.3253279717076241
+  }
+}

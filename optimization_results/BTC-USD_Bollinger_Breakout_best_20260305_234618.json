@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-05T23:46:18.361313",
+  "best_params": {
+    "period": 20,
+    "std_dev": 3.0,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 370204796320.06555,
+  "total_combinations": 27,
+  "valid_combinations": 17,
+  "results_summary": {
+    "best_sharpe": 370204796320.06555,
+    "best_profit_factor": 7.687054017780591,
+    "best_win_rate": 1.0,
+    "best_return": 13.77512370066528,
+    "avg_sharpe": -1370313269.4343262
+  }
+}

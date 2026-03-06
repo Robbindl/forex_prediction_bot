@@ -1,0 +1,22 @@
+{
+  "asset": "^DJI",
+  "strategy": "Stochastic_Fast",
+  "timestamp": "2026-03-06T00:18:57.007772",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 20,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.53406136256509,
+  "total_combinations": 72,
+  "valid_combinations": 72,
+  "results_summary": {
+    "best_sharpe": -0.53406136256509,
+    "best_profit_factor": 0.3071048020983688,
+    "best_win_rate": 0.23076923076923078,
+    "best_return": -6.18550170774455,
+    "avg_sharpe": -0.873415076579745
+  }
+}

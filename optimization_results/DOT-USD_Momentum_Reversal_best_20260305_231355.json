@@ -1,0 +1,22 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T23:13:55.366045",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 75,
+    "lookback": 7,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 177975305095.5963,
+  "total_combinations": 27,
+  "valid_combinations": 24,
+  "results_summary": {
+    "best_sharpe": 177975305095.5963,
+    "best_profit_factor": 13.609706303289627,
+    "best_win_rate": 1.0,
+    "best_return": 33.57061532246416,
+    "avg_sharpe": 50742409.59381231
+  }
+}

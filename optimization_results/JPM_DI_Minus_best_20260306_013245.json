@@ -1,0 +1,20 @@
+{
+  "asset": "JPM",
+  "strategy": "DI_Minus",
+  "timestamp": "2026-03-06T01:32:45.976933",
+  "best_params": {
+    "period": 7,
+    "threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.13792903407497364,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": -0.13792903407497364,
+    "best_profit_factor": 0.6863831904744344,
+    "best_win_rate": 0.25,
+    "best_return": -5.868895548779801,
+    "avg_sharpe": -0.38142528723026553
+  }
+}

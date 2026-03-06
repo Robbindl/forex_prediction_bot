@@ -1,0 +1,20 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Three_Black",
+  "timestamp": "2026-03-06T02:05:13.232525",
+  "best_params": {
+    "body_min": 0.02,
+    "wick_max": 0.3
+  },
+  "best_metric": "sharpe",
+  "best_value": 290040274194.1642,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 290040274194.1642,
+    "best_profit_factor": 2.5893806828640384,
+    "best_win_rate": 1.0,
+    "best_return": 2.628484053877533,
+    "avg_sharpe": 128906788531.00665
+  }
+}

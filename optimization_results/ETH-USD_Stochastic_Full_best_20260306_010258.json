@@ -1,0 +1,23 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Stochastic_Full",
+  "timestamp": "2026-03-06T01:02:58.564673",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 7,
+    "slowing": 5,
+    "oversold": 15,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": 446388947478.7256,
+  "total_combinations": 324,
+  "valid_combinations": 324,
+  "results_summary": {
+    "best_sharpe": 446388947478.7256,
+    "best_profit_factor": 34.22685087121995,
+    "best_win_rate": 1.0,
+    "best_return": 41.6063833057421,
+    "avg_sharpe": 10983055750.718164
+  }
+}

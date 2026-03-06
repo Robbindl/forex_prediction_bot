@@ -1,0 +1,21 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Ichimoku",
+  "timestamp": "2026-03-05T23:32:59.571693",
+  "best_params": {
+    "tenkan": 5,
+    "kijun": 20,
+    "senkou": 45
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6743820288518255,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.6743820288518255,
+    "best_profit_factor": 5.13631097045639,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 13.488692610400719,
+    "avg_sharpe": 0.6743820288518257
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "TSLA",
+  "strategy": "DI_Minus",
+  "timestamp": "2026-03-06T00:36:08.950005",
+  "best_params": {
+    "period": 7,
+    "threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.019838753085478243,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.019838753085478243,
+    "best_profit_factor": 1.0211720607860795,
+    "best_win_rate": 0.3026315789473684,
+    "best_return": 0.8221892982201554,
+    "avg_sharpe": -0.04450389731886074
+  }
+}

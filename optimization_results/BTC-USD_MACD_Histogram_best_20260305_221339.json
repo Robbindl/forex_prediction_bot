@@ -1,0 +1,22 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-05T22:13:39.133177",
+  "best_params": {
+    "fast": 12,
+    "slow": 32,
+    "signal": 7,
+    "histogram_threshold": 0
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.38096869301729785,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.38096869301729785,
+    "best_profit_factor": 2.3410490438608886,
+    "best_win_rate": 0.4642857142857143,
+    "best_return": 18.396141956726936,
+    "avg_sharpe": 0.24493668893077228
+  }
+}

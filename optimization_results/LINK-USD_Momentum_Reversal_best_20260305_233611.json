@@ -1,0 +1,22 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T23:36:11.158040",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 75,
+    "lookback": 5,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.619409009979016,
+  "total_combinations": 27,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.619409009979016,
+    "best_profit_factor": 8.366316661204898,
+    "best_win_rate": 0.5,
+    "best_return": 42.8541956886339,
+    "avg_sharpe": -12993185015.590147
+  }
+}

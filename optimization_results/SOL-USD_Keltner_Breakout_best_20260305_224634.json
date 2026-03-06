@@ -1,0 +1,22 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-05T22:46:34.805236",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.0,
+    "confirmation_bars": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5768269947936777,
+  "total_combinations": 36,
+  "valid_combinations": 32,
+  "results_summary": {
+    "best_sharpe": 0.5768269947936777,
+    "best_profit_factor": 4.515358360513508,
+    "best_win_rate": 0.8,
+    "best_return": 3.5893783639375787,
+    "avg_sharpe": -35542954705.67211
+  }
+}

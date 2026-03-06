@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "CMO",
+  "timestamp": "2026-03-06T01:18:49.133487",
+  "best_params": {
+    "period": 20,
+    "oversold": -50,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.0712279490892322,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 1.0712279490892322,
+    "best_profit_factor": 13.911053234544395,
+    "best_win_rate": 0.7142857142857143,
+    "best_return": 13.88178549315347,
+    "avg_sharpe": 0.1043564784266198
+  }
+}

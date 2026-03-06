@@ -1,0 +1,20 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T23:06:40.365865",
+  "best_params": {
+    "period": 8,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.1268195135598572,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.1268195135598572,
+    "best_profit_factor": 1.272396322945273,
+    "best_win_rate": 0.4342105263157895,
+    "best_return": 12.756442381065867,
+    "avg_sharpe": -0.0046972232406802105
+  }
+}

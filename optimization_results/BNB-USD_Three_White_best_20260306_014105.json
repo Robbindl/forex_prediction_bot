@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Three_White",
+  "timestamp": "2026-03-06T01:41:05.556894",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -456410687929.9328,
+  "total_combinations": 9,
+  "valid_combinations": 1,
+  "results_summary": {
+    "best_sharpe": -456410687929.9328,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -2.919877483294899,
+    "avg_sharpe": -456410687929.9328
+  }
+}

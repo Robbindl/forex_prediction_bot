@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "RSI",
+  "timestamp": "2026-03-05T23:19:51.204318",
+  "best_params": {
+    "oversold": 20,
+    "overbought": 80,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.26322306452138655,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 0.26322306452138655,
+    "best_profit_factor": 1.8001595197776221,
+    "best_win_rate": 0.43478260869565216,
+    "best_return": 14.127891732594225,
+    "avg_sharpe": 0.06680960062486183
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "AAPL",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T23:37:36.000469",
+  "best_params": {
+    "rsi_period": 7,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.07950887896627581,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.07950887896627581,
+    "best_profit_factor": 1.1647501388136063,
+    "best_win_rate": 0.38636363636363635,
+    "best_return": 3.98373225917317,
+    "avg_sharpe": -0.25727339798405113
+  }
+}

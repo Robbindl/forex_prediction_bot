@@ -1,0 +1,21 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "RSI",
+  "timestamp": "2026-03-05T22:48:08.826216",
+  "best_params": {
+    "oversold": 20,
+    "overbought": 70,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.07726221038451131,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 0.07726221038451131,
+    "best_profit_factor": 1.1811865726842643,
+    "best_win_rate": 0.32558139534883723,
+    "best_return": 3.997468935807083,
+    "avg_sharpe": -0.06700969448459788
+  }
+}

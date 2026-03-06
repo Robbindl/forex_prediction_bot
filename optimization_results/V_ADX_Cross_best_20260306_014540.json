@@ -1,0 +1,20 @@
+{
+  "asset": "V",
+  "strategy": "ADX_Cross",
+  "timestamp": "2026-03-06T01:45:40.539778",
+  "best_params": {
+    "period": 7,
+    "adx_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.051225597863296765,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.051225597863296765,
+    "best_profit_factor": 1.1194168568134557,
+    "best_win_rate": 0.3125,
+    "best_return": 1.054879522318598,
+    "avg_sharpe": 0.05122559786329676
+  }
+}

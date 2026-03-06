@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-05T23:46:55.963338",
+  "best_params": {
+    "period": 20,
+    "multiplier": 1.5,
+    "band_type": "both"
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5609086826204727,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.5609086826204727,
+    "best_profit_factor": 16.971204380685784,
+    "best_win_rate": 0.7008547008547008,
+    "best_return": 929.258421997459,
+    "avg_sharpe": 0.25441772514229954
+  }
+}

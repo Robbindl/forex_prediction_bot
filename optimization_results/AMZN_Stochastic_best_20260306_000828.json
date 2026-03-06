@@ -1,0 +1,22 @@
+{
+  "asset": "AMZN",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-06T00:08:28.037871",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 20,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5651947798515808,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.5651947798515808,
+    "best_profit_factor": 3.6532513027312596,
+    "best_win_rate": 0.5454545454545454,
+    "best_return": 9.14565140118562,
+    "avg_sharpe": 0.2534615570097929
+  }
+}

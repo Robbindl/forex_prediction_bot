@@ -1,0 +1,22 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-05T23:02:59.009197",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 5,
+    "d_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.16524204233972792,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.16524204233972792,
+    "best_profit_factor": 1.9640953540862192,
+    "best_win_rate": 0.46153846153846156,
+    "best_return": 10.566025360248743,
+    "avg_sharpe": -0.03924718303552328
+  }
+}

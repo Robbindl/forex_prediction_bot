@@ -1,0 +1,22 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Bollinger_Squeeze",
+  "timestamp": "2026-03-05T22:46:25.661412",
+  "best_params": {
+    "period": 20,
+    "bb_std": 2.0,
+    "kc_std": 1.5,
+    "squeeze_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.41524409346871927,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.41524409346871927,
+    "best_profit_factor": 0.21618020259006016,
+    "best_win_rate": 0.2,
+    "best_return": -14.06328188933891,
+    "avg_sharpe": -0.4553669157134778
+  }
+}

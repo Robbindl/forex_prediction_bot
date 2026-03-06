@@ -1,0 +1,22 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-05T23:54:29.603804",
+  "best_params": {
+    "rsi_period": 14,
+    "stoch_period": 5,
+    "k_period": 3,
+    "d_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.10661565005587488,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.10661565005587488,
+    "best_profit_factor": 1.227639303953399,
+    "best_win_rate": 0.4074074074074074,
+    "best_return": 3.5066544762309415,
+    "avg_sharpe": -3298465884.5908275
+  }
+}

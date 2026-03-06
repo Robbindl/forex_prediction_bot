@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-05T23:01:33.307096",
+  "best_params": {
+    "period": 5,
+    "std_dev": 1.5,
+    "volume_threshold": 1.2
+  },
+  "best_metric": "sharpe",
+  "best_value": 3.9706658445331207,
+  "total_combinations": 27,
+  "valid_combinations": 23,
+  "results_summary": {
+    "best_sharpe": 3.9706658445331207,
+    "best_profit_factor": 6.427993015926075,
+    "best_win_rate": 1.0,
+    "best_return": 23.43348370061845,
+    "avg_sharpe": -25023938891.14916
+  }
+}

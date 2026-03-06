@@ -1,0 +1,20 @@
+{
+  "asset": "AAPL",
+  "strategy": "HMA_Cross",
+  "timestamp": "2026-03-05T23:40:12.316766",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.20339034971506073,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.20339034971506073,
+    "best_profit_factor": 1.6358276637976619,
+    "best_win_rate": 0.4090909090909091,
+    "best_return": 7.098168314722429,
+    "avg_sharpe": 0.023255435578125754
+  }
+}

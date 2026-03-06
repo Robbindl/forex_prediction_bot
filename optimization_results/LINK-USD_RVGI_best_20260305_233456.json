@@ -1,0 +1,20 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T23:34:56.574654",
+  "best_params": {
+    "period": 10,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.11851586897878331,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.11851586897878331,
+    "best_profit_factor": 1.2531036975993115,
+    "best_win_rate": 0.42,
+    "best_return": 7.572344940980419,
+    "avg_sharpe": 0.057092575890516306
+  }
+}

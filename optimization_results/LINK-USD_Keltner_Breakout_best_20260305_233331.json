@@ -1,0 +1,22 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-05T23:33:31.475863",
+  "best_params": {
+    "ema_period": 20,
+    "atr_period": 14,
+    "atr_multiplier": 2.0,
+    "confirmation_bars": 2
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6592698972690126,
+  "total_combinations": 36,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.6592698972690126,
+    "best_profit_factor": 3.9066133533121974,
+    "best_win_rate": 0.8571428571428571,
+    "best_return": 6.877377560444159,
+    "avg_sharpe": -0.006357473635286833
+  }
+}

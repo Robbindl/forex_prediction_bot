@@ -1,0 +1,20 @@
+{
+  "asset": "JPM",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-06T01:35:15.221070",
+  "best_params": {
+    "period": 12,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5599002995130721,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.5599002995130721,
+    "best_profit_factor": 3.26403789433242,
+    "best_win_rate": 0.5833333333333334,
+    "best_return": 9.401012390707331,
+    "avg_sharpe": 0.09558325429791892
+  }
+}

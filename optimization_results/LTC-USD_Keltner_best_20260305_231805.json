@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-05T23:18:05.896659",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 14,
+    "atr_multiplier": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 4.18590863006433,
+  "total_combinations": 18,
+  "valid_combinations": 17,
+  "results_summary": {
+    "best_sharpe": 4.18590863006433,
+    "best_profit_factor": 28.162321692885605,
+    "best_win_rate": 1.0,
+    "best_return": 28479.30014079425,
+    "avg_sharpe": 0.7703664701093766
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "^DJI",
+  "strategy": "Keltner_Breakout",
+  "timestamp": "2026-03-05T22:24:39.925603",
+  "best_params": {
+    "ema_period": 20,
+    "atr_period": 10,
+    "atr_multiplier": 3.0,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5866713367249484,
+  "total_combinations": 36,
+  "valid_combinations": 35,
+  "results_summary": {
+    "best_sharpe": 0.5866713367249484,
+    "best_profit_factor": 9.479268461307369,
+    "best_win_rate": 0.75,
+    "best_return": 9.140834477003832,
+    "avg_sharpe": -29065835247.942028
+  }
+}

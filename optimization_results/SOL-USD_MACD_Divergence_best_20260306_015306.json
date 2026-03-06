@@ -1,0 +1,23 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-06T01:53:06.347547",
+  "best_params": {
+    "fast": 8,
+    "slow": 32,
+    "signal": 7,
+    "lookback": 10,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.36480442194102985,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.36480442194102985,
+    "best_profit_factor": 2.291049353946372,
+    "best_win_rate": 0.5238095238095238,
+    "best_return": 14.074983760761,
+    "avg_sharpe": 0.026180213502233707
+  }
+}

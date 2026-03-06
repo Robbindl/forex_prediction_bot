@@ -1,0 +1,20 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T22:42:08.904989",
+  "best_params": {
+    "period": 8,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.13980285276784812,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.13980285276784812,
+    "best_profit_factor": 1.3357403292544243,
+    "best_win_rate": 0.43478260869565216,
+    "best_return": 12.667849561367078,
+    "avg_sharpe": 0.04813538248107719
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "V",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-06T01:38:49.974188",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 20,
+    "overbought": 85
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5122649503778531,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": 0.5122649503778531,
+    "best_profit_factor": 2.8896392628235095,
+    "best_win_rate": 0.5625,
+    "best_return": 9.942492508715443,
+    "avg_sharpe": 0.2108355416426383
+  }
+}

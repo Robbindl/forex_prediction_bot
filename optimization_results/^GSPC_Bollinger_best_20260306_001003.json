@@ -1,0 +1,21 @@
+{
+  "asset": "^GSPC",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T00:10:03.474900",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.12293866340565884,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.12293866340565884,
+    "best_profit_factor": 6.000446706102387,
+    "best_win_rate": 0.47619047619047616,
+    "best_return": 115.66807758951046,
+    "avg_sharpe": 0.02783968277488637
+  }
+}

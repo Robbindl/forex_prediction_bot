@@ -1,0 +1,21 @@
+{
+  "asset": "GOOGL",
+  "strategy": "CCI",
+  "timestamp": "2026-03-05T23:56:53.780275",
+  "best_params": {
+    "period": 30,
+    "oversold": -100,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.07536742980328315,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": -0.07536742980328315,
+    "best_profit_factor": 0.8375165078054716,
+    "best_win_rate": 0.32,
+    "best_return": -2.588800059577273,
+    "avg_sharpe": -0.5204560982550217
+  }
+}

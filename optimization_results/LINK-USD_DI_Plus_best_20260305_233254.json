@@ -1,0 +1,20 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "DI_Plus",
+  "timestamp": "2026-03-05T23:32:54.617730",
+  "best_params": {
+    "period": 20,
+    "threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.10462280502604157,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.10462280502604157,
+    "best_profit_factor": 1.2479157765205677,
+    "best_win_rate": 0.3225806451612903,
+    "best_return": 12.262669711538434,
+    "avg_sharpe": 0.06839062115330484
+  }
+}

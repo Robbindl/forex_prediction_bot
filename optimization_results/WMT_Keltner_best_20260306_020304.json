@@ -1,0 +1,21 @@
+{
+  "asset": "WMT",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-06T02:03:04.666275",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.37673418774538475,
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.37673418774538475,
+    "best_profit_factor": 3.8333492262959052,
+    "best_win_rate": 0.5166666666666667,
+    "best_return": 96.0763582272606,
+    "avg_sharpe": -0.024438644390257953
+  }
+}

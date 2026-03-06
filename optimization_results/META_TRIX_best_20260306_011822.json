@@ -1,0 +1,20 @@
+{
+  "asset": "META",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-06T01:18:22.960327",
+  "best_params": {
+    "period": 9,
+    "signal_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.1809136951686766,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.1809136951686766,
+    "best_profit_factor": 1.4894688192406134,
+    "best_win_rate": 0.47058823529411764,
+    "best_return": 4.142410068826236,
+    "avg_sharpe": -0.22220542907996177
+  }
+}

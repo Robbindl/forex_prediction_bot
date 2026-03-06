@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-05T22:33:08.319262",
+  "best_params": {
+    "period": 30,
+    "std_dev": 3.0,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 4.718318233765058,
+  "total_combinations": 27,
+  "valid_combinations": 22,
+  "results_summary": {
+    "best_sharpe": 4.718318233765058,
+    "best_profit_factor": 2.599037503662334,
+    "best_win_rate": 1.0,
+    "best_return": 3.0164340512153114,
+    "avg_sharpe": -26577280278.500057
+  }
+}

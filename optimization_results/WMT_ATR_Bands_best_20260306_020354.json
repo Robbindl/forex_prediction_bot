@@ -1,0 +1,21 @@
+{
+  "asset": "WMT",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-06T02:03:53.999363",
+  "best_params": {
+    "period": 20,
+    "multiplier": 2.0,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 58.5274614549477,
+  "total_combinations": 27,
+  "valid_combinations": 26,
+  "results_summary": {
+    "best_sharpe": 58.5274614549477,
+    "best_profit_factor": 12.142759948433463,
+    "best_win_rate": 1.0,
+    "best_return": 918.8328302805849,
+    "avg_sharpe": 6.804398555840181
+  }
+}

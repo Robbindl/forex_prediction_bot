@@ -1,0 +1,20 @@
+{
+  "asset": "CL=F",
+  "strategy": "CMF",
+  "timestamp": "2026-03-05T22:56:22.362166",
+  "best_params": {
+    "period": 21,
+    "threshold": 0.15
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5093985889852053,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.5093985889852053,
+    "best_profit_factor": 6.026909432072721,
+    "best_win_rate": 0.5652173913043478,
+    "best_return": 38.825816276723145,
+    "avg_sharpe": 0.06060896487102533
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-06T00:30:26.269449",
+  "best_params": {
+    "period": 20,
+    "std_dev": 2.5,
+    "confirmation_bars": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 77118334280.0104,
+  "total_combinations": 27,
+  "valid_combinations": 16,
+  "results_summary": {
+    "best_sharpe": 77118334280.0104,
+    "best_profit_factor": 214.62794391271328,
+    "best_win_rate": 1.0,
+    "best_return": 11.697144737254554,
+    "avg_sharpe": -21900495960.852226
+  }
+}

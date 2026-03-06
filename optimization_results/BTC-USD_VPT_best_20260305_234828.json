@@ -1,0 +1,19 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "VPT",
+  "timestamp": "2026-03-05T23:48:28.029703",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.0810482967466085,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.0810482967466085,
+    "best_profit_factor": 1.2049531846159833,
+    "best_win_rate": 0.34210526315789475,
+    "best_return": 10.94164163251631,
+    "avg_sharpe": 0.022522901838522263
+  }
+}

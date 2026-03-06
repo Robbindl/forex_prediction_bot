@@ -1,0 +1,20 @@
+{
+  "asset": "^GSPC",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-05T22:20:27.405745",
+  "best_params": {
+    "fast_period": 10,
+    "slow_period": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2728227240075858,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.2728227240075858,
+    "best_profit_factor": 2.047768012477887,
+    "best_win_rate": 0.5,
+    "best_return": 2.3371168529887387,
+    "avg_sharpe": -0.23593383837066076
+  }
+}

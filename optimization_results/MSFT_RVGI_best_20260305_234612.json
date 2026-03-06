@@ -1,0 +1,20 @@
+{
+  "asset": "MSFT",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T23:46:12.412904",
+  "best_params": {
+    "period": 10,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.09324176390271133,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.09324176390271133,
+    "best_profit_factor": 1.2145989205146068,
+    "best_win_rate": 0.40540540540540543,
+    "best_return": 4.219494000527027,
+    "avg_sharpe": -0.011366145366014437
+  }
+}

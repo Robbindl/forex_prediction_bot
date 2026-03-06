@@ -1,0 +1,21 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "CCI",
+  "timestamp": "2026-03-05T22:50:23.581308",
+  "best_params": {
+    "period": 10,
+    "oversold": -200,
+    "overbought": 200
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.213717713422424,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.213717713422424,
+    "best_profit_factor": 1.661736187010108,
+    "best_win_rate": 0.4444444444444444,
+    "best_return": 7.181028779732071,
+    "avg_sharpe": -0.099583236979439
+  }
+}

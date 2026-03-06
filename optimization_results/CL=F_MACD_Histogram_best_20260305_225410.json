@@ -1,0 +1,22 @@
+{
+  "asset": "CL=F",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-05T22:54:10.736615",
+  "best_params": {
+    "fast": 8,
+    "slow": 32,
+    "signal": 11,
+    "histogram_threshold": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 1.041697617911443,
+  "total_combinations": 108,
+  "valid_combinations": 76,
+  "results_summary": {
+    "best_sharpe": 1.041697617911443,
+    "best_profit_factor": 80.32491206860055,
+    "best_win_rate": 0.75,
+    "best_return": 21.5656805248127,
+    "avg_sharpe": -15786316.136826992
+  }
+}

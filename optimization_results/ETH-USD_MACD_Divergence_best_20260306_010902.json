@@ -1,0 +1,23 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "MACD_Divergence",
+  "timestamp": "2026-03-06T01:09:02.334450",
+  "best_params": {
+    "fast": 16,
+    "slow": 32,
+    "signal": 7,
+    "lookback": 10,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.39091028593687793,
+  "total_combinations": 243,
+  "valid_combinations": 243,
+  "results_summary": {
+    "best_sharpe": 0.39091028593687793,
+    "best_profit_factor": 2.4880719305902916,
+    "best_win_rate": 0.5151515151515151,
+    "best_return": 20.744971122379997,
+    "avg_sharpe": 0.018900604310947648
+  }
+}

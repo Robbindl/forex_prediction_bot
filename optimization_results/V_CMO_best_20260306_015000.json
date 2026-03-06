@@ -1,0 +1,21 @@
+{
+  "asset": "V",
+  "strategy": "CMO",
+  "timestamp": "2026-03-06T01:50:00.317240",
+  "best_params": {
+    "period": 20,
+    "oversold": -50,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 98.0305227377049,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 98.0305227377049,
+    "best_profit_factor": 4.219055828922085,
+    "best_win_rate": 1.0,
+    "best_return": 24.303223870169298,
+    "avg_sharpe": 6.930399755470179
+  }
+}

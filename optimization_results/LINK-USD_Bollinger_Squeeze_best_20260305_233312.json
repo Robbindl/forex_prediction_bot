@@ -1,0 +1,22 @@
+{
+  "asset": "LINK-USD",
+  "strategy": "Bollinger_Squeeze",
+  "timestamp": "2026-03-05T23:33:12.269252",
+  "best_params": {
+    "period": 20,
+    "bb_std": 2.0,
+    "kc_std": 1.5,
+    "squeeze_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.3411790181224265,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -0.3411790181224265,
+    "best_profit_factor": 0.3326997590770027,
+    "best_win_rate": 0.4,
+    "best_return": -15.988741187604461,
+    "avg_sharpe": -0.3411790181224265
+  }
+}

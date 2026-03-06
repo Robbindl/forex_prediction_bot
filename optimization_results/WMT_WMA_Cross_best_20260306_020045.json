@@ -1,0 +1,20 @@
+{
+  "asset": "WMT",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-06T02:00:45.802100",
+  "best_params": {
+    "fast_period": 5,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.8009641706854603,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.8009641706854603,
+    "best_profit_factor": 6.831001790856765,
+    "best_win_rate": 0.6666666666666666,
+    "best_return": 11.780324513137057,
+    "avg_sharpe": 0.19165363187566145
+  }
+}

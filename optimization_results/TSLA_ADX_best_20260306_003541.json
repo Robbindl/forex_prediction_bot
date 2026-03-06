@@ -1,0 +1,20 @@
+{
+  "asset": "TSLA",
+  "strategy": "ADX",
+  "timestamp": "2026-03-06T00:35:41.048537",
+  "best_params": {
+    "period": 7,
+    "threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": "0",
+  "total_combinations": 16,
+  "valid_combinations": 16,
+  "results_summary": {
+    "best_sharpe": 0.0,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": 0.0,
+    "avg_sharpe": 0.0
+  }
+}

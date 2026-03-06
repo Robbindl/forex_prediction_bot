@@ -1,0 +1,20 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "TRIX",
+  "timestamp": "2026-03-05T23:01:49.092210",
+  "best_params": {
+    "period": 9,
+    "signal_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.5821455620354958,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.5821455620354958,
+    "best_profit_factor": 3.278004337218274,
+    "best_win_rate": 0.6153846153846154,
+    "best_return": 23.30458608784743,
+    "avg_sharpe": 0.08193043718587333
+  }
+}

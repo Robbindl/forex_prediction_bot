@@ -1,0 +1,21 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "APO",
+  "timestamp": "2026-03-06T01:11:31.810818",
+  "best_params": {
+    "fast": 5,
+    "slow": 13,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.33268895916341024,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.33268895916341024,
+    "best_profit_factor": 1.9953352257089212,
+    "best_win_rate": 0.5,
+    "best_return": 20.080784095320915,
+    "avg_sharpe": 0.2095041447049231
+  }
+}

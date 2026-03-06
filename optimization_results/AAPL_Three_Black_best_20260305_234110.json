@@ -1,0 +1,20 @@
+{
+  "asset": "AAPL",
+  "strategy": "Three_Black",
+  "timestamp": "2026-03-05T23:41:10.708699",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.4
+  },
+  "best_metric": "sharpe",
+  "best_value": 3656736324.341015,
+  "total_combinations": 9,
+  "valid_combinations": 2,
+  "results_summary": {
+    "best_sharpe": 3656736324.341015,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 1.0,
+    "best_return": 0.08513103496961621,
+    "avg_sharpe": 3656736324.341015
+  }
+}

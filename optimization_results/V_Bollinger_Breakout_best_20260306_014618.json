@@ -1,0 +1,21 @@
+{
+  "asset": "V",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-06T01:46:18.467665",
+  "best_params": {
+    "period": 10,
+    "std_dev": 2.0,
+    "confirmation_bars": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 1644410544.3183026,
+  "total_combinations": 27,
+  "valid_combinations": 15,
+  "results_summary": {
+    "best_sharpe": 1644410544.3183026,
+    "best_profit_factor": 2.554172078655912,
+    "best_win_rate": 1.0,
+    "best_return": 2.2447817978575606,
+    "avg_sharpe": -5173702494.619257
+  }
+}

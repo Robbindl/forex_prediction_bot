@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-06T01:15:37.515443",
+  "best_params": {
+    "period": 30,
+    "std_dev": 2.0,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.08480984595044407,
+  "total_combinations": 27,
+  "valid_combinations": 16,
+  "results_summary": {
+    "best_sharpe": 0.08480984595044407,
+    "best_profit_factor": 1.056858615179146,
+    "best_win_rate": 0.5,
+    "best_return": 0.22583424747158204,
+    "avg_sharpe": -1.4961549359523063
+  }
+}

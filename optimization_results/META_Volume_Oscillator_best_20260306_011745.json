@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "Volume_Oscillator",
+  "timestamp": "2026-03-06T01:17:45.878808",
+  "best_params": {
+    "fast_period": 3,
+    "slow_period": 14,
+    "threshold": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.26843035149343214,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.26843035149343214,
+    "best_profit_factor": 1.7647680182786187,
+    "best_win_rate": 0.4507042253521127,
+    "best_return": 25.067999828842837,
+    "avg_sharpe": 0.03628401389321712
+  }
+}

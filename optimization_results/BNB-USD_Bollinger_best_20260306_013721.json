@@ -1,0 +1,21 @@
+{
+  "asset": "BNB-USD",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T01:37:20.888915",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.33530119362442656,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.33530119362442656,
+    "best_profit_factor": 2.980160865441491,
+    "best_win_rate": 0.3958333333333333,
+    "best_return": 129.27411173939421,
+    "avg_sharpe": 0.3353011936244265
+  }
+}

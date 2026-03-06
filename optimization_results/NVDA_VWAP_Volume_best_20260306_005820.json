@@ -1,0 +1,21 @@
+{
+  "asset": "NVDA",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-06T00:58:20.286674",
+  "best_params": {
+    "period": 20,
+    "std_dev": 1,
+    "volume_threshold": 2.0
+  },
+  "best_metric": "sharpe",
+  "best_value": 877016118061.3989,
+  "total_combinations": 27,
+  "valid_combinations": 17,
+  "results_summary": {
+    "best_sharpe": 877016118061.3989,
+    "best_profit_factor": 9.33966027984439,
+    "best_win_rate": 1.0,
+    "best_return": 29.23971737616703,
+    "avg_sharpe": 103178366831.03107
+  }
+}

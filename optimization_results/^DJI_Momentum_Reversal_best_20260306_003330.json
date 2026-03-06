@@ -1,0 +1,22 @@
+{
+  "asset": "^DJI",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-06T00:33:30.830613",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 70,
+    "lookback": 3,
+    "reversal_threshold": 0.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.2588937583155081,
+  "total_combinations": 27,
+  "valid_combinations": 24,
+  "results_summary": {
+    "best_sharpe": -0.2588937583155081,
+    "best_profit_factor": 0.6778549536350997,
+    "best_win_rate": 0.13333333333333333,
+    "best_return": -7.45619686935808,
+    "avg_sharpe": -9892802504.388824
+  }
+}

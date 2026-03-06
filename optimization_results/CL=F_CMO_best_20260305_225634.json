@@ -1,0 +1,21 @@
+{
+  "asset": "CL=F",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T22:56:34.881929",
+  "best_params": {
+    "period": 20,
+    "oversold": -40,
+    "overbought": 60
+  },
+  "best_metric": "sharpe",
+  "best_value": 384335786351.50006,
+  "total_combinations": 36,
+  "valid_combinations": 34,
+  "results_summary": {
+    "best_sharpe": 384335786351.50006,
+    "best_profit_factor": 1.4900197566006457,
+    "best_win_rate": 1.0,
+    "best_return": 13.155155235485077,
+    "avg_sharpe": 11303993715.98112
+  }
+}

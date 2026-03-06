@@ -1,0 +1,20 @@
+{
+  "asset": "META",
+  "strategy": "ADX_Cross",
+  "timestamp": "2026-03-06T01:14:47.892360",
+  "best_params": {
+    "period": 7,
+    "adx_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.01809286317547983,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": 0.01809286317547983,
+    "best_profit_factor": 1.035178298109288,
+    "best_win_rate": 0.35294117647058826,
+    "best_return": 0.3391041552909765,
+    "avg_sharpe": 0.018092863175479833
+  }
+}

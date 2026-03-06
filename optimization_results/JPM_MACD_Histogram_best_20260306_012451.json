@@ -1,0 +1,22 @@
+{
+  "asset": "JPM",
+  "strategy": "MACD_Histogram",
+  "timestamp": "2026-03-06T01:24:51.186137",
+  "best_params": {
+    "fast": 16,
+    "slow": 20,
+    "signal": 11,
+    "histogram_threshold": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 27522865478.003777,
+  "total_combinations": 108,
+  "valid_combinations": 101,
+  "results_summary": {
+    "best_sharpe": 27522865478.003777,
+    "best_profit_factor": 8.584355321337082,
+    "best_win_rate": 1.0,
+    "best_return": 11.14975993403849,
+    "avg_sharpe": 950316588.0105134
+  }
+}

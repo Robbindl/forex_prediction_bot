@@ -1,0 +1,19 @@
+{
+  "asset": "^GSPC",
+  "strategy": "OBV",
+  "timestamp": "2026-03-05T22:21:16.863648",
+  "best_params": {
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.06922894813890997,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.06922894813890997,
+    "best_profit_factor": 1.1564276476656923,
+    "best_win_rate": 0.4166666666666667,
+    "best_return": 2.8327015413236256,
+    "avg_sharpe": 0.03777802537802976
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "^DJI",
+  "strategy": "SMA_Cross",
+  "timestamp": "2026-03-05T22:24:16.646715",
+  "best_params": {
+    "fast_period": 20,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 114090217058.25085,
+  "total_combinations": 20,
+  "valid_combinations": 10,
+  "results_summary": {
+    "best_sharpe": 114090217058.25085,
+    "best_profit_factor": 2.92885129041065,
+    "best_win_rate": 1.0,
+    "best_return": 3.9241919706347947,
+    "avg_sharpe": 11409021705.941715
+  }
+}

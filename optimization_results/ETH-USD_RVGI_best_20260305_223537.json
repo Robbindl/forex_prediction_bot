@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T22:35:37.975103",
+  "best_params": {
+    "period": 10,
+    "signal_period": 4
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.12692673565949544,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.12692673565949544,
+    "best_profit_factor": 1.2790495779611333,
+    "best_win_rate": 0.45,
+    "best_return": 10.150527262121262,
+    "avg_sharpe": 0.041749390375073005
+  }
+}

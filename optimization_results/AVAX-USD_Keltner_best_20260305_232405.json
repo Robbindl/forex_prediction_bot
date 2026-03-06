@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "Keltner",
+  "timestamp": "2026-03-05T23:24:05.516850",
+  "best_params": {
+    "ema_period": 10,
+    "atr_period": 10,
+    "atr_multiplier": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.9807901251533857,
+  "total_combinations": 18,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 0.9807901251533857,
+    "best_profit_factor": 75.40501939261159,
+    "best_win_rate": 0.7610619469026548,
+    "best_return": 10626.887896600723,
+    "avg_sharpe": 0.5655813415779557
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "MSFT",
+  "strategy": "Stochastic",
+  "timestamp": "2026-03-05T23:42:02.442788",
+  "best_params": {
+    "k_period": 5,
+    "d_period": 3,
+    "oversold": 20,
+    "overbought": 80
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.42646280239698586,
+  "total_combinations": 108,
+  "valid_combinations": 108,
+  "results_summary": {
+    "best_sharpe": -0.42646280239698586,
+    "best_profit_factor": 0.39939620724402003,
+    "best_win_rate": 0.25,
+    "best_return": -11.115547668650338,
+    "avg_sharpe": -0.5067833056480009
+  }
+}

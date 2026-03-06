@@ -1,0 +1,21 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Supply_Demand",
+  "timestamp": "2026-03-05T23:49:47.316648",
+  "best_params": {
+    "zone_period": 20,
+    "strength_bars": 2,
+    "touch_tolerance": 0.005
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.19707368238307127,
+  "total_combinations": 27,
+  "valid_combinations": 8,
+  "results_summary": {
+    "best_sharpe": -0.19707368238307127,
+    "best_profit_factor": 0.542794806852242,
+    "best_win_rate": 0.5,
+    "best_return": -5.864427298061876,
+    "avg_sharpe": -41495567119.844536
+  }
+}

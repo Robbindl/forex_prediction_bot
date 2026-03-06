@@ -1,0 +1,40 @@
+{
+  "open_positions": [
+    {
+      "trade_id": "6f46607a",
+      "asset": "GC=F",
+      "category": "commodities",
+      "signal": "SELL",
+      "entry_price": 5199.5,
+      "position_size": 0.001153957111260698,
+      "stop_loss": 5225.4974999999995,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 5173.5025
+        },
+        {
+          "level": 2,
+          "price": 5147.505
+        },
+        {
+          "level": 3,
+          "price": 5095.51
+        }
+      ],
+      "confidence": 0.6,
+      "reason": "FAST: Overbought reversal",
+      "entry_time": "2026-02-26T22:03:30.470613",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0,
+      "strategy_id": "FAST",
+      "strategy_emoji": "\u26a1"
+    }
+  ],
+  "closed_positions": []
+}

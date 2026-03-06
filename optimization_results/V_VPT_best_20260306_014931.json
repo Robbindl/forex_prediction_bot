@@ -1,0 +1,19 @@
+{
+  "asset": "V",
+  "strategy": "VPT",
+  "timestamp": "2026-03-06T01:49:31.872456",
+  "best_params": {
+    "signal_period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.11989324568714275,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": 0.11989324568714275,
+    "best_profit_factor": 1.319061571362922,
+    "best_win_rate": 0.34210526315789475,
+    "best_return": 5.103785144659963,
+    "avg_sharpe": -0.0740505094972736
+  }
+}

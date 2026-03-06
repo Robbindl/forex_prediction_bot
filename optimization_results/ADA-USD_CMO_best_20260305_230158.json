@@ -1,0 +1,21 @@
+{
+  "asset": "ADA-USD",
+  "strategy": "CMO",
+  "timestamp": "2026-03-05T23:01:58.851215",
+  "best_params": {
+    "period": 20,
+    "oversold": -50,
+    "overbought": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.07139183776822991,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.07139183776822991,
+    "best_profit_factor": 1.150111393546326,
+    "best_win_rate": 0.4,
+    "best_return": 1.6928434868887159,
+    "avg_sharpe": -0.2091070757597736
+  }
+}

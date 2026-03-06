@@ -1,0 +1,20 @@
+{
+  "asset": "^GSPC",
+  "strategy": "OBV_Divergence",
+  "timestamp": "2026-03-05T22:21:18.685017",
+  "best_params": {
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.030465763422336253,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": -0.030465763422336253,
+    "best_profit_factor": 0.929178231687138,
+    "best_win_rate": 0.38095238095238093,
+    "best_return": -0.9547823559153132,
+    "avg_sharpe": -0.26125200686355565
+  }
+}

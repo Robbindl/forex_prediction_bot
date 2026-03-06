@@ -1,0 +1,20 @@
+{
+  "asset": "AMZN",
+  "strategy": "Three_White",
+  "timestamp": "2026-03-06T00:24:45.173442",
+  "best_params": {
+    "body_min": 0.01,
+    "wick_max": 0.3
+  },
+  "best_metric": "sharpe",
+  "best_value": 63681787786.89766,
+  "total_combinations": 9,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": 63681787786.89766,
+    "best_profit_factor": 2.929932850901547,
+    "best_win_rate": 1.0,
+    "best_return": 1.9718193072877033,
+    "avg_sharpe": 21227262595.84657
+  }
+}

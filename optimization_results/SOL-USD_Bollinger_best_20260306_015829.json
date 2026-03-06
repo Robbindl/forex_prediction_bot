@@ -1,0 +1,21 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-06T01:58:29.369691",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.41053432808193324,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.41053432808193324,
+    "best_profit_factor": 5.799225238763663,
+    "best_win_rate": 0.4634146341463415,
+    "best_return": 250.15491514177413,
+    "avg_sharpe": 0.41053432808193324
+  }
+}

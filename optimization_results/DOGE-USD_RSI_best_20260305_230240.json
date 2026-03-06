@@ -1,0 +1,21 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "RSI",
+  "timestamp": "2026-03-05T23:02:40.012415",
+  "best_params": {
+    "oversold": 20,
+    "overbought": 80,
+    "period": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.569713195380655,
+  "total_combinations": 48,
+  "valid_combinations": 48,
+  "results_summary": {
+    "best_sharpe": 0.569713195380655,
+    "best_profit_factor": 3.0636607926553254,
+    "best_win_rate": 0.6153846153846154,
+    "best_return": 23.008838775703794,
+    "avg_sharpe": 0.1086899030423415
+  }
+}

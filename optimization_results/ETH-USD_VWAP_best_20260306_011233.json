@@ -1,0 +1,20 @@
+{
+  "asset": "ETH-USD",
+  "strategy": "VWAP",
+  "timestamp": "2026-03-06T01:12:33.709055",
+  "best_params": {
+    "period": 20,
+    "std_dev": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.40687304534155083,
+  "total_combinations": 12,
+  "valid_combinations": 10,
+  "results_summary": {
+    "best_sharpe": 0.40687304534155083,
+    "best_profit_factor": 3.4480480772284396,
+    "best_win_rate": 0.5526315789473685,
+    "best_return": 26.179412117276087,
+    "avg_sharpe": 0.16781325519692766
+  }
+}

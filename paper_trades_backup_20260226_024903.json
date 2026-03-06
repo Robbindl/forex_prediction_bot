@@ -1,0 +1,831 @@
+{
+  "open_positions": [
+    {
+      "trade_id": "6d1d9c7e",
+      "asset": "HG=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 6.059500217437744,
+      "position_size": 0.9901806724477842,
+      "stop_loss": 6.0292027163505555,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 6.089797718524932
+        },
+        {
+          "level": 2,
+          "price": 6.120095219612121
+        },
+        {
+          "level": 3,
+          "price": 6.15039272069931
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 59.0)",
+      "entry_time": "2026-02-25T23:23:19.401380",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "c200e270",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 89.65499877929688,
+      "position_size": 0.06692320653274628,
+      "stop_loss": 89.20672378540038,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 90.10327377319335
+        },
+        {
+          "level": 2,
+          "price": 90.55154876708984
+        },
+        {
+          "level": 3,
+          "price": 90.99982376098632
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 55.5)",
+      "entry_time": "2026-02-25T23:58:08.140420",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "6a186af6",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 89.86000061035156,
+      "position_size": 0.06677053148504898,
+      "stop_loss": 89.4107006072998,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 90.30930061340331
+        },
+        {
+          "level": 2,
+          "price": 90.75860061645508
+        },
+        {
+          "level": 3,
+          "price": 91.20790061950683
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 55.7)",
+      "entry_time": "2026-02-26T01:17:24.829227",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "9ffc297b",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 89.86000061035156,
+      "position_size": 0.06677053148504898,
+      "stop_loss": 89.4107006072998,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 90.30930061340331
+        },
+        {
+          "level": 2,
+          "price": 90.75860061645508
+        },
+        {
+          "level": 3,
+          "price": 91.20790061950683
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 55.7)",
+      "entry_time": "2026-02-26T01:42:11.390574",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "0ae681f2",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 89.86000061035156,
+      "position_size": 0.06677053148504898,
+      "stop_loss": 89.4107006072998,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 90.30930061340331
+        },
+        {
+          "level": 2,
+          "price": 90.75860061645508
+        },
+        {
+          "level": 3,
+          "price": 91.20790061950683
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 55.7)",
+      "entry_time": "2026-02-26T01:52:44.312276",
+      "exit_time": null,
+      "exit_price": null,
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "exit_reason": null,
+      "status": "OPEN",
+      "duration_minutes": 0
+    }
+  ],
+  "closed_positions": [
+    {
+      "trade_id": "975a50db",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 91.76499938964844,
+      "position_size": 0.06538440625409987,
+      "stop_loss": 91.3061743927002,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 92.22382438659668
+        },
+        {
+          "level": 2,
+          "price": 92.68264938354493
+        },
+        {
+          "level": 3,
+          "price": 93.14147438049315
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 57.3)",
+      "entry_time": "2026-02-25T23:22:46.800138",
+      "exit_time": "2026-02-25T23:31:34.406874",
+      "exit_price": 91.3061743927002,
+      "pnl": -0.029999999999999704,
+      "pnl_percent": -0.49999999999999506,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 8
+    },
+    {
+      "trade_id": "70a0b062",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 91.2699966430664,
+      "position_size": 0.06573901852395661,
+      "stop_loss": 90.81364665985107,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 91.72634662628172
+        },
+        {
+          "level": 2,
+          "price": 92.18269660949707
+        },
+        {
+          "level": 3,
+          "price": 92.63904659271239
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 56.9)",
+      "entry_time": "2026-02-25T23:32:42.277076",
+      "exit_time": "2026-02-25T23:38:20.536064",
+      "exit_price": 90.81364665985107,
+      "pnl": -0.030000000000000037,
+      "pnl_percent": -0.5000000000000007,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 5
+    },
+    {
+      "trade_id": "6b6b5498",
+      "asset": "AVAX-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 9.67,
+      "position_size": 0.6204756980351603,
+      "stop_loss": 9.727023983001708,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 9.630237674713134
+        },
+        {
+          "level": 2,
+          "price": 9.581844520568847
+        },
+        {
+          "level": 3,
+          "price": 9.533451366424561
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 62.3)",
+      "entry_time": "2026-02-25T23:23:08.125321",
+      "exit_time": "2026-02-25T23:50:20.423310",
+      "exit_price": 9.727023983001708,
+      "pnl": -0.03538199565772966,
+      "pnl_percent": -0.5896999276288277,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 27
+    },
+    {
+      "trade_id": "611a50eb",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 90.6449966430664,
+      "position_size": 0.06619229104973386,
+      "stop_loss": 90.17684726715088,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 91.08314723968505
+        },
+        {
+          "level": 2,
+          "price": 91.53629722595215
+        },
+        {
+          "level": 3,
+          "price": 91.98944721221923
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 56.4)",
+      "entry_time": "2026-02-25T23:39:28.496990",
+      "exit_time": "2026-02-25T23:53:03.862040",
+      "exit_price": 90.17684726715088,
+      "pnl": -0.03098787974535204,
+      "pnl_percent": -0.516464662422534,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 13
+    },
+    {
+      "trade_id": "59bee333",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 90.26499938964844,
+      "position_size": 0.06647094710652686,
+      "stop_loss": 89.8136743927002,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 90.71632438659667
+        },
+        {
+          "level": 2,
+          "price": 91.16764938354493
+        },
+        {
+          "level": 3,
+          "price": 91.61897438049316
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 56.1)",
+      "entry_time": "2026-02-25T23:51:27.938350",
+      "exit_time": "2026-02-25T23:57:04.026888",
+      "exit_price": 89.8136743927002,
+      "pnl": -0.030000000000000155,
+      "pnl_percent": -0.5000000000000026,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 5
+    },
+    {
+      "trade_id": "818e6c7a",
+      "asset": "SI=F",
+      "category": "commodities",
+      "signal": "BUY",
+      "entry_price": 90.22000122070312,
+      "position_size": 0.06650410018641362,
+      "stop_loss": 89.7440246963501,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 90.64597469329833
+        },
+        {
+          "level": 2,
+          "price": 91.09694969177247
+        },
+        {
+          "level": 3,
+          "price": 91.54792469024657
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp BUY signal (RSI: 56.0)",
+      "entry_time": "2026-02-25T23:54:11.591120",
+      "exit_time": "2026-02-25T23:57:04.026888",
+      "exit_price": 89.7440246963501,
+      "pnl": -0.03165439046195482,
+      "pnl_percent": -0.5275731743659138,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 2
+    },
+    {
+      "trade_id": "c8d6b9f1",
+      "asset": "DOGE-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 0.1039,
+      "position_size": 57.74783445620789,
+      "stop_loss": 0.10447723165154456,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 0.1034376572072506
+        },
+        {
+          "level": 2,
+          "price": 0.1029178699851036
+        },
+        {
+          "level": 3,
+          "price": 0.10239808276295662
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 61.5)",
+      "entry_time": "2026-02-25T23:23:01.456669",
+      "exit_time": "2026-02-26T00:13:20.359736",
+      "exit_price": 0.10447723165154456,
+      "pnl": -0.03333387785627826,
+      "pnl_percent": -0.555564630937971,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 50
+    },
+    {
+      "trade_id": "4c980967",
+      "asset": "BNB-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 631.1287841796875,
+      "position_size": 0.009506776034305784,
+      "stop_loss": 634.3717153930663,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 628.0595590209961
+        },
+        {
+          "level": 2,
+          "price": 624.903480834961
+        },
+        {
+          "level": 3,
+          "price": 621.7474026489258
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 56.4)",
+      "entry_time": "2026-02-25T23:22:53.530321",
+      "exit_time": "2026-02-26T00:36:14.221047",
+      "exit_price": 634.3717153930663,
+      "pnl": -0.030829820740251982,
+      "pnl_percent": -0.5138303456708664,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 73
+    },
+    {
+      "trade_id": "4e54f8c2",
+      "asset": "BNB-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 632.2438354492188,
+      "position_size": 0.009490009492519463,
+      "stop_loss": 635.3846282958983,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 629.0623931884766
+        },
+        {
+          "level": 2,
+          "price": 625.9012756347656
+        },
+        {
+          "level": 3,
+          "price": 622.7401580810547
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 56.6)",
+      "entry_time": "2026-02-25T23:58:14.399887",
+      "exit_time": "2026-02-26T00:36:18.016302",
+      "exit_price": 635.3846282958983,
+      "pnl": -0.029806153929026382,
+      "pnl_percent": -0.4967692321504398,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 38
+    },
+    {
+      "trade_id": "bbf4222b",
+      "asset": "BNB-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 630.6,
+      "position_size": 0.009514747859181731,
+      "stop_loss": 635.7167248535155,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 629.3911853027344
+        },
+        {
+          "level": 2,
+          "price": 626.2284155273437
+        },
+        {
+          "level": 3,
+          "price": 623.0656457519531
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 56.7)",
+      "entry_time": "2026-02-26T00:14:28.029655",
+      "exit_time": "2026-02-26T00:36:18.016302",
+      "exit_price": 635.7167248535155,
+      "pnl": -0.04868434684600863,
+      "pnl_percent": -0.8114057807668105,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 21
+    },
+    {
+      "trade_id": "471d302e",
+      "asset": "BNB-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 640.03,
+      "position_size": 0.0093745605674734,
+      "stop_loss": 634.0891204833983,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 627.7797760009765
+        },
+        {
+          "level": 2,
+          "price": 624.6251037597656
+        },
+        {
+          "level": 3,
+          "price": 621.4704315185547
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 56.3)",
+      "entry_time": "2026-02-26T00:37:22.569409",
+      "exit_time": "2026-02-26T00:37:44.581416",
+      "exit_price": 634.0891204833983,
+      "pnl": 0.055693134852444044,
+      "pnl_percent": 0.9282189142074007,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "2865fe9c",
+      "asset": "SOL-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 91.52,
+      "position_size": 0.06555944055944056,
+      "stop_loss": 90.38469554901123,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 89.48534534454346
+        },
+        {
+          "level": 2,
+          "price": 89.03567024230956
+        },
+        {
+          "level": 3,
+          "price": 88.58599514007568
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 62.9)",
+      "entry_time": "2026-02-26T00:37:27.792770",
+      "exit_time": "2026-02-26T00:37:48.079754",
+      "exit_price": 90.38469554901123,
+      "pnl": 0.07442992467146653,
+      "pnl_percent": 1.2404987445244422,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "f7572f2a",
+      "asset": "XRP-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 1.4863,
+      "position_size": 4.03687008006459,
+      "stop_loss": 1.4752065914869308,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 1.4605279189348221
+        },
+        {
+          "level": 2,
+          "price": 1.4531885826587676
+        },
+        {
+          "level": 3,
+          "price": 1.4458492463827133
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 59.8)",
+      "entry_time": "2026-02-26T00:37:32.769633",
+      "exit_time": "2026-02-26T00:37:51.583780",
+      "exit_price": 1.4752065914869308,
+      "pnl": 0.044782648912342744,
+      "pnl_percent": 0.7463774818723791,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "214dc950",
+      "asset": "SOL-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 90.85,
+      "position_size": 0.06604292790313704,
+      "stop_loss": 90.56044326782225,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 89.65934432983398
+        },
+        {
+          "level": 2,
+          "price": 89.20879486083984
+        },
+        {
+          "level": 3,
+          "price": 88.7582453918457
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 63.0)",
+      "entry_time": "2026-02-26T00:39:01.980906",
+      "exit_time": "2026-02-26T00:39:11.805262",
+      "exit_price": 90.56044326782225,
+      "pnl": 0.01912317438708267,
+      "pnl_percent": 0.3187195731180445,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "dc8180f7",
+      "asset": "XRP-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 1.478,
+      "position_size": 4.059539918809202,
+      "stop_loss": 1.4777809685468672,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 1.4630766803026198
+        },
+        {
+          "level": 2,
+          "price": 1.4557245361804962
+        },
+        {
+          "level": 3,
+          "price": 1.4483723920583724
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 60.0)",
+      "entry_time": "2026-02-26T00:39:03.360941",
+      "exit_time": "2026-02-26T00:39:11.805262",
+      "exit_price": 1.4777809685468672,
+      "pnl": 0.0008891669274671214,
+      "pnl_percent": 0.014819448791118689,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 0
+    },
+    {
+      "trade_id": "5a807ad7",
+      "asset": "BNB-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 631.175048828125,
+      "position_size": 0.00950607919489203,
+      "stop_loss": 635.3189328002929,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 628.9973513793946
+        },
+        {
+          "level": 2,
+          "price": 625.8365606689453
+        },
+        {
+          "level": 3,
+          "price": 622.6757699584961
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 56.6)",
+      "entry_time": "2026-02-26T00:39:00.413778",
+      "exit_time": "2026-02-26T00:40:24.890787",
+      "exit_price": 635.3189328002929,
+      "pnl": -0.03939208921387221,
+      "pnl_percent": -0.6565348202312035,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 1
+    },
+    {
+      "trade_id": "16fae56b",
+      "asset": "XRP-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 1.4825,
+      "position_size": 4.0472175379426645,
+      "stop_loss": 1.4859999740123748,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 1.471213904619217
+        },
+        {
+          "level": 2,
+          "price": 1.4638208699226378
+        },
+        {
+          "level": 3,
+          "price": 1.456427835226059
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 60.7)",
+      "entry_time": "2026-02-26T00:40:17.157717",
+      "exit_time": "2026-02-26T01:16:17.979028",
+      "exit_price": 1.4859999740123748,
+      "pnl": -0.014165156205227234,
+      "pnl_percent": -0.23608593675378725,
+      "exit_reason": "Stop Loss",
+      "status": "CLOSED",
+      "duration_minutes": 36
+    },
+    {
+      "trade_id": "f1300f5a",
+      "asset": "BNB-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 636.9,
+      "position_size": 0.009420631182289214,
+      "stop_loss": 638.045633239746,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 631.6969204711914
+        },
+        {
+          "level": 2,
+          "price": 628.522564086914
+        },
+        {
+          "level": 3,
+          "price": 625.3482077026367
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 57.2)",
+      "entry_time": "2026-02-26T00:40:15.349369",
+      "exit_time": "2026-02-26T01:41:04.431104",
+      "exit_price": 631.6969204711914,
+      "pnl": 0.049016293253024305,
+      "pnl_percent": 0.8169382208837385,
+      "exit_reason": "Take Profit 1",
+      "status": "CLOSED",
+      "duration_minutes": 60
+    },
+    {
+      "trade_id": "39ccead7",
+      "asset": "BNB-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 636.45,
+      "position_size": 0.009427292010370021,
+      "stop_loss": 637.9852130126952,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 631.6371014404297
+        },
+        {
+          "level": 2,
+          "price": 628.4630456542968
+        },
+        {
+          "level": 3,
+          "price": 625.2889898681641
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 57.2)",
+      "entry_time": "2026-02-26T00:41:28.470612",
+      "exit_time": "2026-02-26T01:41:07.959675",
+      "exit_price": 631.6371014404297,
+      "pnl": 0.045372600137359276,
+      "pnl_percent": 0.7562100022893213,
+      "exit_reason": "Take Profit 1",
+      "status": "CLOSED",
+      "duration_minutes": 59
+    },
+    {
+      "trade_id": "97ca4964",
+      "asset": "BNB-USD",
+      "category": "crypto",
+      "signal": "SELL",
+      "entry_price": 633.4517211914062,
+      "position_size": 0.009471913642787336,
+      "stop_loss": 636.2582373046874,
+      "take_profit_levels": [
+        {
+          "level": 1,
+          "price": 629.9273095703124
+        },
+        {
+          "level": 2,
+          "price": 626.761845703125
+        },
+        {
+          "level": 3,
+          "price": 623.5963818359374
+        }
+      ],
+      "confidence": 0.76,
+      "reason": "Scalp SELL signal (RSI: 56.8)",
+      "entry_time": "2026-02-26T01:42:16.669014",
+      "exit_time": "2026-02-26T01:51:37.171723",
+      "exit_price": 629.9273095703124,
+      "pnl": 0.03338292251663664,
+      "pnl_percent": 0.5563820419439438,
+      "exit_reason": "Take Profit 1",
+      "status": "CLOSED",
+      "duration_minutes": 9
+    }
+  ]
+}

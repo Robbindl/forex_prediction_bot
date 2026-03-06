@@ -1,0 +1,21 @@
+{
+  "asset": "SOL-USD",
+  "strategy": "ADX_DI",
+  "timestamp": "2026-03-05T22:47:51.193929",
+  "best_params": {
+    "period": 14,
+    "adx_threshold": 25,
+    "di_threshold": 30
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.1155465500633043,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.1155465500633043,
+    "best_profit_factor": 1.2864051309429283,
+    "best_win_rate": 0.3211009174311927,
+    "best_return": 16.60415472246636,
+    "avg_sharpe": 0.06451594506759359
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "APO",
+  "timestamp": "2026-03-06T01:12:45.901918",
+  "best_params": {
+    "fast": 8,
+    "slow": 26,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.3534427629096966,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.3534427629096966,
+    "best_profit_factor": 2.2498951600942885,
+    "best_win_rate": 0.5,
+    "best_return": 10.878075911747867,
+    "avg_sharpe": 0.19492319373178282
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-05T23:06:53.627825",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.3146731456947022,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": -0.3146731456947022,
+    "best_profit_factor": 0.3841142079747755,
+    "best_win_rate": 0.3,
+    "best_return": -8.28737091620016,
+    "avg_sharpe": -0.3146731456947022
+  }
+}

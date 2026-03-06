@@ -1,0 +1,19 @@
+{
+  "asset": "V",
+  "strategy": "OBV",
+  "timestamp": "2026-03-06T01:47:22.157654",
+  "best_params": {
+    "signal_period": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.0626894273382815,
+  "total_combinations": 4,
+  "valid_combinations": 4,
+  "results_summary": {
+    "best_sharpe": -0.0626894273382815,
+    "best_profit_factor": 0.8521563551224943,
+    "best_win_rate": 0.2571428571428571,
+    "best_return": -2.4457759530810304,
+    "avg_sharpe": -0.11521141055949058
+  }
+}

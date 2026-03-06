@@ -1,0 +1,21 @@
+{
+  "asset": "TSLA",
+  "strategy": "Bollinger_Breakout",
+  "timestamp": "2026-03-06T00:36:45.307506",
+  "best_params": {
+    "period": 20,
+    "std_dev": 3.0,
+    "confirmation_bars": 1
+  },
+  "best_metric": "sharpe",
+  "best_value": 23659304328.754826,
+  "total_combinations": 27,
+  "valid_combinations": 19,
+  "results_summary": {
+    "best_sharpe": 23659304328.754826,
+    "best_profit_factor": 4.303487715446304,
+    "best_win_rate": 1.0,
+    "best_return": 1.4369321253158764,
+    "avg_sharpe": -25211914982.683327
+  }
+}

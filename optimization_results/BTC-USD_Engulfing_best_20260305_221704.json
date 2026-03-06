@@ -1,0 +1,20 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-05T22:17:04.668959",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 10
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.18038202095094164,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.18038202095094164,
+    "best_profit_factor": 2.0122111934879223,
+    "best_win_rate": 0.3541666666666667,
+    "best_return": 22.047673318981474,
+    "avg_sharpe": 0.1771918572274741
+  }
+}

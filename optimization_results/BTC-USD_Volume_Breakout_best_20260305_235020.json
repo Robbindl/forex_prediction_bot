@@ -1,0 +1,22 @@
+{
+  "asset": "BTC-USD",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-05T23:50:20.890305",
+  "best_params": {
+    "volume_period": 10,
+    "volume_multiplier": 2.5,
+    "price_period": 5,
+    "price_threshold": 0.02
+  },
+  "best_metric": "sharpe",
+  "best_value": 99328130755.6078,
+  "total_combinations": 36,
+  "valid_combinations": 34,
+  "results_summary": {
+    "best_sharpe": 99328130755.6078,
+    "best_profit_factor": 3.7938779542930163,
+    "best_win_rate": 1.0,
+    "best_return": 16.748748838387584,
+    "avg_sharpe": -3263745002.709129
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "asset": "^DJI",
+  "strategy": "RVGI",
+  "timestamp": "2026-03-05T22:25:00.491423",
+  "best_params": {
+    "period": 8,
+    "signal_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2181354443438415,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.2181354443438415,
+    "best_profit_factor": 1.5753225020920694,
+    "best_win_rate": 0.4782608695652174,
+    "best_return": 6.190325465427453,
+    "avg_sharpe": -0.004929733989592329
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "asset": "LTC-USD",
+  "strategy": "PPO",
+  "timestamp": "2026-03-05T23:17:29.454822",
+  "best_params": {
+    "fast": 8,
+    "slow": 26,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.45402879519049544,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.45402879519049544,
+    "best_profit_factor": 2.64282979652211,
+    "best_win_rate": 0.5357142857142857,
+    "best_return": 18.92462021491057,
+    "avg_sharpe": 0.30241619229136063
+  }
+}

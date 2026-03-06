@@ -1,0 +1,22 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "Volume_Breakout",
+  "timestamp": "2026-03-05T23:25:51.365389",
+  "best_params": {
+    "volume_period": 20,
+    "volume_multiplier": 1.5,
+    "price_period": 10,
+    "price_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.16585071961009337,
+  "total_combinations": 36,
+  "valid_combinations": 30,
+  "results_summary": {
+    "best_sharpe": 0.16585071961009337,
+    "best_profit_factor": 1.6052780184124265,
+    "best_win_rate": 0.6097560975609756,
+    "best_return": 8.047180278700518,
+    "avg_sharpe": -1526700492.963734
+  }
+}

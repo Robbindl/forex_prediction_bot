@@ -1,0 +1,21 @@
+{
+  "asset": "AVAX-USD",
+  "strategy": "PPO",
+  "timestamp": "2026-03-05T23:23:19.551236",
+  "best_params": {
+    "fast": 8,
+    "slow": 20,
+    "signal": 7
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.22395776414033164,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.22395776414033164,
+    "best_profit_factor": 1.581522218230306,
+    "best_win_rate": 0.43333333333333335,
+    "best_return": 9.890549792069162,
+    "avg_sharpe": 0.10870995389841077
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "asset": "CL=F",
+  "strategy": "Momentum_Reversal",
+  "timestamp": "2026-03-05T22:56:54.833709",
+  "best_params": {
+    "rsi_period": 14,
+    "rsi_extreme": 80,
+    "lookback": 5,
+    "reversal_threshold": 1.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 298849406312.78674,
+  "total_combinations": 27,
+  "valid_combinations": 18,
+  "results_summary": {
+    "best_sharpe": 298849406312.78674,
+    "best_profit_factor": 164.54049950563703,
+    "best_win_rate": 1.0,
+    "best_return": 222.21834584011933,
+    "avg_sharpe": 75257950702.87572
+  }
+}

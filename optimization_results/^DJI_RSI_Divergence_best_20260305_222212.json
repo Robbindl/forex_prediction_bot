@@ -1,0 +1,21 @@
+{
+  "asset": "^DJI",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T22:22:12.710846",
+  "best_params": {
+    "rsi_period": 14,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.288400046673574,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.288400046673574,
+    "best_profit_factor": 0.528402649652731,
+    "best_win_rate": 0.2608695652173913,
+    "best_return": -7.264275564449109,
+    "avg_sharpe": -0.4725150117007451
+  }
+}

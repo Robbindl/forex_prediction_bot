@@ -1,0 +1,21 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-05T23:11:26.324543",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.6402778531006791,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.6402778531006791,
+    "best_profit_factor": 18.83592371270627,
+    "best_win_rate": 0.6756756756756757,
+    "best_return": 1007.808251580626,
+    "avg_sharpe": 0.6402778531006789
+  }
+}

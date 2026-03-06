@@ -1,0 +1,20 @@
+{
+  "asset": "V",
+  "strategy": "WMA_Cross",
+  "timestamp": "2026-03-06T01:44:15.152492",
+  "best_params": {
+    "fast_period": 15,
+    "slow_period": 50
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7380943613071567,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.7380943613071567,
+    "best_profit_factor": 4.0154329003116604,
+    "best_win_rate": 0.75,
+    "best_return": 3.0597598242548965,
+    "avg_sharpe": -0.02251500728517439
+  }
+}

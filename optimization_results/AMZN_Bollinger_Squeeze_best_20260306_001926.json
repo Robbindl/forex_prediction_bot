@@ -1,0 +1,22 @@
+{
+  "asset": "AMZN",
+  "strategy": "Bollinger_Squeeze",
+  "timestamp": "2026-03-06T00:19:26.115938",
+  "best_params": {
+    "period": 20,
+    "bb_std": 2.0,
+    "kc_std": 1.5,
+    "squeeze_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": -24092898822.75412,
+  "total_combinations": 3,
+  "valid_combinations": 3,
+  "results_summary": {
+    "best_sharpe": -24092898822.75412,
+    "best_profit_factor": 0.0,
+    "best_win_rate": 0.0,
+    "best_return": -0.8032572467506214,
+    "avg_sharpe": -24092898822.75412
+  }
+}

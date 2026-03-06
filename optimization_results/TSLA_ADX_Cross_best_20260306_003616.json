@@ -1,0 +1,20 @@
+{
+  "asset": "TSLA",
+  "strategy": "ADX_Cross",
+  "timestamp": "2026-03-06T00:36:16.588071",
+  "best_params": {
+    "period": 7,
+    "adx_threshold": 20
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.14796754428993597,
+  "total_combinations": 12,
+  "valid_combinations": 12,
+  "results_summary": {
+    "best_sharpe": -0.14796754428993597,
+    "best_profit_factor": 0.7224384090152698,
+    "best_win_rate": 0.26666666666666666,
+    "best_return": -5.855904421680518,
+    "avg_sharpe": -0.14796754428993597
+  }
+}

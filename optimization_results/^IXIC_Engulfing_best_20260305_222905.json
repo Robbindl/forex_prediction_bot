@@ -1,0 +1,20 @@
+{
+  "asset": "^IXIC",
+  "strategy": "Engulfing",
+  "timestamp": "2026-03-05T22:29:05.232674",
+  "best_params": {
+    "body_ratio": 0.7,
+    "trend_period": 3
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.2817386097321198,
+  "total_combinations": 9,
+  "valid_combinations": 9,
+  "results_summary": {
+    "best_sharpe": 0.2817386097321198,
+    "best_profit_factor": 2.6778250498414864,
+    "best_win_rate": 0.35,
+    "best_return": 20.44690680078527,
+    "avg_sharpe": 0.2817386097321198
+  }
+}

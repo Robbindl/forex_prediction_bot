@@ -1,0 +1,21 @@
+{
+  "asset": "DOGE-USD",
+  "strategy": "VWAP_Volume",
+  "timestamp": "2026-03-05T23:06:28.239651",
+  "best_params": {
+    "period": 5,
+    "std_dev": 1.5,
+    "volume_threshold": 1.5
+  },
+  "best_metric": "sharpe",
+  "best_value": 13.746520746962846,
+  "total_combinations": 27,
+  "valid_combinations": 23,
+  "results_summary": {
+    "best_sharpe": 13.746520746962846,
+    "best_profit_factor": 6.105021453067719,
+    "best_win_rate": 1.0,
+    "best_return": 22.909486917010128,
+    "avg_sharpe": 0.80784597427429
+  }
+}

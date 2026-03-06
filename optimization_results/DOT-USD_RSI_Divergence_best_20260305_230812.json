@@ -1,0 +1,21 @@
+{
+  "asset": "DOT-USD",
+  "strategy": "RSI_Divergence",
+  "timestamp": "2026-03-05T23:08:12.092553",
+  "best_params": {
+    "rsi_period": 21,
+    "lookback": 5,
+    "divergence_threshold": 0.01
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.13900632303490845,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 0.13900632303490845,
+    "best_profit_factor": 1.3908310199588876,
+    "best_win_rate": 0.4050632911392405,
+    "best_return": 18.116075334771896,
+    "avg_sharpe": 0.019008150097688036
+  }
+}

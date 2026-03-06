@@ -1,0 +1,22 @@
+{
+  "asset": "V",
+  "strategy": "Stoch_RSI",
+  "timestamp": "2026-03-06T01:38:25.918138",
+  "best_params": {
+    "rsi_period": 7,
+    "stoch_period": 5,
+    "k_period": 3,
+    "d_period": 5
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.7113489876884392,
+  "total_combinations": 81,
+  "valid_combinations": 81,
+  "results_summary": {
+    "best_sharpe": 0.7113489876884392,
+    "best_profit_factor": 6.7159747667977605,
+    "best_win_rate": 0.6470588235294118,
+    "best_return": 25.67294109118515,
+    "avg_sharpe": 0.16480240439661226
+  }
+}

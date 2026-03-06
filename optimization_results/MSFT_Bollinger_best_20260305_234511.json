@@ -1,0 +1,21 @@
+{
+  "asset": "MSFT",
+  "strategy": "Bollinger",
+  "timestamp": "2026-03-05T23:45:11.255792",
+  "best_params": {
+    "period": 10,
+    "std_dev": 1.5,
+    "exit_std": 2.5
+  },
+  "best_metric": "sharpe",
+  "best_value": -0.16659391486623948,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": -0.16659391486623948,
+    "best_profit_factor": 0.5970015743041391,
+    "best_win_rate": 0.19230769230769232,
+    "best_return": -7.301962836461927,
+    "avg_sharpe": -0.2530540570271089
+  }
+}

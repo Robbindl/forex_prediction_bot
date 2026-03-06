@@ -1,0 +1,21 @@
+{
+  "asset": "META",
+  "strategy": "Williams_R",
+  "timestamp": "2026-03-06T01:12:37.690144",
+  "best_params": {
+    "period": 20,
+    "oversold": -80,
+    "overbought": -20
+  },
+  "best_metric": "sharpe",
+  "best_value": 0.14801296982978396,
+  "total_combinations": 36,
+  "valid_combinations": 36,
+  "results_summary": {
+    "best_sharpe": 0.14801296982978396,
+    "best_profit_factor": 1.349582272841215,
+    "best_win_rate": 0.43373493975903615,
+    "best_return": 14.856506578639925,
+    "avg_sharpe": 0.021313644586989342
+  }
+}

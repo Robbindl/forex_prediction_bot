@@ -1,0 +1,21 @@
+{
+  "asset": "XRP-USD",
+  "strategy": "ATR_Bands",
+  "timestamp": "2026-03-05T22:51:35.580209",
+  "best_params": {
+    "period": 10,
+    "multiplier": 2.5,
+    "band_type": "lower"
+  },
+  "best_metric": "sharpe",
+  "best_value": 166827243454.5887,
+  "total_combinations": 27,
+  "valid_combinations": 27,
+  "results_summary": {
+    "best_sharpe": 166827243454.5887,
+    "best_profit_factor": 108.7901380752161,
+    "best_win_rate": 1.0,
+    "best_return": 308.6957762695102,
+    "avg_sharpe": 6178786795.220742
+  }
+}
