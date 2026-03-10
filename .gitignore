@@ -113,6 +113,7 @@ venv311/
 __pycache__/
 *.pyc
 # Virtual Environments
+venv_tf/
 venv/
 venv311/
 .venv/
@@ -139,3 +140,4 @@ __pycache__/
 config/local_*.py
 *.session
 *.session-journal
+
