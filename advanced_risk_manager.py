@@ -7,6 +7,9 @@ Features:
 - Value at Risk (VaR) calculation
 - Portfolio correlation management
 - Dynamic position sizing based on market conditions
+- Sentiment-based stop loss adjustment
+- Market regime detection
+- Dynamic position sizing with sentiment
 """
 
 import pandas as pd
@@ -14,6 +17,8 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 from scipy.optimize import minimize
 from dataclasses import dataclass
+from datetime import datetime
+from logger import logger
 
 
 @dataclass
@@ -37,10 +42,13 @@ class AdvancedRiskManager:
     
     def __init__(self, account_balance: float = 10000):
         self.account_balance = account_balance
+        self.initial_balance = account_balance
         self.trade_history: List[Dict] = []
         self.current_positions: List[Dict] = []
         self.max_positions = 5
         self.max_correlation = 0.7
+        self.current_drawdown = 0.0
+        self.peak_balance = account_balance
         
     def calculate_kelly_criterion(self, win_rate: float, avg_win: float, 
                                   avg_loss: float, fraction: float = 0.25) -> float:
@@ -88,6 +96,7 @@ class AdvancedRiskManager:
         """
         return np.percentile(returns, (1 - confidence) * 100)
     
+    # In advanced_risk_manager.py, find this method (around line 150-200)
     def calculate_optimal_position_size(
         self,
         entry_price: float,
@@ -100,44 +109,43 @@ class AdvancedRiskManager:
     ) -> Dict[str, float]:
         """
         Calculate optimal position size using multiple methods
-        
-        Returns comprehensive position sizing recommendation
+        LOOSENED for volatile markets
         """
-        # Method 1: Fixed fractional (baseline)
-        risk_pct = 0.01  # 1% base risk
+        # Method 1: Fixed fractional (INCREASED from 1% to 2%)
+        risk_pct = 0.02  # ← CHANGED from 0.01 to 0.02 (2% risk)
         risk_amount = self.account_balance * risk_pct
         price_diff = abs(entry_price - stop_loss)
         
         if price_diff == 0:
+            logger.warning(f"Position size calculation failed: entry price equals stop loss")
             return {'position_size': 0, 'risk_amount': 0, 'method': 'invalid'}
         
         fixed_position = risk_amount / price_diff
         
-        # Method 2: Kelly Criterion
+        # Method 2: Kelly Criterion (INCREASED fraction from 0.25 to 0.5)
         kelly_fraction = self.calculate_kelly_criterion(win_rate, avg_win, avg_loss)
+        kelly_fraction = kelly_fraction * 0.5  # ← CHANGED from 0.25 to 0.5 (half Kelly instead of quarter)
         kelly_position = (self.account_balance * kelly_fraction) / price_diff
         
-        # Method 3: Volatility-adjusted
-        # Higher volatility = smaller position
-        vol_adjustment = 0.02 / (asset_volatility + 0.01)  # Normalize to 2% volatility
-        vol_adjusted_risk = risk_pct * min(vol_adjustment, 2.0)  # Cap at 2x
+        # Method 3: Volatility-adjusted (INCREASED cap from 2x to 3x)
+        vol_adjustment = 0.02 / (asset_volatility + 0.01)
+        vol_adjusted_risk = risk_pct * min(vol_adjustment, 3.0)  # ← CHANGED from 2.0 to 3.0
         vol_position = (self.account_balance * vol_adjusted_risk) / price_diff
         
-        # Method 4: Confidence-weighted
-        # Higher confidence = larger position (up to 2x)
-        confidence_multiplier = 0.5 + (signal_confidence * 1.5)  # 0.5x to 2x
+        # Method 4: Confidence-weighted (INCREASED multiplier range)
+        confidence_multiplier = 0.5 + (signal_confidence * 2.0)  # ← CHANGED from 1.5 to 2.0 (now 0.5x to 2.5x)
         confidence_position = fixed_position * confidence_multiplier
         
-        # Ensemble: Average of all methods
+        # Ensemble: Average of all methods (with higher weights for aggressive methods)
         ensemble_position = np.mean([
             fixed_position,
-            kelly_position * 0.8,  # Weight Kelly lower (more conservative)
+            kelly_position,
             vol_position,
             confidence_position
         ])
         
-        # Final position (with safety limits)
-        max_position_value = self.account_balance * 0.2  # Never more than 20% in one trade
+        # Final position (INCREASED max position value from 20% to 35%)
+        max_position_value = self.account_balance * 0.35  # ← CHANGED from 0.2 to 0.35 (35% in one trade)
         max_position_size = max_position_value / entry_price
         
         final_position = min(ensemble_position, max_position_size)
@@ -185,6 +193,8 @@ class AdvancedRiskManager:
                 max_corr = max(max_corr, corr)
         
         allowed = max_corr < self.max_correlation
+        if not allowed:
+            logger.warning(f"Correlation check failed: {new_asset} vs {existing_asset} = {max_corr:.2f}")
         return allowed, max_corr
     
     def calculate_portfolio_heat(self, open_positions: List[Dict]) -> float:
@@ -329,6 +339,269 @@ class AdvancedRiskManager:
         )
         
         return result.x if result.success else init_guess
+    
+    def update_drawdown(self, current_balance: float):
+        """Update current drawdown based on balance"""
+        if current_balance > self.peak_balance:
+            self.peak_balance = current_balance
+        
+        self.current_drawdown = ((self.peak_balance - current_balance) / self.peak_balance) * 100
+        logger.debug(f"Drawdown updated: {self.current_drawdown:.2f}%")
+    
+    # ============= NEW ENHANCED METHODS =============
+    
+    def calculate_dynamic_stop_loss(self, 
+                                atr: float, 
+                                entry_price: float,
+                                sentiment_score: float = 0.0,
+                                market_regime: str = 'normal',
+                                volatility_regime: str = 'normal') -> Dict[str, float]:
+        """
+        Calculate dynamic stop loss based on market conditions
+        LOOSENED for volatile markets
+        """
+        # Base stop loss (REDUCED from 2x ATR to 1.5x ATR - tighter stops for bigger positions)
+        base_stop_distance = atr * 1.5  # ← CHANGED from 2.0 to 1.5
+        
+        # 1. SENTIMENT ADJUSTMENT (LESS impact)
+        if sentiment_score < -0.5:  # Extreme fear
+            sentiment_multiplier = 1.3  # ← CHANGED from 1.5
+            sentiment_reason = "Extreme fear - widening stops"
+        elif sentiment_score < -0.2:  # Fear
+            sentiment_multiplier = 1.1  # ← CHANGED from 1.2
+            sentiment_reason = "Fear present - slightly wider stops"
+        elif sentiment_score > 0.5:   # Extreme greed
+            sentiment_multiplier = 0.8  # ← CHANGED from 0.7 (less tight)
+            sentiment_reason = "Extreme greed - tightening stops"
+        elif sentiment_score > 0.2:    # Greed
+            sentiment_multiplier = 0.95  # ← CHANGED from 0.9
+            sentiment_reason = "Greed present - slightly tighter stops"
+        else:
+            sentiment_multiplier = 1.0
+            sentiment_reason = "Neutral sentiment - normal stops"
+        
+        # 2. MARKET REGIME ADJUSTMENT (LESS impact)
+        regime_multipliers = {
+            'trending': 1.1,      # ← CHANGED from 1.2
+            'ranging': 0.9,       # ← CHANGED from 0.8
+            'breakout': 1.2,      # ← CHANGED from 1.3
+            'volatile': 1.2,      # ← CHANGED from 1.4
+            'calm': 0.9,          # ← CHANGED from 0.8
+            'normal': 1.0
+        }
+        regime_multiplier = regime_multipliers.get(market_regime, 1.0)
+        
+        # 3. VOLATILITY REGIME ADJUSTMENT (LESS impact)
+        vol_multipliers = {
+            'low': 0.9,           # ← CHANGED from 0.8
+            'normal': 1.0,
+            'high': 1.2           # ← CHANGED from 1.3
+        }
+        vol_multiplier = vol_multipliers.get(volatility_regime, 1.0)
+        
+        # Combine all multipliers
+        final_multiplier = sentiment_multiplier * regime_multiplier * vol_multiplier
+        
+        # Calculate final stop distance
+        stop_distance = base_stop_distance * final_multiplier
+        
+        return {
+            'stop_distance': stop_distance,
+            'stop_percent': (stop_distance / entry_price) * 100,
+            'atr_multiple': final_multiplier * 1.5,
+            'base_atr_multiple': 1.5,
+            'sentiment_multiplier': sentiment_multiplier,
+            'regime_multiplier': regime_multiplier,
+            'volatility_multiplier': vol_multiplier,
+            'sentiment_reason': sentiment_reason,
+            'final_multiplier': final_multiplier
+        }
+    
+    def get_market_regime_from_df(self, df: pd.DataFrame) -> str:
+        """
+        Determine market regime from dataframe
+        
+        Returns:
+            'trending', 'ranging', 'breakout', 'volatile', 'calm', 'normal'
+        """
+        try:
+            # Check ADX for trend strength
+            if 'adx' in df.columns:
+                adx = df['adx'].iloc[-1]
+            else:
+                adx = 20
+            
+            # Check volatility
+            if 'atr' in df.columns:
+                atr_pct = df['atr'].iloc[-1] / df['close'].iloc[-1]
+            else:
+                atr_pct = 0.02
+            
+            # Check Bollinger Band position for breakouts
+            if all(x in df.columns for x in ['bb_upper', 'bb_lower']):
+                close = df['close'].iloc[-1]
+                bb_upper = df['bb_upper'].iloc[-1]
+                bb_lower = df['bb_lower'].iloc[-1]
+                
+                if close > bb_upper * 1.01:
+                    logger.debug(f"Breakout detected: price above upper BB")
+                    return 'breakout'
+                elif close < bb_lower * 0.99:
+                    logger.debug(f"Breakout detected: price below lower BB")
+                    return 'breakout'
+            
+            # Determine regime
+            if adx > 30:
+                return 'trending'
+            elif adx < 20:
+                return 'ranging'
+            elif atr_pct > 0.03:
+                return 'volatile'
+            elif atr_pct < 0.01:
+                return 'calm'
+            else:
+                return 'normal'
+                
+        except Exception as e:
+            logger.warning(f"Error detecting market regime: {e}")
+            return 'normal'
+    
+    def get_volatility_regime(self, df: pd.DataFrame) -> str:
+        """
+        Determine volatility regime
+        
+        Returns:
+            'low', 'normal', 'high'
+        """
+        try:
+            if 'atr' not in df.columns or len(df) < 50:
+                return 'normal'
+            
+            current_atr_pct = df['atr'].iloc[-1] / df['close'].iloc[-1]
+            avg_atr_pct = (df['atr'] / df['close']).rolling(50).mean().iloc[-1]
+            
+            ratio = current_atr_pct / avg_atr_pct if avg_atr_pct > 0 else 1.0
+            
+            if ratio > 1.5:
+                logger.debug(f"High volatility regime: ratio={ratio:.2f}")
+                return 'high'
+            elif ratio < 0.7:
+                logger.debug(f"Low volatility regime: ratio={ratio:.2f}")
+                return 'low'
+            else:
+                return 'normal'
+                
+        except Exception as e:
+            logger.warning(f"Error detecting volatility regime: {e}")
+            return 'normal'
+    
+    def calculate_position_size_with_sentiment(
+        self,
+        entry_price: float,
+        stop_loss: float,
+        signal_confidence: float,
+        sentiment_score: float,
+        market_regime: str = 'normal',
+        win_rate: float = 0.55,
+        avg_win: float = 0.02,
+        avg_loss: float = 0.01
+    ) -> Dict[str, float]:
+        """
+        Calculate position size incorporating sentiment analysis
+        
+        This is an enhanced version of calculate_optimal_position_size
+        that also considers market sentiment
+        """
+        # Get base position size from existing method
+        base_position = self.calculate_optimal_position_size(
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            signal_confidence=signal_confidence,
+            asset_volatility=0.02,
+            win_rate=win_rate,
+            avg_win=avg_win,
+            avg_loss=avg_loss
+        )
+        
+        # Apply sentiment adjustment
+        if sentiment_score < -0.5:  # Extreme fear
+            sentiment_adjustment = 0.6  # Reduce size significantly
+            sentiment_reason = "Extreme fear - reducing position size"
+        elif sentiment_score < -0.2:  # Fear
+            sentiment_adjustment = 0.8
+            sentiment_reason = "Fear - reducing position size"
+        elif sentiment_score > 0.5:   # Extreme greed
+            sentiment_adjustment = 0.7  # Reduce size (top risk)
+            sentiment_reason = "Extreme greed - reducing position size"
+        elif sentiment_score > 0.2:    # Greed
+            sentiment_adjustment = 0.9
+            sentiment_reason = "Greed - slight reduction"
+        else:
+            sentiment_adjustment = 1.0
+            sentiment_reason = "Neutral sentiment - normal size"
+        
+        # Apply market regime adjustment
+        regime_adjustments = {
+            'trending': 1.2,
+            'breakout': 1.3,
+            'ranging': 0.7,
+            'volatile': 0.6,
+            'calm': 0.9,
+            'normal': 1.0
+        }
+        regime_adjustment = regime_adjustments.get(market_regime, 1.0)
+        
+        # Final adjustment
+        final_adjustment = sentiment_adjustment * regime_adjustment
+        adjusted_position = base_position['position_size'] * final_adjustment
+        
+        # Recalculate risk
+        price_diff = abs(entry_price - stop_loss)
+        adjusted_risk = adjusted_position * price_diff
+        adjusted_risk_pct = (adjusted_risk / self.account_balance) * 100
+        
+        logger.debug(f"Position size with sentiment: {adjusted_position:.4f} (adjustment={final_adjustment:.2f}x)")
+        
+        # Update base position with adjustments
+        base_position.update({
+            'position_size': adjusted_position,
+            'risk_amount': adjusted_risk,
+            'risk_pct': adjusted_risk_pct,
+            'sentiment_adjustment': sentiment_adjustment,
+            'regime_adjustment': regime_adjustment,
+            'final_adjustment': final_adjustment,
+            'sentiment_reason': sentiment_reason
+        })
+        
+        return base_position
+    
+    def get_sentiment_regime(self, sentiment_score: float) -> str:
+        """Classify sentiment regime"""
+        if sentiment_score < -0.5:
+            return 'extreme_fear'
+        elif sentiment_score < -0.2:
+            return 'fear'
+        elif sentiment_score > 0.5:
+            return 'extreme_greed'
+        elif sentiment_score > 0.2:
+            return 'greed'
+        else:
+            return 'neutral'
+    
+    def get_risk_summary(self) -> Dict:
+        """Get comprehensive risk summary"""
+        return {
+            'account_balance': self.account_balance,
+            'peak_balance': self.peak_balance,
+            'current_drawdown': self.current_drawdown,
+            'max_positions': self.max_positions,
+            'current_positions': len(self.current_positions),
+            'total_trades': len(self.trade_history),
+            'risk_per_trade': '1% base',
+            'max_risk_per_trade': '3%',
+            'kelly_fraction': '25%',
+            'correlation_limit': self.max_correlation
+        }
 
 
 class DynamicRiskAdjuster:
@@ -374,6 +647,7 @@ class DynamicRiskAdjuster:
         }
         
         return base_risk * multipliers.get(regime, 1.0)
+
 
 class DynamicPositionSizer:
     """
@@ -435,6 +709,8 @@ class DynamicPositionSizer:
         # Cap at max risk
         final_risk = min(final_risk, self.max_risk)
         
+        logger.debug(f"Position size calculated: {final_risk*100:.2f}% risk")
+        
         return {
             'risk_percent': round(final_risk * 100, 2),
             'kelly_component': kelly_size,
@@ -457,6 +733,7 @@ class DynamicPositionSizer:
         price_diff = abs(entry_price - stop_loss)
         
         if price_diff == 0:
+            logger.warning("Position units calculation failed: price_diff=0")
             return {'position_size': 0, 'risk_amount': 0}
         
         position_size = risk_amount / price_diff
@@ -468,6 +745,8 @@ class DynamicPositionSizer:
             'position_value': position_value,
             'leverage': position_value / account_balance if account_balance > 0 else 0
         }
+
+
 class DailyLossLimit:
     """
     Automatic trading stop when daily loss limit is hit
@@ -494,6 +773,7 @@ class DailyLossLimit:
         """Set initial balance for the day"""
         self.initial_balance = balance
         self.current_balance = balance
+        logger.info(f"Daily loss limit set with balance: ${balance:.2f}")
     
     def update(self, pnl: float) -> Tuple[bool, str]:
         """
@@ -514,11 +794,9 @@ class DailyLossLimit:
             self.trading_paused = True
             self.pause_time = datetime.now()
             
-            message = f"🚨 DAILY LOSS LIMIT HIT: {loss_pct:.1f}% (max {self.max_loss_pct}%)"
-            print(f"\n{'='*60}")
-            print(message)
-            print(f"Trading paused for {self.pause_duration//60} minutes")
-            print(f"{'='*60}\n")
+            message = f"DAILY LOSS LIMIT HIT: {loss_pct:.1f}% (max {self.max_loss_pct}%)"
+            logger.warning(message)
+            logger.warning(f"Trading paused for {self.pause_duration//60} minutes")
             
             if self.alert_callback:
                 self.alert_callback(message)
@@ -535,7 +813,7 @@ class DailyLossLimit:
                 # Resume trading
                 self.trading_paused = False
                 self.pause_time = None
-                print(f"\n✅ Trading resumed after pause period")
+                logger.info(f"Trading resumed after pause period")
                 return True, "Trading resumed"
         
         return True, f"OK (Daily P&L: {loss_pct:.1f}%)"
@@ -555,7 +833,8 @@ class DailyLossLimit:
             'max_loss_pct': self.max_loss_pct,
             'trading_paused': self.trading_paused,
             'limit_hit': loss_pct <= -self.max_loss_pct
-        } 
+        }
+
 
 if __name__ == "__main__":
     # Test the risk manager
@@ -563,7 +842,7 @@ if __name__ == "__main__":
     
     # Test Kelly Criterion
     kelly = rm.calculate_kelly_criterion(0.6, 0.02, 0.01)
-    print(f"Kelly Criterion: {kelly:.2%}")
+    logger.info(f"Kelly Criterion: {kelly:.2%}")
     
     # Test position sizing
     position = rm.calculate_optimal_position_size(
@@ -576,9 +855,23 @@ if __name__ == "__main__":
         avg_loss=0.012
     )
     
-    print("\nOptimal Position Sizing:")
-    print(f"  Position Size: {position['position_size']:.2f} units")
-    print(f"  Position Value: ${position['position_value']:.2f}")
-    print(f"  Risk Amount: ${position['risk_amount']:.2f}")
-    print(f"  Risk %: {position['risk_pct']:.2f}%")
-    print(f"  Kelly Fraction: {position['kelly_fraction']:.2%}")
+    logger.info("\nOptimal Position Sizing:")
+    logger.info(f"  Position Size: {position['position_size']:.2f} units")
+    logger.info(f"  Position Value: ${position['position_value']:.2f}")
+    logger.info(f"  Risk Amount: ${position['risk_amount']:.2f}")
+    logger.info(f"  Risk %: {position['risk_pct']:.2f}%")
+    logger.info(f"  Kelly Fraction: {position['kelly_fraction']:.2%}")
+    
+    # Test dynamic stop loss
+    logger.info("\nDynamic Stop Loss Test:")
+    stop = rm.calculate_dynamic_stop_loss(
+        atr=0.0015,
+        entry_price=1.0850,
+        sentiment_score=-0.3,
+        market_regime='trending',
+        volatility_regime='normal'
+    )
+    logger.info(f"  Stop Distance: {stop['stop_distance']:.5f}")
+    logger.info(f"  Stop %: {stop['stop_percent']:.2f}%")
+    logger.info(f"  Reason: {stop['sentiment_reason']}")
+    logger.info(f"  Final Multiplier: {stop['final_multiplier']:.2f}x")

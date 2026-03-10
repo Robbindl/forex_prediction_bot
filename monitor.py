@@ -11,6 +11,7 @@ import requests
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from logger import logger
 
 
 class TradingMonitor:
@@ -50,7 +51,7 @@ class TradingMonitor:
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
         
-        print("[INFO] Trading Monitor Initialized")
+        logger.info("Trading Monitor Initialized")
         channels = []
         if telegram_config and telegram_config.get('enabled'):
             channels.append("Telegram")
@@ -58,9 +59,9 @@ class TradingMonitor:
             channels.append("Email")
         
         if channels:
-            print(f"   • Alert System: Enabled ({', '.join(channels)})")
+            logger.info(f"Alert System: Enabled ({', '.join(channels)})")
         else:
-            print(f"   • Alert System: Basic (console only)")
+            logger.info(f"Alert System: Basic (console only)")
     
     def _monitor_loop(self):
         """Background monitoring loop"""
@@ -69,7 +70,7 @@ class TradingMonitor:
                 time.sleep(60)  # Check every minute
                 self._check_alerts()
             except Exception as e:
-                print(f"[WARN] Monitor error: {e}")
+                logger.error(f"Monitor error: {e}")
     
     def _check_alerts(self):
         """Check all alert conditions"""
@@ -82,7 +83,7 @@ class TradingMonitor:
                 elif hasattr(self.risk_manager, 'get_risk_status'):
                     status = self.risk_manager.get_risk_status()
             except Exception as e:
-                print(f"[WARN] Could not get risk status: {e}")
+                logger.error(f"Could not get risk status: {e}")
         
         # Check drawdown
         drawdown = status.get('current_drawdown', 0)
@@ -140,7 +141,7 @@ class TradingMonitor:
                         f"Win rate: {perf.get('win_rate', 0)}%"
                     )
             except Exception as e:
-                print(f"[WARN] Could not get paper trader performance: {e}")
+                logger.error(f"Could not get paper trader performance: {e}")
     
     def on_trade_closed(self, trade_result: Dict):
         """Called when a trade is closed"""
@@ -155,6 +156,8 @@ class TradingMonitor:
         status = "[PROFIT]" if trade_result.get('pnl', 0) > 0 else "[LOSS]"
         strategy_emoji = trade_result.get('strategy_emoji', '🤖')
         strategy_id = trade_result.get('strategy_id', 'UNKNOWN')
+        
+        logger.info(f"Trade closed: {trade_result.get('asset')} - P&L: ${trade_result.get('pnl', 0):.2f}")
         
         # Send trade closed alert with strategy info
         self._send_alert(
@@ -171,6 +174,8 @@ class TradingMonitor:
         """Called when a new trade is opened"""
         strategy_emoji = trade_result.get('strategy_emoji', '🤖')
         strategy_id = trade_result.get('strategy_id', 'UNKNOWN')
+        
+        logger.info(f"New trade opened: {trade_result.get('asset')} - {trade_result.get('signal')}")
         
         self._send_alert(
             'INFO',
@@ -192,9 +197,11 @@ class TradingMonitor:
         # Check cooldown
         if alert_key in self.last_alert_time:
             if now - self.last_alert_time[alert_key] < self.alert_cooldown:
+                logger.debug(f"Alert skipped due to cooldown: {title}")
                 return
         
         self.last_alert_time[alert_key] = now
+        logger.info(f"ALERT: {level} - {title}")
         
         # Always print to console
         self._console_alert(level, title, message)
@@ -209,6 +216,7 @@ class TradingMonitor:
     
     def _console_alert(self, level: str, title: str, message: str):
         """Print alert to console"""
+        # Keep as print for visibility (but also log)
         print(f"\n{'='*60}")
         print(f"{level} ALERT: {title}")
         print(f"{'='*60}")
@@ -222,7 +230,7 @@ class TradingMonitor:
             chat_id = self.telegram_config.get('chat_id')
             
             if not bot_token or not chat_id:
-                print("[WARN] Telegram: Missing bot_token or chat_id")
+                logger.warning("Telegram: Missing bot_token or chat_id")
                 return
             
             # Map level to text prefix
@@ -251,10 +259,12 @@ class TradingMonitor:
             
             response = requests.post(url, data=data, timeout=15)
             if response.status_code != 200:
-                print(f"[WARN] Telegram error: {response.text}")
+                logger.error(f"Telegram error: {response.text}")
+            else:
+                logger.debug(f"Telegram alert sent: {title}")
                 
         except Exception as e:
-            print(f"[WARN] Telegram error: {e}")
+            logger.error(f"Telegram error: {e}")
     
     def _email_alert(self, level: str, title: str, message: str):
         """Send alert via Email"""
@@ -268,7 +278,7 @@ class TradingMonitor:
             use_tls = self.email_config.get('use_tls', True)
             
             if not username or not password:
-                print("[WARN] Email: Missing username or password")
+                logger.warning("Email: Missing username or password")
                 return
             
             # Create message
@@ -314,8 +324,10 @@ class TradingMonitor:
             server.send_message(msg)
             server.quit()
             
+            logger.debug(f"Email alert sent: {title}")
+            
         except Exception as e:
-            print(f"[WARN] Email error: {e}")
+            logger.error(f"Email error: {e}")
     
     def get_status(self) -> Dict:
         """Get monitoring status"""
@@ -324,8 +336,8 @@ class TradingMonitor:
         if self.paper_trader:
             try:
                 paper_stats = self.paper_trader.get_performance()
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Could not get paper trader performance: {e}")
         
         # Get alert channels status
         channels = []
@@ -350,9 +362,11 @@ class ConsoleMonitor:
     
     def __init__(self):
         self.start_time = datetime.now()
+        logger.info("Console Monitor initialized for backtesting")
     
     def print_backtest_results(self, results):
         """Print formatted backtest results"""
+        # Keep as print for backtesting output
         print("\n" + "="*60)
         print("BACKTEST RESULTS")
         print("="*60)
@@ -366,21 +380,28 @@ class ConsoleMonitor:
         print(f"Sharpe Ratio: {results.sharpe_ratio:.2f}")
         print(f"Max Drawdown: {results.max_drawdown:.2%}")
         print("="*60)
+        
+        # Also log summary
+        logger.info(f"Backtest complete: {results.total_trades} trades, {results.win_rate:.1%} win rate, P&L: ${results.total_pnl:.2f}")
     
     def print_trade(self, trade):
         """Print individual trade"""
+        # Keep as print for backtesting output
         print(f"\nTrade: {trade.asset} {trade.direction}")
         print(f"   Entry: ${trade.entry_price:.2f} → Exit: ${trade.exit_price:.2f}")
         print(f"   P&L: ${trade.pnl:.2f} ({trade.return_pct:.2f}%)")
         print(f"   Duration: {trade.duration_days} days")
         print(f"   Exit Reason: {trade.exit_reason}")
+        
+        # Also log
+        logger.info(f"Trade: {trade.asset} {trade.direction} - P&L: ${trade.pnl:.2f}")
 
 
 if __name__ == "__main__":
     # Test the monitor
     monitor = TradingMonitor()
-    print("\n[OK] Monitor initialized successfully")
+    logger.info("Monitor initialized successfully")
     
     # Test console monitor
     console = ConsoleMonitor()
-    print("[OK] Console monitor ready")
+    logger.info("Console monitor ready")

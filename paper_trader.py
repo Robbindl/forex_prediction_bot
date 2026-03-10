@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 import threading
 import uuid
 from services.database_service import DatabaseService
+from logger import logger
 
 class PaperTrade:
     """Individual paper trade record"""
@@ -79,9 +80,10 @@ class PaperTrader:
     - Sends alerts via monitor
     """
     
-    def __init__(self, risk_manager=None, history_file: str = "paper_trades.json"):
+    def __init__(self, risk_manager=None, history_file: str = "paper_trades.json", save_json=False):
         self.risk_manager = risk_manager
         self.history_file = history_file
+        self.save_json = save_json
         self.open_positions: Dict[str, PaperTrade] = {}
         self.closed_positions: List[PaperTrade] = []
         self.lock = threading.RLock()
@@ -89,13 +91,14 @@ class PaperTrader:
         self.voting_engine = None  # ← ADDED THIS (will be set by trading system)
         self.db = DatabaseService()  # Initialize database
         self.use_db = True
+        self.trading_system = None  # ← ADDED THIS: Will be set by trading system for Telegram access
         
         # Load history if exists
         self._load_history()
         
-        print(" Paper Trader Initialized")
-        print(f"   • Open Positions: {len(self.open_positions)}")
-        print(f"   • Historical Trades: {len(self.closed_positions)}")
+        logger.info("Paper Trader Initialized")
+        logger.info(f"Open Positions: {len(self.open_positions)}")
+        logger.info(f"Historical Trades: {len(self.closed_positions)}")
     
     def _load_history(self):
         """Load trade history from file"""
@@ -106,13 +109,16 @@ class PaperTrader:
                     
                     # Load closed positions (simplified - would need proper deserialization)
                     if 'closed_positions' in data:
-                        print(f"[OK] Loaded {len(data['closed_positions'])} trades from history")
+                        logger.info(f"Loaded {len(data['closed_positions'])} trades from history")
                         
         except Exception as e:
-            print(f" Could not load trade history: {e}")
+            logger.error(f"Could not load trade history: {e}")
     
     def _save_history(self):
         """Save trade history to file"""
+        if not self.save_json:  # Skip if JSON saving is disabled
+            return
+        
         try:
             history = {
                 'open_positions': [p.to_dict() for p in self.open_positions.values()],
@@ -121,7 +127,7 @@ class PaperTrader:
             with open(self.history_file, 'w') as f:
                 json.dump(history, f, indent=2, default=str)
         except Exception as e:
-            print(f" Could not save trade history: {e}")
+            logger.error(f"Could not save trade history: {e}")
 
     def partial_close(self, trade_id: str, current_price: float, level: int) -> Optional[Dict]:
         """
@@ -150,9 +156,9 @@ class PaperTrader:
                 # Move stop to breakeven
                 trade.stop_loss = trade.entry_price
                 
-                print(f"  🎯 TP1 HIT: Closed 50% of {trade.asset} at ${current_price:.2f}")
-                print(f"     P&L on closed portion: ${pnl:.2f}")
-                print(f"     Stop moved to breakeven (${trade.entry_price:.2f})")
+                logger.info(f"TP1 HIT: Closed 50% of {trade.asset} at ${current_price:.2f}")
+                logger.info(f"P&L on closed portion: ${pnl:.2f}")
+                logger.info(f"Stop moved to breakeven (${trade.entry_price:.2f})")
                 
                 # Record this in trade metadata
                 if not hasattr(trade, 'metadata'):
@@ -185,9 +191,9 @@ class PaperTrader:
                 trade.highest_price = current_price
                 trade.trailing_distance = trade.atr * 2 if hasattr(trade, 'atr') else current_price * 0.01
                 
-                print(f"  🎯 TP2 HIT: Closed 30% of {trade.asset} at ${current_price:.2f}")
-                print(f"     P&L on closed portion: ${pnl:.2f}")
-                print(f"     Trailing stop activated (distance: ${trade.trailing_distance:.2f})")
+                logger.info(f"TP2 HIT: Closed 30% of {trade.asset} at ${current_price:.2f}")
+                logger.info(f"P&L on closed portion: ${pnl:.2f}")
+                logger.info(f"Trailing stop activated (distance: ${trade.trailing_distance:.2f})")
                 
                 return {
                     'trade_id': trade_id,
@@ -251,7 +257,7 @@ class PaperTrader:
         """
         with self.lock:
             if trade_id not in self.open_positions:
-                print(f"   ⚠️ Trade {trade_id} not found")
+                logger.warning(f"Trade {trade_id} not found")
                 return None
             
             trade = self.open_positions.pop(trade_id)
@@ -283,7 +289,7 @@ class PaperTrader:
                     }
                     self.voting_engine.update_strategy_performance(trade_result)
                 except Exception as e:
-                    print(f"   ⚠️ Failed to update voting engine: {e}")
+                    logger.error(f"Failed to update voting engine: {e}")
             
             # ===== UPDATE DATABASE =====
             if hasattr(self, 'use_db') and self.use_db:
@@ -295,9 +301,9 @@ class PaperTrader:
                         'pnl_percent': trade.pnl_percent
                     }
                     self.db.update_trade_exit(trade.trade_id, exit_data)
-                    print(f"   💾 Trade exit saved to database")
+                    logger.info(f"Trade exit saved to database")
                 except Exception as e:
-                    print(f"   ⚠️ Failed to update database: {e}")
+                    logger.error(f"Failed to update database: {e}")
             
             # Update risk manager if available
             if self.risk_manager and hasattr(self.risk_manager, 'update_pnl'):
@@ -306,10 +312,10 @@ class PaperTrader:
             # Add to closed positions
             self.closed_positions.append(trade)
             
-            print(f" 🔥 FORCE CLOSED: {trade.asset} - {reason}")
-            print(f"   • P&L: ${trade.pnl:.2f} ({trade.pnl_percent:.2f}%)")
-            print(f"   • Duration: {trade.duration_minutes} minutes")
-            print(f"   • Trade ID: {trade.trade_id}")
+            logger.info(f"FORCE CLOSED: {trade.asset} - {reason}")
+            logger.info(f"P&L: ${trade.pnl:.2f} ({trade.pnl_percent:.2f}%)")
+            logger.info(f"Duration: {trade.duration_minutes} minutes")
+            logger.info(f"Trade ID: {trade.trade_id}")
             
             # ===== SEND ALERT =====
             if hasattr(self, 'monitor') and self.monitor:
@@ -324,7 +330,15 @@ class PaperTrader:
                         f"Duration: {trade.duration_minutes} minutes"
                     )
                 except Exception as e:
-                    print(f"    Could not send alert: {e}")
+                    logger.error(f"Could not send alert: {e}")
+            
+            # ===== SEND TELEGRAM ALERT =====
+            if hasattr(self, 'trading_system') and hasattr(self.trading_system, 'telegram') and self.trading_system.telegram:
+                try:
+                    self.trading_system.telegram.alert_trade_closed(trade.to_dict())
+                except Exception as e:
+                    logger.error(f"Could not send Telegram alert: {e}")
+            # ================================
             
             # Save history
             self._save_history()
@@ -390,7 +404,7 @@ class PaperTrader:
             # 🔥 PROFITABILITY UPGRADE: Check cooldown
             if self.is_asset_on_cooldown(signal['asset']):
                 remaining = self.get_cooldown_remaining(signal['asset'])
-                print(f" ⏳ Skipping {signal['asset']}: On cooldown ({remaining}min remaining)")
+                logger.info(f"Skipping {signal['asset']}: On cooldown ({remaining}min remaining)")
                 return None
             
             # Check risk manager if available
@@ -398,7 +412,7 @@ class PaperTrader:
                 # Check max positions
                 if hasattr(self.risk_manager, 'max_positions'):
                     if len(self.open_positions) >= self.risk_manager.max_positions:
-                        print(f" Skipping {signal['asset']}: Max positions reached")
+                        logger.info(f"Skipping {signal['asset']}: Max positions reached")
                         return None
                 
                 # Calculate position size with risk management
@@ -451,7 +465,7 @@ class PaperTrader:
                 position_size = risk_amount / price_diff if price_diff > 0 else 0
             
             if position_size <= 0:
-                print(f" Skipping {signal['asset']}: Invalid position size")
+                logger.info(f"Skipping {signal['asset']}: Invalid position size")
                 return None
             
             # Create paper trade - MODIFIED to include contributing_strategies
@@ -486,7 +500,7 @@ class PaperTrader:
                         'category': trade.category
                     }
                     self.trading_system.session_tracker.record_trade(trade_data)
-                    print(f"   📊 Trade recorded in session tracker")
+                    logger.info(f"Trade recorded in session tracker")
             # ===========================================
             
             # ===== NEW: SAVE TO DATABASE =====
@@ -506,28 +520,37 @@ class PaperTrader:
                         'metadata': {'reason': signal.get('reason', '')}
                     }
                     self.db.save_trade(trade_data)
-                    print(f"   💾 Trade saved to database")
+                    logger.info(f"Trade saved to database")
                 except Exception as e:
-                    print(f"   ⚠️ Failed to save to database: {e}")
+                    logger.error(f"Failed to save to database: {e}")
             # =================================
             
             # Update risk manager trade count if available
             if self.risk_manager and hasattr(self.risk_manager, 'increment_trades'):
                 self.risk_manager.increment_trades()
             
-            print(f" EXECUTED: {signal['asset']} {signal['signal']}")
-            print(f"   • Size: {position_size:.4f} units")
-            print(f"   • Risk: ${risk_amount:.2f}")
-            print(f"   • Trade ID: {trade.trade_id}")
+            logger.info(f"EXECUTED: {signal['asset']} {signal['signal']}")
+            logger.info(f"Size: {position_size:.4f} units")
+            logger.info(f"Risk: ${risk_amount:.2f}")
+            logger.info(f"Trade ID: {trade.trade_id}")
             
             # ===== SEND NEW TRADE ALERT =====
             if hasattr(self, 'monitor') and self.monitor:
                 try:
                     # Pass the original signal which has ALL the strategy info
                     self.monitor.on_new_trade(signal)
-                    print(f"   📱 Trade alert sent! [{signal.get('strategy_id', 'UNKNOWN')} {signal.get('strategy_emoji', '🤖')}]")
+                    logger.info(f"Trade alert sent! [{signal.get('strategy_id', 'UNKNOWN')} {signal.get('strategy_emoji', '🤖')}]")
                 except Exception as e:
-                    print(f"    Could not send alert: {e}")
+                    logger.error(f"Could not send alert: {e}")
+            
+            # ===== SEND TELEGRAM ALERT =====
+            if hasattr(self, 'trading_system') and hasattr(self.trading_system, 'telegram') and self.trading_system.telegram:
+                try:
+                    self.trading_system.telegram.alert_trade_opened(signal)
+                    logger.info(f"Telegram alert sent!")
+                except Exception as e:
+                    logger.error(f"Could not send Telegram alert: {e}")
+            # ================================
             
             # Save history
             self._save_history()
@@ -617,7 +640,7 @@ class PaperTrader:
                         }
                         self.voting_engine.update_strategy_performance(trade_result)
                     except Exception as e:
-                        print(f"   ⚠️ Failed to update voting engine: {e}")
+                        logger.error(f"Failed to update voting engine: {e}")
                 # =============================================
                 
                 # 🔥 PROFITABILITY UPGRADE: Update cooldown tracker on losses
@@ -625,11 +648,11 @@ class PaperTrader:
                     try:
                         from profitability_upgrade import on_trade_closed
                         on_trade_closed(trade.asset, trade.pnl, trade.exit_reason)
-                        print(f"   🚫 Cooldown activated for {trade.asset} (60min)")
+                        logger.info(f"Cooldown activated for {trade.asset} (60min)")
                     except ImportError:
                         pass  # Upgrade not installed
                     except Exception as e:
-                        print(f"   ⚠️ Could not update cooldown: {e}")
+                        logger.error(f"Could not update cooldown: {e}")
                 
                 # ===== NEW: UPDATE DATABASE WITH EXIT DATA =====
                 if hasattr(self, 'use_db') and self.use_db:
@@ -641,9 +664,9 @@ class PaperTrader:
                             'pnl_percent': trade.pnl_percent
                         }
                         self.db.update_trade_exit(trade.trade_id, exit_data)
-                        print(f"   💾 Trade exit saved to database")
+                        logger.info(f"Trade exit saved to database")
                     except Exception as e:
-                        print(f"   ⚠️ Failed to update database: {e}")
+                        logger.error(f"Failed to update database: {e}")
                 # ==============================================
                 
                 # Update risk manager if available
@@ -667,16 +690,16 @@ class PaperTrader:
                                 t['exit_time'] = trade.exit_time
                                 t['exit_reason'] = trade.exit_reason
                                 t['pnl_percent'] = trade.pnl_percent
-                                print(f"   📊 Session tracker updated with P&L")
+                                logger.info(f"Session tracker updated with P&L")
                                 break
                 # ===========================================
                 
                 # Add to closed positions
                 self.closed_positions.append(trade)
                 
-                print(f" CLOSED: {trade.asset} - {trade.exit_reason}")
-                print(f"   • P&L: ${trade.pnl:.2f} ({trade.pnl_percent:.2f}%)")
-                print(f"   • Trade ID: {trade.trade_id}")
+                logger.info(f"CLOSED: {trade.asset} - {trade.exit_reason}")
+                logger.info(f"P&L: ${trade.pnl:.2f} ({trade.pnl_percent:.2f}%)")
+                logger.info(f"Trade ID: {trade.trade_id}")
                 
                 # ===== SEND CLOSED TRADE ALERT =====
                 if hasattr(self, 'monitor') and self.monitor:
@@ -690,9 +713,18 @@ class PaperTrader:
                             f"Entry: ${trade.entry_price:.2f} → Exit: ${trade.exit_price:.2f}\n"
                             f"Duration: {trade.duration_minutes} minutes"
                         )
-                        print("    P&L alert sent!")
+                        logger.info(f"P&L alert sent!")
                     except Exception as e:
-                        print(f"    Could not send alert: {e}")
+                        logger.error(f"Could not send alert: {e}")
+                
+                # ===== SEND TELEGRAM ALERT =====
+                if hasattr(self, 'trading_system') and hasattr(self.trading_system, 'telegram') and self.trading_system.telegram:
+                    try:
+                        self.trading_system.telegram.alert_trade_closed(trade.to_dict())
+                        logger.info(f"Telegram alert sent!")
+                    except Exception as e:
+                        logger.error(f"Could not send Telegram alert: {e}")
+                # ================================
             
             if to_close: 
                 self._save_history()

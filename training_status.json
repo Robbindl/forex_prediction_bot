@@ -213,8 +213,1215 @@
       }
     }
   },
-  "total_models": 0,
-  "model_ages": {},
+  "total_models": 134,
+  "model_ages": {
+    "AAVE-USD_15m": {
+      "trained_at": "2026-03-07T21:34:01.560964",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AAVE-USD_1d": {
+      "trained_at": "2026-03-07T21:27:18.406283",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AAVE-USD_1h": {
+      "trained_at": "2026-03-07T21:37:22.276473",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ADA-USD_15m": {
+      "trained_at": "2026-03-07T21:17:43.587029",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ADA-USD_1d": {
+      "trained_at": "2026-03-07T21:17:36.179999",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ADA-USD_1h": {
+      "trained_at": "2026-03-07T21:22:19.642696",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AUD_JPY_15m": {
+      "trained_at": "2026-03-07T20:52:59.410128",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AUD_JPY_1d": {
+      "trained_at": "2026-03-07T20:52:28.174263",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AUD_JPY_1h": {
+      "trained_at": "2026-03-07T20:57:11.790592",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AUD_USD_15m": {
+      "trained_at": "2026-03-07T20:37:50.482736",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AUD_USD_1d": {
+      "trained_at": "2026-03-07T20:34:43.655984",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AUD_USD_1h": {
+      "trained_at": "2026-03-07T20:43:08.964979",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AVAX-USD_15m": {
+      "trained_at": "2026-03-07T21:26:47.193226",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AVAX-USD_1d": {
+      "trained_at": "2026-03-07T21:26:41.817344",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AVAX-USD_1h": {
+      "trained_at": "2026-03-07T21:31:54.533760",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "BNB-USD_15m": {
+      "trained_at": "2026-03-07T21:08:41.525485",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "BNB-USD_1d": {
+      "trained_at": "2026-03-07T21:07:21.519445",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "BNB-USD_1h": {
+      "trained_at": "2026-03-07T21:17:13.139544",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "BTC-USD_15m": {
+      "trained_at": "2026-03-07T21:00:58.748186",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "BTC-USD_1d": {
+      "trained_at": "2026-03-07T21:00:59.267904",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "BTC-USD_1h": {
+      "trained_at": "2026-03-07T21:11:47.508888",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "COMP-USD_15m": {
+      "trained_at": "2026-03-07T21:35:20.056596",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "COMP-USD_1d": {
+      "trained_at": "2026-03-07T21:34:47.779784",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "COMP-USD_1h": {
+      "trained_at": "2026-03-07T21:35:19.837754",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "CRV-USD_1d": {
+      "trained_at": "2026-03-07T21:39:32.311321",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "DOGE-USD_15m": {
+      "trained_at": "2026-03-07T21:20:12.819974",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "DOGE-USD_1d": {
+      "trained_at": "2026-03-07T21:19:46.093404",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "DOGE-USD_1h": {
+      "trained_at": "2026-03-07T21:26:23.438141",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "DOT-USD_15m": {
+      "trained_at": "2026-03-07T21:22:13.628235",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "DOT-USD_1d": {
+      "trained_at": "2026-03-07T21:20:13.484011",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "DOT-USD_1h": {
+      "trained_at": "2026-03-07T21:26:49.021112",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ETH-USD_15m": {
+      "trained_at": "2026-03-07T21:04:29.462728",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ETH-USD_1d": {
+      "trained_at": "2026-03-07T21:04:30.210620",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ETH-USD_1h": {
+      "trained_at": "2026-03-07T21:12:02.637086",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_AUD_15m": {
+      "trained_at": "2026-03-07T20:54:52.726406",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_AUD_1d": {
+      "trained_at": "2026-03-07T20:54:46.721836",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_AUD_1h": {
+      "trained_at": "2026-03-07T20:58:10.682882",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_GBP_15m": {
+      "trained_at": "2026-03-07T20:45:09.085117",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_GBP_1d": {
+      "trained_at": "2026-03-07T20:43:09.166016",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_GBP_1h": {
+      "trained_at": "2026-03-07T20:49:33.863696",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_JPY_15m": {
+      "trained_at": "2026-03-07T20:47:10.271561",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_JPY_1d": {
+      "trained_at": "2026-03-07T20:45:09.907774",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_JPY_1h": {
+      "trained_at": "2026-03-07T20:52:58.473027",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_USD_15m": {
+      "trained_at": "2026-03-07T20:27:40.033301",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_USD_1d": {
+      "trained_at": "2026-03-07T20:27:41.818807",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_USD_1h": {
+      "trained_at": "2026-03-07T20:37:15.583612",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_AUD_15m": {
+      "trained_at": "2026-03-07T20:57:08.781054",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_AUD_1d": {
+      "trained_at": "2026-03-07T20:57:07.111362",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_AUD_1h": {
+      "trained_at": "2026-03-07T21:03:31.545401",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_JPY_15m": {
+      "trained_at": "2026-03-07T20:52:12.433461",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_JPY_1d": {
+      "trained_at": "2026-03-07T20:48:57.548894",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_JPY_1h": {
+      "trained_at": "2026-03-07T20:54:54.388558",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_USD_15m": {
+      "trained_at": "2026-03-07T20:27:40.984654",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_USD_1d": {
+      "trained_at": "2026-03-07T20:27:52.127612",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "LINK-USD_15m": {
+      "trained_at": "2026-03-07T21:31:26.892488",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "LINK-USD_1d": {
+      "trained_at": "2026-03-07T21:26:59.033953",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "LINK-USD_1h": {
+      "trained_at": "2026-03-07T21:37:13.862550",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "LTC-USD_15m": {
+      "trained_at": "2026-03-07T21:24:18.358378",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "LTC-USD_1d": {
+      "trained_at": "2026-03-07T21:24:17.495532",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "LTC-USD_1h": {
+      "trained_at": "2026-03-07T21:31:38.076694",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "MATIC-USD_15m": {
+      "trained_at": "2026-03-07T21:23:40.781997",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "MATIC-USD_1d": {
+      "trained_at": "2026-03-07T21:22:05.496785",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "MATIC-USD_1h": {
+      "trained_at": "2026-03-07T21:22:19.204111",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "MKR-USD_15m": {
+      "trained_at": "2026-03-07T21:34:46.204576",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "MKR-USD_1d": {
+      "trained_at": "2026-03-07T21:34:24.025101",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "MKR-USD_1h": {
+      "trained_at": "2026-03-07T21:39:33.060454",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "NZD_USD_15m": {
+      "trained_at": "2026-03-07T20:43:07.870360",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "NZD_USD_1d": {
+      "trained_at": "2026-03-07T20:40:51.825860",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "NZD_USD_1h": {
+      "trained_at": "2026-03-07T20:49:07.867074",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "SNX-USD_15m": {
+      "trained_at": "2026-03-07T21:39:31.173740",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "SNX-USD_1d": {
+      "trained_at": "2026-03-07T21:37:43.426149",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "SOL-USD_15m": {
+      "trained_at": "2026-03-07T21:15:09.464582",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "SOL-USD_1d": {
+      "trained_at": "2026-03-07T21:15:08.382984",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "SOL-USD_1h": {
+      "trained_at": "2026-03-07T21:20:14.011741",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_BRL_15m": {
+      "trained_at": "2026-03-07T20:58:35.680553",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_BRL_1d": {
+      "trained_at": "2026-03-07T20:58:35.623225",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_BRL_1h": {
+      "trained_at": "2026-03-07T20:58:35.615223",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_CAD_15m": {
+      "trained_at": "2026-03-07T20:40:51.319978",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_CAD_1d": {
+      "trained_at": "2026-03-07T20:39:48.065967",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_CAD_1h": {
+      "trained_at": "2026-03-07T20:46:13.708208",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_CHF_15m": {
+      "trained_at": "2026-03-07T20:34:41.779303",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_CHF_1d": {
+      "trained_at": "2026-03-07T20:33:35.227591",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_CHF_1h": {
+      "trained_at": "2026-03-07T20:40:51.062955",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_JPY_15m": {
+      "trained_at": "2026-03-07T20:32:13.717921",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_JPY_1d": {
+      "trained_at": "2026-03-07T20:33:19.797559",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_JPY_1h": {
+      "trained_at": "2026-03-07T20:39:56.464826",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_MXN_15m": {
+      "trained_at": "2026-03-07T20:58:58.118159",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_MXN_1d": {
+      "trained_at": "2026-03-07T20:58:34.211855",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_MXN_1h": {
+      "trained_at": "2026-03-07T20:58:57.783234",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_SGD_15m": {
+      "trained_at": "2026-03-07T21:00:58.117632",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_SGD_1d": {
+      "trained_at": "2026-03-07T20:59:00.941900",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_SGD_1h": {
+      "trained_at": "2026-03-07T20:58:58.733445",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_TRY_15m": {
+      "trained_at": "2026-03-07T20:57:36.678698",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_TRY_1d": {
+      "trained_at": "2026-03-07T20:57:36.756712",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_TRY_1h": {
+      "trained_at": "2026-03-07T20:57:36.788356",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_ZAR_15m": {
+      "trained_at": "2026-03-07T20:58:07.087167",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_ZAR_1d": {
+      "trained_at": "2026-03-07T20:58:06.822928",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_ZAR_1h": {
+      "trained_at": "2026-03-07T20:58:07.037829",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "XRP-USD_15m": {
+      "trained_at": "2026-03-07T21:12:03.437012",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "XRP-USD_1d": {
+      "trained_at": "2026-03-07T21:11:38.043739",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "XRP-USD_1h": {
+      "trained_at": "2026-03-07T21:19:42.596323",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "trained_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AAPL_model": {
+      "trained_at": "2026-03-03T22:58:24.202504",
+      "age_days": 4,
+      "age_hours": 2,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ADA-USD_model": {
+      "trained_at": "2026-03-07T20:41:05.254969",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AMZN_model": {
+      "trained_at": "2026-03-03T22:59:19.909319",
+      "age_days": 4,
+      "age_hours": 2,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ATOM-USD_model": {
+      "trained_at": "2026-02-22T20:39:54.278226",
+      "age_days": 13,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AUD_USD_model": {
+      "trained_at": "2026-03-06T11:57:27.253423",
+      "age_days": 1,
+      "age_hours": 13,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "AVAX-USD_model": {
+      "trained_at": "2026-03-07T20:49:22.028521",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "BNB-USD_model": {
+      "trained_at": "2026-03-07T20:36:57.744270",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "BTC-USD_model": {
+      "trained_at": "2026-03-07T20:32:32.154252",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "CL=F_model": {
+      "trained_at": "2026-03-03T22:37:07.275504",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "DOGE-USD_model": {
+      "trained_at": "2026-03-07T20:43:06.090558",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "DOT-USD_model": {
+      "trained_at": "2026-03-07T20:45:08.582476",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "ETH-USD_model": {
+      "trained_at": "2026-03-07T20:34:37.846336",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "EUR_USD_model": {
+      "trained_at": "2026-03-06T11:49:17.717268",
+      "age_days": 1,
+      "age_hours": 13,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GBP_USD_model": {
+      "trained_at": "2026-03-06T11:53:12.189989",
+      "age_days": 1,
+      "age_hours": 13,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GC=F_model": {
+      "trained_at": "2026-03-03T22:36:27.365306",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "GOOGL_model": {
+      "trained_at": "2026-03-03T22:58:59.419782",
+      "age_days": 4,
+      "age_hours": 2,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "LINK-USD_model": {
+      "trained_at": "2026-03-07T20:52:18.820181",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "LTC-USD_model": {
+      "trained_at": "2026-03-07T20:47:09.336202",
+      "age_days": 0,
+      "age_hours": 4,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "META_model": {
+      "trained_at": "2026-03-03T22:36:03.742282",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "MSFT_model": {
+      "trained_at": "2026-03-03T22:58:41.015876",
+      "age_days": 4,
+      "age_hours": 2,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "NG=F_model": {
+      "trained_at": "2026-03-03T22:37:25.584000",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "NVDA_model": {
+      "trained_at": "2026-03-03T22:59:56.939088",
+      "age_days": 4,
+      "age_hours": 2,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "SI=F_model": {
+      "trained_at": "2026-03-03T22:36:54.318519",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "SOL-USD_model": {
+      "trained_at": "2026-03-07T20:37:50.814662",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "TSLA_model": {
+      "trained_at": "2026-03-03T22:59:37.647171",
+      "age_days": 4,
+      "age_hours": 2,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "UNI-USD_model": {
+      "trained_at": "2026-02-22T20:39:36.335866",
+      "age_days": 13,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_CAD_model": {
+      "trained_at": "2026-03-03T22:58:01.859690",
+      "age_days": 4,
+      "age_hours": 2,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "USD_JPY_model": {
+      "trained_at": "2026-03-06T11:53:47.827087",
+      "age_days": 1,
+      "age_hours": 13,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "XRP-USD_model": {
+      "trained_at": "2026-03-07T20:40:23.426409",
+      "age_days": 0,
+      "age_hours": 5,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "^DJI_model": {
+      "trained_at": "2026-03-03T22:38:15.603419",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "^FTSE_model": {
+      "trained_at": "2026-03-03T22:39:12.361819",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "^GSPC_model": {
+      "trained_at": "2026-03-03T22:37:41.418736",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    },
+    "^IXIC_model": {
+      "trained_at": "2026-03-03T22:38:39.220887",
+      "age_days": 4,
+      "age_hours": 3,
+      "data_points": "N/A",
+      "confidence": "N/A",
+      "location": "ml_models",
+      "note": "Using file modification time (unpickle failed)"
+    }
+  },
   "training_history": [
     {
       "date": "2026-02-21T11:14:04.924982",

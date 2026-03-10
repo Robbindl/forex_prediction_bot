@@ -137,4 +137,5 @@ __pycache__/
 # Local config
 .env
 config/local_*.py
-
+*.session
+*.session-journal

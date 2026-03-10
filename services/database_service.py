@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 # Fix imports
 from models.trade_models import Trade
-from config.database import SessionLocal
+from config.database import SessionLocal, engine
 
 def convert_numpy(value):
     """Convert numpy types to Python native types for database storage"""
@@ -30,39 +30,60 @@ class DatabaseService:
     
     def __init__(self):
         """Create a new database session"""
-        self.session = SessionLocal()
+        self.session = None
+        self.use_db = False
+        self._connect()
+    
+    def _connect(self):
+        """Connect to database if available"""
+        try:
+            if SessionLocal:
+                self.session = SessionLocal()
+                # Test connection
+                self.session.execute(text("SELECT 1"))
+                self.use_db = True
+                print("✅ Database connected")
+            else:
+                print("⚠️ Database not available, using file storage")
+        except Exception as e:
+            print(f"⚠️ Database connection failed: {e}")
+            self.use_db = False
+            self.session = None
     
     def save_trade(self, trade_data):
-        """
-        Save a trade to the database
+        """Save a trade to the database"""
+        if not self.use_db or not self.session:
+            print("⚠️ Database not available, trade not saved")
+            return trade_data.get('trade_id', str(uuid.uuid4())[:8])
         
-        Args:
-            trade_data: Dictionary with trade information
-        """
-        # Convert any numpy values to Python native types
-        trade = Trade(
-            trade_id=str(convert_numpy(trade_data.get('trade_id', str(uuid.uuid4())[:8]))),
-            asset=str(convert_numpy(trade_data.get('asset', 'UNKNOWN'))),
-            category=str(convert_numpy(trade_data.get('category', 'unknown'))),
-            direction=str(convert_numpy(trade_data.get('signal', 'HOLD'))),
-            entry_price=convert_numpy(trade_data.get('entry_price', 0)),
-            exit_price=convert_numpy(trade_data.get('exit_price')),
-            position_size=convert_numpy(trade_data.get('position_size', 0)),
-            stop_loss=convert_numpy(trade_data.get('stop_loss', 0)),
-            take_profit=convert_numpy(trade_data.get('take_profit')),
-            pnl=convert_numpy(trade_data.get('pnl')),
-            pnl_percent=convert_numpy(trade_data.get('pnl_percent')),
-            exit_time=datetime.fromisoformat(trade_data['exit_time']) if trade_data.get('exit_time') else None,
-            exit_reason=str(convert_numpy(trade_data.get('exit_reason'))) if trade_data.get('exit_reason') else None,
-            strategy_id=str(convert_numpy(trade_data.get('strategy_id', 'UNKNOWN'))),
-            confidence=convert_numpy(trade_data.get('confidence', 0)),
-            trade_metadata=trade_data.get('metadata', {})
-        )
-        
-        # Add to database and save
-        self.session.add(trade)
-        self.session.commit()
-        return trade.trade_id
+        try:
+            # Convert any numpy values to Python native types
+            trade = Trade(
+                trade_id=str(convert_numpy(trade_data.get('trade_id', str(uuid.uuid4())[:8]))),
+                asset=str(convert_numpy(trade_data.get('asset', 'UNKNOWN'))),
+                category=str(convert_numpy(trade_data.get('category', 'unknown'))),
+                direction=str(convert_numpy(trade_data.get('signal', 'HOLD'))),
+                entry_price=convert_numpy(trade_data.get('entry_price', 0)),
+                exit_price=convert_numpy(trade_data.get('exit_price')),
+                position_size=convert_numpy(trade_data.get('position_size', 0)),
+                stop_loss=convert_numpy(trade_data.get('stop_loss', 0)),
+                take_profit=convert_numpy(trade_data.get('take_profit')),
+                pnl=convert_numpy(trade_data.get('pnl')),
+                pnl_percent=convert_numpy(trade_data.get('pnl_percent')),
+                exit_time=datetime.fromisoformat(trade_data['exit_time']) if trade_data.get('exit_time') else None,
+                exit_reason=str(convert_numpy(trade_data.get('exit_reason'))) if trade_data.get('exit_reason') else None,
+                strategy_id=str(convert_numpy(trade_data.get('strategy_id', 'UNKNOWN'))),
+                confidence=convert_numpy(trade_data.get('confidence', 0)),
+                trade_metadata=trade_data.get('metadata', {})
+            )
+            
+            self.session.add(trade)
+            self.session.commit()
+            return trade.trade_id
+        except Exception as e:
+            print(f"⚠️ Database save failed: {e}")
+            self.session.rollback()
+            return trade_data.get('trade_id', str(uuid.uuid4())[:8])
     
     def update_trade_exit(self, trade_id, exit_data):
         """Update a trade when it closes"""

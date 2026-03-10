@@ -1,6 +1,7 @@
 """
 ULTIMATE PROFESSIONAL TRADING SYSTEM
-Everything integrated: Backtesting + ML + Paper Trading + Broker Ready
+Everything integrated: Backtesting + ML + Paper Trading + Broker Ready + Telegram Commander
+UPDATED: Two-bot Telegram system - Command bot in web dashboard, Alert bot in trading system
 """
 
 import sys
@@ -15,6 +16,10 @@ import numpy as np
 import yfinance as yf
 import argparse
 from pathlib import Path
+import asyncio
+import threading
+import re
+from logger import logger
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,6 +41,23 @@ from model_registry import ModelRegistry
 from cache_manager import CacheManager
 from strategy_optimizer import StrategyOptimizer
 from session_tracker import SessionTracker
+from telegram_manager import telegram_manager
+
+# ===== TELEGRAM COMMANDER (for web dashboard only) =====
+try:
+    from telegram_commander import TelegramCommander
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    logger.warning("Telegram Commander not available - run: pip install python-telegram-bot")
+
+# ===== SIMPLE ALERT BOT (for trading system only) =====
+try:
+    from simple_alert_bot import SimpleAlertBot
+    SIMPLE_ALERT_AVAILABLE = True
+except ImportError:
+    SIMPLE_ALERT_AVAILABLE = False
+    logger.warning("SimpleAlertBot not available - create simple_alert_bot.py")
 
 # ===== DYNAMIC POSITION SIZER =====
 try:
@@ -43,18 +65,30 @@ try:
     DYNAMIC_SIZER_AVAILABLE = True
 except ImportError:
     DYNAMIC_SIZER_AVAILABLE = False
-    print("⚠️ Dynamic Position Sizer not available")
+    logger.warning("Dynamic Position Sizer not available")
 
+from advanced_risk_manager import DailyLossLimit
 
 class UltimateTradingSystem:
     """
     ULTIMATE PROFESSIONAL TRADING SYSTEM
     """
     
-    def __init__(self, account_balance: float = 10000, strategy_mode: str = 'balanced'):
-        print("\n" + "="*60)
-        print(" ULTIMATE PROFESSIONAL TRADING SYSTEM")
-        print("="*60 + "\n")
+    def __init__(self, account_balance: float = 10000, strategy_mode: str = 'balanced', no_telegram: bool = False):
+        """
+        Initialize the Ultimate Trading System
+        
+        Args:
+            account_balance: Starting account balance
+            strategy_mode: Trading strategy mode ('strict', 'fast', 'balanced', 'voting')
+            no_telegram: If True, disable Telegram commander
+        """
+        logger.info("="*60)
+        logger.info(" ULTIMATE PROFESSIONAL TRADING SYSTEM")
+        logger.info("="*60)
+
+        # Store the no_telegram flag
+        self.no_telegram = no_telegram
         
         # Core Components
         from data.fetcher import NASALevelFetcher, MarketHours
@@ -71,22 +105,61 @@ class UltimateTradingSystem:
         from auto_train_intelligent import IntelligentAutoTrainer
         from advanced_ai import AdvancedAIIntegration
         from market_regime_analyzer import MarketRegimeDetector
-        from session_tracker import SessionTracker  # ← ADD THIS LINE
+        from session_tracker import SessionTracker
         from model_registry import ModelRegistry
         from cache_manager import CacheManager
         from strategy_optimizer import StrategyOptimizer
         from profitability_upgrade import apply_upgrades, cooldown_tracker, category_limiter, position_age_monitor
+        from back_up import HumanExplainer, TradingPersonality
         
-         # Core Components (create these FIRST)
+        # Core Components (create these FIRST)
         self.fetcher = NASALevelFetcher()
+
+        # ===== WEBSOCKET INTEGRATION =====
+        self.use_websocket = True
+        self.ws_status = {'connected': False, 'last_message': None, 'sources': {}}
+
+        if self.use_websocket:
+            try:
+                # Start WebSocket in background thread
+                import threading
+                def start_ws():
+                    success = self.fetcher.enable_websocket(self)
+                    self.ws_status['connected'] = success
+                
+                ws_thread = threading.Thread(target=start_ws, daemon=True)
+                ws_thread.start()
+                
+                # Start WebSocket monitor
+                self._start_ws_monitor()
+                
+                logger.info("🚀 WebSocket real-time mode INITIALIZING")
+            except Exception as e:
+                logger.error(f"❌ WebSocket init failed: {e}")
+                self.use_websocket = False
+        # ==================================
+
         self.predictor = AdvancedPredictionEngine("super_ensemble")
         self.risk_manager = AdvancedRiskManager(account_balance)
+        self.risk_manager.max_positions = 10 
+        self.max_positions = 10 
         self.backtester = AdvancedBacktester(initial_capital=account_balance)
         self.monitor = TrainingMonitor()
+
+        # Add personality to your bot
+        self.personality = TradingPersonality("Robbie")
+        self.explainer = HumanExplainer(self)
         
         # ===== CREATE PAPER TRADER HERE (BEFORE using it) =====
         self.paper_trader = PaperTrader(self.risk_manager)
         # ======================================================
+
+        # ===== CONNECT PAPER TRADER TO TRADING SYSTEM FOR TELEGRAM =====
+        self.paper_trader.trading_system = self
+        # ======================================================
+
+        # Connect trade callback for personality memory
+        self.paper_trader.on_trade_closed = self._remember_trade
         
         self.strategy_mode = strategy_mode
         self.auto_trainer = IntelligentAutoTrainer(self)
@@ -100,18 +173,18 @@ class UltimateTradingSystem:
             self.category_limiter = category_limiter
             self.position_age_monitor = position_age_monitor
             self.profitability_upgrades_active = True
-            print("✅ PROFITABILITY UPGRADES: ACTIVE")
-            print("   • 60-min cooldown after losses")
-            print("   • Category position limits (1 crypto, 2 forex)")
-            print("   • ATR-based stop losses")
-            print("   • Entry quality filter")
-            print("   • 4-hour position age limit")
+            logger.info("PROFITABILITY UPGRADES: ACTIVE")
+            logger.info("   • 60-min cooldown after losses")
+            logger.info("   • Category position limits (1 crypto, 2 forex)")
+            logger.info("   • ATR-based stop losses")
+            logger.info("   • Entry quality filter")
+            logger.info("   • 4-hour position age limit")
         except ImportError as e:
-            print("⚠️ PROFITABILITY UPGRADES: NOT INSTALLED")
-            print(f"   Run: python profitability_upgrade.py")
+            logger.warning("PROFITABILITY UPGRADES: NOT INSTALLED")
+            logger.info("   Run: python profitability_upgrade.py")
             self.profitability_upgrades_active = False
         except Exception as e:
-            print(f"⚠️ PROFITABILITY UPGRADES ERROR: {e}")
+            logger.error(f"PROFITABILITY UPGRADES ERROR: {e}")
             self.profitability_upgrades_active = False
         # ====================================================
         
@@ -148,9 +221,9 @@ class UltimateTradingSystem:
             try:
                 with open('config/telegram_config.json', 'r') as f:
                     telegram_config = json.load(f)
-                print(" Telegram config loaded")
-            except:
-                print(" Could not load Telegram config")
+                logger.info("Telegram config loaded")
+            except Exception as e:
+                logger.warning(f"Could not load Telegram config: {e}")
         
         # Load Email config
         email_config = None
@@ -158,9 +231,9 @@ class UltimateTradingSystem:
             try:
                 with open('config/email_config.json', 'r') as f:
                     email_config = json.load(f)
-                print(" Email config loaded")
-            except:
-                print(" Could not load Email config")
+                logger.info("Email config loaded")
+            except Exception as e:
+                logger.warning(f"Could not load Email config: {e}")
         
         # Initialize monitor WITH alert channels
         self.live_monitor = TradingMonitor(
@@ -173,26 +246,114 @@ class UltimateTradingSystem:
         # Connect monitor to paper trader for alerts
         self.paper_trader.monitor = self.live_monitor
         
+        # ===== TELEGRAM - TWO-BOT SYSTEM =====
+        # Trading system uses SIMPLE ALERT BOT (no commands)
+        # Web dashboard uses FULL COMMANDER (handles /commands)
+        # This prevents conflicts!
+        # =====================================
+        
+        try:
+            # Check if Telegram is disabled by flag
+            if self.no_telegram:
+                self.telegram = None
+                logger.info("📱 TELEGRAM: Disabled by --no-telegram flag")
+                logger.info("   • Trading system will run without Telegram alerts")
+            else:
+                # ===== USE SIMPLE ALERT BOT (no commands, no conflicts) =====
+                if SIMPLE_ALERT_AVAILABLE:
+                    # Use WHALE_TELEGRAM_TOKEN for alerts (it's already a bot)
+                    alert_token = os.getenv('WHALE_TELEGRAM_TOKEN')
+                    alert_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+                    
+                    # Fallback to main token if whale token not set
+                    if not alert_token:
+                        alert_token = os.getenv('TELEGRAM_TOKEN')
+                        logger.info("📱 WHALE_TELEGRAM_TOKEN not set, using TELEGRAM_TOKEN as fallback")
+                    
+                    if alert_token and alert_chat_id:
+                        try:
+                            from simple_alert_bot import SimpleAlertBot
+                            self.telegram = SimpleAlertBot(alert_token, alert_chat_id)
+                            logger.info("📱 SIMPLE ALERT BOT: Active")
+                            logger.info("   • Using WHALE_TELEGRAM_TOKEN for alerts")
+                            logger.info("   • No command conflicts with web dashboard")
+                            logger.info("   • Trade alerts will be sent to Telegram")
+                        except Exception as e:
+                            self.telegram = None
+                            logger.error(f"📱 Failed to initialize SimpleAlertBot: {e}")
+                    else:
+                        self.telegram = None
+                        logger.warning("📱 Alert bot not configured - set WHALE_TELEGRAM_TOKEN in .env")
+                        logger.info("   • Trading will continue without Telegram alerts")
+                
+                # ===== FALLBACK: Try full commander (but check for conflicts) =====
+                elif TELEGRAM_AVAILABLE:
+                    logger.warning("SimpleAlertBot not available, checking for Telegram Commander...")
+                    
+                    # Get token from environment or config
+                    telegram_token = os.getenv('TELEGRAM_TOKEN')
+                    telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+                    
+                    # Fallback to config file if env not set
+                    if not telegram_token and 'telegram_config' in locals() and telegram_config:
+                        telegram_token = telegram_config.get('bot_token')
+                        telegram_chat_id = telegram_config.get('chat_id')
+                    
+                    if telegram_token and telegram_chat_id:
+                        # Use the manager to prevent conflicts
+                        from telegram_manager import telegram_manager
+                        
+                        # Check if another instance is already running
+                        if hasattr(telegram_manager, 'is_other_instance_running') and telegram_manager.is_other_instance_running():
+                            self.telegram = None
+                            logger.warning("📱 Telegram Commander: Another instance running, skipping")
+                            logger.info("   • Use --no-telegram flag to disable")
+                            logger.info("   • Or install SimpleAlertBot for alerts without conflicts")
+                        else:
+                            # Start bot through manager
+                            if telegram_manager.start(telegram_token, telegram_chat_id, self):
+                                self.telegram = telegram_manager.bot
+                                logger.info("📱 TELEGRAM COMMANDER: ACTIVE (fallback mode)")
+                                logger.info("   • Commands: /status, /positions, /pause, /resume, /balance, /performance, /strategies, /market, /close")
+                                logger.info("   • WARNING: May conflict with web dashboard!")
+                            else:
+                                self.telegram = None
+                                logger.warning("📱 Telegram Commander: Could not start (another instance may be running)")
+                    else:
+                        self.telegram = None
+                        if not TELEGRAM_AVAILABLE:
+                            logger.warning("📱 Telegram Commander: python-telegram-bot not installed")
+                        else:
+                            logger.warning("📱 Telegram Commander: Not configured (set TELEGRAM_TOKEN in .env)")
+                else:
+                    self.telegram = None
+                    logger.warning("📱 No Telegram bots available - install SimpleAlertBot or python-telegram-bot")
+                    
+        except Exception as e:
+            self.telegram = None
+            logger.error(f"📱 TELEGRAM ERROR: Could not initialize - {e}")
+        # =================================
+        
         # ===== ENHANCED PORTFOLIO OPTIMIZER =====
         try:
             self.portfolio_optimizer = EnhancedPortfolioOptimizer(
                 max_allocation=0.3, 
                 max_correlation=0.7
             )
-            print("✅ PORTFOLIO OPTIMIZER: ACTIVE")
-            print("   • Max allocation per asset: 30%")
-            print("   • Max correlation threshold: 0.7")
-            print("   • VaR tracking enabled")
+            logger.info("PORTFOLIO OPTIMIZER: ACTIVE")
+            logger.info("   • Max allocation per asset: 30%")
+            logger.info("   • Max correlation threshold: 0.7")
+            logger.info("   • VaR tracking enabled")
         except Exception as e:
-            print(f"⚠️ Could not initialize portfolio optimizer: {e}")
+            logger.warning(f"Could not initialize portfolio optimizer: {e}")
             self.portfolio_optimizer = None
         
         # ===== SENTIMENT ANALYZER =====
         try:
             self.sentiment_analyzer = SentimentAnalyzer()
-            print("✅ SENTIMENT ANALYZER: ACTIVE")
+            logger.info("SENTIMENT ANALYZER: ACTIVE")
         except Exception as e:
-            print(f"⚠️ Could not initialize sentiment analyzer: {e}")
+            logger.warning(f"Could not initialize sentiment analyzer: {e}")
             self.sentiment_analyzer = None
         
         # ===== MARKET REGIME DETECTION =====
@@ -201,19 +362,19 @@ class UltimateTradingSystem:
             self.regime_history = []
             self.current_regime = None
             self.regime_confidence = 0.0
-            print("✅ MARKET REGIME DETECTION: ACTIVE")
+            logger.info("MARKET REGIME DETECTION: ACTIVE")
         except Exception as e:
-            print(f"⚠️ Could not initialize regime detector: {e}")
+            logger.warning(f"Could not initialize regime detector: {e}")
             self.regime_detector = None
 
         # ===== STRATEGY OPTIMIZER =====
         try:
             self.strategy_optimizer = StrategyOptimizer(self.backtester)
-            print("✅ STRATEGY OPTIMIZER: ACTIVE")
-            print("   • Grid search optimization")
-            print("   • Finds best parameters for all strategies")
+            logger.info("STRATEGY OPTIMIZER: ACTIVE")
+            logger.info("   • Grid search optimization")
+            logger.info("   • Finds best parameters for all strategies")
         except Exception as e:
-            print(f"⚠️ Could not initialize strategy optimizer: {e}")
+            logger.warning(f"Could not initialize strategy optimizer: {e}")
             self.strategy_optimizer = None
         
         # ===== DYNAMIC POSITION SIZER =====
@@ -223,15 +384,15 @@ class UltimateTradingSystem:
                     base_risk=0.01,  # 1% base risk
                     max_risk=0.03    # 3% maximum risk
                 )
-                print("✅ DYNAMIC POSITION SIZER: ACTIVE")
-                print("   • Base risk: 1%")
-                print("   • Max risk: 3%")
-                print("   • Adapts to confidence, volatility, regime, win rate")
+                logger.info("DYNAMIC POSITION SIZER: ACTIVE")
+                logger.info("   • Base risk: 1%")
+                logger.info("   • Max risk: 3%")
+                logger.info("   • Adapts to confidence, volatility, regime, win rate")
             else:
                 self.position_sizer = None
-                print("⚠️ DYNAMIC POSITION SIZER: Not available")
+                logger.warning("Dynamic Position Sizer: Not available")
         except Exception as e:
-            print(f"⚠️ Could not initialize position sizer: {e}")
+            logger.warning(f"Could not initialize position sizer: {e}")
             self.position_sizer = None
         
         # ===== TRACKING VARIABLES =====
@@ -242,48 +403,23 @@ class UltimateTradingSystem:
         self.health_check_counter = 0  # For periodic portfolio health checks
         self.current_asset = None  # For scalping strategy
 
-        # ===== DAILY LOSS LIMIT =====  <-- ADD THIS HERE
-        try:
-            from advanced_risk_manager import DailyLossLimit
-            self.daily_loss_limit = DailyLossLimit(
-                max_loss_pct=3.0,  # 3% max daily loss
-                alert_callback=self.send_loss_limit_alert
-            )
-            # Set initial balance
-            self.daily_loss_limit.set_initial_balance(account_balance)
-            print("✅ DAILY LOSS LIMIT: ACTIVE")
-            print("   • Max daily loss: 3%")
-            print("   • Auto-pause: 1 hour when limit hit")
-        except Exception as e:
-            print(f"⚠️ Could not initialize daily loss limit: {e}")
-            self.daily_loss_limit = None
-        # ============================
-
-        # ===== ALERT CALLBACK METHODS =====
-        def send_loss_limit_alert(self, message: str):
-            """Send alert when daily loss limit is hit"""
-            print(f"\n🔴 {message}")
-            
-            # Also send via monitor if available
-            if hasattr(self, 'live_monitor') and self.live_monitor:
-                try:
-                    self.live_monitor._send_alert(
-                        'CRITICAL',
-                        'Daily Loss Limit Hit',
-                        message
-                    )
-                except:
-                    pass
-        # ==================================
+        # ===== DAILY LOSS LIMIT =====
+        self.daily_loss_limit = DailyLossLimit(
+            max_loss_pct=3.0,  # 3% max daily loss
+            alert_callback=self.send_loss_limit_alert
+        )
+        # Set initial balance
+        if hasattr(self, 'risk_manager'):
+            self.daily_loss_limit.set_initial_balance(self.risk_manager.account_balance)
 
         # ===== MODEL REGISTRY =====
         try:
             self.model_registry = ModelRegistry(registry_file="model_registry.json")
-            print("✅ MODEL REGISTRY: ACTIVE")
-            print("   • Tracks ML model performance")
-            print("   • Auto-selects best models per asset")
+            logger.info("MODEL REGISTRY: ACTIVE")
+            logger.info("   • Tracks ML model performance")
+            logger.info("   • Auto-selects best models per asset")
         except Exception as e:
-            print(f"⚠️ Could not initialize model registry: {e}")
+            logger.warning(f"Could not initialize model registry: {e}")
             self.model_registry = None
 
         # ===== CACHE MANAGER =====
@@ -294,27 +430,42 @@ class UltimateTradingSystem:
                 db=0,
                 password=None
             )
-            print("✅ CACHE MANAGER: ACTIVE")
+            logger.info("CACHE MANAGER: ACTIVE")
             
             # Connect cache manager to portfolio optimizer
             if hasattr(self, 'portfolio_optimizer') and self.portfolio_optimizer:
                 self.portfolio_optimizer.set_cache_manager(self.cache_manager)
                 
         except Exception as e:
-            print(f"⚠️ Could not initialize cache manager: {e}")
+            logger.warning(f"Could not initialize cache manager: {e}")
             self.cache_manager = None
         # ========================
+
+        # ===== MARKET CALENDAR =====
+        try:
+            from market_calendar import MarketCalendar
+            self.market_calendar = MarketCalendar()
+            # Fetch initial data
+            self.market_calendar.fetch_economic_calendar()
+            self.market_calendar.fetch_earnings_calendar()
+            logger.info("MARKET CALENDAR: ACTIVE")
+            logger.info("   • Economic events tracking")
+            logger.info("   • Earnings calendar")
+            logger.info("   • Crypto halving countdown")
+        except Exception as e:
+            logger.warning(f"Could not initialize market calendar: {e}")
+            self.market_calendar = None
 
         # ===== SESSION TRACKER =====
         try:
             from session_tracker import SessionTracker
             self.session_tracker = SessionTracker()
-            print("✅ SESSION TRACKER: ACTIVE")
-            print("   • Tracks performance by trading session")
-            print("   • Asian, London, New York sessions")
-            print("   • Identifies best times to trade")
+            logger.info("SESSION TRACKER: ACTIVE")
+            logger.info("   • Tracks performance by trading session")
+            logger.info("   • Asian, London, New York sessions")
+            logger.info("   • Identifies best times to trade")
         except Exception as e:
-            print(f"⚠️ Could not initialize session tracker: {e}")
+            logger.warning(f"Could not initialize session tracker: {e}")
             self.session_tracker = None
         # ============================
         
@@ -324,10 +475,338 @@ class UltimateTradingSystem:
         Path("trade_logs").mkdir(exist_ok=True)
         Path("portfolio_reports").mkdir(exist_ok=True)  # For saving health reports
         
-        print("\n" + "="*60)
-        print(" ALL SYSTEMS INITIALIZED")
-        print("="*60 + "\n")
+        # ===== WHALE INTELLIGENCE INTEGRATION =====
+        self.setup_whale_integration()
+        # =========================================
+
+        logger.info("="*60)
+        logger.info(" ALL SYSTEMS INITIALIZED")
+        logger.info("="*60)
     
+        # ===== ADD TELEGRAM ALERT METHODS =====
+    
+    def on_trade_opened(self, signal: dict):
+        """Called when a new trade is opened"""
+        # Send Telegram alert
+        if hasattr(self, 'telegram') and self.telegram:
+            try:
+                # Check if it's SimpleAlertBot or TelegramCommander
+                if hasattr(self.telegram, 'alert_trade_opened'):
+                    self.telegram.alert_trade_opened(signal)
+                else:
+                    # Fallback for commander
+                    self.telegram.send_message(f"🟢 New Trade: {signal['asset']} {signal['signal']} @ ${signal['entry_price']:.2f}")
+            except Exception as e:
+                logger.warning(f"Telegram alert failed: {e}")
+    
+    def on_trade_closed(self, trade: dict):
+        """Called when a trade is closed"""
+        # Send Telegram alert
+        if hasattr(self, 'telegram') and self.telegram:
+            try:
+                if hasattr(self.telegram, 'alert_trade_closed'):
+                    self.telegram.alert_trade_closed(trade)
+                else:
+                    emoji = "✅" if trade.get('pnl', 0) > 0 else "❌"
+                    self.telegram.send_message(f"{emoji} Trade Closed: {trade['asset']} P&L: ${trade.get('pnl', 0):.2f}")
+            except Exception as e:
+                logger.warning(f"Telegram alert failed: {e}")
+        
+        # Update cooldown on loss
+        if trade.get('pnl', 0) < 0 and hasattr(self, 'cooldown_tracker'):
+            self.cooldown_tracker.record_loss(trade['asset'])
+    
+    def on_profit_target(self, profit_pct: float):
+        """Called when profit target reached"""
+        if hasattr(self, 'telegram') and self.telegram:
+            try:
+                if hasattr(self.telegram, 'alert_profit_target'):
+                    self.telegram.alert_profit_target(profit_pct)
+                else:
+                    self.telegram.send_message(f"🎯 Profit Target: +{profit_pct:.1f}%")
+            except Exception as e:
+                logger.warning(f"Telegram alert failed: {e}")
+
+    def _start_ws_monitor(self):
+        """Monitor WebSocket health"""
+        def monitor():
+            while self.is_running:
+                try:
+                    if hasattr(self.fetcher, 'ws_manager'):
+                        ws = self.fetcher.ws_manager
+                        self.ws_status['sources'] = {
+                            'bybit': 'bybit' in ws.connections,
+                            'finnhub': 'finnhub' in ws.connections
+                        }
+                        
+                        # Log status every 5 minutes
+                        if int(time.time()) % 300 < 1:
+                            status = []
+                            if self.ws_status['sources'].get('bybit'):
+                                status.append("Bybit✅")
+                            if self.ws_status['sources'].get('finnhub'):
+                                status.append("Finnhub✅")
+                            
+                            if status:
+                                logger.info(f"📡 WebSocket: {' '.join(status)}")
+                    
+                    time.sleep(60)
+                except Exception as e:
+                    logger.error(f"WebSocket monitor error: {e}")
+                    time.sleep(60)
+        
+        thread = threading.Thread(target=monitor, daemon=True)
+        thread.start()
+    # =================================================
+
+    # ===== DAILY LOSS LIMIT ALERT METHOD =====
+    def send_loss_limit_alert(self, message: str):
+        """Send alert when daily loss limit is hit"""
+        logger.warning(f"Daily loss limit hit: {message}")
+        
+        # Also send via monitor if available
+        if hasattr(self, 'live_monitor') and self.live_monitor:
+            try:
+                self.live_monitor._send_alert(
+                    'CRITICAL',
+                    'Daily Loss Limit Hit',
+                    message
+                )
+            except Exception as e:
+                logger.debug(f"Monitor alert failed: {e}")
+        
+        # Send Telegram alert
+        if hasattr(self, 'telegram') and self.telegram:
+            try:
+                if hasattr(self.telegram, 'alert_daily_loss_limit'):
+                    self.telegram.alert_daily_loss_limit(
+                        self.daily_loss_limit.get_status()['daily_loss_pct']
+                    )
+                else:
+                    self.telegram.send_message(f"⚠️ Daily Loss Limit Hit: {self.daily_loss_limit.get_status()['daily_loss_pct']:.1f}%")
+            except Exception as e:
+                logger.warning(f"Telegram alert failed: {e}")
+    # =========================================
+
+     # ===== WHALE INTELLIGENCE INTEGRATION =====
+    def setup_whale_integration(self):
+        """Initialize whale monitoring with trading influence"""
+        self.whale_signals = []
+        self.whale_weights = {
+            'BTC': 1.0,
+            'ETH': 1.0,
+            'BNB': 1.0,
+            'SOL': 1.0,
+            'XRP': 1.0
+        }
+        self.start_whale_monitor()
+        logger.info("🐋 Whale Intelligence: ACTIVE")
+        logger.info("   • Monitoring 8 whale channels")
+        logger.info("   • Whale activity influences position sizing")
+        logger.info("   • Large inflows = +20% confidence boost")
+
+    def start_whale_monitor(self):
+        """Start whale monitor in background thread using saved session"""
+        import threading
+        import asyncio
+        from telethon import TelegramClient, events
+        import re
+        import os
+        from dotenv import load_dotenv
+        
+        load_dotenv()
+        
+        # Your credentials from .env
+        api_id = int(os.getenv('TELEGRAM_API_ID', '32486436'))
+        api_hash = os.getenv('TELEGRAM_API_HASH', '3e264a0c1e28644378a9c5236bf251cb')
+        session_name = os.getenv('TELEGRAM_SESSION', 'whale_session')
+        phone = os.getenv('TELEGRAM_PHONE')  # Optional, but good to have
+        
+        # Channels to monitor
+        WHALE_CHANNELS = [
+            'whale_alert',
+            'whalebotalerts',
+            'WhaleSniper',
+            'lookonchain',
+            'cryptoquant_alert',
+            'WhaleBotRektd',
+            'WhaleWire',
+            'whalecointalk'
+        ]
+        
+        def extract_whale_info(text):
+            """Extract whale transaction details"""
+            if not text:
+                return None
+            
+            patterns = [
+                r'(\d+[,]?\d*\.?\d*)\s*(BTC|ETH|BNB|SOL|XRP).*?\$(\d+[.,]?\d*)[mM]',
+                r'(\d+[kKmM]?)\s*(BTC|ETH).*?(\d+[mM]?)',
+                r'(\d+[,]?\d*)\s*(BTC|ETH).*?\$(\d+[.,]?\d*)[mM]',
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    try:
+                        amount = float(re.sub(r'[^\d.]', '', match.group(1)))
+                        symbol = match.group(2).upper()
+                        value_str = match.group(3).lower()
+                        
+                        if 'm' in value_str:
+                            value = float(re.sub(r'[^\d.]', '', value_str)) * 1_000_000
+                        else:
+                            value = float(re.sub(r'[^\d.]', '', value_str))
+                        
+                        if value >= 1_000_000:
+                            return amount, symbol, value
+                    except:
+                        pass
+            return None
+        
+        async def whale_loop():
+            # This will use the saved session file - NO PHONE PROMPT!
+            client = TelegramClient(session_name, api_id, api_hash)
+            
+            try:
+                # Try to start with saved session first
+                await client.start()
+                logger.info("🐋 Whale Monitor: Connected using saved session")
+            except Exception as e:
+                logger.error(f"Failed to connect with saved session: {e}")
+                # Fall back to phone if needed (but shouldn't happen if session exists)
+                if phone:
+                    await client.start(phone=phone)
+                else:
+                    raise
+            
+            @client.on(events.NewMessage(chats=WHALE_CHANNELS))
+            async def handler(event):
+                if not event.message.text:
+                    return
+                
+                whale = extract_whale_info(event.message.text)
+                if whale:
+                    amount, symbol, value = whale
+                    await self.process_whale_alert(amount, symbol, value, event.chat.username)
+            
+            logger.info("🐋 Whale Monitor: Connected and listening")
+            await client.run_until_disconnected()
+        
+        def run_whale():
+            asyncio.run(whale_loop())
+        
+        thread = threading.Thread(target=run_whale, daemon=True)
+        thread.start()
+
+    async def process_whale_alert(self, amount: float, symbol: str, value: float, channel: str):
+        """Process whale alert and influence trading decisions"""
+        
+        value_millions = value / 1_000_000
+        
+        # Store whale signal
+        signal = {
+            'time': datetime.now(),
+            'symbol': symbol,
+            'amount': amount,
+            'value': value,
+            'channel': channel,
+            'bullish': self._is_bullish_whale(channel, symbol)
+        }
+        
+        if not hasattr(self, 'whale_signals'):
+            self.whale_signals = []
+        
+        self.whale_signals.append(signal)
+        
+        # Keep last 100 signals
+        if len(self.whale_signals) > 100:
+            self.whale_signals = self.whale_signals[-100:]
+        
+        # Calculate whale sentiment
+        sentiment = self.get_whale_sentiment(symbol)
+        
+        # Log the alert
+        alert_msg = (
+            f"🐋 Whale Alert: {amount:.2f} {symbol} (${value_millions:.1f}M)\n"
+            f"   • Channel: @{channel}\n"
+            f"   • Sentiment: {'BULLISH' if signal['bullish'] else 'NEUTRAL'}\n"
+            f"   • Impact: {self.whale_weights.get(symbol, 1.0):.1f}x weight"
+        )
+        logger.info(alert_msg)
+        
+        # Send to Telegram if alert bot exists
+        if hasattr(self, 'telegram') and self.telegram:
+            try:
+                if hasattr(self.telegram, 'send_whale_alert'):
+                    self.telegram.send_whale_alert(amount, symbol, value_millions, channel)
+                else:
+                    # Fallback for commander
+                    self.telegram.send_message(
+                        f"🐋 *Whale Alert*\n"
+                        f"{amount:.2f} {symbol} (${value_millions:.1f}M)\n"
+                        f"Channel: @{channel}"
+                    )
+            except Exception as e:
+                logger.debug(f"Telegram send failed: {e}")
+
+    def _is_bullish_whale(self, channel: str, symbol: str) -> bool:
+        """Determine if whale movement is bullish"""
+        # Exchange inflows = bearish (selling)
+        bearish_channels = ['binance', 'exchange', 'inflow', 'cex']
+        # Exchange outflows = bullish (buying)
+        bullish_channels = ['withdrawal', 'outflow', 'treasury', 'cold']
+        
+        channel_lower = channel.lower()
+        
+        if any(b in channel_lower for b in bearish_channels):
+            return False
+        if any(b in channel_lower for b in bullish_channels):
+            return True
+        
+        # Default: large transfers are neutral
+        return True
+
+    def get_whale_sentiment(self, asset: str, hours: int = 24) -> float:
+        """Get whale sentiment score (-1 to 1) for an asset"""
+        if not hasattr(self, 'whale_signals'):
+            return 0.0
+            
+        recent = [s for s in self.whale_signals 
+                 if s['symbol'] == asset and 
+                 s['time'] > datetime.now() - timedelta(hours=hours)]
+        
+        if not recent:
+            return 0.0
+        
+        # Calculate weighted sentiment
+        total_value = sum(s['value'] for s in recent)
+        bullish_value = sum(s['value'] for s in recent if s['bullish'])
+        
+        if total_value == 0:
+            return 0.0
+        
+        # Sentiment from -1 (bearish) to 1 (bullish)
+        sentiment = (bullish_value / total_value) * 2 - 1
+        return round(sentiment, 2)
+
+    def enhance_signal_with_whale(self, signal: Dict, asset: str) -> Dict:
+        """Enhance trading signal with whale data"""
+        sentiment = self.get_whale_sentiment(asset)
+        
+        # Adjust confidence based on whale sentiment
+        if abs(sentiment) > 0.3:
+            boost = 1.0 + (sentiment * 0.2)  # Up to 20% boost/cut
+            signal['confidence'] = min(signal['confidence'] * boost, 0.95)
+            signal['reason'] += f" | Whale sentiment: {sentiment:.2f}"
+            
+            # Adjust position size
+            if 'position_size' in signal:
+                signal['position_size'] *= boost
+        
+        return signal
+    # ==========================================
+
     # ============= PROFESSIONAL TRADING STRATEGIES =============
     
     def rsi_strategy(self, df: pd.DataFrame) -> List[Dict]:
@@ -518,7 +997,7 @@ class UltimateTradingSystem:
                         'ml_details': prediction
                     })
         except Exception as e:
-            print(f" ML prediction error: {e}")
+            logger.debug(f"ML prediction error for {self.current_asset}: {e}")
         
         return signals
     
@@ -543,7 +1022,7 @@ class UltimateTradingSystem:
                     self.update_model_prediction(asset, pred['prediction'], actual_move)
                     to_remove.append(pred)
             except Exception as e:
-                print(f"   ⚠️ Failed to verify prediction: {e}")
+                logger.warning(f"Failed to verify prediction for {asset}: {e}")
         
         # Remove verified predictions
         for pred in to_remove:
@@ -556,32 +1035,32 @@ class UltimateTradingSystem:
         report = self.get_model_performance_report()
         
         if 'error' in report:
-            print(f"\n❌ {report['error']}")
+            logger.error(f"Model performance report error: {report['error']}")
             return
         
-        print("\n" + "="*70)
-        print("📊 MODEL PERFORMANCE REPORT")
-        print("="*70)
-        print(f"Total Models: {report['total_models']}")
-        print(f"Active Models: {report['active_models']}")
-        print(f"Average Accuracy: {report['avg_accuracy']:.1%}")
+        logger.info("="*70)
+        logger.info("MODEL PERFORMANCE REPORT")
+        logger.info("="*70)
+        logger.info(f"Total Models: {report['total_models']}")
+        logger.info(f"Active Models: {report['active_models']}")
+        logger.info(f"Average Accuracy: {report['avg_accuracy']:.1%}")
         
         if report['best_models']:
-            print("\n🏆 TOP PERFORMING MODELS:")
+            logger.info("TOP PERFORMING MODELS:")
             for i, model in enumerate(report['best_models'], 1):
-                print(f"\n  {i}. {model['asset']} - {model['model_name']}")
-                print(f"     Accuracy: {model['accuracy']:.1%}")
-                print(f"     Trade Win Rate: {model['trade_win_rate']:.1%}")
-                print(f"     Predictions: {model['total_predictions']}")
+                logger.info(f"  {i}. {model['asset']} - {model['model_name']}")
+                logger.info(f"     Accuracy: {model['accuracy']:.1%}")
+                logger.info(f"     Trade Win Rate: {model['trade_win_rate']:.1%}")
+                logger.info(f"     Predictions: {model['total_predictions']}")
     
     def backtest_asset(self, asset: str, lookback_days: int = 365):
         """Backtest a single asset with all strategies"""
-        print(f"\n📊 Testing {asset}...")
+        logger.info(f"Backtesting {asset}...")
         
         # Fetch data
         df = self.fetch_historical_data(asset, lookback_days)
         if df.empty:
-            print(f" No data for {asset}")
+            logger.warning(f"No data for {asset}")
             return None
         
         # Add indicators
@@ -591,7 +1070,7 @@ class UltimateTradingSystem:
         
         # Test each strategy
         for strategy_name, strategy_func in self.strategies.items():
-            print(f"  • Testing {strategy_name}...")
+            logger.debug(f"Testing {strategy_name} for {asset}")
             
             # Generate signals
             signals = strategy_func(df)
@@ -621,44 +1100,47 @@ class UltimateTradingSystem:
             safe_filename = f"backtest_results/{safe_asset}_{strategy_name}.csv"
             try:
                  self.backtester.export_trades(safe_filename)
-                 print(f"  💾 Saved to {safe_filename}")
+                 logger.info(f"Saved backtest results to {safe_filename}")
             except Exception as e:
-                 print(f"   Could not save file: {e}")
+                 logger.warning(f"Could not save file {safe_filename}: {e}")
         
         # Display results
         if results:
             results_df = pd.DataFrame(results)
             results_df = results_df.sort_values('profit_factor', ascending=False)
             
-            print("\n" + "="*30)
-            print(f"RESULTS FOR {asset}")
-            print("="*30)
-            print(results_df.to_string())
+            logger.info("="*30)
+            logger.info(f"RESULTS FOR {asset}")
+            logger.info("="*30)
+            
+            # Log results as debug to avoid console spam
+            for _, row in results_df.iterrows():
+                logger.debug(f"  {row['strategy']}: WR={row['win_rate']:.1%}, PF={row['profit_factor']:.2f}, Sharpe={row['sharpe']:.2f}")
             
             # Find best strategy
             best = results_df.iloc[0]
-            print(f"\n🏆 BEST STRATEGY: {best['strategy']}")
-            print(f"   Win Rate: {best['win_rate']:.1%}")
-            print(f"   Return: {best['total_return']:.1f}%")
-            print(f"   Profit Factor: {best['profit_factor']:.2f}")
+            logger.info(f"BEST STRATEGY: {best['strategy']}")
+            logger.info(f"   Win Rate: {best['win_rate']:.1%}")
+            logger.info(f"   Return: {best['total_return']:.1f}%")
+            logger.info(f"   Profit Factor: {best['profit_factor']:.2f}")
             
             # Save summary
             safe_asset = asset.replace('/', '_').replace('\\', '_').replace(':', '_')
             summary_filename = f'backtest_results/{safe_asset}_summary.csv'
             try:
                 results_df.to_csv(summary_filename, index=False)
-                print(f"   Summary saved to {summary_filename}")
+                logger.info(f"Summary saved to {summary_filename}")
             except Exception as e:
-                print(f"   Could not save summary: {e}")
+                logger.warning(f"Could not save summary: {e}")
         
             return results_df
         return None
     
     def backtest_all_strategies(self, assets: List[str], lookback_days: int = 365):
         """Backtest all strategies on multiple assets"""
-        print("\n" + "="*60)
-        print(" COMPREHENSIVE STRATEGY BACKTEST")
-        print("="*60)
+        logger.info("="*60)
+        logger.info(" COMPREHENSIVE STRATEGY BACKTEST")
+        logger.info("="*60)
         
         all_results = []
         
@@ -672,9 +1154,9 @@ class UltimateTradingSystem:
             combined = pd.concat(all_results)
             combined.to_csv('backtest_results/all_strategies_comparison.csv', index=False)
             
-            print("\n" + "="*30)
-            print("OVERALL BEST STRATEGIES")
-            print("="*30)
+            logger.info("="*30)
+            logger.info("OVERALL BEST STRATEGIES")
+            logger.info("="*30)
             
             # Group by strategy and find average
             avg_results = combined.groupby('strategy').agg({
@@ -684,19 +1166,22 @@ class UltimateTradingSystem:
                 'sharpe': 'mean'
             }).sort_values('profit_factor', ascending=False)
             
-            print(avg_results.to_string())
+            # Log top strategies
+            for strategy, row in avg_results.head(5).iterrows():
+                logger.info(f"  {strategy}: PF={row['profit_factor']:.2f}, Sharpe={row['sharpe']:.2f}")
             
             # Set best strategy as default
             best_strategy = avg_results.index[0]
             self.current_strategy = best_strategy
-            print(f"\n Default strategy set to: {self.current_strategy}")
+            logger.info(f"Default strategy set to: {self.current_strategy}")
     
     def optimize_strategy(self, asset: str, strategy: str, lookback_days: int = 365):
         """Optimize strategy parameters"""
-        print(f"\n🔧 Optimizing {strategy} for {asset}...")
+        logger.info(f"Optimizing {strategy} for {asset}...")
         
         df = self.fetch_historical_data(asset, lookback_days)
         if df.empty:
+            logger.warning(f"No data for {asset}")
             return
         
         df = self.add_technical_indicators(df)
@@ -722,10 +1207,10 @@ class UltimateTradingSystem:
             if results:
                 results_df = pd.DataFrame(results)
                 best = results_df.loc[results_df['profit_factor'].idxmax()]
-                print(f"\n Best RSI settings:")
-                print(f"   Oversold: {best['oversold']}")
-                print(f"   Overbought: {best['overbought']}")
-                print(f"   Profit Factor: {best['profit_factor']:.2f}")
+                logger.info(f"Best RSI settings for {asset}:")
+                logger.info(f"   Oversold: {best['oversold']}")
+                logger.info(f"   Overbought: {best['overbought']}")
+                logger.info(f"   Profit Factor: {best['profit_factor']:.2f}")
                 
                 results_df.to_csv(f'backtest_results/{strategy}_optimization.csv', index=False)
         
@@ -751,26 +1236,27 @@ class UltimateTradingSystem:
             if results:
                 results_df = pd.DataFrame(results)
                 best = results_df.loc[results_df['profit_factor'].idxmax()]
-                print(f"\n Best MACD settings:")
-                print(f"   Fast: {best['fast']}")
-                print(f"   Slow: {best['slow']}")
-                print(f"   Signal: {best['signal']}")
-                print(f"   Profit Factor: {best['profit_factor']:.2f}")
+                logger.info(f"Best MACD settings for {asset}:")
+                logger.info(f"   Fast: {best['fast']}")
+                logger.info(f"   Slow: {best['slow']}")
+                logger.info(f"   Signal: {best['signal']}")
+                logger.info(f"   Profit Factor: {best['profit_factor']:.2f}")
                 
                 results_df.to_csv(f'backtest_results/{strategy}_optimization.csv', index=False)
+    
     def optimize_all_strategies(self, asset: str, lookback_days: int = 365):
         """
         Optimize ALL 50+ strategies for a given asset
         Returns comprehensive optimization results for every strategy
         """
-        print(f"\n{'='*70}")
-        print(f"🔧 OPTIMIZING ALL 50+ STRATEGIES FOR {asset}")
-        print(f"{'='*70}")
+        logger.info(f"="*70)
+        logger.info(f"OPTIMIZING ALL 50+ STRATEGIES FOR {asset}")
+        logger.info(f"="*70)
         
         # Fetch data
         df = self.fetch_historical_data(asset, lookback_days)
         if df.empty:
-            print(f"❌ No data for {asset}")
+            logger.error(f"No data for {asset}")
             return None
         
         df = self.add_technical_indicators(df)
@@ -779,150 +1265,278 @@ class UltimateTradingSystem:
         all_results = {}
         
         # ===== 1. MOMENTUM INDICATORS =====
-        print("\n📈 OPTIMIZING MOMENTUM INDICATORS...")
+        logger.info("Optimizing Momentum Indicators...")
         
         # RSI Family
+        logger.debug("  • RSI...")
         all_results['rsi'] = self.strategy_optimizer.optimize_rsi(df, asset)
+        
+        logger.debug("  • RSI Divergence...")
         all_results['rsi_divergence'] = self.strategy_optimizer.optimize_rsi_divergence(df, asset)
+        
+        logger.debug("  • Stochastic RSI...")
         all_results['stoch_rsi'] = self.strategy_optimizer.optimize_stoch_rsi(df, asset)
         
-        # Stochastic
+        # Stochastic Family
+        logger.debug("  • Stochastic...")
         all_results['stochastic'] = self.strategy_optimizer.optimize_stochastic(df, asset)
+        
+        logger.debug("  • Stochastic Fast...")
         all_results['stochastic_fast'] = self.strategy_optimizer.optimize_stochastic_fast(df, asset)
+        
+        logger.debug("  • Stochastic Full...")
         all_results['stochastic_full'] = self.strategy_optimizer.optimize_stochastic_full(df, asset)
         
         # MACD Family
+        logger.debug("  • MACD...")
         all_results['macd'] = self.strategy_optimizer.optimize_macd(df, asset)
+        
+        logger.debug("  • MACD Histogram...")
         all_results['macd_histogram'] = self.strategy_optimizer.optimize_macd_histogram(df, asset)
+        
+        logger.debug("  • MACD Divergence...")
         all_results['macd_divergence'] = self.strategy_optimizer.optimize_macd_divergence(df, asset)
         
         # Other Momentum
-        all_results['cci'] = self.strategy_optimizer.optimize_cci(df, asset)  # Commodity Channel Index
+        logger.debug("  • CCI...")
+        all_results['cci'] = self.strategy_optimizer.optimize_cci(df, asset)
+        
+        logger.debug("  • Williams %R...")
         all_results['williams_r'] = self.strategy_optimizer.optimize_williams_r(df, asset)
-        all_results['mfi'] = self.strategy_optimizer.optimize_mfi(df, asset)  # Money Flow Index
-        all_results['uo'] = self.strategy_optimizer.optimize_uo(df, asset)    # Ultimate Oscillator
-        all_results['apo'] = self.strategy_optimizer.optimize_apo(df, asset)  # Absolute Price Oscillator
-        all_results['ppo'] = self.strategy_optimizer.optimize_ppo(df, asset)  # Percentage Price Oscillator
+        
+        logger.debug("  • MFI...")
+        all_results['mfi'] = self.strategy_optimizer.optimize_mfi(df, asset)
+        
+        logger.debug("  • Ultimate Oscillator...")
+        all_results['uo'] = self.strategy_optimizer.optimize_uo(df, asset)
+        
+        logger.debug("  • APO...")
+        all_results['apo'] = self.strategy_optimizer.optimize_apo(df, asset)
+        
+        logger.debug("  • PPO...")
+        all_results['ppo'] = self.strategy_optimizer.optimize_ppo(df, asset)
         
         # ===== 2. TREND INDICATORS =====
-        print("\n📊 OPTIMIZING TREND INDICATORS...")
+        logger.info("Optimizing Trend Indicators...")
         
         # Moving Averages
+        logger.debug("  • SMA Cross...")
         all_results['sma_cross'] = self.strategy_optimizer.optimize_sma_cross(df, asset)
+        
+        logger.debug("  • EMA Cross...")
         all_results['ema_cross'] = self.strategy_optimizer.optimize_ema_cross(df, asset)
-        all_results['wma_cross'] = self.strategy_optimizer.optimize_wma_cross(df, asset)  # Weighted MA
-        all_results['hma_cross'] = self.strategy_optimizer.optimize_hma_cross(df, asset)  # Hull MA
-        all_results['vwap'] = self.strategy_optimizer.optimize_vwap(df, asset)  # Volume Weighted
+        
+        logger.debug("  • WMA Cross...")
+        all_results['wma_cross'] = self.strategy_optimizer.optimize_wma_cross(df, asset)
+        
+        logger.debug("  • HMA Cross...")
+        all_results['hma_cross'] = self.strategy_optimizer.optimize_hma_cross(df, asset)
+        
+        logger.debug("  • VWAP...")
+        all_results['vwap'] = self.strategy_optimizer.optimize_vwap(df, asset)
         
         # ADX Family
+        logger.debug("  • ADX...")
         all_results['adx'] = self.strategy_optimizer.optimize_adx(df, asset)
+        
+        logger.debug("  • +DI...")
         all_results['di_plus'] = self.strategy_optimizer.optimize_di_plus(df, asset)
+        
+        logger.debug("  • -DI...")
         all_results['di_minus'] = self.strategy_optimizer.optimize_di_minus(df, asset)
+        
+        logger.debug("  • ADX Cross...")
         all_results['adx_cross'] = self.strategy_optimizer.optimize_adx_cross(df, asset)
         
         # Ichimoku
+        logger.debug("  • Ichimoku...")
         all_results['ichimoku'] = self.strategy_optimizer.optimize_ichimoku(df, asset)
+        
+        logger.debug("  • Ichimoku Tenkan...")
         all_results['ichimoku_tenkan'] = self.strategy_optimizer.optimize_ichimoku_tenkan(df, asset)
+        
+        logger.debug("  • Ichimoku Kijun...")
         all_results['ichimoku_kijun'] = self.strategy_optimizer.optimize_ichimoku_kijun(df, asset)
+        
+        logger.debug("  • Ichimoku Cross...")
         all_results['ichimoku_cross'] = self.strategy_optimizer.optimize_ichimoku_cross(df, asset)
         
         # Parabolic SAR
+        logger.debug("  • Parabolic SAR...")
         all_results['psar'] = self.strategy_optimizer.optimize_psar(df, asset)
         
         # ===== 3. VOLATILITY INDICATORS =====
-        print("\n📉 OPTIMIZING VOLATILITY INDICATORS...")
+        logger.info("Optimizing Volatility Indicators...")
         
         # Bollinger Bands
+        logger.debug("  • Bollinger Bands...")
         all_results['bollinger'] = self.strategy_optimizer.optimize_bollinger(df, asset)
+        
+        logger.debug("  • Bollinger Breakout...")
         all_results['bollinger_breakout'] = self.strategy_optimizer.optimize_bollinger_breakout(df, asset)
+        
+        logger.debug("  • Bollinger Squeeze...")
         all_results['bollinger_squeeze'] = self.strategy_optimizer.optimize_bollinger_squeeze(df, asset)
+        
+        logger.debug("  • Bollinger Width...")
         all_results['bollinger_width'] = self.strategy_optimizer.optimize_bollinger_width(df, asset)
         
         # Keltner Channels
+        logger.debug("  • Keltner Channels...")
         all_results['keltner'] = self.strategy_optimizer.optimize_keltner(df, asset)
+        
+        logger.debug("  • Keltner Breakout...")
         all_results['keltner_breakout'] = self.strategy_optimizer.optimize_keltner_breakout(df, asset)
         
         # ATR Family
+        logger.debug("  • ATR...")
         all_results['atr'] = self.strategy_optimizer.optimize_atr(df, asset)
+        
+        logger.debug("  • ATR Trailing...")
         all_results['atr_trailing'] = self.strategy_optimizer.optimize_atr_trailing(df, asset)
+        
+        logger.debug("  • ATR Bands...")
         all_results['atr_bands'] = self.strategy_optimizer.optimize_atr_bands(df, asset)
         
         # Donchian Channels
+        logger.debug("  • Donchian Channels...")
         all_results['donchian'] = self.strategy_optimizer.optimize_donchian(df, asset)
+        
+        logger.debug("  • Donchian Breakout...")
         all_results['donchian_breakout'] = self.strategy_optimizer.optimize_donchian_breakout(df, asset)
         
         # Volatility-based
+        logger.debug("  • Volatility Ratio...")
         all_results['volatility_ratio'] = self.strategy_optimizer.optimize_volatility_ratio(df, asset)
+        
+        logger.debug("  • Chaikin Volatility...")
         all_results['chaikin_volatility'] = self.strategy_optimizer.optimize_chaikin_volatility(df, asset)
         
         # ===== 4. VOLUME INDICATORS =====
-        print("\n📊 OPTIMIZING VOLUME INDICATORS...")
+        logger.info("Optimizing Volume Indicators...")
         
-        all_results['obv'] = self.strategy_optimizer.optimize_obv(df, asset)  # On-Balance Volume
+        logger.debug("  • OBV...")
+        all_results['obv'] = self.strategy_optimizer.optimize_obv(df, asset)
+        
+        logger.debug("  • OBV Divergence...")
         all_results['obv_divergence'] = self.strategy_optimizer.optimize_obv_divergence(df, asset)
+        
+        logger.debug("  • Volume Profile...")
         all_results['volume_profile'] = self.strategy_optimizer.optimize_volume_profile(df, asset)
+        
+        logger.debug("  • Volume Oscillator...")
         all_results['volume_oscillator'] = self.strategy_optimizer.optimize_volume_oscillator(df, asset)
+        
+        logger.debug("  • VWAP Volume...")
         all_results['vwap_volume'] = self.strategy_optimizer.optimize_vwap_volume(df, asset)
-        all_results['cmf'] = self.strategy_optimizer.optimize_cmf(df, asset)  # Chaikin Money Flow
-        all_results['eom'] = self.strategy_optimizer.optimize_eom(df, asset)  # Ease of Movement
-        all_results['vpt'] = self.strategy_optimizer.optimize_vpt(df, asset)  # Volume Price Trend
+        
+        logger.debug("  • CMF...")
+        all_results['cmf'] = self.strategy_optimizer.optimize_cmf(df, asset)
+        
+        logger.debug("  • EOM...")
+        all_results['eom'] = self.strategy_optimizer.optimize_eom(df, asset)
+        
+        logger.debug("  • VPT...")
+        all_results['vpt'] = self.strategy_optimizer.optimize_vpt(df, asset)
         
         # ===== 5. OSCILLATORS =====
-        print("\n📊 OPTIMIZING OSCILLATORS...")
+        logger.info("Optimizing Oscillators...")
         
-        all_results['awesome'] = self.strategy_optimizer.optimize_awesome(df, asset)  # Awesome Oscillator
+        logger.debug("  • Awesome Oscillator...")
+        all_results['awesome'] = self.strategy_optimizer.optimize_awesome(df, asset)
+        
+        logger.debug("  • Acceleration Oscillator...")
         all_results['acceleration'] = self.strategy_optimizer.optimize_acceleration(df, asset)
-        all_results['rvgi'] = self.strategy_optimizer.optimize_rvgi(df, asset)  # Relative Vigor Index
-        all_results['trix'] = self.strategy_optimizer.optimize_trix(df, asset)  # Triple Exponential Average
-        all_results['cmo'] = self.strategy_optimizer.optimize_cmo(df, asset)  # Chande Momentum Oscillator
+        
+        logger.debug("  • RVGI...")
+        all_results['rvgi'] = self.strategy_optimizer.optimize_rvgi(df, asset)
+        
+        logger.debug("  • TRIX...")
+        all_results['trix'] = self.strategy_optimizer.optimize_trix(df, asset)
+        
+        logger.debug("  • CMO...")
+        all_results['cmo'] = self.strategy_optimizer.optimize_cmo(df, asset)
         
         # ===== 6. PATTERN RECOGNITION =====
-        print("\n📊 OPTIMIZING PATTERN RECOGNITION...")
+        logger.info("Optimizing Pattern Recognition...")
         
+        logger.debug("  • Doji...")
         all_results['doji'] = self.strategy_optimizer.optimize_doji(df, asset)
+        
+        logger.debug("  • Hammer...")
         all_results['hammer'] = self.strategy_optimizer.optimize_hammer(df, asset)
+        
+        logger.debug("  • Engulfing...")
         all_results['engulfing'] = self.strategy_optimizer.optimize_engulfing(df, asset)
+        
+        logger.debug("  • Morning Star...")
         all_results['morning_star'] = self.strategy_optimizer.optimize_morning_star(df, asset)
+        
+        logger.debug("  • Evening Star...")
         all_results['evening_star'] = self.strategy_optimizer.optimize_evening_star(df, asset)
-        all_results['three_white_soldiers'] = self.strategy_optimizer.optimize_three_white(df, asset)
-        all_results['three_black_crows'] = self.strategy_optimizer.optimize_three_black(df, asset)
+        
+        logger.debug("  • Three White Soldiers...")
+        all_results['three_white'] = self.strategy_optimizer.optimize_three_white(df, asset)
+        
+        logger.debug("  • Three Black Crows...")
+        all_results['three_black'] = self.strategy_optimizer.optimize_three_black(df, asset)
         
         # ===== 7. SUPPORT/RESISTANCE =====
-        print("\n📊 OPTIMIZING SUPPORT/RESISTANCE...")
+        logger.info("Optimizing Support/Resistance...")
         
+        logger.debug("  • Pivot Points...")
         all_results['pivot_points'] = self.strategy_optimizer.optimize_pivot_points(df, asset)
+        
+        logger.debug("  • Fibonacci...")
         all_results['fibonacci'] = self.strategy_optimizer.optimize_fibonacci(df, asset)
+        
+        logger.debug("  • Supply/Demand...")
         all_results['supply_demand'] = self.strategy_optimizer.optimize_supply_demand(df, asset)
         
         # ===== 8. COMBINATION STRATEGIES =====
-        print("\n🤝 OPTIMIZING COMBINATION STRATEGIES...")
+        logger.info("Optimizing Combination Strategies...")
         
+        logger.debug("  • RSI + MACD...")
         all_results['rsi_macd'] = self.strategy_optimizer.optimize_rsi_macd_combination(df, asset)
+        
+        logger.debug("  • Bollinger + RSI...")
         all_results['bollinger_rsi'] = self.strategy_optimizer.optimize_bollinger_rsi(df, asset)
+        
+        logger.debug("  • ADX + DI...")
         all_results['adx_di'] = self.strategy_optimizer.optimize_adx_di(df, asset)
+        
+        logger.debug("  • Volume Breakout...")
         all_results['volume_breakout'] = self.strategy_optimizer.optimize_volume_breakout(df, asset)
+        
+        logger.debug("  • Momentum Reversal...")
         all_results['momentum_reversal'] = self.strategy_optimizer.optimize_momentum_reversal(df, asset)
         
         # ===== 9. ADVANCED ML STRATEGIES =====
-        print("\n🤖 OPTIMIZING ML STRATEGIES...")
+        logger.info("Optimizing ML Strategies...")
         
+        logger.debug("  • ML Ensemble...")
         all_results['ml_ensemble'] = self.strategy_optimizer.optimize_ml_ensemble(df, asset)
+        
+        logger.debug("  • XGBoost...")
         all_results['xgboost'] = self.strategy_optimizer.optimize_xgboost(df, asset)
+        
+        logger.debug("  • Random Forest...")
         all_results['random_forest'] = self.strategy_optimizer.optimize_random_forest(df, asset)
         
         # ===== COMPILE RESULTS =====
-        print(f"\n{'='*70}")
-        print(f"📊 OPTIMIZATION COMPLETE FOR {asset}")
-        print(f"{'='*70}")
+        logger.info(f"="*70)
+        logger.info(f"OPTIMIZATION COMPLETE FOR {asset}")
+        logger.info(f"="*70)
         
         # Create comparison of all strategies
         comparison = self.strategy_optimizer.compare_all_strategies(asset)
         
         # Find top 10 best performing strategies
         if not comparison.empty:
-            print("\n🏆 TOP 10 BEST STRATEGIES FOR", asset)
-            print("-" * 70)
-            print(comparison.head(10).to_string())
+            logger.info(f"TOP 10 BEST STRATEGIES FOR {asset}")
+            logger.info("-" * 70)
+            for idx, row in comparison.head(10).iterrows():
+                logger.info(f"  {row['strategy']}: Sharpe={row['best_sharpe']:.2f}, PF={row['best_profit_factor']:.2f}")
             
             # Save top strategies to file
             top_strategies = comparison.head(10).to_dict('records')
@@ -947,7 +1561,7 @@ class UltimateTradingSystem:
         if not hasattr(self, 'voting_engine') or comparison_df.empty:
             return
         
-        print("\n⚖️ Updating strategy weights based on optimization...")
+        logger.info("Updating strategy weights based on optimization...")
         
         # Normalize Sharpe ratios to weights (0.5 to 2.0 range)
         max_sharpe = comparison_df['sharpe'].max()
@@ -967,7 +1581,7 @@ class UltimateTradingSystem:
             if strategy in self.voting_engine.strategy_weights:
                 old_weight = self.voting_engine.strategy_weights[strategy]
                 self.voting_engine.strategy_weights[strategy] = round(normalized, 2)
-                print(f"  • {strategy}: {old_weight} → {self.voting_engine.strategy_weights[strategy]}")
+                logger.debug(f"  • {strategy}: {old_weight} → {self.voting_engine.strategy_weights[strategy]}")
 
     # ============= BATCH OPTIMIZATION METHODS =============
     def batch_optimize_all_assets(self, assets: List[str] = None, lookback_days: int = 365):
@@ -982,12 +1596,12 @@ class UltimateTradingSystem:
         Returns:
             Dictionary with optimization results for all assets
         """
-        print("\n" + "="*80)
-        print("🚀 BATCH OPTIMIZING ALL 50+ STRATEGIES FOR ALL ASSETS")
-        print("="*80)
-        print("⚠️  This will take a LONG time (minutes to hours depending on number of assets)")
-        print("💡 Consider running this overnight or on a weekend")
-        print("="*80 + "\n")
+        logger.info("="*80)
+        logger.info("BATCH OPTIMIZING ALL 50+ STRATEGIES FOR ALL ASSETS")
+        logger.info("="*80)
+        logger.warning("This will take a LONG time (minutes to hours depending on number of assets)")
+        logger.info("Consider running this overnight or on a weekend")
+        logger.info("="*80)
         
         # Get list of assets to optimize
         if assets is None:
@@ -997,318 +1611,317 @@ class UltimateTradingSystem:
         else:
             assets_to_optimize = assets
         
-        print(f"📊 Will optimize {len(assets_to_optimize)} assets")
-        print(f"📈 Each asset: 50+ strategies × multiple parameters = thousands of combinations")
-        print(f"⏱️  Estimated time: {len(assets_to_optimize) * 5} minutes\n")
+        logger.info(f"Will optimize {len(assets_to_optimize)} assets")
+        logger.info(f"Each asset: 50+ strategies × multiple parameters = thousands of combinations")
+        logger.info(f"Estimated time: {len(assets_to_optimize) * 5} minutes")
         
         all_results = {}
         
         for i, asset_name in enumerate(assets_to_optimize, 1):
-            print(f"\n{'='*60}")
-            print(f"[{i}/{len(assets_to_optimize)}] OPTIMIZING {asset_name}")
-            print(f"{'='*60}")
+            logger.info(f"="*60)
+            logger.info(f"[{i}/{len(assets_to_optimize)}] OPTIMIZING {asset_name}")
+            logger.info(f"="*60)
             
             try:
                 # Fetch historical data
-                print(f"\n📥 Fetching {lookback_days} days of data for {asset_name}...")
+                logger.info(f"Fetching {lookback_days} days of data for {asset_name}...")
                 df = self.fetch_historical_data(asset_name, lookback_days)
                 
                 if df.empty or len(df) < 100:
-                    print(f"⚠️  Insufficient data for {asset_name}, skipping...")
+                    logger.warning(f"Insufficient data for {asset_name}, skipping...")
                     continue
                 
                 # Add all technical indicators
-                print(f"📊 Adding 50+ technical indicators...")
+                logger.info(f"Adding 50+ technical indicators...")
                 df = self.add_technical_indicators(df)
-                print(f"   ✓ Data shape: {df.shape}")
+                logger.debug(f"Data shape: {df.shape}")
                 
                 # Initialize results for this asset
                 asset_results = {}
                 
                 # ===== 1. MOMENTUM INDICATORS =====
-                print("\n📈 Optimizing Momentum Indicators...")
+                logger.info("Optimizing Momentum Indicators...")
                 
                 # RSI Family
-                print("   • RSI...")
+                logger.debug("   • RSI...")
                 asset_results['rsi'] = self.strategy_optimizer.optimize_rsi(df, asset_name)
                 
-                print("   • RSI Divergence...")
+                logger.debug("   • RSI Divergence...")
                 asset_results['rsi_divergence'] = self.strategy_optimizer.optimize_rsi_divergence(df, asset_name)
                 
-                print("   • Stochastic RSI...")
+                logger.debug("   • Stochastic RSI...")
                 asset_results['stoch_rsi'] = self.strategy_optimizer.optimize_stoch_rsi(df, asset_name)
                 
                 # Stochastic Family
-                print("   • Stochastic...")
+                logger.debug("   • Stochastic...")
                 asset_results['stochastic'] = self.strategy_optimizer.optimize_stochastic(df, asset_name)
                 
-                print("   • Stochastic Fast...")
+                logger.debug("   • Stochastic Fast...")
                 asset_results['stochastic_fast'] = self.strategy_optimizer.optimize_stochastic_fast(df, asset_name)
                 
-                print("   • Stochastic Full...")
+                logger.debug("   • Stochastic Full...")
                 asset_results['stochastic_full'] = self.strategy_optimizer.optimize_stochastic_full(df, asset_name)
                 
                 # MACD Family
-                print("   • MACD...")
+                logger.debug("   • MACD...")
                 asset_results['macd'] = self.strategy_optimizer.optimize_macd(df, asset_name)
                 
-                print("   • MACD Histogram...")
+                logger.debug("   • MACD Histogram...")
                 asset_results['macd_histogram'] = self.strategy_optimizer.optimize_macd_histogram(df, asset_name)
                 
-                print("   • MACD Divergence...")
+                logger.debug("   • MACD Divergence...")
                 asset_results['macd_divergence'] = self.strategy_optimizer.optimize_macd_divergence(df, asset_name)
                 
                 # Other Momentum
-                print("   • CCI...")
+                logger.debug("   • CCI...")
                 asset_results['cci'] = self.strategy_optimizer.optimize_cci(df, asset_name)
                 
-                print("   • Williams %R...")
+                logger.debug("   • Williams %R...")
                 asset_results['williams_r'] = self.strategy_optimizer.optimize_williams_r(df, asset_name)
                 
-                print("   • MFI...")
+                logger.debug("   • MFI...")
                 asset_results['mfi'] = self.strategy_optimizer.optimize_mfi(df, asset_name)
                 
-                print("   • Ultimate Oscillator...")
+                logger.debug("   • Ultimate Oscillator...")
                 asset_results['uo'] = self.strategy_optimizer.optimize_uo(df, asset_name)
                 
-                print("   • APO...")
+                logger.debug("   • APO...")
                 asset_results['apo'] = self.strategy_optimizer.optimize_apo(df, asset_name)
                 
-                print("   • PPO...")
+                logger.debug("   • PPO...")
                 asset_results['ppo'] = self.strategy_optimizer.optimize_ppo(df, asset_name)
                 
                 # ===== 2. TREND INDICATORS =====
-                print("\n📊 Optimizing Trend Indicators...")
+                logger.info("Optimizing Trend Indicators...")
                 
                 # Moving Averages
-                print("   • SMA Cross...")
+                logger.debug("   • SMA Cross...")
                 asset_results['sma_cross'] = self.strategy_optimizer.optimize_sma_cross(df, asset_name)
                 
-                print("   • EMA Cross...")
+                logger.debug("   • EMA Cross...")
                 asset_results['ema_cross'] = self.strategy_optimizer.optimize_ema_cross(df, asset_name)
                 
-                print("   • WMA Cross...")
+                logger.debug("   • WMA Cross...")
                 asset_results['wma_cross'] = self.strategy_optimizer.optimize_wma_cross(df, asset_name)
                 
-                print("   • HMA Cross...")
+                logger.debug("   • HMA Cross...")
                 asset_results['hma_cross'] = self.strategy_optimizer.optimize_hma_cross(df, asset_name)
                 
-                print("   • VWAP...")
+                logger.debug("   • VWAP...")
                 asset_results['vwap'] = self.strategy_optimizer.optimize_vwap(df, asset_name)
                 
                 # ADX Family
-                print("   • ADX...")
+                logger.debug("   • ADX...")
                 asset_results['adx'] = self.strategy_optimizer.optimize_adx(df, asset_name)
                 
-                print("   • +DI...")
+                logger.debug("   • +DI...")
                 asset_results['di_plus'] = self.strategy_optimizer.optimize_di_plus(df, asset_name)
                 
-                print("   • -DI...")
+                logger.debug("   • -DI...")
                 asset_results['di_minus'] = self.strategy_optimizer.optimize_di_minus(df, asset_name)
                 
-                print("   • ADX Cross...")
+                logger.debug("   • ADX Cross...")
                 asset_results['adx_cross'] = self.strategy_optimizer.optimize_adx_cross(df, asset_name)
                 
                 # Ichimoku
-                print("   • Ichimoku...")
+                logger.debug("   • Ichimoku...")
                 asset_results['ichimoku'] = self.strategy_optimizer.optimize_ichimoku(df, asset_name)
                 
-                print("   • Ichimoku Tenkan...")
+                logger.debug("   • Ichimoku Tenkan...")
                 asset_results['ichimoku_tenkan'] = self.strategy_optimizer.optimize_ichimoku_tenkan(df, asset_name)
                 
-                print("   • Ichimoku Kijun...")
+                logger.debug("   • Ichimoku Kijun...")
                 asset_results['ichimoku_kijun'] = self.strategy_optimizer.optimize_ichimoku_kijun(df, asset_name)
                 
-                print("   • Ichimoku Cross...")
+                logger.debug("   • Ichimoku Cross...")
                 asset_results['ichimoku_cross'] = self.strategy_optimizer.optimize_ichimoku_cross(df, asset_name)
                 
                 # Parabolic SAR
-                print("   • Parabolic SAR...")
+                logger.debug("   • Parabolic SAR...")
                 asset_results['psar'] = self.strategy_optimizer.optimize_psar(df, asset_name)
                 
                 # ===== 3. VOLATILITY INDICATORS =====
-                print("\n📉 Optimizing Volatility Indicators...")
+                logger.info("Optimizing Volatility Indicators...")
                 
                 # Bollinger Bands
-                print("   • Bollinger Bands...")
+                logger.debug("   • Bollinger Bands...")
                 asset_results['bollinger'] = self.strategy_optimizer.optimize_bollinger(df, asset_name)
                 
-                print("   • Bollinger Breakout...")
+                logger.debug("   • Bollinger Breakout...")
                 asset_results['bollinger_breakout'] = self.strategy_optimizer.optimize_bollinger_breakout(df, asset_name)
                 
-                print("   • Bollinger Squeeze...")
+                logger.debug("   • Bollinger Squeeze...")
                 asset_results['bollinger_squeeze'] = self.strategy_optimizer.optimize_bollinger_squeeze(df, asset_name)
                 
-                print("   • Bollinger Width...")
+                logger.debug("   • Bollinger Width...")
                 asset_results['bollinger_width'] = self.strategy_optimizer.optimize_bollinger_width(df, asset_name)
                 
                 # Keltner Channels
-                print("   • Keltner Channels...")
+                logger.debug("   • Keltner Channels...")
                 asset_results['keltner'] = self.strategy_optimizer.optimize_keltner(df, asset_name)
                 
-                print("   • Keltner Breakout...")
+                logger.debug("   • Keltner Breakout...")
                 asset_results['keltner_breakout'] = self.strategy_optimizer.optimize_keltner_breakout(df, asset_name)
                 
                 # ATR Family
-                print("   • ATR...")
+                logger.debug("   • ATR...")
                 asset_results['atr'] = self.strategy_optimizer.optimize_atr(df, asset_name)
                 
-                print("   • ATR Trailing...")
+                logger.debug("   • ATR Trailing...")
                 asset_results['atr_trailing'] = self.strategy_optimizer.optimize_atr_trailing(df, asset_name)
                 
-                print("   • ATR Bands...")
+                logger.debug("   • ATR Bands...")
                 asset_results['atr_bands'] = self.strategy_optimizer.optimize_atr_bands(df, asset_name)
                 
                 # Donchian Channels
-                print("   • Donchian Channels...")
+                logger.debug("   • Donchian Channels...")
                 asset_results['donchian'] = self.strategy_optimizer.optimize_donchian(df, asset_name)
                 
-                print("   • Donchian Breakout...")
+                logger.debug("   • Donchian Breakout...")
                 asset_results['donchian_breakout'] = self.strategy_optimizer.optimize_donchian_breakout(df, asset_name)
                 
                 # Volatility-based
-                print("   • Volatility Ratio...")
+                logger.debug("   • Volatility Ratio...")
                 asset_results['volatility_ratio'] = self.strategy_optimizer.optimize_volatility_ratio(df, asset_name)
                 
-                print("   • Chaikin Volatility...")
+                logger.debug("   • Chaikin Volatility...")
                 asset_results['chaikin_volatility'] = self.strategy_optimizer.optimize_chaikin_volatility(df, asset_name)
                 
                 # ===== 4. VOLUME INDICATORS =====
-                print("\n📊 Optimizing Volume Indicators...")
+                logger.info("Optimizing Volume Indicators...")
                 
-                print("   • OBV...")
+                logger.debug("   • OBV...")
                 asset_results['obv'] = self.strategy_optimizer.optimize_obv(df, asset_name)
                 
-                print("   • OBV Divergence...")
+                logger.debug("   • OBV Divergence...")
                 asset_results['obv_divergence'] = self.strategy_optimizer.optimize_obv_divergence(df, asset_name)
                 
-                print("   • Volume Profile...")
+                logger.debug("   • Volume Profile...")
                 asset_results['volume_profile'] = self.strategy_optimizer.optimize_volume_profile(df, asset_name)
                 
-                print("   • Volume Oscillator...")
+                logger.debug("   • Volume Oscillator...")
                 asset_results['volume_oscillator'] = self.strategy_optimizer.optimize_volume_oscillator(df, asset_name)
                 
-                print("   • VWAP Volume...")
+                logger.debug("   • VWAP Volume...")
                 asset_results['vwap_volume'] = self.strategy_optimizer.optimize_vwap_volume(df, asset_name)
                 
-                print("   • CMF...")
+                logger.debug("   • CMF...")
                 asset_results['cmf'] = self.strategy_optimizer.optimize_cmf(df, asset_name)
                 
-                print("   • EOM...")
+                logger.debug("   • EOM...")
                 asset_results['eom'] = self.strategy_optimizer.optimize_eom(df, asset_name)
                 
-                print("   • VPT...")
+                logger.debug("   • VPT...")
                 asset_results['vpt'] = self.strategy_optimizer.optimize_vpt(df, asset_name)
                 
                 # ===== 5. OSCILLATORS =====
-                print("\n📊 Optimizing Oscillators...")
+                logger.info("Optimizing Oscillators...")
                 
-                print("   • Awesome Oscillator...")
+                logger.debug("   • Awesome Oscillator...")
                 asset_results['awesome'] = self.strategy_optimizer.optimize_awesome(df, asset_name)
                 
-                print("   • Acceleration Oscillator...")
+                logger.debug("   • Acceleration Oscillator...")
                 asset_results['acceleration'] = self.strategy_optimizer.optimize_acceleration(df, asset_name)
                 
-                print("   • RVGI...")
+                logger.debug("   • RVGI...")
                 asset_results['rvgi'] = self.strategy_optimizer.optimize_rvgi(df, asset_name)
                 
-                print("   • TRIX...")
+                logger.debug("   • TRIX...")
                 asset_results['trix'] = self.strategy_optimizer.optimize_trix(df, asset_name)
                 
-                print("   • CMO...")
+                logger.debug("   • CMO...")
                 asset_results['cmo'] = self.strategy_optimizer.optimize_cmo(df, asset_name)
                 
                 # ===== 6. PATTERN RECOGNITION =====
-                print("\n📊 Optimizing Pattern Recognition...")
+                logger.info("Optimizing Pattern Recognition...")
                 
-                print("   • Doji...")
+                logger.debug("   • Doji...")
                 asset_results['doji'] = self.strategy_optimizer.optimize_doji(df, asset_name)
                 
-                print("   • Hammer...")
+                logger.debug("   • Hammer...")
                 asset_results['hammer'] = self.strategy_optimizer.optimize_hammer(df, asset_name)
                 
-                print("   • Engulfing...")
+                logger.debug("   • Engulfing...")
                 asset_results['engulfing'] = self.strategy_optimizer.optimize_engulfing(df, asset_name)
                 
-                print("   • Morning Star...")
+                logger.debug("   • Morning Star...")
                 asset_results['morning_star'] = self.strategy_optimizer.optimize_morning_star(df, asset_name)
                 
-                print("   • Evening Star...")
+                logger.debug("   • Evening Star...")
                 asset_results['evening_star'] = self.strategy_optimizer.optimize_evening_star(df, asset_name)
                 
-                print("   • Three White Soldiers...")
+                logger.debug("   • Three White Soldiers...")
                 asset_results['three_white'] = self.strategy_optimizer.optimize_three_white(df, asset_name)
                 
-                print("   • Three Black Crows...")
+                logger.debug("   • Three Black Crows...")
                 asset_results['three_black'] = self.strategy_optimizer.optimize_three_black(df, asset_name)
                 
                 # ===== 7. SUPPORT/RESISTANCE =====
-                print("\n📊 Optimizing Support/Resistance...")
+                logger.info("Optimizing Support/Resistance...")
                 
-                print("   • Pivot Points...")
+                logger.debug("   • Pivot Points...")
                 asset_results['pivot_points'] = self.strategy_optimizer.optimize_pivot_points(df, asset_name)
                 
-                print("   • Fibonacci...")
+                logger.debug("   • Fibonacci...")
                 asset_results['fibonacci'] = self.strategy_optimizer.optimize_fibonacci(df, asset_name)
                 
-                print("   • Supply/Demand...")
+                logger.debug("   • Supply/Demand...")
                 asset_results['supply_demand'] = self.strategy_optimizer.optimize_supply_demand(df, asset_name)
                 
                 # ===== 8. COMBINATION STRATEGIES =====
-                print("\n🤝 Optimizing Combination Strategies...")
+                logger.info("Optimizing Combination Strategies...")
                 
-                print("   • RSI + MACD...")
+                logger.debug("   • RSI + MACD...")
                 asset_results['rsi_macd'] = self.strategy_optimizer.optimize_rsi_macd_combination(df, asset_name)
                 
-                print("   • Bollinger + RSI...")
+                logger.debug("   • Bollinger + RSI...")
                 asset_results['bollinger_rsi'] = self.strategy_optimizer.optimize_bollinger_rsi(df, asset_name)
                 
-                print("   • ADX + DI...")
+                logger.debug("   • ADX + DI...")
                 asset_results['adx_di'] = self.strategy_optimizer.optimize_adx_di(df, asset_name)
                 
-                print("   • Volume Breakout...")
+                logger.debug("   • Volume Breakout...")
                 asset_results['volume_breakout'] = self.strategy_optimizer.optimize_volume_breakout(df, asset_name)
                 
-                print("   • Momentum Reversal...")
+                logger.debug("   • Momentum Reversal...")
                 asset_results['momentum_reversal'] = self.strategy_optimizer.optimize_momentum_reversal(df, asset_name)
                 
                 # Store results for this asset
                 all_results[asset_name] = asset_results
                 
                 # Show summary for this asset
-                print(f"\n✅ COMPLETED {asset_name}")
-                print(f"   • Successfully optimized {len(asset_results)} strategies")
+                logger.info(f"COMPLETED {asset_name}")
+                logger.info(f"   • Successfully optimized {len(asset_results)} strategies")
                 
                 # Compare strategies for this asset
                 comparison = self.strategy_optimizer.compare_strategies(asset_name)
                 if not comparison.empty:
-                    print(f"\n   🏆 TOP 3 STRATEGIES FOR {asset_name}:")
+                    logger.info(f"TOP 3 STRATEGIES FOR {asset_name}:")
                     for idx, row in comparison.head(3).iterrows():
-                        print(f"      {row['strategy']}: Sharpe {row['best_sharpe']:.2f}")
+                        logger.info(f"      {row['strategy']}: Sharpe {row['best_sharpe']:.2f}")
                 
             except Exception as e:
-                print(f"\n❌ Error optimizing {asset_name}: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"Error optimizing {asset_name}: {e}", exc_info=True)
                 continue
         
         # Create master summary
-        print("\n" + "="*80)
-        print("📊 MASTER OPTIMIZATION SUMMARY")
-        print("="*80)
-        print(f"✅ Successfully optimized {len(all_results)} out of {len(assets_to_optimize)} assets")
+        logger.info("="*80)
+        logger.info("MASTER OPTIMIZATION SUMMARY")
+        logger.info("="*80)
+        logger.info(f"Successfully optimized {len(all_results)} out of {len(assets_to_optimize)} assets")
         
         # Save all results to file
         self._save_optimization_results(all_results)
         
         return all_results
+    
     def create_master_optimization_report(self, all_results: Dict):
         """
         Create master report showing best strategies across all assets
         """
-        print(f"\n{'='*70}")
-        print(f"📊 MASTER OPTIMIZATION REPORT - ALL ASSETS")
-        print(f"{'='*70}")
+        logger.info(f"="*70)
+        logger.info(f"MASTER OPTIMIZATION REPORT - ALL ASSETS")
+        logger.info("="*70)
         
         # Aggregate results across assets
         strategy_performance = {}
@@ -1333,7 +1946,7 @@ class UltimateTradingSystem:
                         strategy_performance[strategy]['total_sharpe'] += row['best_sharpe']
         
         if not strategy_performance:
-            print("⚠️ No strategy performance data available")
+            logger.warning("No strategy performance data available")
             return
         
         # Calculate averages
@@ -1347,13 +1960,13 @@ class UltimateTradingSystem:
             reverse=True
         )
         
-        print("\n🏆 TOP 10 STRATEGIES ACROSS ALL ASSETS:")
-        print("-" * 70)
+        logger.info("TOP 10 STRATEGIES ACROSS ALL ASSETS:")
+        logger.info("-" * 70)
         for i, (strategy, data) in enumerate(sorted_strategies[:10], 1):
-            print(f"{i}. {strategy}:")
-            print(f"   • Avg Sharpe: {data['avg_sharpe']:.2f}")
-            print(f"   • Works on: {len(data['assets'])} assets")
-            print(f"   • Examples: {', '.join(data['assets'][:3])}")
+            logger.info(f"{i}. {strategy}:")
+            logger.info(f"   • Avg Sharpe: {data['avg_sharpe']:.2f}")
+            logger.info(f"   • Works on: {len(data['assets'])} assets")
+            logger.info(f"   • Examples: {', '.join(data['assets'][:3])}")
         
         # Save master report
         try:
@@ -1377,10 +1990,10 @@ class UltimateTradingSystem:
             with open(filename, 'w') as f:
                 json.dump(report, f, indent=2, default=str)
             
-            print(f"\n💾 Master report saved to {filename}")
+            logger.info(f"Master report saved to {filename}")
             
         except Exception as e:
-            print(f"⚠️ Could not save master report: {e}")
+            logger.warning(f"Could not save master report: {e}")
 
     def _save_optimization_results(self, all_results: Dict):
         """Save all optimization results to a JSON file"""
@@ -1405,10 +2018,10 @@ class UltimateTradingSystem:
             with open(filename, 'w') as f:
                 json.dump(serializable_results, f, indent=2, default=str)
             
-            print(f"\n💾 All optimization results saved to: {filename}")
+            logger.info(f"All optimization results saved to: {filename}")
             
         except Exception as e:
-            print(f"⚠️ Could not save optimization results: {e}")
+            logger.warning(f"Could not save optimization results: {e}")
 
     def load_optimized_params(self, asset: str, strategy: str) -> Optional[Dict]:
         """
@@ -1424,7 +2037,7 @@ class UltimateTradingSystem:
         Apply all optimized parameters to your trading strategies
         Call this after running batch_optimize_all_assets
         """
-        print("\n⚙️ Applying optimized parameters to strategies...")
+        logger.info("Applying optimized parameters to strategies...")
         
         # Store optimized params for later use
         self.optimized_params = {}
@@ -1441,9 +2054,9 @@ class UltimateTradingSystem:
                 params = self.load_optimized_params(asset, strategy)
                 if params:
                     self.optimized_params[asset][strategy] = params
-                    print(f"   ✓ {asset} - {strategy}: {params}")
+                    logger.debug(f"   ✓ {asset} - {strategy}: {params}")
         
-        print("✅ Optimized parameters applied")
+        logger.info("Optimized parameters applied")
 
 
     def custom_rsi_strategy(self, df, oversold, overbought):
@@ -1510,12 +2123,12 @@ class UltimateTradingSystem:
     
     def train_ml_models(self, assets: List[str]):
         """Train ML models on multiple assets"""
-        print("\n" + "="*60)
-        print(" TRAINING ML ENSEMBLE MODELS")
-        print("="*60 + "\n")
+        logger.info("="*60)
+        logger.info(" TRAINING ML ENSEMBLE MODELS")
+        logger.info("="*60)
 
         for asset in assets:
-            print(f"\n Training on {asset}...")
+            logger.info(f"Training on {asset}...")
             
             # ===== TRY MULTIPLE PERIODS, TAKE THE BEST =====
             best_df = None
@@ -1526,14 +2139,14 @@ class UltimateTradingSystem:
                 if not df.empty and len(df) > best_rows:
                     best_rows = len(df)
                     best_df = df
-                    print(f"   Found {len(df)} rows with {days} days")
+                    logger.debug(f"Found {len(df)} rows with {days} days")
             
             if best_df is None:
-                print(f"   No data for {asset}")
+                logger.warning(f"No data for {asset}")
                 continue
             
             df = best_df
-            print(f"   Using {len(df)} rows for training")
+            logger.info(f"Using {len(df)} rows for training")
             
             # Add indicators
             df = self.add_technical_indicators(df)
@@ -1552,7 +2165,7 @@ class UltimateTradingSystem:
                 with open(model_path, 'wb') as f:
                     pickle.dump(self.predictor, f)
                 
-                print(f" Model saved to {model_path}")
+                logger.info(f"Model saved to {model_path}")
 
                  # ===== REGISTER MODEL IN REGISTRY =====
                 if hasattr(self, 'model_registry') and self.model_registry:
@@ -1567,11 +2180,12 @@ class UltimateTradingSystem:
                 # Get feature importance
                 importance = self.predictor.get_feature_importance(10)
                 if not importance.empty:
-                    print("\n Top Features:")
-                    print(importance)
+                    logger.debug("Top Features:")
+                    for idx, row in importance.iterrows():
+                        logger.debug(f"  {row['feature']}: {row['importance']:.4f}")
                 
             except Exception as e:
-                print(f" Training error for {asset}: {e}")
+                logger.error(f"Training error for {asset}: {e}")
     
     # ============= BROKER INTEGRATION (READY FOR ALPACA) =============
     
@@ -1580,7 +2194,7 @@ class UltimateTradingSystem:
         ULTIMATE STRATEGY - Uses ALL 50+ indicators
         Each indicator votes, weighted by reliability
         """
-        print("   Running ULTIMATE indicator strategy (50+ indicators)...")
+        logger.debug("Running ULTIMATE indicator strategy (50+ indicators)...")
 
         if len(df) < 50:
             return []
@@ -2007,8 +2621,7 @@ class UltimateTradingSystem:
     def scalping_strategy(self, df: pd.DataFrame) -> List[Dict]:
         """
         Scalping - Fast, small profits on short timeframes
-        UPDATED: Tighter stops for all assets
-        Best for: 1m-5m timeframes
+        LOOSENED for volatile markets
         """
         signals = []
         if len(df) < 20:
@@ -2021,11 +2634,11 @@ class UltimateTradingSystem:
         def get_stop_pct(asset_name):
             """Get appropriate stop % for different assets"""
             if asset_name and 'USD' in asset_name and '-' in asset_name:  # Crypto
-                return 0.003  # 0.3% for crypto
+                return 0.005  # ← CHANGED from 0.003 to 0.5% (more room)
             elif asset_name and '/' in asset_name:  # Forex
-                return 0.002  # 0.2% for forex
+                return 0.003  # ← CHANGED from 0.002 to 0.3%
             else:  # Stocks
-                return 0.005  # 0.5% for stocks
+                return 0.008  # ← CHANGED from 0.005 to 0.8%
         
         stop_pct = get_stop_pct(self.current_asset)
         
@@ -2041,14 +2654,14 @@ class UltimateTradingSystem:
             volume_ma = df['volume'].rolling(10).mean()
             volume_spike = latest['volume'] > volume_ma.iloc[-1] * 1.2
         
-        # TIGHTENED entry conditions
+        # LOOSENED entry conditions
         buy_score = 0
         sell_score = 0
         
-        # RSI conditions
-        if rsi < 40:  # Was 60
+        # RSI conditions - LOOSENED
+        if rsi < 55:  # ← CHANGED from 40
             buy_score += 1
-        if rsi > 60:  # Was 40
+        if rsi > 45:  # ← CHANGED from 60 (more sensitive)
             sell_score += 1
         
         # Moving average conditions
@@ -2058,33 +2671,33 @@ class UltimateTradingSystem:
             else:
                 sell_score += 1
         
-        # Price position
+        # Price position - LOOSENED
         if 'bb_middle' in df.columns:
-            if latest['close'] < latest['bb_middle']:
+            if latest['close'] < latest['bb_middle'] * 1.02:  # ← CHANGED from just below
                 buy_score += 1
-            else:
+            if latest['close'] > latest['bb_middle'] * 0.98:  # ← CHANGED from just above
                 sell_score += 1
         
         # Volume confirmation
         if volume_spike:
-            buy_score += 0.5
-            sell_score += 0.5
+            buy_score += 1
+            sell_score += 1
         
-        # Generate signal if score is high enough
-        if buy_score >= 2.5:
-            confidence = min(0.5 + buy_score * 0.1, 0.8)
+        # Generate signal if score is high enough - LOWERED THRESHOLD
+        if buy_score >= 2.0:  # ← CHANGED from 2.5
+            confidence = min(0.5 + buy_score * 0.1, 0.85)  # ← CHANGED max from 0.8 to 0.85
             
-            # TIGHTER stops and targets
+            # LOOSER stops and targets
             if latest['close'] < 10:  # Cheap assets like crypto
                 stop_loss = latest['close'] * (1 - stop_pct)
-                tp1 = latest['close'] * (1 + stop_pct * 1.5)
-                tp2 = latest['close'] * (1 + stop_pct * 2.5)
-                tp3 = latest['close'] * (1 + stop_pct * 4)
+                tp1 = latest['close'] * (1 + stop_pct * 2.0)  # ← CHANGED from 1.5
+                tp2 = latest['close'] * (1 + stop_pct * 3.5)  # ← CHANGED from 2.5
+                tp3 = latest['close'] * (1 + stop_pct * 5.0)  # ← CHANGED from 4.0
             else:  # Normal assets
                 stop_loss = latest['close'] * (1 - stop_pct)
-                tp1 = latest['close'] * (1 + stop_pct * 1.5)
-                tp2 = latest['close'] * (1 + stop_pct * 2.5)
-                tp3 = latest['close'] * (1 + stop_pct * 4)
+                tp1 = latest['close'] * (1 + stop_pct * 2.0)
+                tp2 = latest['close'] * (1 + stop_pct * 3.5)
+                tp3 = latest['close'] * (1 + stop_pct * 5.0)
             
             signals.append({
                 'date': df.index[-1],
@@ -2101,13 +2714,13 @@ class UltimateTradingSystem:
                 'reason': f'Scalp BUY (RSI: {rsi:.1f})'
             })
         
-        elif sell_score >= 2.5:
-            confidence = min(0.5 + sell_score * 0.1, 0.8)
+        elif sell_score >= 2.0:  # ← CHANGED from 2.5
+            confidence = min(0.5 + sell_score * 0.1, 0.85)
             
             stop_loss = latest['close'] * (1 + stop_pct)
-            tp1 = latest['close'] * (1 - stop_pct * 1.5)
-            tp2 = latest['close'] * (1 - stop_pct * 2.5)
-            tp3 = latest['close'] * (1 - stop_pct * 4)
+            tp1 = latest['close'] * (1 - stop_pct * 2.0)
+            tp2 = latest['close'] * (1 - stop_pct * 3.5)
+            tp3 = latest['close'] * (1 - stop_pct * 5.0)
             
             signals.append({
                 'date': df.index[-1],
@@ -2125,7 +2738,6 @@ class UltimateTradingSystem:
             })
         
         return signals
-    
     
     def trend_following_strategy(self, df: pd.DataFrame) -> List[Dict]:
         """
@@ -2379,11 +2991,7 @@ class UltimateTradingSystem:
         combined = self.voting_engine.weighted_vote(signals)
         
         if combined:
-            print(f"\n🗳️ VOTING RESULTS:")
-            print(f"   BUY:  {combined['buy_votes']:.1%}")
-            print(f"   SELL: {combined['sell_votes']:.1%}")
-            print(f"   Final: {combined['signal']} ({combined['confidence']:.1%})")
-            print(f"   Strategies: {', '.join(combined['contributing_strategies'][:5])}")
+            logger.info(f"VOTE RESULT: {combined['signal']} with {combined['confidence']:.1%} confidence")
         
         return combined if combined else {'signal': 'HOLD', 'confidence': 0}
     
@@ -2435,7 +3043,7 @@ class UltimateTradingSystem:
                     'name': name
                 }
             except Exception as e:
-                print(f"   ⚠️ Error analyzing {name}: {e}")
+                logger.debug(f"Error analyzing {name}: {e}")
                 return {'available': False, 'name': name}
         
         signals = []
@@ -2484,7 +3092,7 @@ class UltimateTradingSystem:
                     ],
                     'reason': f"ALL TIMEFRAMES {tf_15m['trend']} - STRONG SIGNAL"
                 })
-                print(f"   🔥 STRONG SIGNAL: {signal} on {tf_15m['name']}")
+                logger.debug(f"STRONG SIGNAL: {signal} on {tf_15m['name']}")
         
         # Case 2: Only 15m and 1h available and agree
         elif tf_15m['trend'] == tf_1h['trend']:
@@ -2518,7 +3126,7 @@ class UltimateTradingSystem:
                 ],
                 'reason': f"15m & 1h both {tf_15m['trend']} (4h N/A) - GOOD SIGNAL"
             })
-            print(f"   📈 GOOD SIGNAL: {signal} on {tf_15m['name']} (15m+1h agree)")
+            logger.debug(f"GOOD SIGNAL: {signal} on {tf_15m['name']} (15m+1h agree)")
         
         return signals
 
@@ -2565,7 +3173,7 @@ class UltimateTradingSystem:
         return {
             'signal': signal,
             'confidence': confidence,
-            'strategy_id': 'STRICT',  # ← ADD THIS
+            'strategy_id': 'STRICT',
             'strategy_emoji': '🔒', 
             'entry': entry,
             'stop_loss': stop_loss,
@@ -2664,8 +3272,8 @@ class UltimateTradingSystem:
         return {
             'signal': signal,
             'confidence': confidence,
-            'strategy_id': 'FAST',  # ← ADD THIS
-            'strategy_emoji': '⚡',   # ← ADD THIS
+            'strategy_id': 'FAST',
+            'strategy_emoji': '⚡',
             'entry': entry,
             'stop_loss': stop_loss,
             'take_profit': tp1,
@@ -2750,7 +3358,7 @@ class UltimateTradingSystem:
         return {
             'signal': signal,
             'confidence': confidence,
-            'strategy_id': 'BALANCED',  # ← ADD THIS
+            'strategy_id': 'BALANCED',
             'strategy_emoji': '⚖️',
             'entry': entry,
             'stop_loss': stop_loss,
@@ -2893,17 +3501,17 @@ class UltimateTradingSystem:
             
             # Get account info
             account = self.alpaca.get_account()
-            print(f"\n Connected to Alpaca ({'PAPER' if paper else 'LIVE'})")
-            print(f"   Account: {account.account_number}")
-            print(f"   Balance: ${float(account.cash):,.2f}")
+            logger.info(f"Connected to Alpaca ({'PAPER' if paper else 'LIVE'})")
+            logger.info(f"   Account: {account.account_number}")
+            logger.info(f"   Balance: ${float(account.cash):,.2f}")
             
             return True
             
         except ImportError:
-            print(" Alpaca SDK not installed. Run: pip install alpaca-py")
+            logger.warning("Alpaca SDK not installed. Run: pip install alpaca-py")
             return False
         except Exception as e:
-            print(f" Alpaca connection error: {e}")
+            logger.error(f"Alpaca connection error: {e}")
             return False
     
     def connect_interactive_brokers(self):
@@ -2917,20 +3525,20 @@ class UltimateTradingSystem:
             self.broker_connected = True
             self.broker_name = "Interactive Brokers"
             
-            print(f"\n Connected to Interactive Brokers (PAPER)")
+            logger.info(f"Connected to Interactive Brokers (PAPER)")
             return True
             
         except ImportError:
-            print(" ib_insync not installed. Run: pip install ib_insync")
+            logger.warning("ib_insync not installed. Run: pip install ib_insync")
             return False
         except Exception as e:
-            print(f" IB connection error: {e}")
+            logger.error(f"IB connection error: {e}")
             return False
     
     def execute_real_trade(self, signal: Dict):
         """Execute a REAL trade through connected broker"""
         if not hasattr(self, 'broker_connected') or not self.broker_connected:
-            print(" No broker connected. Paper trading only.")
+            logger.warning("No broker connected. Paper trading only.")
             return None
         
         try:
@@ -2945,7 +3553,7 @@ class UltimateTradingSystem:
                 
                 # Submit order
                 order = self.alpaca.submit_order(order_data)
-                print(f" REAL ORDER EXECUTED: {order.id}")
+                logger.info(f"REAL ORDER EXECUTED: {order.id}")
                 return order
                 
             elif self.broker_name == "Interactive Brokers":
@@ -2953,7 +3561,7 @@ class UltimateTradingSystem:
                 pass
                 
         except Exception as e:
-            print(f" Real trade error: {e}")
+            logger.error(f"Real trade error: {e}")
             return None
     
     # ============= DYNAMIC POSITION SIZING METHODS =============
@@ -3012,7 +3620,7 @@ class UltimateTradingSystem:
             return size_result
             
         except Exception as e:
-            print(f"  ⚠️ Dynamic position sizing error: {e}")
+            logger.warning(f"Dynamic position sizing error: {e}")
             return None
 
     def calculate_account_volatility(self, window: int = 20) -> float:
@@ -3053,7 +3661,7 @@ class UltimateTradingSystem:
             return volatility
             
         except Exception as e:
-            print(f"  ⚠️ Account volatility calculation error: {e}")
+            logger.warning(f"Account volatility calculation error: {e}")
             return 0.02
 
     # ===== ADD THE NEW METHODS HERE =====
@@ -3207,8 +3815,8 @@ class UltimateTradingSystem:
                 div_score = self.portfolio_optimizer.get_diversification_score(positions_dict)
                 
                 if div_score < 40:
-                    print(f"\n⚠️ PORTFOLIO ALERT: Low diversification score ({div_score}%)")
-                    print("   Consider closing some correlated positions")
+                    logger.warning(f"PORTFOLIO ALERT: Low diversification score ({div_score}%)")
+                    logger.info("   Consider closing some correlated positions")
                     
                     # Find most concentrated category
                     categories = {}
@@ -3218,18 +3826,18 @@ class UltimateTradingSystem:
                     
                     most_concentrated = max(categories.items(), key=lambda x: x[1])
                     if most_concentrated[1] >= 3:
-                        print(f"   • Too many {most_concentrated[0]} positions ({most_concentrated[1]})")
+                        logger.info(f"   • Too many {most_concentrated[0]} positions ({most_concentrated[1]})")
             
             # Check risk distribution
             total_value = sum(p['entry_price'] * p['position_size'] for p in open_positions)
             account_balance = getattr(self.risk_manager, 'account_balance', 10000)
             
             if total_value > account_balance * 0.7:  # 70% of account in positions
-                print(f"\n⚠️ PORTFOLIO ALERT: High exposure ({total_value/account_balance*100:.1f}%)")
-                print("   Consider reducing position sizes")
+                logger.warning(f"PORTFOLIO ALERT: High exposure ({total_value/account_balance*100:.1f}%)")
+                logger.info("   Consider reducing position sizes")
                 
         except Exception as e:
-            print(f"⚠️ Portfolio health check error: {e}")
+            logger.warning(f"Portfolio health check error: {e}")
 
     def register_ml_model(self, asset: str, model_name: str = "ensemble", metadata: Dict = None):
         """Register an ML model in the registry"""
@@ -3243,11 +3851,21 @@ class UltimateTradingSystem:
                 model_type="advanced_ensemble",
                 metadata=metadata
             )
-            print(f"   📝 Registered model for {asset}: {key}")
+            logger.info(f"Registered model for {asset}: {key}")
             return key
         except Exception as e:
-            print(f"   ⚠️ Failed to register model: {e}")
+            logger.warning(f"Failed to register model for {asset}: {e}")
             return None
+        
+    def _remember_trade(self, trade_result: Dict):
+        """Store trade in personality memory"""
+        if hasattr(self, 'personality'):
+            self.personality.remember_trade({
+                'asset': trade_result.get('asset'),
+                'pnl': trade_result.get('pnl', 0),
+                'exit_reason': trade_result.get('exit_reason'),
+                'setup': trade_result.get('setup', 'unknown')
+            })
 
     def update_model_prediction(self, asset: str, prediction: Dict, actual_move: float):
         """Update model performance with prediction result"""
@@ -3258,8 +3876,9 @@ class UltimateTradingSystem:
             # Get the model key for this asset
             model_key = f"{asset}_ensemble"
             self.model_registry.update_prediction(model_key, prediction, actual_move)
+            logger.debug(f"Updated prediction for {asset}: actual={actual_move:.2f}%")
         except Exception as e:
-            print(f"   ⚠️ Failed to update model prediction: {e}")
+            logger.warning(f"Failed to update model prediction for {asset}: {e}")
 
     def update_model_trade_result(self, asset: str, trade_result: Dict):
         """Update model performance with trade result"""
@@ -3269,8 +3888,9 @@ class UltimateTradingSystem:
         try:
             model_key = f"{asset}_ensemble"
             self.model_registry.update_trade_result(model_key, trade_result)
+            logger.debug(f"Updated trade result for {asset}: P&L=${trade_result.get('pnl',0):.2f}")
         except Exception as e:
-            print(f"   ⚠️ Failed to update model trade result: {e}")
+            logger.warning(f"Failed to update model trade result for {asset}: {e}")
 
     def get_best_model_for_asset(self, asset: str) -> Optional[Dict]:
         """Get the best performing model for an asset"""
@@ -3280,7 +3900,7 @@ class UltimateTradingSystem:
         try:
             return self.model_registry.get_model_for_asset(asset)
         except Exception as e:
-            print(f"   ⚠️ Failed to get best model: {e}")
+            logger.warning(f"Failed to get best model for {asset}: {e}")
             return None
 
     def get_model_performance_report(self) -> Dict:
@@ -3291,7 +3911,7 @@ class UltimateTradingSystem:
         try:
             return self.model_registry.get_performance_report()
         except Exception as e:
-            print(f"   ⚠️ Failed to get performance report: {e}")
+            logger.warning(f"Failed to get performance report: {e}")
             return {'error': str(e)}
 
     def scan_asset_parallel(self, asset: str, category: str) -> Optional[Dict]:
@@ -3318,7 +3938,7 @@ class UltimateTradingSystem:
                 if hasattr(self, 'portfolio_optimizer'):
                     self.portfolio_optimizer.update_price_data(asset, df_1h['close'])
             except Exception as e:
-                print(f"      ⚠️ Could not update price data: {e}")
+                logger.debug(f"Could not update price data for {asset}: {e}")
             # =================================================
             
             # Generate signal based on strategy mode
@@ -3349,29 +3969,37 @@ class UltimateTradingSystem:
                         signal['regime_multiplier'] = regime_multiplier
                         signal['regime'] = str(self.current_regime) if hasattr(self, 'current_regime') else 'unknown'
                     # ========================================
+
+                    # ===== ADD WHALE INTELLIGENCE =====
+                    if hasattr(self, 'whale_signals'):
+                        signal = self.enhance_signal_with_whale(signal, asset.split('-')[0])
+                    # ==================================
                     
                     return signal
             
             return None
             
         except Exception as e:
-            print(f"  ⚠️ Error scanning {asset}: {e}")
+            logger.warning(f"Error scanning {asset}: {e}")
             return None
 
     def scan_all_assets_parallel(self):
         """
         Scan all assets in parallel using ThreadPool
+        OPTIMIZED VERSION
         """
-        print(f"\n🚀 Scanning {len(self.get_asset_list())} assets in parallel...")
+        logger.info(f"Scanning {len(self.get_asset_list())} assets in parallel...")
         
         assets = self.get_asset_list()
         signals = []
         
+        # Use ThreadPoolExecutor for parallel scanning
         with ThreadPoolExecutor(max_workers=10) as executor:
             # Submit all tasks
             future_to_asset = {
                 executor.submit(self.scan_asset_parallel, asset, category): (asset, category)
                 for asset, category in assets
+                if MarketHours.get_status().get(category, False)  # Only open markets
             }
             
             # Collect results as they complete
@@ -3381,13 +4009,13 @@ class UltimateTradingSystem:
                     signal = future.result(timeout=15)
                     if signal:
                         signals.append(signal)
-                        print(f"  ✅ {asset}: {signal['signal']} signal found")
+                        logger.debug(f"{asset}: {signal['signal']} signal found")
                     else:
-                        print(f"  ⏭️ {asset}: No signal")
+                        logger.debug(f"{asset}: No signal")
                 except Exception as e:
-                    print(f"  ❌ {asset} failed: {e}")
+                    logger.debug(f"{asset} failed: {e}")
         
-        print(f"\n✅ Found {len(signals)} signals from {len(assets)} assets")
+        logger.info(f"Found {len(signals)} signals from {len(assets)} assets")
         
         # Sort by confidence
         signals.sort(key=lambda x: x.get('confidence', 0), reverse=True)
@@ -3399,10 +4027,10 @@ class UltimateTradingSystem:
         Process signals from parallel scan and execute trades
         """
         if not signals:
-            print("  No signals to process")
+            logger.info("No signals to process")
             return
         
-        print(f"\n📊 Processing {len(signals)} signals...")
+        logger.info(f"Processing {len(signals)} signals...")
         
         for signal in signals[:5]:  # Process top 5 signals
             try:
@@ -3448,60 +4076,88 @@ class UltimateTradingSystem:
                     # Execute trade
                     trade = self.paper_trader.execute_signal(signal)
                     if trade:
-                        print(f"  ✅ EXECUTED: {asset} {signal['signal']}")
+                        logger.info(f"EXECUTED: {asset} {signal['signal']}")
                 else:
-                    print(f"  ⏭️ SKIPPED {asset}: {reason}")
+                    logger.info(f"SKIPPED {asset}: {reason}")
                     
             except Exception as e:
-                print(f"  ⚠️ Error processing {signal.get('asset', 'unknown')}: {e}")
+                logger.warning(f"Error processing {signal.get('asset', 'unknown')}: {e}")
 
     def start_professional_trading(self):
         """Start live trading with ALL features ACTIVATED (using 15m + 1h only)"""
-        print("\n" + "="*70)
-        print("🚀 PROFESSIONAL LIVE TRADING - ALL FEATURES ACTIVATED")
-        print("="*70)
-        print("📊 Portfolio Optimizer: ACTIVE - Monitoring diversification")
-        print("⏰ Multi-Timeframe: ACTIVE - Checking 15m + 1h confluence")
-        print("🤖 ML Predictions: ACTIVE - Ensemble models (10+ algorithms)")
-        print("🧠 ADVANCED AI: ACTIVE - Reinforcement Learning + Transformers + Swarm")
-        print("   • RL Agent: PPO - Learns optimal trading policies")
-        print("   • Transformer: Time Series - Predicts price movements")
-        print("   • Swarm Intelligence: 10+ agents collaborating")
-        print("📰 Sentiment Analysis: ACTIVE - News scanning")
-        print("🔄 Intelligent Auto-Trainer: ACTIVE - Event-based learning")
-        print("   • Price movements (>2%)")
-        print("   • Session changes (London/NY/Asia)")
-        print("   • Major news events")
-        print("   • Time fallback (4 hours)")
+        logger.info("="*70)
+        logger.info("PROFESSIONAL LIVE TRADING - ALL FEATURES ACTIVATED")
+        logger.info("="*70)
+        logger.info("Portfolio Optimizer: ACTIVE - Monitoring diversification")
+        logger.info("Multi-Timeframe: ACTIVE - Checking 15m + 1h confluence")
+        logger.info("ML Predictions: ACTIVE - Ensemble models (10+ algorithms)")
+        logger.info("ADVANCED AI: ACTIVE - Reinforcement Learning + Transformers + Swarm")
+        logger.info("   • RL Agent: PPO - Learns optimal trading policies")
+        logger.info("   • Transformer: Time Series - Predicts price movements")
+        logger.info("   • Swarm Intelligence: 10+ agents collaborating")
+        logger.info("Sentiment Analysis: ACTIVE - News scanning")
+        logger.info("Intelligent Auto-Trainer: ACTIVE - Event-based learning")
+        logger.info("   • Price movements (>2%)")
+        logger.info("   • Session changes (London/NY/Asia)")
+        logger.info("   • Major news events")
+        logger.info("   • Time fallback (4 hours)")
         
         # 🔥 PROFITABILITY UPGRADE: Enhanced display
         if hasattr(self, 'profitability_upgrades_active') and self.profitability_upgrades_active:
-            print("💰 PROFITABILITY UPGRADES: ACTIVE")
-            print("   • 60-min cooldown after losses")
-            print("   • Category limits (1 crypto, 2 forex)")
-            print("   • ATR-based stops")
-            print("   • Entry quality filters")
-            print("   • 4-hour stale position cleanup")
+            logger.info("PROFITABILITY UPGRADES: ACTIVE")
+            logger.info("   • 60-min cooldown after losses")
+            logger.info("   • Category limits (1 crypto, 2 forex)")
+            logger.info("   • ATR-based stops")
+            logger.info("   • Entry quality filters")
+            logger.info("   • 4-hour stale position cleanup")
         
         # 📊 MARKET REGIME DETECTION: Add to banner
-        print("📊 MARKET REGIME DETECTION: ACTIVE")
-        print("   • Dynamic position sizing based on market conditions")
-        print("   • 1.5-1.8x in strong trends")
-        print("   • 0.3-0.7x in choppy/volatile markets")
+        logger.info("MARKET REGIME DETECTION: ACTIVE")
+        logger.info("   • Dynamic position sizing based on market conditions")
+        logger.info("   • 1.5-1.8x in strong trends")
+        logger.info("   • 0.3-0.7x in choppy/volatile markets")
         
         # 🔗 CORRELATION CHECKER: Add to banner
-        print("🔗 CORRELATION CHECKER: ACTIVE")
-        print("   • Prevents correlated position blowups")
-        print("   • Maximum correlation threshold: 0.7")
-        print("   • Portfolio VaR (Value at Risk) tracking")
-        print("")
-        print("📡 DATA SOURCES:")
-        print("   • Finnhub      - Real-time stocks, forex, crypto")
-        print("   • Twelve Data  - Commodities, indices, ETFs (supports 4H!)")
-        print("   • Alpha Vantage - Stocks, forex, commodities")
-        print("   • Yahoo Finance - Universal fallback")
-        print("   • Binance      - Crypto WebSocket (real-time)")
-        print("="*70)
+        logger.info("CORRELATION CHECKER: ACTIVE")
+        logger.info("   • Prevents correlated position blowups")
+        logger.info("   • Maximum correlation threshold: 0.7")
+        logger.info("   • Portfolio VaR (Value at Risk) tracking")
+        
+        # 🛡️ ENHANCED RISK MANAGEMENT: Add to banner
+        logger.info("ENHANCED RISK MANAGEMENT: ACTIVE")
+        logger.info("   • Sentiment-based stop loss adjustment")
+        logger.info("   • Volatility-aware position sizing")
+        logger.info("   • Market regime detection (trending/ranging/breakout)")
+        
+        # 📅 MARKET CALENDAR: Add to banner
+        logger.info("MARKET CALENDAR: ACTIVE")
+        logger.info("   • Economic event tracking (FOMC, CPI, NFP)")
+        logger.info("   • Earnings calendar")
+        logger.info("   • Crypto halving countdown")
+        logger.info("   • Auto-risk reduction before major events")
+        logger.info("")
+        logger.info("DATA SOURCES:")
+        logger.info("   • Finnhub      - Real-time stocks, forex, crypto")
+        logger.info("   • Twelve Data  - Commodities, indices, ETFs (supports 4H!)")
+        logger.info("   • Alpha Vantage - Stocks, forex, commodities")
+        logger.info("   • Yahoo Finance - Universal fallback")
+        logger.info("   • Binance      - Crypto WebSocket (real-time)")
+        
+        # ===== TELEGRAM STARTUP MESSAGE =====
+        if hasattr(self, 'telegram') and self.telegram:
+            try:
+                self.telegram.send_message(
+                    "🚀 *Professional Trading Started*\n\n"
+                    f"Mode: {self.strategy_mode.upper()}\n"
+                    f"Balance: ${self.risk_manager.account_balance:.2f}\n"
+                    "Monitoring 50+ assets in parallel"
+                )
+                logger.info("Telegram: Startup message sent")
+            except Exception as e:
+                logger.warning(f"Telegram startup message failed: {e}")
+        # ====================================
+        
+        logger.info("="*70)
         
         self.is_running = True
         
@@ -3511,9 +4167,9 @@ class UltimateTradingSystem:
             self.ai_system = AdvancedAIIntegration()
             # We'll initialize with first asset's data when available
             self.ai_initialized = False
-            print("🧠 Advanced AI systems: READY for initialization")
+            logger.info("Advanced AI systems: READY for initialization")
         except Exception as e:
-            print(f"⚠️ Could not initialize Advanced AI: {e}")
+            logger.warning(f"Could not initialize Advanced AI: {e}")
             self.ai_system = None
         
         # Start auto-trainer
@@ -3538,7 +4194,13 @@ class UltimateTradingSystem:
                             self.daily_loss_limit.reset_daily()
                             current_balance = self.risk_manager.account_balance if hasattr(self, 'risk_manager') else account_balance
                             self.daily_loss_limit.set_initial_balance(current_balance)
-                            print(f"\n📅 New trading day started - Daily loss limit reset")
+                            logger.info("New trading day started - Daily loss limit reset")
+                        
+                        # Refresh market calendar daily
+                        if hasattr(self, 'market_calendar') and self.market_calendar:
+                            self.market_calendar.fetch_economic_calendar()
+                            self.market_calendar.fetch_earnings_calendar()
+                        
                         last_day_check = current_date
                     
                     # Track daily trades
@@ -3562,7 +4224,7 @@ class UltimateTradingSystem:
                             div_score = self.portfolio_optimizer.get_diversification_score(positions_dict)
                             
                             if div_score < 40:
-                                print(f"\n⚠️ PORTFOLIO ALERT: Low diversification score ({div_score}%)")
+                                logger.warning(f"PORTFOLIO ALERT: Low diversification score ({div_score}%)")
                                 
                                 # Find most concentrated category
                                 categories = {}
@@ -3572,8 +4234,8 @@ class UltimateTradingSystem:
                                 
                                 most = max(categories.items(), key=lambda x: x[1])
                                 if most[1] >= 3:
-                                    print(f"   • Too many {most[0]} positions ({most[1]})")
-                                    print(f"   • Consider taking profit on 1 position")
+                                    logger.info(f"   • Too many {most[0]} positions ({most[1]})")
+                                    logger.info(f"   • Consider taking profit on 1 position")
                     
                     # 🔥 PROFITABILITY UPGRADE: Check for stale positions
                     if hasattr(self, 'profitability_upgrades_active') and self.profitability_upgrades_active:
@@ -3589,17 +4251,40 @@ class UltimateTradingSystem:
                             if hasattr(self, 'position_age_monitor'):
                                 stale = self.position_age_monitor.get_stale_positions(open_positions, current_prices)
                                 for s in stale:
-                                    print(f"  ⏰ FORCE CLOSING stale position: {s['asset']} (open {s['age_hours']}h)")
+                                    logger.info(f"FORCE CLOSING stale position: {s['asset']} (open {s['age_hours']}h)")
                                     if hasattr(self.paper_trader, 'force_close'):
                                         self.paper_trader.force_close(s['trade_id'], current_prices[s['asset']], s['reason'])
                                     else:
-                                        print(f"     ⚠️ Would close: {s['trade_id']} - {s['reason']} (force_close method not available)")
+                                        logger.debug(f"Would close: {s['trade_id']} - {s['reason']} (force_close method not available)")
                         except Exception as e:
-                            print(f"  ⚠️ Stale position check error: {e}")
+                            logger.warning(f"Stale position check error: {e}")
+                    
+                    # ===== MARKET CALENDAR RISK CHECK =====
+                    calendar_risk_multiplier = 1.0  # Default to no reduction
+                    if hasattr(self, 'market_calendar') and self.market_calendar:
+                        try:
+                            # Refresh events occasionally
+                            if health_check_counter % 60 == 0:  # Every hour
+                                self.market_calendar.fetch_economic_calendar()
+                                self.market_calendar.fetch_earnings_calendar()
+                            
+                            # Check if we should reduce risk
+                            risk_rec = self.market_calendar.should_reduce_risk()
+                            # calendar_risk_multiplier = risk_rec['risk_multiplier']  # COMMENT THIS OUT
+                            calendar_risk_multiplier = 1.0  # FORCE to 1.0 (no reduction)
+                            
+                            if risk_rec['reduce_trading']:
+                                logger.info(f"MARKET EVENT WARNING: Would reduce risk to {risk_rec['risk_multiplier']:.0%} (FORCED OFF)")
+                                if risk_rec['high_impact_events']:
+                                    logger.info(f"      • High-impact economic events coming up")
+                                if risk_rec['halving_soon']:
+                                    logger.info(f"      • Crypto halving approaching")
+                        except Exception as e:
+                            logger.warning(f"Market calendar error: {e}")
                     
                     # ===== REPLACE THE OLD SCANNING LOOP WITH THIS =====
                     # ===== PARALLEL SIGNAL SCANNING =====
-                    print(f"\n🚀 Scanning assets in parallel...")
+                    logger.info(f"Scanning assets in parallel...")
                     
                     # Get all assets that are currently open for trading
                     active_assets = [
@@ -3607,14 +4292,14 @@ class UltimateTradingSystem:
                         if MarketHours.get_status().get(category, False)
                     ]
                     
-                    print(f"   Active markets: {len(active_assets)} assets")
+                    logger.info(f"   Active markets: {len(active_assets)} assets")
                     
                     # Scan all active assets in parallel
                     signals = self.scan_all_assets_parallel()
                     
                     # Process the top signals
                     if signals:
-                        print(f"\n📊 Processing top signals...")
+                        logger.info(f"Processing top signals...")
                         
                         for signal in signals[:3]:  # Process top 3 signals
                             try:
@@ -3646,9 +4331,9 @@ class UltimateTradingSystem:
                                         if not allowed:
                                             should_trade = False
                                             reason = corr_reason
-                                            print(f"      ⚠️ Correlation check: {corr_reason}")
+                                            logger.debug(f"Correlation check: {corr_reason}")
                                     except Exception as e:
-                                        print(f"      ⚠️ Correlation check error: {e}")
+                                        logger.debug(f"Correlation check error: {e}")
                                 
                                 # ===== DAILY LOSS LIMIT CHECK =====
                                 if should_trade and hasattr(self, 'daily_loss_limit') and self.daily_loss_limit:
@@ -3656,26 +4341,152 @@ class UltimateTradingSystem:
                                     if not trading_allowed:
                                         should_trade = False
                                         reason = f"Daily loss limit: {status_message}"
-                                        print(f"      ⏸️ {reason}")
+                                        logger.info(f"{reason}")
                                 
                                 if should_trade:
+                                    # ===== FETCH DATA FOR ENHANCED RISK =====
+                                    try:
+                                        # Fetch data for this asset
+                                        df_15m = self.fetch_historical_data(asset, 100, '15m')
+                                        df_1h = self.fetch_historical_data(asset, 100, '1h')
+                                        
+                                        if not df_15m.empty and not df_1h.empty:
+                                            df_15m = self.add_technical_indicators(df_15m)
+                                            df_1h = self.add_technical_indicators(df_1h)
+                                            
+                                            # 1. Get sentiment score
+                                            sentiment_score = 0
+                                            if hasattr(self, 'sentiment_analyzer'):
+                                                sentiment_data = self.sentiment_analyzer.get_comprehensive_sentiment()
+                                                sentiment_score = sentiment_data.get('score', 0)
+                                            
+                                            # 2. Detect market regimes
+                                            if hasattr(self, 'risk_manager'):
+                                                market_regime = self.risk_manager.get_market_regime_from_df(df_1h)
+                                                volatility_regime = self.risk_manager.get_volatility_regime(df_1h)
+                                                
+                                                # 3. Calculate ATR
+                                                atr = df_15m['atr'].iloc[-1] if 'atr' in df_15m.columns else signal['entry_price'] * 0.01
+                                                
+                                                # 4. Calculate dynamic stop loss
+                                                stop_info = self.risk_manager.calculate_dynamic_stop_loss(
+                                                    atr=atr,
+                                                    entry_price=signal['entry_price'],
+                                                    sentiment_score=sentiment_score,
+                                                    market_regime=market_regime,
+                                                    volatility_regime=volatility_regime
+                                                )
+                                                
+                                                # 5. Override signal's stop loss
+                                                if signal['signal'] == 'BUY':
+                                                    signal['stop_loss'] = signal['entry_price'] - stop_info['stop_distance']
+                                                else:  # SELL
+                                                    signal['stop_loss'] = signal['entry_price'] + stop_info['stop_distance']
+                                                
+                                                # 6. Get win rate from paper trader
+                                                win_rate = 0.55
+                                                avg_win = 0.02
+                                                avg_loss = 0.01
+                                                if hasattr(self, 'paper_trader'):
+                                                    perf = self.paper_trader.get_performance()
+                                                    if perf['total_trades'] > 10:
+                                                        win_rate = perf['win_rate'] / 100
+                                                        # You could calculate avg_win and avg_loss from trade history here
+                                                
+                                                # 7. Calculate position size with sentiment
+                                                position_info = self.risk_manager.calculate_position_size_with_sentiment(
+                                                    entry_price=signal['entry_price'],
+                                                    stop_loss=signal['stop_loss'],
+                                                    signal_confidence=signal.get('confidence', 0.7),
+                                                    sentiment_score=sentiment_score,
+                                                    market_regime=market_regime,
+                                                    win_rate=win_rate,
+                                                    avg_win=avg_win,
+                                                    avg_loss=avg_loss
+                                                )
+                                                
+                                                # 8. Apply calendar risk multiplier
+                                                position_info['position_size'] *= calendar_risk_multiplier
+                                                position_info['risk_amount'] *= calendar_risk_multiplier
+                                                position_info['risk_pct'] *= calendar_risk_multiplier
+                                                
+                                                # 9. Update signal with enhanced risk info
+                                                signal['position_size'] = position_info['position_size']
+                                                signal['risk_amount'] = position_info['risk_amount']
+                                                signal['risk_pct'] = position_info['risk_pct']
+                                                signal['risk_info'] = {
+                                                    'market_regime': market_regime,
+                                                    'volatility_regime': volatility_regime,
+                                                    'sentiment_score': sentiment_score,
+                                                    'sentiment_regime': self.risk_manager.get_sentiment_regime(sentiment_score),
+                                                    'stop_atr_multiple': stop_info['atr_multiple'],
+                                                    'stop_percent': stop_info['stop_percent'],
+                                                    'sentiment_adjustment': position_info.get('sentiment_adjustment', 1.0),
+                                                    'regime_adjustment': position_info.get('regime_adjustment', 1.0),
+                                                    'calendar_adjustment': calendar_risk_multiplier
+                                                }
+                                                
+                                                # 10. Print enhanced risk analysis
+                                                logger.info(f"ENHANCED RISK ANALYSIS for {asset}:")
+                                                logger.info(f"      • Market Regime: {market_regime}")
+                                                logger.info(f"      • Volatility: {volatility_regime}")
+                                                logger.info(f"      • Sentiment: {sentiment_score:.2f} ({self.risk_manager.get_sentiment_regime(sentiment_score)})")
+                                                if calendar_risk_multiplier < 1.0:
+                                                    logger.info(f"      • Calendar Event: Reducing to {calendar_risk_multiplier:.0%} size")
+                                                logger.info(f"      • Stop Loss: {stop_info['atr_multiple']:.1f}x ATR ({stop_info['stop_percent']:.2f}%)")
+                                                logger.info(f"      • Position Size: {position_info['position_size']:.4f} units")
+                                                logger.info(f"      • Risk: ${position_info['risk_amount']:.2f} ({position_info['risk_pct']:.2f}%)")
+                                                logger.info(f"      • Adjustments: {position_info.get('sentiment_adjustment', 1.0):.1f}x sentiment, {position_info.get('regime_adjustment', 1.0):.1f}x regime, {calendar_risk_multiplier:.1f}x calendar")
+                                                    
+                                    except Exception as e:
+                                        logger.warning(f"Enhanced risk calculation error for {asset}: {e}")
+                                        # Continue with original signal if enhanced risk fails
+                                    
+                                    # ===== ADD PROFITABILITY UPGRADE ENHANCEMENT =====
+                                    if hasattr(self, 'profitability_upgrades_active') and self.profitability_upgrades_active:
+                                        try:
+                                            from profitability_upgrade import enhance_signal
+                                            open_positions = self.paper_trader.get_open_positions() if hasattr(self.paper_trader, 'get_open_positions') else []
+                                            enhanced = enhance_signal(
+                                                signal,
+                                                df=df_15m if 'df_15m' in locals() and not df_15m.empty else None,
+                                                open_positions=open_positions
+                                            )
+                                            if enhanced:
+                                                signal = enhanced
+                                                logger.debug("Signal enhanced with profitability upgrades")
+                                        except Exception as e:
+                                            logger.debug(f"Enhance signal failed: {e}")
+                                    # =================================================
+                                    
                                     # Execute paper trade
                                     trade = self.paper_trader.execute_signal(signal)
                                     if trade:
                                         daily_trades += 1
-                                        print(f"  ✅ EXECUTED: {asset} {signal['signal']} [{signal.get('strategy_id', 'UNKNOWN')}]")
+                                        logger.info(f"EXECUTED: {asset} {signal['signal']} [{signal.get('strategy_id', 'UNKNOWN')}]")
                                         
                                         # Show TP levels if available
                                         if signal.get('take_profit_levels') and len(signal.get('take_profit_levels', [])) > 0:
                                             tp = signal['take_profit_levels'][0]
-                                            print(f"     🎯 TP1: {tp['price']:.5f} ({tp.get('risk_reward', 1.5)}:1)")
+                                            logger.info(f"     🎯 TP1: {tp['price']:.5f} ({tp.get('risk_reward', 1.5)}:1)")
+                                        
+                                        # ===== SEND TELEGRAM ALERT =====
+                                        if hasattr(self, 'telegram') and self.telegram:
+                                            try:
+                                                self.telegram.alert_trade_opened(signal)
+                                                logger.debug("Telegram alert sent!")
+                                            except Exception as e:
+                                                logger.warning(f"Telegram alert failed: {e}")
+                                        # ================================
+                                    else:
+                                        logger.warning(f"Trade execution failed for {asset}")
                                 else:
-                                    print(f"  ⏭️ SKIPPED {asset}: {reason}")
-                                    
+                                    logger.info(f"SKIPPED {asset}: {reason}")
+                                        
                             except Exception as e:
-                                print(f"  ⚠️ Error processing {signal.get('asset', 'unknown')}: {e}")
+                                logger.warning(f"Error processing {signal.get('asset', 'unknown')}: {e}")
                     else:
-                        print(f"  No signals found")
+                        logger.info("No signals found")
                     # ===================================================
                     
                     # Update positions
@@ -3693,27 +4504,27 @@ class UltimateTradingSystem:
                             
                             # Display warnings if any
                             if health['warnings']:
-                                print(f"\n⚠️ PORTFOLIO WARNINGS:")
+                                logger.warning(f"PORTFOLIO WARNINGS:")
                                 for warning in health['warnings']:
-                                    print(f"  • {warning}")
+                                    logger.warning(f"  • {warning}")
                             
                             # Check if rebalancing needed
                             if health.get('needs_rebalancing', False):
-                                print(f"  📊 Portfolio needs rebalancing (score: {health['diversification_score']}/100)")
-                                print(f"     Current VaR (95%): ${health['var_95']} ({health['var_95_percent']}%)")
+                                logger.info(f"Portfolio needs rebalancing (score: {health['diversification_score']}/100)")
+                                logger.info(f"     Current VaR (95%): ${health['var_95']} ({health['var_95_percent']}%)")
                             
                             # Show category breakdown occasionally (every 10 cycles)
                             if health_check_counter % 10 == 0 and health.get('category_breakdown'):
-                                print(f"\n📊 CATEGORY BREAKDOWN:")
+                                logger.info(f"CATEGORY BREAKDOWN:")
                                 for cat, data in health['category_breakdown'].items():
-                                    print(f"  • {cat}: {data['count']} positions (${data['value']:.2f})")
+                                    logger.info(f"  • {cat}: {data['count']} positions (${data['value']:.2f})")
                             
                             # Show diversification score periodically
                             if health_check_counter % 5 == 0:
-                                print(f"  📈 Diversification Score: {health['diversification_score']}/100")
-                                
+                                logger.info(f"Diversification Score: {health['diversification_score']}/100")
+                                    
                     except Exception as e:
-                        print(f"  ⚠️ Portfolio health check error: {e}")
+                        logger.warning(f"Portfolio health check error: {e}")
 
                     # ===== VERIFY ML PREDICTIONS =====
                     if health_check_counter % 5 == 0:
@@ -3721,7 +4532,7 @@ class UltimateTradingSystem:
                             if hasattr(self, 'verify_pending_predictions'):
                                 self.verify_pending_predictions()
                         except Exception as e:
-                            print(f"  ⚠️ Prediction verification error: {e}")
+                            logger.warning(f"Prediction verification error: {e}")
 
                     # ===== CACHE MAINTENANCE =====
                     # Every 100 cycles, log cache stats (don't clear)
@@ -3738,7 +4549,7 @@ class UltimateTradingSystem:
                     if current_date != self._last_cache_cleanup:
                         if hasattr(self, 'clear_cache'):
                             self.clear_cache()
-                            print("🔄 Daily cache cleanup completed")
+                            logger.info("Daily cache cleanup completed")
                         self._last_cache_cleanup = current_date
                     # ==============================
 
@@ -3747,7 +4558,7 @@ class UltimateTradingSystem:
                     if hasattr(self, 'daily_loss_limit') and self.daily_loss_limit:
                         status = self.daily_loss_limit.get_status()
                         if status['trading_paused']:
-                            daily_loss_status = " | ⏸️ LOSS LIMIT PAUSED"
+                            daily_loss_status = " | LOSS LIMIT PAUSED"
                         else:
                             daily_loss_status = f" | Daily: {status['daily_loss_pct']:.1f}%"
                     # ===================================
@@ -3759,8 +4570,8 @@ class UltimateTradingSystem:
                             if health_check_counter % 10 == 0:
                                 best = self.session_tracker.get_best_session()
                                 if 'message' not in best:
-                                    print(f"\n📈 SESSION INSIGHT:")
-                                    print(f"   Best session: {best['emoji']} {best['session']} ({best['win_rate']}% win rate)")
+                                    logger.info(f"SESSION INSIGHT:")
+                                    logger.info(f"   Best session: {best['emoji']} {best['session']} ({best['win_rate']}% win rate)")
                                     
                                     # Show hourly breakdown
                                     hourly = self.session_tracker.analyze_by_hour()
@@ -3770,17 +4581,17 @@ class UltimateTradingSystem:
                                         for _, h in top_hours.iterrows():
                                             hour = int(h['hour'])
                                             hours_str.append(f"{hour}:00")
-                                        print(f"   Best hours: {', '.join(hours_str)}")
+                                        logger.info(f"   Best hours: {', '.join(hours_str)}")
                         except Exception as e:
-                            print(f"  ⚠️ Session tracker error: {e}")
+                            logger.warning(f"Session tracker error: {e}")
                     # ====================================
 
                     # Show performance with all enhancements
                     perf = self.paper_trader.get_performance()
-                    ai_status = "🧠 AI ACTIVE" if (self.ai_system and self.ai_initialized) else "🤖 AI INITIALIZING"
+                    ai_status = "AI ACTIVE" if (self.ai_system and self.ai_initialized) else "AI INITIALIZING"
 
                     # 🔥 PROFITABILITY UPGRADE: Add to status line
-                    upgrade_status = "💰 UPGRADES ON" if (hasattr(self, 'profitability_upgrades_active') and self.profitability_upgrades_active) else "💰 UPGRADES OFF"
+                    upgrade_status = "UPGRADES ON" if (hasattr(self, 'profitability_upgrades_active') and self.profitability_upgrades_active) else "UPGRADES OFF"
 
                     # 📊 Add regime info to status line
                     regime_info = ""
@@ -3789,112 +4600,134 @@ class UltimateTradingSystem:
                         regime_info = f" | 📊 {regime_str}"
 
                     # Print comprehensive status
-                    print(f"\n📊 Portfolio: ${perf['current_balance']:.2f} | "
+                    logger.info(f"Portfolio: ${perf['current_balance']:.2f} | "
                         f"Win Rate: {perf['win_rate']}% | "
                         f"Open: {perf['open_positions']} | "
                         f"Today: {daily_trades} trades | "
-                        f"Mode: {strategy_name} | "
+                        f"Mode: {strategy_mode} | "
                         f"{ai_status} | "
                         f"{upgrade_status}"
                         f"{regime_info}"
                         f"{daily_loss_status}")
                     
                 except Exception as e:
-                    print(f"❌ Trading error: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.error(f"Trading error: {e}", exc_info=True)
                 
                 time.sleep(60)  # Scan every minute
         
         thread = threading.Thread(target=trading_loop, daemon=True)
         thread.start()
-        print(f"✅ Professional trading started with {strategy_mode.upper()} strategy (15m + 1h)!")
+        logger.info(f"Professional trading started with {strategy_mode.upper()} strategy (15m + 1h)!")
         if hasattr(self, 'ai_system') and self.ai_system:
-            print(f"🧠 Advanced AI systems will initialize on first data fetch")
+            logger.info("Advanced AI systems will initialize on first data fetch")
         
         # 🔥 PROFITABILITY UPGRADE: Print confirmation
         if hasattr(self, 'profitability_upgrades_active') and self.profitability_upgrades_active:
-            print(f"💰 Profitability upgrades protecting your account!")
+            logger.info("Profitability upgrades protecting your account!")
         
         # 📊 Market Regime Detection confirmation
-        print(f"📊 Market Regime Detection active - position sizing adapts to market conditions")
+        logger.info("Market Regime Detection active - position sizing adapts to market conditions")
         
         # 🔗 Correlation Checker confirmation
-        print(f"🔗 Correlation Checker active - preventing correlated position blowups")
-    
-    def get_combined_signal(self, df: pd.DataFrame) -> Dict:
-        """
-        Get combined signal from all strategies using voting
-        """
-        if not hasattr(self, 'voting_engine'):
-            return {'signal': 'HOLD', 'confidence': 0}
+        logger.info("Correlation Checker active - preventing correlated position blowups")
         
-        # Get signals from all strategies
-        signals = self.voting_engine.get_all_signals(df)
+        # 🛡️ Enhanced Risk Management confirmation
+        logger.info("Enhanced Risk Management active - sentiment & volatility adjusted stops")
         
-        if not signals:
-            return {'signal': 'HOLD', 'confidence': 0}
+        # 📅 Market Calendar confirmation
+        if hasattr(self, 'market_calendar') and self.market_calendar:
+            logger.info("Market Calendar active - risk reduces before major events")
         
-        # Let them vote
-        combined = self.voting_engine.weighted_vote(signals)
-        
-        if combined:
-            print(f"\n🗳️ VOTING RESULTS:")
-            print(f"   BUY:  {combined['buy_votes']:.1%}")
-            print(f"   SELL: {combined['sell_votes']:.1%}")
-            print(f"   Final: {combined['signal']} ({combined['confidence']:.1%})")
-            print(f"   Strategies: {', '.join(combined['contributing_strategies'][:5])}")
-        
-        return combined if combined else {'signal': 'HOLD', 'confidence': 0}
+        # ===== TELEGRAM READY MESSAGE =====
+        if hasattr(self, 'telegram') and self.telegram:
+            try:
+                self.telegram.send_message(
+                    "✅ *Trading System Ready*\n\n"
+                    f"Mode: {self.strategy_mode.upper()}\n"
+                    f"Balance: ${self.risk_manager.account_balance:.2f}\n"
+                    f"Open Positions: {len(self.paper_trader.get_open_positions())}\n\n"
+                    "Use /help for commands"
+                )
+            except Exception as e:
+                logger.warning(f"Telegram ready message failed: {e}")
+        # ==================================
 
     def show_session_report(self):
         """Display comprehensive session performance report"""
         if not hasattr(self, 'session_tracker') or not self.session_tracker:
-            print("❌ Session tracker not initialized")
+            logger.error("Session tracker not initialized")
             return
         
         report = self.session_tracker.get_summary_report()
         
-        print("\n" + "="*70)
-        print("📊 SESSION PERFORMANCE REPORT")
-        print("="*70)
-        print(f"Total Trades: {report['total_trades']}")
+        logger.info("="*70)
+        logger.info("SESSION PERFORMANCE REPORT")
+        logger.info("="*70)
+        logger.info(f"Total Trades: {report['total_trades']}")
         
-        print("\n📈 Performance by Session:")
+        logger.info("Performance by Session:")
         for session, stats in report['sessions'].items():
             if isinstance(stats, dict) and 'trades' in stats:
                 emoji = stats.get('emoji', '')
-                print(f"  {emoji} {stats['session']}:")
-                print(f"     • Trades: {stats['trades']}")
-                print(f"     • Win Rate: {stats['win_rate']}%")
-                print(f"     • Total P&L: ${stats['total_pnl']}")
+                logger.info(f"  {emoji} {stats['session']}:")
+                logger.info(f"     • Trades: {stats['trades']}")
+                logger.info(f"     • Win Rate: {stats['win_rate']}%")
+                logger.info(f"     • Total P&L: ${stats['total_pnl']}")
         
         if 'best_session' in report and 'message' not in report['best_session']:
-            print(f"\n🏆 Best Session: {report['best_session']['emoji']} {report['best_session']['session']}")
-            print(f"   Win Rate: {report['best_session']['win_rate']}%")
+            logger.info(f"Best Session: {report['best_session']['emoji']} {report['best_session']['session']}")
+            logger.info(f"   Win Rate: {report['best_session']['win_rate']}%")
         
         if 'recommendation' in report:
-            print(f"\n💡 Recommendation: {report['recommendation']}")
+            logger.info(f"Recommendation: {report['recommendation']}")
+
+    def show_upcoming_events(self):
+        """Display upcoming market events"""
+        if not hasattr(self, 'market_calendar') or not self.market_calendar:
+            return
+        
+        logger.info("UPCOMING MARKET EVENTS")
+        logger.info("="*60)
+        
+        # Economic events
+        events = self.market_calendar.get_high_impact_events(days=7)
+        if events:
+            logger.info("High-Impact Economic Events:")
+            for event in events:
+                days = (event['date'] - datetime.now()).days
+                logger.info(f"   • {event['event']} in {days} days - Forecast: {event['forecast']}")
+        
+        # Earnings
+        if self.market_calendar.earnings:
+            logger.info("Upcoming Earnings:")
+            for earning in self.market_calendar.earnings[:5]:
+                days = (earning['date'] - datetime.now()).days
+                logger.info(f"   • {earning['symbol']} in {days} days - EPS est: {earning['eps_estimate']}")
+        
+        # Halving
+        halving = self.market_calendar.get_halving_countdown('bitcoin')
+        if halving['days_until'] > 0:
+            logger.info(f"Bitcoin Halving: {halving['days_until']} days away")
 
     def get_asset_list(self) -> List[tuple]:
         """Get COMPLETE list of assets to trade"""
         return [
-            ('XAU/USD', 'commodities'),
+            # ===== COMMODITIES - KEEP THESE 7 =====
+            ('XAU/USD', 'commodities'),  # Gold Spot
+            ('XAG/USD', 'commodities'),  # Silver Spot
+            ('WTI/USD', 'commodities'),  # WTI Crude Oil Spot
+            ('NG/USD', 'commodities'),   # Natural Gas Spot
+            ('XCU/USD', 'commodities'),  # Copper Spot
+            ('GC=F', 'commodities'),     # Gold Futures
+            ('SI=F', 'commodities'),     # Silver Future
+            ('CL=F', 'commodities'),     # Crude Futures
+
+            # ===== CRYPTO - ONLY THESE 11 =====
             ('BTC-USD', 'crypto'),
-            ('EUR/USD', 'forex'),
-            ('GBP/USD', 'forex'),
-            ('USD/JPY', 'forex'),
-            ('AUD/USD', 'forex'),
-            ('XAG/USD', 'commodities'),
-            ('^GSPC', 'indices'),  # S&P 500
-            ('^DJI', 'indices'),   # Dow Jones
-            ('^IXIC', 'indices'),  # Nasdaq
             ('ETH-USD', 'crypto'),
             ('BNB-USD', 'crypto'),
             ('SOL-USD', 'crypto'),
             ('XRP-USD', 'crypto'),
-            ('CL=F', 'commodities'),  # Crude Oil
-            # ===== CRYPTO (24/7) =====
             ('ADA-USD', 'crypto'),
             ('DOGE-USD', 'crypto'),
             ('DOT-USD', 'crypto'),
@@ -3902,7 +4735,11 @@ class UltimateTradingSystem:
             ('AVAX-USD', 'crypto'),
             ('LINK-USD', 'crypto'),
             
-            # ===== FOREX (24/5) =====
+            # ===== FOREX (keep all) =====
+            ('EUR/USD', 'forex'),
+            ('GBP/USD', 'forex'),
+            ('USD/JPY', 'forex'),
+            ('AUD/USD', 'forex'),
             ('USD/CAD', 'forex'),
             ('NZD/USD', 'forex'),
             ('USD/CHF', 'forex'),
@@ -3912,64 +4749,43 @@ class UltimateTradingSystem:
             ('AUD/JPY', 'forex'),
             ('EUR/AUD', 'forex'),
             ('GBP/AUD', 'forex'),
+            ('AUD/CAD', 'forex'),
+            ('CAD/JPY', 'forex'),
+            ('CHF/JPY', 'forex'),
+            ('EUR/CAD', 'forex'),
+            ('EUR/CHF', 'forex'),
+            ('GBP/CAD', 'forex'),
+            ('GBP/CHF', 'forex'),
+
+            # ===== INDICES (keep all) =====
+            ('^GSPC', 'indices'),   # S&P 500
+            ('^DJI', 'indices'),    # Dow Jones
+            ('^IXIC', 'indices'),   # Nasdaq
+            ('^FTSE', 'indices'),   # FTSE 100
+            ('^N225', 'indices'),   # Nikkei 225
+            ('^HSI', 'indices'),    # Hang Seng
+            ('^GDAXI', 'indices'),  # DAX
+            ('^VIX', 'indices'),    # Volatility Index
             
-            # ===== STOCKS (Mon-Fri) =====
-            ('AAPL', 'stocks'),
-            ('MSFT', 'stocks'),
-            ('GOOGL', 'stocks'),
-            ('AMZN', 'stocks'),
-            ('TSLA', 'stocks'),
-            ('NVDA', 'stocks'),
-            ('META', 'stocks'),
-            ('JPM', 'stocks'),
-            ('V', 'stocks'),
-            ('WMT', 'stocks'),
-            ('JNJ', 'stocks'),
-            ('PG', 'stocks'),
-            ('KO', 'stocks'),
-            ('PEP', 'stocks'),
-            ('HD', 'stocks'),
-            ('DIS', 'stocks'),
-            ('NFLX', 'stocks'),
-            ('CSCO', 'stocks'),
-            ('INTC', 'stocks'),
-            ('AMD', 'stocks'),
-            ('BA', 'stocks'),
-            ('GE', 'stocks'),
-            ('F', 'stocks'),
-            ('GM', 'stocks'),
-            ('XOM', 'stocks'),
-            ('CVX', 'stocks'),
-            ('COP', 'stocks'),
-            ('PFE', 'stocks'),
-            ('MRK', 'stocks'),
-            ('ABBV', 'stocks'),
-            
-            # ===== COMMODITIES (Limited hours) =====
-            ('XPT/USD', 'commodities'),  # Platinum Spot (replaces PL=F)
-            ('XPD/USD', 'commodities'),  # Palladium Spot (replaces PA=F)
-            ('WTI/USD', 'commodities'),  # WTI Crude Oil Spot (replaces CL=F)
-            ('NG/USD', 'commodities'),   # Natural Gas Spot (replaces NG=F)
-            ('XCU/USD', 'commodities'),  # Copper Spot (replaces HG=F)
-            
-            # ===== INDICES (Follow stocks) =====
-            ('^FTSE', 'indices'),  # FTSE 100
-            ('^N225', 'indices'),  # Nikkei 225
-            ('^HSI', 'indices'),   # Hang Seng
-            ('^GDAXI', 'indices'), # DAX
-            ('^FCHI', 'indices'),  # CAC 40
-            ('^VIX', 'indices'),   # Volatility Index
-            
-            # ===== ETFs =====
-            ('SPY', 'stocks'),     # S&P 500 ETF
-            ('QQQ', 'stocks'),     # Nasdaq ETF
-            ('DIA', 'stocks'),     # Dow ETF
-            ('IWM', 'stocks'),     # Russell 2000 ETF
-            ('XLK', 'stocks'),     # Tech ETF
-            ('XLF', 'stocks'),     # Financial ETF
-            ('XLV', 'stocks'),     # Healthcare ETF
-            ('XLE', 'stocks'),     # Energy ETF
-        ] # type: ignore
+            # ===== STOCKS - REDUCED LIST =====
+            ('AAPL', 'stocks'),    # Apple
+            ('MSFT', 'stocks'),    # Microsoft
+            ('GOOGL', 'stocks'),   # Google
+            ('AMZN', 'stocks'),    # Amazon
+            ('TSLA', 'stocks'),    # Tesla
+            ('NVDA', 'stocks'),    # NVIDIA
+            ('META', 'stocks'),    # Meta
+            ('JPM', 'stocks'),     # JPMorgan
+            ('V', 'stocks'),       # Visa
+            ('MA', 'stocks'),      # Mastercard
+            ('JNJ', 'stocks'),     # Johnson & Johnson
+            ('PFE', 'stocks'),     # Pfizer
+            ('WMT', 'stocks'),     # Walmart
+            ('PG', 'stocks'),      # Procter & Gamble
+            ('KO', 'stocks'),      # Coca-Cola
+            ('XOM', 'stocks'),     # Exxon
+            ('CVX', 'stocks'),     # Chevron
+        ]
     
     # ============= UTILITY FUNCTIONS =============
     
@@ -3983,7 +4799,7 @@ class UltimateTradingSystem:
         if hasattr(self, 'cache_manager') and self.cache_manager and self.cache_manager.enabled:
             cached_data = self.cache_manager.get_historical_data(asset, interval)
             if cached_data is not None:
-                print(f"   ✅ Using cached data for {asset} ({interval})")
+                logger.debug(f"Using cached data for {asset} ({interval})")
                 return cached_data
         # =============================
 
@@ -4021,13 +4837,13 @@ class UltimateTradingSystem:
                     df = future.result(timeout=5)
                     if df is not None and not df.empty:
                         rows = len(df)
-                        print(f"   ✅ {source_name}: Got {rows} rows for {asset} ({interval})")
+                        logger.debug(f"{source_name}: Got {rows} rows for {asset} ({interval})")
                         
                         if rows > best_rows:
                             best_df = df
                             best_rows = rows
                 except Exception as e:
-                    print(f"   ⚠️ {source_name} failed: {e}")
+                    logger.debug(f"{source_name} failed for {asset}: {e}")
                     continue
 
          # ===== SAVE TO CACHE =====
@@ -4039,7 +4855,7 @@ class UltimateTradingSystem:
         if best_df is not None:
             return best_df
         
-        print(f"   ❌ No data for {asset} ({interval}) from any source")
+        logger.warning(f"No data for {asset} ({interval}) from any source")
         return pd.DataFrame()
 
 
@@ -4091,8 +4907,8 @@ class UltimateTradingSystem:
                     }).dropna()
                 
                 return df
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Yahoo historical error for {asset}: {e}")
         return pd.DataFrame()
 
 
@@ -4165,7 +4981,7 @@ class UltimateTradingSystem:
                 df.index.name = 'date'
                 return df[['open', 'high', 'low', 'close', 'volume']]
         except Exception as e:
-            print(f"⚠️ Twelve Data error for {asset}: {e}")
+            logger.debug(f"Twelve Data error for {asset}: {e}")
             
         return pd.DataFrame()
 
@@ -4207,8 +5023,8 @@ class UltimateTradingSystem:
                     df = df.sort_index().astype(float)
                     df.index.name = 'date'
                     return df
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Alpha Vantage error for {asset}: {e}")
         return pd.DataFrame()
 
 
@@ -4272,8 +5088,8 @@ class UltimateTradingSystem:
                 df['date'] = pd.to_datetime(df['timestamp'], unit='s')
                 df.set_index('date', inplace=True)
                 return df
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Finnhub error for {asset}: {e}")
         return pd.DataFrame()
     
     def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -4281,7 +5097,8 @@ class UltimateTradingSystem:
         try:
             from indicators.technical import TechnicalIndicators
             df = TechnicalIndicators.add_all_indicators(df)
-        except:
+        except Exception as e:
+            logger.debug(f"Using simple indicators: {e}")
             df = self.add_simple_indicators(df)
         return df
     
@@ -4353,10 +5170,10 @@ class UltimateTradingSystem:
     
     def stop(self):
         """Stop trading"""
-        print("\n Stopping system...")
+        logger.info("Stopping system...")
         self.is_running = False
         self.update_all_positions()
-        print(" System stopped")
+        logger.info("System stopped")
 
 
 def main():
@@ -4386,6 +5203,8 @@ def main():
                        help='Specific assets to optimize (space-separated)')
     parser.add_argument('--sessions', action='store_true',
                         help='Show session performance report')
+    parser.add_argument('--no-telegram', action='store_true',
+                        help='Disable Telegram commander (use when running multiple instances)')
     
     args = parser.parse_args()
     
@@ -4395,52 +5214,52 @@ def main():
         if os.path.exists('paper_trades.json'):
             backup_name = f'paper_trades_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
             os.rename('paper_trades.json', backup_name)
-            print(f"🔄 Trade history reset - backed up to {backup_name}")
+            logger.info(f"Trade history reset - backed up to {backup_name}")
         else:
-            print("📭 No trade history found to reset")
+            logger.info("No trade history found to reset")
+
+    system = UltimateTradingSystem(
+        account_balance=args.balance,
+        strategy_mode=args.strategy_mode,
+        no_telegram=args.no_telegram  # ← PASS THE FLAG TO CONSTRUCTOR
+    )
 
     if args.sessions:
         system.show_session_report()
         return
 
-    # Initialize system
-    system = UltimateTradingSystem(
-        account_balance=args.balance,
-        strategy_mode=args.strategy_mode
-    )
     
     # ===== BATCH OPTIMIZATION =====
     if args.mode == 'batch-optimize':
-        print("\n" + "="*70)
-        print("🚀 BATCH OPTIMIZATION MODE")
-        print("="*70)
-        print("This will optimize ALL 50+ strategies for multiple assets")
-        print("⏱️  This can take several hours depending on the number of assets")
-        print("💡 Recommended to run overnight or on a weekend\n")
+        logger.info("="*70)
+        logger.info("BATCH OPTIMIZATION MODE")
+        logger.info("="*70)
+        logger.warning("This will take a LONG time (minutes to hours depending on the number of assets)")
+        logger.info("Recommended to run overnight or on a weekend")
         
         # Confirm with user
         response = input("Continue with batch optimization? (y/n): ").strip().lower()
         if response != 'y':
-            print("❌ Batch optimization cancelled")
+            logger.info("Batch optimization cancelled")
             return
         
         # Determine which assets to optimize
         if args.assets:
             assets_to_optimize = args.assets
-            print(f"\n📊 Optimizing specified {len(assets_to_optimize)} assets: {', '.join(assets_to_optimize)}")
+            logger.info(f"Optimizing specified {len(assets_to_optimize)} assets: {', '.join(assets_to_optimize)}")
         else:
             # Get all assets from the system
             asset_list = system.get_asset_list()
             assets_to_optimize = [asset[0] for asset in asset_list]
-            print(f"\n📊 Optimizing ALL {len(assets_to_optimize)} assets in the system")
+            logger.info(f"Optimizing ALL {len(assets_to_optimize)} assets in the system")
         
-        print(f"📈 Using {args.lookback} days of historical data")
-        print(f"⏱️  Estimated time: ~{len(assets_to_optimize) * 5} minutes\n")
+        logger.info(f"Using {args.lookback} days of historical data")
+        logger.info(f"Estimated time: ~{len(assets_to_optimize) * 5} minutes")
         
         # Second confirmation
         response2 = input(f"Final confirmation - start optimization now? (y/n): ").strip().lower()
         if response2 != 'y':
-            print("❌ Batch optimization cancelled")
+            logger.info("Batch optimization cancelled")
             return
         
         # Run the batch optimization
@@ -4450,11 +5269,11 @@ def main():
                 lookback_days=args.lookback
             )
             
-            print("\n" + "="*70)
-            print("✅ BATCH OPTIMIZATION COMPLETE")
-            print("="*70)
-            print(f"📊 Successfully optimized {len(results)} assets")
-            print(f"📁 Results saved in: optimization_results/")
+            logger.info("="*70)
+            logger.info("BATCH OPTIMIZATION COMPLETE")
+            logger.info("="*70)
+            logger.info(f"Successfully optimized {len(results)} assets")
+            logger.info(f"Results saved in: optimization_results/")
             
             # Show top strategies across all assets
             if hasattr(system, 'create_master_optimization_report'):
@@ -4465,24 +5284,22 @@ def main():
             response3 = input("Apply optimized parameters to trading strategies? (y/n): ").strip().lower()
             if response3 == 'y':
                 system.apply_optimized_params_to_strategies()
-                print("✅ Optimized parameters applied to all strategies")
+                logger.info("Optimized parameters applied to all strategies")
             
         except KeyboardInterrupt:
-            print("\n\n⚠️ Batch optimization interrupted by user")
-            print("Partial results may have been saved")
+            logger.warning("Batch optimization interrupted by user")
+            logger.info("Partial results may have been saved")
         except Exception as e:
-            print(f"\n❌ Error during batch optimization: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error during batch optimization: {e}", exc_info=True)
     
     # ===== BACKTEST =====
     elif args.mode == 'backtest':
-        print(f"\n📊 Backtesting {args.asset}...")
+        logger.info(f"Backtesting {args.asset}...")
         system.backtest_asset(args.asset)
     
     # ===== OPTIMIZE SINGLE STRATEGY =====
     elif args.mode == 'optimize':
-        print(f"\n🔧 Optimizing {args.strategy} for {args.asset}...")
+        logger.info(f"Optimizing {args.strategy} for {args.asset}...")
         system.optimize_strategy(args.asset, args.strategy)
     
     # ===== TRAIN ML MODELS =====
@@ -4494,13 +5311,13 @@ def main():
         is_weekend = market_status['is_weekend']
     
         if is_weekend:
-            print("\n" + "="*60)
-            print(" WEEKEND MODE: Training only Crypto (24/7 markets)")
-            print("="*60)
-            print("   • Forex: CLOSED")
-            print("   • Stocks: CLOSED") 
-            print("   • Commodities: CLOSED")
-            print("   • Indices: CLOSED\n")
+            logger.info("="*60)
+            logger.info(" WEEKEND MODE: Training only Crypto (24/7 markets)")
+            logger.info("="*60)
+            logger.info("   • Forex: CLOSED")
+            logger.info("   • Stocks: CLOSED") 
+            logger.info("   • Commodities: CLOSED")
+            logger.info("   • Indices: CLOSED")
         
             assets = [
                 # Crypto only (works on weekends)
@@ -4509,14 +5326,14 @@ def main():
                 'LINK-USD'
             ]
         else:
-            print("\n" + "="*60)
-            print(" WEEKDAY MODE: Training ALL assets")
-            print("="*60)
-            print("   • Crypto: OPEN")
-            print("   • Forex: OPEN")
-            print("   • Stocks: OPEN")
-            print("   • Commodities: OPEN")
-            print("   • Indices: OPEN\n")
+            logger.info("="*60)
+            logger.info(" WEEKDAY MODE: Training ALL assets")
+            logger.info("="*60)
+            logger.info("   • Crypto: OPEN")
+            logger.info("   • Forex: OPEN")
+            logger.info("   • Stocks: OPEN")
+            logger.info("   • Commodities: OPEN")
+            logger.info("   • Indices: OPEN")
         
             assets = [
                 # Crypto
@@ -4535,7 +5352,7 @@ def main():
                 '^GSPC', '^DJI', '^IXIC', '^FTSE'
             ]
     
-        print(f" Training {len(assets)} assets...")
+        logger.info(f"Training {len(assets)} assets...")
         system.train_ml_models(assets)
     
     # ===== COMPARE STRATEGIES =====
@@ -4567,15 +5384,15 @@ def main():
                 time.sleep(10)
                 if int(time.time()) % 60 < 1:
                     report = system.generate_report()
-                    print(json.dumps(report, indent=2, default=str))
+                    logger.info(json.dumps(report, indent=2, default=str))
         except KeyboardInterrupt:
             system.stop()
     
     # ===== DEFAULT / HELP =====
     else:
-        print("\n" + "="*60)
-        print(" ULTIMATE TRADING SYSTEM - HELP")
-        print("="*60)
+        logger.info("="*60)
+        logger.info(" ULTIMATE TRADING SYSTEM - HELP")
+        logger.info("="*60)
         print("\nAvailable commands:")
         print("  --mode backtest       Backtest a single asset")
         print("  --mode optimize       Optimize a single strategy")

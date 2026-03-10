@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 from enum import Enum
 import requests
 from datetime import datetime, timedelta
+from logger import logger
 
 
 class MarketRegime(Enum):
@@ -71,38 +72,51 @@ class MarketRegimeDetector:
         
         confidence = 0.5
         
+        # Log the metrics for debugging
+        logger.debug(f"Regime detection metrics: ADX={adx:.1f}, RSI={rsi:.1f}, "
+                    f"Trending={is_trending}, Bullish={is_bullish}, "
+                    f"Volatile={is_volatile}, Breakout={is_breakout}")
+        
         # Determine regime
         if is_breakout:
             if is_bullish:
                 regime = MarketRegime.BREAKOUT_BULLISH
                 confidence = min(0.9, 0.6 + (volume_ratio - 1.5) * 0.2)
+                logger.info(f"Detected BREAKOUT_BULLISH regime (confidence: {confidence:.1%})")
             else:
                 regime = MarketRegime.BREAKOUT_BEARISH
                 confidence = min(0.9, 0.6 + (volume_ratio - 1.5) * 0.2)
+                logger.info(f"Detected BREAKOUT_BEARISH regime (confidence: {confidence:.1%})")
         
         elif is_trending:
             if is_bullish:
                 if is_volatile:
                     regime = MarketRegime.BULL_VOLATILE
                     confidence = 0.7
+                    logger.info(f"Detected BULL_VOLATILE regime (confidence: {confidence:.1%})")
                 else:
                     regime = MarketRegime.BULL_TRENDING
                     confidence = 0.85
+                    logger.info(f"Detected BULL_TRENDING regime (confidence: {confidence:.1%})")
             else:
                 if is_volatile:
                     regime = MarketRegime.BEAR_VOLATILE
                     confidence = 0.7
+                    logger.info(f"Detected BEAR_VOLATILE regime (confidence: {confidence:.1%})")
                 else:
                     regime = MarketRegime.BEAR_TRENDING
                     confidence = 0.85
+                    logger.info(f"Detected BEAR_TRENDING regime (confidence: {confidence:.1%})")
         
         else:  # Ranging
             if is_volatile:
                 regime = MarketRegime.RANGING_VOLATILE
                 confidence = 0.6
+                logger.info(f"Detected RANGING_VOLATILE regime (confidence: {confidence:.1%})")
             else:
                 regime = MarketRegime.RANGING_CALM
                 confidence = 0.65
+                logger.info(f"Detected RANGING_CALM regime (confidence: {confidence:.1%})")
         
         return regime, confidence
     
@@ -181,7 +195,10 @@ class MarketRegimeDetector:
             }
         }
         
-        return strategies.get(regime, strategies[MarketRegime.RANGING_CALM])
+        strategy = strategies.get(regime, strategies[MarketRegime.RANGING_CALM])
+        logger.debug(f"Regime strategy for {regime.value}: bias={strategy['bias']}, risk_multiplier={strategy['risk_multiplier']}")
+        
+        return strategy
 
 
 class SentimentAnalyzer:
@@ -203,14 +220,15 @@ class SentimentAnalyzer:
             
             if 'data' in data and len(data['data']) > 0:
                 latest = data['data'][0]
+                logger.info(f"Crypto Fear & Greed Index: {latest['value']} - {latest['value_classification']}")
                 return {
                     'value': int(latest['value']),
                     'classification': latest['value_classification'],
                     'timestamp': latest['timestamp'],
                     'sentiment_score': int(latest['value']) / 100  # Normalize 0-1
                 }
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to fetch Fear & Greed Index: {e}")
         
         return {'value': 50, 'classification': 'Neutral', 'sentiment_score': 0.5}
     
@@ -230,6 +248,8 @@ class SentimentAnalyzer:
         # Neutral (0.45-0.55) = no change
         # Greed (0.55-0.75) = slight bearish
         # Extreme greed (0.75-1.0) = contrarian bearish
+        
+        logger.debug(f"Analyzing sentiment impact: score={sentiment_score:.2f}, signal={signal_direction}")
         
         if signal_direction == 'BUY':
             if sentiment_score < 0.25:  # Extreme fear
@@ -265,6 +285,7 @@ class SentimentAnalyzer:
                 adjustment = 1.0
                 reason = "Neutral sentiment"
         
+        logger.info(f"Sentiment impact: {adjustment:.2f}x - {reason}")
         return adjustment, reason
     
     @staticmethod
@@ -291,6 +312,8 @@ class SentimentAnalyzer:
         # Commodities sentiment (placeholder)
         sentiment['commodities'] = 0.5
         
+        logger.debug(f"Multi-asset sentiment: crypto={sentiment['crypto']:.2f}, stocks={sentiment['stocks']:.2f}")
+        
         return sentiment
 
 
@@ -309,7 +332,10 @@ class MarketCorrelationAnalyzer:
         returns1 = df1['close'].pct_change()
         returns2 = df2['close'].pct_change()
         
-        return returns1.rolling(window).corr(returns2)
+        correlation = returns1.rolling(window).corr(returns2)
+        logger.debug(f"Rolling correlation calculated with window={window}")
+        
+        return correlation
     
     @staticmethod
     def find_diversification_opportunities(
@@ -324,6 +350,7 @@ class MarketCorrelationAnalyzer:
             List of uncorrelated assets
         """
         if not current_holdings:
+            logger.info("No current holdings, returning all assets")
             return list(correlations.columns)
         
         uncorrelated = []
@@ -341,14 +368,16 @@ class MarketCorrelationAnalyzer:
             
             if max_corr < threshold:
                 uncorrelated.append(asset)
+                logger.debug(f"Asset {asset} uncorrelated with portfolio (max correlation: {max_corr:.2f})")
         
+        logger.info(f"Found {len(uncorrelated)} uncorrelated assets for diversification")
         return uncorrelated
 
 
 if __name__ == "__main__":
     # Test regime detection
-    print("Market Regime Detection Test")
-    print("="*60)
+    logger.info("Market Regime Detection Test")
+    logger.info("="*60)
     
     # Create sample data
     dates = pd.date_range('2024-01-01', periods=100)
@@ -368,32 +397,32 @@ if __name__ == "__main__":
     detector = MarketRegimeDetector()
     regime, confidence = detector.detect_regime(df)
     
-    print(f"Detected Regime: {regime.value}")
-    print(f"Confidence: {confidence:.1%}")
+    logger.info(f"Detected Regime: {regime.value}")
+    logger.info(f"Confidence: {confidence:.1%}")
     
     strategy = detector.get_regime_strategy(regime)
-    print(f"\nRecommended Strategy:")
-    print(f"  Bias: {strategy['bias']}")
-    print(f"  Risk Multiplier: {strategy['risk_multiplier']}")
-    print(f"  Min Confidence: {strategy['min_confidence']:.1%}")
-    print(f"  Description: {strategy['description']}")
+    logger.info(f"Recommended Strategy:")
+    logger.info(f"  Bias: {strategy['bias']}")
+    logger.info(f"  Risk Multiplier: {strategy['risk_multiplier']}")
+    logger.info(f"  Min Confidence: {strategy['min_confidence']:.1%}")
+    logger.info(f"  Description: {strategy['description']}")
     
     # Test sentiment
-    print("\n" + "="*60)
-    print("Sentiment Analysis Test")
-    print("="*60)
+    logger.info("="*60)
+    logger.info("Sentiment Analysis Test")
+    logger.info("="*60)
     
     analyzer = SentimentAnalyzer()
     fg_index = analyzer.get_crypto_fear_greed_index()
     
-    print(f"Crypto Fear & Greed Index: {fg_index['value']}")
-    print(f"Classification: {fg_index['classification']}")
+    logger.info(f"Crypto Fear & Greed Index: {fg_index['value']}")
+    logger.info(f"Classification: {fg_index['classification']}")
     
     adjustment, reason = analyzer.analyze_sentiment_impact(
         fg_index['sentiment_score'],
         'BUY'
     )
     
-    print(f"\nSentiment Impact on BUY signal:")
-    print(f"  Adjustment: {adjustment:.2f}x")
-    print(f"  Reason: {reason}")
+    logger.info(f"Sentiment Impact on BUY signal:")
+    logger.info(f"  Adjustment: {adjustment:.2f}x")
+    logger.info(f"  Reason: {reason}")

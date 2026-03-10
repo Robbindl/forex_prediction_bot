@@ -11,8 +11,22 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
-        .chart-container { transition: all 0.3s ease; }
-        .chart-container:hover { box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        .chart-container { 
+            transition: all 0.3s ease; 
+            overflow: hidden;
+            position: relative;
+            width: 100%;
+            min-height: 300px;
+        }
+        .chart-container:hover { 
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1); 
+        }
+        .chart-container canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            max-width: 100%;
+        }
     </style>
 </head>
 <body class="bg-gray-50">
@@ -148,19 +162,19 @@
 
         <!-- Charts -->
         <div class="grid grid-cols-1 gap-6 mb-8">
-            <div class="bg-white rounded-xl shadow-md p-6 chart-container">
+            <div class="bg-white rounded-xl shadow-md p-6 chart-container" id="equity-container">
                 <h2 class="text-lg font-semibold mb-4">Equity Curve</h2>
                 <canvas id="equity-chart" height="300"></canvas>
             </div>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-            <div class="bg-white rounded-xl shadow-md p-6 chart-container">
+            <div class="bg-white rounded-xl shadow-md p-6 chart-container" id="drawdown-container">
                 <h2 class="text-lg font-semibold mb-4">Drawdown</h2>
                 <canvas id="drawdown-chart" height="250"></canvas>
             </div>
             
-            <div class="bg-white rounded-xl shadow-md p-6 chart-container">
+            <div class="bg-white rounded-xl shadow-md p-6 chart-container" id="monthly-container">
                 <h2 class="text-lg font-semibold mb-4">Monthly Returns</h2>
                 <canvas id="monthly-chart" height="250"></canvas>
             </div>
@@ -194,6 +208,7 @@
     </div>
 
     <script>
+        // Chart instances
         let equityChart = null;
         let drawdownChart = null;
         let monthlyChart = null;
@@ -240,40 +255,75 @@
 
             // Show loading
             document.getElementById('loading').classList.remove('hidden');
-            document.getElementById('results-summary').classList.add('hidden');
-
-            // Clear previous results
-            document.getElementById('trades-body').innerHTML = '<tr><td colspan="7" class="px-6 py-4 text-center text-gray-500">Loading trades...</td></tr>';
 
             try {
                 const response = await fetch(`/api/backtest/run?asset=${encodeURIComponent(asset)}&strategy=${strategy}&period=${period}`);
                 const data = await response.json();
 
-                // Hide loading
-                document.getElementById('loading').classList.add('hidden');
-
                 if (data.success) {
-                    updateSummary(data.results);
-                    updateEquityChart(data.equity_curve);
-                    updateDrawdownChart(data.drawdown);
-                    updateMonthlyChart(data.monthly_returns);
-                    updateTradesTable(data.trades);
-                    document.getElementById('results-summary').classList.remove('hidden');
+                    // Store data in sessionStorage and reload page to get fresh canvas
+                    sessionStorage.setItem('backtestData', JSON.stringify(data));
+                    sessionStorage.setItem('backtestParams', JSON.stringify({asset, strategy, period}));
+                    window.location.reload();
                 } else {
+                    document.getElementById('loading').classList.add('hidden');
                     alert('Error: ' + data.error);
-                    document.getElementById('trades-body').innerHTML = '<tr><td colspan="7" class="px-6 py-4 text-center text-red-500">Error: ' + data.error + '</td></tr>';
                 }
             } catch (error) {
                 document.getElementById('loading').classList.add('hidden');
                 alert('Error running backtest: ' + error);
-                document.getElementById('trades-body').innerHTML = '<tr><td colspan="7" class="px-6 py-4 text-center text-red-500">Error: ' + error + '</td></tr>';
             }
         }
+
+        // On page load, check for stored data
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSettingsFromUrl();
+            
+            const storedData = sessionStorage.getItem('backtestData');
+            if (storedData) {
+                // Clear stored data
+                sessionStorage.removeItem('backtestData');
+                const data = JSON.parse(storedData);
+                
+                // Hide loading
+                document.getElementById('loading').classList.add('hidden');
+                
+                // Update summary
+                updateSummary(data.results);
+                
+                // Update charts with fresh canvas
+                setTimeout(() => {
+                    // Destroy any existing charts
+                    if (equityChart) {
+                        equityChart.destroy();
+                        equityChart = null;
+                    }
+                    if (drawdownChart) {
+                        drawdownChart.destroy();
+                        drawdownChart = null;
+                    }
+                    if (monthlyChart) {
+                        monthlyChart.destroy();
+                        monthlyChart = null;
+                    }
+                    
+                    // Create new charts
+                    createEquityChart(data.equity_curve);
+                    createDrawdownChart(data.drawdown);
+                    createMonthlyChart(data.monthly_returns);
+                }, 100);
+                
+                // Update trades table
+                updateTradesTable(data.trades);
+                
+                // Show results
+                document.getElementById('results-summary').classList.remove('hidden');
+            }
+        });
 
         function updateSummary(results) {
             document.getElementById('total-trades').textContent = results.trades || 0;
             
-            // Convert decimal to percentage (0.75 -> 75%)
             const winRate = results.win_rate ? (results.win_rate * 100).toFixed(1) : '0.0';
             document.getElementById('win-rate').textContent = winRate + '%';
             
@@ -287,13 +337,18 @@
             document.getElementById('max-dd').textContent = maxDD + '%';
         }
 
-        function updateEquityChart(equityData) {
-            const ctx = document.getElementById('equity-chart').getContext('2d');
+        function createEquityChart(equityData) {
+            const container = document.getElementById('equity-container');
+            const canvas = document.getElementById('equity-chart');
             
-            if (equityChart) {
-                equityChart.destroy();
-            }
-
+            // Set fixed pixel dimensions
+            canvas.width = 800;
+            canvas.height = 300;
+            canvas.style.width = '100%';
+            canvas.style.height = 'auto';
+            
+            const ctx = canvas.getContext('2d');
+            
             equityChart = new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -311,36 +366,35 @@
                 },
                 options: {
                     responsive: true,
-                    maintainAspectRatio: false,
+                    maintainAspectRatio: true,
+                    aspectRatio: 2.5, // width:height ratio (800/300 ≈ 2.67)
+                    animation: false,
                     plugins: {
-                        legend: {
-                            display: false
-                        },
-                        tooltip: {
-                            mode: 'index',
-                            intersect: false
-                        }
+                        legend: { display: false },
+                        tooltip: { mode: 'index', intersect: false }
                     },
                     scales: {
-                        y: {
+                        y: { 
                             beginAtZero: false,
-                            title: {
-                                display: true,
-                                text: 'Equity ($)'
-                            }
+                            title: { display: true, text: 'Equity ($)' }
                         }
                     }
                 }
             });
         }
 
-        function updateDrawdownChart(drawdownData) {
-            const ctx = document.getElementById('drawdown-chart').getContext('2d');
+        function createDrawdownChart(drawdownData) {
+            const container = document.getElementById('drawdown-container');
+            const canvas = document.getElementById('drawdown-chart');
             
-            if (drawdownChart) {
-                drawdownChart.destroy();
-            }
-
+            // Set fixed pixel dimensions
+            canvas.width = 400;
+            canvas.height = 250;
+            canvas.style.width = '100%';
+            canvas.style.height = 'auto';
+            
+            const ctx = canvas.getContext('2d');
+            
             drawdownChart = new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -358,32 +412,34 @@
                 },
                 options: {
                     responsive: true,
-                    maintainAspectRatio: false,
+                    maintainAspectRatio: true,
+                    aspectRatio: 1.6, // 400/250 = 1.6
+                    animation: false,
                     plugins: {
-                        legend: {
-                            display: false
-                        }
+                        legend: { display: false }
                     },
                     scales: {
-                        y: {
+                        y: { 
                             beginAtZero: true,
-                            title: {
-                                display: true,
-                                text: 'Drawdown %'
-                            }
+                            title: { display: true, text: 'Drawdown %' }
                         }
                     }
                 }
             });
         }
 
-        function updateMonthlyChart(monthlyData) {
-            const ctx = document.getElementById('monthly-chart').getContext('2d');
+        function createMonthlyChart(monthlyData) {
+            const container = document.getElementById('monthly-container');
+            const canvas = document.getElementById('monthly-chart');
             
-            if (monthlyChart) {
-                monthlyChart.destroy();
-            }
-
+            // Set fixed pixel dimensions
+            canvas.width = 400;
+            canvas.height = 250;
+            canvas.style.width = '100%';
+            canvas.style.height = 'auto';
+            
+            const ctx = canvas.getContext('2d');
+            
             monthlyChart = new Chart(ctx, {
                 type: 'bar',
                 data: {
@@ -400,18 +456,15 @@
                 },
                 options: {
                     responsive: true,
-                    maintainAspectRatio: false,
+                    maintainAspectRatio: true,
+                    aspectRatio: 1.6,
+                    animation: false,
                     plugins: {
-                        legend: {
-                            display: false
-                        }
+                        legend: { display: false }
                     },
                     scales: {
                         y: {
-                            title: {
-                                display: true,
-                                text: 'Return %'
-                            }
+                            title: { display: true, text: 'Return %' }
                         }
                     }
                 }
@@ -453,28 +506,12 @@
         }
 
         // Add event listeners for dropdown changes
-        document.getElementById('asset').addEventListener('change', function() {
-            updateUrlWithSettings();
-        });
-        
-        document.getElementById('strategy').addEventListener('change', function() {
-            updateUrlWithSettings();
-        });
-        
-        document.getElementById('period').addEventListener('change', function() {
-            updateUrlWithSettings();
-        });
-
-        // Load settings on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            loadSettingsFromUrl();
-            // Don't auto-run, wait for user to click Run Backtest
-        });
+        document.getElementById('asset').addEventListener('change', updateUrlWithSettings);
+        document.getElementById('strategy').addEventListener('change', updateUrlWithSettings);
+        document.getElementById('period').addEventListener('change', updateUrlWithSettings);
 
         // Listen for back/forward navigation
-        window.addEventListener('popstate', function() {
-            loadSettingsFromUrl();
-        });
+        window.addEventListener('popstate', loadSettingsFromUrl);
     </script>
 </body>
 </html>

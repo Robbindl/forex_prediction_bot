@@ -7,6 +7,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 import json
+from logger import logger
 
 class StrategyVotingEngine:
     """
@@ -45,7 +46,7 @@ class StrategyVotingEngine:
         }
         # ============================================
         
-        print(f"✅ Voting Engine initialized with {len(self.strategy_weights)} strategies (including news sentiment)")
+        logger.info(f"Voting Engine initialized with {len(self.strategy_weights)} strategies (including news sentiment)")
     
     def get_all_signals(self, df: pd.DataFrame) -> Dict[str, Dict]:
         """
@@ -62,8 +63,9 @@ class StrategyVotingEngine:
                     latest_signal = strategy_signals[-1]
                     signals[name] = latest_signal
                     self.strategy_performance[name]['signals'] += 1
+                    logger.debug(f"Strategy {name} generated signal: {latest_signal.get('signal')}")
             except Exception as e:
-                print(f"  ⚠️ Strategy {name} error: {e}")
+                logger.error(f"Strategy {name} error: {e}")
         
         # ===== GET NEWS SENTIMENT SIGNAL =====
         try:
@@ -78,11 +80,12 @@ class StrategyVotingEngine:
             if news_signal:
                 signals['news_sentiment'] = news_signal
                 self.strategy_performance['news_sentiment']['signals'] += 1
-                print(f"  📰 News Sentiment: {sentiment['overall_sentiment']} ({news_signal['confidence']:.0%})")
+                logger.info(f"📰 News Sentiment: {sentiment.get('overall_sentiment', 'Neutral')} ({news_signal['confidence']:.0%})")
         except Exception as e:
-            print(f"  ⚠️ News sentiment error: {e}")
+            logger.error(f"News sentiment error: {e}")
         # ======================================
         
+        logger.debug(f"Total signals generated: {len(signals)}")
         return signals
     
     def _convert_sentiment_to_signal(self, sentiment: Dict) -> Optional[Dict]:
@@ -95,6 +98,7 @@ class StrategyVotingEngine:
         
         # Only generate signals if we have enough articles
         if article_count < 5:
+            logger.debug(f"News sentiment skipped: only {article_count} articles")
             return None
         
         # Base confidence on sentiment magnitude and article count
@@ -104,6 +108,7 @@ class StrategyVotingEngine:
         confidence = min(base_confidence + article_confidence, 0.85)  # Cap at 85%
         
         if interpretation == "Very Bullish":
+            logger.debug(f"News sentiment: Very Bullish (confidence: {confidence:.2f})")
             return {
                 'signal': 'BUY',
                 'confidence': confidence,
@@ -113,6 +118,7 @@ class StrategyVotingEngine:
                 'strategy': 'news_sentiment'
             }
         elif interpretation == "Bullish":
+            logger.debug(f"News sentiment: Bullish (confidence: {confidence*0.8:.2f})")
             return {
                 'signal': 'BUY',
                 'confidence': confidence * 0.8,
@@ -122,6 +128,7 @@ class StrategyVotingEngine:
                 'strategy': 'news_sentiment'
             }
         elif interpretation == "Very Bearish":
+            logger.debug(f"News sentiment: Very Bearish (confidence: {confidence:.2f})")
             return {
                 'signal': 'SELL',
                 'confidence': confidence,
@@ -131,6 +138,7 @@ class StrategyVotingEngine:
                 'strategy': 'news_sentiment'
             }
         elif interpretation == "Bearish":
+            logger.debug(f"News sentiment: Bearish (confidence: {confidence*0.8:.2f})")
             return {
                 'signal': 'SELL',
                 'confidence': confidence * 0.8,
@@ -140,6 +148,7 @@ class StrategyVotingEngine:
                 'strategy': 'news_sentiment'
             }
         else:
+            logger.debug("News sentiment: Neutral - no signal")
             return None  # Neutral - no signal
     
     def weighted_vote(self, signals: Dict[str, Dict]) -> Optional[Dict]:
@@ -148,6 +157,7 @@ class StrategyVotingEngine:
         Returns: Combined signal or None
         """
         if not signals:
+            logger.debug("No signals to vote on")
             return None
         
         votes_for_buy = 0
@@ -155,6 +165,8 @@ class StrategyVotingEngine:
         total_weight = 0
         all_reasons = []
         contributing_strategies = []
+        
+        logger.debug(f"Voting on {len(signals)} signals")
         
         for name, signal in signals.items():
             weight = self.strategy_weights.get(name, 1.0)
@@ -167,28 +179,37 @@ class StrategyVotingEngine:
                 total_weight += weight
                 all_reasons.append(f"{name}: BUY ({confidence:.0%})")
                 contributing_strategies.append(name)
+                logger.debug(f"  BUY vote: {name} (weight: {weight:.2f}, confidence: {confidence:.2f})")
             elif direction == 'SELL':
                 votes_for_sell += weight * confidence
                 total_weight += weight
                 all_reasons.append(f"{name}: SELL ({confidence:.0%})")
                 contributing_strategies.append(name)
+                logger.debug(f"  SELL vote: {name} (weight: {weight:.2f}, confidence: {confidence:.2f})")
         
         if total_weight == 0:
+            logger.debug("No valid votes (total weight = 0)")
             return None
         
         # Calculate vote percentages
         buy_percentage = votes_for_buy / total_weight
         sell_percentage = votes_for_sell / total_weight
         
+        logger.debug(f"Vote results - BUY: {buy_percentage:.2%}, SELL: {sell_percentage:.2%}")
+        
         # Determine final signal
-        threshold = 0.6  # Need 60% agreement
+        threshold = 0.55
         final_signal = 'HOLD'
         confidence = max(buy_percentage, sell_percentage)
         
         if buy_percentage > threshold and buy_percentage > sell_percentage:
             final_signal = 'BUY'
+            logger.info(f"Voting result: BUY with {buy_percentage:.2%} confidence")
         elif sell_percentage > threshold and sell_percentage > buy_percentage:
             final_signal = 'SELL'
+            logger.info(f"Voting result: SELL with {sell_percentage:.2%} confidence")
+        else:
+            logger.info(f"Voting result: HOLD (BUY: {buy_percentage:.2%}, SELL: {sell_percentage:.2%})")
         
         # Get the most recent price for entry
         if 'df' in self.trading_system.__dict__:
@@ -212,7 +233,7 @@ class StrategyVotingEngine:
         # Record this vote for performance tracking
         vote_record = {
             'timestamp': datetime.now(),
-            'signals': signals,
+            'signals': {k: v.get('signal') for k, v in signals.items()},  # Store only signals, not full dicts
             'buy_percentage': buy_percentage,
             'sell_percentage': sell_percentage,
             'final_signal': final_signal,
@@ -224,6 +245,9 @@ class StrategyVotingEngine:
         # Highlight if news sentiment contributed
         news_contributed = 'news_sentiment' in contributing_strategies
         news_emoji = " 📰" if news_contributed else ""
+        
+        if news_contributed:
+            logger.info("News sentiment contributed to this vote")
         
         return {
             'signal': final_signal,
@@ -246,6 +270,8 @@ class StrategyVotingEngine:
         if 'contributing_strategies' not in trade_result:
             return
         
+        logger.info(f"Updating strategy performance for trade: ${trade_result.get('pnl', 0):.2f}")
+        
         for strategy_name in trade_result['contributing_strategies']:
             if strategy_name in self.strategy_performance:
                 perf = self.strategy_performance[strategy_name]
@@ -253,11 +279,15 @@ class StrategyVotingEngine:
                 
                 if trade_result.get('pnl', 0) > 0:
                     perf['wins'] += 1
+                    logger.debug(f"  {strategy_name}: WIN")
                 else:
                     perf['losses'] += 1
+                    logger.debug(f"  {strategy_name}: LOSS")
                 
                 perf['total_pnl'] += trade_result.get('pnl', 0)
                 perf['win_rate'] = perf['wins'] / perf['trades'] if perf['trades'] > 0 else 0
+                
+                logger.debug(f"  {strategy_name}: now {perf['wins']}/{perf['trades']} wins ({perf['win_rate']:.1%})")
                 
                 # Update weight based on performance (optional)
                 self._update_strategy_weight(strategy_name)
@@ -277,7 +307,10 @@ class StrategyVotingEngine:
         new_weight = base_weight + win_rate_bonus * 0.5 + pnl_factor * 0.3
         new_weight = max(0.3, min(new_weight, 3.0))  # Keep between 0.3 and 3.0
         
+        old_weight = self.strategy_weights.get(strategy_name, 1.0)
         self.strategy_weights[strategy_name] = round(new_weight, 2)
+        
+        logger.info(f"Strategy {strategy_name} weight updated: {old_weight:.2f} → {new_weight:.2f} (win rate: {perf['win_rate']:.1%}, P&L: ${perf['total_pnl']:.2f})")
     
     def get_performance_report(self) -> Dict:
         """
@@ -289,6 +322,8 @@ class StrategyVotingEngine:
             'weights': self.strategy_weights,
             'recent_votes': self.vote_history[-10:] if self.vote_history else []
         }
+        
+        logger.info(f"Performance report generated: {len(self.vote_history)} total votes")
         return report
     
     def get_best_strategies(self, top_n: int = 3) -> List[Tuple[str, float]]:
@@ -301,4 +336,7 @@ class StrategyVotingEngine:
                 strategies.append((name, perf['win_rate']))
         
         strategies.sort(key=lambda x: x[1], reverse=True)
+        
+        logger.info(f"Top {min(top_n, len(strategies))} strategies: {[(s, f'{w:.1%}') for s, w in strategies[:top_n]]}")
+        
         return strategies[:top_n]

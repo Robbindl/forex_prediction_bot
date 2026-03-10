@@ -1,0 +1,79 @@
+# Virtual Environments (from your .gitignore)
+venv/
+venv311/
+venv311_new/
+env/
+ENV/
+pythonenv*
+.venv
+venv_tf/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# ML Models (KEEP THESE OUT - will mount them)
+ml_models/
+trained_models/
+*.pkl
+*.h5
+*.joblib
+*.onnx
+model_registry.json
+training_status.json
+
+# Logs
+logs/
+training_logs/
+*.log
+*.log.*
+master_controller.log
+health_log.txt
+
+# Trading Data
+paper_trades.json
+paper_trades_backup_*.json
+*.db
+*.sqlite
+*.sqlite3
+backtest_results/
+optimization_results/
+
+# Reports
+reports/
+portfolio_reports/
+*.html
+!templates/*.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+.git/
+
+# Security (from your .gitignore)
+.env
+.env.*
+!.env.example
+config/*_config.json
+*key*.py
+*secret*.py
+!config/__init__.py
+
+# Temporary
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.session
+*.session-journal
+

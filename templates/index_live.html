@@ -69,6 +69,113 @@
         .badge-buy { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
         .badge-sell { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
         .badge-hold { background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%); }
+
+        .loading {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Clean Signal Box */
+        .signal-box {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-family: 'Courier New', monospace;
+        }
+        
+        .signal-line {
+            display: flex;
+            padding: 8px 0;
+            border-bottom: 1px dashed #eee;
+        }
+        
+        .signal-label {
+            width: 100px;
+            color: #666;
+        }
+        
+        .signal-value {
+            font-weight: 600;
+        }
+
+        /* Human Response Styles */
+        .human-message {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 20px 20px 20px 5px;
+            padding: 20px;
+            color: white;
+            position: relative;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+        }
+        
+        .human-message::before {
+            content: '🤖';
+            position: absolute;
+            left: -15px;
+            top: -15px;
+            font-size: 30px;
+            background: white;
+            border-radius: 50%;
+            padding: 5px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        
+        .mood-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            background: rgba(255,255,255,0.2);
+            backdrop-filter: blur(5px);
+        }
+        
+        .reason-bullet {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 10px;
+            backdrop-filter: blur(5px);
+        }
+        
+        .trading-diary {
+            background: rgba(255,255,255,0.1);
+            border-left: 3px solid #ffd700;
+            padding: 10px 15px;
+            margin: 10px 0;
+            border-radius: 0 10px 10px 0;
+            font-style: italic;
+        }
+
+        .tab-button {
+            padding: 10px 20px;
+            border-radius: 8px 8px 0 0;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .tab-button.active {
+            background: white;
+            color: #4f46e5;
+            border-bottom: 2px solid #4f46e5;
+        }
+        
+        .tab-button:not(.active) {
+            background: #f3f4f6;
+            color: #6b7280;
+        }
     </style>
 </head>
 <body class="bg-gray-50">
@@ -100,7 +207,7 @@
                 </div>
             </div>
 
-            <!-- ===== NEW NAVIGATION MENU ADDED HERE ===== -->
+            <!-- Navigation Menu -->
             <div class="flex items-center justify-center space-x-8 mt-4 border-t border-red-500 pt-4">
                 <a href="/" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
                     <i class="fas fa-chart-line"></i>
@@ -119,7 +226,6 @@
                     <span>Status</span>
                 </a>
             </div>
-            <!-- ===== END OF NAVIGATION MENU ===== -->
             
         </div>
     </header>
@@ -127,6 +233,53 @@
     <!-- Main Content -->
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         
+        <!-- ASSET SEARCH SECTION -->
+        <div class="bg-white rounded-xl shadow-lg p-6 mb-8 border border-gray-200">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center">
+                    <i class="fas fa-robot text-2xl text-purple-600 mr-3"></i>
+                    <h2 class="text-xl font-semibold text-gray-800">Ask Robbie 🤖</h2>
+                </div>
+                
+                <!-- View Toggle -->
+                <div class="flex bg-gray-100 rounded-lg p-1">
+                    <button onclick="setViewMode('signal')" id="mode-signal" class="tab-button active px-4 py-2 text-sm">
+                        <i class="fas fa-chart-line mr-1"></i>Signal
+                    </button>
+                    <button onclick="setViewMode('human')" id="mode-human" class="tab-button px-4 py-2 text-sm">
+                        <i class="fas fa-comment mr-1"></i>Human
+                    </button>
+                </div>
+            </div>
+            
+            <div class="flex flex-col md:flex-row gap-4">
+                <div class="flex-1">
+                    <input type="text" 
+                           id="asset-search" 
+                           placeholder="Enter asset (BTC, ETH, GOLD, AAPL, EUR/USD...)" 
+                           class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                           onkeypress="if(event.key === 'Enter') searchAsset()">
+                </div>
+                <button onclick="searchAsset()" 
+                        class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold transition flex items-center justify-center space-x-2">
+                    <i class="fas fa-magnifying-glass"></i>
+                    <span>Ask Robbie</span>
+                </button>
+            </div>
+            
+            <!-- Quick Search Buttons -->
+            <div class="flex flex-wrap gap-2 mt-4">
+                <button onclick="quickSearch('BTC')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">₿ BTC</button>
+                <button onclick="quickSearch('ETH')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">⟠ ETH</button>
+                <button onclick="quickSearch('GOLD')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">🏆 GOLD</button>
+                <button onclick="quickSearch('AAPL')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">🍎 AAPL</button>
+                <button onclick="quickSearch('EUR/USD')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">💶 EUR/USD</button>
+            </div>
+            
+            <!-- Search Results -->
+            <div id="search-results" class="mt-6 hidden"></div>
+        </div>
+
         <!-- Disclaimer -->
         <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6 rounded-r-lg">
             <div class="flex">
@@ -277,14 +430,86 @@
         let currentSignals = [];
         let refreshInterval = null;
         let countdownInterval = null;
-        let nextRefreshTime = 60;
+        let currentViewMode = 'signal'; // 'signal' or 'human'
 
-        // Auto-fetch signals every 10 seconds (backend refreshes every 60)
+        // Asset aliases
+        const ASSET_ALIASES = {
+            'BITCOIN': 'BTC-USD',
+            'BTC': 'BTC-USD',
+            'ETHEREUM': 'ETH-USD',
+            'ETH': 'ETH-USD',
+            'BINANCE': 'BNB-USD',
+            'BNB': 'BNB-USD',
+            'SOLANA': 'SOL-USD',
+            'SOL': 'SOL-USD',
+            'XRP': 'XRP-USD',
+            'RIPPLE': 'XRP-USD',
+            'GOLD': 'XAU/USD',
+            'SILVER': 'XAG/USD',
+            'OIL': 'CL=F',
+            'WTI': 'CL=F',
+            'SP500': '^GSPC',
+            'S&P': '^GSPC',
+            'DOW': '^DJI',
+            'NASDAQ': '^IXIC',
+            'APPLE': 'AAPL',
+            'MICROSOFT': 'MSFT',
+            'GOOGLE': 'GOOGL',
+            'AMAZON': 'AMZN',
+            'TESLA': 'TSLA',
+            'NVIDIA': 'NVDA',
+            'META': 'META',
+            'EURO': 'EUR/USD',
+            'POUND': 'GBP/USD',
+            'YEN': 'USD/JPY',
+        };
+
+        // Human-like response phrases
+        const BULLISH_PHRASES = [
+            "looking pretty bullish", "ready to pump", "showing strength", 
+            "on the move", "looking juicy", "getting interesting",
+            "green across the board", "buyers are stepping in", "looking good!"
+        ];
+        
+        const BEARISH_PHRASES = [
+            "looking bearish", "showing weakness", "might dip",
+            "under pressure", "sellers are in control", "looking shaky",
+            "red flags popping up", "I'd be careful here"
+        ];
+        
+        const NEUTRAL_PHRASES = [
+            "looking neutral", "choppy waters", "no clear direction",
+            "wait and see", "mixed signals", "consolidating"
+        ];
+
+        const GREETINGS = [
+            "Hey there! 👋",
+            "Yo! 👊",
+            "Hey! ☕",
+            "Quick update for you:",
+            "Check this out:",
+            "After analyzing the charts:"
+        ];
+
+        const SIGN_OFFS = [
+            "That's my 2 satoshis! 🪙",
+            "Catch you later! 👊",
+            "Let's see if it plays out! 🤞",
+            "— Robbie 🤖",
+            "Back to watching charts! 📈"
+        ];
+
+        // Auto-fetch signals
         function startAutoRefresh() {
-            console.log('🚀 Starting auto-refresh...');
             loadSignals();
-            refreshInterval = setInterval(loadSignals, 10000); // Check every 10 seconds
-            countdownInterval = setInterval(updateCountdown, 1000); // Update countdown every second
+            refreshInterval = setInterval(loadSignals, 10000);
+            countdownInterval = setInterval(updateCountdown, 1000);
+        }
+
+        function setViewMode(mode) {
+            currentViewMode = mode;
+            document.getElementById('mode-signal').classList.toggle('active', mode === 'signal');
+            document.getElementById('mode-human').classList.toggle('active', mode === 'human');
         }
 
         function updateCountdown() {
@@ -308,24 +533,13 @@
         }
 
         async function loadSignals() {
-            console.log('📡 Loading signals...');
             try {
                 const filter = document.getElementById('filter').value;
-                console.log('🔍 Filter:', filter);
-                
                 const response = await fetch(`/api/signals/live?filter=${filter}`);
-                console.log('📊 Response status:', response.status);
-                
                 const data = await response.json();
-                console.log('📦 Data received:', data);
                 
                 if (data.success) {
-                    console.log('✅ Success! Signals count:', data.signals?.length);
-                    
-                    // Filter out CLOSED signals
                     const activeSignals = data.signals ? data.signals.filter(s => s.signal !== 'CLOSED') : [];
-                    console.log('🎯 Active signals:', activeSignals.length);
-                    
                     displaySignals(activeSignals);
                     updateStats(activeSignals);
                     
@@ -333,45 +547,31 @@
                         const time = new Date(data.last_refresh);
                         document.getElementById('last-update').textContent = time.toLocaleTimeString();
                     }
-                } else {
-                    console.error('❌ API returned success=false');
                 }
             } catch (error) {
-                console.error('❌ Error loading signals:', error);
+                console.error('Error loading signals:', error);
             }
         }
 
         function displaySignals(signals) {
-            console.log('🎨 Displaying signals:', signals.length);
             const container = document.getElementById('signals-container');
             
-            if (!container) {
-                console.error('❌ Container not found!');
-                return;
-            }
-            
             if (signals.length === 0) {
-                console.log('📭 No signals to display');
                 container.style.display = 'none';
                 document.getElementById('no-signals').style.display = 'block';
                 return;
             }
 
-            console.log('✅ Showing signals grid');
             container.style.display = 'grid';
             document.getElementById('no-signals').style.display = 'none';
-
-            // Clear and rebuild
             container.innerHTML = '';
             
-            signals.forEach((signal, index) => {
-                console.log(`📇 Signal ${index}:`, signal.asset, signal.signal);
+            signals.forEach(signal => {
                 const card = createSignalCard(signal);
                 container.innerHTML += card;
             });
 
             currentSignals = signals;
-            console.log('✅ Display complete');
         }
 
         function createSignalCard(signal) {
@@ -386,13 +586,11 @@
 
             const expiringClass = signal.time_remaining < 2 ? 'expiring' : '';
             
-            // Safely handle take_profit_levels
             const tpLevels = signal.take_profit_levels || [];
             const tp1Price = tpLevels.length > 0 ? tpLevels[0].price : signal.take_profit || 0;
             
             return `
                 <div class="signal-card ${expiringClass} bg-white rounded-lg shadow-sm p-6 relative">
-                    <!-- Expiry Timer -->
                     <div class="absolute top-2 right-2 text-xs font-semibold ${signal.time_remaining < 2 ? 'text-orange-600' : 'text-gray-400'}">
                         <i class="fas fa-clock"></i> ${(signal.time_remaining || 0).toFixed(1)}m
                     </div>
@@ -444,8 +642,6 @@
         }
 
         function updateStats(signals) {
-            console.log('📊 Updating stats with', signals.length, 'signals');
-            
             const buyCount = signals.filter(s => s && s.signal === 'BUY').length;
             const sellCount = signals.filter(s => s && s.signal === 'SELL').length;
             const total = signals.length;
@@ -460,8 +656,6 @@
             document.getElementById('buy-signals').textContent = buyCount;
             document.getElementById('sell-signals').textContent = sellCount;
             document.getElementById('avg-confidence').textContent = Math.round(avgConf * 100) + '%';
-            
-            console.log(`✅ Stats updated - Total: ${total}, Buy: ${buyCount}, Sell: ${sellCount}, Avg: ${Math.round(avgConf * 100)}%`);
         }
 
         async function updateSettings() {
@@ -472,8 +666,6 @@
                 filter: document.getElementById('filter').value
             };
 
-            console.log('⚙️ Updating settings:', settings);
-
             try {
                 const response = await fetch('/api/settings/update', {
                     method: 'POST',
@@ -483,7 +675,7 @@
 
                 const data = await response.json();
                 if (data.success) {
-                    alert('✅ Settings updated! Fresh signals will generate shortly.');
+                    alert('✅ Settings updated!');
                 }
             } catch (error) {
                 console.error('Error updating settings:', error);
@@ -491,17 +683,11 @@
         }
 
         async function manualRefresh() {
-            console.log('🔄 Manual refresh triggered');
             try {
                 document.getElementById('next-refresh').textContent = 'Refreshing...';
-                
-                const response = await fetch('/api/refresh/manual', {
-                    method: 'POST'
-                });
-                
+                const response = await fetch('/api/refresh/manual', { method: 'POST' });
                 const data = await response.json();
                 if (data.success) {
-                    console.log('✅ Manual refresh successful');
                     await loadSignals();
                 }
             } catch (error) {
@@ -509,11 +695,287 @@
             }
         }
 
-        // Start auto-refresh when page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('📄 Page loaded, starting auto-refresh...');
-            startAutoRefresh();
-        });
+        // Asset Search Functions
+        async function searchAsset() {
+            let asset = document.getElementById('asset-search').value.trim().toUpperCase();
+            
+            if (!asset) {
+                alert('Please enter an asset symbol');
+                return;
+            }
+            
+            if (ASSET_ALIASES[asset]) {
+                asset = ASSET_ALIASES[asset];
+            }
+            
+            const resultsDiv = document.getElementById('search-results');
+            
+            resultsDiv.innerHTML = `
+                <div class="bg-purple-50 border border-purple-200 rounded-xl p-8 text-center">
+                    <div class="loading mx-auto mb-4" style="border-top-color: #8b5cf6;"></div>
+                    <p class="text-gray-600">Robbie is analyzing ${asset}...</p>
+                </div>
+            `;
+            resultsDiv.classList.remove('hidden');
+            
+            try {
+                const response = await fetch(`/api/signal/${encodeURIComponent(asset)}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (currentViewMode === 'signal') {
+                        displaySignalResponse(data.signal, asset);
+                    } else {
+                        displayHumanResponse(data.human_response, asset);
+                    }
+                } else {
+                    resultsDiv.innerHTML = `
+                        <div class="bg-red-50 border border-red-200 rounded-xl p-6">
+                            <p class="text-red-600">❌ ${data.error || 'Could not fetch data'}</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `
+                    <div class="bg-red-50 border border-red-200 rounded-xl p-6">
+                        <p class="text-red-600">❌ Error fetching signal</p>
+                    </div>
+                `;
+            }
+        }
+
+        function displaySignalResponse(signal, asset) {
+            const direction = signal.direction === 'UP' ? 'BUY' : signal.direction === 'DOWN' ? 'SELL' : 'HOLD';
+            const confidence = (signal.confidence * 100).toFixed(1);
+            const price = signal.current_price;
+            const timestamp = new Date().toLocaleString();
+            
+            let bgColor, borderColor, textColor;
+            if (direction === 'BUY') {
+                bgColor = 'bg-green-50';
+                borderColor = 'border-green-200';
+                textColor = 'text-green-600';
+            } else if (direction === 'SELL') {
+                bgColor = 'bg-red-50';
+                borderColor = 'border-red-200';
+                textColor = 'text-red-600';
+            } else {
+                bgColor = 'bg-gray-50';
+                borderColor = 'border-gray-200';
+                textColor = 'text-gray-600';
+            }
+            
+            let html = `
+                <div class="${bgColor} border ${borderColor} rounded-xl p-6 shadow-sm">
+                    <div class="flex justify-between items-start mb-4">
+                        <h3 class="text-2xl font-bold text-gray-900">${asset}</h3>
+                        <span class="text-sm text-gray-500">${timestamp}</span>
+                    </div>
+                    
+                    <div class="space-y-2 font-mono">
+                        <div class="flex py-1 border-b border-dashed border-gray-200">
+                            <span class="w-24 text-gray-600">Signal:</span>
+                            <span class="font-bold ${textColor}">${direction}</span>
+                        </div>
+                        
+                        <div class="flex py-1 border-b border-dashed border-gray-200">
+                            <span class="w-24 text-gray-600">Entry:</span>
+                            <span class="font-mono">$${price.toFixed(2)}</span>
+                        </div>
+            `;
+            
+            if (signal.stop_loss) {
+                html += `
+                        <div class="flex py-1 border-b border-dashed border-gray-200">
+                            <span class="w-24 text-gray-600">Stop Loss:</span>
+                            <span class="font-mono text-red-600">$${signal.stop_loss.toFixed(2)}</span>
+                        </div>
+                `;
+            }
+            
+            if (signal.take_profit) {
+                html += `
+                        <div class="flex py-1 border-b border-dashed border-gray-200">
+                            <span class="w-24 text-gray-600">Take Profit:</span>
+                            <span class="font-mono text-green-600">$${signal.take_profit.toFixed(2)}</span>
+                        </div>
+                `;
+            }
+            
+            html += `
+                        <div class="flex py-1 border-b border-dashed border-gray-200">
+                            <span class="w-24 text-gray-600">Confidence:</span>
+                            <span class="font-mono">${confidence}%</span>
+                        </div>
+                        
+                        <div class="flex py-1">
+                            <span class="w-24 text-gray-600">Strategy:</span>
+                            <span class="font-mono">VOTING</span>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-4 pt-3 border-t border-gray-200 flex justify-end">
+                        <button onclick="closeSearch()" class="text-sm text-gray-500 hover:text-gray-700">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('search-results').innerHTML = html;
+        }
+
+        function displayHumanResponse(response, asset) {
+            const direction = response.direction === 'UP' ? 'BUY' : response.direction === 'DOWN' ? 'SELL' : 'HOLD';
+            const confidence = Math.round(response.confidence * 100);
+            const price = response.current_price;
+            
+            // Get random phrases
+            const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+            const signOff = SIGN_OFFS[Math.floor(Math.random() * SIGN_OFFS.length)];
+            
+            let phrase = '';
+            if (direction === 'BUY') {
+                phrase = BULLISH_PHRASES[Math.floor(Math.random() * BULLISH_PHRASES.length)];
+            } else if (direction === 'SELL') {
+                phrase = BEARISH_PHRASES[Math.floor(Math.random() * BEARISH_PHRASES.length)];
+            } else {
+                phrase = NEUTRAL_PHRASES[Math.floor(Math.random() * NEUTRAL_PHRASES.length)];
+            }
+            
+            let html = `
+                <div class="human-message">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="mood-badge">
+                            <i class="fas ${response.mood_emoji === '🚀' ? 'fa-rocket' : 'fa-smile'} mr-1"></i>
+                            Feeling ${response.mood || 'neutral'} ${response.mood_emoji || '😐'}
+                        </div>
+                        <span class="text-xs opacity-75">${new Date().toLocaleTimeString()}</span>
+                    </div>
+                    
+                    <p class="text-xl mb-3">${greeting}</p>
+                    
+                    <div class="flex items-center justify-between bg-white/10 rounded-xl p-4 mb-4">
+                        <div>
+                            <span class="text-3xl font-bold">${asset}</span>
+                            <span class="ml-3 text-2xl ${direction === 'BUY' ? 'text-green-300' : direction === 'SELL' ? 'text-red-300' : 'text-gray-300'}">
+                                ${direction === 'BUY' ? '🚀' : direction === 'SELL' ? '📉' : '⚖️'}
+                            </span>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold">${direction}</div>
+                            <div class="text-sm">${confidence}% confident</div>
+                        </div>
+                    </div>
+                    
+                    <p class="mb-3"><span class="font-semibold">${asset} is ${phrase}</span> Here's why:</p>
+                    
+                    <div class="space-y-2 mb-4">
+            `;
+            
+            if (response.reasons && response.reasons.length > 0) {
+                response.reasons.slice(0, 4).forEach(reason => {
+                    let emoji = '📊';
+                    if (reason.toLowerCase().includes('rsi')) emoji = '📈';
+                    else if (reason.toLowerCase().includes('volume')) emoji = '📊';
+                    else if (reason.toLowerCase().includes('macd')) emoji = '📉';
+                    else if (reason.toLowerCase().includes('trend')) emoji = '📐';
+                    
+                    html += `
+                        <div class="reason-bullet">
+                            <span class="mr-2">${emoji}</span>
+                            <span>${reason}</span>
+                        </div>
+                    `;
+                });
+            }
+            
+            html += `</div>`;
+            
+            if (response.whale_alerts) {
+                html += `
+                    <div class="bg-yellow-500/20 rounded-lg p-3 mb-4 border border-yellow-400/30">
+                        <p class="text-sm flex items-center">
+                            <i class="fas fa-fish text-yellow-300 mr-2"></i>
+                            🐋 ${response.whale_alerts}
+                        </p>
+                    </div>
+                `;
+            }
+            
+            if (response.historical_context) {
+                html += `
+                    <div class="trading-diary">
+                        <i class="fas fa-book-open mr-2"></i>
+                        📝 Trading diary: ${response.historical_context}
+                    </div>
+                `;
+            }
+            
+            if (response.news && response.news.length > 0) {
+                html += `
+                    <div class="mt-4 pt-3 border-t border-white/20">
+                        <p class="text-sm font-semibold mb-2 flex items-center">
+                            <i class="fas fa-newspaper mr-2"></i>
+                            In the news:
+                        </p>
+                `;
+                response.news.slice(0, 2).forEach(article => {
+                    html += `<p class="text-sm opacity-90 mb-1">📰 "${article.title.substring(0, 70)}..."</p>`;
+                });
+                html += `</div>`;
+            }
+            
+            html += `
+                <div class="mt-4 pt-3 border-t border-white/20 grid grid-cols-2 gap-3">
+                    <div>
+                        <p class="text-xs opacity-75">Current Price</p>
+                        <p class="text-xl font-bold">$${price.toFixed(2)}</p>
+                    </div>
+            `;
+            
+            if (response.predicted_price) {
+                const change = ((response.predicted_price - price) / price * 100).toFixed(1);
+                const changeClass = change >= 0 ? 'text-green-300' : 'text-red-300';
+                html += `
+                    <div>
+                        <p class="text-xs opacity-75">Target Price</p>
+                        <p class="text-xl font-bold">$${response.predicted_price.toFixed(2)}</p>
+                        <p class="text-sm ${changeClass}">${change >= 0 ? '+' : ''}${change}%</p>
+                    </div>
+                `;
+            }
+            
+            html += `
+                </div>
+                
+                <div class="mt-4 text-right italic opacity-90">
+                    ${signOff}
+                </div>
+                
+                <div class="mt-4 flex justify-end">
+                    <button onclick="closeSearch()" class="text-sm opacity-75 hover:opacity-100">
+                        Close
+                    </button>
+                </div>
+                </div>
+            `;
+            
+            document.getElementById('search-results').innerHTML = html;
+        }
+
+        function quickSearch(asset) {
+            document.getElementById('asset-search').value = asset;
+            searchAsset();
+        }
+
+        function closeSearch() {
+            document.getElementById('search-results').classList.add('hidden');
+            document.getElementById('asset-search').value = '';
+        }
+
+        // Start auto-refresh
+        document.addEventListener('DOMContentLoaded', startAutoRefresh);
     </script>
 
 </body>

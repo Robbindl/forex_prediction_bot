@@ -1,6 +1,7 @@
 """
 ⚡ ULTIMATE MULTI-API FETCHER - Real-time data from ALL sources
 With ACCURATE market hours for EAT timezone (UTC+3)
+FIXED: Added CoinGecko, better error handling, improved Yahoo mappings
 """
 
 import requests
@@ -16,6 +17,7 @@ import threading
 import warnings
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from logger import logger
 
 # ===== IMPORT FROM CONFIG =====
 from config.config import ITICK_TOKEN, OILPRICE_API_KEY
@@ -188,13 +190,14 @@ class NASALevelFetcher:
     - Alpha Vantage: Stocks, forex, commodities (via REST API)
     - Twelve Data: Commodities, ETFs, indices (SUPPORTS 4H!)
     - Yahoo Finance: Universal fallback
+    - CoinGecko: Free crypto data (no API key needed!)
     - SUPPORTS: 1m, 5m, 15m, 1h, 4h, 1d for day trading
     """
     
     def __init__(self):
-        print("\n" + "="*60)
-        print(" INITIALIZING ULTIMATE MULTI-API FETCHER")
-        print("="*60 + "\n")
+        logger.info("="*60)
+        logger.info(" INITIALIZING ULTIMATE MULTI-API FETCHER")
+        logger.info("="*60)
         
         # API Keys
         self.alpha_vantage_key = 'PACP0NRM3SIFWZBL'
@@ -211,7 +214,7 @@ class NASALevelFetcher:
         
         # Connection pooling
         self.session = requests.Session()
-        retry_strategy = Retry(total=2, backoff_factor=0.5)
+        retry_strategy = Retry(total=3, backoff_factor=1.0, status_forcelist=[429, 500, 502, 503, 504])
         adapter = HTTPAdapter(pool_connections=50, pool_maxsize=100, max_retries=retry_strategy)
         self.session.mount('http://', adapter)
         self.session.mount('https://', adapter)
@@ -244,12 +247,158 @@ class NASALevelFetcher:
             '1d': '1y'        # 1 year of daily data
         }
         
-        print(f"[OK] Finnhub: {'Connected' if FINNHUB_AVAILABLE else 'Not Installed'}")
-        print(f"[OK] Alpha Vantage: {'Connected' if ALPHA_VANTAGE_AVAILABLE else 'Not Installed'}")
-        print(f"[OK] Twelve Data: {'Connected' if TWELVEDATA_AVAILABLE else 'Not Installed'}")
-        print(f"[OK] Yahoo Finance: Connected")
-        print(f"[OK] Timeframes: 1m, 5m, 15m, 1h, 4h, 1d")
-        print("="*60 + "\n")
+        # Initialize symbol mappings
+        self._init_symbol_maps()
+        
+        logger.info(f"Finnhub: {'Connected' if FINNHUB_AVAILABLE else 'Not Installed'}")
+        logger.info(f"Alpha Vantage: {'Connected' if ALPHA_VANTAGE_AVAILABLE else 'Not Installed'}")
+        logger.info(f"Twelve Data: {'Connected' if TWELVEDATA_AVAILABLE else 'Not Installed'}")
+        logger.info(f"Yahoo Finance: Connected")
+        logger.info(f"CoinGecko: Available (free crypto data)")
+        logger.info(f"Timeframes: 1m, 5m, 15m, 1h, 4h, 1d")
+        logger.info("="*60)
+    
+    def _init_symbol_maps(self):
+        """Initialize symbol mappings for different APIs"""
+        
+        # Yahoo Finance mappings (FIXED for commodities)
+        self.yahoo_map = {
+            # Crypto
+            'BTC-USD': 'BTC-USD',
+            'ETH-USD': 'ETH-USD',
+            'BNB-USD': 'BNB-USD',
+            'SOL-USD': 'SOL-USD',
+            'XRP-USD': 'XRP-USD',
+            'ADA-USD': 'ADA-USD',
+            'DOGE-USD': 'DOGE-USD',
+            'DOT-USD': 'DOT-USD',
+            'LTC-USD': 'LTC-USD',
+            'AVAX-USD': 'AVAX-USD',
+            'LINK-USD': 'LINK-USD',
+            
+            # Forex - FIXED mappings
+            'EUR/USD': 'EURUSD=X',
+            'GBP/USD': 'GBPUSD=X',
+            'USD/JPY': 'JPY=X',           # Yahoo uses JPY=X for USD/JPY
+            'AUD/USD': 'AUDUSD=X',
+            'USD/CAD': 'CAD=X',            # Yahoo uses CAD=X for USD/CAD
+            'NZD/USD': 'NZDUSD=X',
+            'USD/CHF': 'CHF=X',            # Yahoo uses CHF=X for USD/CHF
+            'EUR/GBP': 'EURGBP=X',
+            'EUR/JPY': 'EURJPY=X',
+            'GBP/JPY': 'GBPJPY=X',
+            'AUD/JPY': 'AUDJPY=X',
+            'EUR/AUD': 'EURAUD=X',
+            'GBP/AUD': 'GBPAUD=X',
+            'AUD/CAD': 'AUDCAD=X',
+            'CAD/JPY': 'CADJPY=X',
+            'CHF/JPY': 'CHFJPY=X',
+            'EUR/CAD': 'EURCAD=X',
+            'EUR/CHF': 'EURCHF=X',
+            'GBP/CAD': 'GBPCAD=X',
+            'GBP/CHF': 'GBPCHF=X',
+            
+            # Stocks
+            'AAPL': 'AAPL',
+            'MSFT': 'MSFT',
+            'GOOGL': 'GOOGL',
+            'AMZN': 'AMZN',
+            'TSLA': 'TSLA',
+            'NVDA': 'NVDA',
+            'META': 'META',
+            'JPM': 'JPM',
+            'V': 'V',
+            'WMT': 'WMT',
+            'JNJ': 'JNJ',
+            'PG': 'PG',
+            'KO': 'KO',
+            'PEP': 'PEP',
+            
+            # Indices
+            '^GSPC': '^GSPC',
+            '^DJI': '^DJI',
+            '^IXIC': '^IXIC',
+            '^FTSE': '^FTSE',
+            '^N225': '^N225',
+            '^HSI': '^HSI',
+            '^GDAXI': '^GDAXI',
+            
+            # Commodities (futures as fallback for spot)
+            'XAU/USD': 'GC=F',      # Gold futures
+            'XAG/USD': 'SI=F',      # Silver futures
+            'XPT/USD': 'PL=F',      # Platinum futures
+            'XPD/USD': 'PA=F',      # Palladium futures
+            'WTI/USD': 'CL=F',      # WTI Crude futures
+            'NG/USD': 'NG=F',       # Natural gas futures
+            'XCU/USD': 'HG=F',      # Copper futures
+            'GC=F': 'GC=F',          # Gold futures
+            'SI=F': 'SI=F',          # Silver futures
+            'CL=F': 'CL=F',          # Crude futures
+            'NG=F': 'NG=F',          # Gas futures
+            'HG=F': 'HG=F',          # Copper futures
+        }
+        
+        # Twelve Data mappings
+        self.twelve_map = {
+            # Crypto
+            'BTC-USD': 'BTC/USD',
+            'ETH-USD': 'ETH/USD',
+            'BNB-USD': 'BNB/USD',
+            'SOL-USD': 'SOL/USD',
+            'XRP-USD': 'XRP/USD',
+            
+            # Forex
+            'EUR/USD': 'EUR/USD',
+            'GBP/USD': 'GBP/USD',
+            'USD/JPY': 'USD/JPY',
+            'AUD/USD': 'AUD/USD',
+            'USD/CAD': 'USD/CAD',
+            'NZD/USD': 'NZD/USD',
+            'USD/CHF': 'USD/CHF',
+            
+            # Stocks
+            'AAPL': 'AAPL',
+            'MSFT': 'MSFT',
+            'GOOGL': 'GOOGL',
+            'AMZN': 'AMZN',
+            'TSLA': 'TSLA',
+            
+            # Indices
+            '^GSPC': 'SPX',
+            '^DJI': 'DJI',
+            '^IXIC': 'IXIC',
+            '^FTSE': 'FTSE',
+            '^N225': 'NIKKEI',
+            
+            # Spot metals
+            'XAU/USD': 'XAU/USD',
+            'XAG/USD': 'XAG/USD',
+            'XPT/USD': 'XPT/USD',
+            'XPD/USD': 'XPD/USD',
+            'WTI/USD': 'WTI/USD',
+            'NG/USD': 'NG/USD',
+            'XCU/USD': 'XCU/USD',
+        }
+        
+        # CoinGecko mappings
+        self.coingecko_map = {
+            'BTC-USD': 'bitcoin',
+            'ETH-USD': 'ethereum',
+            'BNB-USD': 'binancecoin',
+            'SOL-USD': 'solana',
+            'XRP-USD': 'ripple',
+            'ADA-USD': 'cardano',
+            'DOGE-USD': 'dogecoin',
+            'DOT-USD': 'polkadot',
+            'LTC-USD': 'litecoin',
+            'AVAX-USD': 'avalanche-2',
+            'LINK-USD': 'chainlink',
+            'MATIC-USD': 'matic-network',
+            'UNI-USD': 'uniswap',
+            'ATOM-USD': 'cosmos',
+            'XLM-USD': 'stellar',
+            'ALGO-USD': 'algorand',
+        }
     
     def _init_api_clients(self):
         """Initialize API clients"""
@@ -338,7 +487,7 @@ class NASALevelFetcher:
                         return float(data["data"]["p"])   # Price
                 
         except Exception as e:
-            print(f"[WARN] iTick {category} error for {asset}: {e}")
+            logger.warning(f"iTick {category} error for {asset}: {e}")
         
         return None
 
@@ -382,7 +531,67 @@ class NASALevelFetcher:
                     return float(data["data"][price_key])
             
         except Exception as e:
-            print(f"[WARN] OilPriceAPI error for {symbol}: {e}")
+            logger.warning(f"OilPriceAPI error for {symbol}: {e}")
+        
+        return None
+
+    # ===== COINGECKO API (FREE, NO KEY NEEDED) =====
+    
+    def fetch_coingecko_price(self, symbol: str) -> Optional[float]:
+        """
+        Fetch crypto price from CoinGecko - FREE, no API key required!
+        """
+        try:
+            coin_id = self.coingecko_map.get(symbol)
+            if not coin_id:
+                return None
+            
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+            response = self.session.get(url, timeout=5)
+            data = response.json()
+            
+            if coin_id in data and 'usd' in data[coin_id]:
+                return float(data[coin_id]['usd'])
+                
+        except Exception as e:
+            logger.warning(f"CoinGecko error for {symbol}: {e}")
+        
+        return None
+    
+    def fetch_coingecko_historical(self, symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
+        """
+        Fetch historical crypto data from CoinGecko
+        """
+        try:
+            coin_id = self.coingecko_map.get(symbol)
+            if not coin_id:
+                return None
+            
+            url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+            params = {
+                'vs_currency': 'usd',
+                'days': days,
+                'interval': 'daily'
+            }
+            
+            response = self.session.get(url, params=params, timeout=5)
+            data = response.json()
+            
+            if 'prices' in data and len(data['prices']) > 0:
+                df = pd.DataFrame(data['prices'], columns=['timestamp', 'close'])
+                df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('date', inplace=True)
+                
+                # Add OHLC approximations (CoinGecko only gives close)
+                df['open'] = df['close']
+                df['high'] = df['close']
+                df['low'] = df['close']
+                df['volume'] = 0
+                
+                return df[['open', 'high', 'low', 'close', 'volume']]
+                
+        except Exception as e:
+            logger.warning(f"CoinGecko historical error for {symbol}: {e}")
         
         return None
 
@@ -439,7 +648,7 @@ class NASALevelFetcher:
                 }
             
         except Exception as e:
-            print(f"[WARN] CryptoNews error for {asset}: {e}")
+            logger.warning(f"CryptoNews error for {asset}: {e}")
         
         return {
             'score': 0,
@@ -473,7 +682,7 @@ class NASALevelFetcher:
             if quote and 'c' in quote:  # 'c' is current price
                 return float(quote['c'])
         except Exception as e:
-            print(f"[WARN] Finnhub stock error: {e}")
+            logger.warning(f"Finnhub stock error for {symbol}: {e}")
         return None
     
     def fetch_finnhub_crypto(self, symbol: str) -> Optional[float]:
@@ -493,7 +702,7 @@ class NASALevelFetcher:
                 return float(quote['c'])
                 
         except Exception as e:
-            print(f"[WARN] Finnhub crypto error: {e}")
+            logger.warning(f"Finnhub crypto error for {symbol}: {e}")
         return None
     
     def fetch_finnhub_forex(self, pair: str) -> Optional[float]:
@@ -513,7 +722,7 @@ class NASALevelFetcher:
                 return float(rates['quote'][quote_currency])
                 
         except Exception as e:
-            print(f"[WARN] Finnhub forex error: {e}")
+            logger.warning(f"Finnhub forex error for {pair}: {e}")
         return None
     
     # ===== ALPHA VANTAGE METHODS - FIXED FOR ALL ASSETS =====
@@ -534,7 +743,7 @@ class NASALevelFetcher:
                 return float(data['Global Quote']['05. price'])
                 
         except Exception as e:
-            print(f"[WARN] Alpha Vantage stock error: {e}")
+            logger.warning(f"Alpha Vantage stock error for {symbol}: {e}")
         return None
     
     def fetch_alphavantage_forex(self, pair: str) -> Optional[float]:
@@ -559,7 +768,7 @@ class NASALevelFetcher:
                     return float(rate_data['5. Exchange Rate'])
                     
         except Exception as e:
-            print(f"[WARN] Alpha Vantage forex error: {e}")
+            logger.warning(f"Alpha Vantage forex error for {pair}: {e}")
         return None
     
     def fetch_alphavantage_crypto(self, symbol: str) -> Optional[float]:
@@ -583,7 +792,7 @@ class NASALevelFetcher:
                     return float(rate_data['5. Exchange Rate'])
                     
         except Exception as e:
-            print(f"[WARN] Alpha Vantage crypto error: {e}")
+            logger.warning(f"Alpha Vantage crypto error for {symbol}: {e}")
         return None
     
     def fetch_alphavantage_commodity(self, symbol: str) -> Optional[float]:
@@ -622,7 +831,7 @@ class NASALevelFetcher:
                 return float(data['values'][0]['value'])
                 
         except Exception as e:
-            print(f"[WARN] Alpha Vantage commodity error: {e}")
+            logger.warning(f"Alpha Vantage commodity error for {symbol}: {e}")
         return None
     
     # ===== TWELVE DATA METHODS (SUPPORTS 4H!) =====
@@ -632,29 +841,8 @@ class NASALevelFetcher:
         if not self.td_client:
             return None
         
-        # Add symbol mapping for spot metals and futures
-        commodity_map = {
-            # ===== SPOT METALS (Twelve Data format) =====
-            'XAU/USD': 'XAU/USD',      # Gold Spot
-            'XAG/USD': 'XAG/USD',      # Silver Spot
-            'XPT/USD': 'XPT/USD',      # Platinum Spot
-            'XPD/USD': 'XPD/USD',      # Palladium Spot
-            'WTI/USD': 'WTI/USD',      # WTI Crude Oil Spot
-            'NG/USD': 'NG/USD',        # Natural Gas Spot
-            'XCU/USD': 'XCU/USD',      # Copper Spot
-            
-            # ===== FUTURES (keep for backward compatibility) =====
-            'GC=F': 'GC',               # Gold Futures
-            'SI=F': 'SI',               # Silver Futures
-            'CL=F': 'CL',               # Crude Oil Futures
-            'NG=F': 'NG',               # Natural Gas Futures
-            'HG=F': 'HG',               # Copper Futures
-            'PL=F': 'PL',               # Platinum Futures
-            'PA=F': 'PA',               # Palladium Futures
-        }
-        
         # Use mapped symbol if available, otherwise use original
-        twelve_symbol = commodity_map.get(symbol, symbol)
+        twelve_symbol = self.twelve_map.get(symbol, symbol)
         
         try:
             ts = self.td_client.time_series(
@@ -675,45 +863,7 @@ class NASALevelFetcher:
     def _fetch_twelve_historical(self, asset: str, interval: str) -> pd.DataFrame:
         """Fetch from Twelve Data"""
         try:
-            # Map Yahoo symbols to Twelve Data format
-            symbol_map = {
-                # Crypto
-                'BTC-USD': 'BTC/USD', 
-                'ETH-USD': 'ETH/USD',
-                'BNB-USD': 'BNB/USD',
-                'SOL-USD': 'SOL/USD',
-                'XRP-USD': 'XRP/USD',
-                
-                # Stocks
-                'AAPL': 'AAPL', 
-                'MSFT': 'MSFT',
-                'GOOGL': 'GOOGL',
-                'AMZN': 'AMZN',
-                'TSLA': 'TSLA',
-                'NVDA': 'NVDA',
-                
-                # Forex
-                'EUR/USD': 'EUR/USD', 
-                'GBP/USD': 'GBP/USD',
-                'USD/JPY': 'USD/JPY',
-                'AUD/USD': 'AUD/USD',
-                'USD/CAD': 'USD/CAD',
-                
-                # Spot Metals
-                'XAU/USD': 'XAU/USD',
-                'XAG/USD': 'XAG/USD',
-                'XPT/USD': 'XPT/USD',
-                'XPD/USD': 'XPD/USD',
-
-                # Indices - FIX THESE
-                '^GSPC': 'SPX',      # S&P 500
-                '^DJI': 'DJI',       # Dow Jones
-                '^IXIC': 'IXIC',     # Nasdaq
-                '^FTSE': 'FTSE',     # FTSE 100
-                '^N225': 'NIKKEI',   # Nikkei 225
-            }
-            
-            twelve_symbol = symbol_map.get(asset, asset.replace('-USD', '/USD'))
+            twelve_symbol = self.twelve_map.get(asset, asset.replace('-USD', '/USD'))
             
             # Map interval
             interval_map = {
@@ -740,10 +890,10 @@ class NASALevelFetcher:
                 # Use the safe dataframe helper
                 return self._safe_dataframe(df, asset)
             else:
-                print(f"   ⚠️ Twelve Data: No data for {asset}")
+                logger.warning(f"Twelve Data: No data for {asset}")
                 
         except Exception as e:
-            print(f"   ⚠️ Twelve Data error: {e}")
+            logger.warning(f"Twelve Data error for {asset}: {e}")
         
         return pd.DataFrame()
     
@@ -774,9 +924,20 @@ class NASALevelFetcher:
             data = ticker.history(period='5d', interval='5m')
             if not data.empty:
                 return float(data['Close'].iloc[-1])
+            
+            # Try to get quote from info
+            info = ticker.info
+            if 'regularMarketPrice' in info and info['regularMarketPrice']:
+                return float(info['regularMarketPrice'])
+            if 'currentPrice' in info and info['currentPrice']:
+                return float(info['currentPrice'])
+            if 'ask' in info and info['ask']:
+                return float(info['ask'])
+            if 'bid' in info and info['bid']:
+                return float(info['bid'])
                 
         except Exception as e:
-            print(f"[WARN] Yahoo error: {e}")
+            logger.warning(f"Yahoo error for {symbol}: {str(e)[:50]}")
         return None
     
     # ===== HISTORICAL DATA METHODS (for backtesting) =====
@@ -810,15 +971,146 @@ class NASALevelFetcher:
                         'close': 'last',
                         'volume': 'sum'
                     }).dropna()
-                    print(f"   📊 Resampled to 4h: {len(df)} candles")
+                    logger.info(f"Resampled to 4h: {len(df)} candles")
                 
                 return df
                 
         except Exception as e:
-            print(f"[WARN] Yahoo historical error: {e}")
+            logger.warning(f"Yahoo historical error for {symbol}: {e}")
         
         return pd.DataFrame()
     
+    def get_historical_data(self, asset: str, interval: str = '1d', days: int = 100) -> pd.DataFrame:
+        """
+        Get historical data with multiple API fallbacks
+        AUTO-FIX: Switches to daily data if intraday period exceeds Yahoo's 60-day limit
+        """
+        
+        # ===== AUTO-DETECT AND FIX YAHOO 60-DAY LIMIT =====
+        original_interval = interval
+        original_days = days
+        
+        # Check if we're requesting intraday data beyond Yahoo's limit
+        if interval in ['1m', '5m', '15m'] and days > 60:
+            logger.warning(f"⚠️ Yahoo {interval} data limited to 60 days. Requested: {days} days")
+            logger.warning(f"   Automatically switching to daily data (1d) for {asset}")
+            interval = '1d'
+            days = min(days, 365)  # Still get up to a year of daily data
+        # ===================================================
+        
+        # Determine category
+        category = self._get_asset_category(asset)
+        
+        # Try category-specific sources first
+        if category == 'crypto':
+            # Try CoinGecko first (free, reliable)
+            df = self.fetch_coingecko_historical(asset, days)
+            if df is not None and not df.empty:
+                # Log if we switched intervals
+                if original_interval != interval:
+                    logger.info(f"✅ Got {len(df)} rows of {interval} data for {asset} (auto-switched from {original_interval})")
+                return df
+        
+        # Try Yahoo (most reliable for historical)
+        yahoo_symbol = self.yahoo_map.get(asset, asset)
+        df = self.fetch_yahoo_historical(yahoo_symbol, interval, f"{days}d")
+        
+        if not df.empty:
+            # Log if we switched intervals
+            if original_interval != interval:
+                logger.info(f"✅ Got {len(df)} rows of {interval} data for {asset} (auto-switched from {original_interval})")
+            return df
+        
+        # Try Twelve Data
+        if self.td_client:
+            try:
+                twelve_symbol = self.twelve_map.get(asset, asset)
+                interval_map = {
+                    '1d': '1day',
+                    '1h': '1h',
+                    '15m': '15min',
+                    '5m': '5min',
+                }
+                twelve_interval = interval_map.get(interval, '1day')
+                
+                ts = self.td_client.time_series(
+                    symbol=twelve_symbol,
+                    interval=twelve_interval,
+                    outputsize=days
+                )
+                data = ts.as_json()
+                
+                if data and len(data) > 0:
+                    df = pd.DataFrame(data)
+                    df['datetime'] = pd.to_datetime(df['datetime'])
+                    df.set_index('datetime', inplace=True)
+                    df = df.astype(float)
+                    df.index.name = 'date'
+                    
+                    # Log if we switched intervals
+                    if original_interval != interval:
+                        logger.info(f"✅ Got {len(df)} rows of {interval} data for {asset} from Twelve Data (auto-switched)")
+                    return df[['open', 'high', 'low', 'close', 'volume']]
+            except:
+                pass
+        
+        # If we switched intervals and still got no data, try the original interval one last time
+        if original_interval != interval and original_days <= 60:
+            logger.info(f"Trying original {original_interval} data for {asset} (within 60-day limit)")
+            return self.get_historical_data(asset, original_interval, min(original_days, 60))
+        
+        return pd.DataFrame()
+    
+    def _get_asset_category(self, asset: str) -> str:
+        """Determine asset category from symbol"""
+        if asset in self.coingecko_map or '-USD' in asset:
+            return 'crypto'
+        elif '/' in asset:
+            return 'forex'
+        elif asset.startswith('^'):
+            return 'indices'
+        elif asset in ['GC=F', 'SI=F', 'CL=F', 'NG=F', 'HG=F']:
+            return 'commodities'
+        elif '=F' in asset:
+            return 'commodities'
+        else:
+            return 'stocks'
+        
+    def enable_websocket(self, trading_system):
+        """
+        Enable WebSocket for real-time data with full integration
+        """
+        try:
+            from websocket_manager import WebSocketManager
+            from websocket_handlers import WebSocketHandlers
+            
+            self.ws_manager = WebSocketManager()
+            self.ws_handlers = WebSocketHandlers(trading_system)
+            
+            # Start WebSocket
+            self.ws_manager.start()
+            
+            # Subscribe to all crypto
+            crypto_symbols = [
+                'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
+                'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'LTCUSDT', 'AVAXUSDT',
+                'LINKUSDT', 'MATICUSDT'
+            ]
+            self.ws_manager.subscribe_bybit(crypto_symbols, self.ws_handlers.on_price_update)
+            
+            logger.info(f"✅ WebSocket enabled: {len(crypto_symbols)} crypto, {len(stock_symbols)} stocks, {len(forex_symbols)} forex")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ WebSocket enable failed: {e}")
+            return False
+
+    def stop_websocket(self):
+        """Stop WebSocket connections"""
+        if hasattr(self, 'ws_manager'):
+            self.ws_manager.stop()
+            logger.info("📡 WebSocket stopped")
+        
     # ===== MULTI-API FETCH WITH PARALLEL EXECUTION =====
 
     def _safe_dataframe(self, df, asset_name):
@@ -828,7 +1120,7 @@ class NASALevelFetcher:
         # Check required columns
         missing = [col for col in required_cols if col not in df.columns]
         if missing:
-            print(f"   ⚠️ Missing required columns for {asset_name}: {missing}")
+            logger.warning(f"Missing required columns for {asset_name}: {missing}")
             return pd.DataFrame()
         
         # Add volume if missing
@@ -849,12 +1141,10 @@ class NASALevelFetcher:
             return None, f"Market Closed ({MarketHours.get_status_message(category)})"
         
         # ===== CHECK CACHE FIRST =====
-        if hasattr(self, 'cache_manager') and self.cache_manager and self.cache_manager.enabled:
-            # Try to get from cache first
-            cached_price = self.cache_manager.get_price(asset, "any")
-            if cached_price:
-                return cached_price, "Cache"
-        # =============================
+        cache_key = f"price:{asset}:{category}"
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return cached, "Cache"
         
         # Define API sources based on category
         sources = []
@@ -864,13 +1154,16 @@ class NASALevelFetcher:
                 ('iTick', lambda: self.fetch_itick_price(asset, 'forex')),
                 ('Finnhub', lambda: self.fetch_finnhub_forex(asset)),
                 ('AlphaVantage', lambda: self.fetch_alphavantage_forex(asset)),
+                ('TwelveData', lambda: self.fetch_twelvedata_price(asset)),
                 ('Yahoo', lambda: self.fetch_yahoo_price(self._to_yahoo_forex(asset), interval))
             ]
         elif category == 'crypto':
             sources = [
+                ('CoinGecko', lambda: self.fetch_coingecko_price(asset)),  # FREE, no key needed
                 ('iTick', lambda: self.fetch_itick_price(asset, 'crypto')),
                 ('Finnhub', lambda: self.fetch_finnhub_crypto(asset)),
                 ('AlphaVantage', lambda: self.fetch_alphavantage_crypto(asset)),
+                ('TwelveData', lambda: self.fetch_twelvedata_price(asset)),
                 ('Yahoo', lambda: self.fetch_yahoo_price(asset, interval))
             ]
         elif category == 'stocks':
@@ -884,7 +1177,7 @@ class NASALevelFetcher:
         elif category == 'commodities':
             sources = [
                 ('OilPriceAPI', lambda: self.fetch_oilprice_commodity(asset)),
-                ('TwelveData', lambda: self.fetch_twelvedata_price(asset)),
+                ('TwelveData', lambda: self.fetch_twelvedata_price(self._to_twelvedata_commodity(asset))),
                 ('AlphaVantage', lambda: self.fetch_alphavantage_commodity(asset)),
                 ('Yahoo', lambda: self.fetch_yahoo_price(self._to_yahoo_commodity(asset), interval))
             ]
@@ -892,21 +1185,13 @@ class NASALevelFetcher:
             sources = [
                 ('iTick', lambda: self.fetch_itick_price(asset, 'stocks')),
                 ('Yahoo', lambda: self.fetch_yahoo_price(asset, interval)),
-                ('TwelveData', lambda: self.fetch_twelvedata_price(asset)),
+                ('TwelveData', lambda: self.fetch_twelvedata_price(self._to_twelvedata_index(asset))),
+                ('Finnhub', lambda: self.fetch_finnhub_stock(asset.replace('^', ''))),
             ]
         else:
             sources = [('Yahoo', lambda: self.fetch_yahoo_price(asset, interval))]
         
-        # Check cache for each source
-        for source_name, _ in sources:
-            cache_key = self._get_cache_key(source_name, asset, interval)
-            cached = self._get_from_cache(cache_key)
-            if cached:
-                return cached, f"{source_name} (cached)"
-        
         # Try ALL sources in parallel with timeout
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
         results = []
         with ThreadPoolExecutor(max_workers=len(sources)) as executor:
             future_to_source = {
@@ -919,14 +1204,8 @@ class NASALevelFetcher:
                 try:
                     price = future.result(timeout=3)
                     if price and price > 0:
-                        # Cache successful result in both caches
-                        cache_key = self._get_cache_key(source_name, asset, interval)
+                        # Cache successful result
                         self._save_to_cache(cache_key, price)
-                        
-                        # Also save to Redis cache if available
-                        if hasattr(self, 'cache_manager') and self.cache_manager:
-                            self.cache_manager.set_price(asset, source_name, price, ttl=30)
-                        
                         return price, source_name
                 except Exception as e:
                     results.append(f"⚠️ {source_name}: {str(e)[:50]}")
@@ -934,39 +1213,29 @@ class NASALevelFetcher:
         
         # Log failures at debug level only
         if results:
-            print(f"  [LOG] {asset} - " + " | ".join(results[:2]))
+            logger.debug(f"{asset} - " + " | ".join(results[:2]))
         
         return None, "All APIs failed"
     
     def _to_yahoo_forex(self, pair: str) -> str:
         """Convert forex pair to Yahoo Finance symbol - FIXED VERSION"""
         yahoo_map = {
-            # Majors
             'EUR/USD': 'EURUSD=X',
             'GBP/USD': 'GBPUSD=X',
-            'USD/JPY': 'USDJPY=X',      # Fixed
+            'USD/JPY': 'JPY=X',           # Yahoo uses JPY=X for USD/JPY
             'AUD/USD': 'AUDUSD=X',
-            'USD/CAD': 'USDCAD=X',       # Fixed
+            'USD/CAD': 'CAD=X',            # Yahoo uses CAD=X for USD/CAD
             'NZD/USD': 'NZDUSD=X',
-            'USD/CHF': 'USDCHF=X',       # Fixed
-            
-            # Crosses
+            'USD/CHF': 'CHF=X',            # Yahoo uses CHF=X for USD/CHF
             'EUR/GBP': 'EURGBP=X',
             'EUR/JPY': 'EURJPY=X',
             'GBP/JPY': 'GBPJPY=X',
             'AUD/JPY': 'AUDJPY=X',
             'EUR/AUD': 'EURAUD=X',
             'GBP/AUD': 'GBPAUD=X',
-            'AUD/CAD': 'AUDCAD=X',
-            'CAD/JPY': 'CADJPY=X',
-            'CHF/JPY': 'CHFJPY=X',
-            'EUR/CAD': 'EURCAD=X',
-            'EUR/CHF': 'EURCHF=X',
-            'GBP/CAD': 'GBPCAD=X',
-            'GBP/CHF': 'GBPCHF=X',
         }
         
-        # Try direct mapping first, then fallback to conversion
+        # Try direct mapping first
         if pair in yahoo_map:
             return yahoo_map[pair]
         
@@ -976,141 +1245,39 @@ class NASALevelFetcher:
     def _to_yahoo_commodity(self, symbol: str) -> str:
         """Convert spot symbols to Yahoo format if needed"""
         yahoo_map = {
-            # Spot to futures mapping (Yahoo doesn't have spot)
             'XAU/USD': 'GC=F',      # Gold Spot → Gold Futures
             'XAG/USD': 'SI=F',      # Silver Spot → Silver Futures
             'XPT/USD': 'PL=F',      # Platinum Spot → Platinum Futures
             'XPD/USD': 'PA=F',      # Palladium Spot → Palladium Futures
             'WTI/USD': 'CL=F',      # WTI Spot → WTI Futures
+            'BRENT/USD': 'BZ=F',    # Brent Spot → Brent Futures
             'NG/USD': 'NG=F',       # Natural Gas Spot → Natural Gas Futures
             'XCU/USD': 'HG=F',      # Copper Spot → Copper Futures
+            # Keep futures as-is
+            'GC=F': 'GC=F',
+            'SI=F': 'SI=F',
+            'CL=F': 'CL=F',
+            'NG=F': 'NG=F',
+            'HG=F': 'HG=F',
         }
         return yahoo_map.get(symbol, symbol)
     
-    def get_market_status(self) -> Dict:
-        return MarketHours.get_status()
-
-    # ===== ENHANCED METHODS ADDED FOR BETTER ERROR HANDLING =====
-    
-    def _get_sources_for_category(self, asset: str, category: str, interval: str) -> List[Tuple[str, callable]]:
-        """Get list of API sources for a given category with proper error handling"""
-        
-        sources = []
-        
-        # Add sources with proper error handling wrappers
-        if category == 'forex':
-            sources = [
-                ('iTick', lambda: self._safe_api_call(self.fetch_itick_price, asset, 'forex')),
-                ('Finnhub', lambda: self._safe_api_call(self.fetch_finnhub_forex, asset)),
-                ('AlphaVantage', lambda: self._safe_api_call(self.fetch_alphavantage_forex, asset)),
-                ('TwelveData', lambda: self._safe_api_call(self.fetch_twelvedata_price, self._to_twelvedata_forex(asset))),
-                ('Yahoo', lambda: self._safe_api_call(self.fetch_yahoo_price, self._to_yahoo_forex(asset), interval)),
-            ]
-        elif category == 'crypto':
-            sources = [
-                ('iTick', lambda: self._safe_api_call(self.fetch_itick_price, asset, 'crypto')),
-                ('Finnhub', lambda: self._safe_api_call(self.fetch_finnhub_crypto, asset)),
-                ('AlphaVantage', lambda: self._safe_api_call(self.fetch_alphavantage_crypto, asset)),
-                ('TwelveData', lambda: self._safe_api_call(self.fetch_twelvedata_price, self._to_twelvedata_crypto(asset))),
-                ('Yahoo', lambda: self._safe_api_call(self.fetch_yahoo_price, asset, interval)),
-            ]
-        elif category == 'stocks':
-            sources = [
-                ('iTick', lambda: self._safe_api_call(self.fetch_itick_price, asset, 'stocks')),
-                ('Finnhub', lambda: self._safe_api_call(self.fetch_finnhub_stock, asset)),
-                ('AlphaVantage', lambda: self._safe_api_call(self.fetch_alphavantage_stock, asset)),
-                ('TwelveData', lambda: self._safe_api_call(self.fetch_twelvedata_price, asset)),
-                ('Yahoo', lambda: self._safe_api_call(self.fetch_yahoo_price, asset, interval)),
-            ]
-        elif category == 'commodities':
-            sources = [
-                ('OilPriceAPI', lambda: self._safe_api_call(self.fetch_oilprice_commodity, asset)),
-                ('TwelveData', lambda: self._safe_api_call(self.fetch_twelvedata_price, self._to_twelvedata_commodity(asset))),
-                ('AlphaVantage', lambda: self._safe_api_call(self.fetch_alphavantage_commodity, asset)),
-                ('Yahoo', lambda: self._safe_api_call(self.fetch_yahoo_price, self._to_yahoo_commodity(asset), interval)),
-            ]
-        elif category == 'indices':
-            sources = [
-                ('iTick', lambda: self._safe_api_call(self.fetch_itick_price, asset, 'stocks')),
-                ('Yahoo', lambda: self._safe_api_call(self.fetch_yahoo_price, asset, interval)),
-                ('TwelveData', lambda: self._safe_api_call(self.fetch_twelvedata_price, self._to_twelvedata_index(asset))),
-            ]
-        else:
-            sources = [('Yahoo', lambda: self._safe_api_call(self.fetch_yahoo_price, asset, interval))]
-        
-        return sources
-
-    def _safe_api_call(self, func, *args, **kwargs):
-        """Wrapper to safely call API functions and return None on any error"""
-        try:
-            result = func(*args, **kwargs)
-            # Validate result
-            if result is None:
-                return None
-            if isinstance(result, (int, float)) and result > 0:
-                return result
-            return None
-        except Exception:
-            return None
-
-    def _try_parallel_sources(self, sources: List[Tuple[str, callable]], asset: str) -> Tuple[Optional[float], Optional[str]]:
-        """Try all sources in parallel and return the fastest successful result"""
-        
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
-        with ThreadPoolExecutor(max_workers=len(sources)) as executor:
-            future_to_source = {
-                executor.submit(func): source_name 
-                for source_name, func in sources
-            }
-            
-            for future in as_completed(future_to_source):
-                source_name = future_to_source[future]
-                try:
-                    price = future.result(timeout=3)
-                    if price and price > 0:
-                        return price, source_name
-                except Exception:
-                    continue
-        
-        return None, None
-
-    def _get_yahoo_symbol(self, asset: str, category: str) -> str:
-        """Get Yahoo Finance symbol for any asset"""
-        
-        if category == 'forex':
-            return self._to_yahoo_forex(asset)
-        elif category == 'commodities':
-            return self._to_yahoo_commodity(asset)
-        elif category == 'indices':
-            # Handle indices like ^GSPC
-            return asset
-        else:
-            # Crypto, stocks use same symbol
-            return asset
-
-    def _to_twelvedata_forex(self, pair: str) -> str:
-        """Convert forex pair to Twelve Data format"""
-        return pair.replace('/', '/')  # Twelve Data uses same format
-
-    def _to_twelvedata_crypto(self, asset: str) -> str:
-        """Convert crypto to Twelve Data format"""
-        return asset.replace('-', '/')
-
     def _to_twelvedata_commodity(self, asset: str) -> str:
         """Convert commodity to Twelve Data format"""
         mapping = {
-            'GC=F': 'GC',  # Gold Futures
-            'SI=F': 'SI',  # Silver Futures
-            'CL=F': 'CL',  # Crude Oil
-            'NG=F': 'NG',  # Natural Gas
-            'HG=F': 'HG',  # Copper
+            'GC=F': 'GC',          # Gold Futures
+            'SI=F': 'SI',          # Silver Futures
+            'CL=F': 'CL',          # Crude Oil
+            'NG=F': 'NG',          # Natural Gas
+            'HG=F': 'HG',          # Copper
             'XAU/USD': 'XAU/USD',  # Gold Spot
             'XAG/USD': 'XAG/USD',  # Silver Spot
             'WTI/USD': 'WTI/USD',  # WTI Spot
+            'NG/USD': 'NG/USD',    # Natural Gas Spot
+            'XCU/USD': 'XCU/USD',  # Copper Spot
         }
         return mapping.get(asset, asset)
-
+    
     def _to_twelvedata_index(self, asset: str) -> str:
         """Convert index to Twelve Data format"""
         mapping = {
@@ -1121,142 +1288,10 @@ class NASALevelFetcher:
             '^N225': 'NIKKEI',
         }
         return mapping.get(asset, asset.replace('^', ''))
-
-    def fetch_yahoo_price_enhanced(self, symbol: str, interval: str = '1m') -> Optional[float]:
-        """Enhanced Yahoo Finance price fetch with better error handling and multiple fallbacks"""
-        try:
-            import yfinance as yf
-            
-            # Map interval to Yahoo period
-            period_map = {
-                '1m': '1d',
-                '5m': '5d',
-                '15m': '1mo',
-                '1h': '3mo',
-                '1d': '1y'
-            }
-            
-            period = period_map.get(interval, '1d')
-            yf_interval = interval if interval != '1d' else '1d'
-            
-            ticker = yf.Ticker(symbol)
-            
-            # Try with specified interval first
-            data = ticker.history(period=period, interval=yf_interval)
-            
-            if not data.empty:
-                return float(data['Close'].iloc[-1])
-            
-            # Fallback to different intervals
-            for fallback_interval in ['5m', '15m', '1h', '1d']:
-                if fallback_interval == interval:
-                    continue
-                data = ticker.history(period=period_map.get(fallback_interval, '1d'), 
-                                     interval=fallback_interval)
-                if not data.empty:
-                    return float(data['Close'].iloc[-1])
-            
-            # Last resort - try to get quote
-            try:
-                info = ticker.info
-                if 'regularMarketPrice' in info:
-                    return float(info['regularMarketPrice'])
-                if 'currentPrice' in info:
-                    return float(info['currentPrice'])
-            except:
-                pass
-                
-        except Exception as e:
-            print(f"    ⚠️ Yahoo error for {symbol}: {str(e)[:50]}")
-        
-        return None
-
-    def get_real_time_price_enhanced(self, asset: str, category: str, interval: str = '1m', max_retries: int = 2) -> Tuple[Optional[float], str]:
-        """
-        Enhanced version of get_real_time_price with better error handling, retries, and fallbacks
-        
-        Args:
-            asset: Asset symbol (e.g., 'EUR/USD', 'BTC-USD')
-            category: Asset category ('forex', 'crypto', 'stocks', 'commodities', 'indices')
-            interval: Timeframe for price data
-            max_retries: Number of retry attempts for failed APIs
-        
-        Returns:
-            Tuple of (price, source) or (None, error_message)
-        """
-        # Check market hours first
-        market_status = MarketHours.get_status().get(category, False)
-        if not market_status:
-            return None, f"Market Closed ({MarketHours.get_status_message(category)})"
-        
-        # Define API sources with priority and retry counts
-        sources = self._get_sources_for_category(asset, category, interval)
-        
-        # Check cache first
-        for source_name, _ in sources:
-            cache_key = self._get_cache_key(source_name, asset, interval)
-            cached = self._get_from_cache(cache_key)
-            if cached:
-                return cached, f"{source_name} (cached)"
-        
-        # Track attempts for retry logic
-        failed_sources = []
-        successful_price = None
-        successful_source = None
-        
-        # Try with parallel execution first (fastest wins)
-        successful_price, successful_source = self._try_parallel_sources(sources, asset)
-        
-        if successful_price:
-            return successful_price, successful_source
-        
-        # If all parallel attempts failed, try sequential with retries
-        print(f"  ⚠️ All parallel attempts failed for {asset}, trying sequential with retries...")
-        
-        for attempt in range(max_retries):
-            for source_name, func in sources:
-                if source_name in failed_sources:
-                    continue  # Skip sources that already failed
-                
-                try:
-                    # Add delay between retries
-                    if attempt > 0:
-                        time.sleep(1 * attempt)
-                    
-                    price = func()
-                    if price and price > 0:
-                        # Cache successful result
-                        cache_key = self._get_cache_key(source_name, asset, interval)
-                        self._save_to_cache(cache_key, price)
-                        return price, f"{source_name} (retry {attempt+1})"
-                    else:
-                        failed_sources.append(source_name)
-                except Exception as e:
-                    print(f"    ⚠️ {source_name} attempt {attempt+1} failed: {str(e)[:50]}")
-                    failed_sources.append(source_name)
-        
-        # Ultimate fallback - try Yahoo with different intervals
-        print(f"  ⚠️ All APIs failed for {asset}, trying Yahoo fallback with multiple intervals...")
-        
-        yahoo_intervals = ['1m', '5m', '15m', '1h', '1d']
-        for yf_interval in yahoo_intervals:
-            try:
-                yf_symbol = self._get_yahoo_symbol(asset, category)
-                price = self.fetch_yahoo_price_enhanced(yf_symbol, yf_interval)
-                if price and price > 0:
-                    return price, f"Yahoo Fallback ({yf_interval})"
-            except Exception:
-                continue
-        
-        # If everything fails, try to get from historical data as last resort
-        try:
-            df = self.fetch_yahoo_historical(self._get_yahoo_symbol(asset, category), '1d', '5d')
-            if not df.empty and 'close' in df.columns:
-                return float(df['close'].iloc[-1]), "Yahoo Historical (last resort)"
-        except Exception:
-            pass
-        
-        return None, "All APIs failed after multiple attempts"
+    
+    def get_market_status(self) -> Dict:
+        """Get current market status"""
+        return MarketHours.get_status()
 
 
 # Backward compatibility

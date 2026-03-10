@@ -6,10 +6,10 @@ Runs 24/7 and ensures everything stays alive
 import subprocess
 import time
 import psutil
-import os
 from datetime import datetime
 import logging
 import sys
+import os
 
 # Setup logging
 logging.basicConfig(
@@ -73,37 +73,52 @@ class MasterController:
             return False
     
     def check_all(self):
-        """Check all components and restart if dead"""
-        # 1. Main Trading Bot (Paper Trading with $30, VOTING mode)
-        self.start_component(
-            "trading_bot",
-            ["python", "trading_system.py", "--mode", "live", "--balance", "30", "--reset", "--strategy-mode", "voting"]
-        )
+        """Check all components and restart if dead - DOCKER OPTIMIZED"""
+        # In Docker, we need a different approach to detect running processes
+        import psutil
         
-        # 2. Web Dashboard (accessible from browser)
-        self.start_component(
-            "web_dashboard",
-            ["python", "web_app_live.py", "--balance", "30"]
-        )
+        # Check if trading_bot is running by looking for the process name
+        trading_bot_running = False
+        web_dash_running = False
+        perf_dash_running = False
         
-        # 3. Performance Dashboard (advanced charts)
-        self.start_component(
-            "performance_dashboard",
-            ["python", "performance_dashboard.py"]
-        )
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                cmd = ' '.join(proc.info['cmdline']) if proc.info['cmdline'] else ''
+                if 'trading_system.py' in cmd:
+                    trading_bot_running = True
+                elif 'web_app_live.py' in cmd:
+                    web_dash_running = True
+                elif 'performance_dashboard.py' in cmd:
+                    perf_dash_running = True
+            except:
+                pass
         
-        # 4. Real-time WebSocket trader (optional, uncomment if needed)
-        # self.start_component(
-        #     "realtime_trader",
-        #     ["python", "realtime_trader.py"]
-        # )
+        # Only start if not running
+        if not trading_bot_running:
+            self.start_component(
+                "trading_bot",
+                ["python", "trading_system.py", "--mode", "live", "--balance", "30", "--strategy-mode", "voting"]
+            )
+        
+        if not web_dash_running:
+            self.start_component(
+                "web_dashboard",
+                ["python", "web_app_live.py", "--balance", "30", "--no-telegram"]
+            )
+        
+        if not perf_dash_running:
+            self.start_component(
+                "performance_dashboard",
+                ["python", "performance_dashboard.py"]
+            )
     
     def run_daily_tasks(self):
         """Run daily at 2 AM"""
         logger.info("DAILY TASK - Running training and maintenance...")
         try:
             # Get the full path to python in virtual environment
-            python_path = r"C:\Users\ROBBIE\Downloads\forex_prediction_bot\venv311\Scripts\python.exe"
+            python_path = r"C:\Users\ROBBIE\Downloads\forex_prediction_bot\venv_tf\Scripts\python.exe"
             
             # Train ML models using virtual environment python
             logger.info("DAILY TASK - Starting model training...")
@@ -152,7 +167,8 @@ class MasterController:
         logger.info("WEEKLY TASK - Running maintenance...")
         try:
             # Get Python path
-            python_path = r"C:\Users\ROBBIE\Downloads\forex_prediction_bot\venv311\Scripts\python.exe"
+            # Get Python path
+            python_path = r"C:\Users\ROBBIE\Downloads\forex_prediction_bot\venv_tf\Scripts\python.exe"
             
             # Call maintenance.py if it exists
             if os.path.exists('maintenance.py'):
@@ -236,7 +252,7 @@ class MasterController:
         logger.info("Trading Bot: ACTIVE (VOTING mode, $30 balance)")
         logger.info("Web Dashboard: http://localhost:5000")
         logger.info("Performance Dashboard: http://localhost:8050")
-        logger.info("Telegram Alerts: ACTIVE")
+        logger.info("Telegram Alerts: ACTIVE (handled by main bot only)")
         logger.info("Auto-Trainer: Background (event-based)")
         logger.info("="*60)
         logger.info("Daily tasks: 2 AM training, 3 AM comparison")
@@ -277,14 +293,13 @@ class MasterController:
         import json
         import os
         
-        # Load Telegram config
+        # Load Telegram config (for reference only - bot handles Telegram)
         self.telegram_config = None
         if os.path.exists('config/telegram_config.json'):
             try:
                 with open('config/telegram_config.json', 'r') as f:
                     self.telegram_config = json.load(f)
-                # REMOVED EMOJI
-                logger.info("Telegram alerts configured")
+                logger.info("Telegram config loaded (handled by main bot)")
             except:
                 logger.warning("Could not load Telegram config")
         
@@ -294,7 +309,6 @@ class MasterController:
             try:
                 with open('config/email_config.json', 'r') as f:
                     self.email_config = json.load(f)
-                # REMOVED EMOJI
                 logger.info("Email alerts configured")
             except:
                 logger.warning("Could not load Email config")

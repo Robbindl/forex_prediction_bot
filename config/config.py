@@ -61,8 +61,7 @@ FORBES_RSS = {
     'crypto': 'https://www.forbes.com/digital-assets/feed/',
 }
 
-# Gold Telegraph RSS
-GOLD_TELEGRAPH_RSS = 'https://goldtelegraph.com/feed/'
+# GOLD_TELEGRAPH_RSS = 'https://goldtelegraph.com/feed/'
 
 # Binance Announcements API
 BINANCE_ANNOUNCEMENTS_URL = 'https://www.binance.com/bapi/composite/v1/public/cms/article/list/query'
@@ -71,6 +70,8 @@ BINANCE_ANNOUNCEMENTS_URL = 'https://www.binance.com/bapi/composite/v1/public/cm
 # APIFY (for Forbes Scraper - optional)
 # ==================================================
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")  # ✅ FIXED
+
+MARKETAUX_TOKEN = os.getenv("MARKETAUX_TOKEN", "")
 
 # ==================================================
 # TELEGRAM ALERTS
@@ -99,30 +100,28 @@ FOREX_PAIRS = [
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", 
     "AUD/USD", "USD/CAD", "NZD/USD", "EUR/GBP",
     "GBP/JPY", "AUD/JPY"
-]
+]  # ← Make sure XPT/XPD aren't here (they shouldn't be)
 
 CRYPTOCURRENCIES = [
     "BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD",
     "ADA-USD", "DOGE-USD", "SOL-USD", "DOT-USD",
-    "MATIC-USD", "LTC-USD", "AVAX-USD", "LINK-USD",
-    "UNI-USD", "ATOM-USD", "XLM-USD", "ALGO-USD",
-    "VET-USD", "ICP-USD", "FIL-USD", "TRX-USD",
-]
+    "LTC-USD", "AVAX-USD", "LINK-USD"
+]  # ← UPDATE this to your 11 cryptos
 
 COMMODITIES = [
-    "XAU/USD", "XAG/USD", "XPT/USD", "XPD/USD",
+    "XAU/USD", "XAG/USD",  # ← REMOVE XPT/USD, XPD/USD
     "WTI/USD", "NG/USD", "XCU/USD",
-]
+    "GC=F", "CL=F", "SI=F",
+]  # ← UPDATE this list
 
 INDICES = [
     "^GSPC", "^DJI", "^IXIC", "^FTSE", "^N225",
-]
+]  # ← Fine as is
 
 STOCKS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA",
-    "JPM", "BAC", "GS", "WFC", "C",
-    "XOM", "CVX", "COP",
-    "NFLX", "DIS", "V", "MA", "PYPL"
+    "JPM", "V", "MA", "PYPL",  # ← REMOVE extra stocks
+    # ... etc
 ]
 
 # Analysis settings

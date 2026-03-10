@@ -9,6 +9,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List
 import pickle
+from logger import logger
+from advanced_predictor import AdvancedPredictionEngine
 
 
 class TrainingMonitor:
@@ -17,14 +19,19 @@ class TrainingMonitor:
     def __init__(self, models_dir: str = "trained_models", logs_dir: str = "training_logs"):
         self.models_dir = Path(models_dir)
         self.logs_dir = Path(logs_dir)
+        logger.info(f"Training Monitor initialized - Models: {models_dir}, Logs: {logs_dir}")
     
     def get_latest_report(self) -> Dict:
         """Get the latest training report"""
         report_file = self.logs_dir / "latest_training_report.json"
         
         if report_file.exists():
-            with open(report_file, 'r') as f:
-                return json.load(f)
+            try:
+                with open(report_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load latest report: {e}")
+                return {}
         return {}
     
     def get_all_reports(self) -> List[Dict]:
@@ -36,93 +43,239 @@ class TrainingMonitor:
                 with open(report_file, 'r') as f:
                     report = json.load(f)
                     reports.append(report)
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to load report {report_file}: {e}")
                 pass
         
+        logger.debug(f"Loaded {len(reports)} training reports")
         return reports
     
     def count_trained_models(self) -> int:
-        """Count models on disk"""
-        return len(list(self.models_dir.glob("*.pkl")))
+        """Count models on disk in both possible directories"""
+        count = 0
+        
+        # Check configured models_dir (trained_models)
+        trained_count = 0
+        if self.models_dir.exists():
+            trained_count = len(list(self.models_dir.glob("*.pkl")))
+            count += trained_count
+        
+        # Check ml_models directory
+        ml_count = 0
+        ml_models = Path("ml_models")
+        if ml_models.exists() and ml_models != self.models_dir:
+            ml_count = len(list(ml_models.glob("*.pkl")))
+            count += ml_count
+        
+        logger.info(f"Found models: ml_models/{ml_count}, trained_models/{trained_count}")
+        return count
     
     def get_model_ages(self) -> Dict:
-        """Get age of each trained model"""
+        """Get age of each trained model from all directories"""
         ages = {}
         
-        for model_file in self.models_dir.glob("*.pkl"):
-            try:
-                with open(model_file, 'rb') as f:
-                    model_data = pickle.load(f)
-                    trained_at = model_data.get('trained_at')
-                    
-                    if trained_at:
-                        age = datetime.now() - trained_at
-                        ages[model_file.stem] = {
-                            'trained_at': trained_at.isoformat(),
-                            'age_days': age.days,
-                            'age_hours': age.seconds // 3600,
-                            'data_points': model_data.get('data_points', 'N/A'),
-                            'confidence': model_data.get('test_confidence', 'N/A')
-                        }
-            except:
-                pass
+        # Check both possible directories
+        directories = [self.models_dir, Path("ml_models")]
         
+        for dir_path in directories:
+            if not dir_path.exists():
+                continue
+                
+            for model_file in dir_path.glob("*.pkl"):
+                try:
+                    with open(model_file, 'rb') as f:
+                        # Try to load just the metadata without full unpickling
+                        import pickle
+                        
+                        # Use pickle.load with error handling
+                        try:
+                            model_data = pickle.load(f)
+                            
+                            # Try different ways to get trained_at
+                            trained_at = None
+                            
+                            # Method 1: Direct attribute
+                            if isinstance(model_data, dict):
+                                trained_at = model_data.get('trained_at')
+                            elif hasattr(model_data, 'get'):
+                                trained_at = model_data.get('trained_at')
+                            elif hasattr(model_data, 'trained_at'):
+                                trained_at = getattr(model_data, 'trained_at')
+                            
+                            if trained_at:
+                                # Convert string to datetime if needed
+                                if isinstance(trained_at, str):
+                                    trained_at = datetime.fromisoformat(trained_at)
+                                
+                                age = datetime.now() - trained_at
+                                
+                                # Get data points if available
+                                data_points = 'N/A'
+                                if isinstance(model_data, dict):
+                                    data_points = model_data.get('data_points', 'N/A')
+                                elif hasattr(model_data, 'data_points'):
+                                    data_points = getattr(model_data, 'data_points', 'N/A')
+                                
+                                ages[model_file.stem] = {
+                                    'trained_at': trained_at.isoformat(),
+                                    'age_days': age.days,
+                                    'age_hours': age.seconds // 3600,
+                                    'data_points': data_points,
+                                    'confidence': 'N/A',
+                                    'location': dir_path.name
+                                }
+                                logger.debug(f"Successfully loaded {model_file.name}")
+                            else:
+                                # If no trained_at, use file modification time
+                                mod_time = datetime.fromtimestamp(model_file.stat().st_mtime)
+                                age = datetime.now() - mod_time
+                                ages[model_file.stem] = {
+                                    'trained_at': mod_time.isoformat(),
+                                    'age_days': age.days,
+                                    'age_hours': age.seconds // 3600,
+                                    'data_points': 'N/A',
+                                    'confidence': 'N/A',
+                                    'location': dir_path.name,
+                                    'note': 'Using file modification time'
+                                }
+                                logger.debug(f"Using file time for {model_file.name}")
+                                
+                        except Exception as e:
+                            # If full unpickling fails, try to get just the file time
+                            logger.warning(f"Could not unpickle {model_file.name}, using file time: {e}")
+                            mod_time = datetime.fromtimestamp(model_file.stat().st_mtime)
+                            age = datetime.now() - mod_time
+                            ages[model_file.stem] = {
+                                'trained_at': mod_time.isoformat(),
+                                'age_days': age.days,
+                                'age_hours': age.seconds // 3600,
+                                'data_points': 'N/A',
+                                'confidence': 'N/A',
+                                'location': dir_path.name,
+                                'note': 'Using file modification time (unpickle failed)'
+                            }
+                            
+                except Exception as e:
+                    logger.warning(f"Failed to process model {model_file}: {e}")
+                    pass
+        
+        logger.debug(f"Calculated ages for {len(ages)} models")
         return ages
+    
+    def analyze_risk_performance(self):
+        """Analyze how different risk regimes performed"""
+        try:
+            import json
+            from collections import defaultdict
+            
+            with open('paper_trades.json', 'r') as f:
+                data = json.load(f)
+            
+            closed = data.get('closed_positions', [])
+            
+            # Group by market regime
+            regime_stats = defaultdict(lambda: {'trades': 0, 'wins': 0, 'pnl': 0})
+            
+            for trade in closed:
+                if 'risk_info' in trade:
+                    regime = trade['risk_info'].get('market_regime', 'unknown')
+                    sentiment = trade['risk_info'].get('sentiment_regime', 'unknown')
+                    
+                    key = f"{regime}_{sentiment}"
+                    regime_stats[key]['trades'] += 1
+                    if trade.get('pnl', 0) > 0:
+                        regime_stats[key]['wins'] += 1
+                    regime_stats[key]['pnl'] += trade.get('pnl', 0)
+            
+            logger.info("\nRISK REGIME PERFORMANCE")
+            logger.info("="*60)
+            for regime, stats in regime_stats.items():
+                win_rate = (stats['wins'] / stats['trades'] * 100) if stats['trades'] > 0 else 0
+                logger.info(f"{regime:30} | Trades: {stats['trades']:3} | Win Rate: {win_rate:5.1f}% | P&L: ${stats['pnl']:8.2f}")
+                
+        except Exception as e:
+            logger.error(f"Error analyzing risk performance: {e}")
     
     def print_dashboard(self):
         """Print comprehensive training dashboard"""
         
+        # Log to file
+        logger.info("="*80)
+        logger.info("AI TRAINING MONITOR DASHBOARD")
+        logger.info("="*80)
+        
+        # Print to console (keep for user) - using ASCII only
         print("\n" + "="*80)
-        print("📊 AI TRAINING MONITOR DASHBOARD")
+        print("AI TRAINING MONITOR DASHBOARD")
         print("="*80)
         
-        # Latest training session
-        latest = self.get_latest_report()
+        # Get model ages first
+        ages = self.get_model_ages()
         
-        if latest:
-            print("\n🔄 LAST TRAINING SESSION:")
-            print("-" * 80)
+        # MODEL TRAINING STATUS (based on actual model files)
+        print("\nMODEL TRAINING STATUS:")
+        print("-" * 80)
+        logger.info("MODEL TRAINING STATUS:")
+        
+        if ages:
+            # Find newest model
+            newest_model = None
+            newest_date = None
             
-            trained_date = datetime.fromisoformat(latest['date'])
-            time_ago = datetime.now() - trained_date
+            for name, data in ages.items():
+                trained_at = datetime.fromisoformat(data['trained_at'])
+                if newest_date is None or trained_at > newest_date:
+                    newest_date = trained_at
+                    newest_model = name
             
-            print(f"📅 Date: {trained_date.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"⏰ Time Ago: {time_ago.days} days, {time_ago.seconds//3600} hours ago")
-            print(f"✅ Successfully Trained: {latest['successfully_trained']}")
-            print(f"❌ Failed: {latest['failed']}")
-            print(f"📈 Success Rate: {latest['success_rate']:.1f}%")
-            print(f"⏱️  Training Time: {latest['total_time_minutes']:.1f} minutes")
-            print(f"🧠 Model Type: {latest['model_type'].title()}")
-            print(f"📊 Timeframes: {', '.join(latest['timeframes'])}")
+            if newest_date:
+                time_ago = datetime.now() - newest_date
+                print(f"Last Model Trained: {newest_date.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"Time Ago: {time_ago.days} days, {time_ago.seconds//3600} hours ago")
+                print(f"Newest Model: {newest_model}")
+                logger.info(f"Last Model Trained: {newest_date.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"Time Ago: {time_ago.days} days, {time_ago.seconds//3600} hours ago")
         else:
-            print("\n⚠️  No training reports found")
-            print("Run: python auto_train_daily.py")
+            print("No trained models found")
+            logger.warning("No trained models found")
         
         # Model inventory
-        print("\n💾 MODEL INVENTORY:")
+        print("\nMODEL INVENTORY:")
         print("-" * 80)
+        logger.info("MODEL INVENTORY:")
         
         model_count = self.count_trained_models()
-        print(f"📦 Total Models: {model_count}")
+        print(f"Total Models: {model_count}")
+        logger.info(f"Total Models: {model_count}")
         
-        if model_count > 0:
-            ages = self.get_model_ages()
+        if model_count > 0 and ages:
+            # Count by location
+            ml_count = sum(1 for data in ages.values() if data.get('location') == 'ml_models')
+            trained_count = sum(1 for data in ages.values() if data.get('location') == 'trained_models')
+            
+            print(f"  Location: ml_models/: {ml_count} models, trained_models/: {trained_count} models")
             
             # Group by age
-            fresh = sum(1 for age in ages.values() if age['age_days'] == 0)
-            recent = sum(1 for age in ages.values() if 0 < age['age_days'] <= 7)
-            old = sum(1 for age in ages.values() if age['age_days'] > 7)
+            fresh = sum(1 for data in ages.values() if data['age_days'] == 0)
+            recent = sum(1 for data in ages.values() if 0 < data['age_days'] <= 7)
+            old = sum(1 for data in ages.values() if data['age_days'] > 7)
             
-            print(f"  🟢 Fresh (today): {fresh}")
-            print(f"  🟡 Recent (1-7 days): {recent}")
-            print(f"  🔴 Old (>7 days): {old}")
+            print(f"  Fresh (today): {fresh}")
+            print(f"  Recent (1-7 days): {recent}")
+            print(f"  Old (>7 days): {old}")
+            
+            logger.info(f"Fresh (today): {fresh}")
+            logger.info(f"Recent (1-7 days): {recent}")
+            logger.info(f"Old (>7 days): {old}")
             
             if old > 0:
                 print(f"\n  ⚠️  {old} models need retraining!")
+                logger.warning(f"{old} models need retraining!")
         
-        # Training history
-        print("\n📈 TRAINING HISTORY (Last 7 Days):")
+        # Training history (from logs - optional, can be removed if not needed)
+        print("\nTRAINING HISTORY (Last 7 Days):")
         print("-" * 80)
+        logger.info("TRAINING HISTORY (Last 7 Days):")
         
         reports = self.get_all_reports()[:7]  # Last 7
         
@@ -138,60 +291,73 @@ class TrainingMonitor:
                 time_min = f"{report['total_time_minutes']:.1f}m"
                 
                 print(f"{date:<20} {success:<10} {failed:<10} {rate:<10} {time_min:<10}")
+                
+                # Log to file
+                logger.info(f"{date} | Success: {success} | Failed: {failed} | Rate: {rate} | Time: {time_min}")
         else:
             print("No training history available")
+            logger.info("No training history available")
         
         # Model health check
-        print("\n🏥 MODEL HEALTH CHECK:")
+        print("\nMODEL HEALTH CHECK:")
         print("-" * 80)
-        
-        ages = self.get_model_ages()
+        logger.info("MODEL HEALTH CHECK:")
         
         if ages:
             # Find models needing attention
             needs_retrain = [name for name, data in ages.items() if data['age_days'] > 7]
-            low_confidence = [name for name, data in ages.items() if isinstance(data['confidence'], float) and data['confidence'] < 0.5]
+            low_confidence = [name for name, data in ages.items() if isinstance(data.get('confidence'), (int, float)) and data['confidence'] < 0.5]
             
             if needs_retrain:
-                print(f"⚠️  {len(needs_retrain)} models need retraining (>7 days old)")
+                print(f"  ⚠️  {len(needs_retrain)} models need retraining (>7 days old)")
+                logger.warning(f"{len(needs_retrain)} models need retraining (>7 days old)")
                 for name in needs_retrain[:5]:
                     age = ages[name]['age_days']
-                    print(f"   - {name}: {age} days old")
+                    location = ages[name].get('location', 'unknown')
+                    print(f"     - {name}: {age} days old ({location})")
+                    logger.warning(f"     - {name}: {age} days old ({location})")
                 if len(needs_retrain) > 5:
-                    print(f"   ... and {len(needs_retrain)-5} more")
+                    print(f"     ... and {len(needs_retrain)-5} more")
+                    logger.warning(f"     ... and {len(needs_retrain)-5} more")
             
             if low_confidence:
-                print(f"⚠️  {len(low_confidence)} models have low confidence (<50%)")
+                print(f"  ⚠️  {len(low_confidence)} models have low confidence (<50%)")
+                logger.warning(f"{len(low_confidence)} models have low confidence (<50%)")
                 for name in low_confidence[:3]:
                     conf = ages[name]['confidence']
-                    print(f"   - {name}: {conf:.0%} confidence")
+                    location = ages[name].get('location', 'unknown')
+                    print(f"     - {name}: {conf:.0%} confidence ({location})")
+                    logger.warning(f"     - {name}: {conf:.0%} confidence ({location})")
             
             if not needs_retrain and not low_confidence:
-                print("✅ All models are healthy!")
+                print("  ✅ All models are healthy!")
+                logger.info("All models are healthy!")
+        else:
+            print("  No model data available")
         
         # Recommendations
-        print("\n💡 RECOMMENDATIONS:")
+        print("\nRECOMMENDATIONS:")
         print("-" * 80)
+        logger.info("RECOMMENDATIONS:")
         
-        if latest:
-            hours_since = (datetime.now() - datetime.fromisoformat(latest['date'])).seconds // 3600
-            days_since = (datetime.now() - datetime.fromisoformat(latest['date'])).days
-            
-            if days_since > 1:
-                print("⚠️  Models are more than 1 day old - consider retraining")
-                print("   Run: python auto_train_daily.py")
-            elif latest['success_rate'] < 80:
-                print("⚠️  Last training had low success rate")
-                print("   Check logs in: training_logs/")
+        if ages:
+            # Check if any models are old
+            old_models = [name for name, data in ages.items() if data['age_days'] > 1]
+            if old_models:
+                print("  ⚠️  Some models are more than 1 day old - consider retraining")
+                print("     Run: python auto_train_daily.py")
+                logger.warning("Some models are more than 1 day old - consider retraining")
             else:
-                print("✅ Everything looks good!")
-                print(f"   Next training: Scheduled for tonight (if auto-training is setup)")
+                print("  ✅ All models are fresh!")
+                print("     Next training: Scheduled for tonight (if auto-training is setup)")
+                logger.info("All models are fresh!")
         else:
-            print("⚠️  No training found - run initial training")
-            print("   Run: python auto_train_daily.py")
+            print("  ⚠️  No models found - run initial training")
+            print("     Run: python auto_train_daily.py")
+            logger.warning("No models found - run initial training")
         
         # Quick actions
-        print("\n🚀 QUICK ACTIONS:")
+        print("\nQUICK ACTIONS:")
         print("-" * 80)
         print("Train now:        python auto_train_daily.py")
         print("Setup auto:       Run setup_auto_training.ps1 (as Admin)")
@@ -199,6 +365,7 @@ class TrainingMonitor:
         print("Check logs:       training_logs/")
         
         print("\n" + "="*80 + "\n")
+        logger.info("="*80)
     
     def export_status_json(self) -> str:
         """Export status as JSON for web dashboard"""
@@ -209,6 +376,7 @@ class TrainingMonitor:
             'training_history': self.get_all_reports()[:30]
         }
         
+        logger.info(f"Exporting status JSON with {len(status['training_history'])} history entries")
         return json.dumps(status, indent=2, default=str)
 
 
@@ -218,7 +386,7 @@ def main():
     monitor.print_dashboard()
     
     # Ask if user wants JSON export
-    print("📄 Export status as JSON? (Y/N): ", end="")
+    print("Export status as JSON? (Y/N): ", end="")
     try:
         response = input().strip().upper()
         if response == 'Y':
@@ -227,8 +395,10 @@ def main():
             with open('training_status.json', 'w') as f:
                 f.write(json_data)
             
-            print("✅ Exported to: training_status.json")
-    except:
+            print("Exported to: training_status.json")
+            logger.info("Status exported to training_status.json")
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
         pass
 
 

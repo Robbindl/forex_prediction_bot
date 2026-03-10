@@ -69,12 +69,12 @@ class CategoryLimiter:
 
     # These are deliberately conservative for a $30 account
     MAX_PER_CATEGORY = {
-        'crypto':      1,   # Crypto is extremely correlated
-        'forex':       2,   # Can have 2 forex (e.g. EURUSD + USDJPY - different directions)
-        'stocks':      1,
-        'commodities': 1,
-        'indices':     1,
-        'unknown':     1,
+    'crypto':      3,  # Can have 3 crypto positions
+    'forex':       3,  # Can have 3 forex positions
+    'stocks':      2,  # Can have 2 stocks
+    'commodities': 2,  # Can have 2 commodities
+    'indices':     2,  # Can have 2 indices
+    'unknown':     2,
     }
 
     @staticmethod
@@ -236,7 +236,7 @@ def passes_entry_filter(df, signal: str) -> tuple:
                     return False, f"Price at bottom of BB ({bb_pct:.0%}) - skip SELL"
 
         return True, "Entry quality OK"
-
+        
     except Exception as e:
         return True, f"Filter error (allowing): {e}"
 
@@ -375,7 +375,7 @@ def on_trade_closed(asset: str, pnl: float, exit_reason: str):
 # GLOBAL INSTANCES (import these directly)
 # ============================================================
 
-cooldown_tracker = CooldownTracker(cooldown_minutes=60)
+cooldown_tracker = CooldownTracker(cooldown_minutes=30)
 category_limiter = CategoryLimiter()
 position_age_monitor = PositionAgeMonitor(max_age_hours=4.0)
 

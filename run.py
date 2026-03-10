@@ -2,7 +2,7 @@
 """
 ULTIMATE TRADING BOT LAUNCHER v5.0
 Complete interface for all bot features
-Includes: Paper Trading, Dashboards, ML Training, Backtesting, Sentiment Analysis, Whale Alerts
+Includes: Paper Trading, Dashboards, ML Training, Backtesting, Sentiment Analysis, Whale Alerts, Market Calendar
 """
 
 import sys
@@ -58,7 +58,7 @@ def print_banner():
 ║                    ULTIMATE TRADING BOT v5.0                    ║
 ║              Multi-Asset AI Trading System with                  ║
 ║           50+ Indicators • 13 Strategies • ML Ensemble          ║
-║              Sentiment Analysis • Whale Alerts                   ║
+║      Sentiment Analysis • Whale Alerts • Market Calendar         ║
 ╚══════════════════════════════════════════════════════════════════╝
     """)
 
@@ -166,13 +166,19 @@ def print_menu():
   19. Sentiment monitor     (real-time)         📡
   20. View whale alerts     (Twitter/Telegram)  🐋
 
+  📅 MARKET CALENDAR
+  ─────────────────────────────────────────────
+  21. View economic calendar (upcoming events)  📅
+  22. Check crypto halving countdown            🪙
+  23. Risk outlook for next 7 days              ⚡
+
   🛠️ SYSTEM
   ─────────────────────────────────────────────
-  21. Master controller    (24/7 auto-trading)  🤖
-  22. System health check
-  23. Verify installation
-  24. Database status
-  25. View open positions  (terminal)
+  24. Master controller    (24/7 auto-trading)  🤖
+  25. System health check
+  26. Verify installation
+  27. Database status
+  28. View open positions  (terminal)
 
   💰 PROFITABILITY UPGRADES
   ─────────────────────────────────────────────
@@ -327,6 +333,67 @@ for alert in alerts[:10]:
     print(f"     • Source: {alert['source']}")
     print(f"     • Value: ${alert['value_usd']:,.0f}")
     print()
+"""
+    run([sys.executable, "-c", code])
+
+
+def view_economic_calendar():
+    """Show upcoming economic events"""
+    code = """
+from market_calendar import MarketCalendar
+from datetime import datetime
+cal = MarketCalendar()
+cal.fetch_economic_calendar(days=14)
+events = cal.get_high_impact_events(days=7)
+print("\\n  📅 UPCOMING HIGH-IMPACT EVENTS (Next 7 Days)")
+print("  " + "-" * 50)
+if events:
+    for event in events:
+        days = (event['date'] - datetime.now()).days
+        print(f"  • {event['event']} in {days} days")
+        print(f"    Forecast: {event['forecast']} | Previous: {event['previous']}")
+else:
+    print("  No high-impact events in the next 7 days")
+"""
+    run([sys.executable, "-c", code])
+
+
+def view_halving_countdown():
+    """Show crypto halving countdown"""
+    code = """
+from market_calendar import MarketCalendar
+from datetime import datetime
+cal = MarketCalendar()
+print("\\n  🪙 CRYPTO HALVING COUNTDOWN")
+print("  " + "-" * 50)
+for crypto in ['bitcoin', 'litecoin']:
+    halving = cal.get_halving_countdown(crypto)
+    print(f"  {crypto.title()}:")
+    print(f"    • {halving['days_until']} days until halving")
+    print(f"    • Date: {halving['halving_date']}")
+    print(f"    • Reward: {halving['current_reward']} → {halving['next_reward']} BTC")
+    print(f"    • Reduction: {halving['reduction_percent']:.1f}%")
+    print()
+"""
+    run([sys.executable, "-c", code])
+
+
+def risk_outlook():
+    """Show risk outlook based on calendar"""
+    code = """
+from market_calendar import MarketCalendar
+from datetime import datetime
+cal = MarketCalendar()
+cal.fetch_economic_calendar()
+risk = cal.should_reduce_risk()
+print("\\n  ⚡ RISK OUTLOOK - NEXT 7 DAYS")
+print("  " + "-" * 50)
+print(f"  Risk Multiplier: {risk['risk_multiplier']:.0%}")
+print(f"  Reduce Trading: {'YES' if risk['reduce_trading'] else 'NO'}")
+print(f"  High-Impact Events: {'YES' if risk['high_impact_events'] else 'NO'}")
+print(f"  Halving Soon: {'YES' if risk['halving_soon'] else 'NO'}")
+if risk['reduce_trading']:
+    print("\\n  ⚠️ RECOMMENDATION: Reduce position sizes by 30-50%")
 """
     run([sys.executable, "-c", code])
 
@@ -504,17 +571,31 @@ def main():
         elif choice == "20":
             view_whale_alerts()
 
-        # ── System (21-25) ───────────────────────────
+        # ── Market Calendar (21-23) ──────────────────
         elif choice == "21":
+            view_economic_calendar()
+            pause()
+            continue
+        elif choice == "22":
+            view_halving_countdown()
+            pause()
+            continue
+        elif choice == "23":
+            risk_outlook()
+            pause()
+            continue
+
+        # ── System (24-28) ───────────────────────────
+        elif choice == "24":
             print("\n  Starting Master Controller (Ctrl+C to stop)")
             run([sys.executable, "master_controller.py"])
-        elif choice == "22":
-            run([sys.executable, "health_check.py"])
-        elif choice == "23":
-            run([sys.executable, "verify_installation.py"])
-        elif choice == "24":
-            db_status()
         elif choice == "25":
+            run([sys.executable, "health_check.py"])
+        elif choice == "26":
+            run([sys.executable, "verify_installation.py"])
+        elif choice == "27":
+            db_status()
+        elif choice == "28":
             view_positions()
             pause()
             continue

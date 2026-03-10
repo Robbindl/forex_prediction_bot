@@ -7,6 +7,6 @@
     "risk_reward_min": 1.5,
     "stop_loss_atr_multiplier": 2.0,
     "take_profit_atr_multipliers": [1.5, 3.0, 5.0],
-    "max_open_positions": 5,
+    "max_open_positions": 10,
     "correlation_warning": 0.7
 }

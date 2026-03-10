@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Optional
 import os
 from dotenv import load_dotenv
+from logger import logger  # Only change - using logger instead of print
 
 load_dotenv()
 
@@ -23,33 +24,33 @@ class TelegramWhaleWatcher:
         """
         Initialize with Telegram bot token from .env
         """
-        self.bot_token = os.getenv('TELEGRAM_TOKEN')
+        # Use WHALE_TELEGRAM_TOKEN instead of TELEGRAM_TOKEN
+        self.bot_token = os.getenv('WHALE_TELEGRAM_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
         
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
         self.recent_messages = []
         self.max_messages = 100
         self.is_running = False
-        self.last_update_id = 0  # Track last update to avoid duplicates
+        self.last_update_id = 0
         
-        # Public channels to monitor (you need to join these)
+        # Public channels to monitor
         self.public_channels = [
-            'whale_alert',           # Official Whale Alert
-            'Whalebotalerts',         # Whalebotalerts
-            'WhaleSniper',            # WhaleSniper
-            'lookonchain',            # lookonchain
-            'CryptoQuantAlerts',      # CryptoQuantAlerts
-            'WhaleBotRektd',          # WhaleBotRektd
-            'WhaleWire',              # WhaleWire Telegram
+            'whale_alert',
+            'whalebotalerts',
+            'WhaleSniper',
+            'lookonchain',
+            'cryptoquant_alert',
+            'WhaleBotRektd',
+            'WhaleWire',
+            'whalecointalk',
         ]
         
-        # Your personal chat (for testing)
-        self.your_chat_id = self.chat_id
-        
         if self.bot_token:
-            print(f"✅ Telegram bot initialized")
+            logger.info(f"✅ Whale Telegram bot initialized")
+            logger.info(f"   Monitoring {len(self.public_channels)} channels")
         else:
-            print(f"⚠️ Telegram bot token not found in .env")
+            logger.warning(f"⚠️ Whale Telegram bot token not found in .env")
     
     def get_updates(self, limit: int = 100) -> List[Dict]:
         """
@@ -77,10 +78,10 @@ class TelegramWhaleWatcher:
                     self.last_update_id = updates[-1]['update_id']
                 return updates
             else:
-                print(f"⚠️ Telegram API error: {data.get('description')}")
+                logger.warning(f"⚠️ Telegram API error: {data.get('description')}")
                 
         except Exception as e:
-            print(f"⚠️ Telegram getUpdates error: {e}")
+            logger.error(f"⚠️ Telegram getUpdates error: {e}")
         
         return []
     
@@ -177,37 +178,47 @@ class TelegramWhaleWatcher:
         return messages
     
     def start_monitoring(self, interval_seconds: int = 300):
-        """
-        Start background thread to monitor Telegram
-        """
+        """Start background thread to monitor Telegram"""
+        if self.is_running:
+            logger.warning("Telegram monitor already running")
+            return
+            
         self.is_running = True
+        
+        logger.info(f"🐋 Telegram Whale Watcher started")
+        logger.info(f"   Monitoring {len(self.public_channels)} channels")
+        logger.info(f"   Checking every {interval_seconds}s")
         
         def monitor_loop():
             while self.is_running:
                 try:
                     messages = self.fetch_channel_messages()
                     if messages:
-                        # Add to existing messages, avoiding duplicates
                         existing_ids = {m['id'] for m in self.recent_messages}
                         new_messages = [m for m in messages if m['id'] not in existing_ids]
                         
                         if new_messages:
                             self.recent_messages = (new_messages + self.recent_messages)[:self.max_messages]
-                            print(f"📱 Telegram: {len(new_messages)} new whale messages")
+                            logger.info(f"📱 Telegram: Found {len(new_messages)} new whale alerts")
+                            
+                            # Log first alert as example
+                            if new_messages:
+                                first = new_messages[0]
+                                whale = first.get('whale_info', {})
+                                logger.info(f"   Example: {whale.get('amount')} {whale.get('symbol')} (${whale.get('value_usd',0)/1e6:.1f}M)")
                     
                     time.sleep(interval_seconds)
-                    
                 except Exception as e:
-                    print(f"⚠️ Telegram monitor error: {e}")
+                    logger.error(f"⚠️ Telegram monitor error: {e}")
                     time.sleep(60)
         
         thread = threading.Thread(target=monitor_loop, daemon=True)
         thread.start()
-        print(f"📱 Telegram whale monitor started (checking every {interval_seconds}s)")
     
     def stop_monitoring(self):
         """Stop monitoring"""
         self.is_running = False
+        logger.info("📱 Telegram Whale Watcher stopped")
     
     def get_recent_alerts(self, min_value_usd: float = 1000000) -> List[Dict]:
         """
@@ -235,3 +246,32 @@ class TelegramWhaleWatcher:
         alerts = self.get_recent_alerts(min_value_usd=0)
         sorted_alerts = sorted(alerts, key=lambda x: x['value_usd'], reverse=True)
         return sorted_alerts[:limit]
+
+
+# ===== SIMPLE TEST =====
+if __name__ == "__main__":
+    print("\n📱 TESTING TELEGRAM WHALE WATCHER")
+    print("="*50)
+    
+    watcher = TelegramWhaleWatcher()
+    
+    if watcher.bot_token:
+        print(f"✅ Telegram initialized")
+        print(f"   • Channels: {len(watcher.public_channels)}")
+        
+        # Test fetching
+        print("\n📡 Testing fetch...")
+        messages = watcher.fetch_channel_messages()
+        print(f"Found {len(messages)} messages")
+        
+        if messages:
+            print("\n🐋 Sample alerts:")
+            for msg in messages[:3]:
+                info = msg.get('whale_info', {})
+                if info:
+                    value_m = info['value_usd'] / 1_000_000
+                    print(f"  • {info['amount']} {info['symbol']} (${value_m:.1f}M) from {msg.get('source')}")
+    else:
+        print("❌ Telegram not configured - check WHALE_TELEGRAM_TOKEN in .env")
+    
+    print("="*50)

@@ -241,36 +241,76 @@ if not junk_found:
 
 
 # ══════════════════════════════════════════════════════
-# 5. .ENV FILE & API KEYS
+# 5. .ENV FILE & API KEYS - UPDATED to read your actual .env
 # ══════════════════════════════════════════════════════
 section("5. .ENV FILE & API KEYS")
 
 env_path = Path(".env")
 if not env_path.exists():
     warn(".env file not found — API-based features won't work")
-    info("Create .env with these keys (all optional, yfinance works without them):")
-    info("  NEWS_API_KEY=your_key")
-    info("  FINNHUB_API_KEY=your_key")
-    info("  TWELVEDATA_API_KEY=your_key")
-    info("  ALPHA_VANTAGE_KEY=your_key")
-    info("  DATABASE_URL=postgresql://user:pass@localhost/trading_bot")
+    info("Create .env with your API keys")
 else:
     ok(".env file found")
     try:
         from dotenv import dotenv_values
         env = dotenv_values(".env")
+        
+        # Complete list of your actual API keys from your .env
         keys_to_check = [
-            ("NEWS_API_KEY",       "NewsAPI (sentiment)"),
-            ("FINNHUB_API_KEY",    "Finnhub (real-time data)"),
-            ("TWELVEDATA_API_KEY", "TwelveData (forex data)"),
-            ("DATABASE_URL",       "PostgreSQL database"),
+            ("ALPHA_VANTAGE_KEY",    "Alpha Vantage"),
+            ("FINNHUB_KEY",          "Finnhub"),
+            ("TWELVEDATA_KEY",       "Twelve Data"),
+            ("ITICK_TOKEN",          "iTick API"),
+            ("OILPRICE_API_KEY",     "OilPrice API"),
+            ("NEWSAPI_KEY",          "NewsAPI"),
+            ("GNEWS_KEY",            "GNews"),
+            ("RAPIDAPI_KEY",         "RapidAPI"),
+            ("WHALE_ALERT_KEY",      "Whale Alert"),
+            ("TELEGRAM_TOKEN",       "Telegram Bot"),
+            ("WHALE_TELEGRAM_TOKEN", "Whale Telegram"),
+            ("TELEGRAM_CHAT_ID",     "Telegram Chat"),
+            ("EMAIL_USERNAME",       "Email"),
+            ("EMAIL_PASSWORD",       "Email Password"),
+            ("DATABASE_URL",         "PostgreSQL database"),
+            ("TWITTER_BEARER_TOKEN", "Twitter Bearer"),
+            ("TWITTER_API_KEY",      "Twitter API Key"),
+            ("TWITTER_API_SECRET",   "Twitter API Secret"),
+            ("TWITTER_ACCESS_TOKEN", "Twitter Access Token"),
+            ("TWITTER_ACCESS_SECRET","Twitter Access Secret"),
+            ("APIFY_TOKEN",          "Apify"),
         ]
+        
+        configured = 0
+        total = 0
+        placeholder_count = 0
+        
         for key, label in keys_to_check:
             val = env.get(key, "")
-            if val and len(val) > 5:
+            total += 1
+            if val and len(val) > 5 and "your_" not in val.lower() and "key_here" not in val.lower():
                 ok(f"{label}: configured")
+                configured += 1
+            elif val and len(val) > 0:
+                warn(f"{label}: has placeholder value")
+                placeholder_count += 1
             else:
-                warn(f"{label}: NOT set  ({key})")
+                warn(f"{label}: NOT set")
+        
+        print()
+        info(f"API Keys configured: {configured}/{total}")
+        if placeholder_count > 0:
+            info(f"Placeholder keys: {placeholder_count} (need real values)")
+        
+        # Check database URL specifically
+        db_url = env.get("DATABASE_URL", "")
+        if db_url and "@" in db_url:
+            # Mask password for display
+            parts = db_url.split("@")
+            credentials = parts[0].split("://")[1] if "://" in parts[0] else ""
+            if ":" in credentials:
+                user = credentials.split(":")[0]
+                info(f"Database: connected as {user}")
+        
     except Exception as e:
         warn(f"Could not read .env: {e}")
 
@@ -425,27 +465,50 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════
-# 10. ML MODELS
+# 10. ML MODELS - UPDATED to check both folders
 # ══════════════════════════════════════════════════════
 section("10. ML MODELS")
 
-models_dir = Path("trained_models")
-if models_dir.exists():
-    models = list(models_dir.glob("*.pkl"))
-    if models:
-        ok(f"{len(models)} trained model(s) found in trained_models/")
-        for m in sorted(models)[:5]:
-            size_kb = m.stat().st_size // 1024
-            mtime = datetime.fromtimestamp(m.stat().st_mtime).strftime("%Y-%m-%d")
-            info(f"  {m.name}  ({size_kb} KB, trained {mtime})")
-        if len(models) > 5:
-            info(f"  ... and {len(models)-5} more")
+model_folders = ["trained_models", "ml_models"]
+models_found = False
+total_models = 0
+
+for folder in model_folders:
+    models_dir = Path(folder)
+    if models_dir.exists():
+        models = list(models_dir.glob("*.pkl"))
+        if models:
+            models_found = True
+            total_models += len(models)
+            ok(f"{len(models)} trained model(s) found in {folder}/")
+            for m in sorted(models)[:3]:  # Show first 3
+                size_kb = m.stat().st_size // 1024
+                mtime = datetime.fromtimestamp(m.stat().st_mtime).strftime("%Y-%m-%d")
+                info(f"  {m.name}  ({size_kb} KB, trained {mtime})")
+            if len(models) > 3:
+                info(f"  ... and {len(models)-3} more")
+        else:
+            if folder == "trained_models":
+                info(f"No .pkl models in {folder}/ (checking ml_models/)")
     else:
-        warn("No .pkl models found — run option 10 (Train ML Models) to train them")
-        info("Bot still works without models — uses technical indicators only")
+        if folder == "trained_models":
+            info(f"{folder}/ folder not found (checking ml_models/)")
+
+if models_found:
+    ok(f"Total models across all folders: {total_models}")
+    
+    # Check model registry
+    registry_path = Path("model_registry.json")
+    if registry_path.exists():
+        try:
+            with open(registry_path) as f:
+                registry = json.load(f)
+            info(f"Model registry contains {len(registry)} registered models")
+        except:
+            warn("Model registry exists but couldn't be read")
 else:
-    warn("trained_models/ folder not found")
-    info("Run option 10 (Train ML Models) to create it")
+    warn("No .pkl models found in any folder — run training to create them")
+    info("Bot still works without models — uses technical indicators only")
 
 
 # ══════════════════════════════════════════════════════
