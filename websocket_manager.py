@@ -26,6 +26,7 @@ class WebSocketManager:
         self.loop = None
         self.thread = None
         self.loop_ready = False
+        self._finnhub_disabled = False  # FIX 1: permanent stop flag
 
         # Connection URLs
         self.finnhub_url = "wss://ws.finnhub.io"
@@ -121,7 +122,11 @@ class WebSocketManager:
     # ───────────────────────── FINNHUB ─────────────────────────
 
     def subscribe_finnhub(self, symbols: List[str], callback: Callable):
-        """Subscribe to Finnhub WebSocket for stocks/forex"""
+        """Subscribe to Finnhub WebSocket — disabled on 401 (free tier has no WS)"""
+        if self._finnhub_disabled:
+            logger.warning("Finnhub WebSocket permanently disabled (HTTP 401 — requires paid plan)")
+            return
+
         while not self.loop_ready:
             time.sleep(0.1)
 
@@ -132,11 +137,20 @@ class WebSocketManager:
         logger.info(f"📡 Subscribed to Finnhub: {symbols}")
 
     async def _connect_finnhub_with_reconnect(self, symbols: List[str], callback: Callable):
-        """Auto-reconnect wrapper for Finnhub"""
-        while self.running:
+        """Auto-reconnect wrapper for Finnhub — stops permanently on 401"""
+        while self.running and not self._finnhub_disabled:
             try:
                 await self._connect_finnhub(symbols, callback)
+                # FIX 1: if _connect_finnhub returned normally due to 401, stop here
+                if self._finnhub_disabled:
+                    break
             except Exception as e:
+                err = str(e)
+                # FIX 1: catch 401 at the connection level (before message loop)
+                if 'HTTP 401' in err or '401' in err:
+                    self._finnhub_disabled = True
+                    logger.warning("Finnhub WebSocket: HTTP 401 — free tier has no WS access. Stopped permanently.")
+                    break
                 logger.error(f"❌ Finnhub connection lost: {e} — reconnecting in 5s")
                 await asyncio.sleep(5)
 
@@ -171,17 +185,15 @@ class WebSocketManager:
                             price = float(trade['p'])
                             volume = float(trade.get('v', 0))
                             timestamp = datetime.fromtimestamp(trade['t'] / 1000)
-
                             callback('finnhub', symbol, price, volume, None, timestamp)
 
                 except Exception as e:
                     err = str(e)
-                    if 'HTTP 401' in err:
-                        logger.warning("Finnhub WebSocket: API key rejected (401) — WebSocket requires paid plan. Stopping.")
-                        break  # Stop retrying permanently
-                    logger.error(f"[ERROR] Finnhub connection lost: {e} — reconnecting in 5s")
-                    time.sleep(5)
-                    
+                    if 'HTTP 401' in err or '401' in err:
+                        self._finnhub_disabled = True
+                        logger.warning("Finnhub WebSocket: HTTP 401 — stopping permanently.")
+                        return  # exit cleanly so reconnect wrapper sees _finnhub_disabled
+
     # ───────────────────────── CONTROL ─────────────────────────
 
     def stop(self):

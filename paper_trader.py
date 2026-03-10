@@ -19,7 +19,8 @@ class PaperTrade:
                  entry_price: float, position_size: float, stop_loss: float,
                  take_profit_levels: List[Dict], confidence: float, reason: str,
                  strategy_id: str = "UNKNOWN", strategy_emoji: str = "🤖",
-                 contributing_strategies: list = None):  # ← ADDED THIS
+                 contributing_strategies: list = None,
+                 db=None):  # FIX 3: accept shared db instance
         self.trade_id = str(uuid.uuid4())[:8]
         self.asset = asset
         self.category = category
@@ -40,9 +41,10 @@ class PaperTrade:
         self.duration_minutes = 0
         self.strategy_id = strategy_id
         self.strategy_emoji = strategy_emoji
-        self.contributing_strategies = contributing_strategies or []  # ← ADDED THIS
-        self.db = DatabaseService()
-        self.use_db = True
+        self.contributing_strategies = contributing_strategies or []
+        # FIX 3: use shared db — never create a new DatabaseService per trade
+        self.db = db
+        self.use_db = db is not None and getattr(db, "use_db", False)
     
     def to_dict(self) -> Dict:
         """Convert trade to dictionary"""
@@ -481,7 +483,8 @@ class PaperTrader:
                 reason=signal.get('reason', 'Signal generated'),
                 strategy_id=signal.get('strategy_id', 'UNKNOWN'),
                 strategy_emoji=signal.get('strategy_emoji', '🤖'),
-                contributing_strategies=signal.get('contributing_strategies', [])
+                contributing_strategies=signal.get('contributing_strategies', []),
+                db=self.db  # FIX 3: pass shared db instance
             )
             
             # Store position

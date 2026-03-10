@@ -9,6 +9,20 @@ from datetime import datetime
 import json
 from logger import logger
 
+# FIX 4: top-level import — not inside function call per cycle
+# FIX 5 (Phase 2): TTL-based singleton — refresh sentiment every 5 minutes
+import time as _time
+try:
+    from sentiment_analyzer import SentimentAnalyzer as _SentimentAnalyzer
+    _sentiment_instance = None
+    _sentiment_last_init = 0.0
+    SENTIMENT_TTL = 300  # 5 minutes
+except ImportError:
+    _SentimentAnalyzer = None
+    _sentiment_instance = None
+    _sentiment_last_init = 0.0
+    SENTIMENT_TTL = 300
+
 class StrategyVotingEngine:
     """
     Combines multiple strategies using weighted voting
@@ -69,8 +83,15 @@ class StrategyVotingEngine:
         
         # ===== GET NEWS SENTIMENT SIGNAL =====
         try:
-            from sentiment_analyzer import SentimentAnalyzer
-            sentiment_analyzer = SentimentAnalyzer()
+            # FIX 4+5: singleton with 5-min TTL — avoids reimport AND stale sentiment
+            global _sentiment_instance, _sentiment_last_init
+            if _SentimentAnalyzer is None:
+                raise ImportError("SentimentAnalyzer not available")
+            now = _time.time()
+            if _sentiment_instance is None or (now - _sentiment_last_init) > SENTIMENT_TTL:
+                _sentiment_instance = _SentimentAnalyzer()
+                _sentiment_last_init = now
+            sentiment_analyzer = _sentiment_instance
             
             # Get comprehensive sentiment for general market
             sentiment = sentiment_analyzer.get_comprehensive_sentiment()

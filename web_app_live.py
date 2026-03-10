@@ -83,6 +83,22 @@ signals_cache = {
     'is_updating': False
 }
 
+# ── Phase 2: price-change gate + tiered refresh tracking ──────────────────────
+_price_cache: dict = {}          # {asset: last_seen_price}
+_last_refreshed: dict = {}       # {asset: timestamp}
+
+# How often each category is allowed to refresh (seconds)
+REFRESH_INTERVALS = {
+    'crypto':      30,
+    'forex':       60,
+    'commodities': 60,
+    'indices':    120,
+    'stocks':     120,
+}
+# Minimum price move (fraction) to trigger a full signal recompute
+PRICE_GATE_THRESHOLD = 0.001   # 0.1%
+# ───────────────────────────────────────────────────────────────────────────────
+
 # Complete asset universe
 ALL_ASSETS = [
     # ===== COMMODITIES =====
@@ -197,7 +213,16 @@ def get_real_signal(asset: str, category: str):
         price, source = fetcher.get_real_time_price(asset, category)
         if not price or price <= 0:
             return None
-        
+
+        # ── Phase 2: price-change gate ────────────────────────────────────────
+        last_price = _price_cache.get(asset)
+        if last_price and last_price > 0:
+            move = abs(price - last_price) / last_price
+            if move < PRICE_GATE_THRESHOLD:
+                return None  # price barely moved — skip expensive pipeline
+        _price_cache[asset] = price
+        # ─────────────────────────────────────────────────────────────────────
+
         df = bot.fetch_historical_data(asset, 100, '15m')
         if df.empty:
             return None
@@ -309,27 +334,77 @@ def refresh_signals():
     return signals
 
 def auto_refresh_worker():
-    """Background worker"""
-    global signals_cache
-    
+    """Background worker — tiered refresh per asset category (Phase 2)"""
+    global signals_cache, _last_refreshed
+    import time as _t
+
     while True:
         try:
             if not signals_cache['is_updating']:
                 signals_cache['is_updating'] = True
-                fresh_signals = refresh_signals()
-                signals_cache['signals'] = fresh_signals
-                signals_cache['last_refresh'] = datetime.now()
-                signals_cache['is_updating'] = False
-                
+                now = datetime.now()
+                now_ts = _t.time()
+
                 status = MarketHours.get_status()
                 if status['is_weekend']:
-                    print("🏦 WEEKEND MODE: Forex/Stocks/Indices Closed")
-            
+                    assets_to_process = [a for a in ALL_ASSETS if a[1] == 'crypto']
+                else:
+                    assets_to_process = ALL_ASSETS
+
+                # ── Phase 2: only refresh assets whose interval has elapsed ──
+                due = []
+                for asset, category, _ in assets_to_process:
+                    interval = REFRESH_INTERVALS.get(category, 60)
+                    last = _last_refreshed.get(asset, 0)
+                    if (now_ts - last) >= interval:
+                        due.append((asset, category))
+
+                if due:
+                    print(f"\n🔄 Refreshing {len(due)} assets (of {len(assets_to_process)} total)")
+
+                    new_signals = {}
+                    for sig in signals_cache.get('signals', []):
+                        new_signals[sig['asset']] = sig
+
+                    for asset, category in due:
+                        try:
+                            if not MarketHours.get_status().get(category, False):
+                                new_signals[asset] = {
+                                    'asset': asset, 'category': category,
+                                    'signal': 'CLOSED', 'confidence': 0,
+                                    'entry_price': 0, 'stop_loss': 0,
+                                    'take_profit_levels': [], 'risk_pct': 0,
+                                    'timestamp': now.isoformat(),
+                                    'generated_at': now.strftime('%H:%M:%S'),
+                                    'expires_at': (now + timedelta(minutes=5)).isoformat(),
+                                    'time_remaining': 5.0, 'reason': 'Market Closed',
+                                    'market_open': False, 'data_source': 'N/A'
+                                }
+                            else:
+                                sig = get_real_signal(asset, category)
+                                if sig:
+                                    new_signals[asset] = sig
+                                    if sig['signal'] not in ('HOLD', 'CLOSED'):
+                                        print(f"  ✅ {asset}: {sig['signal']} @ ${sig['entry_price']:.4f} ({sig['confidence']:.0%})")
+                            _last_refreshed[asset] = now_ts
+                        except Exception as e:
+                            print(f"  ❌ {asset}: {e}")
+
+                    merged = list(new_signals.values())
+                    merged.sort(key=lambda x: (-x.get('confidence', 0) if x.get('market_open') else -1))
+                    signals_cache['signals'] = merged
+                    signals_cache['last_refresh'] = now
+
+                    if status['is_weekend']:
+                        print("🏦 WEEKEND MODE: Forex/Stocks/Indices Closed")
+
+                signals_cache['is_updating'] = False
+
         except Exception as e:
             print(f"❌ Error in auto_refresh: {e}")
             signals_cache['is_updating'] = False
-        
-        time.sleep(30)
+
+        time.sleep(10)  # check every 10s; actual refresh governed by per-category intervals
 
 # ===== HUMAN RESPONSE GENERATOR =====
 def generate_human_response(asset: str, df, prediction: Dict, news: List, whale_info: str = None) -> Dict:
@@ -662,6 +737,162 @@ def sentiment_dashboard():
 @app.route('/backtest')
 def backtest_page():
     return render_template('backtest_visualizer.html')
+
+@app.route('/api/backtest/run')
+def api_backtest_run():
+    """Run a backtest — returns JSON shaped to match backtest_visualizer.html"""
+    import traceback
+    import numpy as np
+    import pandas as pd
+    from dataclasses import asdict
+
+    asset    = request.args.get('asset', 'BTC-USD')
+    strategy = request.args.get('strategy', 'rsi')
+    period   = request.args.get('period', '90d')
+
+    period_map = {'30d': 30, '90d': 90, '180d': 180, '365d': 365, '730d': 730}
+    days = period_map.get(period, int(''.join(filter(str.isdigit, period)) or 90))
+
+    def clean(obj):
+        """Recursively convert numpy/datetime types to plain Python."""
+        if isinstance(obj, dict):  return {k: clean(v) for k, v in obj.items()}
+        if isinstance(obj, list):  return [clean(v) for v in obj]
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        if hasattr(obj, 'isoformat'):   return obj.isoformat()
+        return obj
+
+    try:
+        bot = get_trading_bot()
+        if bot is None:
+            return jsonify({'success': False, 'error': 'Trading bot not initialised yet'}), 503
+
+        df = bot.fetch_historical_data(asset, days=days, interval='1d')
+        if df is None or df.empty:
+            return jsonify({'success': False, 'error': f'No historical data for {asset}'}), 404
+
+        from indicators.technical import TechnicalIndicators
+        df = TechnicalIndicators.add_all_indicators(df)
+
+        # Resolve strategy function — try strategy_engine first, then bot directly
+        strategy_fn = None
+        if hasattr(bot, 'strategy_engine') and bot.strategy_engine:
+            strategy_fn = getattr(bot.strategy_engine, f'{strategy}_strategy', None)
+        if strategy_fn is None:
+            strategy_fn = getattr(bot, f'{strategy}_strategy', None)
+        if strategy_fn is None:
+            return jsonify({'success': False, 'error': f'Unknown strategy: {strategy}'}), 400
+
+        # ── Scan full history row-by-row to generate signals across all bars ──
+        # Strategies are designed for live use (only look at iloc[-1]).
+        # For backtesting we slide a window across the full dataframe.
+        min_window = 60  # minimum bars needed by most indicators
+        all_signals = []
+        for i in range(min_window, len(df)):
+            window = df.iloc[:i+1]
+            try:
+                bar_signals = strategy_fn(window) or []
+                for s in bar_signals:
+                    # tag each signal with the bar date if not already set
+                    if 'date' not in s or s['date'] is None:
+                        s['date'] = window.index[-1]
+                    # normalise keys: entry_price → entry, stop_loss → stop_loss, take_profit
+                    if 'entry_price' in s and 'entry' not in s:
+                        s['entry'] = s['entry_price']
+                    if 'take_profit_levels' in s and 'take_profit' not in s:
+                        tp_levels = s['take_profit_levels']
+                        s['take_profit'] = tp_levels[0]['price'] if tp_levels else s.get('entry', 0) * 1.02
+                    all_signals.append(s)
+            except Exception:
+                continue
+
+        if all_signals:
+            signals_df = pd.DataFrame(all_signals)
+            # ensure required columns exist
+            for col in ['date', 'signal', 'entry', 'stop_loss', 'take_profit', 'confidence']:
+                if col not in signals_df.columns:
+                    signals_df[col] = None
+            signals_df = signals_df.dropna(subset=['date', 'signal', 'entry'])
+        else:
+            signals_df = pd.DataFrame()
+        # ────────────────────────────────────────────────────────────────────
+
+        # Run backtest — resets internal state first
+        bt = bot.backtester
+        bt.trades = []
+        bt.equity_curve = [bt.initial_capital]
+        results_obj = bt.run_backtest(df, signals_df)
+
+        if results_obj is None:
+            return jsonify({'success': False, 'error': 'Backtest returned no results'}), 500
+
+        # Convert BacktestResults dataclass → dict
+        results_dict = asdict(results_obj) if hasattr(results_obj, '__dataclass_fields__') else dict(results_obj)
+
+        # Rename keys to match what the HTML summary cards expect
+        results_dict['trades']       = results_dict.pop('total_trades', 0)
+        results_dict['win_rate']     = results_dict.get('win_rate', 0)
+        results_dict['total_return'] = results_dict.pop('total_return_pct', 0)
+        results_dict['profit_factor']= results_dict.get('profit_factor', 0)
+        results_dict['max_dd']       = results_dict.pop('max_drawdown', 0)
+
+        # Build equity curve {dates, values}
+        equity_vals = bt.equity_curve
+        if bt.trades:
+            dates = [t.entry_date for t in bt.trades]
+            # pad dates to match equity_curve length (equity has one extra: starting capital)
+            dates = ['Start'] + [str(d) for d in dates]
+        else:
+            dates = [str(i) for i in range(len(equity_vals))]
+        equity_curve = {'dates': dates[:len(equity_vals)], 'values': equity_vals}
+
+        # Build drawdown series
+        eq_arr = np.array(equity_vals)
+        running_max = np.maximum.accumulate(eq_arr)
+        dd_vals = ((eq_arr - running_max) / (running_max + 1e-10) * 100).tolist()
+        drawdown = {'dates': dates[:len(dd_vals)], 'values': dd_vals}
+
+        # Build monthly returns
+        monthly_returns = {'months': [], 'returns': []}
+        if bt.trades:
+            trades_df = pd.DataFrame([asdict(t) for t in bt.trades])
+            trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'], errors='coerce')
+            trades_df = trades_df.dropna(subset=['exit_date'])
+            if not trades_df.empty:
+                trades_df['month'] = trades_df['exit_date'].dt.to_period('M')
+                monthly = trades_df.groupby('month')['pnl'].sum()
+                monthly_returns = {
+                    'months': [str(m) for m in monthly.index],
+                    'returns': monthly.values.tolist()
+                }
+
+        # Serialise individual trades for table
+        trades_out = []
+        for t in bt.trades[-50:]:  # last 50
+            td = asdict(t)
+            trades_out.append({
+                'entry_date':  str(td.get('entry_date', '')),
+                'exit_date':   str(td.get('exit_date', '')),
+                'direction':   td.get('direction', ''),
+                'entry_price': td.get('entry_price', 0),
+                'exit_price':  td.get('exit_price', 0),
+                'pnl':         td.get('pnl', 0),
+                'return_pct':  td.get('return_pct', 0),
+                'exit_reason': td.get('exit_reason', ''),
+            })
+
+        return jsonify(clean({
+            'success':        True,
+            'results':        results_dict,
+            'equity_curve':   equity_curve,
+            'drawdown':       drawdown,
+            'monthly_returns':monthly_returns,
+            'trades':         trades_out,
+        }))
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()}), 500
 
 @app.route('/api/sentiment/dashboard')
 def api_sentiment_dashboard():

@@ -369,8 +369,19 @@ class AdvancedPredictionEngine:
     def predict_next(self, df: pd.DataFrame) -> dict:
         """Generate ensemble prediction with confidence scoring"""
         if not self.models:
-            logger.error("Models not trained. Call train() first.")
-            raise ValueError("Models not trained. Call train() first.")
+            # FIX: degrade gracefully instead of raising — caller handles HOLD
+            logger.debug("ML models not trained yet — returning HOLD signal.")
+            return {
+                'direction': 'HOLD',
+                'confidence': 0.0,
+                'predicted_return': 0,
+                'predicted_price': df['close'].iloc[-1] if 'close' in df.columns else 0,
+                'current_price': df['close'].iloc[-1] if 'close' in df.columns else 0,
+                'price_change_pct': 0,
+                'model_count': 0,
+                'prediction_std': 0,
+                'not_trained': True,
+            }
         
         try:
             # Prepare features

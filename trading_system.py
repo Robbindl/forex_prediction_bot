@@ -91,7 +91,7 @@ class UltimateTradingSystem:
         self.no_telegram = no_telegram
         
         # Core Components
-        from data.fetcher import NASALevelFetcher, MarketHours
+        # [moved to top-level import]
         from advanced_predictor import AdvancedPredictionEngine
         from advanced_risk_manager import AdvancedRiskManager
         from advanced_backtester import AdvancedBacktester
@@ -99,7 +99,7 @@ class UltimateTradingSystem:
         from training_monitor import TrainingMonitor
         from monitor import TradingMonitor
         from portfolio_optimizer import EnhancedPortfolioOptimizer
-        from sentiment_analyzer import SentimentAnalyzer
+        # [moved to top-level import]
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from strategies.voting_engine import StrategyVotingEngine
         from auto_train_intelligent import IntelligentAutoTrainer
@@ -115,31 +115,37 @@ class UltimateTradingSystem:
         # Core Components (create these FIRST)
         self.fetcher = NASALevelFetcher()
 
-        # ===== WEBSOCKET INTEGRATION =====
-        self.use_websocket = True
+        # WebSocket is managed by web_app_live.py in-process thread.
+        # trading_system does NOT start its own WS manager to avoid duplicate connections.
+        self.use_websocket = False
         self.ws_status = {'connected': False, 'last_message': None, 'sources': {}}
 
-        if self.use_websocket:
-            try:
-                # Start WebSocket in background thread
-                import threading
-                def start_ws():
-                    success = self.fetcher.enable_websocket(self)
-                    self.ws_status['connected'] = success
-                
-                ws_thread = threading.Thread(target=start_ws, daemon=True)
-                ws_thread.start()
-                
-                # Start WebSocket monitor
-                self._start_ws_monitor()
-                
-                logger.info("🚀 WebSocket real-time mode INITIALIZING")
-            except Exception as e:
-                logger.error(f"❌ WebSocket init failed: {e}")
-                self.use_websocket = False
-        # ==================================
-
-        self.predictor = AdvancedPredictionEngine("super_ensemble")
+        # Try loading a pre-trained predictor from auto_train_daily output first
+        _predictor_loaded = False
+        _trained_models_dir = Path("trained_models")
+        if _trained_models_dir.exists():
+            _pkl_files = sorted(_trained_models_dir.glob("*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for _pkl in _pkl_files:
+                try:
+                    import cloudpickle
+                    with open(_pkl, 'rb') as _f:
+                        _model_data = cloudpickle.load(_f)
+                    if isinstance(_model_data, dict) and 'predictor' in _model_data:
+                        self.predictor = _model_data['predictor']
+                        logger.info(f"✅ Loaded pre-trained predictor from {_pkl.name} ({len(self.predictor.models)} models)")
+                        _predictor_loaded = True
+                        break
+                    elif hasattr(_model_data, 'models'):
+                        self.predictor = _model_data
+                        logger.info(f"✅ Loaded pre-trained predictor from {_pkl.name}")
+                        _predictor_loaded = True
+                        break
+                except Exception as _e:
+                    logger.debug(f"Could not load {_pkl.name}: {_e}")
+                    continue
+        if not _predictor_loaded:
+            self.predictor = AdvancedPredictionEngine("super_ensemble")
+            logger.info("ℹ️ No pre-trained models found — predictor starts untrained. Run auto_train_daily.py to train.")
         self.risk_manager = AdvancedRiskManager(account_balance)
         self.risk_manager.max_positions = 10 
         self.max_positions = 10 
@@ -479,6 +485,68 @@ class UltimateTradingSystem:
         self.setup_whale_integration()
         # =========================================
 
+        # ─── Phase 3: Engine composition ─────────────────────────────────────
+        # Engines are lazily wired AFTER all self.X attributes are set above.
+        try:
+            from engines.strategy_engine import StrategyEngine
+            self.strategy_engine = StrategyEngine()
+            # Re-point strategy dict to engine methods (keeps external callers working)
+            self.strategies.update({
+                'rsi':           self.strategy_engine.rsi_strategy,
+                'macd':          self.strategy_engine.macd_strategy,
+                'bb':            self.strategy_engine.bollinger_strategy,
+                'ma_cross':      self.strategy_engine.ma_cross_strategy,
+                'breakout':      self.strategy_engine.breakout_strategy,
+                'mean_reversion':self.strategy_engine.mean_reversion_strategy,
+                'trend_following':self.strategy_engine.trend_following_strategy,
+                'scalping':      self.strategy_engine.scalping_strategy,
+                'arbitrage':     self.strategy_engine.arbitrage_strategy,
+                'day_trading':   self.strategy_engine.day_trading_strategy,
+                'news_sentiment':self.strategy_engine.news_sentiment_strategy,
+            })
+            logger.info("✅ StrategyEngine wired")
+        except Exception as e:
+            logger.warning(f"StrategyEngine unavailable, using built-ins: {e}")
+            self.strategy_engine = None
+
+        try:
+            from engines.whale_monitor import WhaleMonitor
+            self.whale_monitor_engine = WhaleMonitor(telegram=self.telegram)
+            # Copy any signals already collected via setup_whale_integration
+            self.whale_monitor_engine.whale_signals = self.whale_signals
+            self.whale_monitor_engine.whale_weights = self.whale_weights
+            logger.info("✅ WhaleMonitor engine wired")
+        except Exception as e:
+            logger.warning(f"WhaleMonitor engine unavailable: {e}")
+            self.whale_monitor_engine = None
+
+        try:
+            from engines.backtest_engine import BacktestEngine
+            self.backtest_engine = BacktestEngine(self)
+            logger.info("✅ BacktestEngine wired")
+        except Exception as e:
+            logger.warning(f"BacktestEngine unavailable: {e}")
+            self.backtest_engine = None
+
+        try:
+            from engines.ml_engine import MLEngine
+            self.ml_engine = MLEngine(self)
+            logger.info("✅ MLEngine wired")
+        except Exception as e:
+            logger.warning(f"MLEngine unavailable: {e}")
+            self.ml_engine = None
+
+        try:
+            from services.db_pool import get_db
+            self.db = get_db()
+            # Give paper trader the shared instance too
+            if hasattr(self.paper_trader, 'db'):
+                self.paper_trader.db = self.db
+            logger.info("✅ Shared DB pool wired")
+        except Exception as e:
+            logger.warning(f"DB pool unavailable: {e}")
+        # ─────────────────────────────────────────────────────────────────────
+
         logger.info("="*60)
         logger.info(" ALL SYSTEMS INITIALIZED")
         logger.info("="*60)
@@ -665,20 +733,30 @@ class UltimateTradingSystem:
             return None
         
         async def whale_loop():
-            # This will use the saved session file - NO PHONE PROMPT!
-            client = TelegramClient(session_name, api_id, api_hash)
-            
+            # FIX: use connection_retries=0 + timeout so SQLite lock doesn't hang
+            client = TelegramClient(
+                session_name, api_id, api_hash,
+                connection_retries=1,
+                timeout=10,
+            )
+
             try:
-                # Try to start with saved session first
                 await client.start()
                 logger.info("🐋 Whale Monitor: Connected using saved session")
             except Exception as e:
+                err = str(e)
+                if 'database is locked' in err.lower():
+                    logger.warning("🐋 Whale Monitor: session DB locked — another instance running. Skipping.")
+                    return  # Don't retry — another process owns the session
                 logger.error(f"Failed to connect with saved session: {e}")
-                # Fall back to phone if needed (but shouldn't happen if session exists)
                 if phone:
-                    await client.start(phone=phone)
+                    try:
+                        await client.start(phone=phone)
+                    except Exception as e2:
+                        logger.error(f"Whale Monitor fallback connect failed: {e2}")
+                        return
                 else:
-                    raise
+                    return  # Can't connect — exit cleanly instead of crashing
             
             @client.on(events.NewMessage(chats=WHALE_CHANNELS))
             async def handler(event):
@@ -955,7 +1033,9 @@ class UltimateTradingSystem:
         """Machine Learning Ensemble Strategy"""
         signals = []
         try:
-            # Get ML prediction
+            # FIX: skip entirely if models not trained — avoids log spam
+            if not self.predictor.models:
+                return signals
             prediction = self.predictor.predict_next(df)
 
             if hasattr(self, 'model_registry') and self.model_registry and 'asset' in self.__dict__:

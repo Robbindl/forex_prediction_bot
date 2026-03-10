@@ -10,6 +10,7 @@
 config/*_config.json
 config/telegram_config.json
 config/email_config.json
+twitter_cookies.json
 *key*.py
 *secret*.py
 
