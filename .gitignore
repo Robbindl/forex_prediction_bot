@@ -1,143 +1,133 @@
 # ==================================================
-    # ULTIMATE .GITIGNORE FOR TRADING BOT
-    # ==================================================
+# ULTIMATE .GITIGNORE FOR TRADING BOT
+# ==================================================
 
-    # SECURITY - NEVER COMMIT THESE!
-    # ------------------------------------------------
-    .env
-    .env.*
-    !.env.example
-    config/*_config.json
-    config/telegram_config.json
-    config/email_config.json
-    *key*.py
-    *secret*.py
+# SECURITY - NEVER COMMIT THESE!
+# ------------------------------------------------
+.env
+.env.*
+!.env.example
+config/*_config.json
+config/telegram_config.json
+config/email_config.json
+*key*.py
+*secret*.py
 
-    # PYTHON
-    # ------------------------------------------------
-    __pycache__/
-    *.py[cod]
-    *.pyc
-    *.pyo
-    *.pyd
-    .Python
-    .pytest_cache/
-    .coverage
-    htmlcov/
-    *.cover
-    *.log
-    *.log.*
-
-    # VIRTUAL ENVIRONMENTS
-    # ------------------------------------------------
-    venv/
-    venv311/
-    env/
-    ENV/
-    pythonenv*
-
-    # TRADING DATA
-    # ------------------------------------------------
-    paper_trades.json
-    paper_trades_backup_*.json
-    *.db
-    *.sqlite
-    *.sqlite3
-    backtest_results/*.csv
-    !backtest_results/example_*.csv
-
-    # ML MODELS
-    # ------------------------------------------------
-    ml_models/
-    trained_models/
-    *.pkl
-    *.h5
-    *.joblib
-    *.onnx
-
-    # LOGS
-    # ------------------------------------------------
-    logs/
-    training_logs/
-    *.log
-    *.log.*
-    master_controller.log
-    health_log.txt
-
-    # WEB APP
-    # ------------------------------------------------
-    static/
-    *.pid
-    *.sock
-
-    # IDE
-    # ------------------------------------------------
-    .vscode/
-    .idea/
-    *.swp
-    *.swo
-    *~
-    .DS_Store
-    Thumbs.db
-    desktop.ini
-
-    # PACKAGES
-    # ------------------------------------------------
-    *.egg-info/
-    build/
-    dist/
-    *.egg
-
-    # REPORTS
-    # ------------------------------------------------
-    reports/
-    backups/
-    *.html
-    !templates/*.html
-
-    # CONFIGURATION
-    # ------------------------------------------------
-    config/local_*.py
-    *.local.py
-
-    # TEMPORARY FILES
-    # ------------------------------------------------
-    *.tmp
-    *.temp
-    *.bak
-    *.old
-    *.orig
-    venv/
-venv311/
-.venv/
+# PYTHON
+# ------------------------------------------------
 __pycache__/
+*.py[cod]
 *.pyc
-# Virtual Environments
-venv_tf/
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# VIRTUAL ENVIRONMENTS
+# ------------------------------------------------
 venv/
 venv311/
+venv_tf/
 .venv/
-__pycache__/
-*.pyc
+env/
+ENV/
+pythonenv*
 
-# Large binary files
+# TRADING DATA
+# ------------------------------------------------
+paper_trades.json
+paper_trades_backup_*.json
+*.db
+*.sqlite
+*.sqlite3
+backtest_results/*.csv
+!backtest_results/example_*.csv
+
+# ML MODELS
+# ------------------------------------------------
+ml_models/
+trained_models/
+*.pkl
+*.h5
+*.joblib
+*.onnx
+
+# LOGS
+# ------------------------------------------------
+logs/
+training_logs/
+*.log
+*.log.*
+master_controller.log
+health_log.txt
+health_log.json
+
+# WEB APP
+# ------------------------------------------------
+static/
+*.pid
+*.sock
+
+# IDE
+# ------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PACKAGES
+# ------------------------------------------------
+*.egg-info/
+build/
+dist/
+*.egg
+
+# REPORTS & OUTPUTS
+# ------------------------------------------------
+reports/
+backups/
+backup_*/
+optimization_results/
+*.html
+!templates/*.html
+
+# CONFIGURATION
+# ------------------------------------------------
+config/local_*.py
+*.local.py
+*.session
+*.session-journal
+
+# TEMPORARY & BACKUP FILES
+# ------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.backup
+*.backup2
+
+# LARGE BINARY FILES
+# ------------------------------------------------
 *.dll
 *.so
 *.pyd
 *.exe
 *.bin
 
-# Data files
-*.db
-*.sqlite
-*.sqlite3
-*.log
+# DATA FILES
+# ------------------------------------------------
 *.csv
 !example.csv
-
-# Local config
-.env
-config/local_*.py
-*.session
-*.session-journal
-
+debug_output.txt
+model_registry.json
+sentiment_test_results.json
+installed_all.txt
