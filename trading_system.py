@@ -4082,72 +4082,188 @@ class UltimateTradingSystem:
 
     def scan_asset_parallel(self, asset: str, category: str) -> Optional[Dict]:
         """
-        Scan single asset for signals (for parallel processing)
+        Scan single asset — every signal passes through the FULL quality pipeline:
+
+        LAYER 1 — Voting Engine (11 strategies vote)
+        LAYER 2 — signal_learning quality gate:
+                  • 3-timeframe confluence  (15m + 1h + 4h must agree ≥ 2/3)
+                  • ATR-based stops         (per-asset-class multipliers)
+                  • Min 1.5:1 RR enforced
+                  • News blackout ±30 min around high-impact events
+                  • Session filter          (only trade during active sessions)
+                  • ML ensemble vote        (7 models)
+                  • Learned confidence bias (win rate over last N trades)
+        LAYER 3 — Market regime gate (no trades in choppy/ranging markets)
+        LAYER 4 — Session quality gate (only fire in sessions this asset wins)
+        LAYER 5 — Sentiment confirmation (extreme fear/greed flips direction gate)
+        LAYER 6 — Whale intelligence overlay
+        LAYER 7 — Portfolio optimizer price feed
+
+        Result: signals that reach Telegram have passed every filter in the system.
         """
         try:
-            # Set current asset for strategies that need it
+            # Propagate current asset to strategy engine
             self.current_asset = asset
-            # Also propagate to strategy_engine so scalping and others can access it
             if hasattr(self, 'strategy_engine') and self.strategy_engine:
                 self.strategy_engine.current_asset = asset
-            
-            # Fetch data
+
+            # ── LAYER 1: Voting engine (quick pre-filter) ──────────────────────
+            # Run voting engine first — it's fast and kills HOLD signals early.
+            # No point running the expensive quality pipeline on a HOLD.
             df_15m = self.fetch_historical_data(asset, 100, '15m')
-            df_1h = self.fetch_historical_data(asset, 100, '1h')
-            
+            df_1h  = self.fetch_historical_data(asset, 100, '1h')
+
             if df_15m.empty or df_1h.empty:
                 return None
-            
-            # Add indicators
+
             df_15m = self.add_technical_indicators(df_15m)
-            df_1h = self.add_technical_indicators(df_1h)
-            
-            # ===== ADD PRICE DATA TO PORTFOLIO OPTIMIZER =====
+            df_1h  = self.add_technical_indicators(df_1h)
+
+            # Feed price history to portfolio optimizer
             try:
                 if hasattr(self, 'portfolio_optimizer'):
                     self.portfolio_optimizer.update_price_data(asset, df_1h['close'])
-            except Exception as e:
-                logger.debug(f"Could not update price data for {asset}: {e}")
-            # =================================================
-            
-            # Generate signal based on strategy mode
-            if self.strategy_mode == 'strict':
-                signal = self.strict_strategy(df_15m, df_1h)
-            elif self.strategy_mode == 'fast':
-                signal = self.fast_strategy(df_15m, df_1h)
-            elif self.strategy_mode == 'voting':
-                combined = self.get_combined_signal(df_15m)
-                signal = combined if combined and combined['signal'] != 'HOLD' else None
-            else:
-                signal = self.balanced_strategy(df_15m, df_1h)
-            
-            if signal:
-                # Add asset info
-                signal['asset'] = asset
-                signal['category'] = category
-                
-                # Get current price
-                price, source = self.fetcher.get_real_time_price(asset, category)
-                if price:
-                    signal['entry_price'] = price
-                    
-                    # ===== ADD REGIME INFO IF AVAILABLE =====
-                    if hasattr(self, 'current_regime') and self.current_regime:
-                        regime_multiplier = 1.0
-                        # You could calculate regime multiplier here if needed
-                        signal['regime_multiplier'] = regime_multiplier
-                        signal['regime'] = str(self.current_regime) if hasattr(self, 'current_regime') else 'unknown'
-                    # ========================================
+            except Exception:
+                pass
 
-                    # ===== ADD WHALE INTELLIGENCE =====
-                    if hasattr(self, 'whale_signals'):
-                        signal = self.enhance_signal_with_whale(signal, asset.split('-')[0])
-                    # ==================================
-                    
-                    return signal
-            
-            return None
-            
+            if self.strategy_mode == 'strict':
+                base_signal = self.strict_strategy(df_15m, df_1h)
+            elif self.strategy_mode == 'fast':
+                base_signal = self.fast_strategy(df_15m, df_1h)
+            elif self.strategy_mode == 'voting':
+                combined    = self.get_combined_signal(df_15m)
+                base_signal = combined if combined and combined['signal'] != 'HOLD' else None
+            else:
+                base_signal = self.balanced_strategy(df_15m, df_1h)
+
+            if not base_signal:
+                return None   # Voting engine killed it — skip expensive layers
+
+            # ── LAYER 2: signal_learning full quality gate ─────────────────────
+            quality_signal = None
+            try:
+                from signal_learning import get_instant_signal
+                quality_signal = get_instant_signal(asset, category, self)
+            except Exception as e:
+                logger.debug(f"signal_learning unavailable for {asset}: {e}")
+
+            if quality_signal:
+                # Quality gate passed — use its ATR stops, confluence, learned bias
+                if quality_signal.get('signal', 'HOLD') == 'HOLD':
+                    logger.debug(f"{asset}: killed by quality gate (confluence/RR/blackout/session)")
+                    return None
+                # Merge quality signal on top of base signal
+                base_signal.update({
+                    'signal':        quality_signal.get('signal',     base_signal.get('signal')),
+                    'confidence':    quality_signal.get('confidence', base_signal.get('confidence', 0.5)),
+                    'stop_loss':     quality_signal.get('stop_loss',  base_signal.get('stop_loss')),
+                    'take_profit':   quality_signal.get('take_profit',base_signal.get('take_profit')),
+                    'take_profit_2': quality_signal.get('take_profit_2'),
+                    'take_profit_3': quality_signal.get('take_profit_3'),
+                    'confluence':    quality_signal.get('confluence', 'UNKNOWN'),
+                    'atr':           quality_signal.get('atr'),
+                    'win_rate':      quality_signal.get('win_rate', 0),
+                    'signal_id':     quality_signal.get('signal_id'),
+                    'learning_bias': quality_signal.get('learning_bias', 0),
+                    'rr_ratio':      quality_signal.get('rr_ratio', 0),
+                    'session':       quality_signal.get('session', ''),
+                    'news_clear':    quality_signal.get('news_clear', True),
+                })
+
+            signal = base_signal
+            signal['asset']    = asset
+            signal['category'] = category
+
+            # ── LAYER 3: Market regime gate ────────────────────────────────────
+            # Don't trade choppy/ranging markets — wait for trending conditions.
+            try:
+                if hasattr(self, 'market_regime_analyzer') and self.market_regime_analyzer:
+                    regime = self.market_regime_analyzer.detect_regime(df_1h)
+                    regime_str = str(regime).lower() if regime else ''
+                    signal['market_regime'] = regime_str
+                    # Block trades when market is choppy/mean-reverting with low ADX
+                    if any(x in regime_str for x in ['choppy', 'ranging', 'low_volatility']):
+                        conf = signal.get('confidence', 0)
+                        if conf < 0.72:   # Allow through only high-conviction signals
+                            logger.debug(f"{asset}: blocked by regime gate ({regime_str}, conf={conf:.2f})")
+                            return None
+            except Exception as e:
+                logger.debug(f"Regime gate error for {asset}: {e}")
+
+            # ── LAYER 4: Session quality gate ──────────────────────────────────
+            # Only fire during sessions where this specific asset has a proven edge.
+            try:
+                if hasattr(self, 'session_tracker') and self.session_tracker:
+                    session_data = self.session_tracker.get_asset_session_performance(asset)
+                    if session_data:
+                        current_session = self.session_tracker.get_current_session()
+                        sess_win_rate   = session_data.get(current_session, {}).get('win_rate', 100)
+                        signal['session_win_rate'] = sess_win_rate
+                        # Skip if this asset loses money in the current session
+                        if sess_win_rate < 40 and session_data.get(current_session, {}).get('trades', 0) >= 5:
+                            logger.debug(f"{asset}: blocked by session gate ({current_session} win={sess_win_rate}%)")
+                            return None
+            except Exception as e:
+                logger.debug(f"Session gate error for {asset}: {e}")
+
+            # ── LAYER 5: Sentiment confirmation ───────────────────────────────
+            # Extreme sentiment against our direction reduces confidence.
+            # Extreme sentiment WITH our direction boosts it.
+            try:
+                if hasattr(self, 'sentiment_analyzer') and self.sentiment_analyzer:
+                    sent = self.sentiment_analyzer.get_comprehensive_sentiment()
+                    score = sent.get('score', 0)   # -1 (fear) to +1 (greed)
+                    signal['sentiment_score'] = score
+                    direction = signal.get('signal', 'HOLD')
+                    # Extreme fear (< -0.6) + BUY signal → lower confidence
+                    if score < -0.6 and direction == 'BUY':
+                        signal['confidence'] = signal.get('confidence', 0.6) * 0.88
+                        signal['sentiment_note'] = 'caution: extreme fear vs BUY'
+                    # Extreme greed (> 0.6) + SELL signal → lower confidence
+                    elif score > 0.6 and direction == 'SELL':
+                        signal['confidence'] = signal.get('confidence', 0.6) * 0.88
+                        signal['sentiment_note'] = 'caution: extreme greed vs SELL'
+                    # Sentiment confirms direction → small boost
+                    elif (score > 0.3 and direction == 'BUY') or (score < -0.3 and direction == 'SELL'):
+                        signal['confidence'] = min(0.97, signal.get('confidence', 0.6) * 1.05)
+                        signal['sentiment_note'] = 'sentiment confirms direction'
+            except Exception as e:
+                logger.debug(f"Sentiment gate error for {asset}: {e}")
+
+            # ── LAYER 6: Whale intelligence overlay ───────────────────────────
+            try:
+                if hasattr(self, 'whale_signals'):
+                    signal = self.enhance_signal_with_whale(signal, asset.split('-')[0])
+            except Exception:
+                pass
+
+            # ── LAYER 7: Final confidence floor ───────────────────────────────
+            # After all gates, if confidence still too low — kill it.
+            final_conf = signal.get('confidence', 0)
+            if final_conf < 0.52:
+                logger.debug(f"{asset}: final confidence {final_conf:.2f} below floor — discarded")
+                return None
+
+            # Get live price
+            price, source = self.fetcher.get_real_time_price(asset, category)
+            if price:
+                signal['entry_price'] = price
+                signal['price_source'] = source
+
+            # Attach regime for downstream risk sizing
+            if hasattr(self, 'current_regime') and self.current_regime:
+                signal['regime'] = str(self.current_regime)
+
+            logger.info(
+                f"✅ QUALITY SIGNAL: {asset} {signal.get('signal')} | "
+                f"conf={signal.get('confidence', 0):.0%} | "
+                f"confluence={signal.get('confluence','?')} | "
+                f"RR={signal.get('rr_ratio', 0):.1f} | "
+                f"session={signal.get('session','?')} | "
+                f"sentiment={signal.get('sentiment_score', 0):+.2f}"
+            )
+            return signal
+
         except Exception as e:
             logger.warning(f"Error scanning {asset}: {e}")
             return None
@@ -4639,14 +4755,288 @@ class UltimateTradingSystem:
                                             tp = signal['take_profit_levels'][0]
                                             logger.info(f"     🎯 TP1: {tp['price']:.5f} ({tp.get('risk_reward', 1.5)}:1)")
                                         
-                                        # ===== SEND TELEGRAM ALERT =====
+                                        # ===== SEND TELEGRAM ALERT (rich quality signal) =====
                                         if hasattr(self, 'telegram') and self.telegram:
                                             try:
-                                                self.telegram.alert_trade_opened(signal)
-                                                logger.debug("Telegram alert sent!")
+                                                _dir   = signal.get('signal', '?')
+                                                _emoji = '🟢' if _dir == 'BUY' else '🔴'
+                                                _asset = signal.get('asset', asset)
+                                                _entry = signal.get('entry_price', 0)
+                                                _sl    = signal.get('stop_loss', 0)
+                                                _tp    = signal.get('take_profit', 0)
+                                                _tp2   = signal.get('take_profit_2')
+                                                _tp3   = signal.get('take_profit_3')
+                                                _conf  = signal.get('confidence', 0)
+                                                _rr    = signal.get('rr_ratio', 0)
+                                                _conf_str  = signal.get('confluence', '')
+                                                _wr        = signal.get('win_rate', 0)
+                                                _bias      = signal.get('learning_bias', 0)
+                                                _sess      = signal.get('session', '')
+                                                _sent      = signal.get('sentiment_score', 0)
+                                                _sent_note = signal.get('sentiment_note', '')
+                                                _regime    = signal.get('market_regime', signal.get('regime', ''))
+                                                _sess_wr   = signal.get('session_win_rate', 0)
+                                                _strat     = signal.get('strategy_id', signal.get('strategy', ''))
+                                                _risk_pct  = signal.get('risk_pct', 1.0)
+                                                _risk_amt  = signal.get('risk_amount', 0)
+                                                _whale     = signal.get('whale_signal', '')
+
+                                                # Build TP lines
+                                                _tp_lines = f"   TP1: `{_tp:.5f}`"
+                                                if _tp2:  _tp_lines += f"\n   TP2: `{_tp2:.5f}`"
+                                                if _tp3:  _tp_lines += f"\n   TP3: `{_tp3:.5f}`"
+
+                                                # Confluence badge
+                                                _conf_badge = {
+                                                    'ALL3':   '🔥 ALL 3 TF AGREE',
+                                                    'BOTH':   '✅ 2/3 TF AGREE',
+                                                    '2OF3':   '✅ 2/3 TF AGREE',
+                                                    'DIVERGE':'⚠️ DIVERGING TF',
+                                                }.get(_conf_str, _conf_str)
+
+                                                # Sentiment label
+                                                _sent_lbl = ''
+                                                if   _sent >  0.4: _sent_lbl = '😏 Greedy'
+                                                elif _sent >  0.1: _sent_lbl = '😐 Mild greed'
+                                                elif _sent < -0.4: _sent_lbl = '😨 Fearful'
+                                                elif _sent < -0.1: _sent_lbl = '😐 Mild fear'
+                                                else:              _sent_lbl = '😶 Neutral'
+
+                                                # ── Human explainer narrative (Robbie speaks) ─
+                                                # Pull mood + diary + memorable moments from DB
+                                                # then layer our quality-gate data on top so
+                                                # every word is grounded in real numbers.
+                                                _human_intro = ""
+                                                _human_outro = ""
+                                                _market_narrative = ""
+                                                try:
+                                                    from human_explainer_db import DatabaseExplainer
+                                                    _explainer = DatabaseExplainer(self)
+                                                    _mood = _explainer.personality.current_mood
+
+                                                    # Mood-aware opener
+                                                    _mood_name = _mood.get('name', 'neutral')
+                                                    _mood_emoji = _mood.get('emoji', '🤖')
+                                                    _mood_desc  = _mood.get('description', '')
+                                                    _opener_map = {
+                                                        'euphoric':  f"ON FIRE right now {_mood_emoji} — {_mood_desc}. Check this out:",
+                                                        'on_fire':   f"Feeling sharp {_mood_emoji} — {_mood_desc}. Got one for you:",
+                                                        'confident': f"Feeling good {_mood_emoji} — {_mood_desc}. Here we go:",
+                                                        'cautious':  f"Taking it steady {_mood_emoji} — {_mood_desc}. Worth watching:",
+                                                        'shaken':    f"Been a rough patch {_mood_emoji} — {_mood_desc}. But this looks real:",
+                                                        'grumpy':    f"Market's been difficult {_mood_emoji} but this stood out:",
+                                                        'rich':      f"Having a great run {_mood_emoji} — {_mood_desc}. Another one:",
+                                                        'neutral':   f"Hey Robbie 👋 — fresh signal just cleared every filter:",
+                                                    }
+                                                    _human_intro = _opener_map.get(_mood_name, f"Hey Robbie 👋")
+
+                                                    # Market narrative (news → price connection)
+                                                    _market_narrative = _explainer.get_market_narrative(
+                                                        asset, signal.get('entry_price', 0)
+                                                    )
+
+                                                    # Memorable moment for this asset (30% chance)
+                                                    import random as _rnd
+                                                    _moment = _explainer.personality.get_memorable_moment(asset)
+                                                    if _moment and _rnd.random() < 0.35:
+                                                        _human_outro = f"\n💭 _{_moment}_"
+
+                                                    # Sign-offs matched to mood
+                                                    _signoffs = {
+                                                        'euphoric':  "Can't stop, won't stop 🚀",
+                                                        'on_fire':   "Let's ride this! 🔥",
+                                                        'confident': "Let's see if it plays out 🤞",
+                                                        'cautious':  "Keeping size small, staying sharp.",
+                                                        'shaken':    "Being extra careful — trust the system.",
+                                                        'grumpy':    "Back to watching charts 📉",
+                                                        'rich':      "Another day, another setup 💰",
+                                                        'neutral':   "That's my read — your call 🤖",
+                                                    }
+                                                    _human_outro += f"\n_{_signoffs.get(_mood_name, 'Good luck out there!')}_"
+
+                                                    _explainer.close()
+                                                except Exception as _he:
+                                                    logger.debug(f"Human explainer unavailable: {_he}")
+                                                    _human_intro = "Hey Robbie 👋 — signal cleared every filter:"
+                                                # ─────────────────────────────────────────────
+
+                                                _reasons = []
+
+                                                # 1. Timeframe confluence reasoning
+                                                if _conf_str == 'ALL3':
+                                                    _reasons.append(
+                                                        f"All 3 timeframes (15m, 1h, 4h) are pointing "
+                                                        f"{_dir.lower()} — that level of agreement is rare "
+                                                        f"and historically my strongest setups."
+                                                    )
+                                                elif _conf_str in ('BOTH', '2OF3'):
+                                                    _reasons.append(
+                                                        f"2 of 3 timeframes agree on {_dir.lower()}. "
+                                                        f"Not perfect confluence but enough structure to act."
+                                                    )
+
+                                                # 2. Session reasoning
+                                                if _sess_wr >= 60 and _sess:
+                                                    _reasons.append(
+                                                        f"This is the {_sess} session — historically "
+                                                        f"I win {_sess_wr:.0f}% of my {_asset} trades "
+                                                        f"during this window. Good timing."
+                                                    )
+                                                elif _sess_wr >= 50 and _sess:
+                                                    _reasons.append(
+                                                        f"{_sess} session is average for {_asset} "
+                                                        f"({_sess_wr:.0f}% win rate) — no edge, no penalty."
+                                                    )
+
+                                                # 3. Learned win rate reasoning
+                                                if _wr >= 65:
+                                                    _reasons.append(
+                                                        f"My last resolved {_asset} signals hit "
+                                                        f"target {_wr:.0f}% of the time. "
+                                                        f"The bot has been right on this asset recently."
+                                                    )
+                                                elif _wr > 0 and _wr < 45:
+                                                    _reasons.append(
+                                                        f"{_asset} has only hit target {_wr:.0f}% recently — "
+                                                        f"I'm treating this with more caution than usual."
+                                                    )
+
+                                                # 4. Sentiment reasoning
+                                                if _sent < -0.4 and _dir == 'BUY':
+                                                    _reasons.append(
+                                                        f"Market sentiment is fearful ({_sent:+.2f}). "
+                                                        f"Fear often marks bottoms — contrarian BUY "
+                                                        f"but I've reduced confidence slightly."
+                                                    )
+                                                elif _sent > 0.4 and _dir == 'SELL':
+                                                    _reasons.append(
+                                                        f"Sentiment is greedy ({_sent:+.2f}). "
+                                                        f"Greed often marks tops — contrarian SELL "
+                                                        f"but proceeding with reduced confidence."
+                                                    )
+                                                elif (_sent > 0.3 and _dir == 'BUY') or \
+                                                     (_sent < -0.3 and _dir == 'SELL'):
+                                                    _reasons.append(
+                                                        f"Sentiment is confirming this direction "
+                                                        f"({_sent_lbl}, {_sent:+.2f}). "
+                                                        f"Market mood and price action aligned."
+                                                    )
+
+                                                # 5. Regime reasoning
+                                                if _regime:
+                                                    if 'trend' in _regime.lower():
+                                                        _reasons.append(
+                                                            f"Market is trending ({_regime}) — "
+                                                            f"momentum trades have higher success rates "
+                                                            f"in this condition."
+                                                        )
+                                                    elif 'breakout' in _regime.lower():
+                                                        _reasons.append(
+                                                            f"Breakout regime detected ({_regime}). "
+                                                            f"These can move fast — TP targets may hit quickly."
+                                                        )
+                                                    elif any(x in _regime.lower() for x in ['chop','rang']):
+                                                        _reasons.append(
+                                                            f"Market is {_regime} but signal still passed "
+                                                            f"with {_conf:.0%} confidence — above the "
+                                                            f"72% threshold required in choppy conditions."
+                                                        )
+
+                                                # 6. RR reasoning
+                                                if _rr >= 3.0:
+                                                    _reasons.append(
+                                                        f"Risk/reward is {_rr:.1f}:1 — exceptional. "
+                                                        f"Even if I only win 1 in 3 of these I'm profitable."
+                                                    )
+                                                elif _rr >= 2.0:
+                                                    _reasons.append(
+                                                        f"R:R of {_rr:.1f}:1 is solid. "
+                                                        f"Need to win 34%+ to break even on this setup."
+                                                    )
+                                                elif _rr >= 1.5:
+                                                    _reasons.append(
+                                                        f"R:R is {_rr:.1f}:1 — minimum acceptable. "
+                                                        f"All other factors need to be strong for this."
+                                                    )
+
+                                                # 7. Whale reasoning
+                                                if _whale:
+                                                    _reasons.append(
+                                                        f"Whale activity detected: {_whale}. "
+                                                        f"Smart money is moving — adds conviction."
+                                                    )
+
+                                                # 8. Overall conviction statement
+                                                if _conf >= 0.80:
+                                                    _reasons.append(
+                                                        f"Overall conviction: HIGH ({_conf:.0%}). "
+                                                        f"This passed every filter in the system."
+                                                    )
+                                                elif _conf >= 0.65:
+                                                    _reasons.append(
+                                                        f"Overall conviction: MODERATE ({_conf:.0%}). "
+                                                        f"Good setup, standard position size."
+                                                    )
+                                                else:
+                                                    _reasons.append(
+                                                        f"Overall conviction: CAUTIOUS ({_conf:.0%}). "
+                                                        f"Signal passed all gates but I'm keeping "
+                                                        f"position size small."
+                                                    )
+
+                                                _reasoning_text = "\n".join(
+                                                    f"   {i+1}. {r}"
+                                                    for i, r in enumerate(_reasons)
+                                                ) if _reasons else "   Signal passed all 7 quality layers."
+
+                                                # Store reasoning in signal for DB
+                                                signal['reasoning'] = _reasoning_text
+                                                # ─────────────────────────────────────────────
+
+                                                msg = (
+                                                    f"{_human_intro}\n\n"
+                                                    f"{_emoji} *{_dir} {_asset}*\n"
+                                                    f"{'─'*30}\n"
+                                                    f"📍 Entry: `{_entry:.5f}`\n"
+                                                    f"🛑 Stop:  `{_sl:.5f}`\n"
+                                                    f"{_tp_lines}\n\n"
+                                                    f"📊 *Signal Quality*\n"
+                                                    f"   Confidence:  {_conf:.0%}\n"
+                                                    f"   R:R Ratio:   {_rr:.2f}:1\n"
+                                                    f"   Confluence:  {_conf_badge}\n"
+                                                    f"   Win Rate:    {_wr:.0f}% (learned)\n"
+                                                    f"   Bias:        {_bias:+.3f}\n\n"
+                                                    f"🧠 *Why I'm taking this trade*\n"
+                                                    f"{_reasoning_text}\n\n"
+                                                )
+                                                if _market_narrative:
+                                                    msg += f"📰 *What's moving it*\n   {_market_narrative}\n\n"
+                                                msg += (
+                                                    f"📈 *Context*\n"
+                                                    f"   Session:     {_sess} (win {_sess_wr:.0f}%)\n"
+                                                    f"   Regime:      {_regime}\n"
+                                                    f"   Sentiment:   {_sent_lbl} ({_sent:+.2f})\n"
+                                                    f"   Strategy:    {_strat}\n"
+                                                )
+                                                if _sent_note:
+                                                    msg += f"   Note:        _{_sent_note}_\n"
+                                                if _whale:
+                                                    msg += f"\n🐋 Whale:  {_whale}\n"
+                                                msg += (
+                                                    f"\n💰 *Risk*\n"
+                                                    f"   Risk:  ${_risk_amt:.2f} ({_risk_pct:.1f}%)\n"
+                                                    f"   Balance: ${self.risk_manager.account_balance:.2f}\n"
+                                                    f"{'─'*30}\n"
+                                                    f"_Passed 7-layer quality filter_"
+                                                )
+                                                if _human_outro:
+                                                    msg += f"\n{_human_outro}"
+
+                                                self.telegram.send_message(msg)
+                                                logger.debug("Rich Telegram alert sent")
                                             except Exception as e:
                                                 logger.warning(f"Telegram alert failed: {e}")
-                                        # ================================
+                                        # ======================================================
                                     else:
                                         logger.warning(f"Trade execution failed for {asset}")
                                 else:

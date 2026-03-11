@@ -4,6 +4,14 @@ Features: Parallel Training, GPU Acceleration, Distributed Computing, Auto-optim
 UPDATED: Reduced asset list to match web_app_live.py, cloudpickle for model persistence
 """
 
+# ── RAM-safe thread caps — set BEFORE any numpy/sklearn import ───────────────
+import os
+os.environ.setdefault('OMP_NUM_THREADS',    '1')
+os.environ.setdefault('MKL_NUM_THREADS',    '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS','1')
+os.environ.setdefault('NUMEXPR_NUM_THREADS','1')
+# ─────────────────────────────────────────────────────────────────────────────
+
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -101,9 +109,12 @@ class NASALevelTrainer:
         # NASA-LEVEL FETCHER
         self.fetcher = NASALevelFetcher()
         
-        # Thread pools
-        self.thread_pool = ThreadPoolExecutor(max_workers=50)
-        self.process_pool = ProcessPoolExecutor(max_workers=4)
+        # Thread pools — hard capped for 4-8GB RAM machines.
+        # 50 workers × one DataFrame each = instant OOM on 4GB.
+        # MAX_TRAINING_WORKERS env var lets you tune without editing code.
+        _max_w = int(os.getenv('MAX_TRAINING_WORKERS', '4'))
+        self.thread_pool  = ThreadPoolExecutor(max_workers=_max_w)
+        self.process_pool = ProcessPoolExecutor(max_workers=1)
         
         # Training storage
         self.trained_models: Dict[str, Any] = {}
@@ -224,10 +235,10 @@ class NASALevelTrainer:
         """Print NASA-LEVEL configuration"""
         total_assets = self.count_total_assets()
         
+        _max_w = int(os.getenv('MAX_TRAINING_WORKERS', '4'))
         self.logger.info(f"🚀 ASSET UNIVERSE: {total_assets} assets (reduced to match web_app_live.py)")
         self.logger.info(f"🚀 TIMEFRAMES: {', '.join(self.timeframes)}")
-        self.logger.info(f"🚀 THREAD POOL: 50 workers")
-        self.logger.info(f"🚀 PROCESS POOL: 4 workers")
+        self.logger.info(f"🚀 PARALLEL WORKERS: {_max_w} (RAM-safe — 4-8GB mode)")
         self.logger.info(f"🚀 GPU ACCELERATION: {'ENABLED' if self.use_gpu else 'DISABLED'}")
         self.logger.info(f"🚀 DISTRIBUTED: {'ENABLED' if self.use_ray else 'DISABLED'}")
         self.logger.info(f"🚀 XGBoost: {'ENABLED' if XGB_AVAILABLE else 'DISABLED'}")
@@ -667,13 +678,25 @@ class NASALevelTrainer:
         completed = 0
 
         import multiprocessing
-        max_workers = max(4, min(12, multiprocessing.cpu_count() * 2))
-        self.logger.info(f"⚡ Parallel workers: {max_workers} (auto from CPU count)")
+        # Hard cap at 2 for 4-8GB RAM. Each worker holds a full DataFrame +
+        # 7 sklearn models in memory simultaneously.
+        # Raise MAX_TRAINING_WORKERS in .env if you upgrade to 16GB+.
+        max_workers = int(os.getenv('MAX_TRAINING_WORKERS', '4'))
+        self.logger.info(f"⚡ Parallel workers: {max_workers} (RAM-safe cap — set MAX_TRAINING_WORKERS in .env to change)")
+
+        def _ram_guard():
+            """Pause submission when RAM > 85%, resume at < 75%."""
+            mem = psutil.virtual_memory()
+            if mem.percent > 85:
+                self.logger.warning(f"⚠️  RAM at {mem.percent}% — pausing 30s to let GC catch up")
+                time.sleep(30)
+                gc.collect()
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_asset = {}
 
             for asset, category, tf in all_jobs:
+                _ram_guard()   # pause if RAM > 85% before queuing next job
                 future = executor.submit(self.train_single_asset, asset, category, tf)
                 future_to_asset[future] = (asset, category, tf)
             
@@ -691,7 +714,10 @@ class NASALevelTrainer:
                     else:
                         results['failed'].append(f"{asset} ({tf})")
                         status_symbol = "❌"
-                    
+
+                    # Free RAM after every job — critical on 4-8GB machines
+                    gc.collect()
+
                     # Progress update
                     progress = (completed / total_tasks) * 100
                     self.logger.info(

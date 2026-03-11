@@ -4,11 +4,20 @@ Multiple sophisticated models with ensemble voting and confidence weighting
 FIXED: Proper NaN handling, data preprocessing, and cloudpickle for model persistence
 """
 
+# ── RAM-safe thread caps (must be set BEFORE numpy/sklearn load their BLAS) ──
+# On 4-8GB machines these prevent numpy/sklearn from spawning hidden threads
+# that silently eat 300-500MB each and push RAM to 100%.
+import os
+os.environ.setdefault('OMP_NUM_THREADS',    '1')
+os.environ.setdefault('MKL_NUM_THREADS',    '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS','1')
+os.environ.setdefault('NUMEXPR_NUM_THREADS','1')
+# ─────────────────────────────────────────────────────────────────────────────
+
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, AdaBoostRegressor
-from sklearn.linear_model import Ridge, Lasso, ElasticNet
-from sklearn.svm import SVR
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import Ridge, ElasticNet
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
