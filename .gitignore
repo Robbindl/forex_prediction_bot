@@ -136,4 +136,5 @@ whale_session*
 telegram_session*
 *_config.json
 api_keys.txt
-secrets.json
+secrets.jsonconfig/bot_runtime.json
+config/bot_runtime.json

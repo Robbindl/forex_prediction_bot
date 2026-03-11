@@ -436,6 +436,17 @@ class NASALevelFetcher:
     # ===== iTick API METHODS =====
     
     def fetch_itick_price(self, asset: str, category: str) -> Optional[float]:
+        """iTick price fetch with global rate limit — max 1 call per 2 seconds."""
+        import time as _t
+        # Global throttle across all threads: never call iTick more than once per 2s
+        with getattr(self, '_itick_lock', __import__('threading').Lock()):
+            if not hasattr(self, '_itick_lock'):
+                self._itick_lock = __import__('threading').Lock()
+            _last = getattr(self, '_itick_last_call', 0)
+            _gap = _t.time() - _last
+            if _gap < 2.0:
+                _t.sleep(2.0 - _gap)
+            self._itick_last_call = _t.time()
         """
         Fetch price from iTick API - Best for forex and stocks
         """
@@ -706,6 +717,12 @@ class NASALevelFetcher:
         return None
     
     def fetch_finnhub_forex(self, pair: str) -> Optional[float]:
+        """Finnhub forex requires a paid plan (403 on free tier) — skip it."""
+        return None
+        # ↓ original code kept for reference but never reached
+        _FINNHUB_FOREX_DISABLED = True
+        if _FINNHUB_FOREX_DISABLED:
+            return None
         """Real-time forex from Finnhub using forex_rates()"""
         if not self.finnhub_client:
             return None
@@ -1058,6 +1075,15 @@ class NASALevelFetcher:
         if original_interval != interval and original_days <= 60:
             logger.info(f"Trying original {original_interval} data for {asset} (within 60-day limit)")
             return self.get_historical_data(asset, original_interval, min(original_days, 60))
+
+        # 4h fallback: Yahoo doesn't serve 4h for stocks/indices natively.
+        # If 4h returned nothing, silently fall back to 1d which Yahoo always has.
+        if interval == '4h' and df.empty:
+            logger.debug(f"4h unavailable for {asset} — falling back to 1d")
+            yahoo_symbol = self.yahoo_map.get(asset, asset)
+            df = self.fetch_yahoo_historical(yahoo_symbol, '1d', self._days_to_yahoo_period(original_days))
+            if not df.empty:
+                return df
         
         return pd.DataFrame()
     

@@ -65,6 +65,20 @@ class TelegramManager:
                 pass
             return False
 
+    @staticmethod
+    def _clear_telegram_session(token: str):
+        """
+        Clear any stale Telegram session before starting a new one.
+        Prevents 'Conflict: terminated by other getUpdates request' on fast restarts.
+        """
+        try:
+            import requests as _req
+            base = f"https://api.telegram.org/bot{token}"
+            _req.post(f"{base}/deleteWebhook", json={"drop_pending_updates": True}, timeout=5)
+            _req.post(f"{base}/close", timeout=5)
+        except Exception:
+            pass
+
     def start(self, token, chat_id, trading_system):
         """Start bot only if not already running"""
         if self.is_running:
@@ -74,6 +88,9 @@ class TelegramManager:
         if self._check_pid_file():
             logger.warning("Telegram bot not started — another live instance is running")
             return False
+
+        # Always clear any stale session before starting polling
+        self._clear_telegram_session(token)
 
         try:
             from telegram_commander import TelegramCommander

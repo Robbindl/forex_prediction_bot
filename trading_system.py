@@ -4218,10 +4218,16 @@ class UltimateTradingSystem:
 
             # ── LAYER 5: Sentiment confirmation ───────────────────────────────
             # Extreme sentiment against our direction reduces confidence.
-            # Extreme sentiment WITH our direction boosts it.
+            # Cached at scan-cycle level — one fetch per 5 min, shared across all 64 assets.
+            # Previously: 64 assets × 42 sources = 2,688 HTTP calls per scan!
             try:
                 if hasattr(self, 'sentiment_analyzer') and self.sentiment_analyzer:
-                    sent = self.sentiment_analyzer.get_comprehensive_sentiment()
+                    import time as _time
+                    _now = _time.time()
+                    if not hasattr(self, '_sentiment_cache') or                        not hasattr(self, '_sentiment_cache_time') or                        (_now - self._sentiment_cache_time) > 300:   # refresh every 5 min
+                        self._sentiment_cache = self.sentiment_analyzer.get_comprehensive_sentiment()
+                        self._sentiment_cache_time = _now
+                    sent = self._sentiment_cache
                     score = sent.get('score', 0)   # -1 (fear) to +1 (greed)
                     signal['sentiment_score'] = score
                     direction = signal.get('signal', 'HOLD')
@@ -4649,10 +4655,16 @@ class UltimateTradingSystem:
                                             df_15m = self.add_technical_indicators(df_15m)
                                             df_1h = self.add_technical_indicators(df_1h)
                                             
-                                            # 1. Get sentiment score
+                                            # 1. Get sentiment score (use cycle cache)
                                             sentiment_score = 0
                                             if hasattr(self, 'sentiment_analyzer'):
-                                                sentiment_data = self.sentiment_analyzer.get_comprehensive_sentiment()
+                                                import time as _t
+                                                if hasattr(self, '_sentiment_cache') and                                                    hasattr(self, '_sentiment_cache_time') and                                                    (_t.time() - self._sentiment_cache_time) < 300:
+                                                    sentiment_data = self._sentiment_cache
+                                                else:
+                                                    sentiment_data = self.sentiment_analyzer.get_comprehensive_sentiment()
+                                                    self._sentiment_cache = sentiment_data
+                                                    self._sentiment_cache_time = _t.time()
                                                 sentiment_score = sentiment_data.get('score', 0)
                                             
                                             # 2. Detect market regimes

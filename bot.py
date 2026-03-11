@@ -30,14 +30,17 @@ LOGS_DIR = BASE / 'logs'
 CFG_FILE = BASE / 'config' / 'bot_runtime.json'   # shared config for all services
 
 SERVICES = {
-    'dashboard':  {'script': 'web_app_live.py',          'label': 'Dashboard        :5000'},
-    'trading':    {'script': 'trading_system.py',         'label': 'Trading Engine'},
-    # master_controller.py removed — bot.py watchdog covers this
-    'health':     {'script': 'health_check.py',           'label': 'Health Monitor'},
-    'perf':       {'script': 'performance_dashboard.py',  'label': 'Perf Dashboard   :8050'},
-    'telegram':   {'script': 'telegram_commander.py',     'label': 'Telegram Commander'},
-    'training':   {'script': 'auto_train_daily.py',       'label': 'ML Training'},
+    'dashboard': {'script': 'web_app_live.py',         'label': 'Dashboard        :5000'},
+    'trading':   {'script': 'trading_system.py',        'label': 'Trading Engine'},
+    'perf':      {'script': 'performance_dashboard.py', 'label': 'Perf Dashboard   :8050'},
+    'training':  {'script': 'auto_train_daily.py',      'label': 'ML Training'},
 }
+# NOTE — intentionally excluded:
+# 'telegram' → TelegramCommander starts INSIDE trading_system via telegram_manager.
+#              Running it as a subprocess has no trading_system reference — exits
+#              instantly and causes a crash loop. Already working fine (see Telegram).
+# 'health'   → health_check.py runs once and exits. Not a persistent service.
+#              bot.py watchdog calls it on a 5-min schedule instead.
 
 RESTART_DELAY  = 10    # seconds before restarting a crashed service
 MAX_RESTARTS   = 5     # after this, give up and alert
@@ -193,6 +196,21 @@ def _watchdog(balance: float, auto_services: list):
                 _tg_alert(f'🧠 Auto-training started (balance ${balance})')
                 _start('training', balance)
 
+        # Scheduled health check every 5 min (runs once + exits — not a persistent service)
+        if not hasattr(_watchdog, '_last_health') or (now - _watchdog._last_health).seconds >= 300:
+            _watchdog._last_health = now
+            try:
+                import subprocess as _sp
+                _sp.Popen(
+                    [PYTHON, str(BASE / 'health_check.py')],
+                    stdout=open(LOGS_DIR / 'health.log', 'a'),
+                    stderr=subprocess.STDOUT,
+                    cwd=BASE,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                )
+            except Exception as _he:
+                _log(f'Health check failed to launch: {_he}')
+
         _stop_evt.wait(CHECK_INTERVAL)
 
 
@@ -303,12 +321,11 @@ def main():
     auto_services = [
         'dashboard',
         'trading',
-        'health',
-        'telegram',
         'training',   # scheduler only — not immediately started
     ]
     if not _args.no_perf:
-        auto_services.insert(4, 'perf')
+        auto_services.insert(2, 'perf')
+    # 'telegram' and 'health' intentionally excluded — see SERVICES comment above
 
     if _args.command == 'status':
         cmd_status()

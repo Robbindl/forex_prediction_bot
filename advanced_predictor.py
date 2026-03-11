@@ -440,17 +440,25 @@ class AdvancedPredictionEngine:
             try:
                 # Create temporary dataframes with correct columns for scaling
                 X_latest_df = pd.DataFrame(X_latest, columns=available_features)
-                
+
                 # Reindex to match training feature order (fill missing with 0)
                 X_aligned = X_latest_df.reindex(columns=feature_cols, fill_value=0).values
-                
-                X_standard = self.scalers['standard'].transform(X_aligned)
-                X_robust = self.scalers['robust'].transform(X_aligned)
+
+                # Guard: only transform if scaler was actually fitted (has scale_ attribute)
+                # An unfitted scaler raises "'RobustScaler' object has no attribute 'scale_'"
+                std_fitted    = ('standard' in self.scalers and
+                                 hasattr(self.scalers['standard'], 'scale_'))
+                robust_fitted = ('robust' in self.scalers and
+                                 hasattr(self.scalers['robust'], 'n_features_in_'))
+
+                X_standard = (self.scalers['standard'].transform(X_aligned)
+                              if std_fitted else X_aligned)
+                X_robust   = (self.scalers['robust'].transform(X_aligned)
+                              if robust_fitted else X_aligned)
             except Exception as e:
-                logger.error(f"Scaling error: {e}")
-                # Fallback: use original X_latest without scaling for some models
+                logger.warning(f"Scaling skipped ({e}) — using raw features")
                 X_standard = X_latest
-                X_robust = X_latest
+                X_robust   = X_latest
             
             # Get predictions from each model
             predictions = {}

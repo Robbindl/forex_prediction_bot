@@ -71,12 +71,17 @@ class TrainingMonitor:
         return count
     
     def get_model_ages(self) -> Dict:
-        """Get age of each trained model from all directories"""
+        """
+        Get age of each trained model from all directories.
+        Auto-deletes incompatible models (sklearn/numpy version mismatches)
+        so they get retrained tonight instead of spamming warnings.
+        """
         ages = {}
-        
+        _incompatible_deleted = []   # collect names, log once at the end
+
         # Check both possible directories
         directories = [self.models_dir, Path("ml_models")]
-        
+
         for dir_path in directories:
             if not dir_path.exists():
                 continue
@@ -141,24 +146,48 @@ class TrainingMonitor:
                                 logger.debug(f"Using file time for {model_file.name}")
                                 
                         except Exception as e:
-                            # If full unpickling fails, try to get just the file time
-                            logger.warning(f"Could not unpickle {model_file.name}, using file time: {e}")
-                            mod_time = datetime.fromtimestamp(model_file.stat().st_mtime)
-                            age = datetime.now() - mod_time
-                            ages[model_file.stem] = {
-                                'trained_at': mod_time.isoformat(),
-                                'age_days': age.days,
-                                'age_hours': age.seconds // 3600,
-                                'data_points': 'N/A',
-                                'confidence': 'N/A',
-                                'location': dir_path.name,
-                                'note': 'Using file modification time (unpickle failed)'
-                            }
+                            # Incompatible model — sklearn/numpy version mismatch.
+                            # DELETE it so auto_train_daily retrains it tonight.
+                            err_str = str(e)
+                            is_version_mismatch = any(x in err_str for x in [
+                                '__pyx_unpickle', 'BitGenerator', 'module',
+                                'sklearn', 'numpy', "Can't get attribute",
+                            ])
+                            if is_version_mismatch:
+                                try:
+                                    model_file.unlink()
+                                    _incompatible_deleted.append(model_file.name)
+                                except Exception:
+                                    pass
+                                # Don't add to ages — it's gone, will be retrained
+                            else:
+                                # Non-version error — keep file, log warning once
+                                logger.warning(f"Could not load {model_file.name}: {err_str[:80]}")
+                                mod_time = datetime.fromtimestamp(model_file.stat().st_mtime)
+                                age = datetime.now() - mod_time
+                                ages[model_file.stem] = {
+                                    'trained_at': mod_time.isoformat(),
+                                    'age_days': age.days,
+                                    'age_hours': age.seconds // 3600,
+                                    'data_points': 'N/A',
+                                    'confidence': 'N/A',
+                                    'location': dir_path.name,
+                                    'note': 'load error (non-version)'
+                                }
                             
                 except Exception as e:
                     logger.warning(f"Failed to process model {model_file}: {e}")
                     pass
         
+        # Log deleted incompatible models in a single summary line
+        if _incompatible_deleted:
+            logger.info(
+                f"🗑️  Deleted {len(_incompatible_deleted)} incompatible model(s) "
+                f"(sklearn/numpy version mismatch) — will retrain at midnight: "
+                + ", ".join(_incompatible_deleted[:5])
+                + (f" ...+{len(_incompatible_deleted)-5} more" if len(_incompatible_deleted) > 5 else "")
+            )
+
         logger.debug(f"Calculated ages for {len(ages)} models")
         return ages
     

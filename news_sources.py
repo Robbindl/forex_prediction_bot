@@ -502,6 +502,9 @@ class NewsSourceIntegrator:
             return []
     
     def fetch_alpha_vantage_news(self, tickers="FOREX,CRYPTO", limit=10):
+        _now = __import__('time').time()
+        if hasattr(self, '_av_cache_time') and (_now - self._av_cache_time) < 1800:
+            return self._av_cache
         """Fetch news from Alpha Vantage (🔑 needs key)"""
         if not ALPHA_VANTAGE_API_KEY:
             return []
@@ -515,7 +518,7 @@ class NewsSourceIntegrator:
                 'limit': limit
             }
             
-            response = requests.get(url, params=params, timeout=15)
+            response = requests.get(url, params=params, timeout=5)
             data = response.json()
             
             articles = []
@@ -529,22 +532,30 @@ class NewsSourceIntegrator:
                     'summary': item.get('summary', '')[:200]
                 })
             
+            self._av_cache = articles
+            self._av_cache_time = __import__('time').time()
             return articles
         except Exception as e:
             logger.error(f"Alpha Vantage error: {e}")
+            self._av_cache = []
+            self._av_cache_time = __import__('time').time()
             return []
     
     def fetch_fred_data(self, limit=10):
-        """Fetch economic data from FRED (🌐 FREE)"""
+        """Fetch economic data from FRED (free, no key needed for public data)"""
+        # Per-source cache: FRED data changes at most once a day — no need to fetch every scan
+        _now = time.time()
+        if hasattr(self, '_fred_cache_time') and (_now - self._fred_cache_time) < 1800:
+            return self._fred_cache  # return cached for 30 min
         try:
-            # Get latest releases
             url = "https://api.stlouisfed.org/fred/releases"
-            params = {
-                "api_key": "YOUR_API_KEY",  # Optional, free tier available
-                "limit": limit
-            }
-            
-            response = requests.get(url, params=params, timeout=15)
+            # No api_key param — FRED public endpoint works without one at low rate
+            import os
+            fred_key = os.getenv('FRED_API_KEY', '')
+            params = {"limit": limit}
+            if fred_key:
+                params["api_key"] = fred_key
+            response = requests.get(url, params=params, timeout=5)  # 5s not 15s
             # Parse XML response
             import xml.etree.ElementTree as ET
             root = ET.fromstring(response.text)
@@ -561,13 +572,20 @@ class NewsSourceIntegrator:
                     'url': release.find('link').text if release.find('link') is not None else ''
                 })
             
+            self._fred_cache = articles
+            self._fred_cache_time = time.time()
             return articles
         except Exception as e:
             logger.error(f"FRED error: {e}")
+            self._fred_cache = []
+            self._fred_cache_time = time.time()  # cache the failure too — no point retrying for 30 min
             return []
-    
+
     def fetch_ecb_data(self, limit=10):
         """Fetch economic data from ECB (🌐 FREE)"""
+        _now = time.time()
+        if hasattr(self, '_ecb_cache_time') and (_now - self._ecb_cache_time) < 1800:
+            return self._ecb_cache
         try:
             url = "https://data-api.ecb.europa.eu/service/data/EXR"
             params = {
@@ -575,7 +593,7 @@ class NewsSourceIntegrator:
                 "startPeriod": (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
             }
             
-            response = requests.get(url, params=params, timeout=15)
+            response = requests.get(url, params=params, timeout=5)
             data = response.json()
             
             articles = []
@@ -589,9 +607,13 @@ class NewsSourceIntegrator:
                     'url': 'https://www.ecb.europa.eu/stats'
                 })
             
+            self._ecb_cache = articles
+            self._ecb_cache_time = time.time()
             return articles
         except Exception as e:
             logger.error(f"ECB error: {e}")
+            self._ecb_cache = []
+            self._ecb_cache_time = time.time()
             return []
     
     def fetch_forexfactory_api(self, limit=10):
@@ -782,6 +804,9 @@ class NewsSourceIntegrator:
             return []
     
     def fetch_marketaux(self, limit=10):
+        _now = __import__('time').time()
+        if hasattr(self, '_maux_cache_time') and (_now - self._maux_cache_time) < 900:
+            return self._maux_cache
         """Fetch from MarketAux (🔑 using your free token)"""
         from config.config import MARKETAUX_TOKEN
         
@@ -797,7 +822,7 @@ class NewsSourceIntegrator:
                 'limit': limit
             }
             
-            response = requests.get(url, params=params, timeout=15)
+            response = requests.get(url, params=params, timeout=5)
             data = response.json()
             
             articles = []
@@ -812,9 +837,13 @@ class NewsSourceIntegrator:
                 })
             
             logger.info(f"MarketAux: {len(articles)} articles")
+            self._maux_cache = articles
+            self._maux_cache_time = __import__('time').time()
             return articles
         except Exception as e:
             logger.error(f"MarketAux error: {e}")
+            self._maux_cache = []
+            self._maux_cache_time = __import__('time').time()
             return []
     
     def fetch_by_symbol(self, symbol, limit=5):

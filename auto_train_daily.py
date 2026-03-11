@@ -470,7 +470,10 @@ class NASALevelTrainer:
             else:
                 # Try primary fetcher first
                 try:
-                    df = self.fetcher.get_historical_data(asset, timeframe, days=150)
+                    # Use 400 days so _days_to_yahoo_period() maps to '1y' (valid Yahoo period)
+                    # Previously days=150 → '150d' which is INVALID → empty dataframe
+                    fetch_days = 730 if category in ('indices', 'stocks') else 400
+                    df = self.fetcher.get_historical_data(asset, timeframe, days=fetch_days)
                     if df is not None and not df.empty and len(df) >= self.min_data_points:
                         sources_tried.append("primary")
                         self.logger.debug(f"✅ Primary source: {len(df)} rows")
@@ -486,7 +489,7 @@ class NASALevelTrainer:
                     yahoo_symbol = self._get_yahoo_symbol(asset, category)
                     
                     # Try periods: start with 6mo (fast, enough rows)
-                    for period in ['6mo', '3mo', '1y']:
+                    for period in ['1y', '2y', '6mo']:
                         try:
                             ticker = yf.Ticker(yahoo_symbol)
                             hist = ticker.history(period=period, interval='1d')
