@@ -12,6 +12,7 @@ from gymnasium import spaces
 import random
 from datetime import datetime, timedelta
 import warnings
+from logger import logger
 warnings.filterwarnings('ignore')
 
 # ===== 1. REINFORCEMENT LEARNING TRADER =====
@@ -22,11 +23,13 @@ try:
     from stable_baselines3.common.env_checker import check_env
     import shimmy  # Required for Gym compatibility
     RL_AVAILABLE = True
-    print("✅ Reinforcement Learning modules loaded")
+    logger.info("✅ Reinforcement Learning modules loaded")
+
 except ImportError as e:
     RL_AVAILABLE = False
-    print(f"⚠️ RL not available: {e}")
-    print("   Run: pip install stable-baselines3 shimmy gymnasium")
+    logger.info(f"⚠️ RL not available: {e}")
+
+    logger.info("   Run: pip install stable-baselines3 shimmy gymnasium")
 
 # ===== 2. TRANSFORMER MODELS =====
 try:
@@ -34,11 +37,13 @@ try:
     from transformers import TimeSeriesTransformerConfig
     import torch
     TRANSFORMER_AVAILABLE = True
-    print("✅ Transformer modules loaded")
+    logger.info("✅ Transformer modules loaded")
+
 except ImportError as e:
     TRANSFORMER_AVAILABLE = False
-    print(f"⚠️ Transformers not available: {e}")
-    print("   Run: pip install transformers torch")
+    logger.info(f"⚠️ Transformers not available: {e}")
+
+    logger.info("   Run: pip install transformers torch")
 
 class TradingEnvironment(gym.Env):
     """
@@ -159,8 +164,7 @@ class TradingEnvironment(gym.Env):
     def render(self):
         """Render the environment"""
         if self.render_mode == 'human':
-            print(f"Step: {self.current_step}, Balance: ${self.balance:.2f}, Position: {self.position}")
-
+            logger.info(f"Step: {self.current_step}, Balance: ${self.balance:.2f}, Position: {self.position}")
 
 class RLTrader:
     """
@@ -174,15 +178,15 @@ class RLTrader:
         self.trained = False
         
         if not RL_AVAILABLE:
-            print("⚠️ RL not available - install required packages")
-    
+            logger.info("⚠️ RL not available - install required packages")
+
     def train(self, df: pd.DataFrame, total_timesteps: int = 10000):
         """Train RL agent on historical data"""
         if not RL_AVAILABLE:
             return None
         
-        print(f"\n🧠 Training {self.model_type} Reinforcement Learning agent...")
-        
+        logger.info(f"\n🧠 Training {self.model_type} Reinforcement Learning agent...")
+
         try:
             # Create environment
             env = TradingEnvironment(df)
@@ -201,18 +205,21 @@ class RLTrader:
             elif self.model_type == 'DQN':
                 self.model = DQN('MlpPolicy', self.env, verbose=0)
             else:
-                print(f"Unknown model type: {self.model_type}")
+                logger.info(f"Unknown model type: {self.model_type}")
+
                 return None
             
             # Train
             self.model.learn(total_timesteps=total_timesteps)
             self.trained = True
             
-            print(f"✅ RL Agent trained on {len(df)} candles for {total_timesteps} steps")
+            logger.info(f"✅ RL Agent trained on {len(df)} candles for {total_timesteps} steps")
+
             return self
             
         except Exception as e:
-            print(f"❌ RL Training error: {e}")
+            logger.info(f"❌ RL Training error: {e}")
+
             return None
     
     def predict(self, observation):
@@ -226,8 +233,8 @@ class RLTrader:
         """Save trained model"""
         if self.model:
             self.model.save(path)
-            print(f"✅ RL Model saved to {path}")
-    
+            logger.info(f"✅ RL Model saved to {path}")
+
     def load(self, path: str):
         """Load trained model"""
         if not RL_AVAILABLE:
@@ -242,10 +249,10 @@ class RLTrader:
                 self.model = DQN.load(path)
             
             self.trained = True
-            print(f"✅ RL Model loaded from {path}")
-        except Exception as e:
-            print(f"❌ Error loading model: {e}")
+            logger.info(f"✅ RL Model loaded from {path}")
 
+        except Exception as e:
+            logger.info(f"❌ Error loading model: {e}")
 
 # ===== 2. TRANSFORMER MODELS =====
 class TransformerTrader:
@@ -260,8 +267,8 @@ class TransformerTrader:
         self.trained = False
         
         if not TRANSFORMER_AVAILABLE:
-            print("⚠️ Transformers not available")
-    
+            logger.info("⚠️ Transformers not available")
+
     def prepare_data(self, df: pd.DataFrame):
         """Prepare data for transformer"""
         prices = df['close'].values[-self.context_length*2:]
@@ -278,8 +285,8 @@ class TransformerTrader:
         if not TRANSFORMER_AVAILABLE:
             return None
         
-        print("\n🤖 Training Transformer model for time series prediction...")
-        
+        logger.info("\n🤖 Training Transformer model for time series prediction...")
+
         try:
             # Prepare data
             data, mean, std = self.prepare_data(df)
@@ -306,11 +313,13 @@ class TransformerTrader:
             self.model = TimeSeriesTransformerForPrediction(config)
             self.trained = True
             
-            print(f"✅ Transformer model ready with context={self.context_length}, predict={self.prediction_length}")
+            logger.info(f"✅ Transformer model ready with context={self.context_length}, predict={self.prediction_length}")
+
             return self
             
         except Exception as e:
-            print(f"❌ Transformer error: {e}")
+            logger.info(f"❌ Transformer error: {e}")
+
             return None
     
     def predict_next(self, recent_prices: np.ndarray) -> float:
@@ -330,7 +339,8 @@ class TransformerTrader:
             return float(trend / mean)  # Normalized trend
             
         except Exception as e:
-            print(f"❌ Prediction error: {e}")
+            logger.info(f"❌ Prediction error: {e}")
+
             return 0.0
 
 
@@ -424,8 +434,8 @@ class SwarmIntelligence:
     def __init__(self):
         self.agents = []
         self._create_swarm()
-        print(f"🐝 Swarm Intelligence initialized with {len(self.agents)} agents")
-    
+        logger.info(f"🐝 Swarm Intelligence initialized with {len(self.agents)} agents")
+
     def _create_swarm(self):
         """Create diverse swarm of agents"""
         strategies = ['momentum', 'mean_reversion', 'breakout', 'volume']
@@ -526,30 +536,36 @@ class AdvancedAIIntegration:
     
     def initialize_all(self, df: pd.DataFrame = None):
         """Initialize all AI systems"""
-        print("\n" + "="*60)
-        print("🧠 INITIALIZING ADVANCED AI SYSTEMS")
-        print("="*60)
-        
+        logger.info("\n" + "="*60)
+
+        logger.info("🧠 INITIALIZING ADVANCED AI SYSTEMS")
+
+        logger.info("="*60)
+
         # 1. Reinforcement Learning
-        print("\n1. 🤖 Reinforcement Learning...")
+        logger.info("\n1. 🤖 Reinforcement Learning...")
+
         self.rl_trader = RLTrader(model_type='PPO')
         if df is not None and RL_AVAILABLE:
             self.rl_trader.train(df, total_timesteps=5000)
         else:
-            print("   ⚠️ No data for RL training or RL not available")
-        
+            logger.info("   ⚠️ No data for RL training or RL not available")
+
         # 2. Transformer
-        print("\n2. 🦋 Transformer Model...")
+        logger.info("\n2. 🦋 Transformer Model...")
+
         self.transformer = TransformerTrader()
         if df is not None and TRANSFORMER_AVAILABLE:
             self.transformer.train(df)
         
         # 3. Swarm Intelligence
-        print("\n3. 🐝 Swarm Intelligence...")
+        logger.info("\n3. 🐝 Swarm Intelligence...")
+
         self.swarm = SwarmIntelligence()
         
         self.initialized = True
-        print("\n✅ ALL ADVANCED AI SYSTEMS INITIALIZED")
+        logger.info("\n✅ ALL ADVANCED AI SYSTEMS INITIALIZED")
+
         return self
     
     def get_combined_prediction(self, df: pd.DataFrame) -> Dict:
@@ -571,8 +587,8 @@ class AdvancedAIIntegration:
                 weights[swarm_vote['signal']] += 0.4
                 votes[swarm_vote['signal']] += 1
         except Exception as e:
-            print(f"⚠️ Swarm error: {e}")
-        
+            logger.info(f"⚠️ Swarm error: {e}")
+
         # 2. Transformer prediction
         try:
             if self.transformer and self.transformer.trained:
@@ -585,8 +601,8 @@ class AdvancedAIIntegration:
                     weights['SELL'] += 0.3
                     votes['SELL'] += 1
         except Exception as e:
-            print(f"⚠️ Transformer error: {e}")
-        
+            logger.info(f"⚠️ Transformer error: {e}")
+
         # Determine final signal
         if weights['BUY'] > weights['SELL'] and weights['BUY'] > 0.35:
             signal = 'BUY'
@@ -610,44 +626,56 @@ class AdvancedAIIntegration:
 # ===== TEST FUNCTION =====
 def test_advanced_ai():
     """Test all AI systems"""
-    print("\n" + "="*60)
-    print("🧪 TESTING ADVANCED AI SYSTEMS")
-    print("="*60)
-    
+    logger.info("\n" + "="*60)
+
+    logger.info("🧪 TESTING ADVANCED AI SYSTEMS")
+
+    logger.info("="*60)
+
     # Create sample data
     import yfinance as yf
-    print("\n📊 Fetching sample BTC data...")
+    logger.info("\n📊 Fetching sample BTC data...")
+
     try:
         btc = yf.Ticker("BTC-USD")
         df = btc.history(period="3mo", interval="1h")
         df.columns = df.columns.str.lower()
-        print(f"✅ Got {len(df)} candles of BTC data")
+        logger.info(f"✅ Got {len(df)} candles of BTC data")
+
     except Exception as e:
-        print(f"❌ Error fetching data: {e}")
+        logger.info(f"❌ Error fetching data: {e}")
+
         return None
     
     # Initialize AI
-    print("\n🧠 Initializing AI systems...")
+    logger.info("\n🧠 Initializing AI systems...")
+
     ai = AdvancedAIIntegration()
     ai.initialize_all(df)
     
     # Get prediction
-    print("\n🎯 Getting combined AI prediction...")
+    logger.info("\n🎯 Getting combined AI prediction...")
+
     prediction = ai.get_combined_prediction(df)
     
-    print(f"\n📈 FINAL PREDICTION:")
-    print(f"  Signal: {prediction['signal']}")
-    print(f"  Confidence: {prediction['confidence']:.2f}")
-    print(f"  Buy weight: {prediction['weights']['BUY']:.2f}")
-    print(f"  Sell weight: {prediction['weights']['SELL']:.2f}")
-    
+    logger.info(f"\n📈 FINAL PREDICTION:")
+
+    logger.info(f"  Signal: {prediction['signal']}")
+
+    logger.info(f"  Confidence: {prediction['confidence']:.2f}")
+
+    logger.info(f"  Buy weight: {prediction['weights']['BUY']:.2f}")
+
+    logger.info(f"  Sell weight: {prediction['weights']['SELL']:.2f}")
+
     # Show best agents
     if ai.swarm:
-        print("\n🏆 Best Swarm Agents:")
+        logger.info("\n🏆 Best Swarm Agents:")
+
         best = ai.swarm.get_best_agents(3)
         for b in best:
-            print(f"  • {b['id']}: {b['win_rate']:.1%} win rate ({b['trades']} trades), weight={b['weight']:.1f}")
-    
+            logger.info(f"  • {b['id']}: {b['win_rate']:.1%} win rate ({b['trades']} trades), weight={b['weight']:.1f}")
+
     return ai
 
 if __name__ == "__main__":

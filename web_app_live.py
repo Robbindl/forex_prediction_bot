@@ -144,6 +144,64 @@ _PRICE_GATE = 0.001
 _bot      = None
 _bot_lock = threading.Lock()
 
+# ── Module-level singletons — created ONCE, reused everywhere ────────────────
+# WhaleAlertManager: spawns Twitter/Telegram/Reddit threads — never recreate
+_whale_mgr      = None
+_whale_mgr_lock = threading.Lock()
+
+def get_whale_mgr():
+    global _whale_mgr
+    if _whale_mgr is not None:
+        return _whale_mgr
+    with _whale_mgr_lock:
+        if _whale_mgr is not None:
+            return _whale_mgr
+        # Reuse the instance already created inside the trading bot
+        # to avoid spawning duplicate Twitter/Telegram/Reddit threads
+        try:
+            bot = _bot  # read without calling get_bot() to avoid recursion
+            if bot is not None and hasattr(bot, 'sentiment_analyzer') and                bot.sentiment_analyzer is not None and                hasattr(bot.sentiment_analyzer, 'whale_manager') and                bot.sentiment_analyzer.whale_manager is not None:
+                _whale_mgr = bot.sentiment_analyzer.whale_manager
+                logger.info("WhaleAlertManager: reusing bot instance (no duplicate threads)")
+                return _whale_mgr
+        except Exception:
+            pass
+        # Fallback: create fresh only if bot not ready yet
+        try:
+            from whale_alert_manager import WhaleAlertManager
+            _whale_mgr = WhaleAlertManager()
+        except Exception as _e:
+            logger.warning(f"WhaleAlertManager init failed: {_e}")
+    return _whale_mgr
+
+# SentimentAnalyzer: initialises 42 news sources — never recreate per-request
+_sentiment      = None
+_sentiment_lock = threading.Lock()
+
+def get_sentiment():
+    global _sentiment
+    if _sentiment is not None:
+        return _sentiment
+    with _sentiment_lock:
+        if _sentiment is not None:
+            return _sentiment
+        # Reuse the instance already created inside the trading bot
+        try:
+            bot = _bot
+            if bot is not None and hasattr(bot, 'sentiment_analyzer') and                bot.sentiment_analyzer is not None:
+                _sentiment = bot.sentiment_analyzer
+                logger.info("SentimentAnalyzer: reusing bot instance (no duplicate init)")
+                return _sentiment
+        except Exception:
+            pass
+        # Fallback: create fresh only if bot not ready yet
+        try:
+            from sentiment_analyzer import SentimentAnalyzer
+            _sentiment = SentimentAnalyzer()
+        except Exception as _e:
+            logger.warning(f"SentimentAnalyzer init failed: {_e}")
+    return _sentiment
+
 def get_bot():
     """Thread-safe singleton. Returns None on failure — never raises."""
     global _bot
@@ -156,6 +214,15 @@ def get_bot():
             from trading_system import UltimateTradingSystem
             _bot = UltimateTradingSystem(account_balance=args.balance, no_telegram=True)
             logger.info("Trading bot loaded")
+            # Wire trading_system into the Telegram commander so /commands work
+            # (commander was started with trading_system=None at boot time)
+            try:
+                from telegram_manager import telegram_manager
+                if telegram_manager.is_running and telegram_manager.bot is not None:
+                    telegram_manager.bot.trading_system = _bot
+                    logger.info("[OK] Telegram commands wired to trading system")
+            except Exception as _te:
+                logger.warning(f"Telegram wiring skipped: {_te}")
             # Wire signal cache so background pre-fetch starts
             try:
                 from signal_learning import signal_cache
@@ -190,7 +257,14 @@ def _should_refresh(asset: str, category: str) -> bool:
 
 def _bg_refresh_worker():
     """Background thread: refreshes signals for all assets on their own schedule."""
-    time.sleep(20)   # let bot finish init first
+    # Eagerly init bot FIRST — then singletons reuse its internal instances
+    # This prevents duplicate WhaleAlertManager/SentimentAnalyzer/Reddit threads
+    try:
+        get_bot()           # creates UltimateTradingSystem (includes SentimentAnalyzer + WhaleAlertManager)
+        get_sentiment()     # picks up bot.sentiment_analyzer — no new instance
+        get_whale_mgr()     # picks up bot.sentiment_analyzer.whale_manager — no new instance
+    except Exception as _init_e:
+        logger.warning(f"Eager init warning: {_init_e}")
     while True:
         try:
             bot = get_bot()
@@ -468,8 +542,7 @@ def get_signal(asset: str):
         whale = None
         if any(k in asset for k in ('-USD','XAU','XAG','GC=','SI=','CL=','BTC','ETH','BNB','SOL','XRP')):
             try:
-                from whale_alert_manager import WhaleAlertManager
-                alerts = WhaleAlertManager().get_alerts(min_value_usd=1_000_000)
+                alerts = (get_whale_mgr() or {}) and get_whale_mgr().get_alerts(min_value_usd=1_000_000) if get_whale_mgr() else []
                 base   = asset.replace('-USD','').replace('/USD','').replace('=F','').replace('=X','')
                 for a in alerts[:5]:
                     sym = a.get('symbol','')
@@ -874,8 +947,9 @@ def api_backtest_run():
 @app.route('/api/sentiment/dashboard')
 def api_sentiment_dashboard():
     try:
-        from sentiment_analyzer import SentimentAnalyzer
-        analyzer = SentimentAnalyzer()
+        analyzer = get_sentiment()
+        if analyzer is None:
+            return jsonify({'success': False, 'error': 'SentimentAnalyzer unavailable'}), 503
         result   = {'success':True,'overall_sentiment':'Neutral','score':0,
                     'fear_greed':{'value':50,'classification':'Neutral','score':0},
                     'vix':{'value':20,'classification':'Normal','score':0},
@@ -906,7 +980,8 @@ def api_sentiment_dashboard():
 def api_market_events():
     try:
         from sentiment_analyzer import SentimentAnalyzer
-        return jsonify({'success':True,'events':SentimentAnalyzer().get_market_events()})
+        analyzer = get_sentiment()
+        return jsonify({'success':True,'events':analyzer.get_market_events() if analyzer else []})
     except Exception as e:
         logger.error(f"market_events: {e}")
         return jsonify({'success':False,'error':str(e)}), 500

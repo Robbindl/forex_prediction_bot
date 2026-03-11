@@ -10,6 +10,7 @@ from datetime import datetime
 import logging
 import sys
 import os
+from logger import logger
 
 # Setup logging
 logging.basicConfig(
@@ -21,6 +22,16 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+def _get_balance(default: float = 30.0) -> float:
+    """Read balance from bot_runtime.json written by bot.py."""
+    import json, pathlib
+    cfg = pathlib.Path('config/bot_runtime.json')
+    try:
+        return float(json.loads(cfg.read_text(encoding='utf-8')).get('balance', default))
+    except Exception:
+        return default
+
 
 class MasterController:
     """Controls all trading system components"""
@@ -98,13 +109,15 @@ class MasterController:
         if not trading_bot_running:
             self.start_component(
                 "trading_bot",
-                ["python", "trading_system.py", "--mode", "live", "--balance", "30", "--strategy-mode", "voting"]
+                ["python", "trading_system.py", "--mode", "live",
+                 "--balance", str(_get_balance()),
+                 "--strategy-mode", "voting"]
             )
         
         if not web_dash_running:
             self.start_component(
                 "web_dashboard",
-                ["python", "web_app_live.py", "--balance", "30", "--no-telegram"]
+                ["python", "web_app_live.py", "--balance", str(_get_balance()), "--no-telegram"]
             )
         
         if not perf_dash_running:

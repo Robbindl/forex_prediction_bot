@@ -55,15 +55,22 @@ class RedditWatcher:
             'commodities',           # Commodities
         ]
         
-        print("\n" + "="*50)
-        print("📱 REDDIT WATCHER (OPTIMIZED)")
-        print("="*50)
-        print(f"✅ Reddit API: {'ACTIVE' if self.enabled else 'DISABLED'}")
-        print(f"📊 Whale subs: {len(self.whale_subs)}")
-        print(f"📰 News subs: {len(self.news_subs)}")
-        print(f"⚡ Rate limit: {self.requests_per_minute} requests/min")
-        print("="*50)
-    
+        logger.info("\n" + "="*50)
+
+        logger.info("📱 REDDIT WATCHER (OPTIMIZED)")
+
+        logger.info("="*50)
+
+        logger.info(f"✅ Reddit API: {'ACTIVE' if self.enabled else 'DISABLED'}")
+
+        logger.info(f"📊 Whale subs: {len(self.whale_subs)}")
+
+        logger.info(f"📰 News subs: {len(self.news_subs)}")
+
+        logger.info(f"⚡ Rate limit: {self.requests_per_minute} requests/min")
+
+        logger.info("="*50)
+
     def setup_reddit(self):
         """Setup Reddit API with your free credentials"""
         try:

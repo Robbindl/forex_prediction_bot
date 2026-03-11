@@ -250,28 +250,33 @@ class TelegramWhaleWatcher:
 
 # ===== SIMPLE TEST =====
 if __name__ == "__main__":
-    print("\n📱 TESTING TELEGRAM WHALE WATCHER")
-    print("="*50)
-    
+    logger.info("\n📱 TESTING TELEGRAM WHALE WATCHER")
+
+    logger.info("="*50)
+
     watcher = TelegramWhaleWatcher()
     
     if watcher.bot_token:
-        print(f"✅ Telegram initialized")
-        print(f"   • Channels: {len(watcher.public_channels)}")
-        
+        logger.info(f"✅ Telegram initialized")
+
+        logger.info(f"   • Channels: {len(watcher.public_channels)}")
+
         # Test fetching
-        print("\n📡 Testing fetch...")
+        logger.info("\n📡 Testing fetch...")
+
         messages = watcher.fetch_channel_messages()
-        print(f"Found {len(messages)} messages")
-        
+        logger.info(f"Found {len(messages)} messages")
+
         if messages:
-            print("\n🐋 Sample alerts:")
+            logger.info("\n🐋 Sample alerts:")
+
             for msg in messages[:3]:
                 info = msg.get('whale_info', {})
                 if info:
                     value_m = info['value_usd'] / 1_000_000
-                    print(f"  • {info['amount']} {info['symbol']} (${value_m:.1f}M) from {msg.get('source')}")
+                    logger.info(f"  • {info['amount']} {info['symbol']} (${value_m:.1f}M) from {msg.get('source')}")
+
     else:
-        print("❌ Telegram not configured - check WHALE_TELEGRAM_TOKEN in .env")
-    
-    print("="*50)
+        logger.info("❌ Telegram not configured - check WHALE_TELEGRAM_TOKEN in .env")
+
+    logger.info("="*50)

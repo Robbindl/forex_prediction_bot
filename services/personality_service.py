@@ -12,6 +12,7 @@ import pandas as pd
 
 from models.trade_models import TradingDiary, BotPersonality, MemorableMoments, HumanExplanations, Trade
 from config.database import SessionLocal
+from logger import logger
 
 
 class PersonalityDatabase:
@@ -490,8 +491,8 @@ class DatabaseExplainer:
                 'chat_id': chat_id
             })
         except Exception as e:
-            print(f"Couldn't save explanation to DB: {e}")
-        
+            logger.info(f"Couldn't save explanation to DB: {e}")
+
         return final_message
     
     def close(self):

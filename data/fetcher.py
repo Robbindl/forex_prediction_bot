@@ -1063,8 +1063,13 @@ class NASALevelFetcher:
     
     def _get_asset_category(self, asset: str) -> str:
         """Determine asset category from symbol"""
+        # Spot commodity symbols that contain '/' must be checked BEFORE the forex catch-all
+        _COMMODITY_SPOTS = {'XAU/USD','XAG/USD','XPT/USD','XPD/USD',
+                            'WTI/USD','BRENT/USD','NG/USD','XCU/USD'}
         if asset in self.coingecko_map or '-USD' in asset:
             return 'crypto'
+        elif asset in _COMMODITY_SPOTS:
+            return 'commodities'
         elif '/' in asset:
             return 'forex'
         elif asset.startswith('^'):

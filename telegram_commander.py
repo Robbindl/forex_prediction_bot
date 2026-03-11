@@ -12,6 +12,7 @@ import json
 import os
 from typing import Optional, Dict, List
 import logging
+from logger import logger
 
 # Setup logging
 logging.basicConfig(
@@ -181,17 +182,30 @@ class TelegramCommander:
     
     # ===== COMMAND HANDLERS =====
     
+    async def _require_system(self, update) -> bool:
+        """Returns True if trading_system is available, else sends error and returns False."""
+        if self.trading_system is None:
+            await update.message.reply_text(
+                "⏳ Trading system is still initialising.\n"
+                "Wait ~30 seconds after the dashboard loads, then try again."
+            )
+            return False
+        return True
+
     async def cmd_start(self, update, context):
         """Welcome message"""
+        status = "🟢 Running" if (self.trading_system and self.trading_system.is_running) else "⏳ Initialising"
         await update.message.reply_text(
             "🤖 *Trading Bot Commander*\n\n"
             "I control your Ultimate Trading System.\n"
             "Use /help to see all commands.\n\n"
-            f"Status: {'🟢 Running' if self.trading_system.is_running else '🔴 Stopped'}"
+            f"Status: {status}",
+            parse_mode='Markdown'
         )
     
     async def cmd_status(self, update, context):
         """Show complete bot status"""
+        if not await self._require_system(update): return
         try:
             # Get performance
             perf = self.trading_system.paper_trader.get_performance()
@@ -240,6 +254,7 @@ class TelegramCommander:
     
     async def cmd_positions(self, update, context):
         """Show open positions with detailed info"""
+        if not await self._require_system(update): return
         try:
             positions = self.trading_system.paper_trader.get_open_positions()
             
@@ -292,6 +307,7 @@ class TelegramCommander:
             await update.message.reply_text(f"❌ Error: {e}")
     
     async def cmd_pause(self, update, context):
+        if not await self._require_system(update): return
         """Pause trading"""
         try:
             if not self.trading_system.is_running:
@@ -309,6 +325,7 @@ class TelegramCommander:
             await update.message.reply_text(f"❌ Error: {e}")
     
     async def cmd_resume(self, update, context):
+        if not await self._require_system(update): return
         """Resume trading"""
         try:
             if self.trading_system.is_running:
@@ -326,6 +343,7 @@ class TelegramCommander:
             await update.message.reply_text(f"❌ Error: {e}")
     
     async def cmd_performance(self, update, context):
+        if not await self._require_system(update): return
         """Show detailed performance metrics"""
         try:
             perf = self.trading_system.paper_trader.get_performance()
@@ -376,6 +394,7 @@ class TelegramCommander:
             await update.message.reply_text(f"❌ Error: {e}")
     
     async def cmd_balance(self, update, context):
+        if not await self._require_system(update): return
         """Show account balance"""
         try:
             perf = self.trading_system.paper_trader.get_performance()
@@ -399,6 +418,7 @@ class TelegramCommander:
             await update.message.reply_text(f"❌ Error: {e}")
 
     async def cmd_signal(self, update, context):
+        if not await self._require_system(update): return
         """
         🔍 Get CLEAN SIGNAL for ANY asset (exactly as requested)
         Usage: /signal BTC
@@ -617,6 +637,7 @@ class TelegramCommander:
             await update.message.reply_text(f"❌ Error: {e}")
 
     async def cmd_why(self, update, context):
+        if not await self._require_system(update): return
         """Get HUMAN explanation for any asset"""
         try:
             if not context.args:
@@ -797,6 +818,7 @@ class TelegramCommander:
             await update.message.reply_text(f"❌ Error: {e}")
 
     async def cmd_mood(self, update, context):
+        if not await self._require_system(update): return
         """Check the bot's current mood"""
         try:
             from services.personality_service import PersonalityDatabase
@@ -837,6 +859,7 @@ class TelegramCommander:
             await update.message.reply_text(f"Error checking mood: {e}")
 
     async def cmd_diary(self, update, context):
+        if not await self._require_system(update): return
         """Show recent trading diary entries"""
         try:
             from services.personality_service import PersonalityDatabase
@@ -867,6 +890,7 @@ class TelegramCommander:
             await update.message.reply_text(f"Error reading diary: {e}")
     
     async def cmd_strategies(self, update, context):
+        if not await self._require_system(update): return
         """Show strategy weights and performance"""
         try:
             if not hasattr(self.trading_system, 'voting_engine'):
@@ -943,6 +967,7 @@ class TelegramCommander:
             await update.message.reply_text(f"❌ Error: {e}")
     
     async def cmd_close(self, update, context):
+        if not await self._require_system(update): return
         """Close a specific trade by ID"""
         try:
             # Get trade ID from command

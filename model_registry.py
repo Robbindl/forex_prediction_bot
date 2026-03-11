@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import numpy as np
+from logger import logger
 
 class ModelRegistry:
     """
@@ -25,7 +26,8 @@ class ModelRegistry:
             try:
                 with open(self.registry_file, 'r') as f:
                     self.models = json.load(f)
-                print(f"📚 Loaded {len(self.models)} models from registry")
+                logger.info(f"📚 Loaded {len(self.models)} models from registry")
+
             except:
                 self.models = {}
     
@@ -35,8 +37,8 @@ class ModelRegistry:
             with open(self.registry_file, 'w') as f:
                 json.dump(self.models, f, indent=2)
         except Exception as e:
-            print(f"⚠️ Could not save model registry: {e}")
-    
+            logger.info(f"⚠️ Could not save model registry: {e}")
+
     def register_model(self, model_name: str, asset: str, 
                       model_type: str, metadata: Dict = None):
         """Register a new model"""

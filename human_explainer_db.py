@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from services.personality_service import PersonalityDatabase
+from logger import logger
 
 
 class DatabasePersonality:
@@ -458,8 +459,8 @@ class DatabaseExplainer:
                 'chat_id': chat_id
             })
         except Exception as e:
-            print(f"Couldn't save explanation to DB: {e}")
-        
+            logger.info(f"Couldn't save explanation to DB: {e}")
+
         return final_message
     
     def close(self):

@@ -10,6 +10,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 import time
+from logger import logger
 
 # Load your .env file
 load_dotenv()
@@ -31,13 +32,16 @@ def create_db_engine(max_retries=3):
             # Test connection - FIX THIS LINE
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))  # Add 'text' import
-            print("✅ Database connected successfully")
+            logger.info("✅ Database connected successfully")
+
             return engine
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"❌ Database connection failed after {max_retries} attempts: {e}")
+                logger.info(f"❌ Database connection failed after {max_retries} attempts: {e}")
+
                 return None
-            print(f"⚠️ Database connection attempt {attempt + 1} failed, retrying...")
+            logger.info(f"⚠️ Database connection attempt {attempt + 1} failed, retrying...")
+
             time.sleep(2)
 
 # Create engine with retry
@@ -52,7 +56,8 @@ Base = declarative_base()
 def get_db():
     """Get a database session"""
     if not SessionLocal:
-        print("⚠️ Database not available, using file storage only")
+        logger.info("⚠️ Database not available, using file storage only")
+
         return None
     
     db = SessionLocal()
@@ -65,6 +70,7 @@ def init_db():
     """Create all tables if they don't exist"""
     if engine:
         Base.metadata.create_all(bind=engine)
-        print("✅ Database tables created/verified")
+        logger.info("✅ Database tables created/verified")
+
     else:
-        print("⚠️ Cannot create tables - database not available")
+        logger.info("⚠️ Cannot create tables - database not available")

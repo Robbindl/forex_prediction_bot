@@ -908,19 +908,20 @@ class NewsSourceIntegrator:
                     else:
                         logger.debug(f"  {self.sources[name]['name']}: No articles")
                 except Exception as e:
-                    print(f"  ⚠️ {self.sources[name]['name']}: {str(e)[:50]}")
-        
+                    logger.info(f"  ⚠️ {self.sources[name]['name']}: {str(e)[:50]}")
+
         # Show summary
         if all_articles:
             from collections import Counter
             sources = [a['source'] for a in all_articles]
             counts = Counter(sources)
-            print(f"\n📊 Total: {len(all_articles)} articles from {len(counts)} sources")
+            logger.info(f"\n📊 Total: {len(all_articles)} articles from {len(counts)} sources")
+
             for source, count in counts.most_common(5):
                 # Check if source needs key
                 src_type = "🔑" if any(s.get('needs_key') for s in self.sources.values() if s['name'] == source) else "🌐"
-                print(f"  {src_type} {source}: {count} articles")
-        
+                logger.info(f"  {src_type} {source}: {count} articles")
+
         return all_articles
     
     def get_sentiment_summary(self, asset=None):

@@ -6,6 +6,7 @@ from datetime import datetime, time
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
+from logger import logger
 
 class SessionTracker:
     """
@@ -287,8 +288,7 @@ class SessionTracker:
             'overlap': {'trades': 0, 'wins': 0, 'losses': 0, 'pnl': 0.0}
         }
         self.trade_history = []
-        print("✅ Session statistics reset")
-
+        logger.info("✅ Session statistics reset")
 
 # Example usage
 if __name__ == "__main__":
@@ -297,8 +297,8 @@ if __name__ == "__main__":
     
     # Get current session
     current = tracker.get_current_session()
-    print(f"Current Session: {current['emoji']} {current['name']}")
-    
+    logger.info(f"Current Session: {current['emoji']} {current['name']}")
+
     # Record some test trades
     test_trades = [
         {'entry_time': datetime.now(), 'pnl': 50, 'asset': 'BTC-USD'},
@@ -311,10 +311,11 @@ if __name__ == "__main__":
     
     # Get performance report
     report = tracker.get_summary_report()
-    print("\n📊 Session Performance:")
+    logger.info("\n📊 Session Performance:")
+
     for session, stats in report['sessions'].items():
         if isinstance(stats, dict) and 'trades' in stats:
-            print(f"  {stats['emoji']} {stats['session']}: {stats['win_rate']}% win rate ({stats['trades']} trades)")
-    
+            logger.info(f"  {stats['emoji']} {stats['session']}: {stats['win_rate']}% win rate ({stats['trades']} trades)")
+
     if 'best_session' in report and 'message' not in report['best_session']:
-        print(f"\n🏆 Best Session: {report['best_session']['emoji']} {report['best_session']['session']}")
+        logger.info(f"\n🏆 Best Session: {report['best_session']['emoji']} {report['best_session']['session']}")

@@ -16,15 +16,18 @@ except Exception:
 # FIX 4: top-level import — not inside function call per cycle
 # FIX 5 (Phase 2): TTL-based singleton — refresh sentiment every 5 minutes
 import time as _time
+import threading as _threading
 try:
     from sentiment_analyzer import SentimentAnalyzer as _SentimentAnalyzer
     _sentiment_instance = None
     _sentiment_last_init = 0.0
+    _sentiment_lock = _threading.Lock()   # prevents parallel threads creating duplicate instances
     SENTIMENT_TTL = 300  # 5 minutes
 except ImportError:
     _SentimentAnalyzer = None
     _sentiment_instance = None
     _sentiment_last_init = 0.0
+    _sentiment_lock = _threading.Lock()
     SENTIMENT_TTL = 300
 
 class StrategyVotingEngine:
@@ -92,9 +95,13 @@ class StrategyVotingEngine:
             if _SentimentAnalyzer is None:
                 raise ImportError("SentimentAnalyzer not available")
             now = _time.time()
+            # Double-checked lock: prevents 10 parallel threads each creating a new instance
             if _sentiment_instance is None or (now - _sentiment_last_init) > SENTIMENT_TTL:
-                _sentiment_instance = _SentimentAnalyzer()
-                _sentiment_last_init = now
+                with _sentiment_lock:
+                    if _sentiment_instance is None or (_time.time() - _sentiment_last_init) > SENTIMENT_TTL:
+                        # Prefer reusing the bot's own instance to avoid spawning new threads
+                        _sentiment_instance = _SentimentAnalyzer()
+                        _sentiment_last_init = _time.time()
             sentiment_analyzer = _sentiment_instance
             
             # Get comprehensive sentiment for general market

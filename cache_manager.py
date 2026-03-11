@@ -7,6 +7,7 @@ import json
 import pickle
 from typing import Optional, Any, Dict
 from datetime import timedelta
+from logger import logger
 
 class CacheManager:
     """
@@ -31,9 +32,11 @@ class CacheManager:
             # Test connection
             self.redis_client.ping()
             self.enabled = True
-            print(f"✅ Redis cache connected at {host}:{port}")
+            logger.info(f"✅ Redis cache connected at {host}:{port}")
+
         except Exception as e:
-            print(f"⚠️ Redis not available (using in-memory cache): {e}")
+            logger.info(f"⚠️ Redis not available (using in-memory cache): {e}")
+
             self.enabled = False
     
     def get(self, key: str) -> Optional[Any]:
@@ -104,4 +107,4 @@ class CacheManager:
         """Clear all cache"""
         if self.enabled:
             self.redis_client.flushdb()
-            print("✅ Cache cleared")
+            logger.info("✅ Cache cleared")

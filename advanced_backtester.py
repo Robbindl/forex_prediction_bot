@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 import json
+from logger import logger
 
 
 @dataclass
@@ -104,8 +105,8 @@ class AdvancedBacktester:
         Returns:
             BacktestResults object
         """
-        print("\n🔬 Running Backtest...")
-        
+        logger.info("\n🔬 Running Backtest...")
+
         self.trades = []
         self.equity_curve = [self.initial_capital]
         self.current_capital = self.initial_capital
@@ -190,7 +191,8 @@ class AdvancedBacktester:
         # Calculate results
         results = self._calculate_results()
         
-        print(f"✅ Backtest Complete: {results.total_trades} trades")
+        logger.info(f"✅ Backtest Complete: {results.total_trades} trades")
+
         return results
     
     def _check_exit(
@@ -418,8 +420,8 @@ class AdvancedBacktester:
         if self.trades:
             trades_df = pd.DataFrame([asdict(t) for t in self.trades])
             trades_df.to_csv(filename, index=False)
-            print(f"✅ Exported {len(self.trades)} trades to {filename}")
-    
+            logger.info(f"✅ Exported {len(self.trades)} trades to {filename}")
+
     def monte_carlo_simulation(
         self,
         num_simulations: int = 1000,
@@ -459,9 +461,10 @@ class AdvancedBacktester:
 
 
 if __name__ == "__main__":
-    print("Backtesting Engine Test")
-    print("="*60)
-    
+    logger.info("Backtesting Engine Test")
+
+    logger.info("="*60)
+
     # Create sample data
     dates = pd.date_range('2023-01-01', '2024-01-01', freq='D')
     df = pd.DataFrame({
@@ -489,10 +492,16 @@ if __name__ == "__main__":
     backtester = AdvancedBacktester(initial_capital=10000)
     results = backtester.run_backtest(df, signals)
     
-    print("\nBACKTEST RESULTS:")
-    print(f"Total Trades: {results.total_trades}")
-    print(f"Win Rate: {results.win_rate:.1%}")
-    print(f"Total Return: {results.total_return_pct:.2f}%")
-    print(f"Profit Factor: {results.profit_factor:.2f}")
-    print(f"Sharpe Ratio: {results.sharpe_ratio:.2f}")
-    print(f"Max Drawdown: {results.max_drawdown:.2%}")
+    logger.info("\nBACKTEST RESULTS:")
+
+    logger.info(f"Total Trades: {results.total_trades}")
+
+    logger.info(f"Win Rate: {results.win_rate:.1%}")
+
+    logger.info(f"Total Return: {results.total_return_pct:.2f}%")
+
+    logger.info(f"Profit Factor: {results.profit_factor:.2f}")
+
+    logger.info(f"Sharpe Ratio: {results.sharpe_ratio:.2f}")
+
+    logger.info(f"Max Drawdown: {results.max_drawdown:.2%}")

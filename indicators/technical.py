@@ -6,6 +6,7 @@ Includes: Trend, Momentum, Volatility, Volume indicators
 import pandas as pd
 import numpy as np
 from typing import Tuple
+from logger import logger
 
 
 class TechnicalIndicators:
@@ -248,4 +249,4 @@ if __name__ == "__main__":
     df.columns = df.columns.str.lower()
     
     df = TechnicalIndicators.add_all_indicators(df)
-    print(df[['close', 'rsi', 'macd', 'bb_upper', 'bb_lower']].tail())
+    logger.info(df[['close', 'rsi', 'macd', 'bb_upper', 'bb_lower']].tail())

@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Any, Optional
 from datetime import datetime
+from logger import logger
 
 
 class MarketAnalyzer:
@@ -377,10 +378,11 @@ if __name__ == "__main__":
     
     # Test alerts
     alerts = AlertSystem.generate_all_alerts(df)
-    print(f"Found {len(alerts)} alerts")
+    logger.info(f"Found {len(alerts)} alerts")
+
     for alert in alerts:
-        print(f"  - {alert['message']}")
-    
+        logger.info(f"  - {alert['message']}")
+
     # Test report
     report = ReportGenerator.generate_asset_report("EUR/USD", df)
-    print(report)
+    logger.info(report)

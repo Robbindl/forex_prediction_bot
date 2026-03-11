@@ -205,16 +205,20 @@ class TrainingMonitor:
         logger.info("="*80)
         
         # Print to console (keep for user) - using ASCII only
-        print("\n" + "="*80)
-        print("AI TRAINING MONITOR DASHBOARD")
-        print("="*80)
-        
+        logger.info("\n" + "="*80)
+
+        logger.info("AI TRAINING MONITOR DASHBOARD")
+
+        logger.info("="*80)
+
         # Get model ages first
         ages = self.get_model_ages()
         
         # MODEL TRAINING STATUS (based on actual model files)
-        print("\nMODEL TRAINING STATUS:")
-        print("-" * 80)
+        logger.info("\nMODEL TRAINING STATUS:")
+
+        logger.info("-" * 80)
+
         logger.info("MODEL TRAINING STATUS:")
         
         if ages:
@@ -230,22 +234,29 @@ class TrainingMonitor:
             
             if newest_date:
                 time_ago = datetime.now() - newest_date
-                print(f"Last Model Trained: {newest_date.strftime('%Y-%m-%d %H:%M:%S')}")
-                print(f"Time Ago: {time_ago.days} days, {time_ago.seconds//3600} hours ago")
-                print(f"Newest Model: {newest_model}")
+                logger.info(f"Last Model Trained: {newest_date.strftime('%Y-%m-%d %H:%M:%S')}")
+
+                logger.info(f"Time Ago: {time_ago.days} days, {time_ago.seconds//3600} hours ago")
+
+                logger.info(f"Newest Model: {newest_model}")
+
                 logger.info(f"Last Model Trained: {newest_date.strftime('%Y-%m-%d %H:%M:%S')}")
                 logger.info(f"Time Ago: {time_ago.days} days, {time_ago.seconds//3600} hours ago")
         else:
-            print("No trained models found")
+            logger.info("No trained models found")
+
             logger.warning("No trained models found")
         
         # Model inventory
-        print("\nMODEL INVENTORY:")
-        print("-" * 80)
+        logger.info("\nMODEL INVENTORY:")
+
+        logger.info("-" * 80)
+
         logger.info("MODEL INVENTORY:")
         
         model_count = self.count_trained_models()
-        print(f"Total Models: {model_count}")
+        logger.info(f"Total Models: {model_count}")
+
         logger.info(f"Total Models: {model_count}")
         
         if model_count > 0 and ages:
@@ -253,36 +264,42 @@ class TrainingMonitor:
             ml_count = sum(1 for data in ages.values() if data.get('location') == 'ml_models')
             trained_count = sum(1 for data in ages.values() if data.get('location') == 'trained_models')
             
-            print(f"  Location: ml_models/: {ml_count} models, trained_models/: {trained_count} models")
-            
+            logger.info(f"  Location: ml_models/: {ml_count} models, trained_models/: {trained_count} models")
+
             # Group by age
             fresh = sum(1 for data in ages.values() if data['age_days'] == 0)
             recent = sum(1 for data in ages.values() if 0 < data['age_days'] <= 7)
             old = sum(1 for data in ages.values() if data['age_days'] > 7)
             
-            print(f"  Fresh (today): {fresh}")
-            print(f"  Recent (1-7 days): {recent}")
-            print(f"  Old (>7 days): {old}")
-            
+            logger.info(f"  Fresh (today): {fresh}")
+
+            logger.info(f"  Recent (1-7 days): {recent}")
+
+            logger.info(f"  Old (>7 days): {old}")
+
             logger.info(f"Fresh (today): {fresh}")
             logger.info(f"Recent (1-7 days): {recent}")
             logger.info(f"Old (>7 days): {old}")
             
             if old > 0:
-                print(f"\n  ⚠️  {old} models need retraining!")
+                logger.info(f"\n  ⚠️  {old} models need retraining!")
+
                 logger.warning(f"{old} models need retraining!")
         
         # Training history (from logs - optional, can be removed if not needed)
-        print("\nTRAINING HISTORY (Last 7 Days):")
-        print("-" * 80)
+        logger.info("\nTRAINING HISTORY (Last 7 Days):")
+
+        logger.info("-" * 80)
+
         logger.info("TRAINING HISTORY (Last 7 Days):")
         
         reports = self.get_all_reports()[:7]  # Last 7
         
         if reports:
-            print(f"{'Date':<20} {'Success':<10} {'Failed':<10} {'Rate':<10} {'Time':<10}")
-            print("-" * 80)
-            
+            logger.info(f"{'Date':<20} {'Success':<10} {'Failed':<10} {'Rate':<10} {'Time':<10}")
+
+            logger.info("-" * 80)
+
             for report in reports:
                 date = datetime.fromisoformat(report['date']).strftime('%Y-%m-%d %H:%M')
                 success = report['successfully_trained']
@@ -290,17 +307,20 @@ class TrainingMonitor:
                 rate = f"{report['success_rate']:.1f}%"
                 time_min = f"{report['total_time_minutes']:.1f}m"
                 
-                print(f"{date:<20} {success:<10} {failed:<10} {rate:<10} {time_min:<10}")
-                
+                logger.info(f"{date:<20} {success:<10} {failed:<10} {rate:<10} {time_min:<10}")
+
                 # Log to file
                 logger.info(f"{date} | Success: {success} | Failed: {failed} | Rate: {rate} | Time: {time_min}")
         else:
-            print("No training history available")
+            logger.info("No training history available")
+
             logger.info("No training history available")
         
         # Model health check
-        print("\nMODEL HEALTH CHECK:")
-        print("-" * 80)
+        logger.info("\nMODEL HEALTH CHECK:")
+
+        logger.info("-" * 80)
+
         logger.info("MODEL HEALTH CHECK:")
         
         if ages:
@@ -309,62 +329,82 @@ class TrainingMonitor:
             low_confidence = [name for name, data in ages.items() if isinstance(data.get('confidence'), (int, float)) and data['confidence'] < 0.5]
             
             if needs_retrain:
-                print(f"  ⚠️  {len(needs_retrain)} models need retraining (>7 days old)")
+                logger.info(f"  ⚠️  {len(needs_retrain)} models need retraining (>7 days old)")
+
                 logger.warning(f"{len(needs_retrain)} models need retraining (>7 days old)")
                 for name in needs_retrain[:5]:
                     age = ages[name]['age_days']
                     location = ages[name].get('location', 'unknown')
-                    print(f"     - {name}: {age} days old ({location})")
+                    logger.info(f"     - {name}: {age} days old ({location})")
+
                     logger.warning(f"     - {name}: {age} days old ({location})")
                 if len(needs_retrain) > 5:
-                    print(f"     ... and {len(needs_retrain)-5} more")
+                    logger.info(f"     ... and {len(needs_retrain)-5} more")
+
                     logger.warning(f"     ... and {len(needs_retrain)-5} more")
             
             if low_confidence:
-                print(f"  ⚠️  {len(low_confidence)} models have low confidence (<50%)")
+                logger.info(f"  ⚠️  {len(low_confidence)} models have low confidence (<50%)")
+
                 logger.warning(f"{len(low_confidence)} models have low confidence (<50%)")
                 for name in low_confidence[:3]:
                     conf = ages[name]['confidence']
                     location = ages[name].get('location', 'unknown')
-                    print(f"     - {name}: {conf:.0%} confidence ({location})")
+                    logger.info(f"     - {name}: {conf:.0%} confidence ({location})")
+
                     logger.warning(f"     - {name}: {conf:.0%} confidence ({location})")
             
             if not needs_retrain and not low_confidence:
-                print("  ✅ All models are healthy!")
+                logger.info("  ✅ All models are healthy!")
+
                 logger.info("All models are healthy!")
         else:
-            print("  No model data available")
-        
+            logger.info("  No model data available")
+
         # Recommendations
-        print("\nRECOMMENDATIONS:")
-        print("-" * 80)
+        logger.info("\nRECOMMENDATIONS:")
+
+        logger.info("-" * 80)
+
         logger.info("RECOMMENDATIONS:")
         
         if ages:
             # Check if any models are old
             old_models = [name for name, data in ages.items() if data['age_days'] > 1]
             if old_models:
-                print("  ⚠️  Some models are more than 1 day old - consider retraining")
-                print("     Run: python auto_train_daily.py")
+                logger.info("  ⚠️  Some models are more than 1 day old - consider retraining")
+
+                logger.info("     Run: python auto_train_daily.py")
+
                 logger.warning("Some models are more than 1 day old - consider retraining")
             else:
-                print("  ✅ All models are fresh!")
-                print("     Next training: Scheduled for tonight (if auto-training is setup)")
+                logger.info("  ✅ All models are fresh!")
+
+                logger.info("     Next training: Scheduled for tonight (if auto-training is setup)")
+
                 logger.info("All models are fresh!")
         else:
-            print("  ⚠️  No models found - run initial training")
-            print("     Run: python auto_train_daily.py")
+            logger.info("  ⚠️  No models found - run initial training")
+
+            logger.info("     Run: python auto_train_daily.py")
+
             logger.warning("No models found - run initial training")
         
         # Quick actions
-        print("\nQUICK ACTIONS:")
-        print("-" * 80)
-        print("Train now:        python auto_train_daily.py")
-        print("Setup auto:       Run setup_auto_training.ps1 (as Admin)")
-        print("View this again:  python training_monitor.py")
-        print("Check logs:       training_logs/")
-        
-        print("\n" + "="*80 + "\n")
+        logger.info("\nQUICK ACTIONS:")
+
+        logger.info("-" * 80)
+
+        logger.info("Train now:        python auto_train_daily.py")
+
+        logger.info("Setup auto:       Run setup_auto_training.ps1 (as Admin)")
+
+        logger.info("View this again:  python training_monitor.py")
+
+        logger.info("Check logs:       training_logs/")
+
+        logger.info("\n" + "="*80 + "\n")
+
         logger.info("="*80)
     
     def export_status_json(self) -> str:
@@ -386,7 +426,8 @@ def main():
     monitor.print_dashboard()
     
     # Ask if user wants JSON export
-    print("Export status as JSON? (Y/N): ", end="")
+    logger.info("Export status as JSON? (Y/N): ", end="")
+
     try:
         response = input().strip().upper()
         if response == 'Y':
@@ -395,7 +436,8 @@ def main():
             with open('training_status.json', 'w') as f:
                 f.write(json_data)
             
-            print("Exported to: training_status.json")
+            logger.info("Exported to: training_status.json")
+
             logger.info("Status exported to training_status.json")
     except Exception as e:
         logger.error(f"Export failed: {e}")

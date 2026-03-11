@@ -8,6 +8,7 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 from scipy.optimize import minimize
 from datetime import datetime, timedelta
+from logger import logger
 
 
 class CorrelationChecker:
@@ -313,8 +314,8 @@ class EnhancedPortfolioOptimizer:
         """Set the cache manager for correlation caching"""
         self.cache_manager = cache_manager
         if cache_manager and cache_manager.enabled:
-            print("  ✅ Correlation caching enabled")
-    
+            logger.info("  ✅ Correlation caching enabled")
+
     def get_correlation_warnings(self, open_positions: List[Dict]) -> List[str]:
         """
         Generate warnings for highly correlated positions in portfolio

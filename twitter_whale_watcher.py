@@ -528,9 +528,10 @@ class TwitterWhaleWatcher:
 # ===== LOGIN HELPER FOR OPEN SOURCE METHOD =====
 def login_twitter(username: str = None, email: str = None, password: str = None):
     """Helper function to login to Twitter for open source scraper"""
-    print("\n🔐 TWITTER LOGIN FOR OPEN SOURCE SCRAPER")
-    print("="*50)
-    
+    logger.info("\n🔐 TWITTER LOGIN FOR OPEN SOURCE SCRAPER")
+
+    logger.info("="*50)
+
     if not username:
         username = input("Enter your Twitter username: ").strip()
     if not email:
@@ -542,40 +543,49 @@ def login_twitter(username: str = None, email: str = None, password: str = None)
     success = scraper.login(username, email, password)
     
     if success:
-        print("\n✅ Login successful! Cookies saved for future use.")
-        print("   You can now use the open source scraper method.")
+        logger.info("\n✅ Login successful! Cookies saved for future use.")
+
+        logger.info("   You can now use the open source scraper method.")
+
     else:
-        print("\n❌ Login failed. Check your credentials and try again.")
-    
+        logger.info("\n❌ Login failed. Check your credentials and try again.")
+
     return success
 
 
 # ===== SIMPLE TEST =====
 if __name__ == "__main__":
-    print("\n🐦 TESTING TWITTER WHALE WATCHER")
-    print("="*60)
-    
+    logger.info("\n🐦 TESTING TWITTER WHALE WATCHER")
+
+    logger.info("="*60)
+
     # Try auto mode
     watcher = TwitterWhaleWatcher(method="auto")
     
-    print(f"\n✅ Active method: {watcher.active_method or 'None'}")
-    
+    logger.info(f"\n✅ Active method: {watcher.active_method or 'None'}")
+
     if watcher.active_method:
-        print("\n📡 Testing fetch...")
+        logger.info("\n📡 Testing fetch...")
+
         tweets = watcher.fetch_whale_tweets()
-        print(f"Found {len(tweets)} tweets")
-        
+        logger.info(f"Found {len(tweets)} tweets")
+
         if tweets:
-            print("\n🐋 Sample whale alerts:")
+            logger.info("\n🐋 Sample whale alerts:")
+
             for tweet in tweets[:3]:
                 info = tweet.get('whale_info')
                 if info:
                     value_m = info['value_usd'] / 1_000_000
-                    print(f"  • {info['amount']} {info['symbol']} (${value_m:.1f}M) from {tweet.get('source')}")
+                    logger.info(f"  • {info['amount']} {info['symbol']} (${value_m:.1f}M) from {tweet.get('source')}")
+
     else:
-        print("\n❌ No method available. Options:")
-        print("   1. Install Chrome Extension: https://chromewebstore.google.com/detail/twitter-web-api/pnbhkojogdglhidcgnfljnomjdckkfjh")
-        print("   2. Install Twikit: pip install twikit")
-        print("   3. Run login: from twitter_whale_watcher import login_twitter; login_twitter()")
-    
-    print("="*60)
+        logger.info("\n❌ No method available. Options:")
+
+        logger.info("   1. Install Chrome Extension: https://chromewebstore.google.com/detail/twitter-web-api/pnbhkojogdglhidcgnfljnomjdckkfjh")
+
+        logger.info("   2. Install Twikit: pip install twikit")
+
+        logger.info("   3. Run login: from twitter_whale_watcher import login_twitter; login_twitter()")
+
+    logger.info("="*60)

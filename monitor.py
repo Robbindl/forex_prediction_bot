@@ -217,12 +217,16 @@ class TradingMonitor:
     def _console_alert(self, level: str, title: str, message: str):
         """Print alert to console"""
         # Keep as print for visibility (but also log)
-        print(f"\n{'='*60}")
-        print(f"{level} ALERT: {title}")
-        print(f"{'='*60}")
-        print(message)
-        print(f"{'='*60}\n")
-    
+        logger.info(f"\n{'='*60}")
+
+        logger.info(f"{level} ALERT: {title}")
+
+        logger.info(f"{'='*60}")
+
+        logger.info(message)
+
+        logger.info(f"{'='*60}\n")
+
     def _telegram_alert(self, level: str, title: str, message: str, strategy_info: str = ""):
         """📱 TELEGRAM ALERTS with strategy identification"""
         try:
@@ -367,32 +371,48 @@ class ConsoleMonitor:
     def print_backtest_results(self, results):
         """Print formatted backtest results"""
         # Keep as print for backtesting output
-        print("\n" + "="*60)
-        print("BACKTEST RESULTS")
-        print("="*60)
-        print(f"Total Trades: {results.total_trades}")
-        print(f"Winning Trades: {results.winning_trades}")
-        print(f"Losing Trades: {results.losing_trades}")
-        print(f"Win Rate: {results.win_rate:.1%}")
-        print(f"Total P&L: ${results.total_pnl:.2f}")
-        print(f"Total Return: {results.total_return_pct:.2f}%")
-        print(f"Profit Factor: {results.profit_factor:.2f}")
-        print(f"Sharpe Ratio: {results.sharpe_ratio:.2f}")
-        print(f"Max Drawdown: {results.max_drawdown:.2%}")
-        print("="*60)
-        
+        logger.info("\n" + "="*60)
+
+        logger.info("BACKTEST RESULTS")
+
+        logger.info("="*60)
+
+        logger.info(f"Total Trades: {results.total_trades}")
+
+        logger.info(f"Winning Trades: {results.winning_trades}")
+
+        logger.info(f"Losing Trades: {results.losing_trades}")
+
+        logger.info(f"Win Rate: {results.win_rate:.1%}")
+
+        logger.info(f"Total P&L: ${results.total_pnl:.2f}")
+
+        logger.info(f"Total Return: {results.total_return_pct:.2f}%")
+
+        logger.info(f"Profit Factor: {results.profit_factor:.2f}")
+
+        logger.info(f"Sharpe Ratio: {results.sharpe_ratio:.2f}")
+
+        logger.info(f"Max Drawdown: {results.max_drawdown:.2%}")
+
+        logger.info("="*60)
+
         # Also log summary
         logger.info(f"Backtest complete: {results.total_trades} trades, {results.win_rate:.1%} win rate, P&L: ${results.total_pnl:.2f}")
     
     def print_trade(self, trade):
         """Print individual trade"""
         # Keep as print for backtesting output
-        print(f"\nTrade: {trade.asset} {trade.direction}")
-        print(f"   Entry: ${trade.entry_price:.2f} → Exit: ${trade.exit_price:.2f}")
-        print(f"   P&L: ${trade.pnl:.2f} ({trade.return_pct:.2f}%)")
-        print(f"   Duration: {trade.duration_days} days")
-        print(f"   Exit Reason: {trade.exit_reason}")
-        
+        logger.info(f"\nTrade: {trade.asset} {trade.direction}")
+
+        logger.info(f"   Entry: ${trade.entry_price:.2f} → Exit: ${trade.exit_price:.2f}")
+
+        logger.info(f"   P&L: ${trade.pnl:.2f} ({trade.return_pct:.2f}%)")
+
+        logger.info(f"   Duration: {trade.duration_days} days")
+
+        logger.info(f"   Exit Reason: {trade.exit_reason}")
+
         # Also log
         logger.info(f"Trade: {trade.asset} {trade.direction} - P&L: ${trade.pnl:.2f}")
 

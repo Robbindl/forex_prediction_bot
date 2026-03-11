@@ -119,10 +119,10 @@ def restart_component(component):
             subprocess.Popen(["python", "master_controller.py"])
             return True
         elif component == "trading_system":
-            subprocess.Popen(["python", "trading_system.py", "--mode", "live", "--balance", "30", "--no-telegram"])
+            subprocess.Popen(["python", "trading_system.py", "--mode", "live", "--balance", str(_get_balance()), "--no-telegram"])
             return True
         elif component == "web_app_live":
-            subprocess.Popen(["python", "web_app_live.py", "--balance", "30"])
+            subprocess.Popen(["python", "web_app_live.py", "--balance", str(_get_balance())])
             return True
         elif component == "performance_dashboard":
             subprocess.Popen(["python", "performance_dashboard.py"])
@@ -131,11 +131,23 @@ def restart_component(component):
         logger.error(f"Failed to restart {component}: {e}")
     return False
 
+def _get_balance(default: float = 30.0) -> float:
+    """Read balance from bot_runtime.json written by bot.py."""
+    import json, pathlib
+    cfg = pathlib.Path('config/bot_runtime.json')
+    try:
+        return float(json.loads(cfg.read_text(encoding='utf-8')).get('balance', default))
+    except Exception:
+        return default
+
+
 def main():
-    print(f"\n{'='*60}")
-    print(f"🔍 HEALTH CHECK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*60}")
-    
+    logger.info(f"\n{'='*60}")
+
+    logger.info(f"🔍 HEALTH CHECK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    logger.info(f"{'='*60}")
+
     # Track issues
     issues = []
     warnings = []
@@ -150,34 +162,41 @@ def main():
         "telegram_bot": "telegram_commander.py"
     }
     
-    print("\n📋 COMPONENT STATUS:")
-    print("-" * 50)
-    
+    logger.info("\n📋 COMPONENT STATUS:")
+
+    logger.info("-" * 50)
+
     running_count = 0
     for name, script in components.items():
         if check_process(script):
-            print(f"  ✅ {name:20} RUNNING")
+            logger.info(f"  ✅ {name:20} RUNNING")
+
             running_count += 1
         else:
-            print(f"  ❌ {name:20} NOT RUNNING")
+            logger.info(f"  ❌ {name:20} NOT RUNNING")
+
             issues.append(f"{name} is down")
     
     # System health checks
-    print("\n🖥️ SYSTEM HEALTH:")
-    print("-" * 50)
-    
+    logger.info("\n🖥️ SYSTEM HEALTH:")
+
+    logger.info("-" * 50)
+
     disk_ok, disk_msg = check_disk_space()
-    print(f"  {'✅' if disk_ok else '⚠️'} Disk: {disk_msg}")
+    logger.info(f"  {'✅' if disk_ok else '⚠️'} Disk: {disk_msg}")
+
     if not disk_ok:
         warnings.append(disk_msg)
     
     mem_ok, mem_msg = check_memory()
-    print(f"  {'✅' if mem_ok else '⚠️'} Memory: {mem_msg}")
+    logger.info(f"  {'✅' if mem_ok else '⚠️'} Memory: {mem_msg}")
+
     if not mem_ok:
         warnings.append(mem_msg)
     
     cpu_ok, cpu_msg = check_cpu()
-    print(f"  {'✅' if cpu_ok else '⚠️'} CPU: {cpu_msg}")
+    logger.info(f"  {'✅' if cpu_ok else '⚠️'} CPU: {cpu_msg}")
+
     if not cpu_ok:
         warnings.append(cpu_msg)
     
@@ -188,30 +207,39 @@ def main():
         ages = monitor.get_model_ages()
         old_models = [name for name, data in ages.items() if data.get('age_days', 0) > 7]
         if old_models:
-            print(f"  ⚠️ Models: {len(old_models)} models need retraining")
+            logger.info(f"  ⚠️ Models: {len(old_models)} models need retraining")
+
             warnings.append(f"{len(old_models)} models >7 days old")
         else:
-            print(f"  ✅ Models: All {len(ages)} models fresh")
+            logger.info(f"  ✅ Models: All {len(ages)} models fresh")
+
     except:
         pass
     
     # Summary
-    print(f"\n{'='*60}")
-    print(f"📊 SUMMARY:")
-    print(f"  • Components: {running_count}/{len(components)} running")
-    print(f"  • Issues: {len(issues)}")
-    print(f"  • Warnings: {len(warnings)}")
-    print(f"{'='*60}")
-    
+    logger.info(f"\n{'='*60}")
+
+    logger.info(f"📊 SUMMARY:")
+
+    logger.info(f"  • Components: {running_count}/{len(components)} running")
+
+    logger.info(f"  • Issues: {len(issues)}")
+
+    logger.info(f"  • Warnings: {len(warnings)}")
+
+    logger.info(f"{'='*60}")
+
     # Take action if needed
     if issues:
-        print("\n🚨 ISSUES DETECTED:")
+        logger.info("\n🚨 ISSUES DETECTED:")
+
         for issue in issues:
-            print(f"  • {issue}")
-        
+            logger.info(f"  • {issue}")
+
         # Try to restart master if multiple components down
         if len(issues) >= 2 or "master_controller" in str(issues):
-            print("\n🔄 Restarting master controller...")
+            logger.info("\n🔄 Restarting master controller...")
+
             if restart_component("master_controller"):
                 message = f"⚠️ Master controller restarted at {datetime.now().strftime('%H:%M:%S')}\nIssues: {', '.join(issues)}"
                 send_email_alert(message)
@@ -220,23 +248,25 @@ def main():
             # Try to restart individual components
             for name, script in components.items():
                 if not check_process(script) and name != "master_controller":
-                    print(f"🔄 Restarting {name}...")
+                    logger.info(f"🔄 Restarting {name}...")
+
                     if restart_component(name):
                         message = f"✅ {name} restarted at {datetime.now().strftime('%H:%M:%S')}"
                         send_telegram_alert(message)
     
     elif warnings:
-        print("\n⚠️ WARNINGS:")
+        logger.info("\n⚠️ WARNINGS:")
+
         for warning in warnings:
-            print(f"  • {warning}")
-        
+            logger.info(f"  • {warning}")
+
         # Send warning notification (but don't restart)
         if warnings:
             message = f"⚠️ Health warnings at {datetime.now().strftime('%H:%M:%S')}\n{', '.join(warnings)}"
             send_telegram_alert(message)
     else:
-        print("\n✅ ALL SYSTEMS HEALTHY")
-        
+        logger.info("\n✅ ALL SYSTEMS HEALTHY")
+
         # Send occasional all-clear (every 6 hours)
         if datetime.now().hour % 6 == 0 and datetime.now().minute < 10:
             send_telegram_alert(f"✅ All systems healthy - {running_count}/{len(components)} components running")
@@ -259,7 +289,7 @@ def main():
         status = 'OK' if not issues else 'ISSUES'
         f.write(f"{datetime.now()} - {status} - {running_count}/{len(components)} running\n")
     
-    print(f"\n{'='*60}\n")
+    logger.info(f"\n{'='*60}\n")
 
 if __name__ == "__main__":
     main()

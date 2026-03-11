@@ -367,6 +367,16 @@ class UltimateTradingSystem:
         try:
             self.sentiment_analyzer = SentimentAnalyzer()
             logger.info("SENTIMENT ANALYZER: ACTIVE")
+            # Share this instance with voting_engine's TTL singleton so parallel
+            # scan threads never create a second SentimentAnalyzer (and its
+            # embedded WhaleAlertManager/RedditWatcher) via race condition
+            try:
+                import strategies.voting_engine as _ve
+                import time as _t
+                _ve._sentiment_instance = self.sentiment_analyzer
+                _ve._sentiment_last_init = _t.time()
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"Could not initialize sentiment analyzer: {e}")
             self.sentiment_analyzer = None

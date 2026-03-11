@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 from data.fetcher import MarketHours
+from logger import logger
 
 class IntelligentAutoTrainer:
     """
@@ -48,12 +49,16 @@ class IntelligentAutoTrainer:
         # Create models directory
         os.makedirs("ml_models", exist_ok=True)
         
-        print("🤖 Intelligent Auto-Trainer initialized")
-        print("   • Price movement threshold: 2%")
-        print("   • Session detection: London, NY, Asia")
-        print("   • News sources: NewsAPI, GNews, RapidAPI")
-        print("   • Time fallback: Every 4 hours")
-    
+        logger.info("🤖 Intelligent Auto-Trainer initialized")
+
+        logger.info("   • Price movement threshold: 2%")
+
+        logger.info("   • Session detection: London, NY, Asia")
+
+        logger.info("   • News sources: NewsAPI, GNews, RapidAPI")
+
+        logger.info("   • Time fallback: Every 4 hours")
+
     def detect_price_movement(self, asset: str, current_price: float) -> Tuple[bool, float]:
         """
         Detect significant price movements
@@ -284,12 +289,13 @@ class IntelligentAutoTrainer:
         Train a single asset
         """
         try:
-            print(f"\n🔄 Training {asset} - {reason}")
-            
+            logger.info(f"\n🔄 Training {asset} - {reason}")
+
             # Fetch fresh data (more data for training)
             df = self.bot.fetch_historical_data(asset, days=60, interval='15m')
             if df.empty or len(df) < 100:
-                print(f"   ⚠️ Insufficient data for {asset}")
+                logger.info(f"   ⚠️ Insufficient data for {asset}")
+
                 return False
             
             # Add indicators
@@ -316,11 +322,13 @@ class IntelligentAutoTrainer:
                 'success': True
             })
             
-            print(f"   ✅ {asset} trained successfully ({len(df)} data points)")
+            logger.info(f"   ✅ {asset} trained successfully ({len(df)} data points)")
+
             return True
             
         except Exception as e:
-            print(f"   ❌ {asset} training failed: {e}")
+            logger.info(f"   ❌ {asset} training failed: {e}")
+
             self.training_history.append({
                 'asset': asset,
                 'timestamp': datetime.now(),
@@ -332,9 +340,10 @@ class IntelligentAutoTrainer:
     
     def training_loop(self):
         """Main training loop - runs in background thread"""
-        print("\n🚀 Intelligent Auto-Training started")
-        print("   Monitoring: price movements, session changes, news events")
-        
+        logger.info("\n🚀 Intelligent Auto-Training started")
+
+        logger.info("   Monitoring: price movements, session changes, news events")
+
         while self.is_running:
             try:
                 # Get all assets from trading system
@@ -358,8 +367,8 @@ class IntelligentAutoTrainer:
                 
                 # Train assets that need it
                 if to_train:
-                    print(f"\n📊 Training queue: {len(to_train)} assets need updates")
-                    
+                    logger.info(f"\n📊 Training queue: {len(to_train)} assets need updates")
+
                     # Sort by priority: price movement > news > session > time
                     for asset, category, reason, price in to_train[:3]:  # Train 3 at a time
                         self.train_asset(asset, category, reason, price)
@@ -369,27 +378,29 @@ class IntelligentAutoTrainer:
                 time.sleep(60)  # Check every minute
                 
             except Exception as e:
-                print(f"⚠️ Training loop error: {e}")
+                logger.info(f"⚠️ Training loop error: {e}")
+
                 time.sleep(60)
     
     def start(self):
         """Start the auto-trainer in background thread"""
         if self.is_running:
-            print("⚠️ Auto-trainer already running")
+            logger.info("⚠️ Auto-trainer already running")
+
             return
         
         self.is_running = True
         self.trainer_thread = threading.Thread(target=self.training_loop, daemon=True)
         self.trainer_thread.start()
-        print("✅ Intelligent Auto-Trainer started")
-    
+        logger.info("✅ Intelligent Auto-Trainer started")
+
     def stop(self):
         """Stop the auto-trainer"""
         self.is_running = False
         if self.trainer_thread:
             self.trainer_thread.join(timeout=5)
-        print("🛑 Auto-Trainer stopped")
-    
+        logger.info("🛑 Auto-Trainer stopped")
+
     def get_status(self) -> Dict:
         """Get training status"""
         now = datetime.now()

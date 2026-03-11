@@ -10,6 +10,7 @@ from sqlalchemy import text
 # Fix imports
 from models.trade_models import Trade
 from config.database import SessionLocal, engine
+from logger import logger
 
 def convert_numpy(value):
     """Convert numpy types to Python native types for database storage"""
@@ -42,18 +43,22 @@ class DatabaseService:
                 # Test connection
                 self.session.execute(text("SELECT 1"))
                 self.use_db = True
-                print("✅ Database connected")
+                logger.info("✅ Database connected")
+
             else:
-                print("⚠️ Database not available, using file storage")
+                logger.info("⚠️ Database not available, using file storage")
+
         except Exception as e:
-            print(f"⚠️ Database connection failed: {e}")
+            logger.info(f"⚠️ Database connection failed: {e}")
+
             self.use_db = False
             self.session = None
     
     def save_trade(self, trade_data):
         """Save a trade to the database"""
         if not self.use_db or not self.session:
-            print("⚠️ Database not available, trade not saved")
+            logger.info("⚠️ Database not available, trade not saved")
+
             return trade_data.get('trade_id', str(uuid.uuid4())[:8])
         
         try:
@@ -81,7 +86,8 @@ class DatabaseService:
             self.session.commit()
             return trade.trade_id
         except Exception as e:
-            print(f"⚠️ Database save failed: {e}")
+            logger.info(f"⚠️ Database save failed: {e}")
+
             self.session.rollback()
             return trade_data.get('trade_id', str(uuid.uuid4())[:8])
     
