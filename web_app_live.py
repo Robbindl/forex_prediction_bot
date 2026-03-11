@@ -325,12 +325,14 @@ def _fetch_signal(asset: str, category: str, bot) -> Optional[Dict]:
             from signal_learning import get_instant_signal
             sig = get_instant_signal(asset, category, bot)
             if sig and sig.get('direction') not in (None,):
+                _dir = sig.get('direction', 'HOLD')
                 sig.update({'category':category,'market_open':True,'data_source':source,
                             'timestamp':datetime.now().isoformat(),
                             'generated_at':datetime.now().strftime('%H:%M:%S'),
                             'expires_at':(datetime.now()+timedelta(hours=4)).isoformat(),
                             'time_remaining':240.0,
-                            'take_profit_levels': _tp_levels(sig)})
+                            'take_profit_levels': _tp_levels(sig),
+                            'signal': _dir})  # dashboard filters on 'signal' key
                 return sig
         except Exception as _qe:
             logger.debug(f"Quality signal engine: {_qe} — falling back to voting engine")
@@ -513,7 +515,8 @@ def get_signal(asset: str):
             sig = get_instant_signal(asset, category, bot)
             if sig:
                 sig.update({'category':category,'market_open':True,
-                            'take_profit_levels':_tp_levels(sig)})
+                            'take_profit_levels':_tp_levels(sig),
+                            'signal': sig.get('direction', 'HOLD')})
                 return jsonify({'success':True,'signal':sig,'human_response':sig,
                                 'win_rate':signal_engine.get_win_rate(asset)})
         except Exception as _qe:

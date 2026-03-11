@@ -1188,7 +1188,8 @@ class UltimateTradingSystem:
             try:
                 # Get current price for the asset
                 asset = pred['asset']
-                price, _ = self.fetcher.get_real_time_price(asset, 'unknown')
+                _cat = pred.get('category') or self.fetcher._get_asset_category(asset)
+                price, _ = self.fetcher.get_real_time_price(asset, _cat)
                 
                 if price:
                     # Calculate actual movement
@@ -4159,23 +4160,26 @@ class UltimateTradingSystem:
 
             if quality_signal:
                 # Quality gate passed — use its ATR stops, confluence, learned bias
-                if quality_signal.get('signal', 'HOLD') == 'HOLD':
+                # NOTE: signal_learning uses 'direction' key ('BUY'/'SELL'/'HOLD'),
+                #       not 'signal' key. Check both for backward compat.
+                _qs_dir = quality_signal.get('direction') or quality_signal.get('signal', 'HOLD')
+                if _qs_dir == 'HOLD':
                     logger.debug(f"{asset}: killed by quality gate (confluence/RR/blackout/session)")
                     return None
                 # Merge quality signal on top of base signal
                 base_signal.update({
-                    'signal':        quality_signal.get('signal',     base_signal.get('signal')),
+                    'signal':        _qs_dir,
                     'confidence':    quality_signal.get('confidence', base_signal.get('confidence', 0.5)),
                     'stop_loss':     quality_signal.get('stop_loss',  base_signal.get('stop_loss')),
                     'take_profit':   quality_signal.get('take_profit',base_signal.get('take_profit')),
                     'take_profit_2': quality_signal.get('take_profit_2'),
                     'take_profit_3': quality_signal.get('take_profit_3'),
-                    'confluence':    quality_signal.get('confluence', 'UNKNOWN'),
+                    'confluence':    quality_signal.get('timeframe_conf', quality_signal.get('confluence', 'UNKNOWN')),
                     'atr':           quality_signal.get('atr'),
                     'win_rate':      quality_signal.get('win_rate', 0),
                     'signal_id':     quality_signal.get('signal_id'),
                     'learning_bias': quality_signal.get('learning_bias', 0),
-                    'rr_ratio':      quality_signal.get('rr_ratio', 0),
+                    'rr_ratio':      quality_signal.get('risk_reward', quality_signal.get('rr_ratio', 0)),
                     'session':       quality_signal.get('session', ''),
                     'news_clear':    quality_signal.get('news_clear', True),
                 })
@@ -4183,6 +4187,20 @@ class UltimateTradingSystem:
             signal = base_signal
             signal['asset']    = asset
             signal['category'] = category
+
+            # ── Rebuild take_profit_levels from quality signal TP prices ───────
+            # quality_signal sets take_profit / take_profit_2 / take_profit_3
+            # (ATR-based), overwriting the base strategy's single TP price.
+            # Sync take_profit_levels so paper_trader sees the updated levels.
+            if signal.get('take_profit') or signal.get('take_profit_2'):
+                _rebuilt_tps = []
+                for _i, _k in enumerate(['take_profit','take_profit_2','take_profit_3'], 1):
+                    _v = signal.get(_k)
+                    if _v:
+                        _rebuilt_tps.append({'level': _i, 'price': round(float(_v), 6)})
+                if _rebuilt_tps:
+                    signal['take_profit_levels'] = _rebuilt_tps
+            # ─────────────────────────────────────────────────────────────────
 
             # ── LAYER 3: Market regime gate ────────────────────────────────────
             # Don't trade choppy/ranging markets — wait for trending conditions.
@@ -4544,7 +4562,8 @@ class UltimateTradingSystem:
                             # Get current prices for stale position check
                             current_prices = {}
                             for pos in open_positions:
-                                price, _ = self.fetcher.get_real_time_price(pos['asset'], pos.get('category', 'unknown'))
+                                _pos_cat = pos.get('category') or self.fetcher._get_asset_category(pos['asset'])
+                                price, _ = self.fetcher.get_real_time_price(pos['asset'], _pos_cat)
                                 if price:
                                     current_prices[pos['asset']] = price
                             
@@ -5736,8 +5755,9 @@ class UltimateTradingSystem:
         """Update all open positions with current prices"""
         current_prices = {}
         for position in self.paper_trader.get_open_positions():
+            _pos_cat = position.get('category') or self.fetcher._get_asset_category(position['asset'])
             price, _ = self.fetcher.get_real_time_price(
-                position['asset'], position['category']
+                position['asset'], _pos_cat
             )
             if price:
                 current_prices[position['asset']] = price

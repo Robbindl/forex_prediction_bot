@@ -98,10 +98,13 @@ class StrategyVotingEngine:
             # Double-checked lock: prevents 10 parallel threads each creating a new instance
             if _sentiment_instance is None or (now - _sentiment_last_init) > SENTIMENT_TTL:
                 with _sentiment_lock:
-                    if _sentiment_instance is None or (_time.time() - _sentiment_last_init) > SENTIMENT_TTL:
-                        # Prefer reusing the bot's own instance to avoid spawning new threads
+                    if _sentiment_instance is None:
+                        # First-time creation only — never recreate on TTL expiry.
+                        # SentimentAnalyzer creates WhaleAlertManager + RedditWatcher;
+                        # recreating on TTL would spawn duplicate threads every 5 minutes.
                         _sentiment_instance = _SentimentAnalyzer()
-                        _sentiment_last_init = _time.time()
+                    # Always reset the TTL clock — data refreshes via get_comprehensive_sentiment()
+                    _sentiment_last_init = _time.time()
             sentiment_analyzer = _sentiment_instance
             
             # Get comprehensive sentiment for general market
@@ -256,7 +259,8 @@ class StrategyVotingEngine:
                 if asset:
                     fetcher = getattr(self.trading_system, 'fetcher', None)
                     if fetcher:
-                        p, _ = fetcher.get_real_time_price(asset, 'crypto')
+                        _cat = fetcher._get_asset_category(asset)
+                        p, _ = fetcher.get_real_time_price(asset, _cat)
                         current_price = p or 0
         except Exception as _pe:
             logger.debug(f"current_price fetch in vote: {_pe}")

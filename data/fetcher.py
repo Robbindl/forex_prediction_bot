@@ -942,16 +942,30 @@ class NASALevelFetcher:
             if not data.empty:
                 return float(data['Close'].iloc[-1])
             
-            # Try to get quote from info
-            info = ticker.info
-            if 'regularMarketPrice' in info and info['regularMarketPrice']:
-                return float(info['regularMarketPrice'])
-            if 'currentPrice' in info and info['currentPrice']:
-                return float(info['currentPrice'])
-            if 'ask' in info and info['ask']:
-                return float(info['ask'])
-            if 'bid' in info and info['bid']:
-                return float(info['bid'])
+            # Try to get quote from info (yfinance >= 0.2.x returns Response, not dict)
+            # Use fast_info first (always a proper object), then safe-cast .info
+            try:
+                fast = ticker.fast_info
+                price = getattr(fast, 'last_price', None) or getattr(fast, 'regularMarketPrice', None)
+                if price:
+                    return float(price)
+            except Exception:
+                pass
+            try:
+                info = ticker.info
+                # Safely convert to dict — older yfinance returns dict, newer returns Response
+                if not isinstance(info, dict):
+                    info = dict(info) if hasattr(info, 'items') else {}
+                if info.get('regularMarketPrice'):
+                    return float(info['regularMarketPrice'])
+                if info.get('currentPrice'):
+                    return float(info['currentPrice'])
+                if info.get('ask'):
+                    return float(info['ask'])
+                if info.get('bid'):
+                    return float(info['bid'])
+            except Exception:
+                pass
                 
         except Exception as e:
             logger.warning(f"Yahoo error for {symbol}: {str(e)[:50]}")
