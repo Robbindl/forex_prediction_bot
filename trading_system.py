@@ -702,34 +702,82 @@ class UltimateTradingSystem:
             'whalecointalk'
         ]
         
+        # Supported symbols — extend as needed
+        _WHALE_SYMBOLS = r'(BTC|ETH|BNB|SOL|XRP|USDT|USDC|BUSD|TUSD|DAI|FRAX'\
+                           r'|ADA|DOGE|SHIB|PEPE|FLOKI|BONK'\
+                           r'|MATIC|AVAX|FTM|ONE|NEAR|ALGO|ATOM|ICP'\
+                           r'|DOT|KSM|ARB|OP|MANTA|ZK|STRD'\
+                           r'|LINK|UNI|AAVE|CRV|MKR|SNX|COMP|BAL|YFI'\
+                           r'|LTC|BCH|XLM|XMR|ZEC|DASH|ETC|BTT'\
+                           r'|TRX|TON|SUI|APT|SEI|INJ|TIA|PYTH'\
+                           r'|SAND|MANA|AXS|ENJ|GALA|IMX'\
+                           r'|FIL|AR|GRT|OCEAN|RNDR|FET|AGIX'\
+                           r'|WLD|CFX|HBAR|VET|EGLD|THETA|FLR)'
+
         def extract_whale_info(text):
-            """Extract whale transaction details"""
+            """
+            Extract whale transaction details from Telegram channel messages.
+            Handles all common real-world formats:
+              • "1,250 #BTC (83,456,231 USD) transferred"
+              • "500 ETH ($1.2M) moved from Coinbase"
+              • "BTC: 500 coins ($28M) just moved"
+              • "2500 BTC ($145,000,000) just moved"
+            Returns (amount, symbol, usd_value) or None if < $1M.
+            """
             if not text:
                 return None
-            
-            patterns = [
-                r'(\d+[,]?\d*\.?\d*)\s*(BTC|ETH|BNB|SOL|XRP).*?\$(\d+[.,]?\d*)[mM]',
-                r'(\d+[kKmM]?)\s*(BTC|ETH).*?(\d+[mM]?)',
-                r'(\d+[,]?\d*)\s*(BTC|ETH).*?\$(\d+[.,]?\d*)[mM]',
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
+            clean = text.replace(',', '').replace('#', '')
+
+            # Strategy 1: amount SYMBOL ... (raw_usd USD)
+            m = re.search(
+                rf'([\d.]+)\s*{_WHALE_SYMBOLS}[^$\d]{{0,60}}\(?\$?([\d.]+)\s*(?:USD|usd)\)?',
+                clean, re.IGNORECASE
+            )
+            if m:
+                try:
+                    amount = float(m.group(1)); symbol = m.group(2).upper(); value = float(m.group(3))
+                    if value >= 1_000_000:
+                        return amount, symbol, value
+                except: pass
+
+            # Strategy 2: amount SYMBOL ... $valueM/B/K or plain $value
+            m = re.search(
+                rf'([\d.]+)\s*{_WHALE_SYMBOLS}[^$\d]{{0,80}}\$?\s*([\d.]+)\s*([MmBbKk]?)',
+                clean, re.IGNORECASE
+            )
+            if m:
+                try:
+                    amount  = float(m.group(1)); symbol = m.group(2).upper()
+                    raw_val = float(m.group(3)); suffix = m.group(4).upper()
+                    value   = raw_val * {'B':1e9,'M':1e6,'K':1e3}.get(suffix, 1)
+                    if value >= 1_000_000:
+                        return amount, symbol, value
+                except: pass
+
+            # Strategy 3: SYMBOL: ... $valueM  (e.g. "BTC: 500 coins ($28M)")
+            m = re.search(
+                rf'{_WHALE_SYMBOLS}[:\s]{{1,5}}[\d.]+[^$\d]{{0,60}}\$?([\d.]+)\s*([MmBbKk])',
+                clean, re.IGNORECASE
+            )
+            if m:
+                try:
+                    symbol  = m.group(1).upper(); raw_val = float(m.group(2))
+                    suffix  = m.group(3).upper()
+                    value   = raw_val * {'B':1e9,'M':1e6,'K':1e3}.get(suffix, 1)
+                    if value >= 1_000_000:
+                        return 0, symbol, value
+                except: pass
+
+            # Strategy 4: SYMBOL anywhere + any raw number >= 1M in message
+            m_sym = re.search(_WHALE_SYMBOLS, clean, re.IGNORECASE)
+            if m_sym:
+                symbol = m_sym.group(1).upper()
+                for n in re.findall(r'[\d.]+', clean):
                     try:
-                        amount = float(re.sub(r'[^\d.]', '', match.group(1)))
-                        symbol = match.group(2).upper()
-                        value_str = match.group(3).lower()
-                        
-                        if 'm' in value_str:
-                            value = float(re.sub(r'[^\d.]', '', value_str)) * 1_000_000
-                        else:
-                            value = float(re.sub(r'[^\d.]', '', value_str))
-                        
-                        if value >= 1_000_000:
-                            return amount, symbol, value
-                    except:
-                        pass
+                        v = float(n)
+                        if v >= 1_000_000:
+                            return 0, symbol, v
+                    except: pass
             return None
         
         async def whale_loop():
@@ -746,8 +794,21 @@ class UltimateTradingSystem:
             except Exception as e:
                 err = str(e)
                 if 'database is locked' in err.lower():
-                    logger.warning("🐋 Whale Monitor: session DB locked — another instance running. Skipping.")
-                    return  # Don't retry — another process owns the session
+                    # Flask debug reloader can cause a brief lock on startup
+                    # Wait 8s and retry once before giving up
+                    import asyncio as _aio
+                    logger.info("🐋 Whale Monitor: session DB briefly locked — retrying in 8s...")
+                    await _aio.sleep(8)
+                    try:
+                        await client.start()
+                        logger.info("🐋 Whale Monitor: Connected on retry")
+                    except Exception as e2:
+                        if 'database is locked' in str(e2).lower():
+                            logger.warning("🐋 Whale Monitor: session DB still locked — another live instance owns it. Skipping.")
+                        else:
+                            logger.error(f"Whale Monitor retry failed: {e2}")
+                        return
+                    return  # connected on retry — fall through to handler setup below would re-run, skip
                 logger.error(f"Failed to connect with saved session: {e}")
                 if phone:
                     try:
@@ -4944,15 +5005,31 @@ class UltimateTradingSystem:
         try:
             # Symbol mapping
             symbol_map = {
+                # Forex
                 'EUR/USD': 'EURUSD=X', 'GBP/USD': 'GBPUSD=X', 'USD/JPY': 'JPY=X',
-                'AUD/USD': 'AUDUSD=X', 'USD/CAD': 'CAD=X', 'NZD/USD': 'NZDUSD=X',
-                'USD/CHF': 'CHF=X', 'EUR/GBP': 'EURGBP=X', 'EUR/JPY': 'EURJPY=X',
-                'GBP/JPY': 'GBPJPY=X', 'AUD/JPY': 'AUDJPY=X', 'EUR/AUD': 'EURAUD=X',
-                'GBP/AUD': 'GBPAUD=X',
-                'BTC-USD': 'BTC-USD', 'ETH-USD': 'ETH-USD', 'BNB-USD': 'BNB-USD',
+                'AUD/USD': 'AUDUSD=X', 'USD/CAD': 'CAD=X',    'NZD/USD': 'NZDUSD=X',
+                'USD/CHF': 'CHF=X',    'EUR/GBP': 'EURGBP=X', 'EUR/JPY': 'EURJPY=X',
+                'GBP/JPY': 'GBPJPY=X','AUD/JPY': 'AUDJPY=X', 'EUR/AUD': 'EURAUD=X',
+                'GBP/AUD': 'GBPAUD=X','USD/SGD': 'SGD=X',    'USD/HKD': 'HKD=X',
+                'USD/MXN': 'MXN=X',   'USD/ZAR': 'ZAR=X',    'USD/TRY': 'TRY=X',
+                # Crypto
+                'BTC-USD': 'BTC-USD', 'ETH-USD': 'ETH-USD',  'BNB-USD': 'BNB-USD',
+                'SOL-USD': 'SOL-USD', 'XRP-USD': 'XRP-USD',  'ADA-USD': 'ADA-USD',
+                'DOGE-USD':'DOGE-USD','AVAX-USD':'AVAX-USD',  'DOT-USD': 'DOT-USD',
+                # Commodities — spot aliases map to futures tickers Yahoo actually has
+                'XAU/USD': 'GC=F',    'GOLD': 'GC=F',        'GC=F': 'GC=F',
+                'XAG/USD': 'SI=F',    'SILVER': 'SI=F',      'SI=F': 'SI=F',
+                'WTI/USD': 'CL=F',    'OIL': 'CL=F',         'CL=F': 'CL=F',
+                'XPT/USD': 'PL=F',    'XPD/USD': 'PA=F',
+                'NG/USD':  'NG=F',    'NG=F': 'NG=F',
+                'HG=F': 'HG=F',       'COPPER': 'HG=F',
+                # Stocks
                 'AAPL': 'AAPL', 'MSFT': 'MSFT', 'GOOGL': 'GOOGL',
-                'GC=F': 'GC=F', 'SI=F': 'SI=F', 'CL=F': 'CL=F',
+                'AMZN': 'AMZN', 'TSLA': 'TSLA', 'NVDA': 'NVDA',
+                'META': 'META', 'NFLX': 'NFLX', 'AMD':  'AMD',
+                # Indices
                 '^GSPC': '^GSPC', '^DJI': '^DJI', '^IXIC': '^IXIC',
+                'SP500': '^GSPC',  'DOW': '^DJI',  'NASDAQ': '^IXIC',
             }
             
             yahoo_symbol = symbol_map.get(asset, asset)

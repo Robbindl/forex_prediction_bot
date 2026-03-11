@@ -19,6 +19,8 @@ import time
 import xml.etree.ElementTree as ET
 
 # Import all config values
+from logger import logger
+
 from config.config import (
     NEWSAPI_KEY, GNEWS_KEY, RAPIDAPI_KEY,
     WHALE_ALERT_KEY, TWITTER_BEARER_TOKEN, ALPHA_VANTAGE_API_KEY,
@@ -311,7 +313,7 @@ class NewsSourceIntegrator:
                 "pageNo": 1
             }
             
-            response = requests.get(BINANCE_ANNOUNCEMENTS_URL, params=params, timeout=5)
+            response = requests.get(BINANCE_ANNOUNCEMENTS_URL, params=params, timeout=15)
             data = response.json()
             
             articles = []
@@ -340,7 +342,7 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"Binance error: {e}")
+            logger.error(f"Binance error: {e}")
             return []
     
     def fetch_whale_alerts(self, min_value_usd=1000000):
@@ -356,7 +358,7 @@ class NewsSourceIntegrator:
                 "limit": 20
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=15)
             data = response.json()
             
             alerts = []
@@ -376,7 +378,7 @@ class NewsSourceIntegrator:
             
             return alerts
         except Exception as e:
-            print(f"Whale Alert error: {e}")
+            logger.error(f"Whale Alert error: {e}")
             return []
     
     def fetch_twitter_user(self, username, limit=10):
@@ -389,7 +391,7 @@ class NewsSourceIntegrator:
             
             # Get user ID
             url = f"https://api.twitter.com/2/users/by/username/{username}"
-            user_response = requests.get(url, headers=headers, timeout=5)
+            user_response = requests.get(url, headers=headers, timeout=15)
             
             if user_response.status_code != 200:
                 return []
@@ -403,7 +405,7 @@ class NewsSourceIntegrator:
                 "tweet.fields": "created_at,public_metrics"
             }
             
-            tweets_response = requests.get(tweets_url, headers=headers, params=params, timeout=5)
+            tweets_response = requests.get(tweets_url, headers=headers, params=params, timeout=15)
             
             if tweets_response.status_code != 200:
                 return []
@@ -427,7 +429,7 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"Twitter error for @{username}: {e}")
+            logger.error(f"Twitter error for @{username}: {e}")
             return []
     
     def fetch_rss_feed(self, url, limit=10):
@@ -452,13 +454,13 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"RSS error for {url}: {e}")
+            logger.error(f"RSS error for {url}: {e}")
             return []
     
     def fetch_wsj_newsapi(self, days=1):
         """Fetch WSJ articles using NewsAPI (🔑 needs key)"""
         if not NEWSAPI_KEY:
-            print("  ⚠️ NewsAPI key not configured in .env")
+            logger.warning("NewsAPI key not configured in .env")
             return []
         
         try:
@@ -472,7 +474,7 @@ class NewsSourceIntegrator:
                 "pageSize": 10
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=15)
             data = response.json()
             
             if data.get('status') == 'ok':
@@ -492,11 +494,11 @@ class NewsSourceIntegrator:
                     })
                 return articles
             else:
-                print(f"  ⚠️ NewsAPI error: {data.get('message', 'Unknown error')}")
+                logger.warning(f"NewsAPI error: {data.get('message', 'Unknown error')}")
                 return []
                 
         except Exception as e:
-            print(f"  ⚠️ WSJ NewsAPI error: {e}")
+            logger.warning(f"WSJ NewsAPI error: {e}")
             return []
     
     def fetch_alpha_vantage_news(self, tickers="FOREX,CRYPTO", limit=10):
@@ -513,7 +515,7 @@ class NewsSourceIntegrator:
                 'limit': limit
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=15)
             data = response.json()
             
             articles = []
@@ -529,7 +531,7 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"Alpha Vantage error: {e}")
+            logger.error(f"Alpha Vantage error: {e}")
             return []
     
     def fetch_fred_data(self, limit=10):
@@ -542,7 +544,7 @@ class NewsSourceIntegrator:
                 "limit": limit
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=15)
             # Parse XML response
             import xml.etree.ElementTree as ET
             root = ET.fromstring(response.text)
@@ -561,7 +563,7 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"FRED error: {e}")
+            logger.error(f"FRED error: {e}")
             return []
     
     def fetch_ecb_data(self, limit=10):
@@ -573,7 +575,7 @@ class NewsSourceIntegrator:
                 "startPeriod": (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=15)
             data = response.json()
             
             articles = []
@@ -589,41 +591,83 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"ECB error: {e}")
+            logger.error(f"ECB error: {e}")
             return []
     
     def fetch_forexfactory_api(self, limit=10):
-        """Fetch economic calendar from ForexFactory community API (🌐 FREE)"""
-        try:
-            # Free community API
-            url = "https://www.jblanked.com/news/api/calendar/"
-            response = requests.get(url, timeout=5)
-            data = response.json()
-            
+        """
+        Fetch economic calendar — tries 3 sources in order:
+          1. ForexFactory official JSON feed (nfs.faireconomy.media)
+          2. FXStreet economic calendar API
+          3. jblanked community mirror (original — kept as last resort)
+        Returns [] cleanly on total failure, never crashes the caller.
+        """
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+        }
+
+        def _parse_ff_official(data):
+            """Parse ForexFactory official JSON format"""
             articles = []
-            for event in data[:limit]:
-                impact = event.get('volatility', '').lower()
-                if impact == 'high':
-                    sentiment = -0.2
-                elif impact == 'medium':
-                    sentiment = -0.1
-                else:
-                    sentiment = 0
-                
+            for event in (data or [])[:limit]:
+                impact = event.get('impact', event.get('volatility', '')).lower()
+                sentiment = -0.3 if impact == 'high' else -0.1 if impact == 'medium' else 0
+                title = event.get('title', event.get('name', 'Economic Event'))
+                country = event.get('country', event.get('countryCode', ''))
                 articles.append({
-                    'title': f"{event['name']} - {event['countryCode']}",
+                    'title': f"{title} ({country})" if country else title,
                     'sentiment': sentiment,
-                    'date': event.get('dateUtc', ''),
+                    'date': event.get('date', event.get('dateUtc', '')),
                     'source': 'ForexFactory',
-                    'impact': event.get('volatility', ''),
+                    'impact': impact,
                     'actual': event.get('actual'),
-                    'forecast': event.get('consensus')
+                    'forecast': event.get('forecast', event.get('consensus'))
                 })
-            
             return articles
-        except Exception as e:
-            print(f"ForexFactory error: {e}")
-            return []
+
+        # ── Source 1: ForexFactory official JSON ──
+        try:
+            url = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
+            r = requests.get(url, headers=headers, timeout=8)
+            if r.status_code == 200 and r.text.strip().startswith('['):
+                data = r.json()
+                articles = _parse_ff_official(data)
+                if articles:
+                    return articles
+        except Exception:
+            pass
+
+        # ── Source 2: ForexFactory next week (if current week empty) ──
+        try:
+            url = 'https://nfs.faireconomy.media/ff_calendar_nextweek.json'
+            r = requests.get(url, headers=headers, timeout=8)
+            if r.status_code == 200 and r.text.strip().startswith('['):
+                data = r.json()
+                articles = _parse_ff_official(data)
+                if articles:
+                    return articles
+        except Exception:
+            pass
+
+        # ── Source 3: jblanked mirror (original) ──
+        try:
+            url = 'https://www.jblanked.com/news/api/calendar/'
+            r = requests.get(url, headers=headers, timeout=8)
+            if r.status_code == 200:
+                text = r.text.strip()
+                if text.startswith('[') or text.startswith('{'):
+                    data = r.json()
+                    if isinstance(data, dict):
+                        data = data.get('data', data.get('events', []))
+                    articles = _parse_ff_official(data)
+                    if articles:
+                        return articles
+        except Exception:
+            pass
+
+        return []
     
     def fetch_newsapi(self, query="finance", limit=10):
         """Fetch from NewsAPI (🔑 needs key)"""
@@ -640,7 +684,7 @@ class NewsSourceIntegrator:
                 'apiKey': NEWSAPI_KEY
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=15)
             data = response.json()
             
             articles = []
@@ -660,7 +704,7 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"NewsAPI error: {e}")
+            logger.error(f"NewsAPI error: {e}")
             return []
     
     def fetch_gnews(self, query="finance", limit=10):
@@ -677,7 +721,7 @@ class NewsSourceIntegrator:
                 'apikey': GNEWS_KEY
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=15)
             data = response.json()
             
             articles = []
@@ -697,7 +741,7 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"GNews error: {e}")
+            logger.error(f"GNews error: {e}")
             return []
     
     def fetch_rapidapi(self, symbol="AAPL", limit=10):
@@ -713,7 +757,7 @@ class NewsSourceIntegrator:
             }
             params = {"symbol": symbol, "language": "en"}
             
-            response = requests.get(url, headers=headers, params=params, timeout=5)
+            response = requests.get(url, headers=headers, params=params, timeout=15)
             data = response.json()
             
             articles = []
@@ -734,7 +778,7 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"RapidAPI error: {e}")
+            logger.error(f"RapidAPI error: {e}")
             return []
     
     def fetch_marketaux(self, limit=10):
@@ -742,7 +786,7 @@ class NewsSourceIntegrator:
         from config.config import MARKETAUX_TOKEN
         
         if not MARKETAUX_TOKEN:
-            print("  ⚠️ MarketAux token not configured in .env")
+            logger.warning("MarketAux token not configured in .env")
             return []
         
         try:
@@ -753,7 +797,7 @@ class NewsSourceIntegrator:
                 'limit': limit
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            response = requests.get(url, params=params, timeout=15)
             data = response.json()
             
             articles = []
@@ -767,10 +811,10 @@ class NewsSourceIntegrator:
                     'entities': item.get('entities', [])
                 })
             
-            print(f"  🔑 MarketAux: {len(articles)} articles")
+            logger.info(f"MarketAux: {len(articles)} articles")
             return articles
         except Exception as e:
-            print(f"MarketAux error: {e}")
+            logger.error(f"MarketAux error: {e}")
             return []
     
     def fetch_by_symbol(self, symbol, limit=5):
@@ -796,7 +840,7 @@ class NewsSourceIntegrator:
             
             return articles
         except Exception as e:
-            print(f"TradingView symbol error: {e}")
+            logger.error(f"TradingView symbol error: {e}")
             return []
     
     # ===== MAIN METHODS =====
@@ -808,7 +852,7 @@ class NewsSourceIntegrator:
         all_articles = []
         enabled_sources = {name: src for name, src in self.sources.items() if src['enabled']}
         
-        print(f"\n📰 Fetching from {len(enabled_sources)} news sources...")
+        logger.info(f"Fetching from {len(enabled_sources)} news sources...")
         
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_source = {}
@@ -860,9 +904,9 @@ class NewsSourceIntegrator:
                             status = "🔑"
                         elif self.sources[name].get('free', True):
                             status = "🌐"
-                        print(f"  {status} {self.sources[name]['name']}: {len(articles)} articles")
+                        logger.info(f"  {self.sources[name]['name']}: {len(articles)} articles")
                     else:
-                        print(f"  ⏭️ {self.sources[name]['name']}: No articles")
+                        logger.debug(f"  {self.sources[name]['name']}: No articles")
                 except Exception as e:
                     print(f"  ⚠️ {self.sources[name]['name']}: {str(e)[:50]}")
         

@@ -105,7 +105,12 @@ class TradingLogger:
         # Create logger
         self.logger = logging.getLogger('trading_bot')
         self.logger.setLevel(getattr(logging, log_level.upper()))
-        
+
+        # CRITICAL: stop messages bubbling up to the root (Flask) logger.
+        # Without this every line prints TWICE — once by our handlers,
+        # once by the root logger that Flask installs at startup.
+        self.logger.propagate = False
+
         # Remove existing handlers
         self.logger.handlers.clear()
         

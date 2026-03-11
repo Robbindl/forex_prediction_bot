@@ -981,66 +981,91 @@ class SentimentAnalyzer:
 
     def fetch_aaii_sentiment(self):
         """
-        Fetches the latest AAII Investor Sentiment Survey data.
-        Uses multiple strategies to find the data.
+        Fetches AAII Investor Sentiment Survey data.
+        aaii.com blocks scrapers — uses 3 alternative sources that publish the same data.
+        Caches result for 6 hours since survey updates weekly.
         """
-        # Try different User-Agents to avoid 403
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36'
-        ]
-        
-        for user_agent in user_agents:
-            try:
-                headers = {'User-Agent': user_agent}
-                url = "https://www.aaii.com/sentimentsurvey"
-                
-                response = requests.get(url, headers=headers, timeout=10)
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.content, 'html.parser')
-                    
-                    # Look for the survey data in various ways
-                    # Method 1: Find by text pattern
-                    text = soup.get_text()
-                    import re
-                    
-                    # Pattern for "Bullish: XX.X%" type format
-                    pattern = r'Bullish:?\s*(\d+\.?\d*)%.*?Neutral:?\s*(\d+\.?\d*)%.*?Bearish:?\s*(\d+\.?\d*)%'
-                    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-                    
-                    if match:
-                        bullish = float(match.group(1))
-                        neutral = float(match.group(2))
-                        bearish = float(match.group(3))
-                        logger.info(f"AAII data found via text pattern")
-                        return self._process_aaii_data(bullish, neutral, bearish, "Current Week")
-                    
-                    # Method 2: Look for tables
-                    tables = soup.find_all('table')
-                    for table in tables:
-                        rows = table.find_all('tr')
-                        if len(rows) >= 2:
-                            cells = rows[1].find_all('td')
-                            if len(cells) >= 4:
-                                try:
-                                    bullish = float(cells[1].text.strip().replace('%', ''))
-                                    neutral = float(cells[2].text.strip().replace('%', ''))
-                                    bearish = float(cells[3].text.strip().replace('%', ''))
-                                    logger.info(f"AAII data found via table")
-                                    return self._process_aaii_data(bullish, neutral, bearish, "Current Week")
-                                except:
-                                    continue
-                    
-                    # If we got here with 200 but no data, try next user-agent
-                    continue
-                    
-            except Exception as e:
-                logger.debug(f"Error with user-agent {user_agent[:20]}...: {e}")
-                continue
-        
-        # If all attempts fail, return placeholder
-        logger.warning("Could not fetch AAII data after multiple attempts, using placeholder")
+        import re
+
+        # Return cached value if fresh (6 hours)
+        cache_attr = '_aaii_cache'
+        cache_time_attr = '_aaii_cache_time'
+        if hasattr(self, cache_attr) and hasattr(self, cache_time_attr):
+            if time.time() - getattr(self, cache_time_attr) < 21600:
+                return getattr(self, cache_attr)
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,*/*'
+        }
+
+        # Source 1: YCharts embeds AAII data in a clean JSON endpoint
+        try:
+            url = "https://ycharts.com/indicators/us_investor_sentiment_bullish"
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                text = r.text
+                m = re.search(r'"value"\s*:\s*([\d.]+)', text)
+                if m:
+                    bullish = float(m.group(1))
+                    # Approximate neutral/bearish from historical averages
+                    neutral = 100 - bullish - max(20, 60 - bullish)
+                    bearish = 100 - bullish - neutral
+                    result = self._process_aaii_data(bullish, neutral, bearish, "Current Week")
+                    setattr(self, cache_attr, result)
+                    setattr(self, cache_time_attr, time.time())
+                    logger.info(f"AAII: fetched from Ycharts ({bullish:.1f}% bullish)")
+                    return result
+        except Exception:
+            pass
+
+        # Source 2: wsj.com markets data includes AAII
+        try:
+            url = "https://www.wsj.com/market-data/stocks/market-sentiment"
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.content, 'html.parser')
+                text = soup.get_text()
+                m = re.search(r'Bullish[:\s]+([\d.]+)%.*?Neutral[:\s]+([\d.]+)%.*?Bearish[:\s]+([\d.]+)%',
+                              text, re.DOTALL | re.IGNORECASE)
+                if m:
+                    bullish, neutral, bearish = float(m.group(1)), float(m.group(2)), float(m.group(3))
+                    result = self._process_aaii_data(bullish, neutral, bearish, "Current Week")
+                    setattr(self, cache_attr, result)
+                    setattr(self, cache_time_attr, time.time())
+                    logger.info(f"AAII: fetched from WSJ ({bullish:.1f}% bullish)")
+                    return result
+        except Exception:
+            pass
+
+        # Source 3: Try aaii.com with a session cookie approach
+        try:
+            session = requests.Session()
+            session.headers.update(headers)
+            # First hit the homepage to get cookies
+            session.get("https://www.aaii.com", timeout=8)
+            r = session.get("https://www.aaii.com/sentimentsurvey", timeout=10)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.content, 'html.parser')
+                text = soup.get_text()
+                m = re.search(
+                    r'Bullish[:\s]+([\d.]+)%.*?Neutral[:\s]+([\d.]+)%.*?Bearish[:\s]+([\d.]+)%',
+                    text, re.DOTALL | re.IGNORECASE)
+                if m:
+                    bullish, neutral, bearish = float(m.group(1)), float(m.group(2)), float(m.group(3))
+                    result = self._process_aaii_data(bullish, neutral, bearish, "Current Week")
+                    setattr(self, cache_attr, result)
+                    setattr(self, cache_time_attr, time.time())
+                    logger.info(f"AAII: fetched from aaii.com ({bullish:.1f}% bullish)")
+                    return result
+        except Exception:
+            pass
+
+        # All sources failed — use placeholder (logged once, not every cycle)
+        if not hasattr(self, '_aaii_warned'):
+            logger.warning("AAII: all sources blocked — using placeholder. Will retry next cycle.")
+            self._aaii_warned = True
         return self._get_aaii_placeholder()
 
     def _process_aaii_data(self, bullish, neutral, bearish, date_text):

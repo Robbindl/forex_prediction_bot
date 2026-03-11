@@ -73,13 +73,21 @@ class RedditWatcher:
                 client_secret="YOUR_SECRET",       # Get from reddit
                 user_agent="trading-bot/1.0 by RGriffons"
             )
-            # Test connection
-            self.reddit.user.me()
+            # Test connection — user.me() returns None for anonymous/fake credentials
+            # so we must also verify credentials aren't placeholders
+            cid = self.reddit.config.client_id
+            if not cid or cid in ('YOUR_CLIENT_ID', 'your_client_id', ''):
+                raise ValueError("Reddit client_id is still a placeholder — set real credentials in reddit_watcher.py")
+            me = self.reddit.user.me()
+            # me is None for anonymous read-only — that means auth failed silently
+            if me is None:
+                raise ValueError("Reddit auth returned None — credentials invalid or not set")
             self.enabled = True
-            logger.info("✅ Reddit API connected successfully")
+            logger.info(f"Reddit API connected as u/{me.name}")
         except Exception as e:
-            logger.warning(f"⚠️ Reddit API failed: {e}")
+            logger.warning(f"Reddit API disabled: {e}")
             logger.info("   Get free credentials at: https://www.reddit.com/prefs/apps")
+            self.enabled = False
     
     def _wait_for_rate_limit(self):
         """Ensure we don't exceed 50 requests per minute"""

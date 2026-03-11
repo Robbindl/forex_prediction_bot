@@ -42,7 +42,11 @@ class FreeWhaleAPI:
                 "limit": 25
             }
             
-            response = self.session.get(url, params=params, timeout=5)
+            response = self.session.get(url, params=params, timeout=8)
+            # Guard: empty or HTML response would crash .json()
+            if not response.content or not response.text.strip().startswith('{'):
+                logger.debug(f"Free API returned non-JSON (status {response.status_code}) — skipping")
+                return self.cache
             data = response.json()
             
             alerts = []

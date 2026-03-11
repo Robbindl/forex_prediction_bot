@@ -569,49 +569,62 @@ class PaperTrader:
     
     def update_positions(self, current_prices: Dict[str, float]):
         """
-        Update open positions with current prices
-        Check for stop loss hits and take profit targets
+        Update open positions with current prices.
+        Check for stop loss hits and take profit targets.
+
+        BUG FIXES applied here
+        ─────────────────────
+        1. A trade was being appended to to_close twice when both a
+           stop-loss AND a take-profit level triggered in the same tick
+           (common for volatile assets like Silver/XAG).  The second
+           pop() then raised a KeyError, silently dropping the closed
+           trade from accounting.
+        2. `to_close` is now a set so duplicate IDs are impossible.
+        3. After recording a stop-loss hit we skip the TP scan for that
+           trade (the 'continue' below).
         """
         with self.lock:
-            to_close = []
-            
+            to_close = set()   # FIX: set prevents double-close
+
             for trade_id, trade in self.open_positions.items():
                 if trade.asset not in current_prices:
                     continue
-                
+
                 current_price = current_prices[trade.asset]
-                
-                # Check stop loss
+
+                # ── BUY position ─────────────────────────────────────────
                 if trade.signal_type == 'BUY':
                     if current_price <= trade.stop_loss:
                         trade.exit_price = trade.stop_loss
                         trade.exit_reason = "Stop Loss"
                         trade.status = "CLOSED"
-                        to_close.append(trade_id)
-                    
-                    # Check take profit levels
+                        to_close.add(trade_id)
+                        continue   # FIX: skip TP check once SL is hit
+
+                    # Check take profit levels (first level hit wins)
                     for tp in trade.take_profit_levels:
                         if current_price >= tp['price']:
                             trade.exit_price = tp['price']
                             trade.exit_reason = f"Take Profit {tp['level']}"
                             trade.status = "CLOSED"
-                            to_close.append(trade_id)
+                            to_close.add(trade_id)
                             break
-                
+
+                # ── SELL position ─────────────────────────────────────────
                 elif trade.signal_type == 'SELL':
                     if current_price >= trade.stop_loss:
                         trade.exit_price = trade.stop_loss
                         trade.exit_reason = "Stop Loss"
                         trade.status = "CLOSED"
-                        to_close.append(trade_id)
-                    
-                    # Check take profit levels
+                        to_close.add(trade_id)
+                        continue   # FIX: skip TP check once SL is hit
+
                     for tp in trade.take_profit_levels:
                         if current_price <= tp['price']:
                             trade.exit_price = tp['price']
                             trade.exit_reason = f"Take Profit {tp['level']}"
                             trade.status = "CLOSED"
-                            to_close.append(trade_id)
+                            to_close.add(trade_id)
                             break
             
             # Close positions and calculate P&L
@@ -778,6 +791,80 @@ class PaperTrader:
         with self.lock:
             recent = sorted(self.closed_positions, key=lambda x: x.exit_time or datetime.min, reverse=True)[:limit]
             return [t.to_dict() for t in recent]
+
+    def audit_position_health(self) -> Dict:
+        """
+        Audit open positions for common problems:
+        - Stop-loss set too tight vs entry price (main Silver bug symptom)
+        - Position open too long (stale)
+        - Duplicate asset positions
+        - Repeated stop-loss hits on same asset (pattern detection)
+        Returns a report dict with actionable warnings.
+        """
+        from collections import Counter
+        with self.lock:
+            warnings_list = []
+            asset_counts: Dict[str, int] = {}
+
+            COMMODITY_PREFIXES = ('XAG', 'XAU', 'XPT', 'XPD', 'XCU',
+                                  'WTI', 'NG/', 'GC=', 'SI=', 'CL=', 'NG=', 'HG=')
+
+            for trade_id, trade in self.open_positions.items():
+                # Duplicate asset tracking
+                asset_counts[trade.asset] = asset_counts.get(trade.asset, 0) + 1
+
+                # Stop-loss tightness check
+                if trade.entry_price and trade.stop_loss:
+                    sl_dist_pct = abs(trade.entry_price - trade.stop_loss) / trade.entry_price * 100
+                    is_commodity = any(trade.asset.startswith(p) for p in COMMODITY_PREFIXES)
+                    if is_commodity and sl_dist_pct < 0.8:
+                        warnings_list.append(
+                            f"STOP TOO TIGHT: {trade.asset} [{trade_id}] stop-loss only "
+                            f"{sl_dist_pct:.2f}% from entry (commodity needs >=1.5%). "
+                            f"Likely to stop-out on normal noise."
+                        )
+
+                # Stale position check (>6 hours)
+                age_h = (datetime.now() - trade.entry_time).total_seconds() / 3600
+                if age_h > 6:
+                    warnings_list.append(
+                        f"STALE POSITION: {trade.asset} [{trade_id}] open {age_h:.1f}h "
+                        f"— consider manual review."
+                    )
+
+            # Duplicate positions on same asset
+            for asset, count in asset_counts.items():
+                if count > 1:
+                    warnings_list.append(
+                        f"DUPLICATE: {asset} has {count} open positions "
+                        f"(possible double-signal execution)."
+                    )
+
+            # Repeated SL hits pattern detection (last 20 closed trades)
+            recent_closed = sorted(
+                self.closed_positions,
+                key=lambda x: x.exit_time or datetime.min,
+                reverse=True
+            )[:20]
+
+            sl_hits = [t for t in recent_closed if getattr(t, 'exit_reason', '') == "Stop Loss"]
+            if len(sl_hits) >= 5:
+                sl_asset_counts = Counter(t.asset for t in sl_hits)
+                for asset, count in sl_asset_counts.most_common(3):
+                    if count >= 3:
+                        warnings_list.append(
+                            f"REPEATED SL: {asset} hit stop-loss {count}x in last 20 trades. "
+                            f"Stop may be too tight for asset volatility. "
+                            f"Check get_stop_pct() in strategy_engine.py."
+                        )
+
+            return {
+                'open_positions': len(self.open_positions),
+                'warnings': warnings_list,
+                'warning_count': len(warnings_list),
+                'healthy': len(warnings_list) == 0,
+                'timestamp': datetime.now().isoformat()
+            }
 
 
 if __name__ == "__main__":

@@ -1,6 +1,9 @@
 """
 WebSocket Manager - Real-time market data
-WORKING VERSION - Based on Bybit official API
+Sources:
+  • Bybit       — Crypto (BTC, ETH, SOL, XRP, BNB …)
+  • Finnhub     — Stocks (AAPL, MSFT, GOOGL …)
+  • Twelve Data — Forex + Commodities (EUR/USD, XAU/USD, XAG/USD, WTI …)
 """
 
 import websockets
@@ -14,11 +17,6 @@ from logger import logger
 
 
 class WebSocketManager:
-    """
-    Manages multiple WebSocket connections for real-time data
-    Bybit public trade channel (works worldwide)
-    """
-
     def __init__(self):
         self.connections: Dict[str, websockets.WebSocketClientProtocol] = {}
         self.callbacks: Dict[str, List[Callable]] = {}
@@ -26,63 +24,69 @@ class WebSocketManager:
         self.loop = None
         self.thread = None
         self.loop_ready = False
-        self._finnhub_disabled = False  # FIX 1: permanent stop flag
+        self._finnhub_disabled = False
 
         # Connection URLs
-        self.finnhub_url = "wss://ws.finnhub.io"
-        self.finnhub_token = "d6bc2ohr01qnr27kdcb0d6bc2ohr01q27kdcbg"
-        self.bybit_url = "wss://stream.bybit.com/v5/public/spot"
+        self.finnhub_url    = "wss://ws.finnhub.io"
+        self.finnhub_token  = "d6bc2ohr01qnr27kdcb0d6bc2ohr01q27kdcbg"
+        self.bybit_url      = "wss://stream.bybit.com/v5/public/spot"
+        self.twelvedata_url = "wss://ws.twelvedata.com/v1/quotes/price"
+        self.twelvedata_key = "6c8e5137892642fe96cbfbf9d782c7d0"
 
-        logger.info("📡 WebSocket Manager initialized")
+        logger.info("📡 WebSocket Manager initialized (Bybit + Finnhub + Twelve Data)")
 
     def start(self):
-        """Start the WebSocket manager in background thread"""
         self.running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
-
         while not self.loop_ready:
             time.sleep(0.1)
         logger.info("✅ WebSocket manager started")
 
     def _run_loop(self):
-        """Run asyncio event loop in background thread"""
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.loop_ready = True
         self.loop.run_forever()
 
+    def _schedule(self, coro):
+        while not self.loop_ready:
+            time.sleep(0.1)
+        asyncio.run_coroutine_threadsafe(coro, self.loop)
+
     # ───────────────────────── BYBIT ─────────────────────────
 
     def subscribe_bybit(self, symbols: List[str], callback: Callable):
-        """Subscribe to Bybit WebSocket for crypto (works worldwide)"""
-        while not self.loop_ready:
-            time.sleep(0.1)
-
-        asyncio.run_coroutine_threadsafe(
-            self._connect_bybit_with_reconnect(symbols, callback),
-            self.loop
-        )
-        logger.info(f"📡 Subscribed to Bybit: {symbols}")
+        """Crypto — BTCUSDT, ETHUSDT, SOLUSDT …"""
+        self._schedule(self._connect_bybit_with_reconnect(symbols, callback))
+        logger.info(f"📡 Bybit: subscribing to {symbols}")
 
     async def _connect_bybit_with_reconnect(self, symbols: List[str], callback: Callable):
-        """Auto-reconnect wrapper for Bybit"""
+        """Exponential backoff: 5s → 10s → 20s → 40s → 60s cap."""
+        from websocket_dashboard import set_connected
+        backoff, max_backoff = 5, 60
         while self.running:
+            t0 = asyncio.get_event_loop().time()
             try:
                 await self._connect_bybit(symbols, callback)
+                backoff = 5
             except Exception as e:
-                logger.error(f"❌ Bybit connection lost: {e} — reconnecting in 5s")
-                await asyncio.sleep(5)
+                if asyncio.get_event_loop().time() - t0 > 30:
+                    backoff = 5
+                set_connected('bybit', False)
+                logger.error(f"❌ Bybit lost: {e} — retry in {backoff}s")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
 
     async def _connect_bybit(self, symbols: List[str], callback: Callable):
-        """Main Bybit connection loop"""
+        from websocket_dashboard import set_connected
         async with websockets.connect(self.bybit_url) as ws:
             self.connections['bybit'] = ws
-            logger.info("✅ Bybit WebSocket connected")
+            set_connected('bybit', True, len(symbols))
+            logger.info("✅ Bybit connected")
 
-            bybit_symbols = [f"publicTrade.{s.upper()}" for s in symbols]
-            await ws.send(json.dumps({"op": "subscribe", "args": bybit_symbols}))
-            logger.info(f"📡 Subscribed to: {bybit_symbols}")
+            args = [f"publicTrade.{s.upper()}" for s in symbols]
+            await ws.send(json.dumps({"op": "subscribe", "args": args}))
 
             async def heartbeat():
                 while self.running:
@@ -91,79 +95,66 @@ class WebSocketManager:
                         await ws.send(json.dumps({"op": "ping"}))
                     except Exception:
                         break
-
             asyncio.create_task(heartbeat())
 
             async for message in ws:
                 try:
                     data = json.loads(message)
-
-                    if data.get('op') == 'pong':
+                    if data.get('op') in ('pong', 'ping'):
                         continue
-
-                    if data.get('op') == 'ping':
-                        await ws.send(json.dumps({"op": "pong"}))
-                        continue
-
                     if 'topic' in data and 'publicTrade' in data['topic']:
                         symbol = data['topic'].split('.')[1]
                         for trade in data.get('data', []):
-                            price = float(trade['p'])
-                            volume = float(trade['v'])
-                            side = trade['S']
-                            timestamp = datetime.now()
-
-                            logger.debug(f"💰 {symbol}: ${price:,.2f} | {volume:.4f} | {side}")
-                            callback('bybit', symbol, price, volume, side, timestamp)
-
+                            callback('bybit', symbol,
+                                     float(trade['p']), float(trade['v']),
+                                     trade['S'], datetime.now())
                 except Exception as e:
-                    logger.error(f"❌ Bybit message error: {e}")
+                    logger.error(f"Bybit msg error: {e}")
 
     # ───────────────────────── FINNHUB ─────────────────────────
 
     def subscribe_finnhub(self, symbols: List[str], callback: Callable):
-        """Subscribe to Finnhub WebSocket — disabled on 401 (free tier has no WS)"""
+        """Stocks — AAPL, MSFT, GOOGL …  (requires paid Finnhub plan for WS)"""
         if self._finnhub_disabled:
-            logger.warning("Finnhub WebSocket permanently disabled (HTTP 401 — requires paid plan)")
+            logger.warning("Finnhub WS disabled (401 — requires paid plan)")
             return
-
-        while not self.loop_ready:
-            time.sleep(0.1)
-
-        asyncio.run_coroutine_threadsafe(
-            self._connect_finnhub_with_reconnect(symbols, callback),
-            self.loop
-        )
-        logger.info(f"📡 Subscribed to Finnhub: {symbols}")
+        self._schedule(self._connect_finnhub_with_reconnect(symbols, callback))
+        logger.info(f"📡 Finnhub: subscribing to {symbols}")
 
     async def _connect_finnhub_with_reconnect(self, symbols: List[str], callback: Callable):
-        """Auto-reconnect wrapper for Finnhub — stops permanently on 401"""
+        from websocket_dashboard import set_connected
+        backoff, max_backoff = 5, 60
         while self.running and not self._finnhub_disabled:
+            t0 = asyncio.get_event_loop().time()
             try:
                 await self._connect_finnhub(symbols, callback)
-                # FIX 1: if _connect_finnhub returned normally due to 401, stop here
                 if self._finnhub_disabled:
                     break
+                backoff = 5
             except Exception as e:
                 err = str(e)
-                # FIX 1: catch 401 at the connection level (before message loop)
-                if 'HTTP 401' in err or '401' in err:
+                if '401' in err:
                     self._finnhub_disabled = True
-                    logger.warning("Finnhub WebSocket: HTTP 401 — free tier has no WS access. Stopped permanently.")
+                    set_connected('finnhub', False)
+                    logger.warning("Finnhub WS: 401 — stopped permanently")
                     break
-                logger.error(f"❌ Finnhub connection lost: {e} — reconnecting in 5s")
-                await asyncio.sleep(5)
+                if asyncio.get_event_loop().time() - t0 > 30:
+                    backoff = 5
+                set_connected('finnhub', False)
+                logger.error(f"❌ Finnhub lost: {e} — retry in {backoff}s")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
 
     async def _connect_finnhub(self, symbols: List[str], callback: Callable):
-        """Main Finnhub connection loop"""
+        from websocket_dashboard import set_connected
         url = f"{self.finnhub_url}?token={self.finnhub_token}"
-
         async with websockets.connect(url) as ws:
             self.connections['finnhub'] = ws
-            logger.info("✅ Finnhub WebSocket connected")
+            set_connected('finnhub', True, len(symbols))
+            logger.info("✅ Finnhub connected")
 
-            for symbol in symbols:
-                await ws.send(json.dumps({'type': 'subscribe', 'symbol': symbol}))
+            for sym in symbols:
+                await ws.send(json.dumps({'type': 'subscribe', 'symbol': sym}))
 
             async def heartbeat():
                 while self.running:
@@ -172,61 +163,115 @@ class WebSocketManager:
                         await ws.send(json.dumps({'type': 'ping'}))
                     except Exception:
                         break
-
             asyncio.create_task(heartbeat())
 
             async for message in ws:
                 try:
                     data = json.loads(message)
-
                     if data.get('type') == 'trade':
-                        for trade in data.get('data', []):
-                            symbol = trade['s']
-                            price = float(trade['p'])
-                            volume = float(trade.get('v', 0))
-                            timestamp = datetime.fromtimestamp(trade['t'] / 1000)
-                            callback('finnhub', symbol, price, volume, None, timestamp)
+                        for t in data.get('data', []):
+                            callback('finnhub', t['s'], float(t['p']),
+                                     float(t.get('v', 0)), None,
+                                     datetime.fromtimestamp(t['t'] / 1000))
+                except Exception as e:
+                    if '401' in str(e):
+                        self._finnhub_disabled = True
+                        set_connected('finnhub', False)
+                        return
+
+    # ───────────────────────── TWELVE DATA ─────────────────────────
+
+    def subscribe_twelvedata(self, symbols: List[str], callback: Callable):
+        """Forex & Commodities — EUR/USD, GBP/USD, XAU/USD, XAG/USD, WTI/USD …"""
+        self._schedule(self._connect_twelvedata_with_reconnect(symbols, callback))
+        logger.info(f"📡 Twelve Data: subscribing to {symbols}")
+
+    async def _connect_twelvedata_with_reconnect(self, symbols: List[str], callback: Callable):
+        """Exponential backoff same as Bybit."""
+        from websocket_dashboard import set_connected
+        backoff, max_backoff = 5, 60
+        while self.running:
+            t0 = asyncio.get_event_loop().time()
+            try:
+                await self._connect_twelvedata(symbols, callback)
+                backoff = 5
+            except Exception as e:
+                if asyncio.get_event_loop().time() - t0 > 30:
+                    backoff = 5
+                set_connected('twelvedata', False)
+                logger.error(f"❌ Twelve Data lost: {e} — retry in {backoff}s")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+
+    async def _connect_twelvedata(self, symbols: List[str], callback: Callable):
+        """
+        Twelve Data WebSocket — real-time forex & commodity quotes.
+        Protocol:
+          • Connect: wss://ws.twelvedata.com/v1/quotes/price?apikey=KEY
+          • Subscribe: {"action":"subscribe","params":{"symbols":"EUR/USD,XAU/USD"}}
+          • Price msg: {"event":"price","symbol":"EUR/USD","price":1.0854,...}
+          • Heartbeat: {"event":"heartbeat"} — reply with same to keep alive
+        """
+        from websocket_dashboard import set_connected
+        url = f"{self.twelvedata_url}?apikey={self.twelvedata_key}"
+        async with websockets.connect(url) as ws:
+            self.connections['twelvedata'] = ws
+            set_connected('twelvedata', True, len(symbols))
+            logger.info("✅ Twelve Data connected")
+
+            # Subscribe
+            sym_str = ",".join(symbols)
+            await ws.send(json.dumps({
+                "action": "subscribe",
+                "params": {"symbols": sym_str}
+            }))
+            logger.info(f"📡 Twelve Data: subscribed to {sym_str}")
+
+            async for message in ws:
+                try:
+                    data = json.loads(message)
+                    event = data.get('event', '')
+
+                    # Keep-alive heartbeat
+                    if event == 'heartbeat':
+                        await ws.send(json.dumps({"event": "heartbeat"}))
+                        continue
+
+                    # Subscription confirmation
+                    if event == 'subscribe-status':
+                        ok  = data.get('success', [])
+                        bad = data.get('fails', [])
+                        ok_syms  = [s['symbol'] for s in ok  if isinstance(s, dict)]
+                        bad_syms = [s['symbol'] for s in bad if isinstance(s, dict)]
+                        if ok_syms:
+                            logger.info(f"Twelve Data live: {ok_syms}")
+                        if bad_syms:
+                            # Free tier limit hit — log clearly, don't spam warnings
+                            logger.warning(
+                                f"Twelve Data: {bad_syms} rejected — free tier limit reached. "                                f"Only {ok_syms} streaming. Upgrade at twelvedata.com for more symbols."
+                            )
+                            # Update dashboard to show only confirmed symbols
+                            from websocket_dashboard import set_connected
+                            set_connected('twelvedata', True, len(ok_syms))
+                        continue
+
+                    # Live price tick
+                    if event == 'price':
+                        symbol    = data.get('symbol', '')
+                        price     = float(data.get('price', 0))
+                        bid       = float(data.get('bid', price))
+                        ask       = float(data.get('ask', price))
+                        # Use mid-price; volume not available for forex
+                        if price > 0:
+                            callback('twelvedata', symbol, price, None, None, datetime.now())
 
                 except Exception as e:
-                    err = str(e)
-                    if 'HTTP 401' in err or '401' in err:
-                        self._finnhub_disabled = True
-                        logger.warning("Finnhub WebSocket: HTTP 401 — stopping permanently.")
-                        return  # exit cleanly so reconnect wrapper sees _finnhub_disabled
+                    logger.error(f"Twelve Data msg error: {e}")
 
     # ───────────────────────── CONTROL ─────────────────────────
 
     def stop(self):
-        """Stop all connections"""
         self.running = False
         if self.loop:
             self.loop.call_soon_threadsafe(self.loop.stop)
         logger.info("📡 WebSocket manager stopped")
-
-
-# ───────────────────────── STANDALONE TEST ─────────────────────────
-if __name__ == "__main__":
-    from websocket_dashboard import add_transaction
-
-    def price_callback(source, symbol, price, volume, side, timestamp):
-        """Standalone test callback — feeds dashboard shared store"""
-        add_transaction(source, symbol, price, volume, side)
-        print(f"💰 {source.upper()} | {symbol} | ${price:,.2f} | {volume:.4f} | {side}")
-
-    print("=" * 60)
-    print("🚀 TESTING WEBSOCKET MANAGER")
-    print("=" * 60)
-
-    ws = WebSocketManager()
-    ws.start()
-    ws.subscribe_bybit(['BTCUSDT', 'ETHUSDT', 'SOLUSDT'], price_callback)
-
-    print("\n✅ Listening — trades will appear below")
-    print("Press Ctrl+C to stop\n")
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        ws.stop()
-        print("\n🛑 Stopped")
