@@ -3,6 +3,7 @@ Machine Learning Prediction Engine
 Supports: Random Forest, XGBoost, LSTM, Ensemble
 """
 
+from logger import logger
 import pandas as pd
 import numpy as np
 from typing import Tuple, Dict, Any, List
@@ -18,7 +19,7 @@ try:
     XGBOOST_AVAILABLE = True
 except ImportError:
     XGBOOST_AVAILABLE = False
-    print("XGBoost not available. Install with: pip install xgboost")
+    logger.info("XGBoost not available. Install with: pip install xgboost")
 
 try:
     from tensorflow import keras
@@ -27,7 +28,7 @@ try:
     TENSORFLOW_AVAILABLE = True
 except ImportError:
     TENSORFLOW_AVAILABLE = False
-    print("TensorFlow not available. Install with: pip install tensorflow")
+    logger.info("TensorFlow not available. Install with: pip install tensorflow")
 
 
 class PredictionEngine:
@@ -157,7 +158,7 @@ class PredictionEngine:
     
     def train_random_forest(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
         """Train Random Forest model"""
-        print("Training Random Forest...")
+        logger.info("Training Random Forest...")
         self.model = RandomForestRegressor(
             n_estimators=100,
             max_depth=10,
@@ -172,10 +173,10 @@ class PredictionEngine:
     def train_xgboost(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
         """Train XGBoost model"""
         if not XGBOOST_AVAILABLE:
-            print("XGBoost not available, falling back to Random Forest")
+            logger.info("XGBoost not available, falling back to Random Forest")
             return self.train_random_forest(X_train, y_train)
             
-        print("Training XGBoost...")
+        logger.info("Training XGBoost...")
         self.model = xgb.XGBRegressor(
             n_estimators=100,
             max_depth=7,
@@ -191,10 +192,10 @@ class PredictionEngine:
     def train_lstm(self, X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray, y_test: np.ndarray) -> None:
         """Train LSTM model"""
         if not TENSORFLOW_AVAILABLE:
-            print("TensorFlow not available, falling back to Random Forest")
+            logger.info("TensorFlow not available, falling back to Random Forest")
             return self.train_random_forest(X_train, y_train)
         
-        print("Training LSTM...")
+        logger.info("Training LSTM...")
         
         # Reshape for LSTM [samples, time steps, features]
         X_train_lstm = X_train.reshape((X_train.shape[0], 1, X_train.shape[1]))
@@ -223,7 +224,7 @@ class PredictionEngine:
         
     def train_ensemble(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
         """Train ensemble of models"""
-        print("Training Ensemble (RF + GradientBoosting)...")
+        logger.info("Training Ensemble (RF + GradientBoosting)...")
         
         rf = RandomForestRegressor(
             n_estimators=100,
@@ -269,7 +270,7 @@ class PredictionEngine:
         elif self.model_type == "ensemble":
             self.train_ensemble(X_train, y_train)
         else:
-            print(f"Unknown model type: {self.model_type}, using Random Forest")
+            logger.info(f"Unknown model type: {self.model_type}, using Random Forest")
             self.train_random_forest(X_train, y_train)
         
         # Evaluate
@@ -283,10 +284,10 @@ class PredictionEngine:
         mae = mean_absolute_error(y_test, predictions)
         r2 = r2_score(y_test, predictions)
         
-        print(f"\nModel Performance:")
-        print(f"  MSE: {mse:.6f}")
-        print(f"  MAE: {mae:.6f}")
-        print(f"  R²: {r2:.4f}")
+        logger.info(f"\nModel Performance:")
+        logger.info(f"  MSE: {mse:.6f}")
+        logger.info(f"  MAE: {mae:.6f}")
+        logger.info(f"  R²: {r2:.4f}")
         
     def predict_batch(self, X: np.ndarray) -> np.ndarray:
         """Make predictions on batch of data"""
@@ -391,20 +392,20 @@ if __name__ == "__main__":
     sys.path.append('..')
     from indicators.technical import TechnicalIndicators
     
-    print("Fetching data...")
+    logger.info("Fetching data...")
     ticker = yf.Ticker("EURUSD=X")
     df = ticker.history(period="100d")
     df.columns = df.columns.str.lower()
     
-    print("Adding indicators...")
+    logger.info("Adding indicators...")
     df = TechnicalIndicators.add_all_indicators(df)
     
-    print("\nTraining model...")
+    logger.info("\nTraining model...")
     engine = PredictionEngine(model_type="ensemble")
     engine.train(df, target_periods=5)
     
-    print("\nMaking prediction...")
+    logger.info("\nMaking prediction...")
     prediction = engine.predict_next(df)
-    print(f"Direction: {prediction['direction']}")
-    print(f"Confidence: {prediction['confidence']:.2%}")
-    print(f"Predicted change: {prediction['price_change_pct']:.2f}%")
+    logger.info(f"Direction: {prediction['direction']}")
+    logger.info(f"Confidence: {prediction['confidence']:.2%}")
+    logger.info(f"Predicted change: {prediction['price_change_pct']:.2f}%")

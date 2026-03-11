@@ -70,7 +70,7 @@ if not args.no_telegram:
         tok  = os.getenv('TELEGRAM_TOKEN')
         chat = os.getenv('TELEGRAM_CHAT_ID')
         if not tok and os.path.exists('config/telegram_config.json'):
-            with open('config/telegram_config.json') as _f:
+            with open('config/telegram_config.json', encoding='utf-8') as _f:
                 _cfg = json.load(_f)
                 tok, chat = _cfg.get('bot_token'), _cfg.get('chat_id')
         if tok and chat:

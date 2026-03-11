@@ -17,6 +17,10 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from collections import defaultdict, deque
 from logger import logger
+try:
+    from telethon_whale_store import whale_store as _whale_store
+except Exception:
+    _whale_store = None
 
 # ─── DB ─────────────────────────────────────────────────────────────────────
 try:
@@ -327,7 +331,22 @@ def _build_quality_signal(asset:str, category:str, bot, cache:SignalCache) -> Op
             svotes=comb.get('votes',{})
         except Exception: pass
         learn_b=signal_engine._get_bias(asset)
-        confidence=min(0.97,max(0.30,conf_base+ml_b+vb+learn_b))
+        # ── Telethon whale sentiment boost ───────────────────────────────────
+        whale_b = 0.0
+        try:
+            if _whale_store is not None:
+                sym = asset.split('-')[0].upper()
+                raw_boost = _whale_store.get_confidence_boost(sym)
+                # Only apply if whale direction agrees with signal direction
+                sentiment = _whale_store.get_sentiment(sym)
+                if (direction == 'BUY'  and sentiment > 0) or                    (direction == 'SELL' and sentiment < 0):
+                    whale_b = abs(raw_boost)
+                elif abs(sentiment) > 0.3:
+                    whale_b = -abs(raw_boost) * 0.5   # opposing whale = mild penalty
+        except Exception:
+            pass
+        # ─────────────────────────────────────────────────────────────────────
+        confidence=min(0.97,max(0.30,conf_base+ml_b+vb+learn_b+whale_b))
         snap={}
         for col in ['rsi','macd','macd_signal','sma_20','sma_50','bb_upper','bb_lower','atr']:
             if col in df15.columns:
@@ -340,6 +359,8 @@ def _build_quality_signal(asset:str, category:str, bot, cache:SignalCache) -> Op
             'atr':round(atr,6),'risk_reward':rr,'timeframe_conf':label,'session':session,
             'reasons':_build_reasons(t15,t1h,t4h,label,direction,atr,rr,session,df15),
             'indicators':snap,'strategy_votes':svotes,
+            'whale_boost':round(whale_b,4),
+            'whale_sentiment':round(_whale_store.get_sentiment(asset.split('-')[0].upper()) if _whale_store else 0.0, 3),
         }
     except Exception as e:
         logger.error(f"_build_quality_signal {asset}: {e}")
@@ -560,11 +581,19 @@ def run_stress_test(positions:List[Dict], balance:float) -> Dict:
 def _run_tests():
     import traceback as tb
     p=0; f=0
+    results=[]
     def t(name,fn):
         nonlocal p,f
-        try: fn(); print(f"  PASS  {name}"); p+=1
-        except Exception as e: print(f"  FAIL  {name}: {e}"); tb.print_exc(); f+=1
-    print("\n"+"="*60+"\n  SIGNAL ENGINE UNIT TESTS\n"+"="*60)
+        try:
+            fn()
+            logger.info(f"TEST PASS  {name}")
+            results.append({"name":name,"status":"PASS"})
+            p+=1
+        except Exception as e:
+            logger.error(f"TEST FAIL  {name}: {e}\n{tb.format_exc()}")
+            results.append({"name":name,"status":"FAIL","error":str(e)})
+            f+=1
+    logger.info("="*60+" SIGNAL ENGINE UNIT TESTS "+"="*60)
     def test_atr_rr():
         import pandas as pd, numpy as np
         prices=2000+np.cumsum(np.random.randn(100))
@@ -627,8 +656,8 @@ def _run_tests():
     def test_session():
         s=_session(); assert s in ('Asian','London','NewYork','Overlap')
     t("Session detection valid",test_session)
-    print("="*60+f"\n  {p} passed, {f} failed\n"+"="*60+"\n")
-    return f==0
+    logger.info(f"TESTS COMPLETE: {p} passed, {f} failed")
+    return f==0, results
 
 if __name__=='__main__':
     exit(0 if _run_tests() else 1)

@@ -1,3 +1,4 @@
+from logger import logger
 """
 PROFITABILITY UPGRADE PATCH
 ============================
@@ -38,7 +39,7 @@ class CooldownTracker:
     def record_loss(self, asset: str):
         with self._lock:
             self._losses[asset] = datetime.now()
-            print(f"   🚫 Cooldown activated for {asset} ({self.cooldown_minutes}min)")
+            logger.info(f"Cooldown activated for {asset} ({self.cooldown_minutes}min)")
 
     def is_cooling_down(self, asset: str) -> bool:
         with self._lock:
@@ -86,7 +87,7 @@ class CategoryLimiter:
             if p.get('category', '').lower() == cat
         )
         if current >= limit:
-            print(f"   🚫 Category limit reached: {cat} ({current}/{limit})")
+            logger.warning(f"Category limit reached: {cat} ({current}/{limit})")
             return False
         return True
 
@@ -320,7 +321,7 @@ def enhance_signal(signal: dict, df=None, open_positions: list = None) -> Option
     # --- Check cooldown ---
     if cooldown_tracker.is_cooling_down(asset):
         remaining = cooldown_tracker.get_remaining(asset)
-        print(f"   ⏳ {asset} on cooldown ({remaining}min remaining) - skipping")
+        logger.info(f"{asset} on cooldown ({remaining}min remaining) - skipping")
         return None
 
     # --- Check category limit ---
@@ -333,7 +334,7 @@ def enhance_signal(signal: dict, df=None, open_positions: list = None) -> Option
     if df is not None:
         passes, reason = passes_entry_filter(df, direction)
         if not passes:
-            print(f"   ⛔ Entry filter: {reason}")
+            logger.info(f"Entry filter blocked: {reason}")
             return None
 
     # --- Fix stop loss using ATR ---
@@ -341,7 +342,7 @@ def enhance_signal(signal: dict, df=None, open_positions: list = None) -> Option
     if df is not None and (stop_loss == 0 or abs(entry_price - stop_loss) / entry_price < 0.001):
         # Stop is missing or too tight - recalculate with ATR
         stop_loss = calculate_atr_stop(df, direction, entry_price, multiplier=2.0)
-        print(f"   📐 ATR stop applied: {stop_loss:.5f} (was {signal.get('stop_loss', 0):.5f})")
+        logger.debug(f"ATR stop applied: {stop_loss:.5f}")
         signal['stop_loss'] = stop_loss
 
     # --- Fix missing take profit levels (main VOTING bug) ---
@@ -352,7 +353,7 @@ def enhance_signal(signal: dict, df=None, open_positions: list = None) -> Option
             atr = df['atr'].iloc[-1]
         tp_levels = generate_take_profit_levels(direction, entry_price, stop_loss, atr)
         signal['take_profit_levels'] = tp_levels
-        print(f"   🎯 Take-profit levels added: TP1={tp_levels[0]['price']:.5f}, "
+        logger.debug(f"Take-profit levels added: TP1={tp_levels[0]['price']:.5f}, "
               f"TP2={tp_levels[1]['price']:.5f}, TP3={tp_levels[2]['price']:.5f}")
 
     return signal
@@ -398,13 +399,13 @@ def apply_upgrades(trading_system_instance):
     trading_system_instance.cooldown_tracker = cooldown_tracker
     trading_system_instance.category_limiter = category_limiter
     trading_system_instance.position_age_monitor = position_age_monitor
-    print("✅ Profitability upgrades applied:")
-    print("   • Asset cooldown: 60min after a loss")
-    print("   • Category limits: max 1-2 positions per asset class")
-    print("   • ATR-based stops: adapts to actual volatility")
-    print("   • Take-profit levels: auto-generated for VOTING strategy")
-    print("   • Entry quality filter: blocks weak/bad entries")
-    print("   • Position age limit: closes stale trades after 4h")
+    logger.info("Profitability upgrades applied:")
+    logger.info("  • Asset cooldown: 60min after a loss")
+    logger.info("  • Category limits: max 1-2 positions per asset class")
+    logger.info("  • ATR-based stops: adapts to actual volatility")
+    logger.info("  • Take-profit levels: auto-generated for VOTING strategy")
+    logger.info("  • Entry quality filter: blocks weak/bad entries")
+    logger.info("  • Position age limit: closes stale trades after 4h")
 
 
 # ============================================================
@@ -412,65 +413,4 @@ def apply_upgrades(trading_system_instance):
 # ============================================================
 
 if __name__ == "__main__":
-    print("""
-=======================================================
-PROFITABILITY UPGRADE - INTEGRATION GUIDE
-=======================================================
-
-STEP 1: Copy this file to your forex_prediction_bot folder.
-
-STEP 2: In trading_system.py, add near the top imports:
-    from profitability_upgrade import (
-        apply_upgrades, enhance_signal,
-        on_trade_closed, cooldown_tracker
-    )
-
-STEP 3: In UltimateTradingSystem.__init__(), add:
-    apply_upgrades(self)
-
-STEP 4: In your trading loop, wrap signal execution:
-
-    BEFORE:
-        trade = self.paper_trader.execute_signal(final_signal)
-
-    AFTER:
-        enhanced = enhance_signal(
-            final_signal,
-            df=df_15m,
-            open_positions=self.paper_trader.get_open_positions()
-        )
-        if enhanced:
-            trade = self.paper_trader.execute_signal(enhanced)
-
-STEP 5: In paper_trader.py, in the to_close loop, add:
-    from profitability_upgrade import on_trade_closed
-    on_trade_closed(trade.asset, trade.pnl, trade.exit_reason)
-
-STEP 6: In your trading loop, check stale positions:
-    current_prices = {p['asset']: get_current_price(p['asset'])
-                      for p in self.paper_trader.get_open_positions()}
-    stale = self.position_age_monitor.get_stale_positions(
-        self.paper_trader.get_open_positions(), current_prices
-    )
-    for s in stale:
-        print(f"Force-closing stale: {s['asset']} ({s['age_hours']}h)")
-        self.paper_trader.force_close(s['trade_id'], current_prices[s['asset']], s['reason'])
-
-=======================================================
-ALSO DELETE THESE FILES (god mode cleanup):
-  - god_trading_system.py
-  - force_patch.py
-  - windows_complete_patch.py
-  - windows_patch.py
-  - test_god_mode.py
-  - test_god_windows.py
-  - test_simple.py
-  - test_quick.py
-  - test_patches.py
-
-AND IN trading_system.py, REMOVE:
-  - The god mode try/except import block (lines ~35-45)
-  - 'god_mode': self.god_mode_strategy  in self.strategies dict
-  - The god_mode_strategy() method itself
-=======================================================
-""")
+    logger.info("Run: python profitability_upgrade.py to see usage")

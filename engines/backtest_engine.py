@@ -541,7 +541,7 @@ def optimize_all_strategies(self, asset: str, lookback_days: int = 365):
         
         # Save top strategies to file
         top_strategies = comparison.head(10).to_dict('records')
-        with open(f"optimization_results/{asset}_top_strategies.json", 'w') as f:
+        with open(f"optimization_results/{asset}_top_strategies.json", 'w', encoding='utf-8') as f:
             json.dump(top_strategies, f, indent=2, default=str)
     
     # Update strategy weights based on optimization
@@ -989,7 +989,7 @@ def create_master_optimization_report(self, all_results: Dict):
         }
         
         filename = f"optimization_results/master_optimization_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(filename, 'w') as f:
+        with open(filename, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, default=str)
         
         logger.info(f"Master report saved to {filename}")
@@ -1017,7 +1017,7 @@ def _save_optimization_results(self, all_results: Dict):
                         'total_return': result.get('results_summary', {}).get('best_return', 0)
                     }
         
-        with open(filename, 'w') as f:
+        with open(filename, 'w', encoding='utf-8') as f:
             json.dump(serializable_results, f, indent=2, default=str)
         
         logger.info(f"All optimization results saved to: {filename}")

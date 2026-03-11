@@ -239,10 +239,10 @@ class WebSocketManager:
 
                     # Subscription confirmation
                     if event == 'subscribe-status':
-                        ok  = data.get('success', [])
-                        bad = data.get('fails', [])
-                        ok_syms  = [s['symbol'] for s in ok  if isinstance(s, dict)]
-                        bad_syms = [s['symbol'] for s in bad if isinstance(s, dict)]
+                        ok  = data.get('success') or []
+                        bad = data.get('fails')   or []
+                        ok_syms  = [s['symbol'] for s in ok  if isinstance(s, dict) and 'symbol' in s]
+                        bad_syms = [s['symbol'] for s in bad if isinstance(s, dict) and 'symbol' in s]
                         if ok_syms:
                             logger.info(f"Twelve Data live: {ok_syms}")
                         if bad_syms:

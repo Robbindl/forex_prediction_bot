@@ -8,6 +8,10 @@ from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 import json
 from logger import logger
+try:
+    from telethon_whale_store import whale_store as _whale_store
+except Exception:
+    _whale_store = None
 
 # FIX 4: top-level import — not inside function call per cycle
 # FIX 5 (Phase 2): TTL-based singleton — refresh sentiment every 5 minutes
@@ -232,11 +236,23 @@ class StrategyVotingEngine:
         else:
             logger.info(f"Voting result: HOLD (BUY: {buy_percentage:.2%}, SELL: {sell_percentage:.2%})")
         
-        # Get the most recent price for entry
-        if 'df' in self.trading_system.__dict__:
-            current_price = self.trading_system.df['close'].iloc[-1]
-        else:
-            current_price = 0
+        # Get the most recent price for entry — use entry_price from signals
+        current_price = 0
+        try:
+            # Primary: entry_price already set in individual strategy signals
+            prices = [s.get('entry_price', 0) for s in signals.values() if s.get('entry_price', 0) > 0]
+            if prices:
+                current_price = float(sum(prices) / len(prices))
+            # Fallback: fetch from fetcher if wired
+            if current_price == 0 and hasattr(self, 'trading_system') and self.trading_system:
+                asset = getattr(self.trading_system, 'current_asset', None)
+                if asset:
+                    fetcher = getattr(self.trading_system, 'fetcher', None)
+                    if fetcher:
+                        p, _ = fetcher.get_real_time_price(asset, 'crypto')
+                        current_price = p or 0
+        except Exception as _pe:
+            logger.debug(f"current_price fetch in vote: {_pe}")
         
         # Calculate average stop loss and take profit from voting strategies
         stop_losses = []
@@ -270,6 +286,26 @@ class StrategyVotingEngine:
         if news_contributed:
             logger.info("News sentiment contributed to this vote")
         
+        # ── Telethon whale boost on final VOTING confidence ─────────────────
+        whale_sentiment = 0.0
+        try:
+            if _whale_store is not None and final_signal != 'HOLD':
+                asset = getattr(self.trading_system, 'current_asset', '')
+                sym = asset.split('-')[0].upper() if asset else ''
+                if sym:
+                    whale_sentiment = _whale_store.get_sentiment(sym)
+                    whale_b = _whale_store.get_confidence_boost(sym)
+                    if (final_signal == 'BUY'  and whale_sentiment > 0) or                        (final_signal == 'SELL' and whale_sentiment < 0):
+                        confidence = min(0.95, confidence + abs(whale_b))
+                        all_reasons.append(f"Whale: {whale_sentiment:+.2f}")
+                        logger.info(f"Whale boost applied to VOTING: {whale_sentiment:+.2f} → confidence {confidence:.2f}")
+                    elif abs(whale_sentiment) > 0.3:
+                        confidence = max(0.30, confidence - abs(whale_b) * 0.5)
+                        all_reasons.append(f"Whale opposing: {whale_sentiment:+.2f}")
+        except Exception as _we:
+            logger.debug(f"Whale boost in voting: {_we}")
+        # ─────────────────────────────────────────────────────────────────────
+
         return {
             'signal': final_signal,
             'confidence': confidence,
@@ -281,7 +317,8 @@ class StrategyVotingEngine:
             'reason': f"Vote: {', '.join(all_reasons[:3])}" + (f" +{len(all_reasons)-3} more" if len(all_reasons) > 3 else ""),
             'contributing_strategies': contributing_strategies,
             'strategy_id': 'VOTING',
-            'strategy_emoji': '🗳️' + news_emoji
+            'strategy_emoji': '🗳️' + news_emoji,
+            'whale_sentiment': round(whale_sentiment, 3),
         }
     
     def update_strategy_performance(self, trade_result: Dict):

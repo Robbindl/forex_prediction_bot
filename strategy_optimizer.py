@@ -2,6 +2,7 @@
 Strategy Optimizer - Grid search optimization for trading strategies
 """
 
+from logger import logger
 import itertools
 import pandas as pd
 import numpy as np
@@ -1179,7 +1180,7 @@ class StrategyOptimizer:
         values = param_grid.values()
         combinations = list(itertools.product(*values))
         
-        print(f"\n🔍 Optimizing {strategy_name} for {asset} with {len(combinations)} parameter combinations...")
+        logger.info(f"\n🔍 Optimizing {strategy_name} for {asset} with {len(combinations)} parameter combinations...")
         
         results = []
         
@@ -1189,7 +1190,7 @@ class StrategyOptimizer:
             
             # Progress indicator
             if (i + 1) % 10 == 0:
-                print(f"   Progress: {i + 1}/{len(combinations)} combinations tested...")
+                logger.info(f"   Progress: {i + 1}/{len(combinations)} combinations tested...")
             
             try:
                 # Generate signals with these params
@@ -1217,11 +1218,11 @@ class StrategyOptimizer:
                 })
                 
             except Exception as e:
-                print(f"  ⚠️ Error with {params}: {e}")
+                logger.info(f"  ⚠️ Error with {params}: {e}")
                 continue
         
         if not results:
-            print(f"  ❌ No valid results for {strategy_name}")
+            logger.info(f"  ❌ No valid results for {strategy_name}")
             return {'error': 'No valid results'}
         
         # Convert to DataFrame for analysis
@@ -1268,14 +1269,14 @@ class StrategyOptimizer:
         self._save_results(asset, strategy_name, results_df, result_entry)
         
         # Print summary
-        print(f"\n✅ {strategy_name} Optimization Complete for {asset}")
-        print(f"   Best Parameters: {best['params']}")
-        print(f"   Best {metric}: {best_value:.4f}")
-        print(f"   Win Rate: {best['win_rate']:.1%}")
-        print(f"   Profit Factor: {best['profit_factor']:.2f}")
-        print(f"   Total Return: {best['total_return']:.2f}%")
-        print(f"   Max Drawdown: {best['max_dd']:.2%}")
-        print(f"   Trades: {best['trades']}")
+        logger.info(f"\n✅ {strategy_name} Optimization Complete for {asset}")
+        logger.info(f"   Best Parameters: {best['params']}")
+        logger.info(f"   Best {metric}: {best_value:.4f}")
+        logger.info(f"   Win Rate: {best['win_rate']:.1%}")
+        logger.info(f"   Profit Factor: {best['profit_factor']:.2f}")
+        logger.info(f"   Total Return: {best['total_return']:.2f}%")
+        logger.info(f"   Max Drawdown: {best['max_dd']:.2%}")
+        logger.info(f"   Trades: {best['trades']}")
         
         return result_entry
     
@@ -1292,7 +1293,7 @@ class StrategyOptimizer:
         values = param_grid.values()
         combinations = list(itertools.product(*values))
         
-        print(f"\n🔍 Optimizing {strategy_name} for {asset} with {len(combinations)} combinations (parallel)...")
+        logger.info(f"\n🔍 Optimizing {strategy_name} for {asset} with {len(combinations)} combinations (parallel)...")
         
         results = []
         
@@ -1312,9 +1313,9 @@ class StrategyOptimizer:
                 try:
                     chunk_results = future.result(timeout=60)
                     results.extend(chunk_results)
-                    print(f"   ✓ Chunk {future_to_chunk[future] + 1}/{len(chunks)} complete")
+                    logger.info(f"   ✓ Chunk {future_to_chunk[future] + 1}/{len(chunks)} complete")
                 except Exception as e:
-                    print(f"   ⚠️ Chunk failed: {e}")
+                    logger.info(f"   ⚠️ Chunk failed: {e}")
         
         if not results:
             return {'error': 'No valid results'}
@@ -1379,8 +1380,8 @@ class StrategyOptimizer:
         with open(json_filename, 'w') as f:
             json.dump(best_result, f, indent=2, default=str)
         
-        print(f"   💾 Results saved to {filename}")
-        print(f"   💾 Best params saved to {json_filename}")
+        logger.info(f"   💾 Results saved to {filename}")
+        logger.info(f"   💾 Best params saved to {json_filename}")
     
     def get_best_params(self, asset: str, strategy: str) -> Optional[Dict]:
         """Get best parameters from latest optimization"""
@@ -1793,7 +1794,7 @@ class StrategyOptimizer:
         
         # Make sure we're working with a DataFrame, not a list
         if not isinstance(df, pd.DataFrame):
-            print(f"   ⚠️ Expected DataFrame, got {type(df)}")
+            logger.info(f"   ⚠️ Expected DataFrame, got {type(df)}")
             return signals
         
         try:
@@ -1845,7 +1846,7 @@ class StrategyOptimizer:
                     })
             
         except Exception as e:
-            print(f"   ⚠️ UO calculation error: {e}")
+            logger.info(f"   ⚠️ UO calculation error: {e}")
         
         return signals
     

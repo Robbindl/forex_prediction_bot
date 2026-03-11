@@ -355,7 +355,7 @@ class StrategyEngine:
             else:  # Stocks
                 return 0.008  # ← CHANGED from 0.005 to 0.8%
     
-        stop_pct = get_stop_pct(self.current_asset)
+        stop_pct = get_stop_pct(getattr(self, "current_asset", None))
     
         # Calculate signals
         if 'rsi' in df.columns:

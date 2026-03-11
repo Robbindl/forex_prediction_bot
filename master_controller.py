@@ -297,7 +297,7 @@ class MasterController:
         self.telegram_config = None
         if os.path.exists('config/telegram_config.json'):
             try:
-                with open('config/telegram_config.json', 'r') as f:
+                with open('config/telegram_config.json', 'r', encoding='utf-8') as f:
                     self.telegram_config = json.load(f)
                 logger.info("Telegram config loaded (handled by main bot)")
             except:
@@ -307,7 +307,7 @@ class MasterController:
         self.email_config = None
         if os.path.exists('config/email_config.json'):
             try:
-                with open('config/email_config.json', 'r') as f:
+                with open('config/email_config.json', 'r', encoding='utf-8') as f:
                     self.email_config = json.load(f)
                 logger.info("Email alerts configured")
             except:

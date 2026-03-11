@@ -45,6 +45,13 @@ class PaperTrade:
         # FIX 3: use shared db — never create a new DatabaseService per trade
         self.db = db
         self.use_db = db is not None and getattr(db, "use_db", False)
+        # Learning engine signal ID — set after recording, used to resolve outcome
+        self.signal_id: str = ""
+        # Trailing stop state
+        self.trailing_stop_active: bool = False
+        self.trailing_distance: float = 0.0
+        self.highest_price: float = entry_price
+        self.lowest_price: float = entry_price
     
     def to_dict(self) -> Dict:
         """Convert trade to dictionary"""
@@ -68,7 +75,8 @@ class PaperTrade:
             'status': self.status,
             'duration_minutes': self.duration_minutes,
             'strategy_id': self.strategy_id,
-            'strategy_emoji': self.strategy_emoji
+            'strategy_emoji': self.strategy_emoji,
+            'signal_id': self.signal_id
         }
 
 
@@ -97,16 +105,63 @@ class PaperTrader:
         
         # Load history if exists
         self._load_history()
-        
+
+        # Real-time position monitor — polls prices every 5s and calls update_positions
+        self._monitor_running = False
+        self._monitor_thread: threading.Thread | None = None
+
         logger.info("Paper Trader Initialized")
         logger.info(f"Open Positions: {len(self.open_positions)}")
         logger.info(f"Historical Trades: {len(self.closed_positions)}")
     
+    # ── Real-time position monitor ──────────────────────────────────────────────
+    def start_monitor(self) -> None:
+        """Start background thread that polls prices and fires SL/TP checks every 5s."""
+        if self._monitor_running:
+            return
+        self._monitor_running = True
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, name="pos-monitor", daemon=True)
+        self._monitor_thread.start()
+        logger.info("Position monitor started (5s interval)")
+
+    def stop_monitor(self) -> None:
+        """Stop the position monitor thread gracefully."""
+        self._monitor_running = False
+        logger.info("Position monitor stopped")
+
+    def _monitor_loop(self) -> None:
+        """Background loop: fetch current prices → update_positions → SL/TP resolution."""
+        import time
+        while self._monitor_running:
+            try:
+                with self.lock:
+                    open_assets = {t.asset: t.category for t in self.open_positions.values()}
+                if open_assets:
+                    prices: dict = {}
+                    # Try to get prices via the fetcher wired on trading_system
+                    fetcher = None
+                    if hasattr(self, 'trading_system') and self.trading_system:
+                        fetcher = getattr(self.trading_system, 'fetcher', None)
+                    if fetcher:
+                        for asset, category in open_assets.items():
+                            try:
+                                price, _ = fetcher.get_real_time_price(asset, category)
+                                if price and price > 0:
+                                    prices[asset] = price
+                            except Exception as _pe:
+                                logger.debug(f"Monitor price fetch {asset}: {_pe}")
+                    if prices:
+                        self.update_positions(prices)
+            except Exception as e:
+                logger.error(f"Position monitor error: {e}", exc_info=True)
+            time.sleep(5)
+    # ────────────────────────────────────────────────────────────────────────────
+
     def _load_history(self):
         """Load trade history from file"""
         try:
             if os.path.exists(self.history_file):
-                with open(self.history_file, 'r') as f:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
                     # Load closed positions (simplified - would need proper deserialization)
@@ -126,7 +181,7 @@ class PaperTrader:
                 'open_positions': [p.to_dict() for p in self.open_positions.values()],
                 'closed_positions': [p.to_dict() for p in self.closed_positions]
             }
-            with open(self.history_file, 'w') as f:
+            with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(history, f, indent=2, default=str)
         except Exception as e:
             logger.error(f"Could not save trade history: {e}")
@@ -489,6 +544,9 @@ class PaperTrader:
             
             # Store position
             self.open_positions[trade.trade_id] = trade
+            # Persist signal_id from signal dict so learning engine can resolve outcome later
+            if signal.get('signal_id'):
+                trade.signal_id = signal['signal_id']
             
             # ===== RECORD TRADE IN SESSION TRACKER =====
             if hasattr(self, 'trading_system') and hasattr(self.trading_system, 'session_tracker'):
@@ -741,6 +799,20 @@ class PaperTrader:
                     except Exception as e:
                         logger.error(f"Could not send Telegram alert: {e}")
                 # ================================
+
+                # ===== SIGNAL LEARNING: resolve outcome so bot learns =====
+                sid = getattr(trade, 'signal_id', None) or (
+                    trade.to_dict().get('signal_id') if hasattr(trade, 'to_dict') else None
+                )
+                if sid:
+                    try:
+                        from signal_learning import signal_engine
+                        outcome = 'TP_HIT' if 'Take Profit' in (trade.exit_reason or '') else 'SL_HIT'
+                        signal_engine.resolve(sid, outcome, trade.exit_price)
+                        logger.debug(f"Learning engine notified: {trade.asset} {outcome}")
+                    except Exception as _le:
+                        logger.debug(f"Signal learning resolve skipped: {_le}")
+                # =========================================================
             
             if to_close: 
                 self._save_history()
@@ -889,10 +961,10 @@ if __name__ == "__main__":
     
     # Execute trade
     result = trader.execute_signal(test_signal)
-    print(f"\nTrade executed: {result}")
+    logger.info(f"Trade executed: {result}")
     
     # Update positions (simulate price increase)
     trader.update_positions({'BTC-USD': 51000})
     
     # Check performance
-    print(f"\nPerformance: {trader.get_performance()}")
+    logger.info(f"Performance: {trader.get_performance()}")

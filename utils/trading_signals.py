@@ -3,6 +3,7 @@ Trading Signal Generator
 Calculates entry points, stop loss, take profit levels, and position sizing
 """
 
+from logger import logger
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Any, Tuple
@@ -383,22 +384,22 @@ if __name__ == "__main__":
     # Generate trading signal
     signal = TradingSignalGenerator.generate_entry_signal(df)
     
-    print(f"\n{'='*60}")
-    print("TRADING SIGNAL ANALYSIS")
-    print(f"{'='*60}")
-    print(f"Signal: {signal['signal']}")
-    print(f"Entry Price: {signal['entry_price']:.5f}")
-    print(f"Stop Loss: {signal['stop_loss']:.5f}")
-    print(f"Risk: {signal['risk_pct']:.2f}%")
-    print(f"Confidence: {signal['confidence']:.0%}")
-    print(f"Reason: {signal['reason']}")
+    logger.info(f"\n{'='*60}")
+    logger.info("TRADING SIGNAL ANALYSIS")
+    logger.info(f"{'='*60}")
+    logger.info(f"Signal: {signal['signal']}")
+    logger.info(f"Entry Price: {signal['entry_price']:.5f}")
+    logger.info(f"Stop Loss: {signal['stop_loss']:.5f}")
+    logger.info(f"Risk: {signal['risk_pct']:.2f}%")
+    logger.info(f"Confidence: {signal['confidence']:.0%}")
+    logger.info(f"Reason: {signal['reason']}")
     
-    print(f"\nTake Profit Levels:")
+    logger.info(f"\nTake Profit Levels:")
     for i, tp in enumerate(signal['take_profit_levels'], 1):
-        print(f"  TP{i}: {tp['price']:.5f} (R:R {tp['risk_reward']}:1, +{tp['potential_gain_pct']:.2f}%)")
+        logger.info(f"  TP{i}: {tp['price']:.5f} (R:R {tp['risk_reward']}:1, +{tp['potential_gain_pct']:.2f}%)")
     
-    print(f"\nSupport Levels: {[f'{s:.5f}' for s in signal['support_levels'][:3]]}")
-    print(f"Resistance Levels: {[f'{r:.5f}' for r in signal['resistance_levels'][:3]]}")
+    logger.info(f"\nSupport Levels: {[f'{s:.5f}' for s in signal['support_levels'][:3]]}")
+    logger.info(f"Resistance Levels: {[f'{r:.5f}' for r in signal['resistance_levels'][:3]]}")
     
     # Calculate position size example
     position = TradingSignalGenerator.calculate_position_size(
@@ -408,7 +409,7 @@ if __name__ == "__main__":
         stop_loss=signal['stop_loss']
     )
     
-    print(f"\nPosition Sizing (1% risk on $10,000):")
-    print(f"  Position Size: {position['position_size']:.2f} units")
-    print(f"  Max Loss: ${position['max_loss']:.2f}")
-    print(f"{'='*60}\n")
+    logger.info(f"\nPosition Sizing (1% risk on $10,000):")
+    logger.info(f"  Position Size: {position['position_size']:.2f} units")
+    logger.info(f"  Max Loss: ${position['max_loss']:.2f}")
+    logger.info(f"{'='*60}\n")

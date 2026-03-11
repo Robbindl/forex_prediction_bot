@@ -88,9 +88,9 @@ class NASALevelTrainer:
     """
     
     def __init__(self, models_dir: str = "trained_models"):
-        print("\n" + "🚀"*60)
-        print("🚀 INITIALIZING NASA-LEVEL ULTIMATE POWER TRAINER")
-        print("🚀"*60 + "\n")
+        logger.info("\n" + "🚀"*60)
+        logger.info("🚀 INITIALIZING NASA-LEVEL ULTIMATE POWER TRAINER")
+        logger.info("🚀"*60 + "\n")
         
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(exist_ok=True)
@@ -197,6 +197,10 @@ class NASALevelTrainer:
         self.hyperparameters = self._init_hyperparameters()
         self.best_params: Dict[str, Any] = {}
         
+        # In-session data cache: avoids re-fetching same asset within one training run
+        self._data_cache: Dict[str, Any] = {}
+        self._cache_lock = threading.Lock()
+
         # Performance metrics
         self.metrics: Dict[str, Any] = {
             'start_time': datetime.now(),
@@ -427,7 +431,16 @@ class NASALevelTrainer:
     def train_single_asset(self, asset: str, category: str, timeframe: str) -> Dict:
         """Train a single asset with better error handling"""
         start_time = time.time()
-        
+
+        # Smart skip: if model trained today, reuse it (saves time on re-runs)
+        safe_name = asset.replace('/', '_').replace('\\', '_').replace(':', '_').replace('^', '')
+        model_path = self.models_dir / f"{safe_name}_{timeframe}.pkl"
+        if model_path.exists():
+            age_hours = (time.time() - model_path.stat().st_mtime) / 3600
+            if age_hours < 20:
+                self.logger.info(f"⏭️  {asset} ({timeframe}) trained {age_hours:.1f}h ago — skipping")
+                return {'asset': asset, 'timeframe': timeframe, 'status': 'skipped', 'time': 0}
+
         try:
             self.logger.info(f"🚀 Training {asset} ({category}) on {timeframe}...")
             
@@ -435,14 +448,25 @@ class NASALevelTrainer:
             df = None
             sources_tried = []
             
-            # Try primary fetcher first
-            try:
-                df = self.fetcher.get_historical_data(asset, timeframe, days=500)
-                if df is not None and not df.empty and len(df) >= self.min_data_points:
-                    sources_tried.append("primary")
-                    self.logger.debug(f"✅ Primary source: {len(df)} rows")
-            except Exception as e:
-                self.logger.debug(f"Primary fetch failed for {asset}: {e}")
+            # Check in-session cache first (avoids re-fetching same asset/tf)
+            cache_key = f"{asset}_{timeframe}"
+            with self._cache_lock:
+                cached = self._data_cache.get(cache_key)
+            if cached is not None and len(cached) >= self.min_data_points:
+                df = cached.copy()
+                sources_tried.append("cache")
+                self.logger.debug(f"✅ Cache hit: {asset} {timeframe} ({len(df)} rows)")
+            else:
+                # Try primary fetcher first
+                try:
+                    df = self.fetcher.get_historical_data(asset, timeframe, days=150)
+                    if df is not None and not df.empty and len(df) >= self.min_data_points:
+                        sources_tried.append("primary")
+                        self.logger.debug(f"✅ Primary source: {len(df)} rows")
+                        with self._cache_lock:
+                            self._data_cache[cache_key] = df.copy()
+                except Exception as e:
+                    self.logger.debug(f"Primary fetch failed for {asset}: {e}")
             
             # If no data or insufficient, try Yahoo directly
             if df is None or df.empty or len(df) < self.min_data_points:
@@ -450,8 +474,8 @@ class NASALevelTrainer:
                     import yfinance as yf
                     yahoo_symbol = self._get_yahoo_symbol(asset, category)
                     
-                    # Try different periods
-                    for period in ['1y', '6mo', '3mo']:
+                    # Try periods: start with 6mo (fast, enough rows)
+                    for period in ['6mo', '3mo', '1y']:
                         try:
                             ticker = yf.Ticker(yahoo_symbol)
                             hist = ticker.history(period=period, interval='1d')
@@ -611,17 +635,26 @@ class NASALevelTrainer:
         self.logger.info("🚀 STARTING PARALLEL BATCH TRAINING")
         self.logger.info("="*60)
         
-        # Flatten assets list from the reduced dictionary
+        # Flatten assets list — stocks/indices skip intraday (markets closed overnight)
+        INTRADAY_ONLY_CATS = {'crypto', 'forex', 'commodities'}
         all_assets = []
         for category, assets_list in self.assets_to_train.items():
             for asset, cat in assets_list:
                 all_assets.append((asset, cat))
+
+        # Build job list: stocks/indices get 1d only; everything else gets all timeframes
+        all_jobs = []
+        for asset, cat in all_assets:
+            if cat in INTRADAY_ONLY_CATS:
+                tfs = self.timeframes          # 1d, 1h, 15m
+            else:
+                tfs = ['1d']                   # stocks/indices: daily only
+            for tf in tfs:
+                all_jobs.append((asset, cat, tf))
         
-        total_unique_assets = len(set(asset for asset, _ in all_assets))
-        self.logger.info(f"📊 Total unique assets to train: {total_unique_assets}")
-        self.logger.info(f"⏱️ Timeframes: {', '.join(self.timeframes)}")
-        self.logger.info(f"⚡ Total training jobs: {len(all_assets) * len(self.timeframes)}")
-        self.logger.info(f"⚡ Parallel workers: 5")
+        total_unique_assets = len(set(asset for asset, _, _ in all_jobs))
+        self.logger.info(f"📊 Total unique assets: {total_unique_assets}, total jobs: {len(all_jobs)}")
+        self.logger.info(f"⚡ Total training jobs: {len(all_jobs)} (stocks/indices daily only)")
         
         results = {
             'success': [],
@@ -630,16 +663,19 @@ class NASALevelTrainer:
             'start_time': datetime.now().isoformat()
         }
         
-        total_tasks = len(all_assets) * len(self.timeframes)
+        total_tasks = len(all_jobs)
         completed = 0
-        
-        with ThreadPoolExecutor(max_workers=5) as executor:
+
+        import multiprocessing
+        max_workers = max(4, min(12, multiprocessing.cpu_count() * 2))
+        self.logger.info(f"⚡ Parallel workers: {max_workers} (auto from CPU count)")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_asset = {}
-            
-            for asset, category in all_assets:
-                for tf in self.timeframes:
-                    future = executor.submit(self.train_single_asset, asset, category, tf)
-                    future_to_asset[future] = (asset, category, tf)
+
+            for asset, category, tf in all_jobs:
+                future = executor.submit(self.train_single_asset, asset, category, tf)
+                future_to_asset[future] = (asset, category, tf)
             
             for future in as_completed(future_to_asset):
                 asset, category, tf = future_to_asset[future]
@@ -685,7 +721,7 @@ class NASALevelTrainer:
         results['total_models'] = len(results['success']) + len(results['failed'])
         
         report_file = self.logs_dir / f"training_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(report_file, 'w') as f:
+        with open(report_file, 'w', encoding='utf-8') as f:
             # Convert non-serializable items
             report_clean = {
                 'success': results['success'],
@@ -777,27 +813,27 @@ def main() -> int:
         trainer = NASALevelTrainer(models_dir="trained_models")
         
         total_assets = trainer.count_total_assets()
-        print(f"\n🚀 NASA-LEVEL TRAINER READY FOR ACTION!")
-        print(f"📁 Models directory: {trainer.models_dir}")
-        print(f"📝 Logs directory: {trainer.logs_dir}")
-        print(f"📊 Training {total_assets} assets across {len(trainer.timeframes)} timeframes")
-        print(f"⚡ Total models to train: {total_assets * len(trainer.timeframes)}")
+        logger.info(f"\n🚀 NASA-LEVEL TRAINER READY FOR ACTION!")
+        logger.info(f"📁 Models directory: {trainer.models_dir}")
+        logger.info(f"📝 Logs directory: {trainer.logs_dir}")
+        logger.info(f"📊 Training {total_assets} assets across {len(trainer.timeframes)} timeframes")
+        logger.info(f"⚡ Total models to train: {total_assets * len(trainer.timeframes)}")
         
         # Run training
         results = trainer.train_all_assets_parallel()
         
-        print("\n" + "🚀"*60)
-        print("🚀 TRAINING SESSION COMPLETE!")
-        print("🚀"*60)
-        print(f"✅ Successful: {len(results['success'])}")
-        print(f"❌ Failed: {len(results['failed'])}")
-        print(f"⏱️ Time: {results['elapsed_minutes']:.1f} minutes")
-        print("🚀"*60)
+        logger.info("\n" + "🚀"*60)
+        logger.info("🚀 TRAINING SESSION COMPLETE!")
+        logger.info("🚀"*60)
+        logger.info(f"✅ Successful: {len(results['success'])}")
+        logger.info(f"❌ Failed: {len(results['failed'])}")
+        logger.info(f"⏱️ Time: {results['elapsed_minutes']:.1f} minutes")
+        logger.info("🚀"*60)
         
         return 0
         
     except Exception as e:
-        print(f"\n❌ TRAINING SESSION FAILED: {e}")
+        logger.info(f"\n❌ TRAINING SESSION FAILED: {e}")
         import traceback
         traceback.print_exc()
         return 1

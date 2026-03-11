@@ -20,6 +20,10 @@ import asyncio
 import threading
 import re
 from logger import logger
+try:
+    from telethon_whale_store import whale_store as _whale_store
+except Exception:
+    _whale_store = None
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -162,6 +166,11 @@ class UltimateTradingSystem:
 
         # ===== CONNECT PAPER TRADER TO TRADING SYSTEM FOR TELEGRAM =====
         self.paper_trader.trading_system = self
+        # Start real-time position monitor (polls SL/TP every 5s)
+        try:
+            self.paper_trader.start_monitor()
+        except Exception as _me:
+            logger.warning(f"Position monitor could not start: {_me}")
         # ======================================================
 
         # Connect trade callback for personality memory
@@ -225,7 +234,7 @@ class UltimateTradingSystem:
         telegram_config = None
         if os.path.exists('config/telegram_config.json'):
             try:
-                with open('config/telegram_config.json', 'r') as f:
+                with open('config/telegram_config.json', 'r', encoding='utf-8') as f:
                     telegram_config = json.load(f)
                 logger.info("Telegram config loaded")
             except Exception as e:
@@ -235,7 +244,7 @@ class UltimateTradingSystem:
         email_config = None
         if os.path.exists('config/email_config.json'):
             try:
-                with open('config/email_config.json', 'r') as f:
+                with open('config/email_config.json', 'r', encoding='utf-8') as f:
                     email_config = json.load(f)
                 logger.info("Email config loaded")
             except Exception as e:
@@ -930,19 +939,35 @@ class UltimateTradingSystem:
         return round(sentiment, 2)
 
     def enhance_signal_with_whale(self, signal: Dict, asset: str) -> Dict:
-        """Enhance trading signal with whale data"""
-        sentiment = self.get_whale_sentiment(asset)
-        
-        # Adjust confidence based on whale sentiment
+        """Enhance trading signal with whale data — uses Telethon store + internal signals."""
+        sym = asset.split('-')[0].upper()
+
+        # Primary: Telethon whale_store (real-time Telegram channel data)
+        telethon_sentiment = 0.0
+        try:
+            if _whale_store is not None and len(_whale_store) > 0:
+                telethon_sentiment = _whale_store.get_sentiment(sym)
+        except Exception:
+            pass
+
+        # Secondary: internal whale_signals (legacy fallback)
+        internal_sentiment = self.get_whale_sentiment(sym)
+
+        # Merge: Telethon takes priority if it has data, else fall back
+        sentiment = telethon_sentiment if abs(telethon_sentiment) > 0.05 else internal_sentiment
+
         if abs(sentiment) > 0.3:
-            boost = 1.0 + (sentiment * 0.2)  # Up to 20% boost/cut
-            signal['confidence'] = min(signal['confidence'] * boost, 0.95)
-            signal['reason'] += f" | Whale sentiment: {sentiment:.2f}"
-            
-            # Adjust position size
+            direction = signal.get('signal', signal.get('direction', 'BUY'))
+            # Boost only if whale agrees with signal direction
+            if (direction == 'BUY' and sentiment > 0) or (direction == 'SELL' and sentiment < 0):
+                boost = 1.0 + abs(sentiment) * 0.20
+            else:
+                boost = 1.0 - abs(sentiment) * 0.10  # opposing whale = mild cut
+            signal['confidence'] = min(signal.get('confidence', 0.5) * boost, 0.95)
+            signal['reason'] = signal.get('reason', '') + f" | Whale: {sentiment:+.2f}"
             if 'position_size' in signal:
                 signal['position_size'] *= boost
-        
+
         return signal
     # ==========================================
 
@@ -1681,7 +1706,7 @@ class UltimateTradingSystem:
             
             # Save top strategies to file
             top_strategies = comparison.head(10).to_dict('records')
-            with open(f"optimization_results/{asset}_top_strategies.json", 'w') as f:
+            with open(f"optimization_results/{asset}_top_strategies.json", 'w', encoding='utf-8') as f:
                 json.dump(top_strategies, f, indent=2, default=str)
         
         # Update strategy weights based on optimization
@@ -2128,7 +2153,7 @@ class UltimateTradingSystem:
             }
             
             filename = f"optimization_results/master_optimization_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(filename, 'w') as f:
+            with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=2, default=str)
             
             logger.info(f"Master report saved to {filename}")
@@ -2156,7 +2181,7 @@ class UltimateTradingSystem:
                             'total_return': result.get('results_summary', {}).get('best_return', 0)
                         }
             
-            with open(filename, 'w') as f:
+            with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(serializable_results, f, indent=2, default=str)
             
             logger.info(f"All optimization results saved to: {filename}")
@@ -4062,6 +4087,9 @@ class UltimateTradingSystem:
         try:
             # Set current asset for strategies that need it
             self.current_asset = asset
+            # Also propagate to strategy_engine so scalping and others can access it
+            if hasattr(self, 'strategy_engine') and self.strategy_engine:
+                self.strategy_engine.current_asset = asset
             
             # Fetch data
             df_15m = self.fetch_historical_data(asset, 100, '15m')
@@ -5436,12 +5464,13 @@ def main():
             if hasattr(system, 'create_master_optimization_report'):
                 system.create_master_optimization_report(results)
             
-            # Ask if user wants to apply optimized params
-            print("\n" + "-"*50)
-            response3 = input("Apply optimized parameters to trading strategies? (y/n): ").strip().lower()
-            if response3 == 'y':
+            # Auto-apply optimized params (no interactive prompt in production)
+            logger.info("Auto-applying optimized parameters to all strategies...")
+            try:
                 system.apply_optimized_params_to_strategies()
                 logger.info("Optimized parameters applied to all strategies")
+            except Exception as _e:
+                logger.warning(f"Could not auto-apply params: {_e}")
             
         except KeyboardInterrupt:
             logger.warning("Batch optimization interrupted by user")
@@ -5550,20 +5579,20 @@ def main():
         logger.info("="*60)
         logger.info(" ULTIMATE TRADING SYSTEM - HELP")
         logger.info("="*60)
-        print("\nAvailable commands:")
-        print("  --mode backtest       Backtest a single asset")
-        print("  --mode optimize       Optimize a single strategy")
-        print("  --mode train          Train ML models")
-        print("  --mode compare        Compare all strategies")
-        print("  --mode live           Start live trading")
-        print("  --mode batch-optimize Run batch optimization for all assets")
-        print("\nExamples:")
-        print("  python trading_system.py --mode backtest --asset BTC-USD")
-        print("  python trading_system.py --mode optimize --asset BTC-USD --strategy rsi")
-        print("  python trading_system.py --mode batch-optimize")
-        print("  python trading_system.py --mode batch-optimize --assets BTC-USD ETH-USD")
-        print("  python trading_system.py --mode batch-optimize --lookback 180")
-        print("  python trading_system.py --mode live --balance 100 --strategy-mode voting")
+        logger.info("Available commands:")
+        logger.info("  --mode backtest       Backtest a single asset")
+        logger.info("  --mode optimize       Optimize a single strategy")
+        logger.info("  --mode train          Train ML models")
+        logger.info("  --mode compare        Compare all strategies")
+        logger.info("  --mode live           Start live trading")
+        logger.info("  --mode batch-optimize Run batch optimization for all assets")
+        logger.info("Examples:")
+        logger.info("  python trading_system.py --mode backtest --asset BTC-USD")
+        logger.info("  python trading_system.py --mode optimize --asset BTC-USD --strategy rsi")
+        logger.info("  python trading_system.py --mode batch-optimize")
+        logger.info("  python trading_system.py --mode batch-optimize --assets BTC-USD ETH-USD")
+        logger.info("  python trading_system.py --mode batch-optimize --lookback 180")
+        logger.info("  python trading_system.py --mode live --balance 100 --strategy-mode voting")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,10 @@ from typing import List, Dict, Optional
 from models.trade_models import WhaleAlert
 from config.database import SessionLocal
 from logger import logger
+try:
+    from telethon_whale_store import whale_store as _whale_store
+except Exception:
+    _whale_store = None
 
 class FreeWhaleAPI:
     """Free whale-alert.io API - NO KEY NEEDED"""
@@ -340,21 +344,51 @@ class WhaleAlertManager:
             time.sleep(60)
     
     def get_alerts(self, min_value_usd: float = 1000000, hours: int = 24) -> List[Dict]:
-        """Get alerts from database"""
-        if self.db.enabled:
-            db_alerts = self.db.get_alerts(hours=hours, min_value=min_value_usd)
-            if db_alerts:
-                logger.debug(f"📊 Retrieved {len(db_alerts)} alerts from DB")
-                return db_alerts
-        
-        cutoff = datetime.now() - timedelta(hours=hours)
-        filtered = [
-            a for a in self.all_alerts
-            if a.get('value_usd', 0) >= min_value_usd
-            and a.get('alert_time', datetime.now()) > cutoff
-        ]
-        filtered.sort(key=lambda x: x['value_usd'], reverse=True)
-        return filtered[:self.max_alerts]
+        """Get alerts — merges Telethon live feed + DB + in-memory sources."""
+        results = []
+
+        # 1. Telethon whale_store (primary — real-time, no token needed)
+        try:
+            if _whale_store is not None and len(_whale_store) > 0:
+                tele_alerts = _whale_store.format_for_dashboard(hours=hours)
+                tele_filtered = [a for a in tele_alerts if a.get('value_usd', 0) >= min_value_usd]
+                results.extend(tele_filtered)
+                if tele_filtered:
+                    logger.debug(f"Telethon whale store: {len(tele_filtered)} alerts")
+        except Exception as _e:
+            logger.debug(f"whale_store merge: {_e}")
+
+        # 2. DB / legacy sources (fallback / supplement)
+        try:
+            if self.db.enabled:
+                db_alerts = self.db.get_alerts(hours=hours, min_value=min_value_usd)
+                results.extend(db_alerts)
+        except Exception:
+            pass
+
+        # 3. In-memory (twitter, reddit etc.)
+        try:
+            cutoff = datetime.now() - timedelta(hours=hours)
+            filtered = [
+                a for a in self.all_alerts
+                if a.get('value_usd', 0) >= min_value_usd
+                and a.get('alert_time', datetime.now()) > cutoff
+            ]
+            results.extend(filtered)
+        except Exception:
+            pass
+
+        # Deduplicate by title+time, sort by value
+        seen = set()
+        deduped = []
+        for a in results:
+            key = (a.get('title',''), str(a.get('alert_time','')))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(a)
+
+        deduped.sort(key=lambda x: x.get('value_usd', x.get('value', 0)), reverse=True)
+        return deduped[:self.max_alerts]
     
     def get_alerts_for_symbol(self, symbol: str, min_value_usd: float = 1000000, days: int = 7) -> List[Dict]:
         all_alerts = self.get_alerts(min_value_usd, hours=days*24)
@@ -413,27 +447,27 @@ class WhaleAlertManager:
 
 # ===== SIMPLE TEST =====
 if __name__ == "__main__":
-    print("\n🐋 TESTING WHALE ALERT MANAGER")
-    print("="*60)
+    logger.info("\n🐋 TESTING WHALE ALERT MANAGER")
+    logger.info("="*60)
     
     manager = WhaleAlertManager()
     
-    print("\n📡 Fetching alerts from database...")
+    logger.info("\n📡 Fetching alerts from database...")
     alerts = manager.get_alerts(min_value_usd=1000000, hours=168)
     
     if alerts:
-        print(f"✅ Found {len(alerts)} alerts")
-        print("\n🐋 Top 5:")
+        logger.info(f"✅ Found {len(alerts)} alerts")
+        logger.info("\n🐋 Top 5:")
         for i, alert in enumerate(alerts[:5], 1):
             value_m = alert['value_usd'] / 1_000_000
-            print(f"{i}. {alert['title']} from {alert.get('source', 'Unknown')}")
+            logger.info(f"{i}. {alert['title']} from {alert.get('source', 'Unknown')}")
     else:
-        print("📭 No alerts yet - collector will add them")
+        logger.info("📭 No alerts yet - collector will add them")
     
-    print("\n📊 Summary:")
+    logger.info("\n📊 Summary:")
     summary = manager.get_summary()
     for key, value in summary.items():
         if key != 'largest_alert':
-            print(f"   • {key}: {value}")
+            logger.info(f"   • {key}: {value}")
     
-    print("="*60)
+    logger.info("="*60)
