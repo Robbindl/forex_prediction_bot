@@ -16,7 +16,7 @@
     body::before{content:'';position:fixed;inset:0;z-index:0;background-image:linear-gradient(rgba(0,194,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(0,194,255,.018) 1px,transparent 1px);background-size:48px 48px;pointer-events:none;}
     .wrapper{position:relative;z-index:1;max-width:1440px;margin:0 auto;padding:0 28px 60px;}
 
-    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
+    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
     .nav-overlay.open{opacity:1;pointer-events:all;}
     .nav-drawer{position:fixed;top:0;right:0;width:300px;height:100vh;background:var(--bg2);border-left:1px solid var(--border2);z-index:101;transform:translateX(100%);transition:transform .35s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;overflow-y:auto;}
     .nav-drawer.open{transform:translateX(0);}
@@ -78,7 +78,7 @@
     .chart-container{position:relative;height:320px;margin-bottom:20px;}
     .chart-container canvas{position:absolute;top:0;left:0;width:100%!important;height:100%!important;}
 
-    .loading-overlay{position:absolute;inset:0;background:rgba(6,8,15,.85);backdrop-filter:blur(4px);display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:12px;z-index:10;}
+    .loading-overlay{position:absolute;inset:0;background:rgba(6,8,15,.85);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:12px;z-index:10;}
     .loading-overlay.hidden{display:none;}
     .spinner{width:36px;height:36px;border:3px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin-bottom:14px;}
     @keyframes spin{to{transform:rotate(360deg);}}
@@ -102,6 +102,11 @@
     .empty-placeholder{text-align:center;padding:60px;color:var(--muted);}
     .empty-placeholder .icon{font-size:2.5rem;opacity:.2;margin-bottom:14px;}
     .empty-placeholder p{font-size:.82rem;}
+
+    .controls-actions{margin-top:18px;display:flex;justify-content:flex-end;}
+    .panel-relative{position:relative;}
+    .chart-container--short{height:220px;}
+    .hidden-section{display:none;}
   </style>
 </head>
 <body>
@@ -144,7 +149,7 @@
     <div class="controls-grid">
       <div>
         <div class="field-label">Asset</div>
-        <select class="field-select" id="asset">
+        <select class="field-select" id="asset" title="Select Asset">
           <optgroup label="── Crypto ──">
             <option value="BTC-USD">BTC-USD (Bitcoin)</option>
             <option value="ETH-USD">ETH-USD (Ethereum)</option>
@@ -174,7 +179,7 @@
       </div>
       <div>
         <div class="field-label">Strategy</div>
-        <select class="field-select" id="strategy">
+        <select class="field-select" id="strategy" title="Select Strategy">
           <option value="rsi">RSI Mean Reversion</option>
           <option value="macd">MACD Crossover</option>
           <option value="bb">Bollinger Bands</option>
@@ -184,7 +189,7 @@
       </div>
       <div>
         <div class="field-label">Period</div>
-        <select class="field-select" id="period">
+        <select class="field-select" id="period" title="Select Period">
           <option value="1mo">1 Month</option>
           <option value="3mo" selected>3 Months</option>
           <option value="6mo">6 Months</option>
@@ -194,14 +199,14 @@
       </div>
       <div>
         <div class="field-label">Initial Capital ($)</div>
-        <input class="field-input" type="number" id="initial-capital" value="10000"/>
+        <input class="field-input" type="number" id="initial-capital" value="10000" title="Initial Capital in USD"/>
       </div>
       <div>
         <div class="field-label">Risk Per Trade (%)</div>
-        <input class="field-input" type="number" id="risk-pct" value="1.0" step="0.1" min="0.1" max="10"/>
+        <input class="field-input" type="number" id="risk-pct" value="1.0" step="0.1" min="0.1" max="10" title="Risk Per Trade Percentage"/>
       </div>
     </div>
-    <div style="margin-top:18px;display:flex;justify-content:flex-end;">
+    <div class="controls-actions">
       <button class="btn-primary" id="run-btn" onclick="runBacktest()">
         <i class="fa fa-play"></i> Run Backtest
       </button>
@@ -209,7 +214,7 @@
   </div>
 
   <!-- RESULTS SECTION (hidden until run) -->
-  <div id="results-section" style="display:none">
+  <div id="results-section" class="hidden-section">
 
     <!-- STAT CARDS -->
     <div class="stat-grid">
@@ -222,7 +227,7 @@
     </div>
 
     <!-- EQUITY CURVE -->
-    <div class="panel" style="position:relative">
+    <div class="panel panel-relative">
       <div class="panel-title"><i class="fa fa-chart-line"></i>EQUITY CURVE</div>
       <div class="chart-container">
         <canvas id="equity-chart"></canvas>
@@ -236,7 +241,7 @@
     <!-- MONTHLY RETURNS -->
     <div class="panel">
       <div class="panel-title"><i class="fa fa-calendar"></i>MONTHLY RETURNS</div>
-      <div class="chart-container" style="height:220px">
+      <div class="chart-container chart-container--short">
         <canvas id="monthly-chart"></canvas>
       </div>
     </div>

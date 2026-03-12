@@ -10,22 +10,39 @@
 config/*_config.json
 config/telegram_config.json
 config/email_config.json
+config/bot_runtime.json
+config/local_*.py
 twitter_cookies.json
 *key*.py
 *secret*.py
+api_keys.txt
+secrets.json
+secrets/
+whale_session*
+telegram_session*
+*.key
+*.pem
 
 # PYTHON
 # ------------------------------------------------
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
 *.pyc
 *.pyo
 *.pyd
 .Python
+pip-log.txt
+pip-delete-this-directory.txt
 .pytest_cache/
 .coverage
 htmlcov/
 *.cover
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
 
 # VIRTUAL ENVIRONMENTS
 # ------------------------------------------------
@@ -37,15 +54,40 @@ env/
 ENV/
 pythonenv*
 
+# NODE.JS / GATEWAY
+# ------------------------------------------------
+gateway/node_modules/
+gateway/package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.pid
+*.sock
+
+# DATABASE
+# ------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.postgres
+data/
+*.sql
+*.pid
+dump.rdb
+postgresql.conf.backup
+timescaledb_tune.backup*
+
 # TRADING DATA
 # ------------------------------------------------
 paper_trades.json
 paper_trades_backup_*.json
-*.db
-*.sqlite
-*.sqlite3
-backtest_results/*.csv
+historical_data/
+cache/
+backtest_results/
 !backtest_results/example_*.csv
+optimization_results/
+trade_logs/
+portfolio_reports/
 
 # ML MODELS
 # ------------------------------------------------
@@ -55,6 +97,7 @@ trained_models/
 *.h5
 *.joblib
 *.onnx
+model_registry.json
 
 # LOGS
 # ------------------------------------------------
@@ -62,15 +105,11 @@ logs/
 training_logs/
 *.log
 *.log.*
+*.err
+*.out
 master_controller.log
 health_log.txt
 health_log.json
-
-# WEB APP
-# ------------------------------------------------
-static/
-*.pid
-*.sock
 
 # IDE
 # ------------------------------------------------
@@ -83,7 +122,7 @@ static/
 Thumbs.db
 desktop.ini
 
-# PACKAGES
+# PYTHON PACKAGE BUILD
 # ------------------------------------------------
 *.egg-info/
 build/
@@ -95,16 +134,15 @@ dist/
 reports/
 backups/
 backup_*/
-optimization_results/
 *.html
 !templates/*.html
 
 # CONFIGURATION
 # ------------------------------------------------
-config/local_*.py
 *.local.py
 *.session
 *.session-journal
+config/local_*.py
 
 # TEMPORARY & BACKUP FILES
 # ------------------------------------------------
@@ -120,7 +158,6 @@ config/local_*.py
 # ------------------------------------------------
 *.dll
 *.so
-*.pyd
 *.exe
 *.bin
 
@@ -129,12 +166,9 @@ config/local_*.py
 *.csv
 !example.csv
 debug_output.txt
-model_registry.json
 sentiment_test_results.json
-installed_all.txt# ── SECRETS (must never reach GitHub) ────────────────────────────────────────
-whale_session*
-telegram_session*
-*_config.json
-api_keys.txt
-secrets.jsonconfig/bot_runtime.json
-config/bot_runtime.json
+installed_all.txt
+
+# STATIC / WEB
+# ------------------------------------------------
+static/

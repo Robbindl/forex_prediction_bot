@@ -173,8 +173,27 @@ def main():
         'ram_pct': s.get('ram_pct', 0),
         'cpu_pct': s.get('cpu_pct', 0),
     }
-    with open('health_log.json', 'a', encoding='utf-8') as f:
-        f.write(json.dumps(log_entry) + '\n')
+    # STORAGE FIX: was plain open(..., 'a') which grew forever.
+    # Now keep only the last 288 entries (= 1 day at 5-min intervals = ~150KB max).
+    health_log_path = Path('logs/health_log.json')
+    health_log_path.parent.mkdir(exist_ok=True)
+    try:
+        existing = []
+        if health_log_path.exists():
+            for line in health_log_path.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        existing.append(json.loads(line))
+                    except Exception:
+                        pass
+        existing.append(log_entry)
+        existing = existing[-288:]          # keep last 288 entries only
+        with open(health_log_path, 'w', encoding='utf-8') as f:
+            for entry in existing:
+                f.write(json.dumps(entry) + '\n')
+    except Exception as _e:
+        logger.warning(f"Health log write failed: {_e}")
 
     # ── Telegram — only on real problems ────────────────────────────────────
     if issues:
@@ -199,4 +218,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    

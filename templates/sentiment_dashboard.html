@@ -25,7 +25,7 @@
     .wrapper{position:relative;z-index:1;max-width:1440px;margin:0 auto;padding:0 28px 60px;}
 
     /* nav overlay + drawer — same as dashboard */
-    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
+    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
     .nav-overlay.open{opacity:1;pointer-events:all;}
     .nav-drawer{position:fixed;top:0;right:0;width:300px;height:100vh;background:var(--bg2);border-left:1px solid var(--border2);z-index:101;transform:translateX(100%);transition:transform .35s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;overflow-y:auto;}
     .nav-drawer.open{transform:translateX(0);}
@@ -157,6 +157,63 @@
     .scrollable::-webkit-scrollbar-thumb{background:var(--border2);border-radius:999px;}
 
     .chart-wrap{position:relative;height:220px;}
+
+    /* stat card value variants */
+    .stat-val--lg{font-size:1.4rem;}
+    .stat-val--gold{color:var(--gold);}
+    .stat-val--sell{color:var(--sell);}
+    .stat-val--purple{color:var(--purple);}
+
+    /* bar fills */
+    .bar-fill--sentiment{width:50%;background:linear-gradient(90deg,var(--accent),var(--buy));}
+    .bar-fill--fear{width:50%;background:linear-gradient(90deg,var(--gold),#ffaa33);}
+    .bar-fill--vix{width:50%;background:linear-gradient(90deg,var(--sell),#ff6b6b);}
+
+    /* articles breakdown row */
+    .article-breakdown{margin-top:10px;display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:.7rem;}
+    .article-bull{color:var(--buy);}
+    .article-neut{color:var(--muted2);}
+    .article-bear{color:var(--sell);}
+
+    /* charts row spacing */
+    .two-col--mb{margin-bottom:20px;}
+
+    /* panel-title with bottom margin */
+    .panel-title--mb{margin-bottom:18px;}
+
+    /* gauge labels */
+    .gauge-labels{display:flex;justify-content:space-between;margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:.78rem;}
+    .gauge-col{text-align:center;}
+    .gauge-col--bull{color:var(--buy);font-weight:700;}
+    .gauge-col--neut{color:var(--muted2);font-weight:700;}
+    .gauge-col--bear{color:var(--sell);font-weight:700;}
+    .gauge-sub{color:var(--muted);font-size:.65rem;}
+
+    /* put/call value */
+    .val--gold{color:var(--gold);}
+
+    /* source chart container */
+    .chart-wrap--h200{position:relative;height:200px;}
+
+    /* panel with bottom margin */
+    .panel--mb{margin-bottom:20px;}
+
+    /* article strip count */
+    .strip-count{margin-left:auto;font-size:.68rem;color:var(--muted);}
+
+    /* news feed / whale feed loading placeholders */
+    .feed-placeholder{text-align:center;padding:40px;color:var(--muted);}
+    .feed-placeholder--sm{text-align:center;padding:28px;color:var(--muted);}
+
+    /* whale filter select */
+    .whale-select{background:var(--bg);border:1px solid var(--border2);color:var(--muted2);padding:6px 12px;border-radius:8px;font-size:.75rem;font-family:'DM Sans',sans-serif;outline:none;}
+
+    /* calendar refresh button */
+    .btn-calendar-refresh{background:rgba(160,100,255,.1);border:1px solid rgba(160,100,255,.25);color:var(--purple);padding:7px 14px;border-radius:8px;font-size:.72rem;font-family:'DM Sans',sans-serif;cursor:pointer;transition:all .2s;}
+    .btn-calendar-refresh:hover{background:rgba(160,100,255,.18);}
+
+    /* hidden panels */
+    .hidden{display:none;}
   </style>
 </head>
 <body>
@@ -199,69 +256,69 @@
     <div class="stat-card blue">
       <div class="stat-label">Overall Sentiment</div>
       <div class="stat-main">
-        <div class="stat-val" id="overall-sentiment" style="font-size:1.4rem">Neutral</div>
+        <div class="stat-val stat-val--lg" id="overall-sentiment">Neutral</div>
         <div class="stat-emoji" id="sentiment-emoji">😐</div>
       </div>
-      <div class="bar-wrap"><div class="bar-fill" id="sentiment-bar" style="width:50%;background:linear-gradient(90deg,var(--accent),var(--buy));"></div></div>
+      <div class="bar-wrap"><div class="bar-fill bar-fill--sentiment" id="sentiment-bar"></div></div>
       <div class="stat-sub">Market mood index</div>
     </div>
     <div class="stat-card gold">
       <div class="stat-label">Fear & Greed</div>
       <div class="stat-main">
-        <div class="stat-val" id="fear-greed" style="color:var(--gold)">50</div>
+        <div class="stat-val stat-val--gold" id="fear-greed">50</div>
         <div class="stat-emoji" id="fear-emoji">😐</div>
       </div>
-      <div class="bar-wrap"><div class="bar-fill" id="fear-bar" style="width:50%;background:linear-gradient(90deg,var(--gold),#ffaa33);"></div></div>
+      <div class="bar-wrap"><div class="bar-fill bar-fill--fear" id="fear-bar"></div></div>
       <div class="stat-sub" id="fear-classification">Neutral</div>
     </div>
     <div class="stat-card red">
       <div class="stat-label">VIX (Volatility)</div>
       <div class="stat-main">
-        <div class="stat-val" id="vix-value" style="color:var(--sell)">--</div>
+        <div class="stat-val stat-val--sell" id="vix-value">--</div>
         <div class="stat-emoji" id="vix-emoji">📊</div>
       </div>
-      <div class="bar-wrap"><div class="bar-fill" id="vix-bar" style="width:50%;background:linear-gradient(90deg,var(--sell),#ff6b6b);"></div></div>
+      <div class="bar-wrap"><div class="bar-fill bar-fill--vix" id="vix-bar"></div></div>
       <div class="stat-sub" id="vix-classification">Normal</div>
     </div>
     <div class="stat-card purple">
       <div class="stat-label">Articles Today</div>
       <div class="stat-main">
-        <div class="stat-val" id="article-count" style="color:var(--purple)">0</div>
+        <div class="stat-val stat-val--purple" id="article-count">0</div>
         <div class="stat-emoji">📰</div>
       </div>
-      <div style="margin-top:10px;display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:.7rem;">
-        <span style="color:var(--buy)">↑ <span id="bullish-count">0</span></span>
-        <span style="color:var(--muted2)">— <span id="neutral-count">0</span></span>
-        <span style="color:var(--sell)">↓ <span id="bearish-count">0</span></span>
+      <div class="article-breakdown">
+        <span class="article-bull">↑ <span id="bullish-count">0</span></span>
+        <span class="article-neut">— <span id="neutral-count">0</span></span>
+        <span class="article-bear">↓ <span id="bearish-count">0</span></span>
       </div>
       <div class="stat-sub">News sources</div>
     </div>
   </div>
 
   <!-- CHARTS ROW -->
-  <div class="two-col" style="margin-bottom:20px;">
+  <div class="two-col two-col--mb">
     <div class="panel">
-      <div class="panel-title" style="margin-bottom:18px;"><i class="fa fa-chart-pie"></i>DISTRIBUTION</div>
+      <div class="panel-title panel-title--mb"><i class="fa fa-chart-pie"></i>DISTRIBUTION</div>
       <div class="chart-wrap"><canvas id="sentiment-gauge"></canvas></div>
-      <div style="display:flex;justify-content:space-between;margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:.78rem;">
-        <div style="text-align:center"><div style="color:var(--buy);font-weight:700" id="gauge-bullish">0%</div><div style="color:var(--muted);font-size:.65rem">BULLISH</div></div>
-        <div style="text-align:center"><div style="color:var(--muted2);font-weight:700" id="gauge-neutral">0%</div><div style="color:var(--muted);font-size:.65rem">NEUTRAL</div></div>
-        <div style="text-align:center"><div style="color:var(--sell);font-weight:700" id="gauge-bearish">0%</div><div style="color:var(--muted);font-size:.65rem">BEARISH</div></div>
+      <div class="gauge-labels">
+        <div class="gauge-col"><div class="gauge-col--bull" id="gauge-bullish">0%</div><div class="gauge-sub">BULLISH</div></div>
+        <div class="gauge-col"><div class="gauge-col--neut" id="gauge-neutral">0%</div><div class="gauge-sub">NEUTRAL</div></div>
+        <div class="gauge-col"><div class="gauge-col--bear" id="gauge-bearish">0%</div><div class="gauge-sub">BEARISH</div></div>
       </div>
     </div>
     <div class="panel">
-      <div class="panel-title" style="margin-bottom:18px;"><i class="fa fa-gauge-high"></i>MARKET INDICATORS</div>
+      <div class="panel-title panel-title--mb"><i class="fa fa-gauge-high"></i>MARKET INDICATORS</div>
       <div class="indicator-row"><div class="lbl"><i class="fa fa-chart-line"></i> RSI (Market)</div><div class="val" id="market-rsi">50.0</div></div>
       <div class="indicator-row"><div class="lbl"><i class="fa fa-chart-bar"></i> MACD Signal</div><div class="val" id="market-macd">Neutral</div></div>
       <div class="indicator-row"><div class="lbl"><i class="fa fa-arrow-trend-up"></i> Trend Strength</div><div class="val" id="market-trend">25</div></div>
-      <div class="indicator-row"><div class="lbl"><i class="fa fa-newspaper"></i> Put/Call Ratio</div><div class="val" id="put-call" style="color:var(--gold)">--</div></div>
+      <div class="indicator-row"><div class="lbl"><i class="fa fa-newspaper"></i> Put/Call Ratio</div><div class="val val--gold" id="put-call">--</div></div>
     </div>
   </div>
 
   <!-- SOURCE CHART -->
-  <div class="panel" style="margin-bottom:20px;">
-    <div class="panel-title" style="margin-bottom:18px;"><i class="fa fa-chart-bar"></i>SENTIMENT BY SOURCE</div>
-    <div style="position:relative;height:200px;"><canvas id="source-chart"></canvas></div>
+  <div class="panel panel--mb">
+    <div class="panel-title panel-title--mb"><i class="fa fa-chart-bar"></i>SENTIMENT BY SOURCE</div>
+    <div class="chart-wrap--h200"><canvas id="source-chart"></canvas></div>
   </div>
 
   <!-- NEWS FEED -->
@@ -273,12 +330,12 @@
       <span class="chip active" id="filter-all" onclick="filterNews('all',this)">All</span>
       <span class="chip green" id="filter-bullish" onclick="filterNews('bullish',this)">↑ Bullish</span>
       <span class="chip red" id="filter-bearish" onclick="filterNews('bearish',this)">↓ Bearish</span>
-      <span style="margin-left:auto;font-size:.68rem;color:var(--muted)"><span id="visible-articles">0</span> / <span id="total-articles">0</span> articles</span>
+      <span class="strip-count"><span id="visible-articles">0</span> / <span id="total-articles">0</span> articles</span>
       <span class="chip" id="sort-latest" onclick="sortNews('latest',this)"><i class="fa fa-clock"></i> Latest</span>
       <span class="chip" id="sort-oldest" onclick="sortNews('oldest',this)"><i class="fa fa-history"></i> Oldest</span>
     </div>
     <div class="scrollable" id="news-feed">
-      <div style="text-align:center;padding:40px;color:var(--muted)">Loading articles…</div>
+      <div class="feed-placeholder">Loading articles…</div>
     </div>
   </div>
 
@@ -286,7 +343,7 @@
   <div class="panel">
     <div class="panel-header">
       <div class="panel-title"><i class="fa fa-fish"></i>WHALE ALERTS</div>
-      <select id="whale-filter" onchange="filterWhales()" style="background:var(--bg);border:1px solid var(--border2);color:var(--muted2);padding:6px 12px;border-radius:8px;font-size:.75rem;font-family:'DM Sans',sans-serif;outline:none;">
+      <select id="whale-filter" onchange="filterWhales()" class="whale-select" title="Filter by Whale Transaction Size">
         <option value="all">All amounts</option>
         <option value="1m">$1M+</option>
         <option value="5m">$5M+</option>
@@ -294,7 +351,7 @@
       </select>
     </div>
     <div class="scrollable" id="whale-feed">
-      <div style="text-align:center;padding:28px;color:var(--muted)">No whale alerts</div>
+      <div class="feed-placeholder--sm">No whale alerts</div>
     </div>
   </div>
 
@@ -302,19 +359,19 @@
   <div class="panel">
     <div class="panel-header">
       <div class="panel-title"><i class="fa fa-calendar-alt"></i>MARKET CALENDAR</div>
-      <button onclick="loadMarketCalendar()" style="background:rgba(160,100,255,.1);border:1px solid rgba(160,100,255,.25);color:var(--purple);padding:7px 14px;border-radius:8px;font-size:.72rem;font-family:'DM Sans',sans-serif;cursor:pointer;transition:all .2s;">
+      <button onclick="loadMarketCalendar()" class="btn-calendar-refresh">
         <i class="fa fa-rotate-right"></i> Refresh
       </button>
     </div>
-    <div id="risk-banner" style="display:none"></div>
+    <div id="risk-banner" class="hidden"></div>
     <div class="tab-row">
       <button class="tab-btn active" id="tab-events" onclick="showCalTab('events',this)">📊 Economic Events</button>
       <button class="tab-btn" id="tab-halving" onclick="showCalTab('halving',this)">🪙 Crypto Halving</button>
       <button class="tab-btn" id="tab-earnings" onclick="showCalTab('earnings',this)">📈 Earnings</button>
     </div>
     <div id="calendar-events"></div>
-    <div id="calendar-halving" style="display:none"></div>
-    <div id="calendar-earnings" style="display:none"></div>
+    <div id="calendar-halving" class="hidden"></div>
+    <div id="calendar-earnings" class="hidden"></div>
   </div>
 </div>
 
@@ -461,7 +518,8 @@
       const ev=d.events;
       if(ev.risk_outlook?.reduce_trading){
         const b=document.getElementById('risk-banner');
-        b.style.display='flex';
+        b.classList.remove('hidden');
+        b.style.display='flex'; // flex layout for icon+message alignment
         b.innerHTML=`<i class="fa fa-triangle-exclamation"></i><div class="msg"><strong>⚠️ High Risk Period Detected</strong>Reduce position sizes 30-50% — high-impact events approaching.</div>`;
       }
       renderEvents(ev.events||[]);
@@ -529,7 +587,7 @@
 
   function showCalTab(tab,btn){
     ['events','halving','earnings'].forEach(t=>{
-      document.getElementById(`calendar-${t}`).style.display=t===tab?'':'none';
+      document.getElementById(`calendar-${t}`).classList.toggle('hidden',t!==tab);
       document.getElementById(`tab-${t}`).classList.toggle('active',t===tab);
     });
   }

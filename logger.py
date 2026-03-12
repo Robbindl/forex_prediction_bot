@@ -125,14 +125,16 @@ class TradingLogger:
         self.logger.addHandler(console_handler)
         
         # File handler with rotation (UTF-8 encoding)
+        # STORAGE FIX: INFO not DEBUG (DEBUG logs every internal variable = huge volume)
+        # Cap: 5MB × 2 backups = 10MB max for this file
         log_file = self.log_dir / 'trading_bot.log'
         file_handler = logging.handlers.RotatingFileHandler(
             log_file,
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
-            encoding='utf-8'  # Explicit UTF-8 for files
+            maxBytes=5 * 1024 * 1024,   # 5MB per file
+            backupCount=2,               # 2 backups = 15MB max total
+            encoding='utf-8'
         )
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.INFO)  # INFO not DEBUG — DEBUG floods disk
         file_format = logging.Formatter(
             '%(asctime)s | %(levelname)-8s | %(filename)s:%(lineno)d | %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
@@ -140,11 +142,12 @@ class TradingLogger:
         file_handler.setFormatter(file_format)
         self.logger.addHandler(file_handler)
         
-        # Error file handler (separate file for errors)
+        # Error file handler (separate file for errors only)
+        # Cap: 2MB × 2 backups = 6MB max
         error_handler = logging.handlers.RotatingFileHandler(
             self.log_dir / 'errors.log',
-            maxBytes=5 * 1024 * 1024,  # 5MB
-            backupCount=3,
+            maxBytes=2 * 1024 * 1024,   # 2MB per file
+            backupCount=2,               # 2 backups = 6MB max total
             encoding='utf-8'
         )
         error_handler.setLevel(logging.ERROR)
@@ -152,10 +155,11 @@ class TradingLogger:
         self.logger.addHandler(error_handler)
         
         # Trade log (special file for trades only)
+        # Cap: 2MB × 2 backups = 6MB max
         trade_handler = logging.handlers.RotatingFileHandler(
             self.log_dir / 'trades.log',
-            maxBytes=5 * 1024 * 1024,  # 5MB
-            backupCount=3,
+            maxBytes=2 * 1024 * 1024,   # 2MB per file
+            backupCount=2,               # 2 backups = 6MB max total
             encoding='utf-8'
         )
         trade_handler.setLevel(logging.INFO)

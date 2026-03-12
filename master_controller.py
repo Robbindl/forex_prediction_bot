@@ -8,16 +8,30 @@ import time
 import psutil
 from datetime import datetime
 import logging
+import logging.handlers
 import sys
 import os
 from logger import logger
 
+import logging.handlers
+
 # Setup logging
+# STORAGE FIX: was bare FileHandler('master_controller.log') with no size limit.
+# Now capped at 5MB × 2 backups = 15MB max total.
+_mc_handler = logging.handlers.RotatingFileHandler(
+    'logs/master_controller.log',
+    maxBytes=5 * 1024 * 1024,  # 5MB per file
+    backupCount=2,
+    encoding='utf-8'
+)
+_mc_handler.setLevel(logging.INFO)
+_mc_handler.setFormatter(logging.Formatter('%(asctime)s - MASTER - %(message)s'))
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - MASTER - %(message)s',
     handlers=[
-        logging.FileHandler('master_controller.log'),
+        _mc_handler,
         logging.StreamHandler()
     ]
 )

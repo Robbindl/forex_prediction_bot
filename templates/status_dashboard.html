@@ -14,7 +14,7 @@
     body::before{content:'';position:fixed;inset:0;z-index:0;background-image:linear-gradient(rgba(0,232,122,.015) 1px,transparent 1px),linear-gradient(90deg,rgba(0,232,122,.015) 1px,transparent 1px);background-size:48px 48px;pointer-events:none;}
     .wrapper{position:relative;z-index:1;max-width:1440px;margin:0 auto;padding:0 28px 60px;}
 
-    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
+    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
     .nav-overlay.open{opacity:1;pointer-events:all;}
     .nav-drawer{position:fixed;top:0;right:0;width:300px;height:100vh;background:var(--bg2);border-left:1px solid var(--border2);z-index:101;transform:translateX(100%);transition:transform .35s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;overflow-y:auto;}
     .nav-drawer.open{transform:translateX(0);}
@@ -109,6 +109,26 @@
     .risk-bar-track{flex:1;height:6px;background:var(--border2);border-radius:999px;overflow:hidden;}
     .risk-bar-fill{height:100%;border-radius:999px;}
     .risk-bar-val{font-family:'JetBrains Mono',monospace;font-size:.7rem;color:var(--text);width:50px;text-align:right;flex-shrink:0;}
+
+    /* stat card value color variants */
+    .stat-num--buy{color:var(--buy);}
+    .stat-icon2--buy{color:var(--buy);}
+    .stat-num--gold{color:var(--gold);}
+    .stat-icon2--gold{color:var(--gold);}
+    .stat-num--accent{font-size:1.6rem;color:var(--accent);}
+    .stat-icon2--accent{color:var(--accent);}
+
+    /* processes loading placeholder */
+    .proc-loading{color:var(--muted);font-size:.8rem;padding:8px;}
+
+    /* health value variants */
+    .health-val--gold{color:var(--gold);}
+    .health-val--accent{color:var(--accent);}
+    .health-val--mode{font-size:.9rem;color:var(--muted2);}
+    .health-val--ai{font-size:.85rem;color:var(--buy);}
+
+    /* table loading row */
+    .td-loading{text-align:center;color:var(--muted);padding:28px;}
   </style>
 </head>
 <body>
@@ -159,24 +179,24 @@
     <div class="stat-card green">
       <div class="stat-lbl">Today's P&amp;L</div>
       <div class="stat-card-inner">
-        <div class="stat-num" id="pnl" style="color:var(--buy)">$0.00</div>
-        <div class="stat-icon2" style="color:var(--buy)"><i class="fa fa-chart-line"></i></div>
+        <div class="stat-num stat-num--buy" id="pnl">$0.00</div>
+        <div class="stat-icon2 stat-icon2--buy"><i class="fa fa-chart-line"></i></div>
       </div>
       <div class="stat-sub2">Realized + unrealized</div>
     </div>
     <div class="stat-card gold">
       <div class="stat-lbl">Open Positions</div>
       <div class="stat-card-inner">
-        <div class="stat-num" id="open" style="color:var(--gold)">0</div>
-        <div class="stat-icon2" style="color:var(--gold)"><i class="fa fa-briefcase"></i></div>
+        <div class="stat-num stat-num--gold" id="open">0</div>
+        <div class="stat-icon2 stat-icon2--gold"><i class="fa fa-briefcase"></i></div>
       </div>
       <div class="stat-sub2">Active trades</div>
     </div>
     <div class="stat-card blue">
       <div class="stat-lbl">Win Rate</div>
       <div class="stat-card-inner">
-        <div class="stat-num" id="win-rate" style="font-size:1.6rem;color:var(--accent)">--%</div>
-        <div class="stat-icon2" style="color:var(--accent)"><i class="fa fa-trophy"></i></div>
+        <div class="stat-num stat-num--accent" id="win-rate">--%</div>
+        <div class="stat-icon2 stat-icon2--accent"><i class="fa fa-trophy"></i></div>
       </div>
       <div class="stat-sub2">Closed trades</div>
     </div>
@@ -186,7 +206,7 @@
   <div class="panel">
     <div class="panel-title"><i class="fa fa-microchip"></i>RUNNING PROCESSES</div>
     <div class="proc-grid" id="processes">
-      <div style="color:var(--muted);font-size:.8rem;padding:8px">Loading…</div>
+      <div class="proc-loading">Loading…</div>
     </div>
   </div>
 
@@ -194,10 +214,10 @@
   <div class="panel">
     <div class="panel-title"><i class="fa fa-shield-halved"></i>PORTFOLIO HEALTH</div>
     <div class="health-grid">
-      <div class="health-item"><div class="health-lbl">Total Exposure</div><div class="health-val" id="total-exposure" style="color:var(--gold)">--</div></div>
-      <div class="health-item"><div class="health-lbl">Today Trades</div><div class="health-val" id="today-trades" style="color:var(--accent)">0</div></div>
-      <div class="health-item"><div class="health-lbl">Mode</div><div class="health-val" id="trade-mode" style="font-size:.9rem;color:var(--muted2)">--</div></div>
-      <div class="health-item"><div class="health-lbl">AI Status</div><div class="health-val" id="ai-status" style="font-size:.85rem;color:var(--buy)">--</div></div>
+      <div class="health-item"><div class="health-lbl">Total Exposure</div><div class="health-val health-val--gold" id="total-exposure">--</div></div>
+      <div class="health-item"><div class="health-lbl">Today Trades</div><div class="health-val health-val--accent" id="today-trades">0</div></div>
+      <div class="health-item"><div class="health-lbl">Mode</div><div class="health-val health-val--mode" id="trade-mode">--</div></div>
+      <div class="health-item"><div class="health-lbl">AI Status</div><div class="health-val health-val--ai" id="ai-status">--</div></div>
     </div>
     <div id="risk-bars"></div>
   </div>
@@ -219,7 +239,7 @@
           </tr>
         </thead>
         <tbody id="trades-body">
-          <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:28px">Loading trades…</td></tr>
+          <tr><td colspan="7" class="td-loading">Loading trades…</td></tr>
         </tbody>
       </table>
     </div>

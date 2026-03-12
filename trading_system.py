@@ -47,6 +47,37 @@ from strategy_optimizer import StrategyOptimizer
 from session_tracker import SessionTracker
 from telegram_manager import telegram_manager
 
+# ═══════════════════════════════════════════════════════════════════════
+# PLATFORM UPGRADES — Redis, OrderFlow, Alpha Discovery, Prediction Tracker
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    from redis_broker import broker as _redis_broker
+    _REDIS_OK = _redis_broker.is_connected
+except Exception:
+    _redis_broker = None
+    _REDIS_OK = False
+
+try:
+    from orderflow_engine import orderflow_engine as _orderflow_engine
+    _ORDERFLOW_OK = True
+except Exception:
+    _orderflow_engine = None
+    _ORDERFLOW_OK = False
+
+try:
+    from alpha_discovery import alpha_engine as _alpha_engine
+    _ALPHA_OK = True
+except Exception:
+    _alpha_engine = None
+    _ALPHA_OK = False
+
+try:
+    from prediction_tracker import prediction_tracker as _pred_tracker
+    _PRED_TRACKER_OK = True
+except Exception:
+    _pred_tracker = None
+    _PRED_TRACKER_OK = False
+
 # ===== TELEGRAM COMMANDER (for web dashboard only) =====
 try:
     from telegram_commander import TelegramCommander
@@ -4281,6 +4312,24 @@ class UltimateTradingSystem:
             except Exception:
                 pass
 
+            # ── LAYER 6b: Order Flow alignment ────────────────────────────────
+            # Adjusts confidence based on real bid/ask pressure alignment.
+            try:
+                if _orderflow_engine:
+                    of_modifier = _orderflow_engine.get_signal_modifier(
+                        asset, signal.get('signal', 'HOLD')
+                    )
+                    if of_modifier != 0:
+                        old_conf = signal.get('confidence', 0)
+                        signal['confidence'] = min(0.97, max(0.0, old_conf + of_modifier))
+                        signal['orderflow_modifier'] = of_modifier
+                        snap = _orderflow_engine.get_snapshot(asset)
+                        if snap:
+                            signal['orderflow_pressure'] = snap.get('pressure', 'NEUTRAL')
+                            signal['orderflow_imbalance'] = snap.get('imbalance', 0)
+            except Exception:
+                pass
+
             # ── LAYER 7: Final confidence floor ───────────────────────────────
             # After all gates, if confidence still too low — kill it.
             final_conf = signal.get('confidence', 0)
@@ -4293,6 +4342,18 @@ class UltimateTradingSystem:
             if price:
                 signal['entry_price'] = price
                 signal['price_source'] = source
+                # Feed tick into synthetic orderflow tracker for non-crypto
+                try:
+                    if _orderflow_engine and category in ('forex','commodities','stocks','indices'):
+                        _orderflow_engine.update_forex_tick(asset, price, category)
+                except Exception:
+                    pass
+                # Publish live price tick to Redis
+                try:
+                    if _redis_broker:
+                        _redis_broker.publish_price(asset, price, category)
+                except Exception:
+                    pass
 
             # Attach regime for downstream risk sizing
             if hasattr(self, 'current_regime') and self.current_regime:
@@ -4490,7 +4551,29 @@ class UltimateTradingSystem:
         
         self.is_running = True
         
-        # Initialize Advanced AI systems
+        # ── Start platform upgrade services ───────────────────────────────
+        try:
+            if _orderflow_engine:
+                _orderflow_engine.start()
+                logger.info("OrderFlow Engine: ACTIVE — real-time bid/ask analysis")
+        except Exception as _e:
+            logger.warning(f"OrderFlow Engine failed to start: {_e}")
+
+        try:
+            if _alpha_engine:
+                _alpha_engine.start()
+                logger.info("Alpha Discovery: ACTIVE — correlation/anomaly/divergence scanning")
+        except Exception as _e:
+            logger.warning(f"Alpha Discovery failed to start: {_e}")
+
+        try:
+            if _pred_tracker:
+                _pred_tracker.start()
+                logger.info("Prediction Tracker: ACTIVE — accuracy monitoring at 1H/4H/24H")
+        except Exception as _e:
+            logger.warning(f"Prediction Tracker failed to start: {_e}")
+
+        logger.info(f"Redis Broker: {'ACTIVE' if _REDIS_OK else 'unavailable (bot works without it)'}")
         try:
             from advanced_ai import AdvancedAIIntegration
             self.ai_system = AdvancedAIIntegration()
@@ -5085,6 +5168,20 @@ class UltimateTradingSystem:
 
                                                 self.telegram.send_message(msg)
                                                 logger.debug("Rich Telegram alert sent")
+
+                                                # ── Publish to Redis → Node.js WebSocket gateway ──
+                                                try:
+                                                    if _redis_broker:
+                                                        _redis_broker.publish_signal(signal)
+                                                except Exception:
+                                                    pass
+
+                                                # ── Record for prediction accuracy tracking ───────
+                                                try:
+                                                    if _pred_tracker:
+                                                        _pred_tracker.record_signal(signal)
+                                                except Exception:
+                                                    pass
                                             except Exception as e:
                                                 logger.warning(f"Telegram alert failed: {e}")
                                         # ======================================================

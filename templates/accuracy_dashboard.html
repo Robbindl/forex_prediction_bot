@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Accuracy — Trading Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#0b0e14;--panel:#111520;--border:#1e2535;
+  --buy:#00d4aa;--sell:#ff4466;--gold:#f5c518;--accent:#7c6aff;
+  --muted:#5a6480;--muted2:#8892aa;--text:#d0d8f0;
+  --font-mono:"Space Mono",monospace;--font-sans:"Inter",sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:var(--font-sans);min-height:100vh;}
+
+/* Nav */
+nav{display:flex;align-items:center;gap:20px;padding:14px 24px;background:var(--panel);
+  border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100;}
+.nav-brand{font-family:var(--font-mono);font-weight:700;font-size:.9rem;letter-spacing:2px;color:var(--accent);}
+.nav-links a{color:var(--muted2);text-decoration:none;font-size:.8rem;transition:color .2s;}
+.nav-links a:hover,.nav-links a.active{color:var(--text);}
+.nav-links{display:flex;gap:16px;margin-left:auto;}
+
+/* Layout */
+.container{max-width:1400px;margin:0 auto;padding:24px 20px;}
+h2{font-size:1.1rem;font-weight:600;margin-bottom:18px;letter-spacing:.5px;}
+.page-title{margin-bottom:24px;}
+.page-title h1{font-family:var(--font-mono);font-size:1.2rem;color:var(--accent);letter-spacing:2px;}
+.page-title p{color:var(--muted2);font-size:.82rem;margin-top:4px;}
+
+/* Stat cards row */
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:28px;}
+.stat-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;}
+.stat-card .label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;}
+.stat-card .value{font-family:var(--font-mono);font-size:1.6rem;font-weight:700;}
+.stat-card .sub{font-size:.72rem;color:var(--muted2);margin-top:4px;}
+.stat-card.buy .value{color:var(--buy);}
+.stat-card.sell .value{color:var(--sell);}
+.stat-card.gold .value{color:var(--gold);}
+.stat-card.accent .value{color:var(--accent);}
+
+/* Two-column charts */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:28px;}
+@media(max-width:900px){.two-col{grid-template-columns:1fr;}}
+
+/* Panel */
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;}
+.panel h3{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted2);margin-bottom:16px;}
+.chart-wrap{position:relative;height:220px;}
+
+/* Horizon accuracy bars */
+.horizon-bars{display:flex;flex-direction:column;gap:14px;}
+.h-bar-row{display:flex;align-items:center;gap:12px;}
+.h-bar-label{font-family:var(--font-mono);font-size:.75rem;color:var(--muted2);width:36px;flex-shrink:0;}
+.h-bar-track{flex:1;background:#1a1f2e;border-radius:4px;height:20px;overflow:hidden;}
+.h-bar-fill{height:100%;border-radius:4px;display:flex;align-items:center;padding-left:8px;
+  font-size:.7rem;font-family:var(--font-mono);color:#fff;font-weight:700;transition:width .8s ease;}
+.h-bar-pct{font-family:var(--font-mono);font-size:.78rem;color:var(--text);width:48px;text-align:right;flex-shrink:0;}
+.h-bar-total{font-size:.68rem;color:var(--muted);width:60px;flex-shrink:0;}
+
+/* Asset table */
+.asset-table{width:100%;border-collapse:collapse;font-size:.78rem;}
+.asset-table th{color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:1px;
+  padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);}
+.asset-table td{padding:10px 12px;border-bottom:1px solid rgba(30,37,53,.6);}
+.asset-table tr:last-child td{border-bottom:none;}
+.asset-table tr:hover td{background:rgba(255,255,255,.02);}
+.acc-pill{display:inline-block;padding:2px 8px;border-radius:20px;font-family:var(--font-mono);font-size:.7rem;font-weight:700;}
+.acc-high{background:rgba(0,212,170,.15);color:var(--buy);}
+.acc-mid {background:rgba(245,197,24,.12);color:var(--gold);}
+.acc-low {background:rgba(255,68,102,.12);color:var(--sell);}
+
+/* Recent outcomes table */
+.outcome-row{display:grid;grid-template-columns:100px 60px 70px 70px 70px 60px 1fr;
+  align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid rgba(30,37,53,.5);
+  font-size:.74rem;}
+.outcome-row:last-child{border-bottom:none;}
+.outcome-header{color:var(--muted);font-size:.66rem;text-transform:uppercase;letter-spacing:.8px;}
+.badge-buy{color:var(--buy);font-weight:700;}
+.badge-sell{color:var(--sell);font-weight:700;}
+.badge-correct{color:var(--buy);}
+.badge-wrong{color:var(--sell);}
+.mono{font-family:var(--font-mono);}
+.muted{color:var(--muted2);}
+
+/* Loading */
+.loading{text-align:center;padding:40px;color:var(--muted);font-size:.8rem;}
+.dot-pulse{display:inline-block;animation:pulse 1.2s infinite;}
+@keyframes pulse{0%,100%{opacity:.3;}50%{opacity:1;}}
+
+/* Calibration section */
+.calibration-note{font-size:.72rem;color:var(--muted2);margin-top:12px;line-height:1.6;}
+
+/* Days filter */
+.days-filter{display:flex;gap:8px;margin-bottom:20px;}
+.days-btn{padding:5px 14px;border:1px solid var(--border);border-radius:20px;background:none;
+  color:var(--muted2);font-size:.72rem;cursor:pointer;transition:all .2s;font-family:var(--font-sans);}
+.days-btn:hover,.days-btn.active{border-color:var(--accent);color:var(--accent);}
+
+/* Alpha signals panel */
+.alpha-item{padding:10px 14px;border-bottom:1px solid rgba(30,37,53,.5);font-size:.75rem;}
+.alpha-item:last-child{border-bottom:none;}
+.alpha-header{display:flex;align-items:center;gap:10px;margin-bottom:4px;}
+.alpha-type{font-size:.65rem;background:#1a1f2e;border-radius:4px;padding:2px 7px;color:var(--muted2);text-transform:uppercase;letter-spacing:.5px;}
+.alpha-strength{font-family:var(--font-mono);font-size:.68rem;color:var(--gold);}
+.alpha-detail{color:var(--muted2);font-size:.71rem;}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-brand">⚡ TRADING INTEL</div>
+  <div class="nav-links">
+    <a href="/">Dashboard</a>
+    <a href="/chart">Live Chart</a>
+    <a href="/sentiment">Sentiment</a>
+    <a href="/status">Status</a>
+    <a href="/accuracy" class="active">AI Accuracy</a>
+  </div>
+</nav>
+
+<div class="container">
+  <div class="page-title">
+    <h1>AI PREDICTION ACCURACY</h1>
+    <p>Institutional-grade performance monitoring — how reliable is the AI, actually?</p>
+  </div>
+
+  <!-- Days filter -->
+  <div class="days-filter">
+    <button class="days-btn active" onclick="loadData(7,this)">7 days</button>
+    <button class="days-btn" onclick="loadData(14,this)">14 days</button>
+    <button class="days-btn" onclick="loadData(30,this)">30 days</button>
+    <button class="days-btn" onclick="loadData(90,this)">90 days</button>
+  </div>
+
+  <!-- Stat cards -->
+  <div class="stats-row" id="statsRow">
+    <div class="stat-card accent"><div class="label">1H Accuracy</div><div class="value" id="acc1h">—</div><div class="sub" id="total1h">Loading…</div></div>
+    <div class="stat-card buy">  <div class="label">4H Accuracy</div><div class="value" id="acc4h">—</div><div class="sub" id="total4h"></div></div>
+    <div class="stat-card gold"> <div class="label">24H Accuracy</div><div class="value" id="acc24h">—</div><div class="sub" id="total24h"></div></div>
+    <div class="stat-card">      <div class="label">Target Hit Rate</div><div class="value" id="targetRate">—</div><div class="sub">Avg across horizons</div></div>
+  </div>
+
+  <!-- Horizon bars + calibration chart -->
+  <div class="two-col">
+    <div class="panel">
+      <h3>Accuracy by Horizon</h3>
+      <div class="horizon-bars" id="horizonBars">
+        <div class="loading"><span class="dot-pulse">●</span> Loading…</div>
+      </div>
+      <p class="calibration-note" id="calibNote"></p>
+    </div>
+    <div class="panel">
+      <h3>Calibration — Predicted Confidence vs Actual Win Rate</h3>
+      <div class="chart-wrap"><canvas id="calibChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Asset accuracy + alpha signals -->
+  <div class="two-col">
+    <div class="panel">
+      <h3>Top Performing Assets</h3>
+      <table class="asset-table">
+        <thead><tr>
+          <th>Asset</th><th>1H Acc</th><th>4H Acc</th><th>24H Acc</th><th>Signals</th>
+        </tr></thead>
+        <tbody id="assetTable"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3>Alpha Discovery — Recent Signals</h3>
+      <div id="alphaFeed"><div class="loading"><span class="dot-pulse">●</span> Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- Recent outcomes -->
+  <div class="panel" style="margin-bottom:28px;">
+    <h3>Recent Prediction Outcomes (Last 20)</h3>
+    <div class="outcome-row outcome-header">
+      <span>Asset</span><span>Dir</span><span>Entry</span><span>Actual</span><span>Move</span><span>Horizon</span><span>Result</span>
+    </div>
+    <div id="recentOutcomes"><div class="loading">Loading…</div></div>
+  </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// DATA LOADING
+// ═══════════════════════════════════════════════════════
+let calibChartInst = null;
+
+async function loadData(days = 30, btn = null) {
+  if (btn) {
+    document.querySelectorAll('.days-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+
+  try {
+    const [accRes, alphaRes] = await Promise.all([
+      fetch(`/api/accuracy?days=${days}`).then(r => r.json()),
+      fetch('/api/alpha?n=20').then(r => r.json()),
+    ]);
+
+    if (accRes.success) renderAccuracy(accRes.data);
+    if (alphaRes.success) renderAlpha(alphaRes.signals);
+  } catch (e) {
+    console.error('Load failed:', e);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// RENDER ACCURACY
+// ═══════════════════════════════════════════════════════
+function renderAccuracy(data) {
+  const h  = data.by_horizon || {};
+  const h1  = h['1H']  || {};
+  const h4  = h['4H']  || {};
+  const h24 = h['24H'] || {};
+
+  // Stat cards
+  document.getElementById('acc1h').textContent   = h1.accuracy_pct  != null ? h1.accuracy_pct  + '%' : '—';
+  document.getElementById('acc4h').textContent   = h4.accuracy_pct  != null ? h4.accuracy_pct  + '%' : '—';
+  document.getElementById('acc24h').textContent  = h24.accuracy_pct != null ? h24.accuracy_pct + '%' : '—';
+  document.getElementById('total1h').textContent  = h1.total  ? `${h1.total} predictions`  : 'No data yet';
+  document.getElementById('total4h').textContent  = h4.total  ? `${h4.total} predictions`  : '';
+  document.getElementById('total24h').textContent = h24.total ? `${h24.total} predictions` : '';
+
+  // Target hit rate
+  const allHits = [h1, h4, h24].filter(x => x.total > 0);
+  if (allHits.length) {
+    const avgHit = allHits.reduce((s, x) => s + (x.targets_hit / x.total * 100), 0) / allHits.length;
+    document.getElementById('targetRate').textContent = avgHit.toFixed(1) + '%';
+  }
+
+  // Horizon bars
+  const barsEl = document.getElementById('horizonBars');
+  const horizons = [['1H', h1], ['4H', h4], ['24H', h24]];
+  barsEl.innerHTML = horizons.map(([label, hd]) => {
+    const pct   = hd.accuracy_pct || 0;
+    const total = hd.total || 0;
+    const color = pct >= 65 ? 'var(--buy)' : pct >= 50 ? 'var(--gold)' : 'var(--sell)';
+    return `
+      <div class="h-bar-row">
+        <div class="h-bar-label">${label}</div>
+        <div class="h-bar-track">
+          <div class="h-bar-fill" style="width:${pct}%;background:${color};">${pct > 20 ? pct + '%' : ''}</div>
+        </div>
+        <div class="h-bar-pct">${pct}%</div>
+        <div class="h-bar-total muted">${total} signals</div>
+      </div>`;
+  }).join('');
+
+  // Calibration note
+  const bestH  = horizons.sort((a,b) => (b[1].accuracy_pct||0) - (a[1].accuracy_pct||0))[0];
+  const note = bestH && bestH[1].total > 5
+    ? `Best horizon: ${bestH[0]} with ${bestH[1].accuracy_pct}% accuracy over ${bestH[1].total} signals. 
+       Avg confidence: ${((bestH[1].avg_confidence||0)*100).toFixed(0)}%.`
+    : 'Accuracy data will appear as signals are recorded and evaluated.';
+  document.getElementById('calibNote').textContent = note;
+
+  // Calibration chart (confidence buckets vs actual accuracy)
+  renderCalibChart(data);
+
+  // Asset table
+  renderAssetTable(data.by_asset || {});
+
+  // Recent outcomes
+  renderRecent(data.recent || []);
+}
+
+function renderCalibChart(data) {
+  const recent = data.recent || [];
+  // Bucket predictions by confidence level
+  const buckets = {};
+  for (const r of recent) {
+    const conf = Math.round((r.confidence || 0.5) * 10) * 10;
+    if (!buckets[conf]) buckets[conf] = { total: 0, correct: 0 };
+    buckets[conf].total++;
+    if (r.correct) buckets[conf].correct++;
+  }
+
+  const labels  = Object.keys(buckets).map(k => k + '%');
+  const actuals = Object.values(buckets).map(b => b.total ? (b.correct / b.total * 100).toFixed(1) : 0);
+  const ideal   = Object.keys(buckets).map(k => k);
+
+  const ctx = document.getElementById('calibChart').getContext('2d');
+  if (calibChartInst) calibChartInst.destroy();
+  calibChartInst = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Actual Win Rate %',
+          data: actuals,
+          backgroundColor: 'rgba(0,212,170,.5)',
+          borderColor: 'rgba(0,212,170,.9)',
+          borderWidth: 1,
+          borderRadius: 4,
+        },
+        {
+          label: 'Perfect Calibration',
+          data: ideal,
+          type: 'line',
+          borderColor: 'rgba(124,106,255,.6)',
+          borderDash: [4, 4],
+          pointRadius: 0,
+          fill: false,
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8892aa', font: { size: 10 } } } },
+      scales: {
+        x: { ticks: { color: '#5a6480', font: { size: 9 } }, grid: { color: '#1a1f2e' } },
+        y: {
+          min: 0, max: 100,
+          ticks: { color: '#5a6480', font: { size: 9 }, callback: v => v + '%' },
+          grid: { color: '#1a1f2e' }
+        }
+      }
+    }
+  });
+}
+
+function renderAssetTable(byAsset) {
+  const tbody = document.getElementById('assetTable');
+  const assets = Object.entries(byAsset);
+  if (!assets.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="loading muted">No asset data yet</td></tr>';
+    return;
+  }
+
+  // Sort by total signal count
+  assets.sort((a, b) => {
+    const ta = Object.values(a[1]).reduce((s, h) => s + (h.total || 0), 0);
+    const tb = Object.values(b[1]).reduce((s, h) => s + (h.total || 0), 0);
+    return tb - ta;
+  });
+
+  tbody.innerHTML = assets.slice(0, 15).map(([asset, horizons]) => {
+    const h1  = horizons['1H']  || {};
+    const h4  = horizons['4H']  || {};
+    const h24 = horizons['24H'] || {};
+    const total = Object.values(horizons).reduce((s, h) => s + (h.total || 0), 0);
+
+    const pill = (pct) => {
+      if (!pct) return '<span class="muted">—</span>';
+      const cls = pct >= 65 ? 'acc-high' : pct >= 50 ? 'acc-mid' : 'acc-low';
+      return `<span class="acc-pill ${cls}">${pct}%</span>`;
+    };
+
+    return `<tr>
+      <td class="mono" style="color:var(--text)">${asset}</td>
+      <td>${pill(h1.accuracy_pct)}</td>
+      <td>${pill(h4.accuracy_pct)}</td>
+      <td>${pill(h24.accuracy_pct)}</td>
+      <td class="muted">${total}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderRecent(recent) {
+  const el = document.getElementById('recentOutcomes');
+  if (!recent.length) {
+    el.innerHTML = '<div class="loading muted">No evaluated predictions yet — signals are evaluated 1H, 4H, 24H after generation.</div>';
+    return;
+  }
+  el.innerHTML = recent.map(r => {
+    const dirCls  = r.direction === 'BUY' ? 'badge-buy' : 'badge-sell';
+    const resCls  = r.correct ? 'badge-correct' : 'badge-wrong';
+    const resText = r.correct ? '✓ Correct' : '✗ Wrong';
+    const move    = r.move_pct != null ? (r.move_pct >= 0 ? '+' : '') + r.move_pct.toFixed(2) + '%' : '—';
+    return `
+      <div class="outcome-row">
+        <span class="mono">${r.asset}</span>
+        <span class="${dirCls}">${r.direction}</span>
+        <span class="mono muted">${r.entry ? r.entry.toFixed(4) : '—'}</span>
+        <span class="mono muted">${r.actual ? r.actual.toFixed(4) : '—'}</span>
+        <span class="mono">${move}</span>
+        <span class="muted">${r.horizon}</span>
+        <span class="${resCls}">${resText}</span>
+      </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════
+// ALPHA SIGNALS
+// ═══════════════════════════════════════════════════════
+const SIGNAL_TYPE_LABELS = {
+  'correlation_break': 'Corr Break',
+  'volume_anomaly':    'Vol Anomaly',
+  'divergence':        'Divergence',
+  'liquidity_gap':     'Liq Gap',
+  'flow_rotation':     'Flow Rotation',
+};
+
+function renderAlpha(signals) {
+  const el = document.getElementById('alphaFeed');
+  if (!signals.length) {
+    el.innerHTML = '<div class="loading muted">Scanning… alpha signals appear every 5 minutes.</div>';
+    return;
+  }
+  el.innerHTML = signals.slice(0, 12).map(s => {
+    const dirCls   = s.direction === 'BUY' ? 'badge-buy' : s.direction === 'SELL' ? 'badge-sell' : 'muted';
+    const typeLabel = SIGNAL_TYPE_LABELS[s.signal_type] || s.signal_type;
+    const strength  = Math.round((s.strength || 0) * 100);
+    const ts        = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
+    return `
+      <div class="alpha-item">
+        <div class="alpha-header">
+          <span class="mono ${dirCls}" style="font-size:.78rem;font-weight:700;">${s.asset}</span>
+          <span class="${dirCls}" style="font-size:.72rem;">${s.direction}</span>
+          <span class="alpha-type">${typeLabel}</span>
+          <span class="alpha-strength">${strength}%</span>
+          <span class="muted" style="font-size:.65rem;margin-left:auto;">${ts}</span>
+        </div>
+        <div class="alpha-detail">${s.detail || ''}</div>
+      </div>`;
+  }).join('');
+}
+
+// ── WebSocket gateway connection (optional enhancement) ──────────────────
+function connectGateway() {
+  try {
+    const ws = new WebSocket('ws://localhost:8080');
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ action: 'subscribe', channels: ['alpha', 'predictions'] }));
+    };
+    ws.onmessage = (e) => {
+      try {
+        const env = JSON.parse(e.data);
+        if (env.channel === 'alpha') {
+          // Refresh alpha feed silently
+          fetch('/api/alpha?n=20').then(r => r.json()).then(d => {
+            if (d.success) renderAlpha(d.signals);
+          });
+        }
+      } catch (_) {}
+    };
+    ws.onerror = () => {};   // silently ignore if gateway not running
+  } catch (_) {}
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+loadData(7);
+setInterval(() => loadData(7), 60_000);   // refresh every minute
+connectGateway();
+</script>
+</body>
+</html>

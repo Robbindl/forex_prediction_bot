@@ -35,6 +35,30 @@ from logger import logger
 from telegram_manager import telegram_manager
 from websocket_dashboard import recent_transactions
 
+# ── Platform upgrades ──────────────────────────────────────────────────────────
+try:
+    from redis_broker import broker as _redis_broker
+except Exception:
+    _redis_broker = None
+
+try:
+    from orderflow_engine import orderflow_engine as _orderflow_engine
+    _orderflow_engine.start()
+except Exception:
+    _orderflow_engine = None
+
+try:
+    from alpha_discovery import alpha_engine as _alpha_engine
+    _alpha_engine.start()
+except Exception:
+    _alpha_engine = None
+
+try:
+    from prediction_tracker import prediction_tracker as _pred_tracker
+    _pred_tracker.start()
+except Exception:
+    _pred_tracker = None
+
 
 # ── JSON encoder (handles pandas/numpy types) ─────────────────────────────────
 class _Encoder(json.JSONEncoder):
@@ -1371,6 +1395,153 @@ echo  Stress test: http://localhost:5000/api/stress-test
 """
     return Response(script, mimetype='text/plain',
                     headers={'Content-Disposition':'attachment; filename=install.bat'})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PLATFORM UPGRADE ROUTES — OrderFlow, Alpha, Accuracy, Prediction Overlay
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/accuracy')
+def accuracy_page():
+    return render_template('accuracy_dashboard.html')
+
+
+@app.route('/api/orderflow/<path:asset>')
+def api_orderflow(asset: str):
+    """
+    GET /api/orderflow/BTC-USD
+    Returns latest order flow snapshot for the asset.
+    {bid_vol, ask_vol, delta, imbalance, pressure, bid_walls, ask_walls}
+    """
+    asset = ASSET_ALIASES.get(asset.upper(), asset)
+    if _orderflow_engine:
+        snap = _orderflow_engine.get_snapshot(asset)
+        if snap:
+            return jsonify({'success': True, 'data': snap})
+    return jsonify({'success': False, 'error': 'No orderflow data yet', 'data': {
+        'asset': asset, 'pressure': 'NEUTRAL', 'imbalance': 0,
+        'bid_vol': 0, 'ask_vol': 0, 'delta': 0,
+    }})
+
+
+@app.route('/api/orderflow')
+def api_orderflow_all():
+    """GET /api/orderflow — returns all available orderflow snapshots."""
+    if _orderflow_engine:
+        snaps = _orderflow_engine.get_all_snapshots()
+        return jsonify({'success': True, 'data': snaps, 'count': len(snaps)})
+    return jsonify({'success': False, 'data': {}, 'count': 0})
+
+
+@app.route('/api/alpha')
+def api_alpha_signals():
+    """
+    GET /api/alpha?n=50
+    Returns recent alpha discovery signals.
+    """
+    n = min(int(request.args.get('n', 50)), 200)
+    if _alpha_engine:
+        sigs = _alpha_engine.get_recent_signals(n)
+        return jsonify({'success': True, 'signals': sigs, 'count': len(sigs)})
+    return jsonify({'success': False, 'signals': [], 'count': 0})
+
+
+@app.route('/api/alpha/<path:asset>')
+def api_alpha_for_asset(asset: str):
+    """GET /api/alpha/EUR/USD — alpha signals for a specific asset."""
+    asset = ASSET_ALIASES.get(asset.upper(), asset)
+    if _alpha_engine:
+        sigs = _alpha_engine.get_signals_for_asset(asset, 20)
+        return jsonify({'success': True, 'asset': asset, 'signals': sigs})
+    return jsonify({'success': False, 'asset': asset, 'signals': []})
+
+
+@app.route('/api/accuracy')
+def api_accuracy():
+    """
+    GET /api/accuracy?days=30
+    Returns AI prediction accuracy stats by horizon (1H, 4H, 24H).
+    """
+    days = min(int(request.args.get('days', 30)), 90)
+    if _pred_tracker:
+        stats = _pred_tracker.get_accuracy_stats(days)
+        return jsonify({'success': True, 'data': stats})
+    return jsonify({'success': False, 'data': {
+        'by_horizon': {
+            '1H':  {'total':0,'correct':0,'accuracy_pct':0},
+            '4H':  {'total':0,'correct':0,'accuracy_pct':0},
+            '24H': {'total':0,'correct':0,'accuracy_pct':0},
+        },
+        'by_asset': {}, 'recent': [], 'days_back': days,
+    }})
+
+
+@app.route('/api/prediction-overlay/<path:asset>')
+def api_prediction_overlay(asset: str):
+    """
+    GET /api/prediction-overlay/EUR/USD
+    Returns the AI prediction overlay data for the live chart.
+    {direction, target_price, confidence, horizon_minutes, entry_price}
+    Combines the latest cached signal with prediction tracker data.
+    """
+    asset = ASSET_ALIASES.get(asset.upper(), asset)
+    cat   = _ASSET_MAP.get(asset, ('forex', 0.001))[0]
+
+    # Pull from signal cache
+    cached = _signal_cache.get(asset, {})
+    signal = cached.get('signal') if isinstance(cached, dict) else None
+
+    overlay = None
+    if signal and isinstance(signal, dict):
+        direction  = signal.get('signal', 'HOLD')
+        entry      = signal.get('entry_price', signal.get('entry', 0))
+        tp1        = signal.get('tp1', signal.get('take_profit', 0))
+        confidence = signal.get('confidence', 0.5)
+
+        if direction != 'HOLD' and entry:
+            overlay = {
+                'direction':       direction,
+                'entry_price':     entry,
+                'target_price':    tp1,
+                'stop_loss':       signal.get('stop_loss', 0),
+                'confidence':      confidence,
+                'horizon_minutes': 60,
+                'asset':           asset,
+                'strategy':        signal.get('strategy', ''),
+                'regime':          signal.get('regime', ''),
+            }
+
+    # Augment with alpha signals if available
+    alpha_sigs = []
+    if _alpha_engine:
+        alpha_sigs = _alpha_engine.get_signals_for_asset(asset, 3)
+
+    # Augment with orderflow
+    of_snap = None
+    if _orderflow_engine:
+        of_snap = _orderflow_engine.get_snapshot(asset)
+
+    return jsonify({
+        'success': True,
+        'asset':       asset,
+        'overlay':     overlay,
+        'alpha':       alpha_sigs,
+        'orderflow':   of_snap,
+    })
+
+
+@app.route('/api/redis/status')
+def api_redis_status():
+    """GET /api/redis/status — check Redis and gateway connectivity."""
+    if _redis_broker:
+        return jsonify({
+            'success':   True,
+            'connected': _redis_broker.is_connected,
+            'channels':  _redis_broker.CHANNELS,
+            'gateway':   'ws://localhost:8080',
+        })
+    return jsonify({'success': False, 'connected': False,
+                    'message': 'redis-py not installed or Redis not running'})
 
 
 # ══════════════════════════════════════════════════════════════════════════════

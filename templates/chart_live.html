@@ -50,7 +50,7 @@
     .chart-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;}
     #chart{flex:1;width:100%;}
 
-    .ohlc-bar{position:absolute;top:8px;left:8px;background:rgba(11,14,20,.88);border:1px solid var(--border);border-radius:5px;padding:6px 12px;font-family:var(--mono);font-size:11px;display:flex;gap:16px;pointer-events:none;z-index:10;backdrop-filter:blur(6px);}
+    .ohlc-bar{position:absolute;top:8px;left:8px;background:rgba(11,14,20,.88);border:1px solid var(--border);border-radius:5px;padding:6px 12px;font-family:var(--mono);font-size:11px;display:flex;gap:16px;pointer-events:none;z-index:10;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);}
     .ohlc-item{display:flex;flex-direction:column;gap:1px;}
     .ohlc-lbl{font-size:9px;color:var(--muted);}
     .ohlc-val{color:var(--text);}
@@ -58,7 +58,7 @@
     .ohlc-val.red{color:var(--sell);}
 
     .chart-legend{position:absolute;bottom:32px;left:10px;display:flex;flex-direction:column;gap:4px;pointer-events:none;z-index:10;}
-    .legend-row{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;background:rgba(11,14,20,.82);padding:3px 7px;border-radius:3px;backdrop-filter:blur(4px);}
+    .legend-row{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;background:rgba(11,14,20,.82);padding:3px 7px;border-radius:3px;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);}
     .legend-line{width:20px;height:2px;border-radius:1px;}
 
     .sidebar{width:300px;background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
@@ -118,7 +118,7 @@
     <a href="/chart" class="active">Chart</a>
     <a href="/websocket-feed">Feed</a>
   </div>
-  <select class="asset-select" id="assetSelect" onchange="changeAsset()"></select>
+  <select class="asset-select" id="assetSelect" onchange="changeAsset()" title="Select Asset"></select>
   <div class="tf-group">
     <button class="tf-btn" onclick="changeTf('15m')">15m</button>
     <button class="tf-btn active" onclick="changeTf('1h')">1H</button>
@@ -171,6 +171,8 @@
 // STATE
 // ═══════════════════════════════════════════════
 let chart, candleSeries, volumeSeries;
+let predictionSeries = null;   // AI prediction overlay line
+let predictionArea   = null;   // confidence band area series
 let priceLinesActive = [];
 let currentAsset = 'EUR/USD';
 let currentTf    = '1h';
@@ -188,6 +190,8 @@ const TF_SECS = {'1m':60,'5m':300,'15m':900,'1h':3600,'4h':14400,'1d':86400};
 // ═══════════════════════════════════════════════
 function initChart() {
   const wrap = document.getElementById('chart');
+  // Destroy existing chart instance before creating a new one (prevents GPU memory leak)
+  if(chart){try{chart.remove();}catch(_){}chart=null;candleSeries=null;volumeSeries=null;predictionSeries=null;predictionArea=null;}
   chart = LightweightCharts.createChart(wrap, {
     layout:{background:{color:'#0b0e14'},textColor:'#5a6480',fontFamily:"'Space Mono',monospace",fontSize:10},
     grid:{vertLines:{color:'#1a1f2e'},horzLines:{color:'#1a1f2e'}},
@@ -229,6 +233,26 @@ function initChart() {
 
   new ResizeObserver(()=>chart.applyOptions({width:wrap.clientWidth,height:wrap.clientHeight})).observe(wrap);
   chart.applyOptions({width:wrap.clientWidth,height:wrap.clientHeight});
+
+  // AI Prediction overlay series (invisible until overlay data arrives)
+  predictionSeries = chart.addLineSeries({
+    color:'rgba(124,106,255,0.9)',
+    lineWidth:2,
+    lineStyle:1,          // dashed
+    priceLineVisible:false,
+    lastValueVisible:false,
+    title:'AI Target',
+  });
+  predictionArea = chart.addAreaSeries({
+    topColor:   'rgba(124,106,255,0.12)',
+    bottomColor:'rgba(124,106,255,0.0)',
+    lineColor:  'rgba(124,106,255,0.0)',
+    priceLineVisible:false,
+    lastValueVisible:false,
+  });
+
+  // Load prediction overlay after candles load
+  setTimeout(() => loadPredictionOverlay(), 2000);
 }
 
 // ═══════════════════════════════════════════════
@@ -265,7 +289,28 @@ async function populateAssets(){
       });
       sel.appendChild(og);
     });
-  }catch(e){console.error('populateAssets:',e);}
+  }catch(e){
+    console.error('populateAssets:',e);
+    // Fallback: populate with default assets so chart stays functional
+    const sel=document.getElementById('assetSelect');
+    const fallback=[
+      {group:'Forex',items:['EUR/USD','GBP/USD','USD/JPY','AUD/USD','USD/CAD']},
+      {group:'Crypto',items:['BTC/USD','ETH/USD','SOL/USD','XRP/USD']},
+      {group:'Commodities',items:['XAU/USD','XAG/USD','WTI/USD']},
+    ];
+    sel.innerHTML='';
+    fallback.forEach(({group,items})=>{
+      const og=document.createElement('optgroup');
+      og.label=group;
+      items.forEach(sym=>{
+        const o=document.createElement('option');
+        o.value=sym;o.textContent=sym;
+        if(sym===currentAsset)o.selected=true;
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════
@@ -304,6 +349,105 @@ async function loadCandles(silent=false){
 }
 
 // ═══════════════════════════════════════════════
+// AI PREDICTION OVERLAY
+// ═══════════════════════════════════════════════
+let _predRefreshTimer = null;
+
+async function loadPredictionOverlay(){
+  if(!candleSeries||!predictionSeries||!predictionArea) return;
+  try{
+    const r=await fetch(`/api/prediction-overlay/${encodeURIComponent(currentAsset)}`);
+    const d=await r.json();
+    if(!d.success||!d.overlay) { clearPredictionOverlay(); return; }
+
+    const ov       = d.overlay;
+    const lastCandle= candleData.length ? candleData[candleData.length-1] : null;
+    if(!lastCandle) return;
+
+    const entry    = ov.entry_price;
+    const target   = ov.target_price;
+    const sl       = ov.stop_loss;
+    const conf     = ov.confidence||0.6;
+    const horizonS = (ov.horizon_minutes||60)*60;
+    const dir      = ov.direction;
+
+    if(!target||!entry) { clearPredictionOverlay(); return; }
+
+    // Project line from now to horizon (4 points: entry → target)
+    const t0 = lastCandle.time;
+    const t1 = t0 + Math.floor(horizonS*0.33);
+    const t2 = t0 + Math.floor(horizonS*0.66);
+    const t3 = t0 + horizonS;
+
+    // Interpolated path entry → target
+    const interp = (a,b,f) => a + (b-a)*f;
+    const predLine=[
+      {time:t0, value:entry},
+      {time:t1, value:interp(entry,target,0.25)},
+      {time:t2, value:interp(entry,target,0.65)},
+      {time:t3, value:target},
+    ];
+
+    // Confidence band: ±(1-conf)% around the predicted path
+    const bandWidth = target * (1-conf) * 0.5;
+    const areaLine=[
+      {time:t0, value:entry},
+      {time:t3, value:dir==='BUY'?target+bandWidth:target-bandWidth},
+    ];
+
+    predictionSeries.setData(predLine);
+    predictionArea.setData(areaLine);
+
+    // Update prediction legend
+    updatePredLegend(ov, d.orderflow, d.alpha);
+
+    // Schedule refresh every 2 minutes
+    if(_predRefreshTimer) clearTimeout(_predRefreshTimer);
+    _predRefreshTimer = setTimeout(loadPredictionOverlay, 120_000);
+
+  }catch(e){
+    console.debug('Prediction overlay:', e);
+    clearPredictionOverlay();
+  }
+}
+
+function clearPredictionOverlay(){
+  try{if(predictionSeries)predictionSeries.setData([]);}catch(_){}
+  try{if(predictionArea)predictionArea.setData([]);}catch(_){}
+  const el=document.getElementById('predLegend');
+  if(el) el.style.display='none';
+}
+
+function updatePredLegend(ov, of_snap, alpha_sigs){
+  let el=document.getElementById('predLegend');
+  if(!el){
+    el=document.createElement('div');
+    el.id='predLegend';
+    el.style.cssText='position:absolute;top:8px;right:90px;background:rgba(11,14,20,.85);'
+      +'border:1px solid #2a1f6a;border-radius:8px;padding:8px 12px;font-size:.68rem;z-index:10;'
+      +'font-family:Space Mono,monospace;min-width:160px;backdrop-filter:blur(8px);'
+      +'-webkit-backdrop-filter:blur(8px);';
+    document.getElementById('chart').parentElement.style.position='relative';
+    document.getElementById('chart').parentElement.appendChild(el);
+  }
+  const dirCol= ov.direction==='BUY'?'#00d4aa':'#ff4466';
+  const conf  = Math.round((ov.confidence||0)*100);
+  const ofPres= of_snap ? of_snap.pressure : '—';
+  const ofCol = ofPres.includes('BUY')?'#00d4aa':ofPres.includes('SELL')?'#ff4466':'#8892aa';
+  const alphaCt= Array.isArray(alpha_sigs)?alpha_sigs.length:0;
+
+  el.innerHTML=`
+    <div style="color:#7c6aff;font-size:.6rem;letter-spacing:1px;margin-bottom:5px;">AI PREDICTION</div>
+    <div style="color:${dirCol};font-weight:700;font-size:.8rem;">${ov.direction} @ ${ov.entry_price.toFixed(5)}</div>
+    <div style="color:#d0d8f0;margin-top:3px;">Target: <span style="color:${dirCol}">${ov.target_price.toFixed(5)}</span></div>
+    <div style="color:#8892aa;margin-top:2px;">Confidence: <span style="color:#f5c518">${conf}%</span></div>
+    <div style="color:#8892aa;margin-top:2px;">Flow: <span style="color:${ofCol}">${ofPres}</span></div>
+    ${alphaCt?`<div style="color:#8892aa;margin-top:2px;">Alpha signals: <span style="color:#7c6aff">${alphaCt}</span></div>`:''}
+  `;
+  el.style.display='block';
+}
+
+// ═══════════════════════════════════════════════
 // SSE STREAM
 // ═══════════════════════════════════════════════
 function openStream(){
@@ -317,31 +461,30 @@ function openStream(){
   sseSource.onmessage=evt=>{
     try{
       const msg=JSON.parse(evt.data);
-      if(msg.type==='tick')      handleTick(msg);
-      if(msg.type==='positions') handlePositions(msg);
+      // Server candle authority: prefer full candle update over client-side math
+      if(msg.type==='candle_update') handleCandleUpdate(msg);
+      else if(msg.type==='tick')     scheduleTickUpdate(msg);
+      if(msg.type==='positions')     handlePositions(msg);
     }catch(e){console.error('SSE parse:',e);}
   };
 
   sseSource.onerror=()=>{
-    setSse('error','Reconnecting');
+    setSse('error','Reconnecting…');
+    setConn(false,'Disconnected');
     sseSource.close();
-    setTimeout(()=>{if(currentAsset)openStream();},3000);
+    const jitter=3000+Math.random()*3000;
+    setTimeout(()=>{if(currentAsset){loadCandles(true);openStream();}},jitter);
   };
 }
 
-// ── Price tick received ──────────────────────────
-function handleTick(msg){
-  const price=msg.price;
-  const now=msg.time;
-
-  // Price display with flash
+// ── Shared price display update ─────────────────────────────────────────────
+function updatePriceDisplay(price, time){
   const pEl=document.getElementById('priceDisplay');
   pEl.textContent=fp(price);
   pEl.classList.remove('tick-flash');
   void pEl.offsetWidth;
   pEl.classList.add('tick-flash');
 
-  // % change
   if(firstCandle){
     const chg=((price-firstCandle)/firstCandle*100);
     const el=document.getElementById('priceChange');
@@ -349,9 +492,50 @@ function handleTick(msg){
     el.className='price-change '+(chg>=0?'up':'down');
   }
 
-  // Live cell in OHLC bar
   document.getElementById('oLive').textContent=fp(price);
   document.getElementById('tickTime').textContent=new Date().toLocaleTimeString();
+}
+
+// ── Server candle authority: full OHLCV from server ────────────────────────
+// Eliminates candle drift — server builds candles, browser only displays
+function handleCandleUpdate(msg){
+  if(!candleSeries||!volumeSeries)return;
+  const candle={time:msg.time,open:msg.open,high:msg.high,low:msg.low,close:msg.close};
+  candleSeries.update(candle);
+  if(msg.volume!=null){
+    volumeSeries.update({time:msg.time,value:msg.volume,
+      color:msg.close>=msg.open?'rgba(0,212,170,.25)':'rgba(255,68,102,.25)'});
+  }
+  // Sync local array
+  if(candleData.length&&candleData[candleData.length-1].time===msg.time){
+    candleData[candleData.length-1]=candle;
+  } else if(!candleData.length||msg.time>candleData[candleData.length-1].time){
+    candleData.push(candle);
+  }
+  document.getElementById('candleCount').textContent=candleData.length;
+  updatePriceDisplay(msg.close,msg.time);
+}
+
+// ── RAF throttle — prevents tick flood (up to 200 ticks/s in crypto) ─────────
+let _pendingTick=null, _rafPending=false;
+function scheduleTickUpdate(msg){
+  _pendingTick=msg;  // always keep latest tick
+  if(!_rafPending){
+    _rafPending=true;
+    requestAnimationFrame(()=>{
+      _rafPending=false;
+      if(_pendingTick)handleTick(_pendingTick);
+      _pendingTick=null;
+    });
+  }
+}
+
+// ── Price tick received ──────────────────────────
+function handleTick(msg){
+  const price=msg.price;
+  const now=msg.time;
+
+  updatePriceDisplay(price, now);
 
   if(!candleData.length)return;
 
@@ -470,7 +654,9 @@ function buildMarkers(open,history){
   });
 
   markers.sort((a,b)=>a.time-b.time);
-  candleSeries.setMarkers(markers);
+  // Cap at 200 markers to prevent chart memory growth
+  const capped=markers.length>200?markers.slice(-200):markers;
+  candleSeries.setMarkers(capped);
 }
 
 // ═══════════════════════════════════════════════
@@ -514,14 +700,16 @@ function selectPosition(i){
   currentAsset=pos.asset;
   document.getElementById('assetSelect').value=pos.asset;
   firstCandle=null; candleData=[];
-  loadCandles().then(openStream);
+  clearPredictionOverlay();
+  loadCandles().then(openStream).then(()=>setTimeout(loadPredictionOverlay,2000));
 }
 
 function jumpToTrade(asset){
   currentAsset=asset;
   document.getElementById('assetSelect').value=asset;
   firstCandle=null; candleData=[];
-  loadCandles().then(openStream);
+  clearPredictionOverlay();
+  loadCandles().then(openStream).then(()=>setTimeout(loadPredictionOverlay,2000));
 }
 
 // ═══════════════════════════════════════════════

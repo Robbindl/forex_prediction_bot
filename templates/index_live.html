@@ -221,7 +221,7 @@
     .nav-overlay {
       position: fixed; inset: 0; z-index: 100;
       background: rgba(0,0,0,.6);
-      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);backdrop-filter: blur(4px);
       opacity: 0; pointer-events: none;
       transition: opacity .3s;
     }
@@ -807,6 +807,17 @@
     .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
 
     .close-search-row { text-align: right; margin-top: 14px; }
+
+    .ticker-inner{overflow:hidden;flex:1;}
+    .stat-val--buy{color:var(--buy);}
+    .stat-val--sell{color:var(--sell);}
+    .stat-val--gold{color:var(--gold);}
+    .stat-val--purple{font-size:1rem;color:#a78bfa;}
+    .stat-icon--buy{color:var(--buy);}
+    .stat-icon--sell{color:var(--sell);}
+    .stat-icon--gold{color:var(--gold);}
+    .stat-icon--purple{color:#a78bfa;}
+    .settings-actions{text-align:right;margin-top:16px;}
   </style>
 </head>
 <body>
@@ -814,7 +825,7 @@
 <!-- TICKER TAPE -->
 <div class="ticker-wrap">
   <div class="ticker-label">LIVE</div>
-  <div style="overflow:hidden; flex:1;">
+  <div class="ticker-inner">
     <div class="ticker-track" id="ticker-track">
       <div class="ticker-item"><span class="sym">BTC/USD</span><span class="val" id="t-btc">--</span><span class="chg up" id="t-btc-c">+0.00%</span></div>
       <div class="ticker-item"><span class="sym">ETH/USD</span><span class="val" id="t-eth">--</span><span class="chg" id="t-eth-c">--</span></div>
@@ -920,27 +931,27 @@
     </div>
     <div class="stat-card green">
       <div class="stat-label">Buy Signals</div>
-      <div class="stat-val" id="buy-signals" style="color:var(--buy)">0</div>
+      <div class="stat-val stat-val--buy" id="buy-signals">0</div>
       <div class="stat-sub">Long opportunities</div>
-      <div class="stat-icon" style="color:var(--buy)"><i class="fa fa-arrow-trend-up"></i></div>
+      <div class="stat-icon stat-icon--buy"><i class="fa fa-arrow-trend-up"></i></div>
     </div>
     <div class="stat-card red">
       <div class="stat-label">Sell Signals</div>
-      <div class="stat-val" id="sell-signals" style="color:var(--sell)">0</div>
+      <div class="stat-val stat-val--sell" id="sell-signals">0</div>
       <div class="stat-sub">Short opportunities</div>
-      <div class="stat-icon" style="color:var(--sell)"><i class="fa fa-arrow-trend-down"></i></div>
+      <div class="stat-icon stat-icon--sell"><i class="fa fa-arrow-trend-down"></i></div>
     </div>
     <div class="stat-card gold">
       <div class="stat-label">Avg Confidence</div>
-      <div class="stat-val" id="avg-confidence" style="color:var(--gold)">0%</div>
+      <div class="stat-val stat-val--gold" id="avg-confidence">0%</div>
       <div class="stat-sub">Model agreement</div>
-      <div class="stat-icon" style="color:var(--gold)"><i class="fa fa-chart-pie"></i></div>
+      <div class="stat-icon stat-icon--gold"><i class="fa fa-chart-pie"></i></div>
     </div>
     <div class="stat-card purple">
       <div class="stat-label">Last Update</div>
-      <div class="stat-val" id="last-update" style="font-size:1rem;color:#a78bfa">--:--</div>
+      <div class="stat-val stat-val--purple" id="last-update">--:--</div>
       <div class="stat-sub">Auto-refreshes</div>
-      <div class="stat-icon" style="color:#a78bfa"><i class="fa fa-clock"></i></div>
+      <div class="stat-icon stat-icon--purple"><i class="fa fa-clock"></i></div>
     </div>
   </div>
 
@@ -985,7 +996,7 @@
     <div class="settings-grid">
       <div>
         <div class="field-label"><i class="fa fa-clock"></i> Timeframe</div>
-        <select class="field-select" id="interval" onchange="updateSettings()">
+        <select class="field-select" id="interval" onchange="updateSettings()" title="Select Timeframe">
           <option value="1d">Daily (1D)</option>
           <option value="1h">Hourly (1H)</option>
           <option value="15m" selected>15 Minutes</option>
@@ -993,15 +1004,15 @@
       </div>
       <div>
         <div class="field-label"><i class="fa fa-wallet"></i> Balance ($)</div>
-        <input class="field-input" type="number" id="balance" value="10"/>
+        <input class="field-input" type="number" id="balance" value="10" title="Account Balance in USD"/>
       </div>
       <div>
         <div class="field-label"><i class="fa fa-percent"></i> Risk Per Trade</div>
-        <input class="field-input" type="number" id="risk" value="1.0" step="0.1" min="0.1" max="5"/>
+        <input class="field-input" type="number" id="risk" value="1.0" step="0.1" min="0.1" max="5" title="Risk Per Trade Percentage"/>
       </div>
       <div>
         <div class="field-label"><i class="fa fa-filter"></i> Filter</div>
-        <select class="field-select" id="filter">
+        <select class="field-select" id="filter" title="Filter Signals">
           <option value="all">All Signals</option>
           <option value="buy">Buy Only</option>
           <option value="sell">Sell Only</option>
@@ -1009,7 +1020,7 @@
         </select>
       </div>
     </div>
-    <div style="text-align:right;margin-top:16px;">
+    <div class="settings-actions">
       <button class="btn-primary" onclick="updateSettings()">
         <i class="fa fa-check"></i> Apply & Refresh
       </button>

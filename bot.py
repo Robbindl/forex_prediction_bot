@@ -119,9 +119,13 @@ def _start(key: str, balance: float):
     LOGS_DIR.mkdir(exist_ok=True)
     cmd   = _build_cmd(key, balance)
     label = SERVICES[key]['label']
-    log_f = open(LOGS_DIR / f'{key}.log', 'a', encoding='utf-8')
+    # STORAGE FIX: Route subprocess stdout/stderr to DEVNULL.
+    # Every service (trading_system, web_app_live, etc.) uses logger.py
+    # internally which already writes to logs/trading_bot.log with rotation.
+    # The old approach used plain open(..., 'a') with NO size limit — that
+    # single file was consuming multiple GB per hour from Flask/TF verbose output.
     try:
-        kwargs = dict(stdout=log_f, stderr=log_f, cwd=BASE)
+        kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=BASE)
         if sys.platform == 'win32':
             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
         proc = subprocess.Popen(cmd, **kwargs)
@@ -206,8 +210,8 @@ def _watchdog(balance: float, auto_services: list):
                 import subprocess as _sp
                 _sp.Popen(
                     [PYTHON, str(BASE / 'health_check.py')],
-                    stdout=open(LOGS_DIR / 'health.log', 'a'),
-                    stderr=subprocess.STDOUT,
+                    stdout=subprocess.DEVNULL,   # STORAGE FIX: was open(health.log,'a') — no size limit
+                    stderr=subprocess.DEVNULL,   # health_check uses logger.py internally for real output
                     cwd=BASE,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
                 )
