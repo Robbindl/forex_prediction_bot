@@ -82,15 +82,18 @@ def read_runtime_balance(default: float = 30.0) -> float:
 # ── Telegram alert ────────────────────────────────────────────────────────────
 
 def _tg_alert(text: str):
-    cfg_path = BASE / 'config' / 'telegram_config.json'
-    if not cfg_path.exists():
+    """Watchdog alert — .env is the ONLY credential source. Never reads json config files."""
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(BASE / '.env', override=False)
+    except Exception:
+        pass
+    token   = os.getenv('COMMAND_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN', '')
+    chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
+    if not token or not chat_id:
         return
     try:
-        cfg     = json.loads(cfg_path.read_text(encoding='utf-8'))
-        token   = cfg.get('bot_token') or cfg.get('token', '')
-        chat_id = str(cfg.get('chat_id', ''))
-        if not token or not chat_id:
-            return
         import urllib.request, urllib.parse
         url  = f'https://api.telegram.org/bot{token}/sendMessage'
         data = urllib.parse.urlencode({'chat_id': chat_id, 'text': text}).encode()

@@ -231,12 +231,22 @@ class UltimateTradingSystem:
         import os
         
         # Load Telegram config
+        # .env is FIRST priority for Telegram credentials — telegram_config.json is optional fallback
         telegram_config = None
-        if os.path.exists('config/telegram_config.json'):
+        _tok = os.getenv('COMMAND_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN', '')
+        _cid = os.getenv('TELEGRAM_CHAT_ID', '')
+        if _tok and _cid:
+            telegram_config = {
+                'enabled':   True,
+                'bot_token': _tok,
+                'chat_id':   _cid,
+            }
+            logger.info("Telegram config built from .env")
+        elif os.path.exists('config/telegram_config.json'):
             try:
                 with open('config/telegram_config.json', 'r', encoding='utf-8') as f:
                     telegram_config = json.load(f)
-                logger.info("Telegram config loaded")
+                logger.info("Telegram config loaded from telegram_config.json (fallback)")
             except Exception as e:
                 logger.warning(f"Could not load Telegram config: {e}")
         
@@ -5469,7 +5479,10 @@ class UltimateTradingSystem:
                 'AUD/USD': 'AUDUSD=X', 'USD/CAD': 'CAD=X',    'NZD/USD': 'NZDUSD=X',
                 'USD/CHF': 'CHF=X',    'EUR/GBP': 'EURGBP=X', 'EUR/JPY': 'EURJPY=X',
                 'GBP/JPY': 'GBPJPY=X','AUD/JPY': 'AUDJPY=X', 'EUR/AUD': 'EURAUD=X',
-                'GBP/AUD': 'GBPAUD=X','USD/SGD': 'SGD=X',    'USD/HKD': 'HKD=X',
+                'GBP/AUD': 'GBPAUD=X','AUD/CAD': 'AUDCAD=X', 'CAD/JPY': 'CADJPY=X',
+                'CHF/JPY': 'CHFJPY=X','EUR/CAD': 'EURCAD=X', 'EUR/CHF': 'EURCHF=X',
+                'GBP/CAD': 'GBPCAD=X','GBP/CHF': 'GBPCHF=X', 'NZD/CAD': 'NZDCAD=X',
+                'USD/SGD': 'SGD=X',   'USD/HKD': 'HKD=X',
                 'USD/MXN': 'MXN=X',   'USD/ZAR': 'ZAR=X',    'USD/TRY': 'TRY=X',
                 # Crypto
                 'BTC-USD': 'BTC-USD', 'ETH-USD': 'ETH-USD',  'BNB-USD': 'BNB-USD',
@@ -5481,7 +5494,7 @@ class UltimateTradingSystem:
                 'WTI/USD': 'CL=F',    'OIL': 'CL=F',         'CL=F': 'CL=F',
                 'XPT/USD': 'PL=F',    'XPD/USD': 'PA=F',
                 'NG/USD':  'NG=F',    'NG=F': 'NG=F',
-                'HG=F': 'HG=F',       'COPPER': 'HG=F',
+                'HG=F': 'HG=F',       'COPPER': 'HG=F',  'XCU/USD': 'HG=F',
                 # Stocks
                 'AAPL': 'AAPL', 'MSFT': 'MSFT', 'GOOGL': 'GOOGL',
                 'AMZN': 'AMZN', 'TSLA': 'TSLA', 'NVDA': 'NVDA',

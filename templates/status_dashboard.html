@@ -1,203 +1,303 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 Trading Bot Status</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <meta http-equiv="refresh" content="30">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
-        .card { transition: all 0.3s ease; }
-        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
-        .running { color: #10b981; font-weight: 600; }
-        .stopped { color: #ef4444; font-weight: 600; }
-    </style>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ROBBIE — System Status</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <style>
+    :root{--bg:#06080f;--bg2:#0a0d18;--surface:#0e1220;--surface2:#141928;--border:#1a2035;--border2:#232d45;--buy:#00e87a;--buy-dim:rgba(0,232,122,.12);--sell:#ff3a5c;--sell-dim:rgba(255,58,92,.12);--accent:#00c2ff;--accent-dim:rgba(0,194,255,.1);--gold:#ffd166;--text:#dde4f0;--muted:#4d5b7c;--muted2:#8896b3;}
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;}
+    body::before{content:'';position:fixed;inset:0;z-index:0;background-image:linear-gradient(rgba(0,232,122,.015) 1px,transparent 1px),linear-gradient(90deg,rgba(0,232,122,.015) 1px,transparent 1px);background-size:48px 48px;pointer-events:none;}
+    .wrapper{position:relative;z-index:1;max-width:1440px;margin:0 auto;padding:0 28px 60px;}
+
+    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
+    .nav-overlay.open{opacity:1;pointer-events:all;}
+    .nav-drawer{position:fixed;top:0;right:0;width:300px;height:100vh;background:var(--bg2);border-left:1px solid var(--border2);z-index:101;transform:translateX(100%);transition:transform .35s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;overflow-y:auto;}
+    .nav-drawer.open{transform:translateX(0);}
+    .nav-drawer-header{padding:24px 24px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+    .nav-drawer-header .title{font-family:'Bebas Neue',sans-serif;font-size:1.4rem;letter-spacing:.08em;color:#fff;}
+    .nav-drawer-header .subtitle{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;}
+    .nav-close{width:34px;height:34px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;display:grid;place-items:center;cursor:pointer;color:var(--muted2);font-size:.9rem;transition:all .2s;}
+    .nav-close:hover{border-color:var(--sell);color:var(--sell);}
+    .nav-section{padding:20px 16px 8px;}
+    .nav-section-label{font-size:.6rem;font-weight:600;color:var(--muted);letter-spacing:.15em;text-transform:uppercase;padding:0 8px;margin-bottom:8px;}
+    .nav-item{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:10px;border:1px solid transparent;cursor:pointer;transition:all .2s;text-decoration:none;margin-bottom:4px;}
+    .nav-item:hover{background:var(--surface2);border-color:var(--border2);}
+    .nav-item.active{background:var(--accent-dim);border-color:rgba(0,194,255,.3);}
+    .nav-item .nav-icon{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-size:.95rem;flex-shrink:0;}
+    .nav-item.active .nav-icon{background:rgba(0,194,255,.15);color:var(--accent);}
+    .nav-item:not(.active) .nav-icon{background:var(--surface2);color:var(--muted2);}
+    .nav-item .nav-label{font-size:.85rem;font-weight:500;color:var(--text);}
+    .nav-item .nav-desc{font-size:.68rem;color:var(--muted);margin-top:1px;}
+    .nav-item.active .nav-label{color:var(--accent);}
+    .nav-divider{height:1px;background:var(--border);margin:8px 16px;}
+    .nav-footer{margin-top:auto;padding:20px 24px;border-top:1px solid var(--border);}
+    .nav-footer-bot{display:flex;align-items:center;gap:12px;}
+    .nav-footer-avatar{width:36px;height:36px;background:linear-gradient(135deg,var(--accent),var(--buy));border-radius:10px;display:grid;place-items:center;font-size:1rem;}
+    .nav-footer-info .name{font-size:.82rem;font-weight:600;color:var(--text);}
+    .nav-footer-info .sub{font-size:.66rem;color:var(--muted);}
+    .status-dot-running{width:7px;height:7px;background:var(--buy);border-radius:50%;display:inline-block;margin-right:5px;box-shadow:0 0 6px var(--buy);}
+
+    header{padding:22px 0 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);margin-bottom:32px;}
+    .logo{display:flex;align-items:center;gap:14px;}
+    .logo-icon{width:44px;height:44px;background:var(--buy-dim);border:1px solid rgba(0,232,122,.3);border-radius:12px;display:grid;place-items:center;font-size:1.2rem;color:var(--buy);box-shadow:0 0 20px rgba(0,232,122,.15);}
+    .logo-text h1{font-family:'Bebas Neue',sans-serif;font-size:1.9rem;letter-spacing:.06em;color:#fff;line-height:1;}
+    .logo-text p{font-size:.68rem;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:2px;}
+    .header-right{display:flex;align-items:center;gap:14px;}
+    .ts-badge{font-family:'JetBrains Mono',monospace;font-size:.7rem;color:var(--muted);background:var(--surface2);border:1px solid var(--border2);padding:6px 12px;border-radius:8px;}
+    .nav-trigger{width:40px;height:40px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;display:grid;place-items:center;cursor:pointer;color:var(--muted2);font-size:1.1rem;transition:all .2s;flex-shrink:0;}
+    .nav-trigger:hover{border-color:var(--accent);color:var(--accent);}
+
+    .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:28px;}
+    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;position:relative;overflow:hidden;transition:all .2s;}
+    .stat-card:hover{border-color:var(--border2);transform:translateY(-2px);}
+    .stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+    .stat-card.blue::before{background:linear-gradient(90deg,transparent,var(--accent),transparent);}
+    .stat-card.green::before{background:linear-gradient(90deg,transparent,var(--buy),transparent);}
+    .stat-card.gold::before{background:linear-gradient(90deg,transparent,var(--gold),transparent);}
+    .stat-card.red::before{background:linear-gradient(90deg,transparent,var(--sell),transparent);}
+    .stat-card-inner{display:flex;align-items:flex-start;justify-content:space-between;}
+    .stat-lbl{font-size:.65rem;font-weight:600;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px;}
+    .stat-num{font-family:'JetBrains Mono',monospace;font-size:2rem;font-weight:700;color:#fff;line-height:1;}
+    .stat-icon2{font-size:2rem;opacity:.12;}
+    .stat-sub2{font-size:.7rem;color:var(--muted);margin-top:8px;}
+
+    .panel{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:20px;}
+    .panel-title{font-family:'Bebas Neue',sans-serif;font-size:1.15rem;letter-spacing:.08em;color:#fff;display:flex;align-items:center;gap:10px;margin-bottom:20px;}
+    .panel-title i{color:var(--buy);}
+
+    /* process cards */
+    .proc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;}
+    .proc-card{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;transition:border-color .2s;}
+    .proc-card.running{border-color:rgba(0,232,122,.2);}
+    .proc-card.stopped{border-color:rgba(255,58,92,.15);}
+    .proc-name{font-size:.82rem;font-weight:500;color:var(--text);}
+    .proc-status{display:flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:.72rem;font-weight:700;}
+    .proc-status.ok{color:var(--buy);}
+    .proc-status.err{color:var(--sell);}
+    .proc-dot{width:7px;height:7px;border-radius:50%;}
+    .proc-dot.ok{background:var(--buy);box-shadow:0 0 8px var(--buy);animation:glow 1.6s ease-in-out infinite;}
+    .proc-dot.err{background:var(--sell);}
+    @keyframes glow{0%,100%{box-shadow:0 0 8px var(--buy);}50%{box-shadow:0 0 3px var(--buy);}}
+
+    /* trades table */
+    .table-wrap{overflow-x:auto;}
+    table{width:100%;border-collapse:collapse;}
+    thead th{padding:10px 16px;text-align:left;font-size:.65rem;font-weight:700;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--border2);}
+    tbody tr{border-bottom:1px solid var(--border);transition:background .15s;}
+    tbody tr:hover{background:rgba(255,255,255,.015);}
+    tbody tr:last-child{border-bottom:none;}
+    td{padding:12px 16px;font-size:.8rem;}
+    .td-mono{font-family:'JetBrains Mono',monospace;}
+    .badge-buy{background:var(--buy-dim);color:var(--buy);border:1px solid rgba(0,232,122,.25);padding:3px 10px;border-radius:6px;font-size:.65rem;font-weight:700;}
+    .badge-sell{background:var(--sell-dim);color:var(--sell);border:1px solid rgba(255,58,92,.25);padding:3px 10px;border-radius:6px;font-size:.65rem;font-weight:700;}
+    .pnl-pos{color:var(--buy);font-weight:700;}
+    .pnl-neg{color:var(--sell);font-weight:700;}
+
+    /* portfolio health */
+    .health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px;}
+    .health-item{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;}
+    .health-lbl{font-size:.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;}
+    .health-val{font-family:'JetBrains Mono',monospace;font-size:1.2rem;font-weight:700;}
+
+    .risk-bar-wrap{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
+    .risk-bar-label{font-size:.7rem;color:var(--muted2);width:120px;flex-shrink:0;}
+    .risk-bar-track{flex:1;height:6px;background:var(--border2);border-radius:999px;overflow:hidden;}
+    .risk-bar-fill{height:100%;border-radius:999px;}
+    .risk-bar-val{font-family:'JetBrains Mono',monospace;font-size:.7rem;color:var(--text);width:50px;text-align:right;flex-shrink:0;}
+  </style>
 </head>
-<body class="bg-gray-50">
-    
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
-        <!-- Header with Navigation -->
-        <div class="mb-8">
-            <div class="flex justify-between items-center">
-                <h1 class="text-3xl font-bold text-gray-900 flex items-center">
-                    <i class="fas fa-heartbeat text-red-600 mr-3"></i>
-                    Trading Bot Status
-                </h1>
-                
-                <!-- Navigation Menu -->
-                <div class="flex space-x-3">
-                    <a href="/" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-chart-line"></i>
-                        <span>Dashboard</span>
-                    </a>
-                    <a href="/sentiment" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-newspaper"></i>
-                        <span>Sentiment</span>
-                    </a>
-                    <a href="/backtest" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-chart-bar"></i>
-                        <span>Backtest</span>
-                    </a>
-                    <a href="/status" class="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
-                        <i class="fas fa-heartbeat"></i>
-                        <span>Status</span>
-                    </a>
-                </div>
-            </div>
-            <p class="text-gray-600 mt-2">Real-time system monitoring and performance metrics</p>
-        </div>
+<body>
 
-        <!-- Last Updated -->
-        <div class="text-right mb-4 text-sm text-gray-500">
-            Last updated: <span id="timestamp" class="font-mono"></span>
-        </div>
-        
-        <!-- Stats Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div class="card bg-white rounded-lg shadow-sm p-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500">💰 Account Balance</p>
-                        <p class="text-3xl font-bold text-gray-900" id="balance">$20.00</p>
-                    </div>
-                    <div class="bg-blue-100 rounded-full p-3">
-                        <i class="fas fa-wallet text-blue-600 text-xl"></i>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card bg-white rounded-lg shadow-sm p-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500">📈 Today's P&L</p>
-                        <p class="text-3xl font-bold text-green-600" id="pnl">$0.00</p>
-                    </div>
-                    <div class="bg-green-100 rounded-full p-3">
-                        <i class="fas fa-chart-line text-green-600 text-xl"></i>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card bg-white rounded-lg shadow-sm p-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500">📊 Open Positions</p>
-                        <p class="text-3xl font-bold text-purple-600" id="open">0</p>
-                    </div>
-                    <div class="bg-purple-100 rounded-full p-3">
-                        <i class="fas fa-briefcase text-purple-600 text-xl"></i>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Running Processes -->
-        <div class="card bg-white rounded-lg shadow-sm p-6 mb-8">
-            <h3 class="text-lg font-semibold mb-4 flex items-center">
-                <i class="fas fa-microchip text-gray-600 mr-2"></i>
-                🟢 Running Processes
-            </h3>
-            <div id="processes" class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <!-- Processes will be inserted here -->
-            </div>
-        </div>
-        
-        <!-- Recent Trades -->
-        <div class="card bg-white rounded-lg shadow-sm p-6">
-            <h3 class="text-lg font-semibold mb-4 flex items-center">
-                <i class="fas fa-history text-gray-600 mr-2"></i>
-                📋 Recent Trades
-            </h3>
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200" id="trades">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Asset</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200" id="trades-body">
-                        <tr>
-                            <td colspan="4" class="px-6 py-4 text-center text-gray-500">Loading trades...</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+<div class="nav-overlay" id="nav-overlay" onclick="closeNav()"></div>
+<nav class="nav-drawer" id="nav-drawer">
+  <div class="nav-drawer-header">
+    <div><div class="title">ROBBIE</div><div class="subtitle">Navigation</div></div>
+    <div class="nav-close" onclick="closeNav()"><i class="fa fa-times"></i></div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-section-label">Main</div>
+    <a href="/" class="nav-item"><div class="nav-icon"><i class="fa fa-chart-line"></i></div><div><div class="nav-label">Dashboard</div><div class="nav-desc">Live signals & portfolio</div></div></a>
+    <a href="/sentiment" class="nav-item"><div class="nav-icon"><i class="fa fa-brain"></i></div><div><div class="nav-label">Sentiment</div><div class="nav-desc">News & market mood</div></div></a>
+    <a href="/backtest" class="nav-item"><div class="nav-icon"><i class="fa fa-chart-bar"></i></div><div><div class="nav-label">Backtest</div><div class="nav-desc">Strategy testing</div></div></a>
+    <a href="/status" class="nav-item active"><div class="nav-icon"><i class="fa fa-heartbeat"></i></div><div><div class="nav-label">System Status</div><div class="nav-desc">Processes & trades</div></div></a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-section">
+    <div class="nav-section-label">Advanced</div>
+    <a href="/websocket-feed" class="nav-item"><div class="nav-icon"><i class="fa fa-wifi"></i></div><div><div class="nav-label">WebSocket Feed</div><div class="nav-desc">Real-time price stream</div></div></a>
+  </div>
+  <div class="nav-footer"><div class="nav-footer-bot"><div class="nav-footer-avatar">🤖</div><div class="nav-footer-info"><div class="name">ROBBIE AI</div><div class="sub"><span class="status-dot-running"></span>Running</div></div></div></div>
+</nav>
 
+<div class="wrapper">
+  <header>
+    <div class="logo">
+      <div class="logo-icon"><i class="fa fa-heartbeat"></i></div>
+      <div class="logo-text"><h1>ROBBIE</h1><p>System Status &amp; Monitor</p></div>
     </div>
+    <div class="header-right">
+      <div class="ts-badge" id="timestamp">--</div>
+      <div class="nav-trigger" onclick="openNav()"><i class="fa fa-bars"></i></div>
+    </div>
+  </header>
 
-    <script>
-        function updateStatus() {
-            fetch('/api/system-status')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        // Update timestamp
-                        document.getElementById('timestamp').textContent = new Date().toLocaleString();
-                        
-                        // Update stats
-                        document.getElementById('balance').textContent = '$' + data.balance;
-                        document.getElementById('pnl').textContent = '$' + data.pnl;
-                        document.getElementById('open').textContent = data.open_positions;
-                        
-                        // Show processes
-                        let procHtml = '';
-                        for (let [name, running] of Object.entries(data.processes)) {
-                            procHtml += `
-                                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                                    <span class="font-medium">${name}</span>
-                                    <span class="${running ? 'running' : 'stopped'}">
-                                        ${running ? '✅ RUNNING' : '❌ STOPPED'}
-                                    </span>
-                                </div>
-                            `;
-                        }
-                        document.getElementById('processes').innerHTML = procHtml;
-                        
-                        // Update trades if available
-                        if (data.recent_trades && data.recent_trades.length > 0) {
-                            let tradesHtml = '';
-                            data.recent_trades.slice(0, 10).forEach(trade => {
-                                const pnlClass = trade.pnl >= 0 ? 'text-green-600' : 'text-red-600';
-                                tradesHtml += `
-                                    <tr>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm">${trade.exit_time || trade.entry_time || ''}</td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm">${trade.asset}</td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                            <span class="px-2 py-1 rounded-full text-xs font-semibold ${trade.direction === 'BUY' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
-                                                ${trade.direction || trade.signal || ''}
-                                            </span>
-                                        </td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm ${pnlClass}">$${trade.pnl?.toFixed(2) || '0.00'}</td>
-                                    </tr>
-                                `;
-                            });
-                            document.getElementById('trades-body').innerHTML = tradesHtml;
-                        } else {
-                            document.getElementById('trades-body').innerHTML = `
-                                <tr>
-                                    <td colspan="4" class="px-6 py-4 text-center text-gray-500">No recent trades</td>
-                                </tr>
-                            `;
-                        }
-                    }
-                })
-                .catch(err => {
-                    console.error('Error:', err);
-                    document.getElementById('processes').innerHTML = '<p class="text-red-500">Error loading data</p>';
-                });
+  <!-- STAT CARDS -->
+  <div class="stat-grid">
+    <div class="stat-card blue">
+      <div class="stat-lbl">Account Balance</div>
+      <div class="stat-card-inner">
+        <div class="stat-num" id="balance">$--</div>
+        <div class="stat-icon2"><i class="fa fa-wallet"></i></div>
+      </div>
+      <div class="stat-sub2">Live portfolio value</div>
+    </div>
+    <div class="stat-card green">
+      <div class="stat-lbl">Today's P&amp;L</div>
+      <div class="stat-card-inner">
+        <div class="stat-num" id="pnl" style="color:var(--buy)">$0.00</div>
+        <div class="stat-icon2" style="color:var(--buy)"><i class="fa fa-chart-line"></i></div>
+      </div>
+      <div class="stat-sub2">Realized + unrealized</div>
+    </div>
+    <div class="stat-card gold">
+      <div class="stat-lbl">Open Positions</div>
+      <div class="stat-card-inner">
+        <div class="stat-num" id="open" style="color:var(--gold)">0</div>
+        <div class="stat-icon2" style="color:var(--gold)"><i class="fa fa-briefcase"></i></div>
+      </div>
+      <div class="stat-sub2">Active trades</div>
+    </div>
+    <div class="stat-card blue">
+      <div class="stat-lbl">Win Rate</div>
+      <div class="stat-card-inner">
+        <div class="stat-num" id="win-rate" style="font-size:1.6rem;color:var(--accent)">--%</div>
+        <div class="stat-icon2" style="color:var(--accent)"><i class="fa fa-trophy"></i></div>
+      </div>
+      <div class="stat-sub2">Closed trades</div>
+    </div>
+  </div>
+
+  <!-- PROCESSES -->
+  <div class="panel">
+    <div class="panel-title"><i class="fa fa-microchip"></i>RUNNING PROCESSES</div>
+    <div class="proc-grid" id="processes">
+      <div style="color:var(--muted);font-size:.8rem;padding:8px">Loading…</div>
+    </div>
+  </div>
+
+  <!-- PORTFOLIO HEALTH -->
+  <div class="panel">
+    <div class="panel-title"><i class="fa fa-shield-halved"></i>PORTFOLIO HEALTH</div>
+    <div class="health-grid">
+      <div class="health-item"><div class="health-lbl">Total Exposure</div><div class="health-val" id="total-exposure" style="color:var(--gold)">--</div></div>
+      <div class="health-item"><div class="health-lbl">Today Trades</div><div class="health-val" id="today-trades" style="color:var(--accent)">0</div></div>
+      <div class="health-item"><div class="health-lbl">Mode</div><div class="health-val" id="trade-mode" style="font-size:.9rem;color:var(--muted2)">--</div></div>
+      <div class="health-item"><div class="health-lbl">AI Status</div><div class="health-val" id="ai-status" style="font-size:.85rem;color:var(--buy)">--</div></div>
+    </div>
+    <div id="risk-bars"></div>
+  </div>
+
+  <!-- RECENT TRADES -->
+  <div class="panel">
+    <div class="panel-title"><i class="fa fa-clock-rotate-left"></i>RECENT TRADES</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Asset</th>
+            <th>Direction</th>
+            <th>Entry</th>
+            <th>Exit</th>
+            <th>P&amp;L</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="trades-body">
+          <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:28px">Loading trades…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  function openNav(){document.getElementById('nav-drawer').classList.add('open');document.getElementById('nav-overlay').classList.add('open');}
+  function closeNav(){document.getElementById('nav-drawer').classList.remove('open');document.getElementById('nav-overlay').classList.remove('open');}
+
+  function updateStatus(){
+    fetch('/api/system-status').then(r=>r.json()).then(d=>{
+      if(!d.success) return;
+      document.getElementById('timestamp').textContent=new Date().toLocaleString();
+      document.getElementById('balance').textContent='$'+d.balance;
+      const pnl=parseFloat(d.pnl)||0;
+      const pnlEl=document.getElementById('pnl');
+      pnlEl.textContent=(pnl>=0?'+':'')+'$'+Math.abs(pnl).toFixed(2);
+      pnlEl.style.color=pnl>=0?'var(--buy)':'var(--sell)';
+      document.getElementById('open').textContent=d.open_positions||0;
+      if(d.win_rate!=null) document.getElementById('win-rate').textContent=d.win_rate+'%';
+
+      // processes
+      const pg=document.getElementById('processes');
+      if(d.processes&&Object.keys(d.processes).length){
+        pg.innerHTML=Object.entries(d.processes).map(([n,r])=>`
+          <div class="proc-card ${r?'running':'stopped'}">
+            <div class="proc-name">${n}</div>
+            <div class="proc-status ${r?'ok':'err'}">
+              <div class="proc-dot ${r?'ok':'err'}"></div>
+              ${r?'RUNNING':'STOPPED'}
+            </div>
+          </div>`).join('');
+      }
+
+      // portfolio info
+      if(d.portfolio){
+        const p=d.portfolio;
+        if(p.total_exposure!=null) document.getElementById('total-exposure').textContent='$'+p.total_exposure.toFixed(2);
+        if(p.today_trades!=null) document.getElementById('today-trades').textContent=p.today_trades;
+        if(p.mode) document.getElementById('trade-mode').textContent=p.mode.toUpperCase();
+        if(p.ai_status) document.getElementById('ai-status').textContent=p.ai_status;
+        if(p.risk_breakdown){
+          const rb=document.getElementById('risk-bars');
+          rb.innerHTML=Object.entries(p.risk_breakdown).map(([k,v])=>`
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-label">${k}</div>
+              <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${Math.min(100,v)}%;background:${v>70?'var(--sell)':v>40?'var(--gold)':'var(--buy)'}"></div></div>
+              <div class="risk-bar-val">${v.toFixed(1)}%</div>
+            </div>`).join('');
         }
-        
-        // Update immediately and then every 30 seconds
-        updateStatus();
-        setInterval(updateStatus, 30000);
-    </script>
+      }
+
+      // trades
+      if(d.recent_trades&&d.recent_trades.length){
+        document.getElementById('trades-body').innerHTML=d.recent_trades.slice(0,15).map(t=>{
+          const pnl=t.pnl||0;
+          const dir=(t.direction||t.signal||'').toUpperCase();
+          return `<tr>
+            <td class="td-mono" style="color:var(--muted);font-size:.72rem">${t.exit_time||t.entry_time||'--'}</td>
+            <td style="font-weight:600">${t.asset||'--'}</td>
+            <td><span class="${dir==='BUY'?'badge-buy':'badge-sell'}">${dir||'--'}</span></td>
+            <td class="td-mono" style="color:var(--muted2)">${t.entry_price?'$'+parseFloat(t.entry_price).toFixed(5):'--'}</td>
+            <td class="td-mono" style="color:var(--muted2)">${t.exit_price?'$'+parseFloat(t.exit_price).toFixed(5):'--'}</td>
+            <td class="td-mono ${pnl>=0?'pnl-pos':'pnl-neg'}">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}</td>
+            <td><span style="font-size:.65rem;color:var(--muted2)">${t.exit_reason||t.status||'--'}</span></td>
+          </tr>`;
+        }).join('');
+      } else {
+        document.getElementById('trades-body').innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:28px">No recent trades</td></tr>';
+      }
+    }).catch(()=>{});
+  }
+
+  document.addEventListener('DOMContentLoaded',()=>{
+    updateStatus();
+    setInterval(updateStatus,30000);
+  });
+</script>
 </body>
 </html>

@@ -514,7 +514,9 @@ class TelegramCommander:
 
             await searching.delete()
 
-            if not sig or sig.get('signal', 'HOLD') == 'HOLD':
+            # signal_learning returns 'direction' key; check both for compatibility
+            _sig_dir = sig.get('direction') or sig.get('signal', 'HOLD')
+            if not sig or _sig_dir == 'HOLD':
                 await update.message.reply_text(
                     f"⏸ *{asset}* — No quality signal right now\n\n"
                     f"_Passed quality filter but no clear direction.\n"
@@ -524,7 +526,7 @@ class TelegramCommander:
                 return
 
             # Build rich reply
-            _dir    = sig.get('signal', '?')
+            _dir    = _sig_dir
             _emoji  = '🟢' if _dir == 'BUY' else '🔴'
             _entry  = sig.get('entry_price', 0)
             _sl     = sig.get('stop_loss', 0)

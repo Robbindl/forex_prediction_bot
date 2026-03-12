@@ -31,3 +31,5 @@ aiofiles>=25.1.0
 psycopg2-binary>=2.9.11
 sqlalchemy>=2.0.48
 tweepy>=4.16.0
+beautifulsoup4>=4.14.3
+feedparser>=6.0.12

@@ -394,6 +394,11 @@ class EnhancedPortfolioOptimizer:
         
         returns_df = pd.DataFrame(returns_dict)
         
+        # Normalise value key if missing
+        for p in open_positions:
+            if 'value' not in p:
+                p['value'] = float(p.get('entry_price', 0) or 0) * float(p.get('position_size', 0) or 0)
+
         # Calculate portfolio returns (weighted)
         total_value = sum(p['value'] for p in open_positions)
         weights = [p['value'] / total_value for p in open_positions]
@@ -411,7 +416,13 @@ class EnhancedPortfolioOptimizer:
         """
         if not open_positions:
             return {'status': 'No open positions'}
-        
+
+        # Normalise: add 'value' key if positions come from paper_trader.to_dict()
+        # which uses entry_price/position_size instead of pre-computed value
+        for p in open_positions:
+            if 'value' not in p:
+                p['value'] = float(p.get('entry_price', 0) or 0) * float(p.get('position_size', 0) or 0)
+
         total_value = sum(p['value'] for p in open_positions)
         
         # Calculate diversification score

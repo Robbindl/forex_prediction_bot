@@ -188,6 +188,11 @@ class SignalCache:
                 sig = _build_quality_signal(asset, cat, self._bot, self)
                 if sig: self.put(asset, sig); ok += 1
             except Exception as e: logger.debug(f"Cache {asset}: {e}")
+            # Stagger by 0.5s — prevents cold-start rate burst.
+            # 64 assets × 3 Yahoo calls = 192 needed vs budget of 60/min.
+            # At 0.5s spacing the 64 refreshes take 32s, spreading calls
+            # across time so the rate limiter never sees a burst.
+            time.sleep(0.5)
         logger.info(f"SignalCache: refreshed {ok}/{len(assets)} assets")
 
 signal_cache = SignalCache()
@@ -203,8 +208,16 @@ _ATR_CFG = {
     'indices':    {'sl':1.0,'tp1':1.8,'tp2':3.0,'tp3':4.0,'min_rr':1.5},
 }
 _ASSET_SESSION = {
-    'forex':['London','NewYork','Overlap'],'commodities':['London','NewYork'],
-    'crypto':['Asian','London','NewYork'],'stocks':['NewYork'],'indices':['NewYork','London'],
+    'forex':      ['London','NewYork','Overlap'],
+    # Overlap (12-16 UTC) = London/NY crossover = highest liquidity for ALL asset classes
+    # Gold, Silver, Oil volume peaks exactly in this window — must not penalise it
+    'commodities':['London','NewYork','Overlap'],
+    # Crypto trades 24/7 — Overlap is a valid high-volume window
+    'crypto':     ['Asian','London','NewYork','Overlap'],
+    # US stocks open at 14:30 UTC — Overlap ends at 16:00 so 14:30-16:00 is valid
+    'stocks':     ['NewYork','Overlap'],
+    # Indices follow their underlying markets
+    'indices':    ['NewYork','London','Overlap'],
 }
 
 def _session() -> str:

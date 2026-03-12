@@ -1,3 +1,4 @@
+import os
 """
 WebSocket Manager - Real-time market data
 Sources:
@@ -28,10 +29,10 @@ class WebSocketManager:
 
         # Connection URLs
         self.finnhub_url    = "wss://ws.finnhub.io"
-        self.finnhub_token  = "d6bc2ohr01qnr27kdcb0d6bc2ohr01q27kdcbg"
+        self.finnhub_token  = os.getenv("FINNHUB_KEY", "")
         self.bybit_url      = "wss://stream.bybit.com/v5/public/spot"
         self.twelvedata_url = "wss://ws.twelvedata.com/v1/quotes/price"
-        self.twelvedata_key = "6c8e5137892642fe96cbfbf9d782c7d0"
+        self.twelvedata_key = os.getenv("TWELVEDATA_KEY", "")
 
         logger.info("📡 WebSocket Manager initialized (Bybit + Finnhub + Twelve Data)")
 

@@ -64,10 +64,16 @@ class WhaleMonitor:
             logger.warning(f"Whale monitor disabled — missing dependency: {e}")
             return
 
-        api_id   = int(os.getenv('TELEGRAM_API_ID',  '32486436'))
-        api_hash =     os.getenv('TELEGRAM_API_HASH', '3e264a0c1e28644378a9c5236bf251cb')
-        session  =     os.getenv('TELEGRAM_SESSION',  'whale_session')
-        phone    =     os.getenv('TELEGRAM_PHONE',    None)
+        # .env is the ONLY source — never hardcode Telegram API credentials as fallbacks
+        api_id_str = os.getenv('TELEGRAM_API_ID', '')
+        api_hash   = os.getenv('TELEGRAM_API_HASH', '')
+        session    = os.getenv('TELEGRAM_SESSION', 'whale_session')
+        phone      = os.getenv('TELEGRAM_PHONE', None)
+
+        if not api_id_str or not api_hash:
+            logger.error("WhaleMonitor: TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env")
+            return
+        api_id = int(api_id_str)
 
         client = TelegramClient(session, api_id, api_hash)
         try:

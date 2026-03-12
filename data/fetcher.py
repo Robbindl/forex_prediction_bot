@@ -551,22 +551,38 @@ class NASALevelFetcher:
     def fetch_coingecko_price(self, symbol: str) -> Optional[float]:
         """
         Fetch crypto price from CoinGecko - FREE, no API key required!
+        60-second per-coin cache to avoid 429 rate limiting.
         """
+        import time as _time
+        if not hasattr(self, '_cg_cache'):
+            self._cg_cache = {}          # {coin_id: (price, timestamp)}
         try:
             coin_id = self.coingecko_map.get(symbol)
             if not coin_id:
                 return None
-            
+
+            # Return cached price if under 60 seconds old
+            cached = self._cg_cache.get(coin_id)
+            if cached and (_time.time() - cached[1]) < 60:
+                return cached[0]
+
             url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
             response = self.session.get(url, timeout=5)
+
+            # 429 → back off silently, return last cached value if any
+            if response.status_code == 429:
+                logger.debug(f"CoinGecko 429 for {symbol} — using cached price")
+                return cached[0] if cached else None
+
             data = response.json()
-            
             if coin_id in data and 'usd' in data[coin_id]:
-                return float(data[coin_id]['usd'])
-                
+                price = float(data[coin_id]['usd'])
+                self._cg_cache[coin_id] = (price, _time.time())
+                return price
+
         except Exception as e:
             logger.warning(f"CoinGecko error for {symbol}: {e}")
-        
+
         return None
     
     def fetch_coingecko_historical(self, symbol: str, days: int = 30) -> Optional[pd.DataFrame]:

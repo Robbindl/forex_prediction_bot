@@ -20,6 +20,7 @@ from flask import Flask, render_template, jsonify, request, Response, stream_wit
 from flask_cors import CORS
 from datetime import datetime, timedelta
 import threading
+import queue
 import time
 import sys
 import json
@@ -62,6 +63,24 @@ from data.fetcher import NASALevelFetcher, MarketHours
 app = Flask(__name__)
 app.json_encoder = _Encoder
 CORS(app)
+
+# ── Global error handler — always return JSON, never HTML ─────────────────────
+# Prevents "Unexpected token '<'" errors in the browser when Flask throws an
+# unhandled exception and would otherwise return its default HTML error page.
+@app.errorhandler(Exception)
+def _handle_any_exception(e):
+    import traceback as _tb
+    logger.error(f"Unhandled Flask exception: {e}\n{_tb.format_exc()}")
+    from flask import jsonify as _jsonify
+    code = getattr(e, 'code', 500)
+    if not isinstance(code, int):
+        code = 500
+    return _jsonify({'success': False, 'error': str(e)}), code
+
+@app.errorhandler(404)
+def _handle_404(e):
+    from flask import jsonify as _jsonify
+    return _jsonify({'success': False, 'error': f'Endpoint not found: {request.path}'}), 404
 fetcher = NASALevelFetcher()
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -120,6 +139,50 @@ ALL_ASSETS = [
 ]
 
 _ASSET_MAP = {a: (cat, pip) for a, cat, pip in ALL_ASSETS}  # quick lookup
+
+# ── SSE shared price cache (5-second TTL, avoids hammering APIs per-tab) ────
+_sse_price_cache: dict  = {}   # asset -> (price, timestamp)
+_sse_price_lock         = threading.Lock()
+_SSE_CACHE_TTL          = 5    # seconds — fresher than the 30s main cache
+
+def _get_sse_price(asset: str, category: str) -> float | None:
+    """Fetch the latest price for SSE, using a 5s shared cache."""
+    import time as _t
+    now = _t.time()
+
+    with _sse_price_lock:
+        cached = _sse_price_cache.get(asset)
+        if cached and (now - cached[1]) < _SSE_CACHE_TTL:
+            return cached[0]
+
+    price = None
+    try:
+        if category in ('forex', 'stocks', 'crypto'):
+            price = fetcher.fetch_itick_price(asset, category)
+        if not price and category == 'crypto':
+            price = fetcher.fetch_coingecko_price(asset)
+        if not price:
+            # Yahoo fallback — direct call bypasses 30s main cache
+            sym_map = {
+                'EUR/USD':'EURUSD=X','GBP/USD':'GBPUSD=X','USD/JPY':'JPY=X',
+                'AUD/USD':'AUDUSD=X','USD/CAD':'CAD=X','NZD/USD':'NZDUSD=X',
+                'USD/CHF':'CHF=X','EUR/GBP':'EURGBP=X','EUR/JPY':'EURJPY=X',
+                'GBP/JPY':'GBPJPY=X','AUD/JPY':'AUDJPY=X','EUR/AUD':'EURAUD=X',
+                'GBP/AUD':'GBPAUD=X','AUD/CAD':'AUDCAD=X','CAD/JPY':'CADJPY=X',
+                'CHF/JPY':'CHFJPY=X','EUR/CAD':'EURCAD=X','EUR/CHF':'EURCHF=X',
+                'GBP/CAD':'GBPCAD=X','GBP/CHF':'GBPCHF=X',
+            }
+            yahoo_sym = sym_map.get(asset, asset)
+            price = fetcher.fetch_yahoo_price(yahoo_sym, '1m')
+    except Exception as _e:
+        logger.debug(f"_get_sse_price {asset}: {_e}")
+
+    if price:
+        with _sse_price_lock:
+            _sse_price_cache[asset] = (price, _t.time())
+    return price
+
+
 
 ASSET_ALIASES = {
     'BITCOIN':'BTC-USD','BTC':'BTC-USD','ETHEREUM':'ETH-USD','ETH':'ETH-USD',
@@ -801,7 +864,21 @@ def walk_forward(asset: str):
 def system_status():
     try:
         open_p = closed_p = total_pnl = today_pnl = 0
+
+        # ── Live balance: read directly from the bot's risk_manager ──────────
+        # This is always accurate — risk_manager.update_pnl() is called on
+        # every trade close, so this reflects real-time P&L changes instantly.
+        # Falls back to args.balance (the --balance startup arg) only if the
+        # bot hasn't initialised yet.
         balance = args.balance
+        bot = get_bot()
+        if bot and hasattr(bot, 'risk_manager') and bot.risk_manager:
+            balance = bot.risk_manager.account_balance
+        elif bot and hasattr(bot, 'paper_trader') and bot.paper_trader:
+            perf = bot.paper_trader.get_performance()
+            balance = perf.get('current_balance', args.balance)
+
+        # ── Trade counts and today's P&L from DB (if available) ─────────────
         try:
             from services.database_service import DatabaseService
             db     = DatabaseService()
@@ -817,9 +894,14 @@ def system_status():
                             today_pnl += t.get('pnl', 0)
                     except Exception:
                         pass
-            balance = args.balance + total_pnl
         except Exception as _dbe:
             logger.debug(f"DB status query: {_dbe}")
+            # If DB is down, fall back to paper_trader in-memory counts
+            if bot and hasattr(bot, 'paper_trader') and bot.paper_trader:
+                perf = bot.paper_trader.get_performance()
+                open_p    = perf.get('open_positions', 0)
+                closed_p  = perf.get('total_trades', 0)
+                today_pnl = perf.get('total_pnl', 0)
 
         return jsonify({'success':True,'balance':round(balance,2),'pnl':round(today_pnl,2),
                         'open_positions':open_p,'closed_positions':closed_p,
@@ -999,6 +1081,223 @@ def get_websocket_feed():
     except Exception as e:
         logger.error(f"websocket_feed: {e}")
         return jsonify({'success':False,'error':str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LIVE CHART API  — feeds chart_live.html
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/chart/stream')
+def chart_stream():
+    """
+    Server-Sent Events stream for the live chart.
+    Emits:
+      • 'tick'      every ~2s  — latest price for the requested asset
+      • 'positions' every ~5s  — open positions + recent history + balance
+    Client keeps the connection open; chart updates the current candle live.
+    """
+    import time as _t
+
+    asset    = request.args.get('asset', 'EUR/USD')
+    category = _ASSET_MAP.get(asset, ('forex', 0.001))[0]
+
+    def generate():
+        last_pos_push = 0.0
+        try:
+            while True:
+                now   = _t.time()
+                price = _get_sse_price(asset, category)
+
+                if price:
+                    tick_payload = json.dumps({
+                        'type':  'tick',
+                        'asset': asset,
+                        'price': price,
+                        'time':  int(now),
+                    })
+                    yield f"data: {tick_payload}\n\n"
+
+                # Push position update every 5 seconds
+                if now - last_pos_push >= 5:
+                    try:
+                        bot = _bot   # read global directly — avoids recursive lock
+                        open_pos = []
+                        history  = []
+                        balance  = None
+
+                        if bot and hasattr(bot, 'paper_trader') and bot.paper_trader:
+                            raw_open = bot.paper_trader.get_open_positions()
+                            for p in raw_open:
+                                unreal = None
+                                try:
+                                    if price and p.get('asset') == asset and p.get('entry_price'):
+                                        diff = price - p['entry_price']
+                                        if p.get('signal') == 'SELL':
+                                            diff = -diff
+                                        unreal = round(diff * float(p.get('position_size', 0)), 4)
+                                except Exception:
+                                    pass
+                                p['unrealized_pnl'] = unreal
+                                open_pos.append(p)
+                            history = bot.paper_trader.get_trade_history(limit=50)
+
+                        if bot and hasattr(bot, 'risk_manager') and bot.risk_manager:
+                            balance = bot.risk_manager.account_balance
+
+                        pos_payload = json.dumps({
+                            'type':    'positions',
+                            'open':    open_pos,
+                            'history': history,
+                            'balance': balance,
+                        }, default=str)
+                        yield f"data: {pos_payload}\n\n"
+                        last_pos_push = now
+                    except Exception as _pe:
+                        logger.debug(f"SSE positions error: {_pe}")
+
+                _t.sleep(2)
+
+        except GeneratorExit:
+            pass   # client disconnected — clean exit
+        except Exception as _se:
+            logger.debug(f"SSE stream error for {asset}: {_se}")
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control':    'no-cache',
+            'X-Accel-Buffering':'no',       # disable nginx buffering if behind proxy
+            'Connection':       'keep-alive',
+        },
+    )
+
+
+@app.route('/chart')
+def chart_page():
+    """Serve the MT5-style live chart page."""
+    return render_template('chart_live.html')
+
+
+@app.route('/api/chart/assets')
+def chart_assets():
+    """Return full asset list grouped by category for the chart dropdown."""
+    try:
+        assets = [{'symbol': a, 'category': cat} for a, cat, _ in ALL_ASSETS]
+        return jsonify({'success': True, 'assets': assets})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chart/candles')
+def chart_candles():
+    """
+    Return OHLCV candles for a given asset and interval.
+    Used by chart_live.html to draw the candlestick chart.
+    """
+    try:
+        asset    = request.args.get('asset', 'EUR/USD')
+        interval = request.args.get('interval', '1h')
+        bot      = get_bot()
+        if not bot:
+            return jsonify({'success': False, 'error': 'Bot not ready'}), 503
+
+        days_map = {'1m': 1, '5m': 5, '15m': 7, '1h': 30, '4h': 90, '1d': 365}
+        days     = days_map.get(interval, 30)
+
+        df = bot.fetch_historical_data(asset, days=days, interval=interval)
+        if df is None or df.empty:
+            return jsonify({'success': False, 'error': f'No data for {asset}'}), 404
+
+        # Normalise column names
+        df.columns = [c.lower() for c in df.columns]
+
+        candles = []
+        for ts, row in df.iterrows():
+            try:
+                # Convert index to unix timestamp
+                if hasattr(ts, 'timestamp'):
+                    t = int(ts.timestamp())
+                else:
+                    import pandas as pd
+                    t = int(pd.Timestamp(ts).timestamp())
+
+                candles.append({
+                    'time':   t,
+                    'open':   float(row.get('open',  row.get('close', 0))),
+                    'high':   float(row.get('high',  row.get('close', 0))),
+                    'low':    float(row.get('low',   row.get('close', 0))),
+                    'close':  float(row.get('close', 0)),
+                    'volume': float(row.get('volume', 0)),
+                })
+            except Exception:
+                continue
+
+        # Lightweight-charts requires strictly ascending time with no duplicates
+        seen  = set()
+        clean = []
+        for c in sorted(candles, key=lambda x: x['time']):
+            if c['time'] not in seen:
+                seen.add(c['time'])
+                clean.append(c)
+
+        return jsonify({'success': True, 'candles': clean, 'count': len(clean)})
+
+    except Exception as e:
+        logger.error(f"chart_candles: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/chart/positions')
+def chart_positions():
+    """
+    Return open positions + recent trade history + current balance.
+    Also computes unrealized P&L for each open position using the latest price.
+    """
+    try:
+        bot = get_bot()
+        if not bot:
+            return jsonify({'success': False, 'error': 'Bot not ready'}), 503
+
+        # ── Open positions ──────────────────────────────────────────────────
+        open_pos = []
+        if hasattr(bot, 'paper_trader') and bot.paper_trader:
+            raw_open = bot.paper_trader.get_open_positions()
+            for p in raw_open:
+                # Try to get current price for unrealized P&L
+                unrealized = None
+                try:
+                    cur = fetcher.fetch_current_price(p['asset'])
+                    if cur and p.get('entry_price'):
+                        diff = cur - p['entry_price']
+                        if p.get('signal') == 'SELL':
+                            diff = -diff
+                        unrealized = round(diff * float(p.get('position_size', 0)), 4)
+                except Exception:
+                    pass
+                p['unrealized_pnl'] = unrealized
+                open_pos.append(p)
+
+        # ── Trade history ───────────────────────────────────────────────────
+        history = []
+        if hasattr(bot, 'paper_trader') and bot.paper_trader:
+            history = bot.paper_trader.get_trade_history(limit=50)
+
+        # ── Balance ─────────────────────────────────────────────────────────
+        balance = None
+        if hasattr(bot, 'risk_manager') and bot.risk_manager:
+            balance = bot.risk_manager.account_balance
+
+        return jsonify({
+            'success': True,
+            'open':    open_pos,
+            'history': history,
+            'balance': balance,
+        })
+
+    except Exception as e:
+        logger.error(f"chart_positions: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/refresh/manual', methods=['POST'])
 def manual_refresh():

@@ -482,10 +482,17 @@ class PaperTrader:
                     position_size = pos_result.get('position_size', 0)
                     risk_amount = pos_result.get('risk_amount', 0)
                 else:
-                    # FIXED position sizing for small accounts
-                    account_balance = 20.0  # Your actual balance
+                    # Read balance dynamically: risk_manager → bot_runtime.json → 30 default
+                    # Never hardcode — use whatever --balance was passed at startup
+                    account_balance = 30.0  # last-resort default only
                     if hasattr(self, 'risk_manager') and self.risk_manager:
-                        account_balance = getattr(self.risk_manager, 'account_balance', 20.0)
+                        account_balance = getattr(self.risk_manager, 'account_balance', account_balance)
+                    else:
+                        try:
+                            from bot import read_runtime_balance
+                            account_balance = read_runtime_balance(default=account_balance)
+                        except Exception:
+                            pass
                     
                     # Risk only 1% of account per trade (20 cents)
                     risk_per_trade = 0.01  # 1%
@@ -515,8 +522,13 @@ class PaperTrader:
                         position_size = 0
                         risk_amount = 0
             else:
-                # No risk manager - use conservative defaults
-                account_balance = 10000
+                # No risk manager — read from bot_runtime.json so --balance is respected
+                account_balance = 30.0
+                try:
+                    from bot import read_runtime_balance
+                    account_balance = read_runtime_balance(default=account_balance)
+                except Exception:
+                    pass
                 risk_amount = account_balance * 0.01  # 1% risk
                 price_diff = abs(signal['entry_price'] - signal['stop_loss'])
                 position_size = risk_amount / price_diff if price_diff > 0 else 0
@@ -833,12 +845,18 @@ class PaperTrader:
             profit_factor = abs(sum(t.pnl for t in self.closed_positions if t.pnl > 0) / 
                               sum(abs(t.pnl) for t in self.closed_positions if t.pnl < 0)) if losing_trades > 0 else float('inf')
             
-            # Calculate current balance
-            current_balance = 10000  # Default
+            # Calculate current balance — always dynamic, never hardcoded
             if self.risk_manager and hasattr(self.risk_manager, 'account_balance'):
                 current_balance = self.risk_manager.account_balance
             else:
-                current_balance = 10000 + total_pnl
+                # No risk_manager: read startup balance from bot_runtime.json + apply P&L
+                _startup_balance = 30.0
+                try:
+                    from bot import read_runtime_balance
+                    _startup_balance = read_runtime_balance(default=_startup_balance)
+                except Exception:
+                    pass
+                current_balance = _startup_balance + total_pnl
             
             return {
                 'total_trades': total_trades,

@@ -1,982 +1,1269 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🔴 LIVE Trading Signals - Auto-Refresh Dashboard</title>
-    
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        
-        body { font-family: 'Inter', sans-serif; }
-        
-        .signal-card {
-            transition: all 0.5s ease;
-            animation: slideIn 0.5s ease;
-        }
-        
-        .signal-card.expiring {
-            opacity: 0.6;
-            border: 2px dashed #f59e0b;
-        }
-        
-        .signal-card.expired {
-            animation: slideOut 0.5s ease;
-            opacity: 0;
-            transform: translateX(-100%);
-        }
-        
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        @keyframes slideOut {
-            from {
-                opacity: 1;
-                transform: translateX(0);
-            }
-            to {
-                opacity: 0;
-                transform: translateX(-100%);
-            }
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        .live-indicator {
-            animation: pulse 2s ease-in-out infinite;
-        }
-        
-        .countdown {
-            font-family: 'Courier New', monospace;
-            font-weight: bold;
-        }
-        
-        .badge-buy { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
-        .badge-sell { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
-        .badge-hold { background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%); }
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ROBBIE — Live Trading Signals</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg:        #06080f;
+      --bg2:       #0a0d18;
+      --surface:   #0e1220;
+      --surface2:  #141928;
+      --border:    #1a2035;
+      --border2:   #232d45;
+      --buy:       #00e87a;
+      --buy-dim:   rgba(0,232,122,.12);
+      --sell:      #ff3a5c;
+      --sell-dim:  rgba(255,58,92,.12);
+      --hold:      #6b7fa3;
+      --accent:    #00c2ff;
+      --accent-dim:rgba(0,194,255,.1);
+      --gold:      #ffd166;
+      --text:      #dde4f0;
+      --muted:     #4d5b7c;
+      --muted2:    #8896b3;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        .loading {
-            border: 4px solid rgba(255, 255, 255, 0.3);
-            border-top: 4px solid white;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-        }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
 
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
+    /* ── background grid ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image:
+        linear-gradient(rgba(0,194,255,.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,194,255,.018) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+    }
 
-        /* Clean Signal Box */
-        .signal-box {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            font-family: 'Courier New', monospace;
-        }
-        
-        .signal-line {
-            display: flex;
-            padding: 8px 0;
-            border-bottom: 1px dashed #eee;
-        }
-        
-        .signal-label {
-            width: 100px;
-            color: #666;
-        }
-        
-        .signal-value {
-            font-weight: 600;
-        }
+    /* ── scanline gloss ── */
+    body::after {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(0,194,255,.04) 0%, transparent 70%);
+      pointer-events: none;
+    }
 
-        /* Human Response Styles */
-        .human-message {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 20px 20px 20px 5px;
-            padding: 20px;
-            color: white;
-            position: relative;
-            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
-        }
-        
-        .human-message::before {
-            content: '🤖';
-            position: absolute;
-            left: -15px;
-            top: -15px;
-            font-size: 30px;
-            background: white;
-            border-radius: 50%;
-            padding: 5px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-        }
-        
-        .mood-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            background: rgba(255,255,255,0.2);
-            backdrop-filter: blur(5px);
-        }
-        
-        .reason-bullet {
-            display: flex;
-            align-items: flex-start;
-            margin-bottom: 10px;
-            padding: 8px 12px;
-            background: rgba(255,255,255,0.1);
-            border-radius: 10px;
-            backdrop-filter: blur(5px);
-        }
-        
-        .trading-diary {
-            background: rgba(255,255,255,0.1);
-            border-left: 3px solid #ffd700;
-            padding: 10px 15px;
-            margin: 10px 0;
-            border-radius: 0 10px 10px 0;
-            font-style: italic;
-        }
+    .wrapper { position: relative; z-index: 1; max-width: 1440px; margin: 0 auto; padding: 0 28px 60px; }
 
-        .tab-button {
-            padding: 10px 20px;
-            border-radius: 8px 8px 0 0;
-            font-weight: 500;
-            transition: all 0.2s;
-        }
-        
-        .tab-button.active {
-            background: white;
-            color: #4f46e5;
-            border-bottom: 2px solid #4f46e5;
-        }
-        
-        .tab-button:not(.active) {
-            background: #f3f4f6;
-            color: #6b7280;
-        }
-    </style>
+    /* ══════════════════════════════════
+       TICKER TAPE
+    ══════════════════════════════════ */
+    .ticker-wrap {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+      height: 36px;
+      display: flex;
+      align-items: center;
+    }
+    .ticker-label {
+      background: var(--accent);
+      color: #000;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .65rem;
+      font-weight: 700;
+      letter-spacing: .1em;
+      padding: 0 14px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+      z-index: 2;
+    }
+    .ticker-track {
+      display: flex;
+      gap: 48px;
+      animation: tickerScroll 60s linear infinite;
+      white-space: nowrap;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .7rem;
+    }
+    .ticker-item { display: flex; align-items: center; gap: 8px; }
+    .ticker-item .sym { color: var(--muted2); font-weight: 500; }
+    .ticker-item .val { font-weight: 700; }
+    .ticker-item .chg.up { color: var(--buy); }
+    .ticker-item .chg.dn { color: var(--sell); }
+    @keyframes tickerScroll {
+      0%   { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+
+    /* ══════════════════════════════════
+       HEADER
+    ══════════════════════════════════ */
+    header {
+      padding: 22px 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 32px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .logo-icon {
+      width: 44px; height: 44px;
+      background: var(--accent-dim);
+      border: 1px solid rgba(0,194,255,.3);
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 1.2rem;
+      color: var(--accent);
+      box-shadow: 0 0 20px rgba(0,194,255,.15);
+    }
+    .logo-text h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.9rem;
+      letter-spacing: .06em;
+      color: #fff;
+      line-height: 1;
+    }
+    .logo-text p {
+      font-size: .68rem;
+      color: var(--muted);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    .header-right { display: flex; align-items: center; gap: 16px; }
+
+    .live-pill {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 14px;
+      background: rgba(0,232,122,.08);
+      border: 1px solid rgba(0,232,122,.25);
+      border-radius: 999px;
+      font-size: .68rem;
+      font-weight: 600;
+      color: var(--buy);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .live-dot {
+      width: 7px; height: 7px;
+      background: var(--buy);
+      border-radius: 50%;
+      box-shadow: 0 0 10px var(--buy);
+      animation: pulse-dot 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%,100% { opacity:1; box-shadow: 0 0 10px var(--buy); }
+      50% { opacity:.3; box-shadow: 0 0 4px var(--buy); }
+    }
+
+    .refresh-btn {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      color: var(--text);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: .8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all .2s;
+      font-family: 'DM Sans', sans-serif;
+    }
+    .refresh-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    .countdown-wrap { text-align: right; }
+    .countdown-wrap .label { font-size: .6rem; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; }
+    .countdown-wrap .val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--gold);
+    }
+
+    /* NAV TRIGGER */
+    .nav-trigger {
+      width: 40px; height: 40px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      color: var(--muted2);
+      font-size: 1.1rem;
+      transition: all .2s;
+      flex-shrink: 0;
+    }
+    .nav-trigger:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ══════════════════════════════════
+       RIGHT-SIDE NAV DRAWER
+    ══════════════════════════════════ */
+    .nav-overlay {
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(0,0,0,.6);
+      backdrop-filter: blur(4px);
+      opacity: 0; pointer-events: none;
+      transition: opacity .3s;
+    }
+    .nav-overlay.open { opacity: 1; pointer-events: all; }
+
+    .nav-drawer {
+      position: fixed;
+      top: 0; right: 0;
+      width: 300px; height: 100vh;
+      background: var(--bg2);
+      border-left: 1px solid var(--border2);
+      z-index: 101;
+      transform: translateX(100%);
+      transition: transform .35s cubic-bezier(.4,0,.2,1);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .nav-drawer.open { transform: translateX(0); }
+
+    .nav-drawer-header {
+      padding: 24px 24px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-drawer-header .title {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.4rem;
+      letter-spacing: .08em;
+      color: #fff;
+    }
+    .nav-drawer-header .subtitle {
+      font-size: .65rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .1em;
+    }
+    .nav-close {
+      width: 34px; height: 34px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      color: var(--muted2);
+      font-size: .9rem;
+      transition: all .2s;
+    }
+    .nav-close:hover { border-color: var(--sell); color: var(--sell); }
+
+    .nav-section { padding: 20px 16px 8px; }
+    .nav-section-label {
+      font-size: .6rem;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      padding: 0 8px;
+      margin-bottom: 8px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all .2s;
+      text-decoration: none;
+      margin-bottom: 4px;
+    }
+    .nav-item:hover {
+      background: var(--surface2);
+      border-color: var(--border2);
+    }
+    .nav-item.active {
+      background: var(--accent-dim);
+      border-color: rgba(0,194,255,.3);
+    }
+    .nav-item .nav-icon {
+      width: 36px; height: 36px;
+      border-radius: 9px;
+      display: grid;
+      place-items: center;
+      font-size: .95rem;
+      flex-shrink: 0;
+    }
+    .nav-item.active .nav-icon { background: rgba(0,194,255,.15); color: var(--accent); }
+    .nav-item:not(.active) .nav-icon { background: var(--surface2); color: var(--muted2); }
+    .nav-item .nav-label { font-size: .85rem; font-weight: 500; color: var(--text); }
+    .nav-item .nav-desc { font-size: .68rem; color: var(--muted); margin-top: 1px; }
+    .nav-item.active .nav-label { color: var(--accent); }
+
+    .nav-divider { height: 1px; background: var(--border); margin: 8px 16px; }
+
+    .nav-footer {
+      margin-top: auto;
+      padding: 20px 24px;
+      border-top: 1px solid var(--border);
+    }
+    .nav-footer-bot {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .nav-footer-avatar {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent), var(--buy));
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      font-size: 1rem;
+    }
+    .nav-footer-info .name { font-size: .82rem; font-weight: 600; color: var(--text); }
+    .nav-footer-info .sub { font-size: .66rem; color: var(--muted); }
+    .status-dot-running {
+      width: 7px; height: 7px;
+      background: var(--buy);
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 5px;
+      box-shadow: 0 0 6px var(--buy);
+    }
+
+    /* ══════════════════════════════════
+       STAT CARDS
+    ══════════════════════════════════ */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color .2s, transform .2s;
+    }
+    .stat-card:hover { border-color: var(--border2); transform: translateY(-2px); }
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+    }
+    .stat-card.blue::before { background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+    .stat-card.green::before { background: linear-gradient(90deg, transparent, var(--buy), transparent); }
+    .stat-card.red::before { background: linear-gradient(90deg, transparent, var(--sell), transparent); }
+    .stat-card.gold::before { background: linear-gradient(90deg, transparent, var(--gold), transparent); }
+    .stat-card.purple::before { background: linear-gradient(90deg, transparent, #a78bfa, transparent); }
+
+    .stat-label {
+      font-size: .65rem;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .stat-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1;
+    }
+    .stat-icon {
+      position: absolute;
+      top: 16px; right: 16px;
+      font-size: 1.3rem;
+      opacity: .15;
+    }
+    .stat-sub { font-size: .7rem; color: var(--muted); margin-top: 6px; }
+
+    /* ══════════════════════════════════
+       PANEL / SECTION
+    ══════════════════════════════════ */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .panel-title {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.15rem;
+      letter-spacing: .08em;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .panel-title i { color: var(--accent); font-size: 1rem; }
+
+    /* ══════════════════════════════════
+       SEARCH / ASK ROBBIE
+    ══════════════════════════════════ */
+    .search-wrap {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .search-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border2);
+      color: var(--text);
+      padding: 12px 18px;
+      border-radius: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .82rem;
+      transition: border-color .2s;
+      outline: none;
+    }
+    .search-input::placeholder { color: var(--muted); }
+    .search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,194,255,.08); }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      padding: 12px 22px;
+      border-radius: 10px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .82rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all .2s;
+      white-space: nowrap;
+    }
+    .btn-primary:hover { background: #33cfff; transform: translateY(-1px); }
+
+    .quick-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+    .quick-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      color: var(--muted2);
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: .72rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all .2s;
+    }
+    .quick-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+    /* view toggle */
+    .view-toggle {
+      display: flex;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 3px;
+      gap: 2px;
+    }
+    .view-btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: .72rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all .2s;
+      background: transparent;
+      color: var(--muted);
+      font-family: 'DM Sans', sans-serif;
+    }
+    .view-btn.active { background: var(--surface2); color: var(--accent); }
+
+    /* search result */
+    #search-results { margin-top: 18px; }
+
+    .result-card {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 14px;
+      padding: 22px;
+      animation: fadeUp .3s ease;
+    }
+    @keyframes fadeUp {
+      from { opacity:0; transform: translateY(10px); }
+      to   { opacity:1; transform: translateY(0); }
+    }
+    .result-asset {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 2rem;
+      letter-spacing: .06em;
+    }
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .78rem;
+    }
+    .result-row:last-child { border-bottom: none; }
+    .result-row .lbl { color: var(--muted); }
+    .result-row .val { font-weight: 600; color: var(--text); }
+
+    /* human result */
+    .human-card {
+      background: linear-gradient(135deg, var(--surface2), #0e1628);
+      border: 1px solid var(--border2);
+      border-radius: 14px;
+      padding: 22px;
+      animation: fadeUp .3s ease;
+    }
+    .human-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .robbie-badge {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .robbie-avatar {
+      width: 40px; height: 40px;
+      background: linear-gradient(135deg, var(--accent), var(--buy));
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 1.2rem;
+    }
+    .reason-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 9px 12px;
+      background: rgba(255,255,255,.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 7px;
+      font-size: .78rem;
+      color: var(--text);
+    }
+
+    /* ══════════════════════════════════
+       SETTINGS PANEL
+    ══════════════════════════════════ */
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+    }
+    .field-label {
+      font-size: .68rem;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .field-label i { color: var(--accent); }
+    .field-input, .field-select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border2);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .82rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .field-input:focus, .field-select:focus { border-color: var(--accent); }
+    .field-select option { background: #0e1220; }
+
+    /* ══════════════════════════════════
+       SIGNAL CARDS
+    ══════════════════════════════════ */
+    .signals-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 16px;
+    }
+
+    .signal-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+      animation: fadeUp .4s ease both;
+      transition: border-color .2s, transform .2s;
+    }
+    .signal-card:hover { transform: translateY(-3px); }
+    .signal-card.buy { border-top: 2px solid var(--buy); }
+    .signal-card.buy:hover { border-color: var(--buy); box-shadow: 0 8px 30px rgba(0,232,122,.08); }
+    .signal-card.sell { border-top: 2px solid var(--sell); }
+    .signal-card.sell:hover { border-color: var(--sell); box-shadow: 0 8px 30px rgba(255,58,92,.08); }
+    .signal-card.hold { border-top: 2px solid var(--hold); }
+    .signal-card.expiring { opacity: .7; border-style: dashed; }
+
+    .signal-card-bg {
+      position: absolute;
+      inset: 0;
+      opacity: .03;
+      background-size: cover;
+    }
+    .signal-card.buy .signal-card-bg { background: radial-gradient(at top right, var(--buy), transparent 60%); opacity: .07; }
+    .signal-card.sell .signal-card-bg { background: radial-gradient(at top right, var(--sell), transparent 60%); opacity: .07; }
+
+    .sc-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .sc-asset {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.4rem;
+      letter-spacing: .05em;
+      color: #fff;
+      line-height: 1;
+    }
+    .sc-meta { font-size: .65rem; color: var(--muted); margin-top: 4px; }
+
+    .signal-badge {
+      padding: 5px 14px;
+      border-radius: 6px;
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: .95rem;
+      letter-spacing: .1em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .signal-badge.buy { background: var(--buy-dim); color: var(--buy); border: 1px solid rgba(0,232,122,.3); }
+    .signal-badge.sell { background: var(--sell-dim); color: var(--sell); border: 1px solid rgba(255,58,92,.3); }
+    .signal-badge.hold { background: rgba(107,127,163,.12); color: var(--hold); border: 1px solid rgba(107,127,163,.3); }
+
+    .sc-levels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .sc-level {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+    }
+    .sc-level .lbl { font-size: .6rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .sc-level .val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .82rem;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+    .sc-level .val.entry { color: var(--text); }
+    .sc-level .val.sl { color: var(--sell); }
+    .sc-level .val.tp { color: var(--buy); }
+    .sc-level .val.risk { color: var(--gold); }
+
+    .sc-confidence { margin-top: 4px; }
+    .sc-conf-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .sc-conf-label { font-size: .67rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .sc-conf-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .82rem;
+      font-weight: 700;
+    }
+    .sc-conf-val.hi { color: var(--buy); }
+    .sc-conf-val.mid { color: var(--gold); }
+    .sc-conf-val.lo { color: var(--muted2); }
+
+    .conf-bar {
+      height: 4px;
+      background: var(--border2);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .conf-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width .6s cubic-bezier(.4,0,.2,1);
+    }
+    .conf-fill.hi { background: linear-gradient(90deg, var(--buy), #00ff99); }
+    .conf-fill.mid { background: linear-gradient(90deg, var(--gold), #ffaa33); }
+    .conf-fill.lo { background: linear-gradient(90deg, var(--muted), var(--muted2)); }
+
+    .sc-reason {
+      font-size: .67rem;
+      color: var(--muted2);
+      margin-top: 10px;
+      line-height: 1.5;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+    }
+
+    .sc-timer {
+      position: absolute;
+      top: 12px; right: 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .62rem;
+      color: var(--muted);
+    }
+    .sc-timer.expiring { color: var(--gold); }
+
+    /* ══════════════════════════════════
+       EMPTY STATE
+    ══════════════════════════════════ */
+    .empty-state {
+      text-align: center;
+      padding: 80px 20px;
+      display: none;
+    }
+    .empty-state .icon { font-size: 3rem; margin-bottom: 16px; opacity: .2; }
+    .empty-state h3 { font-family: 'Bebas Neue', sans-serif; font-size: 1.4rem; letter-spacing: .08em; color: var(--muted2); }
+    .empty-state p { font-size: .8rem; color: var(--muted); margin-top: 8px; }
+
+    /* ══════════════════════════════════
+       DISCLAIMER
+    ══════════════════════════════════ */
+    .disclaimer {
+      background: rgba(255,209,102,.05);
+      border: 1px solid rgba(255,209,102,.15);
+      border-radius: 10px;
+      padding: 12px 18px;
+      font-size: .72rem;
+      color: var(--gold);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    /* spin */
+    .spinner {
+      width: 30px; height: 30px;
+      border: 3px solid var(--border2);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+      margin: 0 auto 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* btn-ghost */
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border2);
+      color: var(--muted2);
+      padding: 7px 16px;
+      border-radius: 8px;
+      font-size: .75rem;
+      cursor: pointer;
+      transition: all .2s;
+      font-family: 'DM Sans', sans-serif;
+    }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    .close-search-row { text-align: right; margin-top: 14px; }
+  </style>
 </head>
-<body class="bg-gray-50">
-    
-    <!-- Header -->
-    <header class="bg-gradient-to-r from-red-600 to-red-700 text-white shadow-lg">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-            <div class="flex justify-between items-center">
-                <div class="flex items-center space-x-3">
-                    <div class="relative">
-                        <i class="fas fa-broadcast-tower text-3xl"></i>
-                        <span class="live-indicator absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full"></span>
-                    </div>
-                    <div>
-                        <h1 class="text-2xl font-bold">🔴 LIVE Trading Signals</h1>
-                        <p class="text-sm text-red-100">Auto-Refresh • Real-Time Analysis</p>
-                    </div>
-                </div>
-                
-                <div class="flex items-center space-x-4">
-                    <div class="text-right">
-                        <p class="text-xs text-red-100">Next Refresh In</p>
-                        <p class="countdown text-lg font-bold" id="next-refresh">--</p>
-                    </div>
-                    <button onclick="manualRefresh()" class="bg-white text-red-600 hover:bg-red-50 px-4 py-2 rounded-lg flex items-center space-x-2 transition font-semibold">
-                        <i class="fas fa-sync-alt"></i>
-                        <span>Refresh Now</span>
-                    </button>
-                </div>
-            </div>
+<body>
 
-            <!-- Navigation Menu -->
-            <div class="flex items-center justify-center space-x-8 mt-4 border-t border-red-500 pt-4">
-                <a href="/" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
-                    <i class="fas fa-chart-line"></i>
-                    <span>Dashboard</span>
-                </a>
-                <a href="/sentiment" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
-                    <i class="fas fa-newspaper"></i>
-                    <span>Sentiment</span>
-                </a>
-                <a href="/backtest" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
-                    <i class="fas fa-chart-bar"></i>
-                    <span>Backtest</span>
-                </a>
-                <a href="/status" class="text-white hover:text-gray-200 transition flex items-center space-x-2 px-4 py-2 rounded-lg hover:bg-red-700">
-                    <i class="fas fa-heartbeat"></i>
-                    <span>Status</span>
-                </a>
-            </div>
-            
+<!-- TICKER TAPE -->
+<div class="ticker-wrap">
+  <div class="ticker-label">LIVE</div>
+  <div style="overflow:hidden; flex:1;">
+    <div class="ticker-track" id="ticker-track">
+      <div class="ticker-item"><span class="sym">BTC/USD</span><span class="val" id="t-btc">--</span><span class="chg up" id="t-btc-c">+0.00%</span></div>
+      <div class="ticker-item"><span class="sym">ETH/USD</span><span class="val" id="t-eth">--</span><span class="chg" id="t-eth-c">--</span></div>
+      <div class="ticker-item"><span class="sym">EUR/USD</span><span class="val" id="t-eur">--</span><span class="chg" id="t-eur-c">--</span></div>
+      <div class="ticker-item"><span class="sym">GBP/USD</span><span class="val" id="t-gbp">--</span><span class="chg" id="t-gbp-c">--</span></div>
+      <div class="ticker-item"><span class="sym">GOLD</span><span class="val" id="t-gold">--</span><span class="chg" id="t-gold-c">--</span></div>
+      <div class="ticker-item"><span class="sym">SPX</span><span class="val" id="t-spx">--</span><span class="chg" id="t-spx-c">--</span></div>
+      <div class="ticker-item"><span class="sym">NVDA</span><span class="val" id="t-nvda">--</span><span class="chg" id="t-nvda-c">--</span></div>
+      <!-- duplicate for seamless loop -->
+      <div class="ticker-item"><span class="sym">BTC/USD</span><span class="val">--</span><span class="chg up">+0.00%</span></div>
+      <div class="ticker-item"><span class="sym">ETH/USD</span><span class="val">--</span><span class="chg">--</span></div>
+      <div class="ticker-item"><span class="sym">EUR/USD</span><span class="val">--</span><span class="chg">--</span></div>
+      <div class="ticker-item"><span class="sym">GBP/USD</span><span class="val">--</span><span class="chg">--</span></div>
+      <div class="ticker-item"><span class="sym">GOLD</span><span class="val">--</span><span class="chg">--</span></div>
+      <div class="ticker-item"><span class="sym">SPX</span><span class="val">--</span><span class="chg">--</span></div>
+      <div class="ticker-item"><span class="sym">NVDA</span><span class="val">--</span><span class="chg">--</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- NAV OVERLAY -->
+<div class="nav-overlay" id="nav-overlay" onclick="closeNav()"></div>
+
+<!-- RIGHT NAV DRAWER -->
+<nav class="nav-drawer" id="nav-drawer">
+  <div class="nav-drawer-header">
+    <div>
+      <div class="title">ROBBIE</div>
+      <div class="subtitle">Navigation</div>
+    </div>
+    <div class="nav-close" onclick="closeNav()"><i class="fa fa-times"></i></div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Main</div>
+    <a href="/" class="nav-item active">
+      <div class="nav-icon"><i class="fa fa-chart-line"></i></div>
+      <div><div class="nav-label">Dashboard</div><div class="nav-desc">Live signals & portfolio</div></div>
+    </a>
+    <a href="/sentiment" class="nav-item">
+      <div class="nav-icon"><i class="fa fa-brain"></i></div>
+      <div><div class="nav-label">Sentiment</div><div class="nav-desc">News & market mood</div></div>
+    </a>
+    <a href="/backtest" class="nav-item">
+      <div class="nav-icon"><i class="fa fa-chart-bar"></i></div>
+      <div><div class="nav-label">Backtest</div><div class="nav-desc">Strategy testing</div></div>
+    </a>
+    <a href="/status" class="nav-item">
+      <div class="nav-icon"><i class="fa fa-heartbeat"></i></div>
+      <div><div class="nav-label">System Status</div><div class="nav-desc">Processes & trades</div></div>
+    </a>
+  </div>
+
+  <div class="nav-divider"></div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Advanced</div>
+    <a href="/websocket-feed" class="nav-item">
+      <div class="nav-icon"><i class="fa fa-wifi"></i></div>
+      <div><div class="nav-label">WebSocket Feed</div><div class="nav-desc">Real-time price stream</div></div>
+    </a>
+  </div>
+
+  <div class="nav-footer">
+    <div class="nav-footer-bot">
+      <div class="nav-footer-avatar">🤖</div>
+      <div class="nav-footer-info">
+        <div class="name">ROBBIE AI</div>
+        <div class="sub"><span class="status-dot-running"></span>Running</div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<!-- PAGE CONTENT -->
+<div class="wrapper">
+  <header>
+    <div class="logo">
+      <div class="logo-icon"><i class="fa fa-chart-line"></i></div>
+      <div class="logo-text">
+        <h1>ROBBIE</h1>
+        <p>AI Trading Terminal · Live Dashboard</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="countdown-wrap">
+        <div class="label">Next refresh</div>
+        <div class="val" id="next-refresh">--:--</div>
+      </div>
+      <div class="live-pill"><div class="live-dot"></div>LIVE</div>
+      <button class="refresh-btn" onclick="manualRefresh()"><i class="fa fa-rotate-right"></i> Refresh</button>
+      <div class="nav-trigger" onclick="openNav()" title="Navigation"><i class="fa fa-bars"></i></div>
+    </div>
+  </header>
+
+  <!-- STAT CARDS -->
+  <div class="stat-grid">
+    <div class="stat-card blue">
+      <div class="stat-label">Active Signals</div>
+      <div class="stat-val" id="total-signals">0</div>
+      <div class="stat-sub">All directions</div>
+      <div class="stat-icon"><i class="fa fa-signal"></i></div>
+    </div>
+    <div class="stat-card green">
+      <div class="stat-label">Buy Signals</div>
+      <div class="stat-val" id="buy-signals" style="color:var(--buy)">0</div>
+      <div class="stat-sub">Long opportunities</div>
+      <div class="stat-icon" style="color:var(--buy)"><i class="fa fa-arrow-trend-up"></i></div>
+    </div>
+    <div class="stat-card red">
+      <div class="stat-label">Sell Signals</div>
+      <div class="stat-val" id="sell-signals" style="color:var(--sell)">0</div>
+      <div class="stat-sub">Short opportunities</div>
+      <div class="stat-icon" style="color:var(--sell)"><i class="fa fa-arrow-trend-down"></i></div>
+    </div>
+    <div class="stat-card gold">
+      <div class="stat-label">Avg Confidence</div>
+      <div class="stat-val" id="avg-confidence" style="color:var(--gold)">0%</div>
+      <div class="stat-sub">Model agreement</div>
+      <div class="stat-icon" style="color:var(--gold)"><i class="fa fa-chart-pie"></i></div>
+    </div>
+    <div class="stat-card purple">
+      <div class="stat-label">Last Update</div>
+      <div class="stat-val" id="last-update" style="font-size:1rem;color:#a78bfa">--:--</div>
+      <div class="stat-sub">Auto-refreshes</div>
+      <div class="stat-icon" style="color:#a78bfa"><i class="fa fa-clock"></i></div>
+    </div>
+  </div>
+
+  <!-- ASK ROBBIE -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><i class="fa fa-robot"></i>ASK ROBBIE</div>
+      <div class="view-toggle">
+        <button class="view-btn active" id="mode-signal" onclick="setViewMode('signal')">
+          <i class="fa fa-chart-line"></i> Signal
+        </button>
+        <button class="view-btn" id="mode-human" onclick="setViewMode('human')">
+          <i class="fa fa-comment"></i> Human
+        </button>
+      </div>
+    </div>
+    <div class="search-wrap">
+      <input class="search-input" id="asset-search" type="text"
+        placeholder="Enter asset: BTC, ETH, GOLD, AAPL, EUR/USD …"
+        onkeypress="if(event.key==='Enter')searchAsset()"/>
+      <button class="btn-primary" onclick="searchAsset()">
+        <i class="fa fa-magnifying-glass"></i> Analyze
+      </button>
+    </div>
+    <div class="quick-btns">
+      <button class="quick-btn" onclick="quickSearch('BTC')">₿ BTC</button>
+      <button class="quick-btn" onclick="quickSearch('ETH')">⟠ ETH</button>
+      <button class="quick-btn" onclick="quickSearch('GOLD')">🏅 GOLD</button>
+      <button class="quick-btn" onclick="quickSearch('AAPL')">🍎 AAPL</button>
+      <button class="quick-btn" onclick="quickSearch('EUR/USD')">💶 EUR/USD</button>
+      <button class="quick-btn" onclick="quickSearch('NVDA')">🖥 NVDA</button>
+      <button class="quick-btn" onclick="quickSearch('SOL')">◎ SOL</button>
+    </div>
+    <div id="search-results"></div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><i class="fa fa-sliders"></i>SIGNAL SETTINGS</div>
+    </div>
+    <div class="settings-grid">
+      <div>
+        <div class="field-label"><i class="fa fa-clock"></i> Timeframe</div>
+        <select class="field-select" id="interval" onchange="updateSettings()">
+          <option value="1d">Daily (1D)</option>
+          <option value="1h">Hourly (1H)</option>
+          <option value="15m" selected>15 Minutes</option>
+        </select>
+      </div>
+      <div>
+        <div class="field-label"><i class="fa fa-wallet"></i> Balance ($)</div>
+        <input class="field-input" type="number" id="balance" value="10"/>
+      </div>
+      <div>
+        <div class="field-label"><i class="fa fa-percent"></i> Risk Per Trade</div>
+        <input class="field-input" type="number" id="risk" value="1.0" step="0.1" min="0.1" max="5"/>
+      </div>
+      <div>
+        <div class="field-label"><i class="fa fa-filter"></i> Filter</div>
+        <select class="field-select" id="filter">
+          <option value="all">All Signals</option>
+          <option value="buy">Buy Only</option>
+          <option value="sell">Sell Only</option>
+          <option value="high-confidence">70%+ Confidence</option>
+        </select>
+      </div>
+    </div>
+    <div style="text-align:right;margin-top:16px;">
+      <button class="btn-primary" onclick="updateSettings()">
+        <i class="fa fa-check"></i> Apply & Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- DISCLAIMER -->
+  <div class="disclaimer">
+    <i class="fa fa-triangle-exclamation"></i>
+    <span><strong>LIVE MODE</strong> — Signals auto-refresh every 60 seconds. Old signals expire after 5 minutes. For educational purposes only. Not financial advice.</span>
+  </div>
+
+  <!-- SIGNALS GRID -->
+  <div class="signals-grid" id="signals-container"></div>
+
+  <!-- EMPTY STATE -->
+  <div class="empty-state" id="no-signals">
+    <div class="icon">⏳</div>
+    <h3>Scanning Markets…</h3>
+    <p>Fresh signals will appear here shortly</p>
+  </div>
+</div>
+
+<script>
+  let currentViewMode = 'signal';
+
+  const ALIASES = {
+    BITCOIN:'BTC-USD',BTC:'BTC-USD',ETHEREUM:'ETH-USD',ETH:'ETH-USD',
+    BNB:'BNB-USD',SOL:'SOL-USD',XRP:'XRP-USD',RIPPLE:'XRP-USD',
+    GOLD:'XAU/USD',SILVER:'XAG/USD',OIL:'CL=F',WTI:'CL=F',
+    'S&P':'^^GSPC',SP500:'^GSPC',DOW:'^DJI',NASDAQ:'^IXIC',
+    APPLE:'AAPL',MICROSOFT:'MSFT',GOOGLE:'GOOGL',AMAZON:'AMZN',
+    TESLA:'TSLA',NVIDIA:'NVDA',EURO:'EUR/USD',POUND:'GBP/USD',YEN:'USD/JPY'
+  };
+
+  /* ── nav ── */
+  function openNav()  { document.getElementById('nav-drawer').classList.add('open'); document.getElementById('nav-overlay').classList.add('open'); }
+  function closeNav() { document.getElementById('nav-drawer').classList.remove('open'); document.getElementById('nav-overlay').classList.remove('open'); }
+
+  /* ── view mode ── */
+  function setViewMode(m) {
+    currentViewMode = m;
+    document.getElementById('mode-signal').classList.toggle('active', m==='signal');
+    document.getElementById('mode-human').classList.toggle('active', m==='human');
+  }
+
+  /* ── countdown ── */
+  function updateCountdown() {
+    fetch('/api/status').then(r=>r.json()).then(d=>{
+      if(d.last_refresh){
+        const rem = Math.max(0, 60 - Math.floor((Date.now()-new Date(d.last_refresh))/1000));
+        const m = Math.floor(rem/60), s = rem%60;
+        document.getElementById('next-refresh').textContent = `${m}:${s.toString().padStart(2,'0')}`;
+      }
+    }).catch(()=>{});
+  }
+
+  /* ── load signals ── */
+  async function loadSignals() {
+    try {
+      const filter = document.getElementById('filter').value;
+      const r = await fetch(`/api/signals/live?filter=${filter}`);
+      const d = await r.json();
+      if(d.success){
+        const active = (d.signals||[]).filter(s=>s.signal!=='CLOSED');
+        renderSignals(active);
+        updateStats(active);
+        if(d.last_refresh) document.getElementById('last-update').textContent = new Date(d.last_refresh).toLocaleTimeString();
+      }
+    } catch(e){ console.error(e); }
+  }
+
+  function renderSignals(signals) {
+    const c = document.getElementById('signals-container');
+    const empty = document.getElementById('no-signals');
+    if(!signals.length){ c.innerHTML=''; empty.style.display='block'; return; }
+    empty.style.display='none';
+    c.innerHTML = signals.map((s,i) => signalCardHTML(s,i)).join('');
+  }
+
+  function signalCardHTML(s, idx) {
+    const dir = s.signal||'HOLD';
+    const cls = dir==='BUY'?'buy':dir==='SELL'?'sell':'hold';
+    const icon = dir==='BUY'?'fa-arrow-trend-up':dir==='SELL'?'fa-arrow-trend-down':'fa-minus';
+    const conf = (s.confidence||0)*100;
+    const confCls = conf>=75?'hi':conf>=60?'mid':'lo';
+    const tp = (s.take_profit_levels||[])[0]?.price || s.take_profit || 0;
+    const expiring = (s.time_remaining||0) < 2;
+    const delay = idx * 0.06;
+
+    return `
+    <div class="signal-card ${cls}${expiring?' expiring':''}" style="animation-delay:${delay}s">
+      <div class="signal-card-bg"></div>
+      <span class="sc-timer ${expiring?'expiring':''}">
+        <i class="fa fa-clock"></i> ${(s.time_remaining||0).toFixed(1)}m
+      </span>
+      <div class="sc-top">
+        <div>
+          <div class="sc-asset">${s.asset||'?'}</div>
+          <div class="sc-meta">${s.category||'N/A'} · ${s.generated_at||''}</div>
         </div>
-    </header>
-
-    <!-- Main Content -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        
-        <!-- ASSET SEARCH SECTION -->
-        <div class="bg-white rounded-xl shadow-lg p-6 mb-8 border border-gray-200">
-            <div class="flex items-center justify-between mb-4">
-                <div class="flex items-center">
-                    <i class="fas fa-robot text-2xl text-purple-600 mr-3"></i>
-                    <h2 class="text-xl font-semibold text-gray-800">Ask Robbie 🤖</h2>
-                </div>
-                
-                <!-- View Toggle -->
-                <div class="flex bg-gray-100 rounded-lg p-1">
-                    <button onclick="setViewMode('signal')" id="mode-signal" class="tab-button active px-4 py-2 text-sm">
-                        <i class="fas fa-chart-line mr-1"></i>Signal
-                    </button>
-                    <button onclick="setViewMode('human')" id="mode-human" class="tab-button px-4 py-2 text-sm">
-                        <i class="fas fa-comment mr-1"></i>Human
-                    </button>
-                </div>
-            </div>
-            
-            <div class="flex flex-col md:flex-row gap-4">
-                <div class="flex-1">
-                    <input type="text" 
-                           id="asset-search" 
-                           placeholder="Enter asset (BTC, ETH, GOLD, AAPL, EUR/USD...)" 
-                           class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                           onkeypress="if(event.key === 'Enter') searchAsset()">
-                </div>
-                <button onclick="searchAsset()" 
-                        class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold transition flex items-center justify-center space-x-2">
-                    <i class="fas fa-magnifying-glass"></i>
-                    <span>Ask Robbie</span>
-                </button>
-            </div>
-            
-            <!-- Quick Search Buttons -->
-            <div class="flex flex-wrap gap-2 mt-4">
-                <button onclick="quickSearch('BTC')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">₿ BTC</button>
-                <button onclick="quickSearch('ETH')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">⟠ ETH</button>
-                <button onclick="quickSearch('GOLD')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">🏆 GOLD</button>
-                <button onclick="quickSearch('AAPL')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">🍎 AAPL</button>
-                <button onclick="quickSearch('EUR/USD')" class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-full text-sm transition">💶 EUR/USD</button>
-            </div>
-            
-            <!-- Search Results -->
-            <div id="search-results" class="mt-6 hidden"></div>
+        <div class="signal-badge ${cls}">
+          <i class="fa ${icon}"></i>${dir}
         </div>
-
-        <!-- Disclaimer -->
-        <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6 rounded-r-lg">
-            <div class="flex">
-                <i class="fas fa-exclamation-triangle text-yellow-400 mt-1"></i>
-                <div class="ml-3">
-                    <p class="text-sm text-yellow-700">
-                        <strong>LIVE MODE:</strong> Signals auto-refresh every 60 seconds. Old signals expire after 5 minutes. 
-                        For educational purposes only.
-                    </p>
-                </div>
-            </div>
+      </div>
+      ${dir!=='HOLD'?`
+      <div class="sc-levels">
+        <div class="sc-level">
+          <div class="lbl">Entry</div>
+          <div class="val entry">$${(s.entry_price||0).toFixed(5)}</div>
         </div>
-
-        <!-- Settings Panel -->
-        <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
-            <div class="flex items-center justify-between mb-4">
-                <h2 class="text-lg font-semibold text-gray-900">Live Settings</h2>
-                <div class="flex items-center space-x-2">
-                    <div class="h-3 w-3 bg-green-500 rounded-full live-indicator"></div>
-                    <span class="text-sm text-green-600 font-semibold">LIVE</span>
-                </div>
-            </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">
-                        <i class="fas fa-clock text-blue-600"></i> Time Interval
-                    </label>
-                    <select id="interval" onchange="updateSettings()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
-                        <option value="1d">Daily (1D)</option>
-                        <option value="1h">Hourly (1H)</option>
-                        <option value="15m" selected>15 Minutes</option>
-                    </select>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">
-                        <i class="fas fa-wallet text-green-600"></i> Account Balance ($)
-                    </label>
-                    <input type="number" id="balance" value="10" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">
-                        <i class="fas fa-percentage text-orange-600"></i> Risk Per Trade (%)
-                    </label>
-                    <input type="number" id="risk" value="1.0" step="0.1" min="0.1" max="5" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">
-                        <i class="fas fa-filter text-purple-600"></i> Filter Signals
-                    </label>
-                    <select id="filter" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
-                        <option value="all" selected>All Signals</option>
-                        <option value="buy">Buy Only</option>
-                        <option value="sell">Sell Only</option>
-                        <option value="high-confidence">High Confidence (70%+)</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="mt-4 flex justify-end">
-                <button onclick="updateSettings()" class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg font-semibold transition">
-                    <i class="fas fa-check"></i> Apply & Refresh
-                </button>
-            </div>
+        <div class="sc-level">
+          <div class="lbl">Stop Loss</div>
+          <div class="val sl">$${(s.stop_loss||0).toFixed(5)}</div>
         </div>
-
-        <!-- Stats Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
-            <div class="bg-white rounded-lg shadow-sm p-4">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-xs text-gray-500">Active Signals</p>
-                        <p class="text-2xl font-bold text-gray-900" id="total-signals">0</p>
-                    </div>
-                    <div class="bg-blue-100 rounded-full p-3">
-                        <i class="fas fa-signal text-blue-600"></i>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="bg-white rounded-lg shadow-sm p-4">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-xs text-gray-500">Buy Signals</p>
-                        <p class="text-2xl font-bold text-green-600" id="buy-signals">0</p>
-                    </div>
-                    <div class="bg-green-100 rounded-full p-3">
-                        <i class="fas fa-arrow-up text-green-600"></i>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="bg-white rounded-lg shadow-sm p-4">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-xs text-gray-500">Sell Signals</p>
-                        <p class="text-2xl font-bold text-red-600" id="sell-signals">0</p>
-                    </div>
-                    <div class="bg-red-100 rounded-full p-3">
-                        <i class="fas fa-arrow-down text-red-600"></i>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="bg-white rounded-lg shadow-sm p-4">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-xs text-gray-500">Avg Confidence</p>
-                        <p class="text-2xl font-bold text-purple-600" id="avg-confidence">0%</p>
-                    </div>
-                    <div class="bg-purple-100 rounded-full p-3">
-                        <i class="fas fa-chart-bar text-purple-600"></i>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="bg-white rounded-lg shadow-sm p-4">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-xs text-gray-500">Last Update</p>
-                        <p class="text-sm font-bold text-gray-700" id="last-update">--:--:--</p>
-                    </div>
-                    <div class="bg-gray-100 rounded-full p-3">
-                        <i class="fas fa-clock text-gray-600"></i>
-                    </div>
-                </div>
-            </div>
+        <div class="sc-level">
+          <div class="lbl">TP1</div>
+          <div class="val tp">$${tp.toFixed(5)}</div>
         </div>
-
-        <!-- Signals Grid -->
-        <div id="signals-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <!-- Signals will be inserted here -->
+        <div class="sc-level">
+          <div class="lbl">Risk</div>
+          <div class="val risk">${(s.risk_pct||0).toFixed(2)}%</div>
         </div>
-
-        <!-- No Signals Message -->
-        <div id="no-signals" class="bg-white rounded-lg shadow-sm p-12 text-center" style="display: none;">
-            <i class="fas fa-hourglass-half text-gray-300 text-6xl mb-4"></i>
-            <h3 class="text-xl font-semibold text-gray-700 mb-2">Waiting for Signals...</h3>
-            <p class="text-gray-500">Fresh signals will appear shortly</p>
+      </div>`:''}
+      <div class="sc-confidence">
+        <div class="sc-conf-row">
+          <span class="sc-conf-label">Confidence</span>
+          <span class="sc-conf-val ${confCls}">${Math.round(conf)}%</span>
         </div>
+        <div class="conf-bar">
+          <div class="conf-fill ${confCls}" style="width:${conf}%"></div>
+        </div>
+        <div class="sc-reason">${s.reason||''}</div>
+      </div>
+    </div>`;
+  }
 
-    </main>
+  function updateStats(signals) {
+    const buy = signals.filter(s=>s.signal==='BUY').length;
+    const sell = signals.filter(s=>s.signal==='SELL').length;
+    const avgConf = signals.length ? Math.round(signals.reduce((a,s)=>a+(s.confidence||0),0)/signals.length*100) : 0;
+    document.getElementById('total-signals').textContent = signals.length;
+    document.getElementById('buy-signals').textContent = buy;
+    document.getElementById('sell-signals').textContent = sell;
+    document.getElementById('avg-confidence').textContent = avgConf+'%';
+  }
 
-    <script>
-        let currentSignals = [];
-        let refreshInterval = null;
-        let countdownInterval = null;
-        let currentViewMode = 'signal'; // 'signal' or 'human'
+  /* ── settings ── */
+  async function updateSettings() {
+    const settings = {
+      interval: document.getElementById('interval').value,
+      balance: parseFloat(document.getElementById('balance').value),
+      risk: parseFloat(document.getElementById('risk').value),
+      filter: document.getElementById('filter').value
+    };
+    try {
+      await fetch('/api/settings/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings)});
+      loadSignals();
+    } catch(e){}
+  }
 
-        // Asset aliases
-        const ASSET_ALIASES = {
-            'BITCOIN': 'BTC-USD',
-            'BTC': 'BTC-USD',
-            'ETHEREUM': 'ETH-USD',
-            'ETH': 'ETH-USD',
-            'BINANCE': 'BNB-USD',
-            'BNB': 'BNB-USD',
-            'SOLANA': 'SOL-USD',
-            'SOL': 'SOL-USD',
-            'XRP': 'XRP-USD',
-            'RIPPLE': 'XRP-USD',
-            'GOLD': 'XAU/USD',
-            'SILVER': 'XAG/USD',
-            'OIL': 'CL=F',
-            'WTI': 'CL=F',
-            'SP500': '^GSPC',
-            'S&P': '^GSPC',
-            'DOW': '^DJI',
-            'NASDAQ': '^IXIC',
-            'APPLE': 'AAPL',
-            'MICROSOFT': 'MSFT',
-            'GOOGLE': 'GOOGL',
-            'AMAZON': 'AMZN',
-            'TESLA': 'TSLA',
-            'NVIDIA': 'NVDA',
-            'META': 'META',
-            'EURO': 'EUR/USD',
-            'POUND': 'GBP/USD',
-            'YEN': 'USD/JPY',
-        };
+  async function manualRefresh() {
+    try {
+      document.getElementById('next-refresh').textContent = '…';
+      await fetch('/api/refresh/manual',{method:'POST'});
+      await loadSignals();
+    } catch(e){}
+  }
 
-        // Human-like response phrases
-        const BULLISH_PHRASES = [
-            "looking pretty bullish", "ready to pump", "showing strength", 
-            "on the move", "looking juicy", "getting interesting",
-            "green across the board", "buyers are stepping in", "looking good!"
-        ];
-        
-        const BEARISH_PHRASES = [
-            "looking bearish", "showing weakness", "might dip",
-            "under pressure", "sellers are in control", "looking shaky",
-            "red flags popping up", "I'd be careful here"
-        ];
-        
-        const NEUTRAL_PHRASES = [
-            "looking neutral", "choppy waters", "no clear direction",
-            "wait and see", "mixed signals", "consolidating"
-        ];
+  /* ── search ── */
+  async function searchAsset() {
+    let asset = document.getElementById('asset-search').value.trim().toUpperCase();
+    if(!asset) return;
+    if(ALIASES[asset]) asset = ALIASES[asset];
+    const div = document.getElementById('search-results');
+    div.innerHTML = `<div style="text-align:center;padding:32px"><div class="spinner"></div><div style="font-size:.8rem;color:var(--muted)">Analyzing ${asset}…</div></div>`;
+    try {
+      const r = await fetch(`/api/signal/${encodeURIComponent(asset)}`);
+      const d = await r.json();
+      if(d.success){
+        if(currentViewMode==='signal') renderSignalResult(d.signal, asset);
+        else renderHumanResult(d.human_response, asset);
+      } else {
+        div.innerHTML = `<div class="result-card" style="border-color:var(--sell);color:var(--sell)"><i class="fa fa-circle-xmark"></i> ${d.error||'Could not fetch data'}</div>`;
+      }
+    } catch(e){
+      div.innerHTML = `<div class="result-card" style="border-color:var(--sell);color:var(--sell)"><i class="fa fa-circle-xmark"></i> Network error</div>`;
+    }
+  }
 
-        const GREETINGS = [
-            "Hey there! 👋",
-            "Yo! 👊",
-            "Hey! ☕",
-            "Quick update for you:",
-            "Check this out:",
-            "After analyzing the charts:"
-        ];
+  function renderSignalResult(signal, asset) {
+    const dir = signal.direction==='UP'?'BUY':signal.direction==='DOWN'?'SELL':'HOLD';
+    const cls = dir==='BUY'?'buy':dir==='SELL'?'sell':'hold';
+    const conf = (signal.confidence*100).toFixed(1);
+    const price = signal.current_price||0;
+    document.getElementById('search-results').innerHTML = `
+      <div class="result-card" style="border-color:var(--border2)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+          <span class="result-asset">${asset}</span>
+          <div class="signal-badge ${cls}" style="font-size:1.1rem;padding:8px 20px">
+            <i class="fa ${dir==='BUY'?'fa-arrow-trend-up':dir==='SELL'?'fa-arrow-trend-down':'fa-minus'}"></i>${dir}
+          </div>
+        </div>
+        <div class="result-row"><span class="lbl">Current Price</span><span class="val">$${price.toFixed(5)}</span></div>
+        ${signal.stop_loss?`<div class="result-row"><span class="lbl">Stop Loss</span><span class="val" style="color:var(--sell)">$${signal.stop_loss.toFixed(5)}</span></div>`:''}
+        ${signal.take_profit?`<div class="result-row"><span class="lbl">Take Profit</span><span class="val" style="color:var(--buy)">$${signal.take_profit.toFixed(5)}</span></div>`:''}
+        <div class="result-row"><span class="lbl">Confidence</span><span class="val" style="color:var(--gold)">${conf}%</span></div>
+        <div class="result-row"><span class="lbl">Strategy</span><span class="val">VOTING</span></div>
+        <div class="close-search-row"><button class="btn-ghost" onclick="document.getElementById('search-results').innerHTML=''">✕ Close</button></div>
+      </div>`;
+  }
 
-        const SIGN_OFFS = [
-            "That's my 2 satoshis! 🪙",
-            "Catch you later! 👊",
-            "Let's see if it plays out! 🤞",
-            "— Robbie 🤖",
-            "Back to watching charts! 📈"
-        ];
+  function renderHumanResult(resp, asset) {
+    const dir = resp.direction==='UP'?'BUY':resp.direction==='DOWN'?'SELL':'HOLD';
+    const conf = Math.round(resp.confidence*100);
+    const reasons = (resp.reasons||[]).slice(0,4);
+    document.getElementById('search-results').innerHTML = `
+      <div class="human-card">
+        <div class="human-header">
+          <div class="robbie-badge">
+            <div class="robbie-avatar">🤖</div>
+            <div>
+              <div style="font-weight:600;font-size:.85rem">Robbie</div>
+              <div style="font-size:.65rem;color:var(--muted)">AI Trading Analyst</div>
+            </div>
+          </div>
+          <div style="font-size:.7rem;color:var(--muted)">${new Date().toLocaleTimeString()}</div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
+          <span style="font-family:'Bebas Neue',sans-serif;font-size:2rem;letter-spacing:.06em">${asset}</span>
+          <div style="text-align:right">
+            <div class="signal-badge ${dir==='BUY'?'buy':dir==='SELL'?'sell':'hold'}" style="font-size:1rem">${dir}</div>
+            <div style="font-size:.7rem;color:var(--muted);margin-top:6px">${conf}% confident</div>
+          </div>
+        </div>
+        <div style="margin-bottom:12px;font-size:.78rem;font-weight:500;color:var(--muted2);text-transform:uppercase;letter-spacing:.08em">Analysis</div>
+        ${reasons.map(r=>`<div class="reason-item"><i class="fa fa-chart-simple" style="color:var(--accent);margin-top:1px;flex-shrink:0"></i>${r}</div>`).join('')}
+        ${resp.whale_alerts?`<div style="background:rgba(255,209,102,.07);border:1px solid rgba(255,209,102,.2);border-radius:8px;padding:10px 14px;margin-top:10px;font-size:.75rem;color:var(--gold)"><i class="fa fa-fish"></i> ${resp.whale_alerts}</div>`:''}
+        <div style="display:flex;justify-content:space-between;margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+          <div><div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Price</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700">$${(resp.current_price||0).toFixed(2)}</div></div>
+          ${resp.predicted_price?`<div style="text-align:right"><div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Target</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--buy)">$${resp.predicted_price.toFixed(2)}</div></div>`:''}
+        </div>
+        <div class="close-search-row"><button class="btn-ghost" onclick="document.getElementById('search-results').innerHTML=''">✕ Close</button></div>
+      </div>`;
+  }
 
-        // Auto-fetch signals
-        function startAutoRefresh() {
-            loadSignals();
-            refreshInterval = setInterval(loadSignals, 10000);
-            countdownInterval = setInterval(updateCountdown, 1000);
-        }
+  function quickSearch(a){ document.getElementById('asset-search').value=a; searchAsset(); }
 
-        function setViewMode(mode) {
-            currentViewMode = mode;
-            document.getElementById('mode-signal').classList.toggle('active', mode === 'signal');
-            document.getElementById('mode-human').classList.toggle('active', mode === 'human');
-        }
-
-        function updateCountdown() {
-            fetch('/api/status')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.last_refresh) {
-                        const lastRefresh = new Date(data.last_refresh);
-                        const now = new Date();
-                        const elapsed = Math.floor((now - lastRefresh) / 1000);
-                        const remaining = Math.max(0, 60 - elapsed);
-                        
-                        const minutes = Math.floor(remaining / 60);
-                        const seconds = remaining % 60;
-                        
-                        document.getElementById('next-refresh').textContent = 
-                            `${minutes}:${seconds.toString().padStart(2, '0')}`;
-                    }
-                })
-                .catch(err => console.error('Countdown error:', err));
-        }
-
-        async function loadSignals() {
-            try {
-                const filter = document.getElementById('filter').value;
-                const response = await fetch(`/api/signals/live?filter=${filter}`);
-                const data = await response.json();
-                
-                if (data.success) {
-                    const activeSignals = data.signals ? data.signals.filter(s => s.signal !== 'CLOSED') : [];
-                    displaySignals(activeSignals);
-                    updateStats(activeSignals);
-                    
-                    if (data.last_refresh) {
-                        const time = new Date(data.last_refresh);
-                        document.getElementById('last-update').textContent = time.toLocaleTimeString();
-                    }
-                }
-            } catch (error) {
-                console.error('Error loading signals:', error);
-            }
-        }
-
-        function displaySignals(signals) {
-            const container = document.getElementById('signals-container');
-            
-            if (signals.length === 0) {
-                container.style.display = 'none';
-                document.getElementById('no-signals').style.display = 'block';
-                return;
-            }
-
-            container.style.display = 'grid';
-            document.getElementById('no-signals').style.display = 'none';
-            container.innerHTML = '';
-            
-            signals.forEach(signal => {
-                const card = createSignalCard(signal);
-                container.innerHTML += card;
-            });
-
-            currentSignals = signals;
-        }
-
-        function createSignalCard(signal) {
-            const signalClass = signal.signal === 'BUY' ? 'badge-buy' : 
-                              signal.signal === 'SELL' ? 'badge-sell' : 'badge-hold';
-            
-            const signalIcon = signal.signal === 'BUY' ? 'fa-arrow-trend-up' : 
-                              signal.signal === 'SELL' ? 'fa-arrow-trend-down' : 'fa-minus';
-            
-            const confidenceColor = signal.confidence >= 0.75 ? 'text-green-600' :
-                                   signal.confidence >= 0.60 ? 'text-yellow-600' : 'text-gray-600';
-
-            const expiringClass = signal.time_remaining < 2 ? 'expiring' : '';
-            
-            const tpLevels = signal.take_profit_levels || [];
-            const tp1Price = tpLevels.length > 0 ? tpLevels[0].price : signal.take_profit || 0;
-            
-            return `
-                <div class="signal-card ${expiringClass} bg-white rounded-lg shadow-sm p-6 relative">
-                    <div class="absolute top-2 right-2 text-xs font-semibold ${signal.time_remaining < 2 ? 'text-orange-600' : 'text-gray-400'}">
-                        <i class="fas fa-clock"></i> ${(signal.time_remaining || 0).toFixed(1)}m
-                    </div>
-                    
-                    <div class="flex justify-between items-start mb-4 mt-2">
-                        <div>
-                            <h3 class="text-lg font-semibold text-gray-900">${signal.asset || 'Unknown'}</h3>
-                            <p class="text-xs text-gray-500">${signal.category || 'N/A'} • ${signal.generated_at || ''}</p>
-                        </div>
-                        <span class="${signalClass} text-white px-3 py-1 rounded-full text-sm font-semibold flex items-center space-x-1">
-                            <i class="fas ${signalIcon}"></i>
-                            <span>${signal.signal || 'HOLD'}</span>
-                        </span>
-                    </div>
-
-                    ${signal.signal !== 'HOLD' && signal.signal !== 'CLOSED' ? `
-                        <div class="space-y-2 mb-4">
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-600">Entry:</span>
-                                <span class="font-semibold">$${(signal.entry_price || 0).toFixed(5)}</span>
-                            </div>
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-600">Stop Loss:</span>
-                                <span class="font-semibold text-red-600">$${(signal.stop_loss || 0).toFixed(5)}</span>
-                            </div>
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-600">TP1:</span>
-                                <span class="font-semibold text-green-600">$${tp1Price.toFixed(5)}</span>
-                            </div>
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-600">Risk:</span>
-                                <span class="font-semibold">${(signal.risk_pct || 0).toFixed(2)}%</span>
-                            </div>
-                        </div>
-                    ` : ''}
-
-                    <div class="border-t pt-3">
-                        <div class="flex justify-between items-center mb-2">
-                            <span class="text-sm text-gray-600">Confidence</span>
-                            <span class="text-sm font-semibold ${confidenceColor}">${Math.round((signal.confidence || 0) * 100)}%</span>
-                        </div>
-                        <div class="w-full bg-gray-200 rounded-full h-2">
-                            <div class="bg-blue-600 h-2 rounded-full transition-all duration-500" style="width: ${(signal.confidence || 0) * 100}%"></div>
-                        </div>
-                        <p class="text-xs text-gray-500 mt-2">${signal.reason || ''}</p>
-                    </div>
-                </div>
-            `;
-        }
-
-        function updateStats(signals) {
-            const buyCount = signals.filter(s => s && s.signal === 'BUY').length;
-            const sellCount = signals.filter(s => s && s.signal === 'SELL').length;
-            const total = signals.length;
-            
-            let avgConf = 0;
-            if (total > 0) {
-                const sumConf = signals.reduce((sum, s) => sum + (s.confidence || 0), 0);
-                avgConf = sumConf / total;
-            }
-
-            document.getElementById('total-signals').textContent = total;
-            document.getElementById('buy-signals').textContent = buyCount;
-            document.getElementById('sell-signals').textContent = sellCount;
-            document.getElementById('avg-confidence').textContent = Math.round(avgConf * 100) + '%';
-        }
-
-        async function updateSettings() {
-            const settings = {
-                interval: document.getElementById('interval').value,
-                balance: parseFloat(document.getElementById('balance').value),
-                risk: parseFloat(document.getElementById('risk').value),
-                filter: document.getElementById('filter').value
-            };
-
-            try {
-                const response = await fetch('/api/settings/update', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(settings)
-                });
-
-                const data = await response.json();
-                if (data.success) {
-                    alert('✅ Settings updated!');
-                }
-            } catch (error) {
-                console.error('Error updating settings:', error);
-            }
-        }
-
-        async function manualRefresh() {
-            try {
-                document.getElementById('next-refresh').textContent = 'Refreshing...';
-                const response = await fetch('/api/refresh/manual', { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    await loadSignals();
-                }
-            } catch (error) {
-                console.error('Error:', error);
-            }
-        }
-
-        // Asset Search Functions
-        async function searchAsset() {
-            let asset = document.getElementById('asset-search').value.trim().toUpperCase();
-            
-            if (!asset) {
-                alert('Please enter an asset symbol');
-                return;
-            }
-            
-            if (ASSET_ALIASES[asset]) {
-                asset = ASSET_ALIASES[asset];
-            }
-            
-            const resultsDiv = document.getElementById('search-results');
-            
-            resultsDiv.innerHTML = `
-                <div class="bg-purple-50 border border-purple-200 rounded-xl p-8 text-center">
-                    <div class="loading mx-auto mb-4" style="border-top-color: #8b5cf6;"></div>
-                    <p class="text-gray-600">Robbie is analyzing ${asset}...</p>
-                </div>
-            `;
-            resultsDiv.classList.remove('hidden');
-            
-            try {
-                const response = await fetch(`/api/signal/${encodeURIComponent(asset)}`);
-                const data = await response.json();
-                
-                if (data.success) {
-                    if (currentViewMode === 'signal') {
-                        displaySignalResponse(data.signal, asset);
-                    } else {
-                        displayHumanResponse(data.human_response, asset);
-                    }
-                } else {
-                    resultsDiv.innerHTML = `
-                        <div class="bg-red-50 border border-red-200 rounded-xl p-6">
-                            <p class="text-red-600">❌ ${data.error || 'Could not fetch data'}</p>
-                        </div>
-                    `;
-                }
-            } catch (error) {
-                resultsDiv.innerHTML = `
-                    <div class="bg-red-50 border border-red-200 rounded-xl p-6">
-                        <p class="text-red-600">❌ Error fetching signal</p>
-                    </div>
-                `;
-            }
-        }
-
-        function displaySignalResponse(signal, asset) {
-            const direction = signal.direction === 'UP' ? 'BUY' : signal.direction === 'DOWN' ? 'SELL' : 'HOLD';
-            const confidence = (signal.confidence * 100).toFixed(1);
-            const price = signal.current_price;
-            const timestamp = new Date().toLocaleString();
-            
-            let bgColor, borderColor, textColor;
-            if (direction === 'BUY') {
-                bgColor = 'bg-green-50';
-                borderColor = 'border-green-200';
-                textColor = 'text-green-600';
-            } else if (direction === 'SELL') {
-                bgColor = 'bg-red-50';
-                borderColor = 'border-red-200';
-                textColor = 'text-red-600';
-            } else {
-                bgColor = 'bg-gray-50';
-                borderColor = 'border-gray-200';
-                textColor = 'text-gray-600';
-            }
-            
-            let html = `
-                <div class="${bgColor} border ${borderColor} rounded-xl p-6 shadow-sm">
-                    <div class="flex justify-between items-start mb-4">
-                        <h3 class="text-2xl font-bold text-gray-900">${asset}</h3>
-                        <span class="text-sm text-gray-500">${timestamp}</span>
-                    </div>
-                    
-                    <div class="space-y-2 font-mono">
-                        <div class="flex py-1 border-b border-dashed border-gray-200">
-                            <span class="w-24 text-gray-600">Signal:</span>
-                            <span class="font-bold ${textColor}">${direction}</span>
-                        </div>
-                        
-                        <div class="flex py-1 border-b border-dashed border-gray-200">
-                            <span class="w-24 text-gray-600">Entry:</span>
-                            <span class="font-mono">$${price.toFixed(2)}</span>
-                        </div>
-            `;
-            
-            if (signal.stop_loss) {
-                html += `
-                        <div class="flex py-1 border-b border-dashed border-gray-200">
-                            <span class="w-24 text-gray-600">Stop Loss:</span>
-                            <span class="font-mono text-red-600">$${signal.stop_loss.toFixed(2)}</span>
-                        </div>
-                `;
-            }
-            
-            if (signal.take_profit) {
-                html += `
-                        <div class="flex py-1 border-b border-dashed border-gray-200">
-                            <span class="w-24 text-gray-600">Take Profit:</span>
-                            <span class="font-mono text-green-600">$${signal.take_profit.toFixed(2)}</span>
-                        </div>
-                `;
-            }
-            
-            html += `
-                        <div class="flex py-1 border-b border-dashed border-gray-200">
-                            <span class="w-24 text-gray-600">Confidence:</span>
-                            <span class="font-mono">${confidence}%</span>
-                        </div>
-                        
-                        <div class="flex py-1">
-                            <span class="w-24 text-gray-600">Strategy:</span>
-                            <span class="font-mono">VOTING</span>
-                        </div>
-                    </div>
-                    
-                    <div class="mt-4 pt-3 border-t border-gray-200 flex justify-end">
-                        <button onclick="closeSearch()" class="text-sm text-gray-500 hover:text-gray-700">
-                            Close
-                        </button>
-                    </div>
-                </div>
-            `;
-            
-            document.getElementById('search-results').innerHTML = html;
-        }
-
-        function displayHumanResponse(response, asset) {
-            const direction = response.direction === 'UP' ? 'BUY' : response.direction === 'DOWN' ? 'SELL' : 'HOLD';
-            const confidence = Math.round(response.confidence * 100);
-            const price = response.current_price;
-            
-            // Get random phrases
-            const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
-            const signOff = SIGN_OFFS[Math.floor(Math.random() * SIGN_OFFS.length)];
-            
-            let phrase = '';
-            if (direction === 'BUY') {
-                phrase = BULLISH_PHRASES[Math.floor(Math.random() * BULLISH_PHRASES.length)];
-            } else if (direction === 'SELL') {
-                phrase = BEARISH_PHRASES[Math.floor(Math.random() * BEARISH_PHRASES.length)];
-            } else {
-                phrase = NEUTRAL_PHRASES[Math.floor(Math.random() * NEUTRAL_PHRASES.length)];
-            }
-            
-            let html = `
-                <div class="human-message">
-                    <div class="flex justify-between items-start mb-4">
-                        <div class="mood-badge">
-                            <i class="fas ${response.mood_emoji === '🚀' ? 'fa-rocket' : 'fa-smile'} mr-1"></i>
-                            Feeling ${response.mood || 'neutral'} ${response.mood_emoji || '😐'}
-                        </div>
-                        <span class="text-xs opacity-75">${new Date().toLocaleTimeString()}</span>
-                    </div>
-                    
-                    <p class="text-xl mb-3">${greeting}</p>
-                    
-                    <div class="flex items-center justify-between bg-white/10 rounded-xl p-4 mb-4">
-                        <div>
-                            <span class="text-3xl font-bold">${asset}</span>
-                            <span class="ml-3 text-2xl ${direction === 'BUY' ? 'text-green-300' : direction === 'SELL' ? 'text-red-300' : 'text-gray-300'}">
-                                ${direction === 'BUY' ? '🚀' : direction === 'SELL' ? '📉' : '⚖️'}
-                            </span>
-                        </div>
-                        <div class="text-right">
-                            <div class="text-2xl font-bold">${direction}</div>
-                            <div class="text-sm">${confidence}% confident</div>
-                        </div>
-                    </div>
-                    
-                    <p class="mb-3"><span class="font-semibold">${asset} is ${phrase}</span> Here's why:</p>
-                    
-                    <div class="space-y-2 mb-4">
-            `;
-            
-            if (response.reasons && response.reasons.length > 0) {
-                response.reasons.slice(0, 4).forEach(reason => {
-                    let emoji = '📊';
-                    if (reason.toLowerCase().includes('rsi')) emoji = '📈';
-                    else if (reason.toLowerCase().includes('volume')) emoji = '📊';
-                    else if (reason.toLowerCase().includes('macd')) emoji = '📉';
-                    else if (reason.toLowerCase().includes('trend')) emoji = '📐';
-                    
-                    html += `
-                        <div class="reason-bullet">
-                            <span class="mr-2">${emoji}</span>
-                            <span>${reason}</span>
-                        </div>
-                    `;
-                });
-            }
-            
-            html += `</div>`;
-            
-            if (response.whale_alerts) {
-                html += `
-                    <div class="bg-yellow-500/20 rounded-lg p-3 mb-4 border border-yellow-400/30">
-                        <p class="text-sm flex items-center">
-                            <i class="fas fa-fish text-yellow-300 mr-2"></i>
-                            🐋 ${response.whale_alerts}
-                        </p>
-                    </div>
-                `;
-            }
-            
-            if (response.historical_context) {
-                html += `
-                    <div class="trading-diary">
-                        <i class="fas fa-book-open mr-2"></i>
-                        📝 Trading diary: ${response.historical_context}
-                    </div>
-                `;
-            }
-            
-            if (response.news && response.news.length > 0) {
-                html += `
-                    <div class="mt-4 pt-3 border-t border-white/20">
-                        <p class="text-sm font-semibold mb-2 flex items-center">
-                            <i class="fas fa-newspaper mr-2"></i>
-                            In the news:
-                        </p>
-                `;
-                response.news.slice(0, 2).forEach(article => {
-                    html += `<p class="text-sm opacity-90 mb-1">📰 "${article.title.substring(0, 70)}..."</p>`;
-                });
-                html += `</div>`;
-            }
-            
-            html += `
-                <div class="mt-4 pt-3 border-t border-white/20 grid grid-cols-2 gap-3">
-                    <div>
-                        <p class="text-xs opacity-75">Current Price</p>
-                        <p class="text-xl font-bold">$${price.toFixed(2)}</p>
-                    </div>
-            `;
-            
-            if (response.predicted_price) {
-                const change = ((response.predicted_price - price) / price * 100).toFixed(1);
-                const changeClass = change >= 0 ? 'text-green-300' : 'text-red-300';
-                html += `
-                    <div>
-                        <p class="text-xs opacity-75">Target Price</p>
-                        <p class="text-xl font-bold">$${response.predicted_price.toFixed(2)}</p>
-                        <p class="text-sm ${changeClass}">${change >= 0 ? '+' : ''}${change}%</p>
-                    </div>
-                `;
-            }
-            
-            html += `
-                </div>
-                
-                <div class="mt-4 text-right italic opacity-90">
-                    ${signOff}
-                </div>
-                
-                <div class="mt-4 flex justify-end">
-                    <button onclick="closeSearch()" class="text-sm opacity-75 hover:opacity-100">
-                        Close
-                    </button>
-                </div>
-                </div>
-            `;
-            
-            document.getElementById('search-results').innerHTML = html;
-        }
-
-        function quickSearch(asset) {
-            document.getElementById('asset-search').value = asset;
-            searchAsset();
-        }
-
-        function closeSearch() {
-            document.getElementById('search-results').classList.add('hidden');
-            document.getElementById('asset-search').value = '';
-        }
-
-        // Start auto-refresh
-        document.addEventListener('DOMContentLoaded', startAutoRefresh);
-    </script>
-
+  /* ── init ── */
+  document.addEventListener('DOMContentLoaded', ()=>{
+    loadSignals();
+    setInterval(loadSignals, 10000);
+    setInterval(updateCountdown, 1000);
+  });
+</script>
 </body>
 </html>

@@ -93,6 +93,8 @@ class DatabaseService:
     
     def update_trade_exit(self, trade_id, exit_data):
         """Update a trade when it closes"""
+        if not self.use_db or not self.session:
+            return False
         trade = self.session.query(Trade).filter(Trade.trade_id == trade_id).first()
         if trade:
             trade.exit_price = convert_numpy(exit_data.get('exit_price'))
@@ -106,13 +108,17 @@ class DatabaseService:
     
     def get_recent_trades(self, limit=20):
         """Get the most recent trades"""
+        if not self.use_db or not self.session:
+            return []
         trades = self.session.query(Trade).order_by(desc(Trade.entry_time)).limit(limit).all()
         return [t.to_dict() for t in trades]
     
     def get_performance_summary(self, days=30):
         """Get performance for the last N days"""
+        if not self.use_db or not self.session:
+            return {}
         cutoff = datetime.now() - timedelta(days=days)
-        
+
         trades = self.session.query(Trade).filter(
             Trade.entry_time >= cutoff,
             Trade.exit_time.isnot(None)  # Only closed trades

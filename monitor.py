@@ -230,11 +230,22 @@ class TradingMonitor:
     def _telegram_alert(self, level: str, title: str, message: str, strategy_info: str = ""):
         """📱 TELEGRAM ALERTS with strategy identification"""
         try:
-            bot_token = self.telegram_config.get('bot_token')
-            chat_id = self.telegram_config.get('chat_id')
-            
+            bot_token = self.telegram_config.get('bot_token') if self.telegram_config else None
+            chat_id   = str(self.telegram_config.get('chat_id', '')) if self.telegram_config else ''
+
+            # Fallback: read from .env — telegram_config.json may not exist
             if not bot_token or not chat_id:
-                logger.warning("Telegram: Missing bot_token or chat_id")
+                import os
+                try:
+                    from dotenv import load_dotenv
+                    load_dotenv(override=False)
+                except Exception:
+                    pass
+                bot_token = bot_token or os.getenv('COMMAND_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN', '')
+                chat_id   = chat_id   or os.getenv('TELEGRAM_CHAT_ID', '')
+
+            if not bot_token or not chat_id:
+                logger.warning("Telegram: Missing bot_token or chat_id in config and .env")
                 return
             
             # Map level to text prefix
@@ -261,7 +272,7 @@ class TradingMonitor:
                 'parse_mode': 'Markdown'
             }
             
-            response = requests.post(url, data=data, timeout=15)
+            response = requests.post(url, data=data, timeout=5)
             if response.status_code != 200:
                 logger.error(f"Telegram error: {response.text}")
             else:

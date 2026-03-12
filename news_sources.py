@@ -458,11 +458,13 @@ class NewsSourceIntegrator:
             return []
     
     def fetch_wsj_newsapi(self, days=1):
-        """Fetch WSJ articles using NewsAPI (🔑 needs key)"""
+        """Fetch WSJ articles using NewsAPI (🔑 needs key) — 6-hour cache to stay within 100/day free tier"""
         if not NEWSAPI_KEY:
             logger.warning("NewsAPI key not configured in .env")
             return []
-        
+        _now = __import__('time').time()
+        if hasattr(self, '_wsj_newsapi_cache_time') and (_now - self._wsj_newsapi_cache_time) < 21600:
+            return self._wsj_newsapi_cache
         try:
             url = "https://newsapi.org/v2/everything"
             params = {
@@ -492,13 +494,16 @@ class NewsSourceIntegrator:
                         'source': 'Wall Street Journal',
                         'author': article.get('author')
                     })
+                self._wsj_newsapi_cache = articles; self._wsj_newsapi_cache_time = _now
                 return articles
             else:
                 logger.warning(f"NewsAPI error: {data.get('message', 'Unknown error')}")
+                self._wsj_newsapi_cache = []; self._wsj_newsapi_cache_time = _now
                 return []
                 
         except Exception as e:
             logger.warning(f"WSJ NewsAPI error: {e}")
+            self._wsj_newsapi_cache = []; self._wsj_newsapi_cache_time = _now
             return []
     
     def fetch_alpha_vantage_news(self, tickers="FOREX,CRYPTO", limit=10):
@@ -692,10 +697,14 @@ class NewsSourceIntegrator:
         return []
     
     def fetch_newsapi(self, query="finance", limit=10):
-        """Fetch from NewsAPI (🔑 needs key)"""
+        """Fetch from NewsAPI (🔑 needs key) — 6-hour cache to stay within 100/day free tier"""
         if not NEWSAPI_KEY:
             return []
-        
+        _now = __import__('time').time()
+        _cache_key = f'_newsapi_cache_{query}'
+        _cache_time_key = f'_newsapi_cache_time_{query}'
+        if hasattr(self, _cache_time_key) and (_now - getattr(self, _cache_time_key)) < 21600:
+            return getattr(self, _cache_key, [])
         try:
             url = "https://newsapi.org/v2/everything"
             params = {
@@ -724,9 +733,13 @@ class NewsSourceIntegrator:
                     'author': article.get('author')
                 })
             
+            setattr(self, _cache_key, articles)
+            setattr(self, _cache_time_key, _now)
             return articles
         except Exception as e:
             logger.error(f"NewsAPI error: {e}")
+            setattr(self, _cache_key, [])
+            setattr(self, _cache_time_key, _now)
             return []
     
     def fetch_gnews(self, query="finance", limit=10):

@@ -89,8 +89,12 @@ class Config:
     def _load_env_overrides(self) -> None:
         """Override config with environment variables"""
         # Telegram
-        if os.getenv('TELEGRAM_BOT_TOKEN'):
-            self.config['telegram']['bot_token'] = os.getenv('TELEGRAM_BOT_TOKEN')
+        # .env priority: COMMAND_BOT_TOKEN → TELEGRAM_TOKEN → TELEGRAM_BOT_TOKEN
+        _tg_token = (os.getenv('COMMAND_BOT_TOKEN') or
+                     os.getenv('TELEGRAM_TOKEN') or
+                     os.getenv('TELEGRAM_BOT_TOKEN', ''))
+        if _tg_token:
+            self.config['telegram']['bot_token'] = _tg_token
             self.config['telegram']['enabled'] = True
         if os.getenv('TELEGRAM_CHAT_ID'):
             self.config['telegram']['chat_id'] = os.getenv('TELEGRAM_CHAT_ID')

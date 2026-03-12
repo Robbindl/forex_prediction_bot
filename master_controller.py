@@ -306,13 +306,18 @@ class MasterController:
         import json
         import os
         
-        # Load Telegram config (for reference only - bot handles Telegram)
+        # .env is FIRST priority for Telegram credentials
         self.telegram_config = None
-        if os.path.exists('config/telegram_config.json'):
+        _tok = os.getenv('COMMAND_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN', '')
+        _cid = os.getenv('TELEGRAM_CHAT_ID', '')
+        if _tok and _cid:
+            self.telegram_config = {'enabled': True, 'bot_token': _tok, 'chat_id': _cid}
+            logger.info("Telegram config loaded from .env")
+        elif os.path.exists('config/telegram_config.json'):
             try:
                 with open('config/telegram_config.json', 'r', encoding='utf-8') as f:
                     self.telegram_config = json.load(f)
-                logger.info("Telegram config loaded (handled by main bot)")
+                logger.info("Telegram config loaded from telegram_config.json")
             except:
                 logger.warning("Could not load Telegram config")
         

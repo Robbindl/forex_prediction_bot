@@ -1,3 +1,4 @@
+import os
 """
 Reddit Watcher - Free source for whale alerts and news sentiment
 UPDATED: Faster rate limits (50 requests per minute)
@@ -76,8 +77,8 @@ class RedditWatcher:
         try:
             # You'll get these from reddit.com/prefs/apps
             self.reddit = praw.Reddit(
-                client_id="YOUR_CLIENT_ID",        # Get from reddit
-                client_secret="YOUR_SECRET",       # Get from reddit
+                client_id=os.getenv("REDDIT_CLIENT_ID", ""),
+                client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
                 user_agent="trading-bot/1.0 by RGriffons"
             )
             # Test connection — user.me() returns None for anonymous/fake credentials

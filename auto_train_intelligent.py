@@ -42,9 +42,9 @@ class IntelligentAutoTrainer:
         self.price_history: Dict[str, List[Dict]] = {}
         
         # ===== YOUR NEWS API KEYS =====
-        self.newsapi_key = "45bc87b407044ac1bbf346a997ce41e5"
-        self.gnews_key = "3e75eb4d90be059d9e3494368a40999c"
-        self.rapidapi_key = "ef4048747cmshc06561be18df7dp1d5914jsnb61136336bf5"
+        self.newsapi_key = os.getenv("NEWSAPI_KEY", "")
+        self.gnews_key = os.getenv("GNEWS_KEY", "")
+        self.rapidapi_key = os.getenv("RAPIDAPI_KEY", "")
         
         # Create models directory
         os.makedirs("ml_models", exist_ok=True)

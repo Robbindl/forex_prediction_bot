@@ -1,862 +1,554 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>📰 Sentiment Dashboard - Trading Bot</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
-        .sentiment-card { transition: all 0.3s ease; }
-        .sentiment-card:hover { transform: translateY(-5px); box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .live-badge {
-            animation: pulse 2s ease-in-out infinite;
-        }
-        .sort-button {
-            transition: all 0.2s ease;
-        }
-        .sort-button.active {
-            background-color: #3b82f6;
-            color: white;
-        }
-    </style>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ROBBIE — Market Sentiment</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg:#06080f;--bg2:#0a0d18;--surface:#0e1220;--surface2:#141928;
+      --border:#1a2035;--border2:#232d45;
+      --buy:#00e87a;--buy-dim:rgba(0,232,122,.12);
+      --sell:#ff3a5c;--sell-dim:rgba(255,58,92,.12);
+      --accent:#00c2ff;--accent-dim:rgba(0,194,255,.1);
+      --gold:#ffd166;--purple:#a78bfa;
+      --text:#dde4f0;--muted:#4d5b7c;--muted2:#8896b3;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;overflow-x:hidden;}
+    body::before{content:'';position:fixed;inset:0;z-index:0;background-image:linear-gradient(rgba(0,194,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(0,194,255,.018) 1px,transparent 1px);background-size:48px 48px;pointer-events:none;}
+    body::after{content:'';position:fixed;inset:0;z-index:0;background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(160,100,255,.03) 0%,transparent 70%);pointer-events:none;}
+    .wrapper{position:relative;z-index:1;max-width:1440px;margin:0 auto;padding:0 28px 60px;}
+
+    /* nav overlay + drawer — same as dashboard */
+    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
+    .nav-overlay.open{opacity:1;pointer-events:all;}
+    .nav-drawer{position:fixed;top:0;right:0;width:300px;height:100vh;background:var(--bg2);border-left:1px solid var(--border2);z-index:101;transform:translateX(100%);transition:transform .35s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;overflow-y:auto;}
+    .nav-drawer.open{transform:translateX(0);}
+    .nav-drawer-header{padding:24px 24px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+    .nav-drawer-header .title{font-family:'Bebas Neue',sans-serif;font-size:1.4rem;letter-spacing:.08em;color:#fff;}
+    .nav-drawer-header .subtitle{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;}
+    .nav-close{width:34px;height:34px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;display:grid;place-items:center;cursor:pointer;color:var(--muted2);font-size:.9rem;transition:all .2s;}
+    .nav-close:hover{border-color:var(--sell);color:var(--sell);}
+    .nav-section{padding:20px 16px 8px;}
+    .nav-section-label{font-size:.6rem;font-weight:600;color:var(--muted);letter-spacing:.15em;text-transform:uppercase;padding:0 8px;margin-bottom:8px;}
+    .nav-item{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:10px;border:1px solid transparent;cursor:pointer;transition:all .2s;text-decoration:none;margin-bottom:4px;}
+    .nav-item:hover{background:var(--surface2);border-color:var(--border2);}
+    .nav-item.active{background:var(--accent-dim);border-color:rgba(0,194,255,.3);}
+    .nav-item .nav-icon{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-size:.95rem;flex-shrink:0;}
+    .nav-item.active .nav-icon{background:rgba(0,194,255,.15);color:var(--accent);}
+    .nav-item:not(.active) .nav-icon{background:var(--surface2);color:var(--muted2);}
+    .nav-item .nav-label{font-size:.85rem;font-weight:500;color:var(--text);}
+    .nav-item .nav-desc{font-size:.68rem;color:var(--muted);margin-top:1px;}
+    .nav-item.active .nav-label{color:var(--accent);}
+    .nav-divider{height:1px;background:var(--border);margin:8px 16px;}
+    .nav-footer{margin-top:auto;padding:20px 24px;border-top:1px solid var(--border);}
+    .nav-footer-bot{display:flex;align-items:center;gap:12px;}
+    .nav-footer-avatar{width:36px;height:36px;background:linear-gradient(135deg,var(--accent),var(--buy));border-radius:10px;display:grid;place-items:center;font-size:1rem;}
+    .nav-footer-info .name{font-size:.82rem;font-weight:600;color:var(--text);}
+    .nav-footer-info .sub{font-size:.66rem;color:var(--muted);}
+    .status-dot-running{width:7px;height:7px;background:var(--buy);border-radius:50%;display:inline-block;margin-right:5px;box-shadow:0 0 6px var(--buy);}
+
+    /* header */
+    header{padding:22px 0 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);margin-bottom:32px;}
+    .logo{display:flex;align-items:center;gap:14px;}
+    .logo-icon{width:44px;height:44px;background:rgba(160,100,255,.12);border:1px solid rgba(160,100,255,.3);border-radius:12px;display:grid;place-items:center;font-size:1.2rem;color:var(--purple);box-shadow:0 0 20px rgba(160,100,255,.15);}
+    .logo-text h1{font-family:'Bebas Neue',sans-serif;font-size:1.9rem;letter-spacing:.06em;color:#fff;line-height:1;}
+    .logo-text p{font-size:.68rem;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:2px;}
+    .header-right{display:flex;align-items:center;gap:14px;}
+    .live-pill{display:flex;align-items:center;gap:8px;padding:6px 14px;background:rgba(0,232,122,.08);border:1px solid rgba(0,232,122,.25);border-radius:999px;font-size:.68rem;font-weight:600;color:var(--buy);letter-spacing:.1em;text-transform:uppercase;}
+    .live-dot{width:7px;height:7px;background:var(--buy);border-radius:50%;box-shadow:0 0 10px var(--buy);animation:pulse-dot 1.4s ease-in-out infinite;}
+    @keyframes pulse-dot{0%,100%{opacity:1;box-shadow:0 0 10px var(--buy);}50%{opacity:.3;box-shadow:0 0 4px var(--buy);}}
+    .nav-trigger{width:40px;height:40px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;display:grid;place-items:center;cursor:pointer;color:var(--muted2);font-size:1.1rem;transition:all .2s;flex-shrink:0;}
+    .nav-trigger:hover{border-color:var(--accent);color:var(--accent);}
+
+    /* panels */
+    .panel{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:20px;}
+    .panel-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;}
+    .panel-title{font-family:'Bebas Neue',sans-serif;font-size:1.15rem;letter-spacing:.08em;color:#fff;display:flex;align-items:center;gap:10px;}
+    .panel-title i{color:var(--purple);}
+
+    /* stat cards */
+    .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px;}
+    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;position:relative;overflow:hidden;transition:border-color .2s,transform .2s;}
+    .stat-card:hover{border-color:var(--border2);transform:translateY(-2px);}
+    .stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+    .stat-card.blue::before{background:linear-gradient(90deg,transparent,var(--accent),transparent);}
+    .stat-card.green::before{background:linear-gradient(90deg,transparent,var(--buy),transparent);}
+    .stat-card.red::before{background:linear-gradient(90deg,transparent,var(--sell),transparent);}
+    .stat-card.purple::before{background:linear-gradient(90deg,transparent,var(--purple),transparent);}
+    .stat-label{font-size:.65rem;font-weight:600;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;}
+    .stat-main{display:flex;align-items:center;justify-content:space-between;}
+    .stat-val{font-family:'JetBrains Mono',monospace;font-size:2rem;font-weight:700;color:#fff;line-height:1;}
+    .stat-emoji{font-size:2.4rem;opacity:.7;}
+    .stat-sub{font-size:.7rem;color:var(--muted);margin-top:8px;}
+    .bar-wrap{height:4px;background:var(--border2);border-radius:999px;overflow:hidden;margin-top:10px;}
+    .bar-fill{height:100%;border-radius:999px;transition:width .6s cubic-bezier(.4,0,.2,1);}
+
+    /* two col */
+    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+    @media(max-width:800px){.two-col{grid-template-columns:1fr;}}
+
+    /* indicator rows */
+    .indicator-row{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;}
+    .indicator-row .lbl{display:flex;align-items:center;gap:10px;font-size:.82rem;color:var(--muted2);}
+    .indicator-row .lbl i{color:var(--accent);width:16px;}
+    .indicator-row .val{font-family:'JetBrains Mono',monospace;font-size:.85rem;font-weight:700;color:var(--text);}
+
+    /* news feed */
+    .news-item{padding:14px 0;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:14px;transition:background .2s;}
+    .news-item:last-child{border-bottom:none;}
+    .news-item:hover{background:rgba(255,255,255,.01);border-radius:8px;padding-left:8px;}
+    .news-sent{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-size:.75rem;flex-shrink:0;margin-top:2px;}
+    .news-sent.up{background:var(--buy-dim);color:var(--buy);}
+    .news-sent.dn{background:var(--sell-dim);color:var(--sell);}
+    .news-sent.nt{background:var(--surface2);color:var(--muted2);}
+    .news-title{font-size:.82rem;font-weight:500;color:var(--text);line-height:1.4;margin-bottom:6px;}
+    .news-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+    .news-source{background:var(--surface2);border:1px solid var(--border2);border-radius:6px;padding:2px 8px;font-size:.65rem;color:var(--muted2);}
+    .news-score{font-family:'JetBrains Mono',monospace;font-size:.7rem;font-weight:700;}
+    .news-time{font-size:.65rem;color:var(--muted);}
+
+    /* whale items */
+    .whale-item{padding:12px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;}
+    .whale-item:last-child{border-bottom:none;}
+    .whale-val{font-family:'JetBrains Mono',monospace;font-size:.78rem;font-weight:700;}
+    .whale-val.mega{color:var(--purple);}
+    .whale-val.big{color:var(--accent);}
+    .whale-val.normal{color:var(--muted2);}
+
+    /* calendar tabs */
+    .tab-row{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0;}
+    .tab-btn{padding:8px 16px;font-size:.75rem;font-weight:600;color:var(--muted);background:transparent;border:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .2s;font-family:'DM Sans',sans-serif;letter-spacing:.05em;text-transform:uppercase;}
+    .tab-btn.active{color:var(--purple);border-bottom-color:var(--purple);}
+    .tab-btn:hover:not(.active){color:var(--muted2);}
+
+    /* sort/filter strip */
+    .strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+    .chip{padding:5px 14px;border-radius:20px;font-size:.72rem;font-weight:600;cursor:pointer;border:1px solid var(--border2);background:var(--surface2);color:var(--muted2);transition:all .2s;}
+    .chip.active,.chip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-dim);}
+    .chip.active-green,.chip.green:hover{border-color:var(--buy)!important;color:var(--buy)!important;background:var(--buy-dim)!important;}
+    .chip.active-red,.chip.red:hover{border-color:var(--sell)!important;color:var(--sell)!important;background:var(--sell-dim)!important;}
+
+    /* event rows */
+    .event-row{padding:12px 0;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:14px;}
+    .event-row:last-child{border-bottom:none;}
+    .event-impact{padding:3px 10px;border-radius:6px;font-size:.65rem;font-weight:700;letter-spacing:.08em;flex-shrink:0;}
+    .event-impact.HIGH{background:var(--sell-dim);color:var(--sell);border:1px solid rgba(255,58,92,.25);}
+    .event-impact.MEDIUM{background:rgba(255,209,102,.1);color:var(--gold);border:1px solid rgba(255,209,102,.25);}
+    .event-impact.LOW{background:var(--accent-dim);color:var(--accent);border:1px solid rgba(0,194,255,.25);}
+
+    .halving-card{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:14px;}
+    .halving-card h3{font-family:'Bebas Neue',sans-serif;font-size:1.3rem;letter-spacing:.06em;margin-bottom:12px;display:flex;align-items:center;gap:10px;}
+
+    .risk-banner{padding:14px 18px;border-radius:10px;margin-bottom:16px;display:flex;align-items:center;gap:14px;background:rgba(255,209,102,.06);border:1px solid rgba(255,209,102,.2);}
+    .risk-banner i{color:var(--gold);font-size:1.2rem;flex-shrink:0;}
+    .risk-banner .msg{font-size:.8rem;color:var(--gold);}
+    .risk-banner .msg strong{display:block;margin-bottom:2px;}
+
+    /* scrollable */
+    .scrollable{overflow-y:auto;max-height:380px;}
+    .scrollable::-webkit-scrollbar{width:4px;}
+    .scrollable::-webkit-scrollbar-track{background:transparent;}
+    .scrollable::-webkit-scrollbar-thumb{background:var(--border2);border-radius:999px;}
+
+    .chart-wrap{position:relative;height:220px;}
+  </style>
 </head>
-<body class="bg-gray-50">
-    
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
-        <!-- Header with Navigation -->
-        <div class="mb-8">
-            <div class="flex justify-between items-center">
-                <div class="flex items-center space-x-4">
-                    <h1 class="text-3xl font-bold text-gray-900 flex items-center">
-                        <i class="fas fa-newspaper text-blue-600 mr-3"></i>
-                        Market Sentiment Dashboard
-                    </h1>
-                    <div class="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-semibold flex items-center live-badge">
-                        <span class="h-2 w-2 bg-green-500 rounded-full mr-2"></span>
-                        LIVE
-                    </div>
-                </div>
-                
-                <!-- Navigation Menu -->
-                <div class="flex space-x-3">
-                    <a href="/" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-chart-line"></i>
-                        <span>Dashboard</span>
-                    </a>
-                    <a href="/sentiment" class="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
-                        <i class="fas fa-newspaper"></i>
-                        <span>Sentiment</span>
-                    </a>
-                    <a href="/backtest" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-chart-bar"></i>
-                        <span>Backtest</span>
-                    </a>
-                    <a href="/status" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-heartbeat"></i>
-                        <span>Status</span>
-                    </a>
-                </div>
-            </div>
-            <p class="text-gray-600 mt-2">Real-time sentiment analysis from 15+ sources • Auto-refreshes every 60 seconds</p>
-        </div>
+<body>
 
-        <!-- Summary Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8" id="summary-cards">
-            <div class="sentiment-card bg-white rounded-xl shadow-md p-6 border-l-4 border-blue-500">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500 uppercase tracking-wide">Overall Sentiment</p>
-                        <p class="text-3xl font-bold" id="overall-sentiment">Neutral</p>
-                        <p class="text-xs text-gray-400 mt-1">Market mood</p>
-                    </div>
-                    <div class="text-5xl" id="sentiment-emoji">😐</div>
-                </div>
-                <div class="mt-3 w-full bg-gray-200 rounded-full h-2">
-                    <div class="bg-blue-600 h-2 rounded-full" id="sentiment-bar" style="width: 50%"></div>
-                </div>
-            </div>
-            
-            <div class="sentiment-card bg-white rounded-xl shadow-md p-6 border-l-4 border-orange-500">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500 uppercase tracking-wide">Fear & Greed</p>
-                        <p class="text-3xl font-bold" id="fear-greed">50</p>
-                        <p class="text-xs text-gray-400 mt-1" id="fear-classification">Neutral</p>
-                    </div>
-                    <div class="text-5xl" id="fear-emoji">😐</div>
-                </div>
-                <div class="mt-3 w-full bg-gray-200 rounded-full h-2">
-                    <div class="bg-orange-500 h-2 rounded-full" id="fear-bar" style="width: 50%"></div>
-                </div>
-            </div>
-            
-            <div class="sentiment-card bg-white rounded-xl shadow-md p-6 border-l-4 border-red-500">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500 uppercase tracking-wide">VIX (Fear Index)</p>
-                        <p class="text-3xl font-bold" id="vix-value">--</p>
-                        <p class="text-xs text-gray-400 mt-1" id="vix-classification">Normal</p>
-                    </div>
-                    <div class="text-5xl" id="vix-emoji">📊</div>
-                </div>
-                <div class="mt-3 w-full bg-gray-200 rounded-full h-2">
-                    <div class="bg-red-500 h-2 rounded-full" id="vix-bar" style="width: 50%"></div>
-                </div>
-            </div>
-            
-            <div class="sentiment-card bg-white rounded-xl shadow-md p-6 border-l-4 border-purple-500">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500 uppercase tracking-wide">Articles Today</p>
-                        <p class="text-3xl font-bold" id="article-count">0</p>
-                        <p class="text-xs text-gray-400 mt-1">News sources</p>
-                    </div>
-                    <div class="text-5xl">📰</div>
-                </div>
-                <div class="mt-3 flex justify-between text-xs text-gray-500">
-                    <span><span id="bullish-count">0</span> bullish</span>
-                    <span><span id="neutral-count">0</span> neutral</span>
-                    <span><span id="bearish-count">0</span> bearish</span>
-                </div>
-            </div>
-        </div>
+<div class="nav-overlay" id="nav-overlay" onclick="closeNav()"></div>
+<nav class="nav-drawer" id="nav-drawer">
+  <div class="nav-drawer-header">
+    <div><div class="title">ROBBIE</div><div class="subtitle">Navigation</div></div>
+    <div class="nav-close" onclick="closeNav()"><i class="fa fa-times"></i></div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-section-label">Main</div>
+    <a href="/" class="nav-item"><div class="nav-icon"><i class="fa fa-chart-line"></i></div><div><div class="nav-label">Dashboard</div><div class="nav-desc">Live signals & portfolio</div></div></a>
+    <a href="/sentiment" class="nav-item active"><div class="nav-icon"><i class="fa fa-brain"></i></div><div><div class="nav-label">Sentiment</div><div class="nav-desc">News & market mood</div></div></a>
+    <a href="/backtest" class="nav-item"><div class="nav-icon"><i class="fa fa-chart-bar"></i></div><div><div class="nav-label">Backtest</div><div class="nav-desc">Strategy testing</div></div></a>
+    <a href="/status" class="nav-item"><div class="nav-icon"><i class="fa fa-heartbeat"></i></div><div><div class="nav-label">System Status</div><div class="nav-desc">Processes & trades</div></div></a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-section">
+    <div class="nav-section-label">Advanced</div>
+    <a href="/websocket-feed" class="nav-item"><div class="nav-icon"><i class="fa fa-wifi"></i></div><div><div class="nav-label">WebSocket Feed</div><div class="nav-desc">Real-time price stream</div></div></a>
+  </div>
+  <div class="nav-footer"><div class="nav-footer-bot"><div class="nav-footer-avatar">🤖</div><div class="nav-footer-info"><div class="name">ROBBIE AI</div><div class="sub"><span class="status-dot-running"></span>Running</div></div></div></div>
+</nav>
 
-        <!-- Market Sentiment Overview -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            <div class="bg-white rounded-xl shadow-md p-6">
-                <h2 class="text-lg font-semibold mb-4 flex items-center">
-                    <i class="fas fa-chart-pie text-blue-600 mr-2"></i>
-                    Sentiment Distribution
-                </h2>
-                <div class="flex items-center justify-center">
-                    <canvas id="sentiment-gauge" height="200" width="200"></canvas>
-                </div>
-                <div class="grid grid-cols-3 gap-2 mt-4 text-center text-sm">
-                    <div>
-                        <span class="block text-green-600 font-bold" id="gauge-bullish">0%</span>
-                        <span class="text-gray-500">Bullish</span>
-                    </div>
-                    <div>
-                        <span class="block text-gray-600 font-bold" id="gauge-neutral">0%</span>
-                        <span class="text-gray-500">Neutral</span>
-                    </div>
-                    <div>
-                        <span class="block text-red-600 font-bold" id="gauge-bearish">0%</span>
-                        <span class="text-gray-500">Bearish</span>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="bg-white rounded-xl shadow-md p-6">
-                <h2 class="text-lg font-semibold mb-4 flex items-center">
-                    <i class="fas fa-chart-line text-blue-600 mr-2"></i>
-                    Market Indicators
-                </h2>
-                <div class="space-y-4">
-                    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                        <div class="flex items-center">
-                            <i class="fas fa-chart-line text-blue-600 mr-3"></i>
-                            <span>RSI (Market)</span>
-                        </div>
-                        <span class="font-bold" id="market-rsi">50.0</span>
-                    </div>
-                    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                        <div class="flex items-center">
-                            <i class="fas fa-chart-bar text-purple-600 mr-3"></i>
-                            <span>MACD Signal</span>
-                        </div>
-                        <span class="font-bold" id="market-macd">Neutral</span>
-                    </div>
-                    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                        <div class="flex items-center">
-                            <i class="fas fa-arrow-trend-up text-green-600 mr-3"></i>
-                            <span>Trend Strength</span>
-                        </div>
-                        <span class="font-bold" id="market-trend">25</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Sentiment by Source Chart -->
-        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
-            <h2 class="text-lg font-semibold mb-4 flex items-center">
-                <i class="fas fa-chart-bar text-blue-600 mr-2"></i>
-                Sentiment by Source
-            </h2>
-            <canvas id="source-chart" height="200"></canvas>
-        </div>
-
-        <!-- News Articles with Sorting and Filtering -->
-        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
-            <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
-                <h2 class="text-lg font-semibold flex items-center">
-                    <i class="fas fa-newspaper text-blue-600 mr-2"></i>
-                    Recent News Articles
-                </h2>
-                
-                <div class="flex flex-wrap gap-3">
-                    <!-- Sort Controls -->
-                    <div class="flex items-center space-x-1 bg-gray-100 rounded-lg p-1">
-                        <button onclick="sortNews('latest')" id="sort-latest" class="sort-button px-3 py-1 rounded-lg text-sm font-medium transition active">
-                            <i class="fas fa-clock mr-1"></i>Latest
-                        </button>
-                        <button onclick="sortNews('oldest')" id="sort-oldest" class="sort-button px-3 py-1 rounded-lg text-sm font-medium transition">
-                            <i class="fas fa-history mr-1"></i>Oldest
-                        </button>
-                    </div>
-                    
-                    <!-- Filter Controls -->
-                    <div class="flex space-x-1">
-                        <button onclick="filterNews('all')" id="filter-all" class="px-3 py-1 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300 transition">All</button>
-                        <button onclick="filterNews('bullish')" id="filter-bullish" class="px-3 py-1 bg-green-100 text-green-700 rounded-lg text-sm hover:bg-green-200 transition">Bullish</button>
-                        <button onclick="filterNews('bearish')" id="filter-bearish" class="px-3 py-1 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200 transition">Bearish</button>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- News Stats -->
-            <div class="flex justify-between items-center mb-4 text-sm text-gray-500 border-b pb-2">
-                <div>
-                    <span id="visible-articles">0</span> of <span id="total-articles">0</span> articles
-                </div>
-                <div class="flex space-x-4">
-                    <span><i class="fas fa-arrow-up text-green-600 mr-1"></i><span id="visible-bullish">0</span></span>
-                    <span><i class="fas fa-minus text-gray-600 mr-1"></i><span id="visible-neutral">0</span></span>
-                    <span><i class="fas fa-arrow-down text-red-600 mr-1"></i><span id="visible-bearish">0</span></span>
-                </div>
-            </div>
-            
-            <div class="overflow-y-auto max-h-96" id="news-feed">
-                <!-- Articles will be inserted here -->
-            </div>
-        </div>
-
-        <!-- Whale Alerts with Value Filter -->
-        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-semibold flex items-center">
-                    <i class="fas fa-fish text-blue-600 mr-2"></i>
-                    🐋 Recent Whale Alerts
-                </h2>
-                <select id="whale-filter" onchange="filterWhales()" class="text-sm border rounded-lg px-2 py-1">
-                    <option value="all">All amounts</option>
-                    <option value="1m">$1M+</option>
-                    <option value="5m">$5M+</option>
-                    <option value="10m">$10M+</option>
-                </select>
-            </div>
-            <div class="overflow-y-auto max-h-64" id="whale-feed">
-                <!-- Whale alerts will be inserted here -->
-            </div>
-        </div>
-
-        <!-- Market Calendar Section -->
-        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-semibold flex items-center">
-                    <i class="fas fa-calendar-alt text-purple-600 mr-2"></i>
-                    📅 Market Calendar
-                </h2>
-                <div class="flex space-x-2">
-                    <button onclick="refreshCalendar()" class="px-3 py-1 bg-purple-100 text-purple-700 rounded-lg text-sm hover:bg-purple-200 transition">
-                        <i class="fas fa-sync-alt mr-1"></i>Refresh
-                    </button>
-                </div>
-            </div>
-
-            <!-- Risk Outlook Banner -->
-            <div id="risk-banner" class="mb-4 p-3 rounded-lg hidden">
-                <!-- Will be filled by JavaScript -->
-            </div>
-
-            <!-- Tabs -->
-            <div class="border-b mb-4">
-                <div class="flex space-x-4">
-                    <button onclick="showCalendarTab('events')" id="tab-events" class="px-4 py-2 text-purple-600 border-b-2 border-purple-600 font-medium">📊 Economic Events</button>
-                    <button onclick="showCalendarTab('halving')" id="tab-halving" class="px-4 py-2 text-gray-500 hover:text-purple-600">🪙 Crypto Halving</button>
-                    <button onclick="showCalendarTab('earnings')" id="tab-earnings" class="px-4 py-2 text-gray-500 hover:text-purple-600">📈 Earnings</button>
-                </div>
-            </div>
-
-            <!-- Events Tab -->
-            <div id="calendar-events" class="space-y-3">
-                <!-- Events will be inserted here -->
-            </div>
-
-            <!-- Halving Tab (hidden by default) -->
-            <div id="calendar-halving" class="space-y-4 hidden">
-                <!-- Halving data will be inserted here -->
-            </div>
-
-            <!-- Earnings Tab (hidden by default) -->
-            <div id="calendar-earnings" class="space-y-3 hidden">
-                <!-- Earnings will be inserted here -->
-            </div>
-        </div>
-
+<div class="wrapper">
+  <header>
+    <div class="logo">
+      <div class="logo-icon"><i class="fa fa-brain"></i></div>
+      <div class="logo-text"><h1>ROBBIE</h1><p>Market Sentiment Analysis</p></div>
     </div>
+    <div class="header-right">
+      <div class="live-pill"><div class="live-dot"></div>LIVE</div>
+      <div class="nav-trigger" onclick="openNav()"><i class="fa fa-bars"></i></div>
+    </div>
+  </header>
 
-    <script>
-        let sentimentChart = null;
-        let sourceChart = null;
-        let allArticles = [];
-        let filteredArticles = [];
-        let allWhales = [];
-        let currentSort = 'latest';
-        let currentFilter = 'all';
-        let calendarData = null;
+  <!-- STAT CARDS -->
+  <div class="stat-grid">
+    <div class="stat-card blue">
+      <div class="stat-label">Overall Sentiment</div>
+      <div class="stat-main">
+        <div class="stat-val" id="overall-sentiment" style="font-size:1.4rem">Neutral</div>
+        <div class="stat-emoji" id="sentiment-emoji">😐</div>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" id="sentiment-bar" style="width:50%;background:linear-gradient(90deg,var(--accent),var(--buy));"></div></div>
+      <div class="stat-sub">Market mood index</div>
+    </div>
+    <div class="stat-card gold">
+      <div class="stat-label">Fear & Greed</div>
+      <div class="stat-main">
+        <div class="stat-val" id="fear-greed" style="color:var(--gold)">50</div>
+        <div class="stat-emoji" id="fear-emoji">😐</div>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" id="fear-bar" style="width:50%;background:linear-gradient(90deg,var(--gold),#ffaa33);"></div></div>
+      <div class="stat-sub" id="fear-classification">Neutral</div>
+    </div>
+    <div class="stat-card red">
+      <div class="stat-label">VIX (Volatility)</div>
+      <div class="stat-main">
+        <div class="stat-val" id="vix-value" style="color:var(--sell)">--</div>
+        <div class="stat-emoji" id="vix-emoji">📊</div>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" id="vix-bar" style="width:50%;background:linear-gradient(90deg,var(--sell),#ff6b6b);"></div></div>
+      <div class="stat-sub" id="vix-classification">Normal</div>
+    </div>
+    <div class="stat-card purple">
+      <div class="stat-label">Articles Today</div>
+      <div class="stat-main">
+        <div class="stat-val" id="article-count" style="color:var(--purple)">0</div>
+        <div class="stat-emoji">📰</div>
+      </div>
+      <div style="margin-top:10px;display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:.7rem;">
+        <span style="color:var(--buy)">↑ <span id="bullish-count">0</span></span>
+        <span style="color:var(--muted2)">— <span id="neutral-count">0</span></span>
+        <span style="color:var(--sell)">↓ <span id="bearish-count">0</span></span>
+      </div>
+      <div class="stat-sub">News sources</div>
+    </div>
+  </div>
 
-        function updateDashboard() {
-            fetch('/api/sentiment/dashboard')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        allArticles = data.articles || [];
-                        allWhales = data.whale_alerts || [];
-                        
-                        // Sort articles by date (latest first by default)
-                        sortArticlesByDate('latest');
-                        
-                        updateSummaryCards(data);
-                        updateCharts(data);
-                        applyFiltersAndSort();
-                        updateWhaleFeed(allWhales);
-                        updateArticleStats();
-                    }
-                })
-                .catch(err => console.error('Error:', err));
-        }
+  <!-- CHARTS ROW -->
+  <div class="two-col" style="margin-bottom:20px;">
+    <div class="panel">
+      <div class="panel-title" style="margin-bottom:18px;"><i class="fa fa-chart-pie"></i>DISTRIBUTION</div>
+      <div class="chart-wrap"><canvas id="sentiment-gauge"></canvas></div>
+      <div style="display:flex;justify-content:space-between;margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:.78rem;">
+        <div style="text-align:center"><div style="color:var(--buy);font-weight:700" id="gauge-bullish">0%</div><div style="color:var(--muted);font-size:.65rem">BULLISH</div></div>
+        <div style="text-align:center"><div style="color:var(--muted2);font-weight:700" id="gauge-neutral">0%</div><div style="color:var(--muted);font-size:.65rem">NEUTRAL</div></div>
+        <div style="text-align:center"><div style="color:var(--sell);font-weight:700" id="gauge-bearish">0%</div><div style="color:var(--muted);font-size:.65rem">BEARISH</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title" style="margin-bottom:18px;"><i class="fa fa-gauge-high"></i>MARKET INDICATORS</div>
+      <div class="indicator-row"><div class="lbl"><i class="fa fa-chart-line"></i> RSI (Market)</div><div class="val" id="market-rsi">50.0</div></div>
+      <div class="indicator-row"><div class="lbl"><i class="fa fa-chart-bar"></i> MACD Signal</div><div class="val" id="market-macd">Neutral</div></div>
+      <div class="indicator-row"><div class="lbl"><i class="fa fa-arrow-trend-up"></i> Trend Strength</div><div class="val" id="market-trend">25</div></div>
+      <div class="indicator-row"><div class="lbl"><i class="fa fa-newspaper"></i> Put/Call Ratio</div><div class="val" id="put-call" style="color:var(--gold)">--</div></div>
+    </div>
+  </div>
 
-        function loadMarketCalendar() {
-            fetch('/api/market/events')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        calendarData = data.events;
-                        updateRiskBanner(calendarData.risk_outlook);
-                        updateEventsTab(calendarData.events);
-                        updateHalvingTab(calendarData.halving);
-                        updateEarningsTab(calendarData.earnings);
-                    }
-                })
-                .catch(err => console.error('Error loading calendar:', err));
-        }
+  <!-- SOURCE CHART -->
+  <div class="panel" style="margin-bottom:20px;">
+    <div class="panel-title" style="margin-bottom:18px;"><i class="fa fa-chart-bar"></i>SENTIMENT BY SOURCE</div>
+    <div style="position:relative;height:200px;"><canvas id="source-chart"></canvas></div>
+  </div>
 
-        function updateRiskBanner(risk) {
-            const banner = document.getElementById('risk-banner');
-            if (risk.reduce_trading) {
-                banner.className = 'mb-4 p-3 bg-yellow-100 border-l-4 border-yellow-500 rounded-lg';
-                banner.innerHTML = `
-                    <div class="flex items-center">
-                        <i class="fas fa-exclamation-triangle text-yellow-600 mr-3 text-xl"></i>
-                        <div>
-                            <p class="font-semibold text-yellow-800">⚠️ High Risk Period Detected</p>
-                            <p class="text-sm text-yellow-700">Reduce position sizes by 30-50%</p>
-                            <p class="text-xs text-yellow-600 mt-1">
-                                ${risk.has_high_impact ? '• High-impact economic events coming' : ''}
-                                ${risk.halving_soon ? '• Crypto halving approaching' : ''}
-                            </p>
-                        </div>
-                    </div>
-                `;
-                banner.classList.remove('hidden');
-            } else {
-                banner.classList.add('hidden');
-            }
-        }
+  <!-- NEWS FEED -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><i class="fa fa-newspaper"></i>NEWS FEED</div>
+    </div>
+    <div class="strip">
+      <span class="chip active" id="filter-all" onclick="filterNews('all',this)">All</span>
+      <span class="chip green" id="filter-bullish" onclick="filterNews('bullish',this)">↑ Bullish</span>
+      <span class="chip red" id="filter-bearish" onclick="filterNews('bearish',this)">↓ Bearish</span>
+      <span style="margin-left:auto;font-size:.68rem;color:var(--muted)"><span id="visible-articles">0</span> / <span id="total-articles">0</span> articles</span>
+      <span class="chip" id="sort-latest" onclick="sortNews('latest',this)"><i class="fa fa-clock"></i> Latest</span>
+      <span class="chip" id="sort-oldest" onclick="sortNews('oldest',this)"><i class="fa fa-history"></i> Oldest</span>
+    </div>
+    <div class="scrollable" id="news-feed">
+      <div style="text-align:center;padding:40px;color:var(--muted)">Loading articles…</div>
+    </div>
+  </div>
 
-        function updateEventsTab(events) {
-            const container = document.getElementById('calendar-events');
-            container.innerHTML = '';
-            
-            if (!events || events.length === 0) {
-                container.innerHTML = '<p class="text-gray-500 text-center py-4">No upcoming high-impact events</p>';
-                return;
-            }
-            
-            events.forEach(event => {
-                const card = document.createElement('div');
-                card.className = 'border-b last:border-0 py-3 hover:bg-gray-50 transition';
-                
-                let impactColor = 'text-red-600';
-                if (event.impact === 'MEDIUM') impactColor = 'text-orange-600';
-                else if (event.impact === 'LOW') impactColor = 'text-blue-600';
-                
-                card.innerHTML = `
-                    <div class="flex items-start">
-                        <div class="mr-3 text-2xl">📅</div>
-                        <div class="flex-1">
-                            <div class="flex justify-between">
-                                <p class="font-medium">${event.name}</p>
-                                <span class="text-sm font-semibold ${impactColor}">${event.impact}</span>
-                            </div>
-                            <div class="flex flex-wrap items-center gap-2 text-sm mt-1">
-                                <span class="px-2 py-1 bg-gray-100 rounded-full">${event.date}</span>
-                                <span class="text-gray-400">•</span>
-                                <span class="font-medium">${event.days} days away</span>
-                            </div>
-                            <div class="flex text-xs text-gray-500 mt-1">
-                                <span class="mr-3">Forecast: ${event.forecast}</span>
-                                <span>Previous: ${event.previous}</span>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                container.appendChild(card);
-            });
-        }
+  <!-- WHALE ALERTS -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><i class="fa fa-fish"></i>WHALE ALERTS</div>
+      <select id="whale-filter" onchange="filterWhales()" style="background:var(--bg);border:1px solid var(--border2);color:var(--muted2);padding:6px 12px;border-radius:8px;font-size:.75rem;font-family:'DM Sans',sans-serif;outline:none;">
+        <option value="all">All amounts</option>
+        <option value="1m">$1M+</option>
+        <option value="5m">$5M+</option>
+        <option value="10m">$10M+</option>
+      </select>
+    </div>
+    <div class="scrollable" id="whale-feed">
+      <div style="text-align:center;padding:28px;color:var(--muted)">No whale alerts</div>
+    </div>
+  </div>
 
-        function updateHalvingTab(halving) {
-            const container = document.getElementById('calendar-halving');
-            container.innerHTML = '';
-            
-            // Bitcoin Halving
-            const btc = halving.bitcoin;
-            const btcCard = document.createElement('div');
-            btcCard.className = 'bg-gradient-to-r from-orange-50 to-yellow-50 rounded-lg p-4';
-            btcCard.innerHTML = `
-                <div class="flex items-center mb-3">
-                    <span class="text-3xl mr-3">🪙</span>
-                    <h3 class="text-xl font-bold">Bitcoin Halving</h3>
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <p class="text-sm text-gray-500">Days Until</p>
-                        <p class="text-3xl font-bold text-orange-600">${btc.days_until}</p>
-                    </div>
-                    <div>
-                        <p class="text-sm text-gray-500">Date</p>
-                        <p class="font-semibold">${btc.halving_date}</p>
-                    </div>
-                </div>
-                <div class="mt-3 flex justify-between text-sm">
-                    <span>Current: ${btc.current_reward} BTC</span>
-                    <span>→</span>
-                    <span>Next: ${btc.next_reward} BTC</span>
-                </div>
-                <div class="mt-2 w-full bg-gray-200 rounded-full h-2">
-                    <div class="bg-orange-500 h-2 rounded-full" style="width: ${100 - (btc.days_until / 1460 * 100)}%"></div>
-                </div>
-            `;
-            container.appendChild(btcCard);
-            
-            // Litecoin Halving
-            const ltc = halving.litecoin;
-            const ltcCard = document.createElement('div');
-            ltcCard.className = 'bg-gradient-to-r from-gray-50 to-blue-50 rounded-lg p-4 mt-4';
-            ltcCard.innerHTML = `
-                <div class="flex items-center mb-3">
-                    <span class="text-3xl mr-3">⚡</span>
-                    <h3 class="text-xl font-bold">Litecoin Halving</h3>
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <p class="text-sm text-gray-500">Days Until</p>
-                        <p class="text-3xl font-bold text-blue-600">${ltc.days_until}</p>
-                    </div>
-                    <div>
-                        <p class="text-sm text-gray-500">Date</p>
-                        <p class="font-semibold">${ltc.halving_date}</p>
-                    </div>
-                </div>
-                <div class="mt-3 flex justify-between text-sm">
-                    <span>Current: ${ltc.current_reward} LTC</span>
-                    <span>→</span>
-                    <span>Next: ${ltc.next_reward} LTC</span>
-                </div>
-                <div class="mt-2 w-full bg-gray-200 rounded-full h-2">
-                    <div class="bg-blue-500 h-2 rounded-full" style="width: ${100 - (ltc.days_until / 1460 * 100)}%"></div>
-                </div>
-            `;
-            container.appendChild(ltcCard);
-        }
+  <!-- MARKET CALENDAR -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><i class="fa fa-calendar-alt"></i>MARKET CALENDAR</div>
+      <button onclick="loadMarketCalendar()" style="background:rgba(160,100,255,.1);border:1px solid rgba(160,100,255,.25);color:var(--purple);padding:7px 14px;border-radius:8px;font-size:.72rem;font-family:'DM Sans',sans-serif;cursor:pointer;transition:all .2s;">
+        <i class="fa fa-rotate-right"></i> Refresh
+      </button>
+    </div>
+    <div id="risk-banner" style="display:none"></div>
+    <div class="tab-row">
+      <button class="tab-btn active" id="tab-events" onclick="showCalTab('events',this)">📊 Economic Events</button>
+      <button class="tab-btn" id="tab-halving" onclick="showCalTab('halving',this)">🪙 Crypto Halving</button>
+      <button class="tab-btn" id="tab-earnings" onclick="showCalTab('earnings',this)">📈 Earnings</button>
+    </div>
+    <div id="calendar-events"></div>
+    <div id="calendar-halving" style="display:none"></div>
+    <div id="calendar-earnings" style="display:none"></div>
+  </div>
+</div>
 
-        function updateEarningsTab(earnings) {
-            const container = document.getElementById('calendar-earnings');
-            container.innerHTML = '';
-            
-            if (!earnings || earnings.length === 0) {
-                container.innerHTML = '<p class="text-gray-500 text-center py-4">No upcoming earnings</p>';
-                return;
-            }
-            
-            earnings.forEach(earning => {
-                const card = document.createElement('div');
-                card.className = 'border-b last:border-0 py-3 hover:bg-gray-50 transition';
-                card.innerHTML = `
-                    <div class="flex items-start">
-                        <div class="mr-3 text-2xl">📊</div>
-                        <div class="flex-1">
-                            <div class="flex justify-between">
-                                <p class="font-bold text-lg">${earning.symbol}</p>
-                                <span class="text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded-full">${earning.quarter}</span>
-                            </div>
-                            <div class="flex flex-wrap items-center gap-2 text-sm mt-1">
-                                <span class="px-2 py-1 bg-gray-100 rounded-full">${earning.date}</span>
-                                <span class="text-gray-400">•</span>
-                                <span class="font-medium">${earning.days} days away</span>
-                            </div>
-                            <p class="text-xs text-gray-500 mt-1">EPS Est: $${earning.eps_estimate}</p>
-                        </div>
-                    </div>
-                `;
-                container.appendChild(card);
-            });
-        }
+<script>
+  let sentChart=null, srcChart=null;
+  let allArticles=[], allWhales=[];
+  let currentFilter='all', currentSort='latest';
 
-        function showCalendarTab(tab) {
-            // Hide all tabs
-            document.getElementById('calendar-events').classList.add('hidden');
-            document.getElementById('calendar-halving').classList.add('hidden');
-            document.getElementById('calendar-earnings').classList.add('hidden');
-            
-            // Remove active class from all tabs
-            document.getElementById('tab-events').className = 'px-4 py-2 text-gray-500 hover:text-purple-600';
-            document.getElementById('tab-halving').className = 'px-4 py-2 text-gray-500 hover:text-purple-600';
-            document.getElementById('tab-earnings').className = 'px-4 py-2 text-gray-500 hover:text-purple-600';
-            
-            // Show selected tab
-            document.getElementById(`calendar-${tab}`).classList.remove('hidden');
-            document.getElementById(`tab-${tab}`).className = 'px-4 py-2 text-purple-600 border-b-2 border-purple-600 font-medium';
-        }
+  function openNav(){document.getElementById('nav-drawer').classList.add('open');document.getElementById('nav-overlay').classList.add('open');}
+  function closeNav(){document.getElementById('nav-drawer').classList.remove('open');document.getElementById('nav-overlay').classList.remove('open');}
 
-        function refreshCalendar() {
-            loadMarketCalendar();
-        }
+  function updateDashboard(){
+    fetch('/api/sentiment/dashboard').then(r=>r.json()).then(d=>{
+      if(!d.success) return;
+      allArticles=d.articles||[];
+      allWhales=d.whale_alerts||[];
+      sortArticles(currentSort);
+      updateCards(d);
+      updateCharts(d);
+      applyFilter();
+      renderWhales(allWhales);
+    }).catch(()=>{});
+  }
 
-        function sortArticlesByDate(order) {
-            allArticles.sort((a, b) => {
-                const dateA = new Date(a.date || 0);
-                const dateB = new Date(b.date || 0);
-                return order === 'latest' ? dateB - dateA : dateA - dateB;
-            });
-        }
+  function updateCards(d){
+    const score=d.score||0;
+    document.getElementById('overall-sentiment').textContent=d.overall_sentiment||'Neutral';
+    document.getElementById('sentiment-bar').style.width=((score+1)/2*100)+'%';
+    const sEmoji=score>.3?'🚀':score>.1?'📈':score<-.3?'💀':score<-.1?'📉':'😐';
+    document.getElementById('sentiment-emoji').textContent=sEmoji;
+    const fg=d.fear_greed||{};
+    document.getElementById('fear-greed').textContent=fg.value||50;
+    document.getElementById('fear-classification').textContent=fg.classification||'Neutral';
+    document.getElementById('fear-bar').style.width=(fg.value||50)+'%';
+    const fEmoji=(fg.value||50)<25?'😱':(fg.value||50)<45?'😨':(fg.value||50)<55?'😐':(fg.value||50)<75?'😊':'🤑';
+    document.getElementById('fear-emoji').textContent=fEmoji;
+    const vix=d.vix||{};
+    document.getElementById('vix-value').textContent=vix.value||'--';
+    document.getElementById('vix-classification').textContent=vix.classification||'';
+    document.getElementById('vix-bar').style.width=Math.min(100,(vix.value||20)/50*100)+'%';
+    document.getElementById('vix-emoji').textContent=(vix.value||20)>30?'😱':(vix.value||20)>25?'😨':(vix.value||20)>20?'😐':'😎';
+    document.getElementById('article-count').textContent=d.article_count||0;
+    const dist=d.sentiment_distribution||{bullish:0,neutral:0,bearish:0};
+    document.getElementById('bullish-count').textContent=dist.bullish;
+    document.getElementById('neutral-count').textContent=dist.neutral;
+    document.getElementById('bearish-count').textContent=dist.bearish;
+    const tot=dist.bullish+dist.neutral+dist.bearish;
+    if(tot>0){
+      document.getElementById('gauge-bullish').textContent=Math.round(dist.bullish/tot*100)+'%';
+      document.getElementById('gauge-neutral').textContent=Math.round(dist.neutral/tot*100)+'%';
+      document.getElementById('gauge-bearish').textContent=Math.round(dist.bearish/tot*100)+'%';
+    }
+  }
 
-        function sortNews(order) {
-            currentSort = order;
-            
-            // Update button styles
-            document.getElementById('sort-latest').classList.remove('active', 'bg-blue-600', 'text-white');
-            document.getElementById('sort-oldest').classList.remove('active', 'bg-blue-600', 'text-white');
-            
-            if (order === 'latest') {
-                document.getElementById('sort-latest').classList.add('active', 'bg-blue-600', 'text-white');
-            } else {
-                document.getElementById('sort-oldest').classList.add('active', 'bg-blue-600', 'text-white');
-            }
-            
-            // Re-sort all articles
-            sortArticlesByDate(order);
-            
-            // Re-apply current filter
-            applyFiltersAndSort();
-        }
+  function updateCharts(d){
+    const dist=d.sentiment_distribution||{bullish:33,neutral:34,bearish:33};
+    const ctx1=document.getElementById('sentiment-gauge').getContext('2d');
+    if(sentChart) sentChart.destroy();
+    sentChart=new Chart(ctx1,{type:'doughnut',data:{labels:['Bullish','Neutral','Bearish'],datasets:[{data:[dist.bullish,dist.neutral,dist.bearish],backgroundColor:['#00e87a','#4d5b7c','#ff3a5c'],borderWidth:0,hoverOffset:4}]},options:{cutout:'72%',plugins:{legend:{display:false}}}});
+    const sources=d.sources||{};
+    const labels=Object.keys(sources).slice(0,8);
+    const scores=labels.map(l=>sources[l].score);
+    const ctx2=document.getElementById('source-chart').getContext('2d');
+    if(srcChart) srcChart.destroy();
+    srcChart=new Chart(ctx2,{type:'bar',data:{labels,datasets:[{data:scores,backgroundColor:scores.map(s=>s>0?'rgba(0,232,122,.6)':s<0?'rgba(255,58,92,.6)':'rgba(107,127,163,.4)'),borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{grid:{color:'rgba(255,255,255,.03)'},ticks:{color:'#4d5b7c',font:{size:10}}},y:{min:-1,max:1,grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#4d5b7c',font:{size:10}}}},plugins:{legend:{display:false}}}});
+  }
 
-        function filterNews(type) {
-            currentFilter = type;
-            applyFiltersAndSort();
-        }
+  function sortArticles(order){
+    allArticles.sort((a,b)=>{ const da=new Date(a.date||0),db=new Date(b.date||0); return order==='latest'?db-da:da-db; });
+  }
 
-        function applyFiltersAndSort() {
-            // Apply sentiment filter
-            if (currentFilter === 'all') {
-                filteredArticles = [...allArticles];
-            } else {
-                filteredArticles = allArticles.filter(article => {
-                    if (currentFilter === 'bullish') return article.sentiment > 0.1;
-                    if (currentFilter === 'bearish') return article.sentiment < -0.1;
-                    return true;
-                });
-            }
-            
-            // Update news feed
-            updateNewsFeed(filteredArticles);
-            updateArticleStats();
-        }
+  function sortNews(order,el){
+    currentSort=order;
+    document.querySelectorAll('[id^="sort-"]').forEach(e=>e.classList.remove('active'));
+    el.classList.add('active');
+    sortArticles(order); applyFilter();
+  }
 
-        function updateArticleStats() {
-            document.getElementById('visible-articles').textContent = filteredArticles.length;
-            document.getElementById('total-articles').textContent = allArticles.length;
-            
-            const bullish = filteredArticles.filter(a => a.sentiment > 0.1).length;
-            const bearish = filteredArticles.filter(a => a.sentiment < -0.1).length;
-            const neutral = filteredArticles.length - bullish - bearish;
-            
-            document.getElementById('visible-bullish').textContent = bullish;
-            document.getElementById('visible-neutral').textContent = neutral;
-            document.getElementById('visible-bearish').textContent = bearish;
-        }
+  function filterNews(type,el){
+    currentFilter=type;
+    document.querySelectorAll('[id^="filter-"]').forEach(e=>e.classList.remove('active','active-green','active-red'));
+    if(type==='bullish') el.classList.add('active-green');
+    else if(type==='bearish') el.classList.add('active-red');
+    else el.classList.add('active');
+    applyFilter();
+  }
 
-        function updateSummaryCards(data) {
-            // Overall sentiment
-            const sentEl = document.getElementById('overall-sentiment');
-            const emojiEl = document.getElementById('sentiment-emoji');
-            const barEl = document.getElementById('sentiment-bar');
-            
-            sentEl.textContent = data.overall_sentiment;
-            
-            // Convert score (-1 to 1) to percentage (0 to 100)
-            const scorePct = ((data.score + 1) / 2 * 100);
-            barEl.style.width = scorePct + '%';
-            
-            let emoji = '😐';
-            let color = 'text-gray-600';
-            
-            if (data.score > 0.3) {
-                emoji = '🚀';
-                color = 'text-green-600';
-            } else if (data.score > 0.1) {
-                emoji = '📈';
-                color = 'text-green-500';
-            } else if (data.score < -0.3) {
-                emoji = '💀';
-                color = 'text-red-600';
-            } else if (data.score < -0.1) {
-                emoji = '📉';
-                color = 'text-red-500';
-            }
-            
-            emojiEl.className = `text-5xl ${color}`;
-            emojiEl.textContent = emoji;
-            
-            // Fear & Greed
-            const fg = data.fear_greed;
-            document.getElementById('fear-greed').textContent = fg.value;
-            document.getElementById('fear-classification').textContent = fg.classification;
-            document.getElementById('fear-bar').style.width = fg.value + '%';
-            
-            let fearEmoji = '😐';
-            if (fg.value < 25) fearEmoji = '😱';
-            else if (fg.value < 45) fearEmoji = '😨';
-            else if (fg.value < 55) fearEmoji = '😐';
-            else if (fg.value < 75) fearEmoji = '😊';
-            else fearEmoji = '🤑';
-            
-            document.getElementById('fear-emoji').textContent = fearEmoji;
-            
-            // VIX
-            const vix = data.vix;
-            document.getElementById('vix-value').textContent = vix.value;
-            document.getElementById('vix-classification').textContent = vix.classification;
-            
-            // VIX bar (inverse - higher VIX = more fear)
-            const vixPct = Math.min(100, (vix.value / 50) * 100);
-            document.getElementById('vix-bar').style.width = vixPct + '%';
-            
-            let vixEmoji = '📊';
-            if (vix.value > 30) vixEmoji = '😱';
-            else if (vix.value > 25) vixEmoji = '😨';
-            else if (vix.value > 20) vixEmoji = '😐';
-            else vixEmoji = '😎';
-            
-            document.getElementById('vix-emoji').textContent = vixEmoji;
-            
-            // Article count and distribution
-            document.getElementById('article-count').textContent = data.article_count;
-            
-            const dist = data.sentiment_distribution || {bullish: 0, neutral: 0, bearish: 0};
-            document.getElementById('bullish-count').textContent = dist.bullish;
-            document.getElementById('neutral-count').textContent = dist.neutral;
-            document.getElementById('bearish-count').textContent = dist.bearish;
-            
-            // Gauge percentages
-            const total = dist.bullish + dist.neutral + dist.bearish;
-            if (total > 0) {
-                document.getElementById('gauge-bullish').textContent = Math.round(dist.bullish / total * 100) + '%';
-                document.getElementById('gauge-neutral').textContent = Math.round(dist.neutral / total * 100) + '%';
-                document.getElementById('gauge-bearish').textContent = Math.round(dist.bearish / total * 100) + '%';
-            }
-        }
+  function applyFilter(){
+    let filtered=currentFilter==='bullish'?allArticles.filter(a=>a.sentiment>.1):
+                  currentFilter==='bearish'?allArticles.filter(a=>a.sentiment<-.1):
+                  [...allArticles];
+    document.getElementById('visible-articles').textContent=filtered.length;
+    document.getElementById('total-articles').textContent=allArticles.length;
+    const feed=document.getElementById('news-feed');
+    if(!filtered.length){ feed.innerHTML='<div style="text-align:center;padding:32px;color:var(--muted)">No articles match filter</div>'; return; }
+    feed.innerHTML=filtered.map(a=>{
+      const sc=a.sentiment||0;
+      const sentCls=sc>.1?'up':sc<-.1?'dn':'nt';
+      const sentIcon=sc>.1?'fa-arrow-up':sc<-.1?'fa-arrow-down':'fa-minus';
+      const timeAgo=getTimeAgo(new Date(a.date||0));
+      return `<div class="news-item">
+        <div class="news-sent ${sentCls}"><i class="fa ${sentIcon}"></i></div>
+        <div style="flex:1">
+          <div class="news-title">${a.title||''}</div>
+          <div class="news-meta">
+            <span class="news-source">${a.source||''}</span>
+            <span class="news-score" style="color:${sc>.1?'var(--buy)':sc<-.1?'var(--sell)':'var(--muted2)'}">${(sc*100).toFixed(0)}%</span>
+            <span class="news-time">${timeAgo}</span>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
 
-        function updateCharts(data) {
-            // Sentiment gauge
-            const ctx1 = document.getElementById('sentiment-gauge').getContext('2d');
-            
-            if (sentimentChart) sentimentChart.destroy();
-            
-            const dist = data.sentiment_distribution || {bullish: 33, neutral: 34, bearish: 33};
-            
-            sentimentChart = new Chart(ctx1, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Bullish', 'Neutral', 'Bearish'],
-                    datasets: [{
-                        data: [dist.bullish, dist.neutral, dist.bearish],
-                        backgroundColor: ['#10b981', '#6b7280', '#ef4444'],
-                        borderWidth: 0
-                    }]
-                },
-                options: {
-                    cutout: '70%',
-                    plugins: {
-                        legend: { display: false }
-                    }
-                }
-            });
+  function renderWhales(alerts){
+    const feed=document.getElementById('whale-feed');
+    if(!alerts.length){ feed.innerHTML='<div style="text-align:center;padding:28px;color:var(--muted)">No whale alerts</div>'; return; }
+    feed.innerHTML=alerts.map(a=>{
+      const v=a.value_usd||0;
+      const vc=v>10000000?'mega':v>5000000?'big':'normal';
+      return `<div class="whale-item" data-value="${v}">
+        <span style="font-size:1.3rem">🐋</span>
+        <div style="flex:1">
+          <div style="font-size:.8rem;color:var(--text)">${a.title||''}</div>
+          <div style="display:flex;gap:12px;margin-top:4px;">
+            <span class="whale-val ${vc}">$${(v/1000000).toFixed(1)}M</span>
+            <span style="font-size:.65rem;color:var(--muted)">${getTimeAgo(new Date(a.date||0))}</span>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
 
-            // Source chart
-            const ctx2 = document.getElementById('source-chart').getContext('2d');
-            
-            if (sourceChart) sourceChart.destroy();
-            
-            const sources = data.sources || {};
-            const labels = Object.keys(sources).slice(0, 8);
-            const scores = labels.map(l => sources[l].score);
-            
-            sourceChart = new Chart(ctx2, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'Sentiment Score',
-                        data: scores,
-                        backgroundColor: scores.map(s => 
-                            s > 0 ? '#10b981' : s < 0 ? '#ef4444' : '#6b7280'
-                        )
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    scales: {
-                        y: { 
-                            min: -1, 
-                            max: 1,
-                            grid: { display: true }
-                        }
-                    },
-                    plugins: {
-                        legend: { display: false }
-                    }
-                }
-            });
-        }
+  function filterWhales(){
+    const min={'1m':1e6,'5m':5e6,'10m':1e7,'all':0}[document.getElementById('whale-filter').value];
+    document.querySelectorAll('#whale-feed .whale-item').forEach(el=>{
+      el.style.display=parseFloat(el.dataset.value||0)>=min?'flex':'none';
+    });
+  }
 
-        function updateNewsFeed(articles) {
-            const feed = document.getElementById('news-feed');
-            feed.innerHTML = '';
-            
-            if (!articles || articles.length === 0) {
-                feed.innerHTML = '<p class="text-gray-500 text-center py-8">No articles found</p>';
-                return;
-            }
-            
-            articles.forEach(article => {
-                const sentimentColor = article.sentiment > 0 ? 'text-green-600' : 
-                                      article.sentiment < 0 ? 'text-red-600' : 'text-gray-600';
-                
-                const sentimentIcon = article.sentiment > 0 ? '📈' : 
-                                     article.sentiment < 0 ? '📉' : '➡️';
-                
-                const date = new Date(article.date);
-                const timeAgo = getTimeAgo(date);
-                
-                const card = document.createElement('div');
-                card.className = 'border-b last:border-0 py-4 hover:bg-gray-50 transition';
-                card.setAttribute('data-sentiment', 
-                    article.sentiment > 0.1 ? 'bullish' : 
-                    article.sentiment < -0.1 ? 'bearish' : 'neutral');
-                
-                card.innerHTML = `
-                    <div class="flex items-start">
-                        <div class="mr-3 text-2xl">${sentimentIcon}</div>
-                        <div class="flex-1">
-                            <p class="font-medium text-gray-900">${article.title}</p>
-                            <div class="flex flex-wrap items-center gap-2 text-sm mt-2">
-                                <span class="px-2 py-1 bg-gray-100 rounded-full text-gray-600">${article.source}</span>
-                                <span class="text-gray-400">•</span>
-                                <span class="${sentimentColor} font-semibold">${(article.sentiment * 100).toFixed(0)}%</span>
-                                <span class="text-gray-400">•</span>
-                                <span class="text-gray-500" title="${date.toLocaleString()}">${timeAgo}</span>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                feed.appendChild(card);
-            });
-        }
+  function loadMarketCalendar(){
+    fetch('/api/market/events').then(r=>r.json()).then(d=>{
+      if(!d.success) return;
+      const ev=d.events;
+      if(ev.risk_outlook?.reduce_trading){
+        const b=document.getElementById('risk-banner');
+        b.style.display='flex';
+        b.innerHTML=`<i class="fa fa-triangle-exclamation"></i><div class="msg"><strong>⚠️ High Risk Period Detected</strong>Reduce position sizes 30-50% — high-impact events approaching.</div>`;
+      }
+      renderEvents(ev.events||[]);
+      renderHalving(ev.halving);
+      renderEarnings(ev.earnings||[]);
+    }).catch(()=>{});
+  }
 
-        function getTimeAgo(date) {
-            const now = new Date();
-            const diffMs = now - date;
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMs / 3600000);
-            const diffDays = Math.floor(diffMs / 86400000);
+  function renderEvents(events){
+    const c=document.getElementById('calendar-events');
+    if(!events.length){ c.innerHTML='<div style="color:var(--muted);text-align:center;padding:24px">No upcoming high-impact events</div>'; return; }
+    c.innerHTML=events.map(e=>`<div class="event-row">
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="font-size:.85rem;font-weight:500">${e.name}</div>
+          <span class="event-impact ${e.impact}">${e.impact}</span>
+        </div>
+        <div style="display:flex;gap:12px;font-size:.7rem;color:var(--muted)">
+          <span><i class="fa fa-calendar"></i> ${e.date}</span>
+          <span>${e.days} days away</span>
+          <span>Forecast: ${e.forecast}</span>
+          <span>Prev: ${e.previous}</span>
+        </div>
+      </div>
+    </div>`).join('');
+  }
 
-            if (diffMins < 1) return 'Just now';
-            if (diffMins < 60) return `${diffMins} minute${diffMins === 1 ? '' : 's'} ago`;
-            if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
-            return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
-        }
+  function renderHalving(halving){
+    if(!halving) return;
+    const c=document.getElementById('calendar-halving');
+    const btc=halving.bitcoin||{}, ltc=halving.litecoin||{};
+    c.innerHTML=`
+      <div class="halving-card"><h3 style="color:var(--gold)">🪙 Bitcoin Halving</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:12px">
+          <div><div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Days Until</div><div style="font-family:'JetBrains Mono',monospace;font-size:2rem;font-weight:700;color:var(--gold)">${btc.days_until||'--'}</div></div>
+          <div><div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Date</div><div style="font-size:.85rem;font-weight:500;margin-top:6px">${btc.halving_date||'--'}</div></div>
+        </div>
+        <div class="bar-wrap" style="margin-bottom:8px"><div class="bar-fill" style="width:${100-(btc.days_until||365)/1460*100}%;background:linear-gradient(90deg,var(--gold),#ffaa33)"></div></div>
+        <div style="font-size:.7rem;color:var(--muted);display:flex;justify-content:space-between"><span>Current: ${btc.current_reward||'--'} BTC</span><span>→ Next: ${btc.next_reward||'--'} BTC</span></div>
+      </div>
+      <div class="halving-card"><h3 style="color:var(--accent)">⚡ Litecoin Halving</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:12px">
+          <div><div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Days Until</div><div style="font-family:'JetBrains Mono',monospace;font-size:2rem;font-weight:700;color:var(--accent)">${ltc.days_until||'--'}</div></div>
+          <div><div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Date</div><div style="font-size:.85rem;font-weight:500;margin-top:6px">${ltc.halving_date||'--'}</div></div>
+        </div>
+        <div class="bar-wrap"><div class="bar-fill" style="width:${100-(ltc.days_until||365)/1460*100}%;background:linear-gradient(90deg,var(--accent),var(--buy))"></div></div>
+      </div>`;
+  }
 
-        function updateWhaleFeed(alerts) {
-            const feed = document.getElementById('whale-feed');
-            feed.innerHTML = '';
-            
-            if (!alerts || alerts.length === 0) {
-                feed.innerHTML = '<p class="text-gray-500 text-center py-4">No whale alerts</p>';
-                return;
-            }
-            
-            alerts.forEach(alert => {
-                const value = alert.value_usd || 0;
-                const valueClass = value > 10000000 ? 'text-purple-600 font-bold' : 
-                                  value > 5000000 ? 'text-blue-600' : 'text-gray-600';
-                
-                const date = new Date(alert.date);
-                const timeAgo = getTimeAgo(date);
-                
-                const card = document.createElement('div');
-                card.className = 'border-b last:border-0 py-3 hover:bg-gray-50 transition';
-                card.setAttribute('data-value', value);
-                
-                card.innerHTML = `
-                    <div class="flex items-center">
-                        <div class="mr-3 text-2xl">🐋</div>
-                        <div class="flex-1">
-                            <p class="font-medium">${alert.title}</p>
-                            <div class="flex items-center text-sm mt-1">
-                                <span class="${valueClass}">$${(value/1000000).toFixed(1)}M</span>
-                                <span class="mx-2 text-gray-400">•</span>
-                                <span class="text-gray-500" title="${date.toLocaleString()}">${timeAgo}</span>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                feed.appendChild(card);
-            });
-        }
+  function renderEarnings(earnings){
+    const c=document.getElementById('calendar-earnings');
+    if(!earnings.length){ c.innerHTML='<div style="color:var(--muted);text-align:center;padding:24px">No upcoming earnings</div>'; return; }
+    c.innerHTML=earnings.map(e=>`<div class="event-row">
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="font-family:'Bebas Neue',sans-serif;font-size:1.1rem;letter-spacing:.06em">${e.symbol}</div>
+          <span style="background:var(--accent-dim);color:var(--accent);border:1px solid rgba(0,194,255,.2);padding:2px 10px;border-radius:6px;font-size:.65rem;font-weight:700">${e.quarter}</span>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:4px;display:flex;gap:12px">
+          <span>${e.date}</span><span>${e.days} days away</span><span>EPS Est: $${e.eps_estimate}</span>
+        </div>
+      </div>
+    </div>`).join('');
+  }
 
-        function filterWhales() {
-            const filter = document.getElementById('whale-filter').value;
-            const minValue = filter === '1m' ? 1000000 : filter === '5m' ? 5000000 : filter === '10m' ? 10000000 : 0;
-            
-            const whales = document.querySelectorAll('#whale-feed > div');
-            whales.forEach(whale => {
-                const value = parseFloat(whale.getAttribute('data-value') || '0');
-                whale.style.display = value >= minValue ? 'block' : 'none';
-            });
-        }
+  function showCalTab(tab,btn){
+    ['events','halving','earnings'].forEach(t=>{
+      document.getElementById(`calendar-${t}`).style.display=t===tab?'':'none';
+      document.getElementById(`tab-${t}`).classList.toggle('active',t===tab);
+    });
+  }
 
-        // Initialize sort buttons
-        document.addEventListener('DOMContentLoaded', function() {
-            document.getElementById('sort-latest').classList.add('active', 'bg-blue-600', 'text-white');
-        });
+  function getTimeAgo(date){
+    const d=Math.floor((Date.now()-date)/60000);
+    if(d<1) return 'Just now';
+    if(d<60) return `${d}m ago`;
+    const h=Math.floor(d/60); if(h<24) return `${h}h ago`;
+    return `${Math.floor(h/24)}d ago`;
+  }
 
-        // Auto-refresh every 60 seconds
-        setInterval(updateDashboard, 60000);
-        setInterval(loadMarketCalendar, 300000); // Refresh every 5 minutes
-        updateDashboard();
-        loadMarketCalendar();
-    </script>
+  document.addEventListener('DOMContentLoaded',()=>{
+    updateDashboard();
+    loadMarketCalendar();
+    setInterval(updateDashboard,60000);
+    setInterval(loadMarketCalendar,300000);
+    document.getElementById('sort-latest').classList.add('active');
+  });
+</script>
 </body>
 </html>

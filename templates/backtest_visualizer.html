@@ -1,517 +1,354 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>📊 Backtest Visualizer - Trading Bot</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
-        .chart-container { 
-            transition: all 0.3s ease; 
-            overflow: hidden;
-            position: relative;
-            width: 100%;
-            min-height: 300px;
-        }
-        .chart-container:hover { 
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1); 
-        }
-        .chart-container canvas {
-            display: block;
-            width: 100%;
-            height: auto;
-            max-width: 100%;
-        }
-    </style>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ROBBIE — Backtest Visualizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <style>
+    :root{--bg:#06080f;--bg2:#0a0d18;--surface:#0e1220;--surface2:#141928;--border:#1a2035;--border2:#232d45;--buy:#00e87a;--buy-dim:rgba(0,232,122,.12);--sell:#ff3a5c;--sell-dim:rgba(255,58,92,.12);--accent:#00c2ff;--accent-dim:rgba(0,194,255,.1);--gold:#ffd166;--text:#dde4f0;--muted:#4d5b7c;--muted2:#8896b3;}
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;}
+    body::before{content:'';position:fixed;inset:0;z-index:0;background-image:linear-gradient(rgba(0,194,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(0,194,255,.018) 1px,transparent 1px);background-size:48px 48px;pointer-events:none;}
+    .wrapper{position:relative;z-index:1;max-width:1440px;margin:0 auto;padding:0 28px 60px;}
+
+    .nav-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .3s;}
+    .nav-overlay.open{opacity:1;pointer-events:all;}
+    .nav-drawer{position:fixed;top:0;right:0;width:300px;height:100vh;background:var(--bg2);border-left:1px solid var(--border2);z-index:101;transform:translateX(100%);transition:transform .35s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;overflow-y:auto;}
+    .nav-drawer.open{transform:translateX(0);}
+    .nav-drawer-header{padding:24px 24px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+    .nav-drawer-header .title{font-family:'Bebas Neue',sans-serif;font-size:1.4rem;letter-spacing:.08em;color:#fff;}
+    .nav-drawer-header .subtitle{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;}
+    .nav-close{width:34px;height:34px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;display:grid;place-items:center;cursor:pointer;color:var(--muted2);font-size:.9rem;transition:all .2s;}
+    .nav-close:hover{border-color:var(--sell);color:var(--sell);}
+    .nav-section{padding:20px 16px 8px;}
+    .nav-section-label{font-size:.6rem;font-weight:600;color:var(--muted);letter-spacing:.15em;text-transform:uppercase;padding:0 8px;margin-bottom:8px;}
+    .nav-item{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:10px;border:1px solid transparent;cursor:pointer;transition:all .2s;text-decoration:none;margin-bottom:4px;}
+    .nav-item:hover{background:var(--surface2);border-color:var(--border2);}
+    .nav-item.active{background:var(--accent-dim);border-color:rgba(0,194,255,.3);}
+    .nav-item .nav-icon{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-size:.95rem;flex-shrink:0;}
+    .nav-item.active .nav-icon{background:rgba(0,194,255,.15);color:var(--accent);}
+    .nav-item:not(.active) .nav-icon{background:var(--surface2);color:var(--muted2);}
+    .nav-item .nav-label{font-size:.85rem;font-weight:500;color:var(--text);}
+    .nav-item .nav-desc{font-size:.68rem;color:var(--muted);margin-top:1px;}
+    .nav-item.active .nav-label{color:var(--accent);}
+    .nav-divider{height:1px;background:var(--border);margin:8px 16px;}
+    .nav-footer{margin-top:auto;padding:20px 24px;border-top:1px solid var(--border);}
+    .nav-footer-bot{display:flex;align-items:center;gap:12px;}
+    .nav-footer-avatar{width:36px;height:36px;background:linear-gradient(135deg,var(--accent),var(--buy));border-radius:10px;display:grid;place-items:center;font-size:1rem;}
+    .nav-footer-info .name{font-size:.82rem;font-weight:600;color:var(--text);}
+    .nav-footer-info .sub{font-size:.66rem;color:var(--muted);}
+    .status-dot-running{width:7px;height:7px;background:var(--buy);border-radius:50%;display:inline-block;margin-right:5px;box-shadow:0 0 6px var(--buy);}
+
+    header{padding:22px 0 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);margin-bottom:32px;}
+    .logo{display:flex;align-items:center;gap:14px;}
+    .logo-icon{width:44px;height:44px;background:var(--accent-dim);border:1px solid rgba(0,194,255,.3);border-radius:12px;display:grid;place-items:center;font-size:1.2rem;color:var(--accent);box-shadow:0 0 20px rgba(0,194,255,.15);}
+    .logo-text h1{font-family:'Bebas Neue',sans-serif;font-size:1.9rem;letter-spacing:.06em;color:#fff;line-height:1;}
+    .logo-text p{font-size:.68rem;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:2px;}
+    .header-right{display:flex;align-items:center;gap:14px;}
+    .nav-trigger{width:40px;height:40px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;display:grid;place-items:center;cursor:pointer;color:var(--muted2);font-size:1.1rem;transition:all .2s;}
+    .nav-trigger:hover{border-color:var(--accent);color:var(--accent);}
+
+    .panel{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:20px;}
+    .panel-title{font-family:'Bebas Neue',sans-serif;font-size:1.15rem;letter-spacing:.08em;color:#fff;display:flex;align-items:center;gap:10px;margin-bottom:20px;}
+    .panel-title i{color:var(--accent);}
+
+    .controls-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;}
+    .field-label{font-size:.65rem;font-weight:600;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;}
+    .field-select,.field-input{width:100%;background:var(--bg);border:1px solid var(--border2);color:var(--text);padding:10px 14px;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:.82rem;outline:none;transition:border-color .2s;}
+    .field-select:focus,.field-input:focus{border-color:var(--accent);}
+    .field-select option{background:#0e1220;}
+
+    .btn-primary{background:var(--accent);color:#000;border:none;padding:12px 24px;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:.82rem;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:8px;transition:all .2s;white-space:nowrap;}
+    .btn-primary:hover{background:#33cfff;transform:translateY(-1px);}
+    .btn-primary:disabled{background:var(--muted);cursor:not-allowed;transform:none;}
+
+    .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px;}
+    .stat-card{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:16px;transition:border-color .2s;}
+    .stat-card:hover{border-color:var(--border2);}
+    .stat-card::before{display:none;}
+    .sc-lbl{font-size:.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;}
+    .sc-val{font-family:'JetBrains Mono',monospace;font-size:1.4rem;font-weight:700;color:#fff;line-height:1;}
+    .sc-sub{font-size:.65rem;color:var(--muted);margin-top:4px;}
+
+    .chart-container{position:relative;height:320px;margin-bottom:20px;}
+    .chart-container canvas{position:absolute;top:0;left:0;width:100%!important;height:100%!important;}
+
+    .loading-overlay{position:absolute;inset:0;background:rgba(6,8,15,.85);backdrop-filter:blur(4px);display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:12px;z-index:10;}
+    .loading-overlay.hidden{display:none;}
+    .spinner{width:36px;height:36px;border:3px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin-bottom:14px;}
+    @keyframes spin{to{transform:rotate(360deg);}}
+    .loading-text{font-size:.8rem;color:var(--muted2);}
+
+    .trades-table-wrap{overflow-x:auto;max-height:340px;overflow-y:auto;}
+    .trades-table-wrap::-webkit-scrollbar{width:4px;}
+    .trades-table-wrap::-webkit-scrollbar-track{background:transparent;}
+    .trades-table-wrap::-webkit-scrollbar-thumb{background:var(--border2);border-radius:999px;}
+    table{width:100%;border-collapse:collapse;}
+    thead th{padding:10px 14px;text-align:left;font-size:.62rem;font-weight:700;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;border-bottom:1px solid var(--border2);position:sticky;top:0;background:var(--surface);}
+    tbody tr{border-bottom:1px solid rgba(255,255,255,.03);transition:background .15s;}
+    tbody tr:hover{background:rgba(255,255,255,.015);}
+    td{padding:10px 14px;font-size:.78rem;}
+    .td-mono{font-family:'JetBrains Mono',monospace;}
+    .badge-buy{background:var(--buy-dim);color:var(--buy);border:1px solid rgba(0,232,122,.25);padding:2px 9px;border-radius:5px;font-size:.62rem;font-weight:700;}
+    .badge-sell{background:var(--sell-dim);color:var(--sell);border:1px solid rgba(255,58,92,.25);padding:2px 9px;border-radius:5px;font-size:.62rem;font-weight:700;}
+    .pnl-pos{color:var(--buy);font-weight:700;}
+    .pnl-neg{color:var(--sell);font-weight:700;}
+
+    .empty-placeholder{text-align:center;padding:60px;color:var(--muted);}
+    .empty-placeholder .icon{font-size:2.5rem;opacity:.2;margin-bottom:14px;}
+    .empty-placeholder p{font-size:.82rem;}
+  </style>
 </head>
-<body class="bg-gray-50">
-    
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
-        <!-- Header with navigation -->
-        <div class="mb-8">
-            <div class="flex justify-between items-center">
-                <h1 class="text-3xl font-bold text-gray-900 flex items-center">
-                    <i class="fas fa-chart-line text-blue-600 mr-3"></i>
-                    Backtest Visualizer
-                </h1>
-                <div class="flex space-x-3">
-                    <a href="/" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-home"></i>
-                        <span>Dashboard</span>
-                    </a>
-                    <a href="/sentiment" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-newspaper"></i>
-                        <span>Sentiment</span>
-                    </a>
-                    <a href="/status" class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                        <i class="fas fa-heartbeat"></i>
-                        <span>Status</span>
-                    </a>
-                </div>
-            </div>
-            <p class="text-gray-600 mt-2">Test and visualize trading strategies on historical data</p>
-        </div>
+<body>
 
-        <!-- Controls -->
-        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Asset</label>
-                    <select id="asset" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
-                        <optgroup label="Crypto">
-                            <option value="BTC-USD">BTC-USD (Bitcoin)</option>
-                            <option value="ETH-USD">ETH-USD (Ethereum)</option>
-                            <option value="BNB-USD">BNB-USD (Binance)</option>
-                            <option value="SOL-USD">SOL-USD (Solana)</option>
-                            <option value="XRP-USD">XRP-USD (Ripple)</option>
-                        </optgroup>
-                        <optgroup label="Forex">
-                            <option value="EUR/USD">EUR/USD</option>
-                            <option value="GBP/USD">GBP/USD</option>
-                            <option value="USD/JPY">USD/JPY</option>
-                            <option value="AUD/USD">AUD/USD</option>
-                        </optgroup>
-                        <optgroup label="Stocks">
-                            <option value="AAPL">AAPL (Apple)</option>
-                            <option value="MSFT">MSFT (Microsoft)</option>
-                            <option value="GOOGL">GOOGL (Google)</option>
-                            <option value="TSLA">TSLA (Tesla)</option>
-                            <option value="NVDA">NVDA (NVIDIA)</option>
-                        </optgroup>
-                        <optgroup label="Commodities">
-                            <option value="GC=F">Gold (GC=F)</option>
-                            <option value="SI=F">Silver (SI=F)</option>
-                            <option value="CL=F">Crude Oil (CL=F)</option>
-                        </optgroup>
-                    </select>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Strategy</label>
-                    <select id="strategy" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
-                        <option value="rsi">RSI Mean Reversion</option>
-                        <option value="macd">MACD Crossover</option>
-                        <option value="bb">Bollinger Bands</option>
-                        <option value="ma_cross">Moving Average Cross</option>
-                        <option value="ml_ensemble">ML Ensemble</option>
-                        <option value="breakout">Breakout Strategy</option>
-                        <option value="trend_following">Trend Following</option>
-                        <option value="scalping">Scalping Strategy</option>
-                        <option value="day_trading">Day Trading</option>
-                        <option value="ultimate">Ultimate (50+ indicators)</option>
-                    </select>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Period</label>
-                    <select id="period" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
-                        <option value="90d">3 Months</option>
-                        <option value="180d">6 Months</option>
-                        <option value="365d">1 Year</option>
-                        <option value="730d">2 Years</option>
-                    </select>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">&nbsp;</label>
-                    <button onclick="runBacktest()" class="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center justify-center space-x-2">
-                        <i class="fas fa-play"></i>
-                        <span>Run Backtest</span>
-                    </button>
-                </div>
-            </div>
-        </div>
+<div class="nav-overlay" id="nav-overlay" onclick="closeNav()"></div>
+<nav class="nav-drawer" id="nav-drawer">
+  <div class="nav-drawer-header">
+    <div><div class="title">ROBBIE</div><div class="subtitle">Navigation</div></div>
+    <div class="nav-close" onclick="closeNav()"><i class="fa fa-times"></i></div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-section-label">Main</div>
+    <a href="/" class="nav-item"><div class="nav-icon"><i class="fa fa-chart-line"></i></div><div><div class="nav-label">Dashboard</div><div class="nav-desc">Live signals & portfolio</div></div></a>
+    <a href="/sentiment" class="nav-item"><div class="nav-icon"><i class="fa fa-brain"></i></div><div><div class="nav-label">Sentiment</div><div class="nav-desc">News & market mood</div></div></a>
+    <a href="/backtest" class="nav-item active"><div class="nav-icon"><i class="fa fa-chart-bar"></i></div><div><div class="nav-label">Backtest</div><div class="nav-desc">Strategy testing</div></div></a>
+    <a href="/status" class="nav-item"><div class="nav-icon"><i class="fa fa-heartbeat"></i></div><div><div class="nav-label">System Status</div><div class="nav-desc">Processes & trades</div></div></a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-section">
+    <div class="nav-section-label">Advanced</div>
+    <a href="/websocket-feed" class="nav-item"><div class="nav-icon"><i class="fa fa-wifi"></i></div><div><div class="nav-label">WebSocket Feed</div><div class="nav-desc">Real-time price stream</div></div></a>
+  </div>
+  <div class="nav-footer"><div class="nav-footer-bot"><div class="nav-footer-avatar">🤖</div><div class="nav-footer-info"><div class="name">ROBBIE AI</div><div class="sub"><span class="status-dot-running"></span>Running</div></div></div></div>
+</nav>
 
-        <!-- Loading Indicator -->
-        <div id="loading" class="hidden">
-            <div class="flex justify-center items-center py-12">
-                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-                <span class="ml-3 text-gray-600">Running backtest... This may take a moment</span>
-            </div>
-        </div>
+<div class="wrapper">
+  <header>
+    <div class="logo">
+      <div class="logo-icon"><i class="fa fa-chart-bar"></i></div>
+      <div class="logo-text"><h1>ROBBIE</h1><p>Backtest Visualizer</p></div>
+    </div>
+    <div class="header-right">
+      <div class="nav-trigger" onclick="openNav()"><i class="fa fa-bars"></i></div>
+    </div>
+  </header>
 
-        <!-- Results Summary Cards -->
-        <div id="results-summary" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8 hidden">
-            <div class="bg-white rounded-xl shadow-md p-4">
-                <p class="text-sm text-gray-500">Total Trades</p>
-                <p class="text-2xl font-bold" id="total-trades">0</p>
-            </div>
-            <div class="bg-white rounded-xl shadow-md p-4">
-                <p class="text-sm text-gray-500">Win Rate</p>
-                <p class="text-2xl font-bold text-green-600" id="win-rate">0%</p>
-            </div>
-            <div class="bg-white rounded-xl shadow-md p-4">
-                <p class="text-sm text-gray-500">Total Return</p>
-                <p class="text-2xl font-bold text-blue-600" id="total-return">0%</p>
-            </div>
-            <div class="bg-white rounded-xl shadow-md p-4">
-                <p class="text-sm text-gray-500">Profit Factor</p>
-                <p class="text-2xl font-bold text-purple-600" id="profit-factor">0.0</p>
-            </div>
-            <div class="bg-white rounded-xl shadow-md p-4">
-                <p class="text-sm text-gray-500">Max Drawdown</p>
-                <p class="text-2xl font-bold text-red-600" id="max-dd">0%</p>
-            </div>
-        </div>
+  <!-- CONTROLS -->
+  <div class="panel">
+    <div class="panel-title"><i class="fa fa-sliders"></i>BACKTEST PARAMETERS</div>
+    <div class="controls-grid">
+      <div>
+        <div class="field-label">Asset</div>
+        <select class="field-select" id="asset">
+          <optgroup label="── Crypto ──">
+            <option value="BTC-USD">BTC-USD (Bitcoin)</option>
+            <option value="ETH-USD">ETH-USD (Ethereum)</option>
+            <option value="BNB-USD">BNB-USD (Binance)</option>
+            <option value="SOL-USD">SOL-USD (Solana)</option>
+            <option value="XRP-USD">XRP-USD (Ripple)</option>
+          </optgroup>
+          <optgroup label="── Forex ──">
+            <option value="EUR/USD">EUR/USD</option>
+            <option value="GBP/USD">GBP/USD</option>
+            <option value="USD/JPY">USD/JPY</option>
+            <option value="AUD/USD">AUD/USD</option>
+          </optgroup>
+          <optgroup label="── Stocks ──">
+            <option value="AAPL">AAPL (Apple)</option>
+            <option value="MSFT">MSFT (Microsoft)</option>
+            <option value="GOOGL">GOOGL (Google)</option>
+            <option value="TSLA">TSLA (Tesla)</option>
+            <option value="NVDA">NVDA (NVIDIA)</option>
+          </optgroup>
+          <optgroup label="── Commodities ──">
+            <option value="GC=F">Gold (GC=F)</option>
+            <option value="SI=F">Silver (SI=F)</option>
+            <option value="CL=F">Crude Oil (CL=F)</option>
+          </optgroup>
+        </select>
+      </div>
+      <div>
+        <div class="field-label">Strategy</div>
+        <select class="field-select" id="strategy">
+          <option value="rsi">RSI Mean Reversion</option>
+          <option value="macd">MACD Crossover</option>
+          <option value="bb">Bollinger Bands</option>
+          <option value="ema">EMA Crossover</option>
+          <option value="combined">Combined (All)</option>
+        </select>
+      </div>
+      <div>
+        <div class="field-label">Period</div>
+        <select class="field-select" id="period">
+          <option value="1mo">1 Month</option>
+          <option value="3mo" selected>3 Months</option>
+          <option value="6mo">6 Months</option>
+          <option value="1y">1 Year</option>
+          <option value="2y">2 Years</option>
+        </select>
+      </div>
+      <div>
+        <div class="field-label">Initial Capital ($)</div>
+        <input class="field-input" type="number" id="initial-capital" value="10000"/>
+      </div>
+      <div>
+        <div class="field-label">Risk Per Trade (%)</div>
+        <input class="field-input" type="number" id="risk-pct" value="1.0" step="0.1" min="0.1" max="10"/>
+      </div>
+    </div>
+    <div style="margin-top:18px;display:flex;justify-content:flex-end;">
+      <button class="btn-primary" id="run-btn" onclick="runBacktest()">
+        <i class="fa fa-play"></i> Run Backtest
+      </button>
+    </div>
+  </div>
 
-        <!-- Charts -->
-        <div class="grid grid-cols-1 gap-6 mb-8">
-            <div class="bg-white rounded-xl shadow-md p-6 chart-container" id="equity-container">
-                <h2 class="text-lg font-semibold mb-4">Equity Curve</h2>
-                <canvas id="equity-chart" height="300"></canvas>
-            </div>
-        </div>
+  <!-- RESULTS SECTION (hidden until run) -->
+  <div id="results-section" style="display:none">
 
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-            <div class="bg-white rounded-xl shadow-md p-6 chart-container" id="drawdown-container">
-                <h2 class="text-lg font-semibold mb-4">Drawdown</h2>
-                <canvas id="drawdown-chart" height="250"></canvas>
-            </div>
-            
-            <div class="bg-white rounded-xl shadow-md p-6 chart-container" id="monthly-container">
-                <h2 class="text-lg font-semibold mb-4">Monthly Returns</h2>
-                <canvas id="monthly-chart" height="250"></canvas>
-            </div>
-        </div>
-
-        <!-- Trades Table -->
-        <div class="bg-white rounded-xl shadow-md p-6">
-            <h2 class="text-lg font-semibold mb-4">Recent Trades</h2>
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Direction</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Entry</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Exit</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">P&L</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Return %</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Exit Reason</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200" id="trades-body">
-                        <tr>
-                            <td colspan="7" class="px-6 py-4 text-center text-gray-500">Run a backtest to see trades</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
+    <!-- STAT CARDS -->
+    <div class="stat-grid">
+      <div class="stat-card"><div class="sc-lbl">Total Return</div><div class="sc-val" id="total-return">--</div><div class="sc-sub">Net profit</div></div>
+      <div class="stat-card"><div class="sc-lbl">Win Rate</div><div class="sc-val" id="bt-win-rate">--</div><div class="sc-sub">Winning trades</div></div>
+      <div class="stat-card"><div class="sc-lbl">Sharpe Ratio</div><div class="sc-val" id="sharpe">--</div><div class="sc-sub">Risk-adjusted</div></div>
+      <div class="stat-card"><div class="sc-lbl">Max Drawdown</div><div class="sc-val" id="max-dd">--</div><div class="sc-sub">Peak to trough</div></div>
+      <div class="stat-card"><div class="sc-lbl">Total Trades</div><div class="sc-val" id="total-trades">--</div><div class="sc-sub">Completed</div></div>
+      <div class="stat-card"><div class="sc-lbl">Profit Factor</div><div class="sc-val" id="profit-factor">--</div><div class="sc-sub">Gross P/L ratio</div></div>
     </div>
 
-    <script>
-        // Chart instances
-        let equityChart = null;
-        let drawdownChart = null;
-        let monthlyChart = null;
+    <!-- EQUITY CURVE -->
+    <div class="panel" style="position:relative">
+      <div class="panel-title"><i class="fa fa-chart-line"></i>EQUITY CURVE</div>
+      <div class="chart-container">
+        <canvas id="equity-chart"></canvas>
+        <div class="loading-overlay hidden" id="equity-loading">
+          <div class="spinner"></div>
+          <div class="loading-text">Running backtest…</div>
+        </div>
+      </div>
+    </div>
 
-        // Load settings from URL on page load
-        function loadSettingsFromUrl() {
-            const urlParams = new URLSearchParams(window.location.search);
-            
-            const asset = urlParams.get('asset');
-            const strategy = urlParams.get('strategy');
-            const period = urlParams.get('period');
-            
-            if (asset) {
-                document.getElementById('asset').value = asset;
-            }
-            if (strategy) {
-                document.getElementById('strategy').value = strategy;
-            }
-            if (period) {
-                document.getElementById('period').value = period;
-            }
-        }
+    <!-- MONTHLY RETURNS -->
+    <div class="panel">
+      <div class="panel-title"><i class="fa fa-calendar"></i>MONTHLY RETURNS</div>
+      <div class="chart-container" style="height:220px">
+        <canvas id="monthly-chart"></canvas>
+      </div>
+    </div>
 
-        // Update URL with current settings
-        function updateUrlWithSettings() {
-            const asset = document.getElementById('asset').value;
-            const strategy = document.getElementById('strategy').value;
-            const period = document.getElementById('period').value;
-            
-            const url = new URL(window.location);
-            url.searchParams.set('asset', asset);
-            url.searchParams.set('strategy', strategy);
-            url.searchParams.set('period', period);
-            window.history.pushState({}, '', url);
-        }
+    <!-- TRADE LOG -->
+    <div class="panel">
+      <div class="panel-title"><i class="fa fa-list"></i>TRADE LOG</div>
+      <div class="trades-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th><th>Direction</th><th>Entry</th><th>Exit</th><th>Bars</th><th>P&amp;L</th><th>Return %</th>
+            </tr>
+          </thead>
+          <tbody id="trade-log"></tbody>
+        </table>
+      </div>
+    </div>
 
-        async function runBacktest() {
-            // Update URL with current settings
-            updateUrlWithSettings();
-            
-            const asset = document.getElementById('asset').value;
-            const strategy = document.getElementById('strategy').value;
-            const period = document.getElementById('period').value;
+  </div>
 
-            // Show loading
-            document.getElementById('loading').classList.remove('hidden');
+  <!-- PLACEHOLDER before run -->
+  <div class="empty-placeholder" id="pre-run">
+    <div class="icon"><i class="fa fa-chart-bar"></i></div>
+    <p>Configure parameters above and click <strong>Run Backtest</strong></p>
+  </div>
+</div>
 
-            try {
-                const response = await fetch(`/api/backtest/run?asset=${encodeURIComponent(asset)}&strategy=${strategy}&period=${period}`);
-                const data = await response.json();
+<script>
+  let equityChart=null, monthlyChart=null;
+  function openNav(){document.getElementById('nav-drawer').classList.add('open');document.getElementById('nav-overlay').classList.add('open');}
+  function closeNav(){document.getElementById('nav-drawer').classList.remove('open');document.getElementById('nav-overlay').classList.remove('open');}
 
-                if (data.success) {
-                    // Store data in sessionStorage and reload page to get fresh canvas
-                    sessionStorage.setItem('backtestData', JSON.stringify(data));
-                    sessionStorage.setItem('backtestParams', JSON.stringify({asset, strategy, period}));
-                    window.location.reload();
-                } else {
-                    document.getElementById('loading').classList.add('hidden');
-                    alert('Error: ' + data.error);
-                }
-            } catch (error) {
-                document.getElementById('loading').classList.add('hidden');
-                alert('Error running backtest: ' + error);
-            }
-        }
+  async function runBacktest(){
+    const btn=document.getElementById('run-btn');
+    btn.disabled=true;
+    btn.innerHTML='<div class="spinner" style="width:18px;height:18px;margin:0"></div> Running…';
+    document.getElementById('results-section').style.display='block';
+    document.getElementById('pre-run').style.display='none';
+    document.getElementById('equity-loading').classList.remove('hidden');
 
-        // On page load, check for stored data
-        document.addEventListener('DOMContentLoaded', function() {
-            loadSettingsFromUrl();
-            
-            const storedData = sessionStorage.getItem('backtestData');
-            if (storedData) {
-                // Clear stored data
-                sessionStorage.removeItem('backtestData');
-                const data = JSON.parse(storedData);
-                
-                // Hide loading
-                document.getElementById('loading').classList.add('hidden');
-                
-                // Update summary
-                updateSummary(data.results);
-                
-                // Update charts with fresh canvas
-                setTimeout(() => {
-                    // Destroy any existing charts
-                    if (equityChart) {
-                        equityChart.destroy();
-                        equityChart = null;
-                    }
-                    if (drawdownChart) {
-                        drawdownChart.destroy();
-                        drawdownChart = null;
-                    }
-                    if (monthlyChart) {
-                        monthlyChart.destroy();
-                        monthlyChart = null;
-                    }
-                    
-                    // Create new charts
-                    createEquityChart(data.equity_curve);
-                    createDrawdownChart(data.drawdown);
-                    createMonthlyChart(data.monthly_returns);
-                }, 100);
-                
-                // Update trades table
-                updateTradesTable(data.trades);
-                
-                // Show results
-                document.getElementById('results-summary').classList.remove('hidden');
-            }
-        });
+    const params={
+      asset:document.getElementById('asset').value,
+      strategy:document.getElementById('strategy').value,
+      period:document.getElementById('period').value,
+      initial_capital:parseFloat(document.getElementById('initial-capital').value),
+      risk_per_trade:parseFloat(document.getElementById('risk-pct').value)
+    };
 
-        function updateSummary(results) {
-            document.getElementById('total-trades').textContent = results.trades || 0;
-            
-            const winRate = results.win_rate ? (results.win_rate * 100).toFixed(1) : '0.0';
-            document.getElementById('win-rate').textContent = winRate + '%';
-            
-            const totalReturn = results.total_return ? results.total_return.toFixed(2) : '0.00';
-            document.getElementById('total-return').textContent = totalReturn + '%';
-            
-            const profitFactor = results.profit_factor ? results.profit_factor.toFixed(2) : '0.00';
-            document.getElementById('profit-factor').textContent = profitFactor;
-            
-            const maxDD = results.max_dd ? (results.max_dd * 100).toFixed(1) : '0.0';
-            document.getElementById('max-dd').textContent = maxDD + '%';
-        }
+    try{
+      const r=await fetch('/api/backtest/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)});
+      const d=await r.json();
+      if(d.success||d.results){
+        renderResults(d.results||d);
+      } else {
+        alert(d.error||'Backtest failed');
+      }
+    }catch(e){
+      console.error(e);
+      alert('Network error');
+    }finally{
+      btn.disabled=false;
+      btn.innerHTML='<i class="fa fa-play"></i> Run Backtest';
+      document.getElementById('equity-loading').classList.add('hidden');
+    }
+  }
 
-        function createEquityChart(equityData) {
-            const container = document.getElementById('equity-container');
-            const canvas = document.getElementById('equity-chart');
-            
-            // Set fixed pixel dimensions
-            canvas.width = 800;
-            canvas.height = 300;
-            canvas.style.width = '100%';
-            canvas.style.height = 'auto';
-            
-            const ctx = canvas.getContext('2d');
-            
-            equityChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: equityData.dates || [],
-                    datasets: [{
-                        label: 'Portfolio Equity ($)',
-                        data: equityData.values || [],
-                        borderColor: 'rgb(59, 130, 246)',
-                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                        fill: true,
-                        tension: 0.1,
-                        pointRadius: 2,
-                        pointHoverRadius: 5
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    aspectRatio: 2.5, // width:height ratio (800/300 ≈ 2.67)
-                    animation: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: { mode: 'index', intersect: false }
-                    },
-                    scales: {
-                        y: { 
-                            beginAtZero: false,
-                            title: { display: true, text: 'Equity ($)' }
-                        }
-                    }
-                }
-            });
-        }
+  function renderResults(r){
+    // stats
+    const ret=(r.total_return||0);
+    const retEl=document.getElementById('total-return');
+    retEl.textContent=(ret>=0?'+':'')+ret.toFixed(2)+'%';
+    retEl.style.color=ret>=0?'var(--buy)':'var(--sell)';
+    document.getElementById('bt-win-rate').textContent=(r.win_rate||0).toFixed(1)+'%';
+    document.getElementById('sharpe').textContent=(r.sharpe_ratio||0).toFixed(2);
+    const dd=Math.abs(r.max_drawdown||0);
+    const ddEl=document.getElementById('max-dd');
+    ddEl.textContent='-'+dd.toFixed(2)+'%';
+    ddEl.style.color='var(--sell)';
+    document.getElementById('total-trades').textContent=r.total_trades||0;
+    document.getElementById('profit-factor').textContent=(r.profit_factor||0).toFixed(2);
 
-        function createDrawdownChart(drawdownData) {
-            const container = document.getElementById('drawdown-container');
-            const canvas = document.getElementById('drawdown-chart');
-            
-            // Set fixed pixel dimensions
-            canvas.width = 400;
-            canvas.height = 250;
-            canvas.style.width = '100%';
-            canvas.style.height = 'auto';
-            
-            const ctx = canvas.getContext('2d');
-            
-            drawdownChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: drawdownData.dates || [],
-                    datasets: [{
-                        label: 'Drawdown %',
-                        data: drawdownData.values || [],
-                        borderColor: 'rgb(239, 68, 68)',
-                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                        fill: true,
-                        tension: 0.1,
-                        pointRadius: 2,
-                        pointHoverRadius: 5
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    aspectRatio: 1.6, // 400/250 = 1.6
-                    animation: false,
-                    plugins: {
-                        legend: { display: false }
-                    },
-                    scales: {
-                        y: { 
-                            beginAtZero: true,
-                            title: { display: true, text: 'Drawdown %' }
-                        }
-                    }
-                }
-            });
-        }
+    // equity chart
+    const eCtx=document.getElementById('equity-chart').getContext('2d');
+    if(equityChart) equityChart.destroy();
+    const equity=r.equity_curve||[];
+    equityChart=new Chart(eCtx,{type:'line',data:{labels:equity.map(p=>p.date),datasets:[
+      {label:'Portfolio',data:equity.map(p=>p.value),borderColor:'#00c2ff',backgroundColor:'rgba(0,194,255,.07)',borderWidth:2,fill:true,tension:.3,pointRadius:0,pointHoverRadius:4},
+      {label:'Buy & Hold',data:equity.map(p=>p.benchmark||p.value),borderColor:'rgba(107,127,163,.4)',borderWidth:1.5,fill:false,tension:.3,pointRadius:0,borderDash:[6,4]}
+    ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},scales:{x:{type:'time',time:{unit:'month'},grid:{color:'rgba(255,255,255,.03)'},ticks:{color:'#4d5b7c',font:{size:10}}},y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#4d5b7c',font:{size:10},callback:v=>'$'+v.toLocaleString()}}},plugins:{legend:{labels:{color:'#8896b3',font:{size:11}}},tooltip:{backgroundColor:'#0e1220',borderColor:'#232d45',borderWidth:1,titleColor:'#dde4f0',bodyColor:'#8896b3'}}}});
 
-        function createMonthlyChart(monthlyData) {
-            const container = document.getElementById('monthly-container');
-            const canvas = document.getElementById('monthly-chart');
-            
-            // Set fixed pixel dimensions
-            canvas.width = 400;
-            canvas.height = 250;
-            canvas.style.width = '100%';
-            canvas.style.height = 'auto';
-            
-            const ctx = canvas.getContext('2d');
-            
-            monthlyChart = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: monthlyData.months || [],
-                    datasets: [{
-                        label: 'Monthly Return %',
-                        data: monthlyData.returns || [],
-                        backgroundColor: (monthlyData.returns || []).map(r => 
-                            r >= 0 ? 'rgba(16, 185, 129, 0.8)' : 'rgba(239, 68, 68, 0.8)'
-                        ),
-                        borderWidth: 0,
-                        borderRadius: 4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    aspectRatio: 1.6,
-                    animation: false,
-                    plugins: {
-                        legend: { display: false }
-                    },
-                    scales: {
-                        y: {
-                            title: { display: true, text: 'Return %' }
-                        }
-                    }
-                }
-            });
-        }
+    // monthly chart
+    const mCtx=document.getElementById('monthly-chart').getContext('2d');
+    if(monthlyChart) monthlyChart.destroy();
+    const monthly=r.monthly_returns||[];
+    monthlyChart=new Chart(mCtx,{type:'bar',data:{labels:monthly.map(m=>m.month),datasets:[{label:'Monthly Return %',data:monthly.map(m=>m.return_pct),backgroundColor:monthly.map(m=>m.return_pct>=0?'rgba(0,232,122,.6)':'rgba(255,58,92,.6)'),borderRadius:3}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{grid:{color:'rgba(255,255,255,.03)'},ticks:{color:'#4d5b7c',font:{size:10}}},y:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#4d5b7c',font:{size:10},callback:v=>v+'%'}}},plugins:{legend:{display:false},tooltip:{backgroundColor:'#0e1220',borderColor:'#232d45',borderWidth:1,titleColor:'#dde4f0',bodyColor:'#8896b3'}}}});
 
-        function updateTradesTable(trades) {
-            const tbody = document.getElementById('trades-body');
-            tbody.innerHTML = '';
-
-            if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="px-6 py-4 text-center text-gray-500">No trades found</td></tr>';
-                return;
-            }
-
-            trades.slice(0, 20).forEach(trade => {
-                const row = document.createElement('tr');
-                row.className = 'hover:bg-gray-50';
-                
-                const pnlClass = trade.pnl >= 0 ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
-                const directionClass = trade.direction === 'BUY' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
-                
-                row.innerHTML = `
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">${trade.exit_date || trade.entry_date || ''}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">
-                        <span class="px-2 py-1 rounded-full text-xs font-semibold ${directionClass}">
-                            ${trade.direction || ''}
-                        </span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">$${trade.entry_price ? trade.entry_price.toFixed(2) : '0.00'}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">$${trade.exit_price ? trade.exit_price.toFixed(2) : '0.00'}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm ${pnlClass}">$${trade.pnl ? trade.pnl.toFixed(2) : '0.00'}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm ${pnlClass}">${trade.return_pct ? trade.return_pct.toFixed(2) : '0.00'}%</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">${trade.exit_reason || ''}</td>
-                `;
-                
-                tbody.appendChild(row);
-            });
-        }
-
-        // Add event listeners for dropdown changes
-        document.getElementById('asset').addEventListener('change', updateUrlWithSettings);
-        document.getElementById('strategy').addEventListener('change', updateUrlWithSettings);
-        document.getElementById('period').addEventListener('change', updateUrlWithSettings);
-
-        // Listen for back/forward navigation
-        window.addEventListener('popstate', loadSettingsFromUrl);
-    </script>
+    // trade log
+    const trades=r.trades||[];
+    document.getElementById('trade-log').innerHTML=trades.length?trades.map(t=>{
+      const pnl=t.pnl||0; const ret=t.return_pct||0;
+      return `<tr>
+        <td class="td-mono" style="color:var(--muted);font-size:.72rem">${t.date||t.entry_date||'--'}</td>
+        <td><span class="${(t.direction||'').toUpperCase()==='BUY'?'badge-buy':'badge-sell'}">${(t.direction||t.signal||'').toUpperCase()}</span></td>
+        <td class="td-mono" style="color:var(--muted2)">$${parseFloat(t.entry_price||0).toFixed(4)}</td>
+        <td class="td-mono" style="color:var(--muted2)">$${parseFloat(t.exit_price||0).toFixed(4)}</td>
+        <td class="td-mono" style="color:var(--muted)">${t.bars||t.duration||'--'}</td>
+        <td class="td-mono ${pnl>=0?'pnl-pos':'pnl-neg'}">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}</td>
+        <td class="td-mono ${ret>=0?'pnl-pos':'pnl-neg'}">${ret>=0?'+':''}${Math.abs(ret).toFixed(2)}%</td>
+      </tr>`;
+    }).join(''):'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">No trades in this period</td></tr>';
+  }
+</script>
 </body>
 </html>

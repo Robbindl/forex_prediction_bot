@@ -1,3 +1,4 @@
+import os
 """
 WebSocket Real-time Data Fetcher - STABLE VERSION with auto-reconnect
 """
@@ -26,7 +27,7 @@ class WebSocketFetcher:
         self.last_message_time: Dict[str, datetime] = {}
         
         # API Keys
-        self.finnhub_token = "d6bc2ohr01qnr27kdcb0d6bc2ohr01qnr27kdcbg"
+        self.finnhub_token = os.getenv("FINNHUB_KEY", "")
         self.binance_socket = "wss://stream.binance.com:9443/ws"
         
         # Connection settings
