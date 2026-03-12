@@ -1,22 +1,7 @@
 /**
  * Trading Intelligence Gateway — Node.js WebSocket Server
  * =========================================================
- * Sits between Python bot and all clients (browser, mobile, external).
- * Subscribes to Redis pub/sub channels from the Python services.
- * Broadcasts to every connected WebSocket client instantly.
- *
- * Port: 8080  (WebSocket ws://localhost:8080)
- * Also proxies REST calls to Flask on :5000 at /api/* paths
- *
- * Channels subscribed from Redis:
- *   signals       — trading signals from quality gate
- *   prices        — live price ticks per asset
- *   whale_alerts  — whale movement events
- *   sentiment     — sentiment score updates
- *   orderflow     — bid/ask delta and imbalance
- *   alpha         — alpha discovery engine signals
- *   predictions   — AI price predictions with targets
- *   positions     — open position updates
+ * Professional version with auto-resubscribe and message queue
  */
 
 const http     = require('http');
@@ -45,6 +30,13 @@ const BROADCAST_CHANNELS = [
   'positions',
 ];
 
+// ── Stats ───────────────────────────────────────────────────────────────────
+const stats = { messagesSent: 0, messagesReceived: 0 };
+
+// ── Message Queue Buffer (stores last 100 messages per channel) ────────────
+const messageBuffer = new Map(); // channel -> array of last 100 messages
+BROADCAST_CHANNELS.forEach(channel => messageBuffer.set(channel, []));
+
 // ── Express app (REST proxy to Flask) ──────────────────────────────────────
 const app = express();
 app.use(cors());
@@ -62,76 +54,104 @@ app.use('/api', createProxyMiddleware({
   }
 }));
 
-// Health endpoint (gateway-only, no Flask needed)
-app.get('/health', (req, res) => {
-  res.json({
-    gateway:    'ok',
-    clients:    wss ? wss.clients.size : 0,
-    redis:      redisConnected ? 'ok' : 'disconnected',
-    uptime:     process.uptime(),
-    timestamp:  new Date().toISOString(),
-  });
-});
-
-// Stats endpoint
-app.get('/stats', (req, res) => {
-  res.json({
-    total_clients:    wss ? wss.clients.size : 0,
-    messages_sent:    stats.messagesSent,
-    messages_received:stats.messagesReceived,
-    redis_connected:  redisConnected,
-    channels:         BROADCAST_CHANNELS,
-    uptime_seconds:   process.uptime(),
-  });
-});
-
 // ── HTTP + WebSocket server ─────────────────────────────────────────────────
 const server = http.createServer(app);
 const wss    = new WebSocket.Server({ server });
 
-// ── Stats ───────────────────────────────────────────────────────────────────
-const stats = { messagesSent: 0, messagesReceived: 0 };
-
-// ── Redis subscriber ────────────────────────────────────────────────────────
-let redisConnected = false;
-
+// ── Redis connection options ────────────────────────────────────────────────
 const redisOpts = {
   host:            REDIS_HOST,
   port:            REDIS_PORT,
   password:        REDIS_PASS || undefined,
-  retryStrategy:   (times) => Math.min(times * 500, 5000),
-  lazyConnect:     false,
-  enableOfflineQueue: true,
+  retryStrategy:   (times) => Math.min(times * 100, 3000),
+  maxRetriesPerRequest: null,
+  enableReadyCheck: true,
 };
 
+// ── Redis connections ───────────────────────────────────────────────────────
 const sub = new Redis(redisOpts);
-const pub = new Redis(redisOpts);   // separate connection for publishing
+const pub = new Redis(redisOpts);
 
-sub.on('connect', () => {
+let redisConnected = false;
+
+// ── Helper to subscribe to all channels ────────────────────────────────────
+async function subscribeChannels() {
+  try {
+    const count = await sub.subscribe(...BROADCAST_CHANNELS);
+    console.log(`[Redis Subscriber] Subscribed to ${count} channels: ${BROADCAST_CHANNELS.join(', ')}`);
+    return true;
+  } catch (err) {
+    console.error('[Redis Subscriber] Subscribe error:', err.message);
+    return false;
+  }
+}
+
+// ── Subscriber connection events ───────────────────────────────────────────
+sub.on('connect', async () => {
+  console.log(`[Redis Subscriber] Connected to ${REDIS_HOST}:${REDIS_PORT}`);
   redisConnected = true;
-  console.log(`[Redis] Connected to ${REDIS_HOST}:${REDIS_PORT}`);
-  sub.subscribe(...BROADCAST_CHANNELS, (err, count) => {
-    if (err) {
-      console.error('[Redis] Subscribe error:', err.message);
-    } else {
-      console.log(`[Redis] Subscribed to ${count} channels: ${BROADCAST_CHANNELS.join(', ')}`);
-    }
-  });
+  await subscribeChannels();
 });
 
-sub.on('error', (err) => {
-  redisConnected = false;
-  console.warn('[Redis] Error:', err.message);
+sub.on('ready', async () => {
+  // This fires after a successful reconnect
+  if (!redisConnected) {
+    console.log('[Redis Subscriber] Ready after reconnect, resubscribing…');
+    redisConnected = true;
+    await subscribeChannels();
+    
+    // Optional: Send a system message that Redis reconnected
+    broadcastSystemMessage('redis_reconnected', 'Redis connection restored');
+  }
 });
 
 sub.on('reconnecting', () => {
-  console.log('[Redis] Reconnecting…');
+  console.log('[Redis Subscriber] Reconnecting…');
+  redisConnected = false;
 });
 
-// When Redis publishes a message → broadcast to all WebSocket clients
+sub.on('error', (err) => {
+  console.warn('[Redis Subscriber] Warning:', err.message);
+  // Don't set redisConnected false on every error
+});
+
+sub.on('end', () => {
+  console.log('[Redis Subscriber] Connection ended');
+  redisConnected = false;
+});
+
+// ── Publisher connection ────────────────────────────────────────────────────
+pub.on('connect', () => {
+  console.log('[Redis Publisher] Connected');
+});
+
+pub.on('error', (err) => {
+  console.warn('[Redis Publisher] Error:', err.message);
+});
+
+// ── Helper to broadcast system messages ────────────────────────────────────
+function broadcastSystemMessage(type, message) {
+  const envelope = JSON.stringify({
+    channel: 'system',
+    data: {
+      type,
+      message,
+      timestamp: Date.now(),
+    },
+    timestamp: Date.now(),
+  });
+  
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(envelope);
+    }
+  });
+}
+
+// ── Redis messages → broadcast + buffer ────────────────────────────────────
 sub.on('message', (channel, message) => {
   try {
-    // Parse the message (Python publishes JSON strings)
+    // Parse the message
     let payload;
     try {
       payload = JSON.parse(message);
@@ -139,10 +159,16 @@ sub.on('message', (channel, message) => {
       payload = { raw: message };
     }
 
+    // Add to buffer (keep last 100 messages per channel)
+    const buffer = messageBuffer.get(channel) || [];
+    buffer.push({ payload, timestamp: Date.now() });
+    if (buffer.length > 100) buffer.shift();
+    messageBuffer.set(channel, buffer);
+
     // Wrap in a standard envelope
     const envelope = JSON.stringify({
       channel,
-      data:      payload,
+      data: payload,
       timestamp: Date.now(),
     });
 
@@ -150,7 +176,6 @@ sub.on('message', (channel, message) => {
     let sent = 0;
     wss.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
-        // Check if client is subscribed to this channel (or all channels)
         const subs = client._subscriptions;
         if (!subs || subs.has('*') || subs.has(channel)) {
           client.send(envelope);
@@ -186,13 +211,13 @@ wss.on('connection', (ws, req) => {
     timestamp: Date.now(),
   }));
 
-  // Handle messages from client (e.g. channel subscription control)
+  // Handle messages from client
   ws.on('message', (raw) => {
     stats.messagesReceived++;
     try {
       const msg = JSON.parse(raw.toString());
 
-      // Client can subscribe to specific channels: { action: 'subscribe', channels: ['signals','prices'] }
+      // Subscribe to specific channels
       if (msg.action === 'subscribe' && Array.isArray(msg.channels)) {
         ws._subscriptions = new Set(msg.channels);
         ws.send(JSON.stringify({
@@ -200,10 +225,25 @@ wss.on('connection', (ws, req) => {
           data: { type: 'subscribed', channels: [...ws._subscriptions] },
           timestamp: Date.now(),
         }));
+        
+        // Send buffered messages for these channels
+        if (msg.replayBuffer) {
+          msg.channels.forEach(channel => {
+            const buffer = messageBuffer.get(channel) || [];
+            buffer.forEach(bufferedMsg => {
+              ws.send(JSON.stringify({
+                channel,
+                data: bufferedMsg.payload,
+                timestamp: bufferedMsg.timestamp,
+                replay: true,
+              }));
+            });
+          });
+        }
         return;
       }
 
-      // Client can subscribe to all: { action: 'subscribe_all' }
+      // Subscribe to all channels
       if (msg.action === 'subscribe_all') {
         ws._subscriptions = new Set(['*']);
         ws.send(JSON.stringify({
@@ -211,16 +251,35 @@ wss.on('connection', (ws, req) => {
           data: { type: 'subscribed', channels: ['*'] },
           timestamp: Date.now(),
         }));
+        
+        // Send buffered messages for all channels
+        if (msg.replayBuffer) {
+          BROADCAST_CHANNELS.forEach(channel => {
+            const buffer = messageBuffer.get(channel) || [];
+            buffer.forEach(bufferedMsg => {
+              ws.send(JSON.stringify({
+                channel,
+                data: bufferedMsg.payload,
+                timestamp: bufferedMsg.timestamp,
+                replay: true,
+              }));
+            });
+          });
+        }
         return;
       }
 
       // Ping / pong
       if (msg.type === 'ping') {
-        ws.send(JSON.stringify({ channel: 'system', data: { type: 'pong' }, timestamp: Date.now() }));
+        ws.send(JSON.stringify({ 
+          channel: 'system', 
+          data: { type: 'pong' }, 
+          timestamp: Date.now() 
+        }));
         return;
       }
 
-      // Client can publish to a channel (for admin/testing)
+      // Client can publish (for testing)
       if (msg.action === 'publish' && msg.channel && msg.data) {
         pub.publish(msg.channel, JSON.stringify(msg.data));
         return;
@@ -242,7 +301,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// ── Heartbeat (ping all clients every 30s, drop dead ones) ─────────────────
+// ── Heartbeat ───────────────────────────────────────────────────────────────
 const heartbeat = setInterval(() => {
   wss.clients.forEach(ws => {
     if (ws._isAlive === false) {
@@ -256,11 +315,37 @@ const heartbeat = setInterval(() => {
 
 wss.on('close', () => clearInterval(heartbeat));
 
+// ── Health endpoint ─────────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({
+    gateway:    'ok',
+    clients:    wss ? wss.clients.size : 0,
+    redis:      redisConnected ? 'ok' : 'disconnected',
+    uptime:     process.uptime(),
+    timestamp:  new Date().toISOString(),
+  });
+});
+
+// ── Stats endpoint ──────────────────────────────────────────────────────────
+app.get('/stats', (req, res) => {
+  res.json({
+    total_clients:    wss ? wss.clients.size : 0,
+    messages_sent:    stats.messagesSent,
+    messages_received:stats.messagesReceived,
+    redis_connected:  redisConnected,
+    channels:         BROADCAST_CHANNELS,
+    buffer_sizes:     Object.fromEntries(
+      [...messageBuffer.entries()].map(([k, v]) => [k, v.length])
+    ),
+    uptime_seconds:   process.uptime(),
+  });
+});
+
 // ── Start server ────────────────────────────────────────────────────────────
 server.listen(WS_PORT, () => {
   console.log('');
   console.log('╔══════════════════════════════════════════════╗');
-  console.log('║   Trading Intelligence Gateway               ║');
+  console.log('║   Trading Intelligence Gateway (Pro)         ║');
   console.log(`║   WebSocket  :  ws://localhost:${WS_PORT}          ║`);
   console.log(`║   REST proxy : http://localhost:${WS_PORT}/api/*   ║`);
   console.log(`║   Health     : http://localhost:${WS_PORT}/health  ║`);
