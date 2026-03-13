@@ -339,7 +339,17 @@ def _build_quality_signal(asset:str, category:str, bot, cache:SignalCache) -> Op
         except Exception: pass
         vb=0.0; svotes={}
         try:
-            comb=bot.get_combined_signal(df15); vd=comb.get('signal','HOLD')
+            # FIX BUG 13: scan_asset_parallel already ran get_combined_signal in
+            # Layer 1 and passed the result here indirectly via the 'direction'
+            # variable.  We re-use that result instead of calling get_combined_signal
+            # a second time.  The result is stored in a thread-local by scan_asset_parallel.
+            import threading as _thr
+            _tl = getattr(_thr.current_thread(), '_scan_cache', {})
+            if _tl.get('asset') == asset and _tl.get('combined'):
+                comb = _tl['combined']
+            else:
+                comb = bot.get_combined_signal(df15)
+            vd=comb.get('signal','HOLD')
             if vd!='HOLD': vb=0.05 if (('BUY' if vd=='BUY' else 'SELL')==direction) else -0.05
             svotes=comb.get('votes',{})
         except Exception: pass

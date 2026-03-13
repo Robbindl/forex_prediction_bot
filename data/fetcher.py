@@ -249,6 +249,19 @@ class NASALevelFetcher:
         
         # Initialize symbol mappings
         self._init_symbol_maps()
+
+        # ── Shared API quota tracker (file-backed so both processes share budget) ─
+        self._quota_lock  = threading.Lock()
+        self._quota_file  = os.path.join(os.path.dirname(__file__), '..', 'data', 'api_quota.json')
+        # Hard daily limits (free tier):
+        #   Alpha Vantage : 25 calls/day  (not per-minute)
+        #   Twelve Data   : 800 calls/day, 8 per minute
+        # We leave a 20% safety margin so approaching the cap doesn't break production.
+        self._quota_limits = {
+            'alpha_vantage': 20,   # 25 * 0.80
+            'twelve_data':   640,  # 800 * 0.80
+        }
+        # ─────────────────────────────────────────────────────────────────────────
         
         logger.info(f"Finnhub: {'Connected' if FINNHUB_AVAILABLE else 'Not Installed'}")
         logger.info(f"Alpha Vantage: {'Connected' if ALPHA_VANTAGE_AVAILABLE else 'Not Installed'}")
@@ -400,6 +413,89 @@ class NASALevelFetcher:
             'ALGO-USD': 'algorand',
         }
     
+    # ── Shared quota helpers ──────────────────────────────────────────────────
+
+    def _quota_load(self) -> dict:
+        """Load today's call counts from shared JSON file (process-safe via lock)."""
+        today = datetime.now().strftime('%Y-%m-%d')
+        try:
+            if os.path.exists(self._quota_file):
+                import json as _json
+                with open(self._quota_file, 'r') as f:
+                    data = _json.load(f)
+                if data.get('date') == today:
+                    return data
+        except Exception:
+            pass
+        return {'date': today, 'alpha_vantage': 0, 'twelve_data': 0,
+                'twelve_data_minute': 0, 'twelve_data_minute_ts': 0}
+
+    def _quota_save(self, data: dict):
+        """Write updated quota counts atomically."""
+        try:
+            import json as _json, tempfile
+            tmp = self._quota_file + '.tmp'
+            with open(tmp, 'w') as f:
+                _json.dump(data, f)
+            os.replace(tmp, self._quota_file)
+        except Exception:
+            pass
+
+    def _quota_can_call(self, api: str) -> bool:
+        """
+        Return True and increment counter if the daily budget allows another call.
+        For TwelveData also enforces the 8 calls/minute hard limit.
+        Return False (and log a warning) when a cap is reached.
+        """
+        import time as _time
+        with self._quota_lock:
+            data  = self._quota_load()
+            used  = data.get(api, 0)
+            limit = self._quota_limits.get(api, 9999)
+            if used >= limit:
+                logger.warning(
+                    f"⛔ {api} daily quota exhausted ({used}/{limit}). "
+                    f"Skipping call — will retry tomorrow."
+                )
+                return False
+
+            # TwelveData extra: 8 calls per minute hard cap
+            if api == 'twelve_data':
+                now         = _time.time()
+                min_count   = data.get('twelve_data_minute', 0)
+                min_ts      = data.get('twelve_data_minute_ts', 0)
+                # Reset per-minute counter if the window has expired
+                if now - min_ts >= 60:
+                    min_count = 0
+                    min_ts    = now
+                if min_count >= 8:
+                    logger.warning(
+                        f"⛔ TwelveData per-minute cap hit (8/min). "
+                        f"Skipping call — next window in {60 - (now - min_ts):.0f}s"
+                    )
+                    return False
+                data['twelve_data_minute']    = min_count + 1
+                data['twelve_data_minute_ts'] = min_ts
+
+            data[api] = used + 1
+            self._quota_save(data)
+            if used + 1 >= limit * 0.9:   # warn at 90%
+                logger.warning(
+                    f"⚠️  {api} quota at {used+1}/{limit} ({(used+1)/limit:.0%}) — "
+                    f"approaching daily limit"
+                )
+            return True
+
+    def _quota_status(self) -> dict:
+        """Return current quota usage for dashboard display."""
+        data = self._quota_load()
+        return {
+            api: {'used': data.get(api, 0), 'limit': self._quota_limits[api]}
+            for api in self._quota_limits
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
+
     def _init_api_clients(self):
         """Initialize API clients"""
         self.finnhub_client = finnhub.Client(self.finnhub_key) if FINNHUB_AVAILABLE else None
@@ -520,6 +616,14 @@ class NASALevelFetcher:
                 'BRENT/USD': 'BRENT',    # Brent Crude Oil
                 'NG/USD': 'NATURAL_GAS', # Natural Gas
                 'XCU/USD': 'COPPER',     # Copper
+                # Futures ticker aliases
+                'GC=F': 'GOLD',
+                'SI=F': 'SILVER',
+                'PL=F': 'PLATINUM',
+                'PA=F': 'PALLADIUM',
+                'CL=F': 'WTI',
+                'NG=F': 'NATURAL_GAS',
+                'HG=F': 'COPPER',
             }
             
             oil_symbol = commodity_map.get(symbol)
@@ -762,6 +866,8 @@ class NASALevelFetcher:
     
     def fetch_alphavantage_stock(self, symbol: str) -> Optional[float]:
         """Stock price from Alpha Vantage using GLOBAL_QUOTE"""
+        if not self._quota_can_call('alpha_vantage'):
+            return None
         try:
             url = "https://www.alphavantage.co/query"
             params = {
@@ -781,6 +887,8 @@ class NASALevelFetcher:
     
     def fetch_alphavantage_forex(self, pair: str) -> Optional[float]:
         """Forex from Alpha Vantage using CURRENCY_EXCHANGE_RATE"""
+        if not self._quota_can_call('alpha_vantage'):
+            return None
         try:
             from_currency = pair[:3]
             to_currency = pair[4:]
@@ -806,6 +914,8 @@ class NASALevelFetcher:
     
     def fetch_alphavantage_crypto(self, symbol: str) -> Optional[float]:
         """Crypto from Alpha Vantage using CURRENCY_EXCHANGE_RATE (works for all cryptos)"""
+        if not self._quota_can_call('alpha_vantage'):
+            return None
         try:
             base = symbol.split('-')[0]
             
@@ -847,6 +957,9 @@ class NASALevelFetcher:
         if symbol not in commodity_map:
             return None
         
+        if not self._quota_can_call('alpha_vantage'):
+            return None
+
         try:
             url = "https://www.alphavantage.co/query"
             params = {
@@ -1059,7 +1172,12 @@ class NASALevelFetcher:
                 return df
         
         # Try Yahoo (most reliable for historical)
-        yahoo_symbol = self.yahoo_map.get(asset, asset)
+        # For forex pairs not in yahoo_map, convert via _to_yahoo_forex so we
+        # never send a raw slash-pair like "GBP/JPY" to Yahoo (→ HTTP 500).
+        if category == 'forex' and asset not in self.yahoo_map:
+            yahoo_symbol = self._to_yahoo_forex(asset)
+        else:
+            yahoo_symbol = self.yahoo_map.get(asset, asset)
         df = self.fetch_yahoo_historical(yahoo_symbol, interval, f"{days}d")
         
         if not df.empty:
@@ -1069,7 +1187,7 @@ class NASALevelFetcher:
             return df
         
         # Try Twelve Data
-        if self.td_client:
+        if self.td_client and self._quota_can_call('twelve_data'):
             try:
                 twelve_symbol = self.twelve_map.get(asset, asset)
                 interval_map = {
@@ -1110,7 +1228,10 @@ class NASALevelFetcher:
         # If 4h returned nothing, silently fall back to 1d which Yahoo always has.
         if interval == '4h' and df.empty:
             logger.debug(f"4h unavailable for {asset} — falling back to 1d")
-            yahoo_symbol = self.yahoo_map.get(asset, asset)
+            if category == 'forex' and asset not in self.yahoo_map:
+                yahoo_symbol = self._to_yahoo_forex(asset)
+            else:
+                yahoo_symbol = self.yahoo_map.get(asset, asset)
             df = self.fetch_yahoo_historical(yahoo_symbol, '1d', self._days_to_yahoo_period(original_days))
             if not df.empty:
                 return df

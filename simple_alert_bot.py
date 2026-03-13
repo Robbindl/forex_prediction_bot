@@ -54,13 +54,19 @@ class SimpleAlertBot:
             emoji = "🟢" if signal['signal'] == 'BUY' else "🔴"
             strategy = signal.get('strategy_id', 'UNKNOWN')
             confidence = signal.get('confidence', 0.5)
+            entry  = signal.get('entry_price', 0) or 0
+            sl     = signal.get('stop_loss',   0) or 0
+            tp     = signal.get('take_profit', 0) or 0
+            rr     = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
             
             msg = (
                 f"{emoji} *New Trade Opened*\n\n"
                 f"Asset: {signal['asset']}\n"
                 f"Direction: {signal['signal']}\n"
-                f"Entry: ${signal['entry_price']:.2f}\n"
-                f"Stop: ${signal['stop_loss']:.2f}\n"
+                f"Entry: ${entry:.4f}\n"
+                f"Stop: ${sl:.4f}\n"
+                f"TP: ${tp:.4f}\n"
+                f"RR: {rr:.1f}:1\n"
                 f"Confidence: {confidence:.0%}\n"
                 f"Strategy: {strategy}"
             )
@@ -105,11 +111,11 @@ class SimpleAlertBot:
         )
         self.send_message(msg)
     
-    def send_whale_alert(self, amount: float, symbol: str, value_millions: float, channel: str):
+    def send_whale_alert(self, amount_display, symbol: str, value_millions: float, channel: str):
         """Send whale alert notification"""
         msg = (
             f"🐋 *Whale Alert*\n"
-            f"{amount:.2f} {symbol} (${value_millions:.1f}M)\n"
+            f"{amount_display} {symbol} (${value_millions:.1f}M)\n"
             f"Channel: @{channel}"
         )
         self.send_message(msg)

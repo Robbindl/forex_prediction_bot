@@ -90,18 +90,21 @@ class PaperTrader:
     - Sends alerts via monitor
     """
     
-    def __init__(self, risk_manager=None, history_file: str = "paper_trades.json", save_json=False):
+    def __init__(self, risk_manager=None, history_file: str = "paper_trades.json", save_json=True):
         self.risk_manager = risk_manager
         self.history_file = history_file
+        # FIX BUG 16: save_json defaults to True — open positions must be persisted
+        # so _load_history() can restore them on restart. Old default was False
+        # which meant the file was never written, making restart restore impossible.
         self.save_json = save_json
         self.open_positions: Dict[str, PaperTrade] = {}
         self.closed_positions: List[PaperTrade] = []
         self.lock = threading.RLock()
         self.monitor = None  # Will be set by trading system
-        self.voting_engine = None  # ← ADDED THIS (will be set by trading system)
+        self.voting_engine = None  # Will be set by trading system
         self.db = DatabaseService()  # Initialize database
         self.use_db = True
-        self.trading_system = None  # ← ADDED THIS: Will be set by trading system for Telegram access
+        self.trading_system = None  # Will be set by trading system for Telegram access
         
         # Load history if exists
         self._load_history()
@@ -109,6 +112,12 @@ class PaperTrader:
         # Real-time position monitor — polls prices every 5s and calls update_positions
         self._monitor_running = False
         self._monitor_thread: threading.Thread | None = None
+
+        # ── Event callbacks (wired by TradingCore) ────────────────────────
+        # on_trade_opened(trade_dict)  — fired when execute_signal opens a trade
+        # on_trade_closed(trade_dict)  — fired when update_positions closes a trade
+        self.on_trade_opened = None   # type: ignore
+        # on_trade_closed already referenced in update_positions
 
         logger.info("Paper Trader Initialized")
         logger.info(f"Open Positions: {len(self.open_positions)}")
@@ -158,28 +167,88 @@ class PaperTrader:
     # ────────────────────────────────────────────────────────────────────────────
 
     def _load_history(self):
-        """Load trade history from file"""
+        """Load trade history from file.
+        FIX BUG 11: Now restores OPEN positions too, not just closed history.
+        On restart, previously open trades are reconstructed so SL/TP monitoring
+        resumes immediately and the bot doesn't orphan live positions.
+        """
         try:
-            if os.path.exists(self.history_file):
-                with open(self.history_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                    # Load closed positions (simplified - would need proper deserialization)
-                    if 'closed_positions' in data:
-                        logger.info(f"Loaded {len(data['closed_positions'])} trades from history")
-                        
+            if not os.path.exists(self.history_file):
+                return
+            with open(self.history_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # ── Restore closed positions (history only — no action needed) ────
+            closed_raw = data.get('closed_positions', [])
+            for raw in closed_raw:
+                try:
+                    t = self._dict_to_paper_trade(raw)
+                    if t:
+                        self.closed_positions.append(t)
+                except Exception:
+                    pass
+            logger.info(f"Loaded {len(self.closed_positions)} closed trades from history")
+
+            # ── Restore open positions — CRITICAL for SL/TP to keep working ──
+            open_raw = data.get('open_positions', [])
+            restored = 0
+            for raw in open_raw:
+                try:
+                    t = self._dict_to_paper_trade(raw)
+                    if t and t.status == 'OPEN':
+                        self.open_positions[t.trade_id] = t
+                        restored += 1
+                except Exception as e:
+                    logger.warning(f"Could not restore open position: {e}")
+            if restored:
+                logger.info(f"Restored {restored} open position(s) from previous session")
+
         except Exception as e:
             logger.error(f"Could not load trade history: {e}")
-    
+
+    def _dict_to_paper_trade(self, raw: dict) -> 'PaperTrade':
+        """Deserialise a dict (from JSON) back to a PaperTrade object."""
+        t = PaperTrade(
+            asset=raw['asset'],
+            category=raw.get('category', 'unknown'),
+            signal_type=raw['signal'],
+            entry_price=float(raw['entry_price']),
+            position_size=float(raw['position_size']),
+            stop_loss=float(raw['stop_loss']),
+            take_profit_levels=raw.get('take_profit_levels', []),
+            confidence=float(raw.get('confidence', 0.5)),
+            reason=raw.get('reason', ''),
+            strategy_id=raw.get('strategy_id', 'RESTORED'),
+            strategy_emoji=raw.get('strategy_emoji', '🔄'),
+            db=self.db,
+        )
+        t.trade_id = raw['trade_id']
+        t.signal_id = raw.get('signal_id', '')
+        t.status = raw.get('status', 'OPEN')
+        # Restore timing
+        try:
+            t.entry_time = datetime.fromisoformat(raw['entry_time'])
+        except Exception:
+            pass
+        if raw.get('exit_time'):
+            try:
+                t.exit_time = datetime.fromisoformat(raw['exit_time'])
+            except Exception:
+                pass
+        t.exit_price = raw.get('exit_price')
+        t.pnl = float(raw.get('pnl', 0))
+        t.pnl_percent = float(raw.get('pnl_percent', 0))
+        t.exit_reason = raw.get('exit_reason')
+        return t
+
     def _save_history(self):
-        """Save trade history to file"""
-        if not self.save_json:  # Skip if JSON saving is disabled
+        """Save trade history to file (always saves when save_json=True)."""
+        if not self.save_json:
             return
-        
         try:
             history = {
-                'open_positions': [p.to_dict() for p in self.open_positions.values()],
-                'closed_positions': [p.to_dict() for p in self.closed_positions]
+                'open_positions':  [p.to_dict() for p in self.open_positions.values()],
+                'closed_positions': [p.to_dict() for p in self.closed_positions],
             }
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(history, f, indent=2, default=str)
@@ -450,88 +519,77 @@ class PaperTrader:
     
     def execute_signal(self, signal: Dict) -> Optional[Dict]:
         """
-        Execute a trading signal (paper trade)
-        Returns trade execution details or None if rejected
+        Execute a trading signal (paper trade).
+        FIX BUG 10: Position size is no longer recalculated here when the trading
+        loop has already done it via calculate_position_size_with_sentiment().
+        The trading loop's value (with sentiment + regime + calendar adjustments)
+        is authoritative. This method only calculates when no pre-computed size exists.
+        Returns trade execution details or None if rejected.
         """
         with self.lock:
             # Skip HOLD signals
             if signal.get('signal') in ['HOLD', 'CLOSED']:
                 return None
             
-            # 🔥 PROFITABILITY UPGRADE: Check cooldown
+            # Check cooldown (uses canonical asset ID via CooldownTracker)
             if self.is_asset_on_cooldown(signal['asset']):
                 remaining = self.get_cooldown_remaining(signal['asset'])
                 logger.info(f"Skipping {signal['asset']}: On cooldown ({remaining}min remaining)")
                 return None
             
-            # Check risk manager if available
-            if self.risk_manager:
-                # Check max positions
-                if hasattr(self.risk_manager, 'max_positions'):
-                    if len(self.open_positions) >= self.risk_manager.max_positions:
-                        logger.info(f"Skipping {signal['asset']}: Max positions reached")
-                        return None
-                
-                # Calculate position size with risk management
-                if hasattr(self.risk_manager, 'calculate_optimal_position_size'):
-                    pos_result = self.risk_manager.calculate_optimal_position_size(
-                        entry_price=signal['entry_price'],
-                        stop_loss=signal['stop_loss'],
-                        signal_confidence=signal.get('confidence', 0.7)
-                    )
-                    position_size = pos_result.get('position_size', 0)
-                    risk_amount = pos_result.get('risk_amount', 0)
-                else:
-                    # Read balance dynamically: risk_manager → bot_runtime.json → 30 default
-                    # Never hardcode — use whatever --balance was passed at startup
-                    account_balance = 30.0  # last-resort default only
-                    if hasattr(self, 'risk_manager') and self.risk_manager:
-                        account_balance = getattr(self.risk_manager, 'account_balance', account_balance)
-                    else:
-                        try:
-                            from bot import read_runtime_balance
-                            account_balance = read_runtime_balance(default=account_balance)
-                        except Exception:
-                            pass
-                    
-                    # Risk only 1% of account per trade (20 cents)
-                    risk_per_trade = 0.01  # 1%
-                    risk_amount = account_balance * risk_per_trade
-                    
-                    # Calculate price difference
-                    price_diff = abs(signal['entry_price'] - signal['stop_loss'])
-                    
-                    if price_diff > 0:
-                        # Position size = risk_amount / price_diff
-                        position_size = risk_amount / price_diff
-                        
-                        # SAFETY CHECK: Never risk more than 2% of account
-                        max_risk = account_balance * 0.02  # 2% max
-                        if risk_amount > max_risk:
-                            risk_amount = max_risk
-                            position_size = risk_amount / price_diff
-                            
-                        # Position value check
-                        position_value = position_size * signal['entry_price']
-                        max_position_value = account_balance * 0.5  # Never put >50% in one trade
-                        
-                        if position_value > max_position_value:
-                            position_size = max_position_value / signal['entry_price']
-                            risk_amount = position_size * price_diff
-                    else:
-                        position_size = 0
-                        risk_amount = 0
+            # Check max positions
+            if self.risk_manager and hasattr(self.risk_manager, 'max_positions'):
+                if len(self.open_positions) >= self.risk_manager.max_positions:
+                    logger.info(f"Skipping {signal['asset']}: Max positions reached")
+                    return None
+
+            # ── Position sizing: use pre-computed value when available ─────────
+            # The trading_loop already called calculate_position_size_with_sentiment()
+            # which applies sentiment, regime, and calendar adjustments.
+            # Only run our own calculation as a fallback when that key is absent.
+            pre_computed_size = signal.get('position_size', 0)
+            pre_computed_risk = signal.get('risk_amount', 0)
+
+            if pre_computed_size and pre_computed_size > 0:
+                # FIX BUG 10: trust the caller's enhanced calculation
+                position_size = pre_computed_size
+                risk_amount   = pre_computed_risk if pre_computed_risk > 0 else (
+                    pre_computed_size * abs(signal['entry_price'] - signal['stop_loss'])
+                )
+            elif self.risk_manager and hasattr(self.risk_manager, 'calculate_optimal_position_size'):
+                pos_result = self.risk_manager.calculate_optimal_position_size(
+                    entry_price=signal['entry_price'],
+                    stop_loss=signal['stop_loss'],
+                    signal_confidence=signal.get('confidence', 0.7)
+                )
+                position_size = pos_result.get('position_size', 0)
+                risk_amount   = pos_result.get('risk_amount', 0)
             else:
-                # No risk manager — read from bot_runtime.json so --balance is respected
+                # Fallback: plain 1% risk sizing
                 account_balance = 30.0
-                try:
-                    from bot import read_runtime_balance
-                    account_balance = read_runtime_balance(default=account_balance)
-                except Exception:
-                    pass
-                risk_amount = account_balance * 0.01  # 1% risk
-                price_diff = abs(signal['entry_price'] - signal['stop_loss'])
-                position_size = risk_amount / price_diff if price_diff > 0 else 0
+                if self.risk_manager:
+                    account_balance = getattr(self.risk_manager, 'account_balance', account_balance)
+                else:
+                    try:
+                        from bot import read_runtime_balance
+                        account_balance = read_runtime_balance(default=account_balance)
+                    except Exception:
+                        pass
+                risk_amount  = account_balance * 0.01
+                price_diff   = abs(signal['entry_price'] - signal['stop_loss'])
+                if price_diff > 0:
+                    position_size = risk_amount / price_diff
+                    max_risk = account_balance * 0.02
+                    if risk_amount > max_risk:
+                        risk_amount   = max_risk
+                        position_size = risk_amount / price_diff
+                    max_pos_value = account_balance * 0.5
+                    if position_size * signal['entry_price'] > max_pos_value:
+                        position_size = max_pos_value / signal['entry_price']
+                        risk_amount   = position_size * price_diff
+                else:
+                    position_size = 0
+                    risk_amount   = 0
             
             if position_size <= 0:
                 logger.info(f"Skipping {signal['asset']}: Invalid position size")
@@ -627,15 +685,31 @@ class PaperTrader:
             
             # Save history
             self._save_history()
-            
-            return {
-                'trade_id': trade.trade_id,
-                'asset': signal['asset'],
-                'signal': signal['signal'],
+
+            trade_dict = {
+                'trade_id':     trade.trade_id,
+                'asset':        signal['asset'],
+                'category':     signal.get('category', 'unknown'),
+                'signal':       signal['signal'],
                 'position_size': position_size,
-                'risk_amount': risk_amount,
-                'entry_price': signal['entry_price']
+                'risk_amount':  risk_amount,
+                'entry_price':  signal['entry_price'],
+                'stop_loss':    signal.get('stop_loss', 0),
+                'take_profit_levels': signal.get('take_profit_levels', []),
+                'confidence':   signal.get('confidence', 0.5),
+                'strategy_id':  signal.get('strategy_id', 'UNKNOWN'),
+                'reason':       signal.get('reason', ''),
+                'entry_time':   trade.entry_time.isoformat() if hasattr(trade.entry_time, 'isoformat') else str(trade.entry_time),
             }
+
+            # ── Fire on_trade_opened (wired by TradingCore) ───────────────
+            if hasattr(self, 'on_trade_opened') and callable(self.on_trade_opened):
+                try:
+                    self.on_trade_opened(trade_dict)
+                except Exception as _oe:
+                    logger.debug(f"on_trade_opened callback error: {_oe}")
+
+            return trade_dict
     
     def update_positions(self, current_prices: Dict[str, float]):
         """
@@ -825,6 +899,16 @@ class PaperTrader:
                     except Exception as _le:
                         logger.debug(f"Signal learning resolve skipped: {_le}")
                 # =========================================================
+
+                # FIX BUG 14: Fire the on_trade_closed callback that trading_system
+                # sets to _remember_trade. Previously this attribute was set but
+                # paper_trader never called it — personality memory and any downstream
+                # subscriber was always skipped.
+                if hasattr(self, 'on_trade_closed') and callable(self.on_trade_closed):
+                    try:
+                        self.on_trade_closed(trade.to_dict())
+                    except Exception as _cb_e:
+                        logger.debug(f"on_trade_closed callback error: {_cb_e}")
             
             if to_close: 
                 self._save_history()

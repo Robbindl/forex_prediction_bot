@@ -1,3 +1,4 @@
+from collections import deque
 """
 Strategy Voting Engine - Combines signals from all your strategies
 Now includes news sentiment as a 13th strategy!
@@ -41,7 +42,7 @@ class StrategyVotingEngine:
         self.trading_system = trading_system
         self.strategy_weights = {}
         self.strategy_performance = {}
-        self.vote_history = []
+        self.vote_history = deque(maxlen=500)  # ~4h of history, prevents unbounded growth
         
         # Initialize all strategies with equal weights
         for strategy_name in trading_system.strategies.keys():

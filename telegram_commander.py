@@ -246,11 +246,20 @@ class TelegramCommander:
             future.result(timeout=15)
             return True
         except RetryAfter as e:
-            logger.warning(f"Telegram flood control: retry after {e.retry_after}s")
+            # retry_after can be None in some lib versions — guard it
+            wait = e.retry_after if isinstance(e.retry_after, (int, float)) else 30
+            logger.warning(f"Telegram flood control: retry after {wait}s")
         except (TimedOut, NetworkError) as e:
             logger.warning(f"Telegram network error: {e}")
+        except TypeError as e:
+            # Catches "'>=' not supported between NoneType and int" from lib internals
+            logger.warning(f"Telegram internal type error (ignored): {e}")
         except Exception as e:
-            logger.error(f"Telegram send_message error: {e}")
+            err_str = str(e)
+            if "Unauthorized" in err_str or "401" in err_str:
+                logger.warning("Telegram: bot token invalid or chat_id wrong — alerts disabled until restart")
+            else:
+                logger.error(f"Telegram send_message error: {e}")
         return False
 
     def stop(self):
@@ -345,7 +354,13 @@ class TelegramCommander:
     async def cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._require_system(update): return
         try:
-            positions = self.trading_system.paper_trader.get_open_positions()
+            # PHASE 2: read from TradingCore.state if available
+            core = getattr(self.trading_system, '_trading_core', None)
+            if core is not None:
+                positions = core.state.get_open_positions()
+            else:
+                positions = self.trading_system.paper_trader.get_open_positions()
+
             if not positions:
                 await update.message.reply_text("📭 No open positions")
                 return
@@ -386,6 +401,24 @@ class TelegramCommander:
     async def cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._require_system(update): return
         try:
+            # PHASE 2: read from TradingCore.state if available
+            core = getattr(self.trading_system, '_trading_core', None)
+            if core is not None:
+                perf  = core.state.get_performance()
+                pnl   = perf['total_pnl']
+                emoji = "📈" if pnl >= 0 else "📉"
+                sign  = "+" if pnl >= 0 else ""
+                await update.message.reply_text(
+                    f"💰 *Account Balance*\n\n"
+                    f"Current:       ${perf['balance']:.2f}\n"
+                    f"Total P&L:     {emoji} {sign}${pnl:.2f}\n"
+                    f"Win Rate:      {perf['win_rate']:.1f}%\n"
+                    f"Open Pos:      {perf['open_positions']}\n"
+                    f"Daily Trades:  {core.state.daily_trades}",
+                    parse_mode='Markdown'
+                )
+                return
+            # Fallback
             perf   = self.trading_system.paper_trader.get_performance()
             pnl    = perf['total_pnl']
             emoji  = "📈" if pnl >= 0 else "📉"
@@ -406,15 +439,27 @@ class TelegramCommander:
     async def cmd_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._require_system(update): return
         try:
-            perf   = self.trading_system.paper_trader.get_performance()
-            total  = perf['total_trades']
-            wins   = perf.get('winning_trades', 0)
-            losses = perf.get('losing_trades', 0)
-            wr     = (wins / total * 100) if total > 0 else 0
-            avg_w  = perf.get('avg_win', 0)
-            avg_l  = perf.get('avg_loss', 0)
-            rr     = abs(avg_w / avg_l) if avg_l else 0
-            exp    = (wr/100 * avg_w) - ((1 - wr/100) * avg_l)
+            # PHASE 2: read from TradingCore.state if available
+            core = getattr(self.trading_system, '_trading_core', None)
+            if core is not None:
+                perf = core.state.get_performance()
+                total = perf['total_trades']
+                wins  = perf['winning_trades']
+                losses= perf['losing_trades']
+                wr    = perf['win_rate']
+                avg_w = perf['avg_win']
+                avg_l = perf['avg_loss']
+            else:
+                perf   = self.trading_system.paper_trader.get_performance()
+                total  = perf['total_trades']
+                wins   = perf.get('winning_trades', 0)
+                losses = perf.get('losing_trades', 0)
+                wr     = (wins / total * 100) if total > 0 else 0
+                avg_w  = perf.get('avg_win', 0)
+                avg_l  = perf.get('avg_loss', 0)
+
+            rr  = abs(avg_w / avg_l) if avg_l else 0
+            exp = (wr/100 * avg_w) - ((1 - wr/100) * avg_l)
 
             await update.message.reply_text(
                 f"💰 *Performance Report*\n\n"
@@ -427,8 +472,8 @@ class TelegramCommander:
                 f"Risk/Reward:    {rr:.2f}\n"
                 f"Expectancy:     ${exp:.2f}\n"
                 f"Profit Factor:  {perf.get('profit_factor', 0):.2f}\n"
-                f"Total P&L:      ${perf['total_pnl']:.2f}\n"
-                f"Balance:        ${perf['current_balance']:.2f}",
+                f"Total P&L:      ${perf.get('total_pnl', perf.get('total_pnl', 0)):.2f}\n"
+                f"Balance:        ${perf.get('balance', perf.get('current_balance', 0)):.2f}",
                 parse_mode='Markdown'
             )
         except Exception as e:
@@ -758,11 +803,17 @@ class TelegramCommander:
     def alert_trade_opened(self, signal: dict):
         try:
             emoji = "🟢" if signal.get('signal') == 'BUY' else "🔴"
+            entry  = signal.get('entry_price', 0) or 0
+            sl     = signal.get('stop_loss',   0) or 0
+            tp     = signal.get('take_profit', 0) or 0
+            rr     = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
             self.send_message(
                 f"{emoji} *Trade Opened*\n\n"
                 f"Asset:    {signal.get('asset','?')}\n"
-                f"Entry:    `{signal.get('entry_price',0):.5f}`\n"
-                f"Stop:     `{signal.get('stop_loss',0):.5f}`\n"
+                f"Entry:    `{entry:.5f}`\n"
+                f"Stop:     `{sl:.5f}`\n"
+                f"TP:       `{tp:.5f}`\n"
+                f"RR:       {rr:.1f}:1\n"
                 f"Conf:     {signal.get('confidence',0):.0%}\n"
                 f"Strategy: {signal.get('strategy_id','?')}"
             )

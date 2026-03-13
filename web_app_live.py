@@ -226,10 +226,46 @@ _REFRESH = {'crypto':30,'forex':60,'commodities':60,'indices':120,'stocks':120}
 _PRICE_GATE = 0.001
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TRADING BOT SINGLETON
+# PHASE 2 — TradingCore injection point
 # ══════════════════════════════════════════════════════════════════════════════
+# bot.py calls inject_core(engine) before starting Flask.
+# After injection:
+#   • get_bot() returns engine._engine (the UltimateTradingSystem)
+#   • positions_stream reads from engine.state (SystemState) — zero lag
+#   • system_status reads balance/perf from engine.state
+#   • get_bot() NEVER creates a second UltimateTradingSystem
+#
+# If running without injection (standalone dev mode), get_bot() falls back
+# to lazy-init as before.
+# ══════════════════════════════════════════════════════════════════════════════
+_CORE     = None   # TradingCore instance — set by inject_core()
 _bot      = None
 _bot_lock = threading.Lock()
+
+
+def inject_core(core) -> None:
+    """
+    Called by bot.py after TradingCore is created.
+    Wires the central engine into all dashboard routes.
+    After this call get_bot() returns core._engine directly
+    and positions/balance are read from core.state (zero-copy, zero-lag).
+    """
+    global _bot, _CORE
+    _CORE = core
+    # Pre-populate _bot so get_bot() never creates a duplicate instance
+    if core._engine is not None:
+        _bot = core._engine
+    else:
+        # Engine still initialising — wire it once ready
+        def _wire_when_ready():
+            if core.wait_until_ready(timeout=120):
+                global _bot
+                _bot = core._engine
+                logger.info("[web_app] TradingCore engine wired to dashboard")
+            else:
+                logger.warning("[web_app] TradingCore did not become ready in 120s")
+        threading.Thread(target=_wire_when_ready, name="core-wire", daemon=True).start()
+    logger.info("[web_app] inject_core() called — dashboard connected to TradingCore")
 
 # ── Module-level singletons — created ONCE, reused everywhere ────────────────
 # WhaleAlertManager: spawns Twitter/Telegram/Reddit threads — never recreate
@@ -290,27 +326,39 @@ def get_sentiment():
     return _sentiment
 
 def get_bot():
-    """Thread-safe singleton. Returns None on failure — never raises."""
+    """
+    Thread-safe singleton.
+    PHASE 2: If TradingCore was injected via inject_core(), returns its
+    engine directly — NEVER creates a second UltimateTradingSystem.
+    Falls back to lazy-init only in standalone/dev mode.
+    Returns None on failure — never raises.
+    """
     global _bot
     if _bot is not None:
         return _bot
+
+    # If TradingCore is injected and engine is ready, use it
+    if _CORE is not None:
+        if _CORE._engine is not None:
+            _bot = _CORE._engine
+            return _bot
+        # Engine still initialising
+        return None
+
+    # Standalone dev mode — lazy init (no TradingCore)
     with _bot_lock:
         if _bot is not None:
             return _bot
         try:
             from trading_system import UltimateTradingSystem
             _bot = UltimateTradingSystem(account_balance=args.balance, no_telegram=True)
-            logger.info("Trading bot loaded")
-            # Wire trading_system into the Telegram commander so /commands work
-            # (commander was started with trading_system=None at boot time)
+            logger.info("[web_app] Trading bot loaded (standalone mode)")
             try:
                 from telegram_manager import telegram_manager
                 if telegram_manager.is_running and telegram_manager.bot is not None:
                     telegram_manager.bot.trading_system = _bot
-                    logger.info("[OK] Telegram commands wired to trading system")
             except Exception as _te:
                 logger.warning(f"Telegram wiring skipped: {_te}")
-            # Wire signal cache so background pre-fetch starts
             try:
                 from signal_learning import signal_cache
                 signal_cache.start(_bot)
@@ -707,46 +755,75 @@ def positions_stream():
     """
     Server-Sent Events endpoint.
     Dashboard connects once; receives live position updates every 5s.
-    Usage: const es = new EventSource('/api/positions/stream');
-           es.onmessage = e => updatePositions(JSON.parse(e.data));
+
+    PHASE 2: When TradingCore is injected, reads directly from core.state
+    (SystemState) — zero lag, zero file polling, always authoritative.
+    Falls back to state_bridge file, then in-process bot for dev mode.
     """
+    def _enrich_position(p_dict):
+        """Add current price and live P&L to a position dict."""
+        try:
+            asset    = p_dict.get('asset', '')
+            category = p_dict.get('category', _ASSET_MAP.get(asset, ('stocks', 0))[0])
+            cur_price, _ = fetcher.get_real_time_price(asset, category)
+            entry     = float(p_dict.get('entry_price', 0))
+            size      = float(p_dict.get('position_size', p_dict.get('size', 1)))
+            direction = p_dict.get('signal', p_dict.get('direction', 'BUY'))
+            if cur_price and entry:
+                pnl_pct = ((cur_price - entry) / entry * 100) if direction == 'BUY' else ((entry - cur_price) / entry * 100)
+                pnl_usd = pnl_pct / 100 * size
+            else:
+                pnl_pct = pnl_usd = 0
+            return {
+                **p_dict,
+                'current_price': cur_price,
+                'pnl_pct':       round(pnl_pct, 3),
+                'pnl_usd':       round(pnl_usd, 2),
+                'updated_at':    datetime.now().isoformat(),
+            }
+        except Exception:
+            return p_dict
+
     def _event_gen():
         while True:
             try:
-                bot = get_bot()
                 positions = []
-                if bot and hasattr(bot, 'paper_trader') and hasattr(bot.paper_trader, 'positions'):
-                    for pos in bot.paper_trader.positions:
-                        try:
-                            p_dict = pos if isinstance(pos, dict) else vars(pos)
-                            # Fetch current price for live P&L
-                            asset    = p_dict.get('asset','')
-                            category = p_dict.get('category', _ASSET_MAP.get(asset, ('stocks',0))[0])
-                            cur_price, _ = fetcher.get_real_time_price(asset, category)
-                            entry        = float(p_dict.get('entry_price', 0))
-                            size         = float(p_dict.get('size', 1))
-                            direction    = p_dict.get('direction', p_dict.get('signal','BUY'))
-                            if cur_price and entry:
-                                pnl_pct = ((cur_price-entry)/entry*100) if direction=='BUY' else ((entry-cur_price)/entry*100)
-                                pnl_usd = pnl_pct/100 * size
-                            else:
-                                pnl_pct = pnl_usd = 0
-                            positions.append({**p_dict,'current_price':cur_price,'pnl_pct':round(pnl_pct,3),
-                                               'pnl_usd':round(pnl_usd,2),'updated_at':datetime.now().isoformat()})
-                        except Exception as _pe:
-                            logger.debug(f"Position update: {_pe}")
 
-                payload = json.dumps({'positions':positions,'count':len(positions),
-                                       'ts':datetime.now().isoformat()}, cls=_Encoder)
+                # ── Primary: TradingCore.state — zero lag, always current ────
+                if _CORE is not None:
+                    try:
+                        raw = _CORE.state.get_open_positions()
+                        positions = [_enrich_position(p) for p in raw]
+                    except Exception as _ce:
+                        logger.debug(f"TradingCore positions read error: {_ce}")
+
+                # ── Secondary: state_bridge file (legacy cross-process) ──────
+                if not positions:
+                    try:
+                        from state_bridge import read_trading_state
+                        state = read_trading_state()
+                        if state and state.get('open_positions'):
+                            positions = [_enrich_position(p) for p in state['open_positions']]
+                    except Exception:
+                        pass
+
+                # ── Fallback: in-process bot singleton (dev mode) ─────────────
+                if not positions:
+                    bot = get_bot()
+                    if bot and hasattr(bot, 'paper_trader') and bot.paper_trader:
+                        positions = [_enrich_position(p) for p in bot.paper_trader.get_open_positions()]
+
+                payload = json.dumps({'positions': positions, 'count': len(positions),
+                                       'ts': datetime.now().isoformat()}, cls=_Encoder)
                 yield f"data: {payload}\n\n"
             except Exception as e:
                 logger.error(f"positions_stream: {e}")
-                yield f"data: {json.dumps({'error':str(e)})}\n\n"
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
             time.sleep(5)
 
     return Response(stream_with_context(_event_gen()),
                     mimetype='text/event-stream',
-                    headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
 # ── /api/stress-test ──────────────────────────────────────────────────────────
@@ -767,19 +844,34 @@ def stress_test():
             positions = body.get('positions', [])
             balance   = float(body.get('balance', args.balance))
         else:
-            # Pull from paper trader
+            # Pull from TradingCore.state (Phase 2) or paper_trader (fallback)
             positions = []
             balance   = args.balance
-            bot = get_bot()
-            if bot and hasattr(bot,'paper_trader') and hasattr(bot.paper_trader,'positions'):
-                for pos in bot.paper_trader.positions:
-                    p = pos if isinstance(pos,dict) else vars(pos)
-                    asset    = p.get('asset','')
-                    cat, _   = _ASSET_MAP.get(asset, ('stocks',0))
-                    positions.append({'asset':asset,'category':cat,
-                                       'direction':p.get('direction',p.get('signal','BUY')),
-                                       'size_usd':float(p.get('size',0))})
-                balance = float(getattr(bot.paper_trader,'balance', args.balance))
+            if _CORE is not None:
+                for p in _CORE.state.get_open_positions():
+                    asset  = p.get('asset', '')
+                    cat, _ = _ASSET_MAP.get(asset, ('stocks', 0))
+                    positions.append({
+                        'asset':     asset,
+                        'category':  p.get('category', cat),
+                        'direction': p.get('signal', p.get('direction', 'BUY')),
+                        'size_usd':  float(p.get('position_size', p.get('size', 0))),
+                    })
+                balance = _CORE.state.balance
+            else:
+                bot = get_bot()
+                # FIX BUG 9: use get_open_positions() — .positions attribute doesn't exist
+                if bot and hasattr(bot, 'paper_trader') and bot.paper_trader:
+                    for p in bot.paper_trader.get_open_positions():
+                        asset  = p.get('asset', '')
+                        cat, _ = _ASSET_MAP.get(asset, ('stocks', 0))
+                        positions.append({
+                            'asset':     asset,
+                            'category':  cat,
+                            'direction': p.get('signal', p.get('direction', 'BUY')),
+                            'size_usd':  float(p.get('position_size', p.get('size', 0))),
+                        })
+                    balance = float(getattr(bot.paper_trader, 'balance', args.balance))
 
         result = run_stress_test(positions, balance)
         return jsonify({'success':True, **result})
@@ -889,11 +981,29 @@ def system_status():
     try:
         open_p = closed_p = total_pnl = today_pnl = 0
 
-        # ── Live balance: read directly from the bot's risk_manager ──────────
-        # This is always accurate — risk_manager.update_pnl() is called on
-        # every trade close, so this reflects real-time P&L changes instantly.
-        # Falls back to args.balance (the --balance startup arg) only if the
-        # bot hasn't initialised yet.
+        # ── PHASE 2: read from TradingCore.state — always authoritative ──────
+        if _CORE is not None:
+            perf    = _CORE.state.get_performance()
+            balance = perf.get('balance', args.balance)
+            open_p  = perf.get('open_positions', 0)
+            closed_p= perf.get('total_trades', 0)
+            today_pnl = _CORE.state.daily_pnl
+            total_pnl = perf.get('total_pnl', 0)
+            return jsonify({
+                'success':          True,
+                'balance':          round(balance, 2),
+                'pnl':              round(today_pnl, 2),
+                'total_pnl':        round(total_pnl, 2),
+                'open_positions':   open_p,
+                'closed_positions': closed_p,
+                'daily_trades':     _CORE.state.daily_trades,
+                'win_rate':         perf.get('win_rate', 0),
+                'processes':        {'Trading Bot': _CORE.is_running, 'Web Dashboard': True},
+                'engine_ready':     _CORE.is_ready,
+                'timestamp':        datetime.now().isoformat(),
+            })
+
+        # ── Fallback: legacy path (standalone / dev mode) ─────────────────────
         balance = args.balance
         bot = get_bot()
         if bot and hasattr(bot, 'risk_manager') and bot.risk_manager:
@@ -902,7 +1012,6 @@ def system_status():
             perf = bot.paper_trader.get_performance()
             balance = perf.get('current_balance', args.balance)
 
-        # ── Trade counts and today's P&L from DB (if available) ─────────────
         try:
             from services.database_service import DatabaseService
             db     = DatabaseService()
@@ -920,20 +1029,19 @@ def system_status():
                         pass
         except Exception as _dbe:
             logger.debug(f"DB status query: {_dbe}")
-            # If DB is down, fall back to paper_trader in-memory counts
             if bot and hasattr(bot, 'paper_trader') and bot.paper_trader:
                 perf = bot.paper_trader.get_performance()
                 open_p    = perf.get('open_positions', 0)
                 closed_p  = perf.get('total_trades', 0)
                 today_pnl = perf.get('total_pnl', 0)
 
-        return jsonify({'success':True,'balance':round(balance,2),'pnl':round(today_pnl,2),
-                        'open_positions':open_p,'closed_positions':closed_p,
-                        'processes':{'Trading Bot':_bot is not None,'Web Dashboard':True},
-                        'timestamp':datetime.now().isoformat()})
+        return jsonify({'success': True, 'balance': round(balance, 2), 'pnl': round(today_pnl, 2),
+                        'open_positions': open_p, 'closed_positions': closed_p,
+                        'processes': {'Trading Bot': _bot is not None, 'Web Dashboard': True},
+                        'timestamp': datetime.now().isoformat()})
     except Exception as e:
         logger.error(f"system_status: {e}")
-        return jsonify({'success':False,'error':str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/settings/update', methods=['POST'])
@@ -947,8 +1055,11 @@ def update_settings():
 
 @app.route('/api/status')
 def api_status():
-    return jsonify({'market_status':MarketHours.get_status(),
-                    'assets_cached':len(_sig_store),'bot_ready':_bot is not None})
+    engine_ready = _CORE.is_ready if _CORE else (_bot is not None)
+    return jsonify({'market_status': MarketHours.get_status(),
+                    'assets_cached': len(_sig_store),
+                    'bot_ready':     engine_ready,
+                    'architecture':  'single-process' if _CORE else 'standalone'})
 
 
 # ── /api/backtest/run ─────────────────────────────────────────────────────────

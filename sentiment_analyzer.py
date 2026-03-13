@@ -1485,29 +1485,13 @@ class SentimentAnalyzer:
             from config.config import ALPHA_VANTAGE_API_KEY
             
             if not ALPHA_VANTAGE_API_KEY or ALPHA_VANTAGE_API_KEY == "your_key_here":
-                logger.warning("Alpha Vantage key not configured, using VIX estimate")
+                logger.debug("Alpha Vantage key not configured, using VIX estimate for put/call")
                 return self._get_put_call_from_vix()
             
-            # Alpha Vantage API for Put/Call ratio
-            url = "https://www.alphavantage.co/query"
-            params = {
-                'function': 'PCR',  # Put/Call Ratio
-                'symbol': 'SPX',
-                'apikey': ALPHA_VANTAGE_API_KEY
-            }
-            
-            response = requests.get(url, params=params, timeout=5)
-            data = response.json()
-            
-            # Check if we got valid data
-            if 'data' in data and len(data['data']) > 0:
-                ratio = float(data['data'][0]['value'])
-                source = "Alpha Vantage"
-                logger.info(f"Got real Put/Call from Alpha Vantage: {ratio}")
-            else:
-                # Fallback to VIX estimate
-                logger.warning("Alpha Vantage returned no data, using VIX estimate")
-                return self._get_put_call_from_vix()
+            # Alpha Vantage PCR endpoint is not available on the free tier.
+            # Skip the call entirely to preserve our 20 calls/day quota and go
+            # straight to the VIX-based estimate, which works fine for our use.
+            return self._get_put_call_from_vix()
             
             # Interpret the ratio - MORE SENSITIVE
             if ratio > 1.0:  # Changed from 1.1

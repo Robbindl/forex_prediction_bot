@@ -29,34 +29,86 @@ import numpy as np
 # ============================================================
 
 class CooldownTracker:
-    """Tracks recent losses and blocks re-entry for a period."""
+    """Tracks recent losses and blocks re-entry for a period.
+
+    PHASE 2: When core.state (SystemState) is available, delegates all
+    reads/writes there so cooldowns are:
+      • shared across all subsystems in-process
+      • persisted across restarts
+      • alias-aware via AssetRegistry
+
+    Falls back to in-memory dict when running without TradingCore
+    (standalone mode / tests).
+
+    FIX BUG 6: All asset names are normalised to their canonical ID before
+    storing so that aliases (XAG/USD <-> SI=F, XAU/USD <-> GC=F, etc.)
+    share the same cooldown entry and never bypass each other.
+    """
+
+    # Inline alias map — kept here so profitability_upgrade has no circular
+    # import on trading_system or core.assets at module load time.
+    _CANONICAL: Dict[str, str] = {
+        'XAU/USD': 'GC=F', 'GOLD':   'GC=F', 'GC=F': 'GC=F',
+        'XAG/USD': 'SI=F', 'SILVER': 'SI=F', 'SI=F': 'SI=F',
+        'WTI/USD': 'CL=F', 'OIL':    'CL=F', 'CL=F': 'CL=F',
+        'NG/USD':  'NG=F', 'NG=F':   'NG=F',
+        'XCU/USD': 'HG=F', 'HG=F':   'HG=F',
+    }
+
+    def _canonical(self, asset: str) -> str:
+        # Try AssetRegistry first (full alias map), fallback to inline map
+        try:
+            from core.assets import registry
+            return registry.canonical(asset)
+        except Exception:
+            return self._CANONICAL.get(asset, asset)
+
+    def _get_state(self):
+        """Return SystemState singleton if available, else None."""
+        try:
+            from core.state import state as _system_state
+            return _system_state
+        except Exception:
+            return None
 
     def __init__(self, cooldown_minutes: int = 60):
         self.cooldown_minutes = cooldown_minutes
-        self._losses: Dict[str, datetime] = {}   # asset -> time of last loss
+        self._losses: Dict[str, datetime] = {}   # fallback in-memory store
         self._lock = threading.Lock()
 
     def record_loss(self, asset: str):
-        with self._lock:
-            self._losses[asset] = datetime.now()
-            logger.info(f"Cooldown activated for {asset} ({self.cooldown_minutes}min)")
+        key = self._canonical(asset)
+        state = self._get_state()
+        if state is not None:
+            state.set_cooldown(key, self.cooldown_minutes)
+        else:
+            with self._lock:
+                self._losses[key] = datetime.now()
+                logger.info(f"Cooldown activated for {key} ({self.cooldown_minutes}min) [triggered by {asset}]")
 
     def is_cooling_down(self, asset: str) -> bool:
+        key = self._canonical(asset)
+        state = self._get_state()
+        if state is not None:
+            return state.is_cooling_down(key)
         with self._lock:
-            if asset not in self._losses:
+            if key not in self._losses:
                 return False
-            elapsed = (datetime.now() - self._losses[asset]).total_seconds() / 60
+            elapsed = (datetime.now() - self._losses[key]).total_seconds() / 60
             if elapsed >= self.cooldown_minutes:
-                del self._losses[asset]
+                del self._losses[key]
                 return False
-            remaining = int(self.cooldown_minutes - elapsed)
             return True
 
     def get_remaining(self, asset: str) -> int:
+        key = self._canonical(asset)
+        state = self._get_state()
+        if state is not None:
+            return state.cooldown_remaining(key)
         with self._lock:
-            if asset not in self._losses:
+            if key not in self._losses:
                 return 0
-            elapsed = (datetime.now() - self._losses[asset]).total_seconds() / 60
+            elapsed = (datetime.now() - self._losses[key]).total_seconds() / 60
             return max(0, int(self.cooldown_minutes - elapsed))
 
 

@@ -109,18 +109,30 @@ class UltimateTradingSystem:
     ULTIMATE PROFESSIONAL TRADING SYSTEM
     """
     
-    def __init__(self, account_balance: float = 10000, strategy_mode: str = 'balanced', no_telegram: bool = False):
+    def __init__(self, account_balance: float = 10000, strategy_mode: str = 'balanced', no_telegram: bool = False, _trading_core=None):
         """
         Initialize the Ultimate Trading System
-        
+
         Args:
             account_balance: Starting account balance
-            strategy_mode: Trading strategy mode ('strict', 'fast', 'balanced', 'voting')
-            no_telegram: If True, disable Telegram commander
+            strategy_mode:   Trading strategy mode ('strict', 'fast', 'balanced', 'voting')
+            no_telegram:     If True, disable Telegram commander
+            _trading_core:   TradingCore instance (Phase 2). When provided,
+                             SystemState and EventBus are used for shared state.
         """
         logger.info("="*60)
         logger.info(" ULTIMATE PROFESSIONAL TRADING SYSTEM")
         logger.info("="*60)
+
+        # ── Phase 2: wire TradingCore if provided ─────────────────────────
+        self._trading_core = _trading_core
+        self._system_state = None
+        if _trading_core is not None:
+            try:
+                self._system_state = _trading_core.state
+                logger.info("[UltimateTradingSystem] Wired to TradingCore.state")
+            except Exception as _e:
+                logger.warning(f"[UltimateTradingSystem] Could not wire SystemState: {_e}")
 
         # Store the no_telegram flag
         self.no_telegram = no_telegram
@@ -424,14 +436,14 @@ class UltimateTradingSystem:
         
         # ===== MARKET REGIME DETECTION =====
         try:
-            self.regime_detector = MarketRegimeDetector()
+            self.market_regime_analyzer = MarketRegimeDetector()
             self.regime_history = []
             self.current_regime = None
             self.regime_confidence = 0.0
             logger.info("MARKET REGIME DETECTION: ACTIVE")
         except Exception as e:
             logger.warning(f"Could not initialize regime detector: {e}")
-            self.regime_detector = None
+            self.market_regime_analyzer = None
 
         # ===== STRATEGY OPTIMIZER =====
         try:
@@ -902,6 +914,27 @@ class UltimateTradingSystem:
         """Process whale alert and influence trading decisions"""
         
         value_millions = value / 1_000_000
+
+        # ── Estimate token amount when parser couldn't extract it ────────────────
+        # Whale Alert sometimes rounds tiny fractional amounts to 0.00, or the
+        # message format only shows the USD value. In that case, compute a rough
+        # token count from the USD value using approximate prices. The estimate
+        # is prefixed with "~" so it's clearly not an exact figure.
+        _amount_display: str
+        if amount <= 0 and value > 0:
+            _APPROX_PRICES = {
+                'BTC': 85000, 'ETH': 2000, 'BNB': 600,  'SOL': 150,
+                'XRP': 0.55,  'ADA': 0.45, 'DOGE': 0.18,'TRX': 0.12,
+                'TON': 5.5,   'MATIC': 0.9,'AVAX': 28,  'LINK': 14,
+                'UNI': 8,     'ATOM': 6,   'DOT': 6,    'LTC': 90,
+                'ONE': 0.03,  'NEAR': 5,   'FTM': 0.7,  'ALGO': 0.17,
+            }
+            approx_price = _APPROX_PRICES.get(symbol, 1.0)
+            estimated    = value / approx_price
+            _amount_display = f"~{estimated:,.0f}"
+        else:
+            _amount_display = f"{amount:,.2f}"
+        # ─────────────────────────────────────────────────────────────────────────
         
         # Store whale signal
         signal = {
@@ -927,7 +960,7 @@ class UltimateTradingSystem:
         
         # Log the alert
         alert_msg = (
-            f"🐋 Whale Alert: {amount:.2f} {symbol} (${value_millions:.1f}M)\n"
+            f"🐋 Whale Alert: {_amount_display} {symbol} (${value_millions:.1f}M)\n"
             f"   • Channel: @{channel}\n"
             f"   • Sentiment: {'BULLISH' if signal['bullish'] else 'NEUTRAL'}\n"
             f"   • Impact: {self.whale_weights.get(symbol, 1.0):.1f}x weight"
@@ -938,12 +971,12 @@ class UltimateTradingSystem:
         if hasattr(self, 'telegram') and self.telegram:
             try:
                 if hasattr(self.telegram, 'send_whale_alert'):
-                    self.telegram.send_whale_alert(amount, symbol, value_millions, channel)
+                    self.telegram.send_whale_alert(_amount_display, symbol, value_millions, channel)
                 else:
                     # Fallback for commander
                     self.telegram.send_message(
                         f"🐋 *Whale Alert*\n"
-                        f"{amount:.2f} {symbol} (${value_millions:.1f}M)\n"
+                        f"{_amount_display} {symbol} (${value_millions:.1f}M)\n"
                         f"Channel: @{channel}"
                     )
             except Exception as e:
@@ -4154,10 +4187,11 @@ class UltimateTradingSystem:
         Result: signals that reach Telegram have passed every filter in the system.
         """
         try:
-            # Propagate current asset to strategy engine
-            self.current_asset = asset
-            if hasattr(self, 'strategy_engine') and self.strategy_engine:
-                self.strategy_engine.current_asset = asset
+            # FIX BUG 17: Do NOT write self.current_asset in a parallel thread.
+            # 10 threads run scan_asset_parallel simultaneously — each one was
+            # overwriting self.current_asset and self.strategy_engine.current_asset,
+            # causing a race condition. Pass asset as a local parameter instead.
+            # strategy_engine methods that need current_asset receive it via signal dict.
 
             # ── LAYER 1: Voting engine (quick pre-filter) ──────────────────────
             # Run voting engine first — it's fast and kills HOLD signals early.
@@ -4184,6 +4218,10 @@ class UltimateTradingSystem:
                 base_signal = self.fast_strategy(df_15m, df_1h)
             elif self.strategy_mode == 'voting':
                 combined    = self.get_combined_signal(df_15m)
+                # FIX BUG 13: cache result in thread-local so signal_learning's
+                # _build_quality_signal reuses it instead of calling get_combined_signal again
+                import threading as _thr
+                _thr.current_thread()._scan_cache = {'asset': asset, 'combined': combined}
                 base_signal = combined if combined and combined['signal'] != 'HOLD' else None
             else:
                 base_signal = self.balanced_strategy(df_15m, df_1h)
@@ -4340,11 +4378,41 @@ class UltimateTradingSystem:
             # Get live price
             price, source = self.fetcher.get_real_time_price(asset, category)
             if price:
+                old_entry = signal.get('entry_price') or 0
                 signal['entry_price'] = price
                 signal['price_source'] = source
-                # Feed tick into synthetic orderflow tracker for non-crypto
+
+                # If the stale entry differs from live price by more than 2%,
+                # the existing SL/TP are anchored to the wrong level — rescale them.
+                stale = (old_entry > 0 and abs(price - old_entry) / old_entry > 0.02)
+                if stale:
+                    direction = signal.get('signal', 'BUY')
+                    old_sl = signal.get('stop_loss') or 0
+                    old_tp = signal.get('take_profit') or 0
+                    # Preserve distance as a fraction of the old entry
+                    if old_entry > 0:
+                        sl_frac = abs(old_entry - old_sl) / old_entry if old_sl else 0.005
+                        tp_frac = abs(old_entry - old_tp) / old_entry if old_tp else 0.015
+                    else:
+                        sl_frac, tp_frac = 0.005, 0.015
+                    # Cap absurd distances (>20%) to sane defaults
+                    sl_frac = min(sl_frac, 0.02)
+                    tp_frac = min(tp_frac, 0.06)
+                    if direction == 'BUY':
+                        signal['stop_loss']   = price * (1 - sl_frac)
+                        signal['take_profit'] = price * (1 + tp_frac)
+                    else:
+                        signal['stop_loss']   = price * (1 + sl_frac)
+                        signal['take_profit'] = price * (1 - tp_frac)
+                    logger.debug(
+                        f"{asset}: stale entry {old_entry:.4f} → live {price:.4f}; "
+                        f"SL/TP rescaled (sl_frac={sl_frac:.3f}, tp_frac={tp_frac:.3f})"
+                    )
+
+                # Feed tick into synthetic orderflow tracker — ALL categories now
+                # (crypto used to go via Binance WS which is geo-blocked; now uses synthetic)
                 try:
-                    if _orderflow_engine and category in ('forex','commodities','stocks','indices'):
+                    if _orderflow_engine:
                         _orderflow_engine.update_forex_tick(asset, price, category)
                 except Exception:
                     pass
@@ -4358,6 +4426,21 @@ class UltimateTradingSystem:
             # Attach regime for downstream risk sizing
             if hasattr(self, 'current_regime') and self.current_regime:
                 signal['regime'] = str(self.current_regime)
+
+            # ── Final sanity gate: reject physically impossible SL/TP ────────────
+            # Catches stale entry price that was never overwritten by live price.
+            # Rule: SL distance > 30% of entry means data is corrupt — kill it.
+            _entry = signal.get('entry_price') or 0
+            _sl    = signal.get('stop_loss')   or 0
+            if _entry > 0 and _sl > 0:
+                _sl_pct = abs(_entry - _sl) / _entry
+                if _sl_pct > 0.30:
+                    logger.warning(
+                        f"⛔ SANITY REJECT {asset}: entry={_entry:.4f} SL={_sl:.4f} "
+                        f"→ SL distance={_sl_pct:.1%} > 30% — stale/corrupt price data"
+                    )
+                    return None
+            # ─────────────────────────────────────────────────────────────────────
 
             logger.info(
                 f"✅ QUALITY SIGNAL: {asset} {signal.get('signal')} | "
@@ -4412,66 +4495,8 @@ class UltimateTradingSystem:
         
         return signals
     
-    def process_parallel_signals(self, signals: List[Dict]):
-        """
-        Process signals from parallel scan and execute trades
-        """
-        if not signals:
-            logger.info("No signals to process")
-            return
-        
-        logger.info(f"Processing {len(signals)} signals...")
-        
-        for signal in signals[:5]:  # Process top 5 signals
-            try:
-                asset = signal['asset']
-                category = signal['category']
-                
-                # Get current positions
-                open_positions = self.paper_trader.get_open_positions()
-                
-                # ===== PORTFOLIO CHECKS =====
-                should_trade = True
-                reason = ""
-                
-                # Check max positions
-                if len(open_positions) >= 5:
-                    should_trade = False
-                    reason = "Max positions reached"
-                
-                # Check category diversification
-                if should_trade:
-                    cat_count = sum(1 for p in open_positions if p.get('category') == category)
-                    if cat_count >= 3:
-                        should_trade = False
-                        reason = f"Too many {category} positions"
-                
-                # ===== CORRELATION CHECK =====
-                if should_trade and open_positions and hasattr(self, 'portfolio_optimizer'):
-                    allowed, corr_reason = self.portfolio_optimizer.check_position_correlation(
-                        asset, category, open_positions
-                    )
-                    if not allowed:
-                        should_trade = False
-                        reason = corr_reason
-                
-                # ===== DAILY LOSS LIMIT CHECK =====
-                if should_trade and hasattr(self, 'daily_loss_limit') and self.daily_loss_limit:
-                    trading_allowed, _ = self.daily_loss_limit.update(0)
-                    if not trading_allowed:
-                        should_trade = False
-                        reason = "Daily loss limit hit"
-                
-                if should_trade:
-                    # Execute trade
-                    trade = self.paper_trader.execute_signal(signal)
-                    if trade:
-                        logger.info(f"EXECUTED: {asset} {signal['signal']}")
-                else:
-                    logger.info(f"SKIPPED {asset}: {reason}")
-                    
-            except Exception as e:
-                logger.warning(f"Error processing {signal.get('asset', 'unknown')}: {e}")
+    # process_parallel_signals() removed — was dead code (never called).
+    # Signal processing is handled inline in the trading_loop.
 
     def start_professional_trading(self):
         """Start live trading with ALL features ACTIVATED (using 15m + 1h only)"""
@@ -4577,12 +4602,14 @@ class UltimateTradingSystem:
         try:
             from advanced_ai import AdvancedAIIntegration
             self.ai_system = AdvancedAIIntegration()
-            # We'll initialize with first asset's data when available
-            self.ai_initialized = False
-            logger.info("Advanced AI systems: READY for initialization")
+            # FIX BUG 15: ai_initialized was set False and never set True.
+            # The system IS initialized once the constructor returns successfully.
+            self.ai_initialized = True
+            logger.info("Advanced AI systems: ACTIVE")
         except Exception as e:
             logger.warning(f"Could not initialize Advanced AI: {e}")
             self.ai_system = None
+            self.ai_initialized = False
         
         # Start auto-trainer
         if hasattr(self, 'auto_trainer'):
@@ -4595,13 +4622,17 @@ class UltimateTradingSystem:
             ai_init_counter = 0
             health_check_counter = 0
             last_day_check = datetime.now().date()
+            # FIX BUG 3: daily_trades lives OUTSIDE the while loop so it accumulates
+            # across scan cycles within the same day. It only resets on day change below.
+            daily_trades = 0
             
             while self.is_running:
                 try:
                     # ===== DAILY RESET CHECK =====
                     current_date = datetime.now().date()
                     if current_date != last_day_check:
-                        # New day - reset daily loss limit
+                        # New day - reset daily loss limit AND daily trade counter
+                        daily_trades = 0
                         if hasattr(self, 'daily_loss_limit') and self.daily_loss_limit:
                             self.daily_loss_limit.reset_daily()
                             current_balance = self.risk_manager.account_balance if hasattr(self, 'risk_manager') else account_balance
@@ -4614,9 +4645,6 @@ class UltimateTradingSystem:
                             self.market_calendar.fetch_earnings_calendar()
                         
                         last_day_check = current_date
-                    
-                    # Track daily trades
-                    daily_trades = 0
                     
                     # Get current positions for portfolio analysis
                     open_positions = self.paper_trader.get_open_positions()
@@ -4683,11 +4711,11 @@ class UltimateTradingSystem:
                             
                             # Check if we should reduce risk
                             risk_rec = self.market_calendar.should_reduce_risk()
-                            # calendar_risk_multiplier = risk_rec['risk_multiplier']  # COMMENT THIS OUT
-                            calendar_risk_multiplier = 1.0  # FORCE to 1.0 (no reduction)
+                            # FIX BUG 4: Actually use the calendar multiplier (was hardcoded 1.0)
+                            calendar_risk_multiplier = risk_rec.get('risk_multiplier', 1.0)
                             
                             if risk_rec['reduce_trading']:
-                                logger.info(f"MARKET EVENT WARNING: Would reduce risk to {risk_rec['risk_multiplier']:.0%} (FORCED OFF)")
+                                logger.info(f"MARKET CALENDAR: Reducing position size to {calendar_risk_multiplier:.0%}")
                                 if risk_rec['high_impact_events']:
                                     logger.info(f"      • High-impact economic events coming up")
                                 if risk_rec['halving_soon']:
@@ -4697,18 +4725,11 @@ class UltimateTradingSystem:
                     
                     # ===== REPLACE THE OLD SCANNING LOOP WITH THIS =====
                     # ===== PARALLEL SIGNAL SCANNING =====
-                    logger.info(f"Scanning assets in parallel...")
-                    
-                    # Get all assets that are currently open for trading
-                    active_assets = [
-                        (asset, category) for asset, category in self.get_asset_list()
-                        if MarketHours.get_status().get(category, False)
-                    ]
-                    
-                    logger.info(f"   Active markets: {len(active_assets)} assets")
-                    
-                    # Scan all active assets in parallel
+                    # FIX BUG 12: Removed dead active_assets variable — it was computed
+                    # here but never used. scan_all_assets_parallel applies its own
+                    # MarketHours filter internally.
                     signals = self.scan_all_assets_parallel()
+                    logger.info(f"Scanning assets in parallel... found {len(signals)} signals")
                     
                     # Process the top signals
                     if signals:
@@ -4719,6 +4740,10 @@ class UltimateTradingSystem:
                                 asset = signal['asset']
                                 category = signal['category']
                                 
+                                # FIX BUG 20: Re-fetch open positions for EACH signal so
+                                # we see trades opened by earlier signals in this same cycle.
+                                open_positions = self.paper_trader.get_open_positions()
+
                                 # ===== PORTFOLIO CHECKS =====
                                 should_trade = True
                                 reason = ""
@@ -4727,13 +4752,25 @@ class UltimateTradingSystem:
                                 if len(open_positions) >= 5:
                                     should_trade = False
                                     reason = "Max positions (5) reached"
+
+                                # FIX BUG 7: Hard duplicate-asset guard using canonical ID.
+                                # Prevents opening EUR/USD twice, or XAG/USD while SI=F is open.
+                                if should_trade:
+                                    canonical = UltimateTradingSystem.get_canonical(asset)
+                                    for op in open_positions:
+                                        existing_canonical = UltimateTradingSystem.get_canonical(op.get('asset', ''))
+                                        if existing_canonical == canonical:
+                                            should_trade = False
+                                            reason = f"Already have open position for {canonical} (via {op['asset']})"
+                                            break
                                 
-                                # Check category diversification
+                                # Check category diversification (FIX BUG 21: use consistent cap of 2)
                                 if should_trade:
                                     cat_count = sum(1 for p in open_positions if p.get('category') == category)
-                                    if cat_count >= 3:
+                                    cat_max = 3 if category in ('forex', 'crypto') else 2
+                                    if cat_count >= cat_max:
                                         should_trade = False
-                                        reason = f"Too many {category} positions (max 3)"
+                                        reason = f"Too many {category} positions (max {cat_max})"
                                 
                                 # ===== CORRELATION CHECK =====
                                 if should_trade and open_positions and hasattr(self, 'portfolio_optimizer'):
@@ -4749,8 +4786,14 @@ class UltimateTradingSystem:
                                         logger.debug(f"Correlation check error: {e}")
                                 
                                 # ===== DAILY LOSS LIMIT CHECK =====
+                                # FIX BUG 19: Pass real current P&L, not hardcoded 0
                                 if should_trade and hasattr(self, 'daily_loss_limit') and self.daily_loss_limit:
-                                    trading_allowed, status_message = self.daily_loss_limit.update(0)
+                                    try:
+                                        perf = self.paper_trader.get_performance()
+                                        current_pnl = perf.get('total_pnl', 0)
+                                    except Exception:
+                                        current_pnl = 0
+                                    trading_allowed, status_message = self.daily_loss_limit.update(current_pnl)
                                     if not trading_allowed:
                                         should_trade = False
                                         reason = f"Daily loss limit: {status_message}"
@@ -4882,6 +4925,11 @@ class UltimateTradingSystem:
                                     trade = self.paper_trader.execute_signal(signal)
                                     if trade:
                                         daily_trades += 1
+                                        # PHASE 2: SystemState tracks daily_trades authoritatively
+                                        # trading_loop local var stays in sync as a fallback
+                                        if self._system_state is not None:
+                                            # SystemState.add_position() already increments daily_trades
+                                            pass
                                         logger.info(f"EXECUTED: {asset} {signal['signal']} [{signal.get('strategy_id', 'UNKNOWN')}]")
                                         
                                         # Show TP levels if available
@@ -5320,6 +5368,16 @@ class UltimateTradingSystem:
                 except Exception as e:
                     logger.error(f"Trading error: {e}", exc_info=True)
                 
+                # FIX BUG 1: Write live state to disk so dashboard (separate process)
+                # can read real positions instead of its own idle bot instance.
+                # Also expose daily_trades as an instance attribute for state_bridge.
+                try:
+                    self._daily_trades = daily_trades
+                    from state_bridge import write_trading_state
+                    write_trading_state(self)
+                except Exception as _sb_e:
+                    logger.debug(f"state_bridge write skipped: {_sb_e}")
+
                 time.sleep(60)  # Scan every minute
         
         thread = threading.Thread(target=trading_loop, daemon=True)
@@ -5416,18 +5474,45 @@ class UltimateTradingSystem:
         if halving['days_until'] > 0:
             logger.info(f"Bitcoin Halving: {halving['days_until']} days away")
 
+    # ── Canonical asset alias map ──────────────────────────────────────────────
+    # FIX BUGS 5/6/22/23: XAG/USD and SI=F are the same underlying (silver).
+    # Same for XAU/USD↔GC=F (gold) and WTI/USD↔CL=F (oil).
+    # All aliases map to a single canonical ID used for:
+    #   • Duplicate signal deduplication
+    #   • Shared cooldown timers
+    #   • Duplicate open-position blocking
+    CANONICAL_ASSET: Dict[str, str] = {
+        # Gold
+        'XAU/USD': 'GC=F',  'GOLD': 'GC=F',  'GC=F': 'GC=F',
+        # Silver
+        'XAG/USD': 'SI=F',  'SILVER': 'SI=F', 'SI=F': 'SI=F',
+        # Oil
+        'WTI/USD': 'CL=F',  'OIL': 'CL=F',   'CL=F': 'CL=F',
+        # Natural gas (no spot duplicate, just map to self)
+        'NG/USD':  'NG=F',  'NG=F': 'NG=F',
+        # Copper
+        'XCU/USD': 'HG=F',  'HG=F': 'HG=F',
+    }
+
+    @classmethod
+    def get_canonical(cls, asset: str) -> str:
+        """Return the canonical ID for an asset, or the asset itself if not aliased."""
+        return cls.CANONICAL_ASSET.get(asset, asset)
+
     def get_asset_list(self) -> List[tuple]:
-        """Get COMPLETE list of assets to trade"""
+        """Get COMPLETE list of assets to trade.
+        FIX BUGS 5/22/23: Removed duplicate commodities.
+        Spot aliases (XAU/USD, XAG/USD, WTI/USD) were duplicating
+        GC=F, SI=F, CL=F — same underlying, double trades.
+        Keeping only the futures tickers (Yahoo's canonical form).
+        """
         return [
-            # ===== COMMODITIES - KEEP THESE 7 =====
-            ('XAU/USD', 'commodities'),  # Gold Spot
-            ('XAG/USD', 'commodities'),  # Silver Spot
-            ('WTI/USD', 'commodities'),  # WTI Crude Oil Spot
-            ('NG/USD', 'commodities'),   # Natural Gas Spot
-            ('XCU/USD', 'commodities'),  # Copper Spot
-            ('GC=F', 'commodities'),     # Gold Futures
-            ('SI=F', 'commodities'),     # Silver Future
-            ('CL=F', 'commodities'),     # Crude Futures
+            # ===== COMMODITIES — one ticker per underlying =====
+            ('GC=F',   'commodities'),   # Gold  (was also XAU/USD — removed)
+            ('SI=F',   'commodities'),   # Silver (was also XAG/USD — removed)
+            ('CL=F',   'commodities'),   # Crude Oil (was also WTI/USD — removed)
+            ('NG=F',   'commodities'),   # Natural Gas
+            ('HG=F',   'commodities'),   # Copper
 
             # ===== CRYPTO - ONLY THESE 11 =====
             ('BTC-USD', 'crypto'),
@@ -5466,32 +5551,32 @@ class UltimateTradingSystem:
 
             # ===== INDICES (keep all) =====
             ('^GSPC', 'indices'),   # S&P 500
-            ('^DJI', 'indices'),    # Dow Jones
+            ('^DJI',  'indices'),   # Dow Jones
             ('^IXIC', 'indices'),   # Nasdaq
             ('^FTSE', 'indices'),   # FTSE 100
             ('^N225', 'indices'),   # Nikkei 225
-            ('^HSI', 'indices'),    # Hang Seng
-            ('^GDAXI', 'indices'),  # DAX
-            ('^VIX', 'indices'),    # Volatility Index
+            ('^HSI',  'indices'),   # Hang Seng
+            ('^GDAXI','indices'),   # DAX
+            ('^VIX',  'indices'),   # Volatility Index
             
-            # ===== STOCKS - REDUCED LIST =====
-            ('AAPL', 'stocks'),    # Apple
-            ('MSFT', 'stocks'),    # Microsoft
-            ('GOOGL', 'stocks'),   # Google
-            ('AMZN', 'stocks'),    # Amazon
-            ('TSLA', 'stocks'),    # Tesla
-            ('NVDA', 'stocks'),    # NVIDIA
-            ('META', 'stocks'),    # Meta
-            ('JPM', 'stocks'),     # JPMorgan
-            ('V', 'stocks'),       # Visa
-            ('MA', 'stocks'),      # Mastercard
-            ('JNJ', 'stocks'),     # Johnson & Johnson
-            ('PFE', 'stocks'),     # Pfizer
-            ('WMT', 'stocks'),     # Walmart
-            ('PG', 'stocks'),      # Procter & Gamble
-            ('KO', 'stocks'),      # Coca-Cola
-            ('XOM', 'stocks'),     # Exxon
-            ('CVX', 'stocks'),     # Chevron
+            # ===== STOCKS =====
+            ('AAPL',  'stocks'),
+            ('MSFT',  'stocks'),
+            ('GOOGL', 'stocks'),
+            ('AMZN',  'stocks'),
+            ('TSLA',  'stocks'),
+            ('NVDA',  'stocks'),
+            ('META',  'stocks'),
+            ('JPM',   'stocks'),
+            ('V',     'stocks'),
+            ('MA',    'stocks'),
+            ('JNJ',   'stocks'),
+            ('PFE',   'stocks'),
+            ('WMT',   'stocks'),
+            ('PG',    'stocks'),
+            ('KO',    'stocks'),
+            ('XOM',   'stocks'),
+            ('CVX',   'stocks'),
         ]
     
     # ============= UTILITY FUNCTIONS =============

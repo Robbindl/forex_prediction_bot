@@ -3,6 +3,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from datetime import datetime, timedelta
+from contextlib import contextmanager
 import uuid
 import numpy as np
 from sqlalchemy import text
@@ -53,6 +54,30 @@ class DatabaseService:
 
             self.use_db = False
             self.session = None
+
+    @contextmanager
+    def get_session(self):
+        """
+        Context manager that yields a live SQLAlchemy session.
+        Used by prediction_tracker.py, orderflow_engine.py, and any module
+        that needs raw SQL access.
+
+        Usage:
+            with db.get_session() as session:
+                session.execute(text("SELECT ..."))
+                session.commit()
+        """
+        if not self.use_db or not SessionLocal:
+            raise RuntimeError("Database not available")
+        session = SessionLocal()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
     
     def save_trade(self, trade_data):
         """Save a trade to the database"""

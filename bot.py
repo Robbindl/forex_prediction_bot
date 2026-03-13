@@ -1,348 +1,312 @@
 """
-bot.py — One command to rule them all.
+bot.py — Single-process launcher for the entire trading platform.
+
+PHASE 2 ARCHITECTURE: Everything runs in ONE process.
+No more subprocess.Popen for trading engine or dashboard.
+One TradingCore instance shared by all subsystems.
+
+Process layout (all in-process daemon threads):
+  TradingCore        — trading loop, signal scanning, execution
+  Flask web app      — dashboard (web_app_live.py) in a thread
+  Dash perf app      — performance_dashboard.py in a thread (optional)
+  TelegramCommander  — command bot, wired to TradingCore
+  Health watchdog    — periodic health checks
+  ML auto-trainer    — midnight training trigger
+
+Why one process?
+  TradingCore is shared by reference — no IPC, no state sync lag
+  Flask reads live positions directly from TradingCore.state
+  Telegram commands call TradingCore methods directly
+  No state_bridge.py file polling needed
 
 Usage:
-    python bot.py                  # start everything ($30 default)
-    python bot.py --balance 500    # your balance, flows everywhere
-    python bot.py --no-perf        # skip performance dashboard
-    python bot.py train            # trigger ML training now
-    python bot.py stop             # gracefully stop all services
-    python bot.py status           # show what's running
+    python bot.py                   # start everything ($30 default)
+    python bot.py --balance 500
+    python bot.py --strategy voting
+    python bot.py --no-perf
+    python bot.py status
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from logger import logger
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+from logger import logger
 
 PYTHON   = sys.executable
 BASE     = Path(__file__).parent
-LOGS_DIR = BASE / 'logs'
-CFG_FILE = BASE / 'config' / 'bot_runtime.json'   # shared config for all services
+LOGS_DIR = BASE / "logs"
+CFG_FILE = BASE / "config" / "bot_runtime.json"
+TRAINING_HOUR = 0
 
-SERVICES = {
-    'dashboard': {'script': 'web_app_live.py',         'label': 'Dashboard        :5000'},
-    'trading':   {'script': 'trading_system.py',        'label': 'Trading Engine'},
-    'perf':      {'script': 'performance_dashboard.py', 'label': 'Perf Dashboard   :8050'},
-    'training':  {'script': 'auto_train_daily.py',      'label': 'ML Training'},
-}
-# NOTE — intentionally excluded:
-# 'telegram' → TelegramCommander starts INSIDE trading_system via telegram_manager.
-#              Running it as a subprocess has no trading_system reference — exits
-#              instantly and causes a crash loop. Already working fine (see Telegram).
-# 'health'   → health_check.py runs once and exits. Not a persistent service.
-#              bot.py watchdog calls it on a 5-min schedule instead.
-
-RESTART_DELAY  = 10    # seconds before restarting a crashed service
-MAX_RESTARTS   = 5     # after this, give up and alert
-CHECK_INTERVAL = 30    # seconds between watchdog ticks
-TRAINING_HOUR  = 0     # midnight
-
-# ── Shared runtime state ──────────────────────────────────────────────────────
-
-_procs:   dict = {}
-_crashes: dict = {}
-_lock     = threading.Lock()
+_engine   = None
 _stop_evt = threading.Event()
 _args     = None
 
 
-# ── Runtime config (shared with master_controller / health_check) ─────────────
-
-def _write_runtime_cfg(balance: float):
-    """Write balance + start time to config/bot_runtime.json so every
-    service that restarts processes can read the correct balance."""
+def _write_runtime_cfg(balance: float) -> None:
     CFG_FILE.parent.mkdir(exist_ok=True)
-    data = {
-        'balance':    balance,
-        'started_at': datetime.now().isoformat(),
-        'python':     PYTHON,
-    }
-    CFG_FILE.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    CFG_FILE.write_text(
+        json.dumps({
+            "balance": balance,
+            "started_at": datetime.now().isoformat(),
+            "python": PYTHON,
+            "arch": "single-process-v2",
+        }, indent=2),
+        encoding="utf-8",
+    )
 
 
 def read_runtime_balance(default: float = 30.0) -> float:
-    """Helper any service can import: from bot import read_runtime_balance"""
+    """Helper any module can import: from bot import read_runtime_balance"""
     try:
-        data = json.loads(CFG_FILE.read_text(encoding='utf-8'))
-        return float(data.get('balance', default))
+        return float(json.loads(CFG_FILE.read_text(encoding="utf-8")).get("balance", default))
     except Exception:
         return default
 
 
-# ── Telegram alert ────────────────────────────────────────────────────────────
-
-def _tg_alert(text: str):
-    """Watchdog alert — .env is the ONLY credential source. Never reads json config files."""
-    import os
+def _tg_alert(text: str) -> None:
     try:
         from dotenv import load_dotenv
-        load_dotenv(BASE / '.env', override=False)
+        load_dotenv(BASE / ".env", override=False)
     except Exception:
         pass
-    token   = os.getenv('COMMAND_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN', '')
-    chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
+    token   = os.getenv("COMMAND_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
         return
     try:
         import urllib.request, urllib.parse
-        url  = f'https://api.telegram.org/bot{token}/sendMessage'
-        data = urllib.parse.urlencode({'chat_id': chat_id, 'text': text}).encode()
+        url  = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
         urllib.request.urlopen(url, data, timeout=8)
     except Exception:
         pass
 
 
-# ── Process management ────────────────────────────────────────────────────────
+def _start_flask(engine, balance: float) -> threading.Thread:
+    def _run():
+        try:
+            import web_app_live
+            web_app_live.inject_core(engine)
+            web_app_live.app.run(
+                host="0.0.0.0", port=5000,
+                debug=False, use_reloader=False, threaded=True,
+            )
+        except Exception as e:
+            logger.error(f"[Flask] Crashed: {e}", exc_info=True)
+    t = threading.Thread(target=_run, name="Flask-dashboard", daemon=True)
+    t.start()
+    logger.info("  Flask dashboard starting on :5000")
+    return t
 
-def _build_cmd(key: str, balance: float) -> list:
-    script = SERVICES[key]['script']
-    cmd    = [PYTHON, script]
-    if key == 'dashboard':
-        cmd += ['--balance', str(balance)]
-    elif key == 'trading':
-        cmd += ['--mode', 'live', '--balance', str(balance),
-                '--strategy-mode', 'voting', '--no-telegram']
-    return cmd
+
+def _start_dash(engine) -> threading.Thread:
+    def _run():
+        try:
+            import performance_dashboard
+            performance_dashboard.inject_core(engine)
+            performance_dashboard.app.run(
+                host="0.0.0.0", port=8050,
+                debug=False, use_reloader=False,
+            )
+        except Exception as e:
+            logger.error(f"[Dash] Crashed: {e}", exc_info=True)
+    t = threading.Thread(target=_run, name="Dash-perf", daemon=True)
+    t.start()
+    logger.info("  Dash dashboard starting on :8050")
+    return t
 
 
-def _start(key: str, balance: float):
-    LOGS_DIR.mkdir(exist_ok=True)
-    cmd   = _build_cmd(key, balance)
-    label = SERVICES[key]['label']
-    # STORAGE FIX: Route subprocess stdout/stderr to DEVNULL.
-    # Every service (trading_system, web_app_live, etc.) uses logger.py
-    # internally which already writes to logs/trading_bot.log with rotation.
-    # The old approach used plain open(..., 'a') with NO size limit — that
-    # single file was consuming multiple GB per hour from Flask/TF verbose output.
+def _start_telegram(engine) -> None:
     try:
-        kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=BASE)
-        if sys.platform == 'win32':
-            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-        proc = subprocess.Popen(cmd, **kwargs)
-        with _lock:
-            _procs[key]   = proc
-            _crashes[key] = _crashes.get(key, 0)
-        _log(f'  ✅  {label:<30s}  PID {proc.pid}')
-        return proc
-    except Exception as e:
-        _log(f'  ❌  {label} failed to start: {e}')
-        return None
-
-
-def _is_alive(key: str) -> bool:
-    with _lock:
-        proc = _procs.get(key)
-    return proc is not None and proc.poll() is None
-
-
-def _stop_all():
-    _log('\n🛑  Stopping all services…')
-    with _lock:
-        procs = dict(_procs)
-    for key, proc in procs.items():
-        if proc and proc.poll() is None:
-            label = SERVICES[key]['label']
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-                _log(f'  stopped  {label}')
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                _log(f'  killed   {label}')
-    _log('Done.')
-
-
-# ── Watchdog ──────────────────────────────────────────────────────────────────
-
-def _watchdog(balance: float, auto_services: list):
-    last_training_date = None
-    active = list(auto_services)
-
-    while not _stop_evt.is_set():
-        now = datetime.now()
-
-        # Check each managed service
-        for key in list(active):
-            if key == 'training':
-                continue
-            if not _is_alive(key):
-                with _lock:
-                    n = _crashes.get(key, 0) + 1
-                    _crashes[key] = n
-                label = SERVICES[key]['label']
-
-                if n > MAX_RESTARTS:
-                    msg = (f'🚨 {label} has crashed {n}× — giving up. '
-                           f'Fix the issue and run: python bot.py')
-                    _log(msg)
-                    _tg_alert(msg)
-                    active.remove(key)
-                    continue
-
-                _log(f'⚠️  {label} crashed (#{n}) — restarting in {RESTART_DELAY}s…')
-                _tg_alert(f'⚠️ [{label}] crashed (#{n}/{MAX_RESTARTS}) — restarting…')
-                time.sleep(RESTART_DELAY)
-                _start(key, balance)
-
-        # Midnight auto-training
-        if 'training' in active:
-            today = now.date()
-            if now.hour == TRAINING_HOUR and now.minute < 5 and last_training_date != today:
-                last_training_date = today
-                _log('🧠  Midnight — launching auto ML training…')
-                _tg_alert(f'🧠 Auto-training started (balance ${balance})')
-                _start('training', balance)
-
-        # Scheduled health check every 5 min (runs once + exits — not a persistent service)
-        if not hasattr(_watchdog, '_last_health') or (now - _watchdog._last_health).seconds >= 300:
-            _watchdog._last_health = now
-            try:
-                import subprocess as _sp
-                _sp.Popen(
-                    [PYTHON, str(BASE / 'health_check.py')],
-                    stdout=subprocess.DEVNULL,   # STORAGE FIX: was open(health.log,'a') — no size limit
-                    stderr=subprocess.DEVNULL,   # health_check uses logger.py internally for real output
-                    cwd=BASE,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
-                )
-            except Exception as _he:
-                _log(f'Health check failed to launch: {_he}')
-
-        _stop_evt.wait(CHECK_INTERVAL)
-
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-
-def _log(msg: str):
-    ts = datetime.now().strftime('%H:%M:%S')
-    logger.info(f'{ts}  {msg}')
-
-# ── Sub-commands ──────────────────────────────────────────────────────────────
-
-def cmd_status():
-    balance = read_runtime_balance()
-    _log(f'\n{"="*55}')
-    _log(f'  📊  BOT STATUS   —   Balance: ${balance}')
-    _log(f'{"="*55}')
-    try:
-        cfg = json.loads(CFG_FILE.read_text(encoding='utf-8'))
-        _log(f'  Started : {cfg.get("started_at", "unknown")}')
-        _log(f'  Balance : ${cfg.get("balance", "?")}')
+        from dotenv import load_dotenv
+        load_dotenv(BASE / ".env", override=False)
     except Exception:
-        _log('  (bot not currently running)')
-    _log('')
-    for key, info in SERVICES.items():
-        alive = _is_alive(key)
-        proc  = _procs.get(key)
-        pid   = proc.pid if proc else '—'
-        icon  = '🟢' if alive else '🔴'
-        _log(f'  {icon}  {info["label"]:<30s}  pid={pid}')
-    _log('')
+        pass
+    token   = os.getenv("COMMAND_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        logger.info("  Telegram: no token in .env — skipping")
+        return
+    try:
+        from telegram_commander import TelegramCommander
+        tg = TelegramCommander(
+            token=token,
+            chat_id=chat_id,
+            trading_system=engine._engine,
+        )
+        engine.telegram = tg
+        tg.start()
+        logger.info("  TelegramCommander started")
+    except Exception as e:
+        logger.warning(f"  TelegramCommander failed: {e}")
 
 
-def cmd_train(balance: float):
-    _log(f'🧠  Triggering ML training now  (balance ${balance})…')
-    _tg_alert(f'🧠 Manual training triggered  (balance ${balance})')
-    _start('training', balance)
+def _midnight_trainer(balance: float) -> None:
+    last_training_date = None
+    while not _stop_evt.is_set():
+        now   = datetime.now()
+        today = now.date()
+        if now.hour == TRAINING_HOUR and now.minute < 5 and last_training_date != today:
+            last_training_date = today
+            logger.info("[AutoTrainer] Midnight — starting ML training")
+            _tg_alert("Brain Auto-training started")
+            try:
+                import subprocess
+                subprocess.Popen(
+                    [PYTHON, str(BASE / "auto_train_daily.py")],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=BASE,
+                )
+            except Exception as e:
+                logger.error(f"[AutoTrainer] Failed: {e}")
+        _stop_evt.wait(60)
 
 
-def cmd_start(auto_services: list, balance: float):
+def _health_watchdog(engine) -> None:
+    while not _stop_evt.is_set():
+        _stop_evt.wait(300)
+        if _stop_evt.is_set():
+            break
+        try:
+            report = engine.health_report()
+            if report["issues"]:
+                msg = "Health issues:\n" + "\n".join(f"- {i}" for i in report["issues"])
+                logger.warning(msg)
+                _tg_alert(msg)
+            else:
+                logger.info(
+                    f"[Health] OK RAM={report['ram_pct']:.0f}% "
+                    f"CPU={report['cpu_pct']:.0f}% "
+                    f"bal=${report['balance']:.2f} "
+                    f"pos={report['open_positions']}"
+                )
+        except Exception as e:
+            logger.error(f"[Health] Failed: {e}")
+
+
+def cmd_status() -> None:
+    try:
+        cfg = json.loads(CFG_FILE.read_text(encoding="utf-8"))
+        logger.info("=" * 55)
+        logger.info("  BOT STATUS")
+        logger.info("=" * 55)
+        logger.info(f"  Started : {cfg.get('started_at', 'unknown')}")
+        logger.info(f"  Balance : ${cfg.get('balance', '?')}")
+        logger.info(f"  Arch    : {cfg.get('arch', 'legacy')}")
+    except Exception:
+        logger.info("  (bot not currently running)")
+
+
+def cmd_start(balance: float, strategy_mode: str, no_perf: bool, no_telegram: bool) -> None:
+    global _engine
+
     LOGS_DIR.mkdir(exist_ok=True)
-
-    # Write balance to shared config so master_controller / health_check use it
     _write_runtime_cfg(balance)
 
-    _log(f'\n{"="*55}')
-    _log(f'  🤖  TRADING BOT   —   starting {len([s for s in auto_services if s != "training"])} services')
-    _log(f'  Balance   : ${balance}')
-    _log(f'  Training  : auto at midnight  +  python bot.py train')
-    _log(f'  Logs      : logs/<service>.log')
-    _log(f'{"="*55}\n')
+    logger.info("=" * 55)
+    logger.info("  TRADING BOT  --  Phase 2 Single-Process")
+    logger.info(f"  Balance  : ${balance}")
+    logger.info(f"  Strategy : {strategy_mode}")
+    logger.info("=" * 55)
 
-    # Stagger starts so APIs don't get hammered simultaneously
-    for key in auto_services:
-        if key == 'training':
-            continue
-        time.sleep(1.5)
-        _start(key, balance)
+    from core.engine import TradingCore
+    _engine = TradingCore(
+        balance=balance,
+        strategy_mode=strategy_mode,
+        no_telegram=no_telegram,
+    )
 
-    _log(f'\n  Dashboard  → http://localhost:5000')
-    _log(f'  Perf       → http://localhost:8050')
-    _log(f'  Balance    → ${balance}')
-    _log(f'\n  Ctrl+C to stop everything.\n')
+    time.sleep(0.5)
+    _start_flask(_engine, balance)
 
-    # Graceful shutdown
+    if not no_perf:
+        time.sleep(0.5)
+        _start_dash(_engine)
+
+    if not no_telegram:
+        time.sleep(0.5)
+        _start_telegram(_engine)
+
+    time.sleep(1.0)
+    _engine.start()
+
+    threading.Thread(
+        target=_health_watchdog, args=(_engine,),
+        name="health-watchdog", daemon=True,
+    ).start()
+    threading.Thread(
+        target=_midnight_trainer, args=(balance,),
+        name="midnight-trainer", daemon=True,
+    ).start()
+
+    logger.info("")
+    logger.info(f"  Dashboard  -> http://localhost:5000")
+    if not no_perf:
+        logger.info(f"  Perf       -> http://localhost:8050")
+    logger.info(f"  Ctrl+C to stop.")
+    logger.info("")
+
     def _shutdown(sig=None, frame=None):
+        logger.info("\nShutdown signal — stopping...")
         _stop_evt.set()
-        _stop_all()
+        if _engine:
+            _engine.stop("shutdown")
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # Watchdog thread
-    threading.Thread(
-        target=_watchdog, args=(balance, list(auto_services)),
-        daemon=True, name='watchdog'
-    ).start()
-
-    # Main thread heartbeat every 5 min
     last_hb = datetime.now()
     while True:
         time.sleep(10)
+        if _stop_evt.is_set():
+            break
         if (datetime.now() - last_hb).seconds >= 300:
             last_hb = datetime.now()
-            alive = [k for k in auto_services if k != 'training' and _is_alive(k)]
-            total = len([k for k in auto_services if k != 'training'])
-            _log(f'💓  {len(alive)}/{total} services running  |  Balance ${balance}')
+            if _engine:
+                logger.info(
+                    f"[Heartbeat] engine={'ready' if _engine.is_ready else 'init'} "
+                    f"pos={_engine.state.open_position_count()} "
+                    f"bal=${_engine.state.balance:.2f}"
+                )
 
-
-# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
     global _args
-
-    parser = argparse.ArgumentParser(
-        description='Trading Bot — one command launcher',
-    )
-    parser.add_argument('command', nargs='?', default='start',
-                        choices=['start', 'stop', 'status', 'train'])
-    parser.add_argument('--balance', type=float, default=30,
-                        help='Account balance in USD  (default: 30)')
-    parser.add_argument('--no-perf', action='store_true',
-                        help='Skip performance dashboard (:8050)')
+    parser = argparse.ArgumentParser(description="Trading Bot Phase 2")
+    parser.add_argument("command", nargs="?", default="start",
+                        choices=["start", "stop", "status", "train"])
+    parser.add_argument("--balance",     type=float, default=30.0)
+    parser.add_argument("--strategy",    default="voting",
+                        choices=["voting", "balanced", "strict", "fast"])
+    parser.add_argument("--no-perf",     action="store_true")
+    parser.add_argument("--no-telegram", action="store_true")
     _args = parser.parse_args()
 
-    balance = _args.balance
-
-    auto_services = [
-        'dashboard',
-        'trading',
-        'training',   # scheduler only — not immediately started
-    ]
-    if not _args.no_perf:
-        auto_services.insert(2, 'perf')
-    # 'telegram' and 'health' intentionally excluded — see SERVICES comment above
-
-    if _args.command == 'status':
+    if _args.command == "status":
         cmd_status()
-    elif _args.command == 'train':
-        cmd_train(balance)
-    elif _args.command == 'stop':
-        _stop_all()
+    elif _args.command == "train":
+        import subprocess
+        subprocess.Popen([PYTHON, str(BASE / "auto_train_daily.py")], cwd=BASE)
+    elif _args.command == "stop":
+        logger.info("Use Ctrl+C to stop the running process.")
     else:
-        cmd_start(auto_services, balance)
+        cmd_start(
+            balance      =_args.balance,
+            strategy_mode=_args.strategy,
+            no_perf      =_args.no_perf,
+            no_telegram  =_args.no_telegram,
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

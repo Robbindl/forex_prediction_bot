@@ -29,20 +29,21 @@ class TradingMonitor:
         self.paper_trader = paper_trader
         self.email_config = email_config
         self.telegram_config = telegram_config
+        self._trading_core = None   # set by wire_to_core()
         
         # Alert thresholds
         self.alert_thresholds = {
-            'drawdown_warning': 10.0,      # Alert at 10% drawdown
-            'drawdown_critical': 15.0,      # Alert at 15% drawdown
-            'daily_loss_warning': 3.0,      # Alert at 3% daily loss
-            'daily_loss_critical': 5.0,     # Alert at 5% daily loss
-            'consecutive_losses': 3,        # Alert after 3 consecutive losses
-            'profit_taking': 10.0            # Alert at 10% profit
+            'drawdown_warning': 10.0,
+            'drawdown_critical': 15.0,
+            'daily_loss_warning': 3.0,
+            'daily_loss_critical': 5.0,
+            'consecutive_losses': 3,
+            'profit_taking': 10.0
         }
         
         # State tracking
         self.last_alert_time = {}
-        self.alert_cooldown = 300  # 5 minutes cooldown between same alerts
+        self.alert_cooldown = 300
         self.consecutive_losses = 0
         self.last_trade_result = None
         
@@ -57,11 +58,45 @@ class TradingMonitor:
             channels.append("Telegram")
         if email_config and email_config.get('enabled'):
             channels.append("Email")
-        
         if channels:
             logger.info(f"Alert System: Enabled ({', '.join(channels)})")
         else:
             logger.info(f"Alert System: Basic (console only)")
+
+    def wire_to_core(self, core) -> None:
+        """
+        Subscribe to TradingCore events.
+        After this call, monitor reacts to TradeOpened/TradeClosed events
+        from the EventBus instead of polling paper_trader directly.
+        """
+        from core.events import TradeOpenedEvent, TradeClosedEvent, RiskLimitHitEvent
+        self._trading_core = core
+
+        def _on_opened(evt: TradeOpenedEvent):
+            self.on_new_trade({
+                'asset':       evt.asset,
+                'signal':      evt.direction,
+                'strategy_id': evt.strategy_id,
+                'confidence':  evt.confidence,
+                'entry_price': evt.entry_price,
+            })
+
+        def _on_closed(evt: TradeClosedEvent):
+            self.on_trade_closed({
+                'asset':      evt.asset,
+                'pnl':        evt.pnl,
+                'pnl_pct':    evt.pnl_percent,
+                'exit_reason':evt.exit_reason,
+                'strategy_id':evt.strategy_id,
+            })
+
+        def _on_risk(evt: RiskLimitHitEvent):
+            self._send_alert('warning', 'Risk Limit', evt.message, '')
+
+        core.events.subscribe(TradeOpenedEvent, _on_opened, async_dispatch=True)
+        core.events.subscribe(TradeClosedEvent, _on_closed, async_dispatch=True)
+        core.events.subscribe(RiskLimitHitEvent, _on_risk, async_dispatch=True)
+        logger.info("[TradingMonitor] Wired to TradingCore events")
     
     def _monitor_loop(self):
         """Background monitoring loop"""

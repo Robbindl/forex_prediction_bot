@@ -359,7 +359,15 @@ class AlphaDiscoveryEngine:
 
         for asset, category in self.SCAN_ASSETS:
             try:
-                df = _fetcher.fetch_yahoo_data(asset, period='5d', interval='1h')
+                # Map bot symbol → Yahoo Finance symbol before fetching
+                _YAHOO_MAP = {
+                    'EUR/USD':'EURUSD=X','GBP/USD':'GBPUSD=X','USD/JPY':'JPY=X',
+                    'AUD/USD':'AUDUSD=X','GC=F':'GC=F','CL=F':'CL=F',
+                    'BTC-USD':'BTC-USD','ETH-USD':'ETH-USD','SOL-USD':'SOL-USD',
+                    '^GSPC':'^GSPC','^DJI':'^DJI',
+                }
+                yahoo_sym = _YAHOO_MAP.get(asset, asset)
+                df = _fetcher.fetch_yahoo_historical(yahoo_sym, interval='1h', period='5d')
                 if df is None or df.empty or len(df) < 20:
                     continue
 

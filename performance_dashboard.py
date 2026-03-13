@@ -2,6 +2,10 @@
 Real-time Performance Dashboard for Trading Bot
 Run with: python performance_dashboard.py
 Access at: http://localhost:8050
+
+PHASE 2: When TradingCore is injected via inject_core(), reads trade data
+directly from core.state (SystemState) — no DB required, always authoritative.
+Falls back to DatabaseService if running standalone.
 """
 
 import dash
@@ -15,7 +19,18 @@ import json
 import os
 from services.database_service import DatabaseService
 
-# Initialize database connection
+# ── TradingCore injection point ────────────────────────────────────────────────
+_CORE = None   # set by inject_core() when called from bot.py
+
+def inject_core(core) -> None:
+    """
+    Called by bot.py after TradingCore is created.
+    After injection, get_trade_data() reads from core.state instead of DB.
+    """
+    global _CORE
+    _CORE = core
+
+# Initialize database connection (used only when _CORE is None)
 db = DatabaseService()
 
 # Create Dash app
@@ -80,24 +95,48 @@ app.layout = html.Div([
 ], style={'backgroundColor': '#f5f6fa', 'padding': '20px'})
 
 def get_trade_data():
-    """Fetch trade data from database"""
+    """
+    Fetch trade data.
+    PHASE 2: reads from TradingCore.state when injected (no DB required).
+    Falls back to DatabaseService query for standalone mode.
+    """
+    # ── Primary: TradingCore.state ────────────────────────────────────────────
+    if _CORE is not None:
+        try:
+            closed = _CORE.state.get_closed_positions(limit=500)
+            if not closed:
+                return pd.DataFrame()
+            df = pd.DataFrame(closed)
+            # Normalise column names to match DB schema expected by charts below
+            if 'entry_time' in df.columns:
+                df['entry_time'] = pd.to_datetime(df['entry_time'], errors='coerce')
+            if 'exit_time' in df.columns:
+                df['exit_time']  = pd.to_datetime(df['exit_time'],  errors='coerce')
+            for col in ['pnl', 'pnl_percent', 'confidence']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            # Ensure required columns exist
+            for col in ['strategy_id', 'asset', 'direction', 'exit_reason']:
+                if col not in df.columns:
+                    df[col] = 'unknown'
+            return df
+        except Exception as e:
+            print(f"TradingCore state read error: {e}")
+
+    # ── Fallback: DatabaseService ─────────────────────────────────────────────
     try:
-        # Get all trades with exit data
         query = """
-        SELECT 
+        SELECT
             trade_id, asset, direction, entry_price, exit_price,
             pnl, pnl_percent, entry_time, exit_time, exit_reason,
             strategy_id, confidence
-        FROM trades 
+        FROM trades
         WHERE exit_time IS NOT NULL
         ORDER BY entry_time DESC
         """
         df = pd.read_sql(query, db.session.bind)
-        
-        # Convert datetime columns
         df['entry_time'] = pd.to_datetime(df['entry_time'])
-        df['exit_time'] = pd.to_datetime(df['exit_time'])
-        
+        df['exit_time']  = pd.to_datetime(df['exit_time'])
         return df
     except Exception as e:
         print(f"Error fetching data: {e}")

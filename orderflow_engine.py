@@ -295,8 +295,20 @@ class OrderFlowEngine:
             return
         self._running = True
         logger.info("[OrderFlow] Engine starting…")
-        self._binance.start(self.CRYPTO_ASSETS)
-        logger.info("[OrderFlow] Engine running — crypto: live  |  forex/stocks: synthetic ticks")
+        # ── Binance WebSocket disabled ─────────────────────────────────────────
+        # wss://stream.binance.com is geo-blocked in Kenya (and many VPS regions).
+        # The connection silently fails, leaving _snapshots always empty so
+        # get_signal_modifier() always returns 0.0 — making Layer 6b decorative.
+        #
+        # Fix: route ALL assets (including crypto) through SyntheticOrderFlowTracker.
+        # Crypto price ticks arrive via update_forex_tick() from the scan loop,
+        # giving the synthetic tracker enough data to produce meaningful pressure signals.
+        # When deployed outside Kenya or with a working Binance connection, you can
+        # re-enable the Binance tracker by uncommenting the line below.
+        #
+        #   self._binance.start(self.CRYPTO_ASSETS)  # ← re-enable when unblocked
+        logger.info("[OrderFlow] Engine running — all assets: synthetic tick-velocity")
+        # ─────────────────────────────────────────────────────────────────────
 
     def stop(self):
         self._running = False
@@ -359,7 +371,11 @@ class OrderFlowEngine:
             return dict(self._snapshots)
 
     def update_forex_tick(self, asset: str, price: float, category: str = 'forex'):
-        """Feed a new forex/stock/commodity price tick into the synthetic tracker."""
+        """
+        Feed a new price tick into the synthetic tracker.
+        Works for forex, stocks, commodities, indices AND crypto
+        (crypto was previously handled by Binance WS, now uses synthetic ticks).
+        """
         if self._running:
             self._synthetic.update_tick(asset, price, category)
 
