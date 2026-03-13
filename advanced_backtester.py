@@ -110,69 +110,97 @@ class AdvancedBacktester:
         self.trades = []
         self.equity_curve = [self.initial_capital]
         self.current_capital = self.initial_capital
-        
+
         open_positions: List[Dict] = []
-        
-        # Iterate through signals
-        for idx, signal in signals.iterrows():
-            current_date = signal['date']
-            
-            # Get current price data
-            current_bar = df[df.index <= current_date].iloc[-1] if len(df[df.index <= current_date]) > 0 else None
-            if current_bar is None:
-                continue
-            
-            # Manage existing positions
+
+        # Build a sorted index of all OHLCV bars for bar-by-bar iteration
+        all_bars = df.sort_index()
+        bar_dates = list(all_bars.index)
+
+        # Build a dict from signal date → signal row for O(1) lookup
+        # Accept both 'entry' and 'entry_price' column names, 'stop_loss' or 'sl', 'take_profit' or 'tp'
+        def _get(row, *keys):
+            for k in keys:
+                if k in row.index and not pd.isna(row[k]):
+                    return row[k]
+            return None
+
+        # Build signal lookup: map each bar date to a signal if one fires on that bar
+        signal_lookup = {}
+        for _, sig in signals.iterrows():
+            sig_date = sig['date'] if 'date' in sig.index else sig.name
+            signal_lookup[sig_date] = sig
+
+        # Iterate every OHLCV bar — not just signal dates.
+        # This ensures SL/TP are checked on every bar, not just when the next
+        # signal happens to arrive (which was the original bug: positions could
+        # sit for 20 bars with no exit check while price blew through the stop).
+        for bar_date in bar_dates:
+            current_bar = all_bars.loc[bar_date]
+
+            # ── 1. Check exits for all open positions on this bar ──────────
             for position in open_positions.copy():
                 exit_price, exit_reason = self._check_exit(
                     position,
                     current_bar,
                     use_trailing_stop
                 )
-                
                 if exit_price:
-                    # Close position
                     trade = self._close_position(
                         position,
                         exit_price,
-                        current_date,
+                        bar_date,
                         exit_reason
                     )
                     self.trades.append(trade)
                     open_positions.remove(position)
-                    
-                    # Update capital
                     self.current_capital += trade.pnl
                     self.equity_curve.append(self.current_capital)
-            
-            # Check if we can open new position
-            if (len(open_positions) < max_positions and 
-                signal['signal'] in ['BUY', 'SELL'] and
-                signal['confidence'] >= 0.65):
-                
+
+            # ── 2. Open new position if a signal fires on this bar ─────────
+            signal = signal_lookup.get(bar_date)
+            if signal is None:
+                continue
+
+            entry    = _get(signal, 'entry_price', 'entry')
+            stop_loss = _get(signal, 'stop_loss', 'sl')
+            take_profit = _get(signal, 'take_profit', 'tp')
+            direction = _get(signal, 'signal', 'direction')
+            confidence = _get(signal, 'confidence') or 0.0
+
+            # Guard: all required fields must be present
+            if entry is None or stop_loss is None or take_profit is None:
+                continue
+
+            # FIX: use 0.52 to match live trading quality gate floor, not 0.65
+            if (len(open_positions) < max_positions and
+                    direction in ['BUY', 'SELL'] and
+                    confidence >= 0.52):
+
                 # Calculate position size
                 position_size = self._calculate_position_size(
-                    signal['entry'],
-                    signal['stop_loss'],
+                    entry,
+                    stop_loss,
                     self.current_capital
                 )
                 
-                # Open new position
-                entry_price = self._apply_slippage(signal['entry'], signal['signal'])
-                
+                # Open new position — use local variables (entry/stop_loss/take_profit/direction)
+                # not signal['entry'] which may not exist under that key name
+                entry_price = self._apply_slippage(entry, direction)
+
                 position = {
-                    'entry_date': current_date,
+                    'entry_date': bar_date,
                     'asset': signal.get('asset', 'UNKNOWN'),
-                    'direction': signal['signal'],
+                    'direction': direction,
                     'entry_price': entry_price,
-                    'stop_loss': signal['stop_loss'],
-                    'take_profit': signal['take_profit'],
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
                     'position_size': position_size,
-                    'confidence': signal['confidence'],
+                    'confidence': confidence,
                     'highest_price': entry_price,
                     'lowest_price': entry_price
                 }
-                
+
                 open_positions.append(position)
         
         # Close any remaining positions at end
@@ -201,47 +229,59 @@ class AdvancedBacktester:
         current_bar: pd.Series,
         use_trailing_stop: bool
     ) -> Tuple[Optional[float], Optional[str]]:
-        """Check if position should be exited"""
-        
-        # Update highest/lowest prices
+        """Check if position should be exited.
+
+        Trailing stop logic (fixed):
+        - Phase 1 (< 50% of profit range): SL stays at original level.
+        - Phase 2 (>= 50% of profit range): SL moves to breakeven.
+        - Phase 3 (> 50%): SL trails continuously — locks in 50% of the
+          unrealised profit beyond breakeven so winners don't fully give back.
+        The original code moved SL to breakeven once and then froze it, meaning
+        a position that ran to 3× profit would still only protect breakeven.
+        """
+        # Update highest/lowest watermarks
         position['highest_price'] = max(position['highest_price'], current_bar['high'])
         position['lowest_price'] = min(position['lowest_price'], current_bar['low'])
-        
+
         if position['direction'] == 'BUY':
-            # Check stop loss
+            # ── Exit checks ────────────────────────────────────────────────
             if current_bar['low'] <= position['stop_loss']:
                 return position['stop_loss'], 'stop_loss'
-            
-            # Check take profit
             if current_bar['high'] >= position['take_profit']:
                 return position['take_profit'], 'take_profit'
-            
-            # Trailing stop (move SL to breakeven after 50% of profit)
+
+            # ── Trailing stop ──────────────────────────────────────────────
             if use_trailing_stop:
                 profit_range = position['take_profit'] - position['entry_price']
-                halfway_point = position['entry_price'] + (profit_range * 0.5)
-                
-                if position['highest_price'] >= halfway_point:
-                    # Move SL to breakeven
-                    position['stop_loss'] = max(position['stop_loss'], position['entry_price'])
-        
+                if profit_range > 0:
+                    halfway = position['entry_price'] + profit_range * 0.5
+                    best    = position['highest_price']
+                    if best >= halfway:
+                        # Lock in 50% of profit above entry that price has moved
+                        profit_above_entry = best - position['entry_price']
+                        trail_sl = position['entry_price'] + profit_above_entry * 0.5
+                        # SL only ever moves forward, never back
+                        position['stop_loss'] = max(position['stop_loss'], trail_sl)
+
         else:  # SELL
-            # Check stop loss
+            # ── Exit checks ────────────────────────────────────────────────
             if current_bar['high'] >= position['stop_loss']:
                 return position['stop_loss'], 'stop_loss'
-            
-            # Check take profit
             if current_bar['low'] <= position['take_profit']:
                 return position['take_profit'], 'take_profit'
-            
-            # Trailing stop
+
+            # ── Trailing stop ──────────────────────────────────────────────
             if use_trailing_stop:
                 profit_range = position['entry_price'] - position['take_profit']
-                halfway_point = position['entry_price'] - (profit_range * 0.5)
-                
-                if position['lowest_price'] <= halfway_point:
-                    position['stop_loss'] = min(position['stop_loss'], position['entry_price'])
-        
+                if profit_range > 0:
+                    halfway = position['entry_price'] - profit_range * 0.5
+                    best    = position['lowest_price']
+                    if best <= halfway:
+                        profit_below_entry = position['entry_price'] - best
+                        trail_sl = position['entry_price'] - profit_below_entry * 0.5
+                        # SL only ever moves forward (lower) for shorts
+                        position['stop_loss'] = min(position['stop_loss'], trail_sl)
+
         return None, None
     
     def _calculate_position_size(

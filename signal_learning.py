@@ -454,6 +454,9 @@ class SignalLearningEngine:
                 db.close()
             except Exception as e: logger.error(f"SignalLearning resolve: {e}")
         if asset: self._reinforce(asset, outcome); logger.info(f"SignalLearning: {asset} → {outcome} pnl={pnl_r:+.1f}R")
+        # Notify calibrator so it retrains periodically
+        try: _calibrator.notify_resolved()
+        except Exception: pass
 
     def _reinforce(self, asset:str, outcome:str):
         with self._lock:
@@ -554,6 +557,158 @@ class SignalLearningEngine:
 signal_engine = SignalLearningEngine()
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ISOTONIC CALIBRATOR
+# Converts raw confidence scores → actual win-rate probabilities using PAVA
+# (Pool Adjacent Violators Algorithm).  No external dependencies — pure numpy.
+#
+# Why this matters:
+#   Raw confidence is an uncalibrated sum of boosts (confluence + ML + voting
+#   + learned bias + whale).  A signal with confidence 0.73 does NOT mean 73%
+#   probability of winning — it just means "more boosts fired than a 0.60
+#   signal".  After calibration, 0.73 maps to whatever fraction of historical
+#   signals near that score actually hit TP.
+#
+# How PAVA works:
+#   1. Sort all resolved signals by raw confidence.
+#   2. The monotone constraint: higher confidence must map to ≥ win rate.
+#      If a higher-confidence bucket has a lower empirical win rate than a
+#      lower-confidence bucket, merge them and use their pooled average.
+#   3. Repeat until the sequence is non-decreasing.
+#   4. For any new signal, interpolate between the two nearest breakpoints.
+#
+# Requires ≥ MIN_SAMPLES resolved signals before activating.  Below that,
+# raw confidence is passed through unchanged so the bot doesn't degrade
+# during the cold-start period.
+# ══════════════════════════════════════════════════════════════════════════════
+class IsotonicCalibrator:
+    MIN_SAMPLES = 30   # don't calibrate until we have meaningful history
+    RETRAIN_EVERY = 50 # retrain after every N new resolved signals
+
+    def __init__(self):
+        import numpy as _np
+        self._np = _np
+        self._breakpoints: Optional[List[Tuple[float,float]]] = None  # [(raw, calibrated), ...]
+        self._n_trained = 0
+        self._n_since_retrain = 0
+        self._lock = threading.Lock()
+        logger.info("IsotonicCalibrator: ready (activates after %d resolved signals)", self.MIN_SAMPLES)
+
+    # ── PAVA ─────────────────────────────────────────────────────────────────
+    def _pava(self, scores: list, outcomes: list) -> List[Tuple[float,float]]:
+        """Run Pool Adjacent Violators and return (score, calibrated_prob) pairs."""
+        np = self._np
+        if len(scores) < self.MIN_SAMPLES:
+            return []
+        # Bin into 10 equal-width buckets between min and max score
+        n_bins = min(10, max(3, len(scores) // 5))
+        edges  = np.linspace(min(scores), max(scores) + 1e-9, n_bins + 1)
+        bin_scores = []
+        bin_wins   = []
+        for i in range(n_bins):
+            mask = [edges[i] <= s < edges[i+1] for s in scores]
+            bucket = [outcomes[j] for j in range(len(outcomes)) if mask[j]]
+            if not bucket:
+                continue
+            mid = (edges[i] + edges[i+1]) / 2
+            bin_scores.append(mid)
+            bin_wins.append(float(np.mean(bucket)))
+
+        if len(bin_scores) < 2:
+            return []
+
+        # PAVA: merge adjacent buckets that violate monotonicity
+        pools = [[bin_scores[i], bin_wins[i], 1] for i in range(len(bin_scores))]
+        changed = True
+        while changed:
+            changed = False
+            i = 0
+            new_pools = []
+            while i < len(pools):
+                if i + 1 < len(pools) and pools[i][1] > pools[i+1][1]:
+                    # Merge: weighted average of win rates
+                    n1, n2 = pools[i][2], pools[i+1][2]
+                    merged_score = (pools[i][0]*n1 + pools[i+1][0]*n2) / (n1+n2)
+                    merged_win   = (pools[i][1]*n1 + pools[i+1][1]*n2) / (n1+n2)
+                    new_pools.append([merged_score, merged_win, n1+n2])
+                    i += 2
+                    changed = True
+                else:
+                    new_pools.append(pools[i])
+                    i += 1
+            pools = new_pools
+
+        return [(p[0], p[1]) for p in pools]
+
+    # ── public API ───────────────────────────────────────────────────────────
+    def fit(self, scores: list, outcomes: list):
+        """Fit calibrator from resolved signal history.
+        outcomes: list of 1 (TP_HIT) or 0 (SL_HIT) — expired signals excluded.
+        """
+        if len(scores) < self.MIN_SAMPLES:
+            return
+        with self._lock:
+            bp = self._pava(scores, outcomes)
+            if bp:
+                self._breakpoints = bp
+                self._n_trained   = len(scores)
+                logger.info("IsotonicCalibrator: fitted on %d signals, %d breakpoints",
+                            len(scores), len(bp))
+
+    def calibrate(self, raw_confidence: float) -> float:
+        """Map raw confidence → calibrated probability.  Returns raw if not fitted."""
+        with self._lock:
+            bp = self._breakpoints
+        if not bp or len(bp) < 2:
+            return raw_confidence
+        np = self._np
+        xs = [p[0] for p in bp]
+        ys = [p[1] for p in bp]
+        # Linear interpolation, clamp to [ys[0], ys[-1]]
+        return float(np.clip(np.interp(raw_confidence, xs, ys), 0.30, 0.97))
+
+    def notify_resolved(self):
+        """Call whenever a signal is resolved so we know to retrain periodically."""
+        with self._lock:
+            self._n_since_retrain += 1
+            should_retrain = self._n_since_retrain >= self.RETRAIN_EVERY
+            if should_retrain:
+                self._n_since_retrain = 0
+        if should_retrain:
+            self._retrain_from_db()
+
+    def _retrain_from_db(self):
+        """Pull resolved signals from DB and refit."""
+        if not _DB_OK:
+            return
+        try:
+            db = SessionLocal()
+            rows = db.query(SignalHistory).filter(
+                SignalHistory.outcome.in_(['TP_HIT', 'TP2_HIT', 'SL_HIT']),
+                SignalHistory.confidence.isnot(None)
+            ).all()
+            db.close()
+            if len(rows) < self.MIN_SAMPLES:
+                return
+            scores   = [float(r.confidence) for r in rows]
+            outcomes = [1 if r.outcome in ('TP_HIT', 'TP2_HIT') else 0 for r in rows]
+            self.fit(scores, outcomes)
+        except Exception as e:
+            logger.warning("IsotonicCalibrator retrain error: %s", e)
+
+    def is_active(self) -> bool:
+        with self._lock:
+            return self._breakpoints is not None and len(self._breakpoints) >= 2
+
+
+_calibrator = IsotonicCalibrator()
+# Attempt initial fit on startup if DB has enough history
+try:
+    _calibrator._retrain_from_db()
+except Exception:
+    pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PUBLIC ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 def get_instant_signal(asset:str, category:str, bot) -> Dict:
@@ -562,13 +717,25 @@ def get_instant_signal(asset:str, category:str, bot) -> Dict:
         sig=dict(cached); sig['from_cache']=True
         sig['win_rate']=signal_engine.get_win_rate(asset)
         if sig.get('direction') not in ('HOLD',None): sig['signal_id']=signal_engine.record(sig)
+        _apply_calibration(sig)
         return sig
     sig=_build_quality_signal(asset,category,bot,signal_cache)
     if sig is None: return {'direction':'HOLD','asset':asset,'confidence':0.0,'error':True,'reason':'No data'}
     signal_cache.put(asset,sig); sig['from_cache']=False
     sig['win_rate']=signal_engine.get_win_rate(asset)
     if sig.get('direction') not in ('HOLD',None): sig['signal_id']=signal_engine.record(sig)
+    _apply_calibration(sig)
     return sig
+
+def _apply_calibration(sig: Dict):
+    """Apply isotonic calibration in-place.  Preserves raw score for reference."""
+    if sig.get('direction') in ('HOLD', None):
+        return
+    raw = sig.get('confidence', 0.0)
+    cal = _calibrator.calibrate(raw)
+    sig['confidence']     = round(cal, 4)
+    sig['confidence_raw'] = round(raw, 4)
+    sig['calibrated']     = _calibrator.is_active()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STRESS TEST ENGINE

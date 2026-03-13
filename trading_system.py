@@ -4314,29 +4314,39 @@ class UltimateTradingSystem:
                 logger.debug(f"Session gate error for {asset}: {e}")
 
             # ── LAYER 5: Sentiment confirmation ───────────────────────────────
-            # Extreme sentiment against our direction reduces confidence.
-            # Cached at scan-cycle level — one fetch per 5 min, shared across all 64 assets.
-            # Previously: 64 assets × 42 sources = 2,688 HTTP calls per scan!
+            # Per-asset sentiment: fetches asset-specific news score when available,
+            # falls back to market-wide score.  Each asset has its own 5-min cache.
+            # Previously: one market-wide score was applied to ALL 64 assets equally —
+            # BTC fear/greed was penalising EUR/USD signals with no logical connection.
             try:
                 if hasattr(self, 'sentiment_analyzer') and self.sentiment_analyzer:
                     import time as _time
                     _now = _time.time()
-                    if not hasattr(self, '_sentiment_cache') or                        not hasattr(self, '_sentiment_cache_time') or                        (_now - self._sentiment_cache_time) > 300:   # refresh every 5 min
-                        self._sentiment_cache = self.sentiment_analyzer.get_comprehensive_sentiment()
-                        self._sentiment_cache_time = _now
-                    sent = self._sentiment_cache
-                    score = sent.get('score', 0)   # -1 (fear) to +1 (greed)
+                    if not hasattr(self, '_sentiment_cache_per_asset'):
+                        self._sentiment_cache_per_asset = {}
+                    _ce = self._sentiment_cache_per_asset.get(asset)
+                    if _ce and (_now - _ce['ts']) < 300:
+                        score = _ce['score']
+                    else:
+                        try:
+                            _asent = self.sentiment_analyzer.get_best_sentiment(asset, days=1)
+                            score = _asent.get('score', 0) if _asent else 0
+                        except Exception:
+                            if not hasattr(self, '_sentiment_cache') or \
+                               not hasattr(self, '_sentiment_cache_time') or \
+                               (_now - self._sentiment_cache_time) > 300:
+                                self._sentiment_cache = self.sentiment_analyzer.get_comprehensive_sentiment()
+                                self._sentiment_cache_time = _now
+                            score = self._sentiment_cache.get('score', 0)
+                        self._sentiment_cache_per_asset[asset] = {'score': score, 'ts': _now}
                     signal['sentiment_score'] = score
                     direction = signal.get('signal', 'HOLD')
-                    # Extreme fear (< -0.6) + BUY signal → lower confidence
                     if score < -0.6 and direction == 'BUY':
                         signal['confidence'] = signal.get('confidence', 0.6) * 0.88
                         signal['sentiment_note'] = 'caution: extreme fear vs BUY'
-                    # Extreme greed (> 0.6) + SELL signal → lower confidence
                     elif score > 0.6 and direction == 'SELL':
                         signal['confidence'] = signal.get('confidence', 0.6) * 0.88
                         signal['sentiment_note'] = 'caution: extreme greed vs SELL'
-                    # Sentiment confirms direction → small boost
                     elif (score > 0.3 and direction == 'BUY') or (score < -0.3 and direction == 'SELL'):
                         signal['confidence'] = min(0.97, signal.get('confidence', 0.6) * 1.05)
                         signal['sentiment_note'] = 'sentiment confirms direction'
