@@ -170,10 +170,7 @@ class SystemState:
     def has_open_position_for(self, canonical_asset: str) -> bool:
         """True if any open position's canonical_asset matches."""
         with self._lock:
-            for pos in self._open_positions.values():
-                if pos.get("canonical_asset") == canonical_asset:
-                    return True
-            return False
+            return any(pos.get("canonical_asset") == canonical_asset for pos in self._open_positions.values())
 
     def update_position_field(self, trade_id: str, **kwargs) -> None:
         """Update arbitrary fields on an open position (e.g. trailing stop)."""
