@@ -1,5 +1,6 @@
 """Layer 5 — Sentiment filter. Rewritten from sentiment_analyzer.py."""
 from __future__ import annotations
+import threading
 from typing import Any, Dict, Optional
 from core.signal import Signal
 from utils.logger import get_logger
@@ -12,15 +13,37 @@ _STRONG_THRESHOLD  = 0.4
 _WEAK_THRESHOLD    = -0.3
 _KILL_THRESHOLD    = -0.6
 
+# Module-level singleton — initialised once, reused across all signals (Issue 5)
+_sa_instance = None
+_sa_lock     = threading.Lock()
+
+
+def _get_analyzer():
+    """Return the shared SentimentAnalyzer, creating it on first call."""
+    global _sa_instance
+    if _sa_instance is not None:
+        return _sa_instance
+    with _sa_lock:
+        if _sa_instance is None:
+            try:
+                from sentiment_analyzer import SentimentAnalyzer
+                _sa_instance = SentimentAnalyzer()
+                logger.info("[SentimentLayer] SentimentAnalyzer initialised (singleton)")
+            except Exception as e:
+                logger.warning(f"[SentimentLayer] Analyzer init failed: {e}")
+                _sa_instance = None
+    return _sa_instance
+
 
 def _fetch_sentiment(asset: str, category: str) -> float:
     """
     Fetch sentiment score. Returns 0.0 (neutral) if unavailable.
-    Real implementation wires to news_sources.py + textblob.
+    Uses the module-level singleton — no re-initialisation per signal.
     """
     try:
-        from sentiment_analyzer import SentimentAnalyzer
-        sa    = SentimentAnalyzer()
+        sa = _get_analyzer()
+        if sa is None:
+            return 0.0
         result = sa.get_comprehensive_sentiment(asset, category)
         if isinstance(result, dict):
             return float(result.get("composite_score", 0.0))

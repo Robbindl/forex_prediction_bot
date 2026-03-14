@@ -12,15 +12,20 @@ logger = get_logger()
 
 
 class Cache:
-    """Thread-safe TTL key-value store."""
+    """Thread-safe TTL key-value store with automatic background purge."""
 
-    def __init__(self, default_ttl: int = 30, persist_path: Optional[str] = None):
+    def __init__(self, default_ttl: int = 30, persist_path: Optional[str] = None,
+                 purge_interval: int = 300):
         self._store:       dict = {}
         self._lock              = threading.RLock()
         self.default_ttl        = default_ttl
         self._persist_path      = Path(persist_path) if persist_path else None
+        self._purge_interval    = purge_interval
         if self._persist_path and self._persist_path.exists():
             self._load()
+        # Background purge thread — prevents unbounded memory growth (Issue 12)
+        t = threading.Thread(target=self._auto_purge, daemon=True, name="CachePurge")
+        t.start()
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
@@ -53,8 +58,18 @@ class Cache:
             self._store = {k: v for k, v in self._store.items() if v[1] > now}
             return before - len(self._store)
 
+    def _auto_purge(self) -> None:
+        """Background thread: purge expired entries every purge_interval seconds."""
+        while True:
+            time.sleep(self._purge_interval)
+            try:
+                removed = self.purge_expired()
+                if removed:
+                    logger.debug(f"[Cache] Auto-purged {removed} expired entries")
+            except Exception:
+                pass
+
     def __contains__(self, key: str) -> bool:
-        """Support 'key in cache' syntax."""
         return self.get(key) is not None
 
     def __len__(self) -> int:

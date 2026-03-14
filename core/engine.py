@@ -229,20 +229,51 @@ class TradingCore:
         logger.info("[TradingCore] Loop exited")
 
     def _trading_cycle(self) -> None:
-        self.state.check_day_rollover()
+        # Day rollover — reset risk guard to today's opening balance (Issue 6)
+        rolled = self.state.check_day_rollover()
+        if rolled and self._risk_manager:
+            self._risk_manager.reset_daily(self.state.balance)
+            logger.info(
+                f"[TradingCore] New trading day — risk guard reset "
+                f"at ${self.state.balance:.2f}"
+            )
 
         if self._paper_trader:
             try:
-                self._paper_trader.update_positions(self._get_prices())
+                prices = self._get_prices()
+                self._paper_trader.update_positions(prices)
+                # Publish live prices to Redis (Issue 8)
+                try:
+                    from redis_broker import broker as _redis_broker
+                    for asset, price in prices.items():
+                        cat = next(
+                            (p.get("category", "forex")
+                             for p in self.state.get_open_positions()
+                             if p.get("asset") == asset),
+                            "forex",
+                        )
+                        _redis_broker.publish_price(asset, price, cat)
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"[TradingCore] Position update error: {e}")
 
-        signals = self._generate_signals()
-        if not signals:
+        # Generate signals with per-asset contexts (Issues 2 & 9)
+        signal_ctx_pairs = self._generate_signals()
+        if not signal_ctx_pairs:
             return
 
-        survivors = self.pipeline.run_batch(signals, self._build_context())
-        logger.info(f"[TradingCore] {len(signals)} signals → {len(survivors)} survived pipeline")
+        # Run each signal through the pipeline with its own context
+        survivors = []
+        for sig, ctx in signal_ctx_pairs:
+            result = self.pipeline.run(sig, ctx)
+            if result is not None:
+                survivors.append(result)
+
+        logger.info(
+            f"[TradingCore] {len(signal_ctx_pairs)} signals → "
+            f"{len(survivors)} survived pipeline"
+        )
 
         processed = 0
         for sig in survivors[:3]:
@@ -254,14 +285,21 @@ class TradingCore:
         if processed:
             logger.info(f"[TradingCore] Executed {processed} trade(s)")
 
-    def _generate_signals(self) -> List[Signal]:
-        """Generate signals for all assets. all_assets() returns List[Tuple[str,str]]."""
-        signals: List[Signal] = []
+    def _generate_signals(self) -> List[Tuple[Signal, Dict]]:
+        """
+        Generate signals for all assets.
+        Returns List[Tuple[Signal, Dict]] — each signal paired with its own
+        context dict containing price_data, spread, and ml_prediction so that
+        pipeline layers receive per-asset data (Issues 2 & 9).
+        """
+        result: List[Tuple[Signal, Dict]] = []
         try:
             from strategies.voting import VotingStrategy
-            # FIX: all_assets() returns (canonical_id, category) tuples
+            from ml.predictor import MLPredictor
+
             asset_list: List[Tuple[str, str]] = self.registry.all_assets()
-            strategy = VotingStrategy()
+            strategy  = VotingStrategy()
+            predictor = MLPredictor()
 
             for canonical, category in asset_list:
                 if self._stop_event.is_set():
@@ -276,14 +314,39 @@ class TradingCore:
                     if price_data is None or price_data.empty:
                         continue
 
+                    # Real-time price + spread for Layer 2 / Layer 7
+                    price, spread = (0.0, 0.0)
+                    if self.fetcher:
+                        try:
+                            price, spread = self.fetcher.get_real_time_price(
+                                canonical, category
+                            )
+                            price  = price  or 0.0
+                            spread = spread or 0.0
+                        except Exception:
+                            pass
+
+                    # ML prediction for Layer 1 boost/reduce
+                    ml_prob, ml_conf = predictor.predict(
+                        canonical, category, price_data
+                    )
+
                     sig = strategy.generate(canonical, canonical, category, price_data)
                     if sig and sig.confidence >= 0.5:
-                        signals.append(sig)
+                        ctx = self._build_context(canonical, category)
+                        ctx["price_data"]    = price_data
+                        ctx["spread"]        = spread
+                        ctx["ml_prediction"] = ml_prob
+                        ctx["ml_confidence"] = ml_conf
+                        result.append((sig, ctx))
+
                 except Exception as e:
                     logger.debug(f"[TradingCore] Signal gen {canonical}: {e}")
+
         except Exception as e:
             logger.error(f"[TradingCore] Signal generation error: {e}")
-        return signals
+
+        return result
 
     def _execute_signal(self, signal: Signal) -> bool:
         if self.state.open_position_count() >= 5:
@@ -309,6 +372,17 @@ class TradingCore:
                     confidence=f"{signal.confidence:.3f}",
                     entry=signal.entry_price,
                 )
+                # Publish signal + positions to Redis for dashboard (Issue 8)
+                try:
+                    from redis_broker import broker as _redis_broker
+                    _redis_broker.publish_signal(signal.to_dict())
+                    _redis_broker.publish_positions(
+                        self.state.get_open_positions(),
+                        self.state.balance,
+                    )
+                except Exception:
+                    pass
+
                 self._notify_telegram_open(trade)
                 return True
         except Exception as e:
@@ -349,11 +423,16 @@ class TradingCore:
         }
 
     def _notify_telegram_open(self, trade: Dict) -> None:
-        if self.telegram:
-            try:
-                self.telegram.alert_trade_opened(trade)
-            except Exception:
-                pass
+        if not self.telegram:
+            return
+        try:
+            # Support TelegramCommander (has method directly) and
+            # TelegramManager (wraps commander in .bot) — Issue 4
+            target = getattr(self.telegram, "bot", self.telegram)
+            if hasattr(target, "alert_trade_opened"):
+                target.alert_trade_opened(trade)
+        except Exception as e:
+            logger.debug(f"[TradingCore] Telegram alert failed: {e}")
 
     def get_asset_list(self) -> List[Tuple[str, str]]:
         return self.registry.all_assets()
@@ -365,10 +444,10 @@ class TradingCore:
         pos = self.state.get_open_position(trade_id)
         if not pos:
             return None
-        entry    = float(pos.get("entry_price", 0))
+        entry     = float(pos.get("entry_price", 0))
         direction = pos.get("direction", pos.get("signal", "BUY"))
-        size     = float(pos.get("position_size", 0))
-        pnl      = 0.0
+        size      = float(pos.get("position_size", 0))
+        pnl       = 0.0
         if self.fetcher:
             try:
                 price, _ = self.fetcher.get_real_time_price(

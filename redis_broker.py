@@ -65,7 +65,6 @@ class RedisBroker:
                 decode_responses=True,
                 retry_on_timeout=True,
             )
-            # Test connection
             self._redis.ping()
             self._enabled = True
             logger.info(f"[RedisBroker] Connected to {host}:{port}")
@@ -93,35 +92,26 @@ class RedisBroker:
     # ── Publish ────────────────────────────────────────────────────────────
 
     def publish(self, channel: str, data: Any) -> bool:
-        """
-        Publish data to a Redis channel.
-        data can be a dict, list, str, or number — it will be JSON-serialised.
-        Returns True if published, False if Redis unavailable.
-        """
         if not self._enabled:
             return False
         if not self._ensure_connected():
             return False
-
         try:
-            # Add standard metadata
             if isinstance(data, dict):
                 data.setdefault('_ts', datetime.utcnow().isoformat())
                 data.setdefault('_channel', channel)
-
             payload = json.dumps(data, default=str)
             with self._lock:
                 self._redis.publish(channel, payload)
             return True
         except Exception as e:
             logger.debug(f"[RedisBroker] publish({channel}) failed: {e}")
-            self._enabled = False   # Mark as disconnected; retry on next call
+            self._enabled = False
             return False
 
     # ── Cache (key-value store for shared state) ───────────────────────────
 
     def set(self, key: str, value: Any, ttl_seconds: int = 300) -> bool:
-        """Store a value in Redis with TTL. Used for shared state between services."""
         if not self._ensure_connected():
             return False
         try:
@@ -134,7 +124,6 @@ class RedisBroker:
             return False
 
     def get(self, key: str, default=None) -> Any:
-        """Retrieve a value from Redis."""
         if not self._ensure_connected():
             return default
         try:
@@ -146,7 +135,6 @@ class RedisBroker:
             return default
 
     def delete(self, key: str):
-        """Delete a key from Redis."""
         if not self._ensure_connected():
             return
         try:
@@ -154,42 +142,51 @@ class RedisBroker:
         except Exception:
             pass
 
-    # ── Subscribe (background thread) ─────────────────────────────────────
+    # ── Subscribe (background thread with reconnect) ───────────────────────
 
     def subscribe(self, channel: str, callback: Callable[[Dict], None]):
         """
         Subscribe to a channel in a background daemon thread.
         callback(data_dict) is called for every message received.
+        Includes automatic reconnect — the thread never exits permanently
+        on a Redis drop (Issue 10).
         """
         if not self._enabled:
             logger.debug(f"[RedisBroker] subscribe({channel}) skipped — Redis unavailable")
             return
 
         def _listen():
-            try:
-                import redis as _r
-                host     = os.getenv('REDIS_HOST', '127.0.0.1')
-                port     = int(os.getenv('REDIS_PORT', '6379'))
-                password = os.getenv('REDIS_PASSWORD') or None
+            import time as _time
+            while True:
+                try:
+                    import redis as _r
+                    host     = os.getenv('REDIS_HOST', '127.0.0.1')
+                    port     = int(os.getenv('REDIS_PORT', '6379'))
+                    password = os.getenv('REDIS_PASSWORD') or None
 
-                sub_client = _r.Redis(
-                    host=host, port=port, password=password,
-                    socket_connect_timeout=5,
-                    decode_responses=True,
-                )
-                ps = sub_client.pubsub()
-                ps.subscribe(channel)
-                logger.info(f"[RedisBroker] Listening on channel '{channel}'")
+                    sub_client = _r.Redis(
+                        host=host, port=port, password=password,
+                        socket_connect_timeout=5,
+                        decode_responses=True,
+                    )
+                    ps = sub_client.pubsub()
+                    ps.subscribe(channel)
+                    logger.info(f"[RedisBroker] Listening on channel '{channel}'")
 
-                for msg in ps.listen():
-                    if msg['type'] == 'message':
-                        try:
-                            data = json.loads(msg['data'])
-                            callback(data)
-                        except Exception as e:
-                            logger.debug(f"[RedisBroker] callback error on {channel}: {e}")
-            except Exception as e:
-                logger.warning(f"[RedisBroker] subscribe({channel}) thread died: {e}")
+                    for msg in ps.listen():
+                        if msg['type'] == 'message':
+                            try:
+                                data = json.loads(msg['data'])
+                                callback(data)
+                            except Exception as e:
+                                logger.debug(f"[RedisBroker] callback error on {channel}: {e}")
+
+                except Exception as e:
+                    logger.warning(
+                        f"[RedisBroker] subscribe({channel}) connection lost: {e} "
+                        f"— retrying in 10s"
+                    )
+                    _time.sleep(10)
 
         t = threading.Thread(target=_listen, name=f"RedisSub-{channel}", daemon=True)
         t.start()
@@ -197,41 +194,26 @@ class RedisBroker:
     # ── Convenience publishers ──────────────────────────────────────────────
 
     def publish_signal(self, signal: Dict):
-        """Publish a trading signal that passed the quality gate."""
         self.publish('signals', signal)
 
     def publish_price(self, asset: str, price: float, category: str = ''):
-        """Publish a live price tick."""
-        self.publish('prices', {
-            'asset':    asset,
-            'price':    price,
-            'category': category,
-        })
+        self.publish('prices', {'asset': asset, 'price': price, 'category': category})
 
     def publish_whale(self, alert: Dict):
-        """Publish a whale movement alert."""
         self.publish('whale_alerts', alert)
 
     def publish_sentiment(self, asset: str, score: float, label: str):
-        """Publish a sentiment update."""
-        self.publish('sentiment', {
-            'asset': asset,
-            'score': score,
-            'label': label,
-        })
+        self.publish('sentiment', {'asset': asset, 'score': score, 'label': label})
 
     def publish_orderflow(self, data: Dict):
-        """Publish order flow data (bid/ask imbalance)."""
         self.publish('orderflow', data)
 
     def publish_alpha(self, signal: Dict):
-        """Publish an alpha discovery signal."""
         self.publish('alpha', signal)
 
     def publish_prediction(self, asset: str, direction: str,
                            target: float, confidence: float,
                            horizon_minutes: int = 60):
-        """Publish an AI price prediction."""
         self.publish('predictions', {
             'asset':           asset,
             'direction':       direction,
@@ -241,11 +223,7 @@ class RedisBroker:
         })
 
     def publish_positions(self, positions: list, balance: float):
-        """Publish current open positions update."""
-        self.publish('positions', {
-            'positions': positions,
-            'balance':   balance,
-        })
+        self.publish('positions', {'positions': positions, 'balance': balance})
 
     # ── Status ─────────────────────────────────────────────────────────────
 
@@ -254,10 +232,7 @@ class RedisBroker:
         return self._enabled
 
     def status(self) -> Dict:
-        return {
-            'connected': self._enabled,
-            'channels':  self.CHANNELS,
-        }
+        return {'connected': self._enabled, 'channels': self.CHANNELS}
 
 
 # ── Global singleton ──────────────────────────────────────────────────────────

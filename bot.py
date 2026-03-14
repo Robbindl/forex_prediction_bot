@@ -334,8 +334,13 @@ def main() -> None:
     if not args.no_telegram and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
             from telegram_manager import telegram_manager
-            engine.telegram = telegram_manager
-            logger.info("[bot] Telegram wired")
+            started = telegram_manager.start(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, engine)
+            if started:
+                # Wire the inner TelegramCommander so engine can call alert methods
+                engine.telegram = telegram_manager.bot
+                logger.info("[bot] Telegram started and wired to engine")
+            else:
+                logger.warning("[bot] Telegram not started (duplicate instance or missing creds)")
         except Exception as e:
             logger.warning(f"[bot] Telegram init failed: {e}")
 
@@ -346,6 +351,31 @@ def main() -> None:
         logger.info(f"[bot] Engine ready — balance=${engine.get_balance():.2f}")
     else:
         logger.warning("[bot] Engine did not become ready in 60s — continuing anyway")
+
+    # ── Whale monitoring (optional) ───────────────────────────────────────
+    # try:
+    #     from whale_alert_manager import WhaleAlertManager
+    #     from layers.layer6_whale import ingest_whale_alert
+    #
+    #     _whale_mgr = WhaleAlertManager()
+    #
+    #     def _on_whale_alert(alert: dict) -> None:
+    #         """Bridge: WhaleAlertManager events → Layer 6 whale cache."""
+    #         try:
+    #             ingest_whale_alert(
+    #                 asset=alert.get("asset", ""),
+    #                 direction=alert.get("direction", "BUY"),
+    #                 size_usd=float(alert.get("usd_amount", 0)),
+    #                 source=alert.get("source", "whale_alert"),
+    #             )
+    #         except Exception:
+    #             pass
+    #
+    #     _whale_mgr.on_alert = _on_whale_alert
+    #     _whale_mgr.start_monitoring()
+    #     logger.info("[bot] WhaleAlertManager started — Layer 6 whale cache active")
+    # except Exception as e:
+    #     logger.warning(f"[bot] WhaleAlertManager failed to start: {e}")
 
     # ── Dashboard ─────────────────────────────────────────────────────────
     if not args.no_dashboard:
@@ -365,4 +395,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main()     
