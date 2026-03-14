@@ -1,8 +1,9 @@
 """
 dashboard/web_app_live.py — Flask + SocketIO live dashboard.
-Clean rewrite of web_app_live.py. All existing templates preserved.
+Fixed: template_folder points to root templates/ directory.
 """
 from __future__ import annotations
+import os
 import threading
 from datetime import datetime
 from typing import Any, Optional, TYPE_CHECKING
@@ -19,7 +20,10 @@ if TYPE_CHECKING:
 
 logger = get_logger()
 
-app    = Flask(__name__, template_folder="templates")
+# FIX: templates/ is in project root, dashboard/ is a subdirectory
+_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
+
+app      = Flask(__name__, template_folder=_TEMPLATE_DIR)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
@@ -27,13 +31,10 @@ _engine: Optional["TradingCore"] = None
 
 
 def init_app(engine: "TradingCore") -> None:
-    """Wire the TradingCore to the dashboard."""
     global _engine
     _engine = engine
     logger.info("[Dashboard] TradingCore wired")
 
-
-# ── Helper ────────────────────────────────────────────────────────────────────
 
 def _e() -> Optional["TradingCore"]:
     return _engine
@@ -76,7 +77,7 @@ def websocket_view():
 def api_status():
     e = _e()
     if not e:
-        return jsonify({"status": "not_ready", "engine": None})
+        return jsonify({"status": "not_ready"})
     return jsonify({
         "status":        "running" if e.is_running else "stopped",
         "ready":         e.is_ready,
@@ -94,13 +95,12 @@ def api_positions():
 @app.route("/api/performance")
 def api_performance():
     e = _e()
-    perf = e.get_performance() if e else {}
-    return jsonify(perf)
+    return jsonify(e.get_performance() if e else {})
 
 @app.route("/api/trades")
 def api_trades():
-    e      = _e()
-    limit  = int(request.args.get("limit", 50))
+    e     = _e()
+    limit = int(request.args.get("limit", 50))
     trades = e.get_closed_trades(limit) if e else []
     return jsonify({"trades": trades, "count": len(trades)})
 
@@ -136,7 +136,7 @@ def api_backtest():
     category = data.get("category", "crypto")
     balance  = float(data.get("balance", 10000))
     try:
-        from data.fetcher   import DataFetcher
+        from data.fetcher    import DataFetcher
         from backtest.engine import BacktestEngine
         fetcher = DataFetcher()
         df      = fetcher.get_ohlcv(asset, category, "1d", 500)
@@ -152,7 +152,7 @@ def api_backtest():
 @app.route("/api/close_position/<trade_id>", methods=["POST"])
 def api_close_position(trade_id: str):
     e      = _e()
-    result = e.close_position_manually(trade_id) if e and hasattr(e, "close_position_manually") else None
+    result = e.close_position_manually(trade_id) if e else None
     return jsonify({"success": bool(result), "trade": result})
 
 
@@ -181,7 +181,6 @@ def ws_performance():
 
 
 def _broadcast_loop() -> None:
-    """Background thread: push position updates to all WebSocket clients every 5s."""
     import time
     while True:
         try:
@@ -196,7 +195,6 @@ def _broadcast_loop() -> None:
 
 
 def start_dashboard(engine: "TradingCore", host: str = "0.0.0.0", port: int = 5000) -> None:
-    """Start the Flask+SocketIO server. Called from bot.py."""
     init_app(engine)
     t = threading.Thread(target=_broadcast_loop, daemon=True, name="ws-broadcast")
     t.start()

@@ -1,3 +1,1 @@
-"""Configuration package"""
-from .config import *
-from .database import engine, SessionLocal, Base
+"""Configuration package — empty init to prevent premature DB connection."""

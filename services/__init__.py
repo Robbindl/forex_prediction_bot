@@ -1,2 +1,1 @@
-"""Services package"""
-from .database_service import DatabaseService
+"""Services package — empty init to prevent premature DB connection."""

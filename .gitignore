@@ -73,8 +73,9 @@ yarn-error.log*
 *.sqlite
 *.sqlite3
 *.postgres
-data/
+!data/cache.py
 !data/system_state.json  # Already ignored above in SECURITY
+data/
 *.sql
 *.pid
 dump.rdb
@@ -178,3 +179,4 @@ installed_all.txt
 # STATIC / WEB
 # ------------------------------------------------
 static/
+

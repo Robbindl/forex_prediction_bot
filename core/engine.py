@@ -1,15 +1,12 @@
 """
-core/engine.py — TradingCore: single central engine. Clean rewrite.
-
-All subsystems (dashboard, Telegram, auto-trainer) talk to this one object.
-The trading loop runs on a daemon thread. State is persisted via core/state.py.
+core/engine.py — TradingCore: single central engine.
 """
 from __future__ import annotations
 
 import threading
 import time
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from utils.logger import get_logger
 from core.signal import Signal
@@ -19,9 +16,7 @@ logger = get_logger()
 
 
 class TradingCore:
-    """
-    Central trading engine — single instance per process.
-    """
+    """Central trading engine — single instance per process."""
 
     def __init__(
         self,
@@ -33,7 +28,6 @@ class TradingCore:
         self.strategy_mode = strategy_mode
         self.no_telegram   = no_telegram
 
-        # ── Deferred imports (avoid circular at module level) ─────────────
         from core.state  import SystemState
         from core.events import EventBus
         from core.assets import AssetRegistry
@@ -43,7 +37,6 @@ class TradingCore:
         self.registry = AssetRegistry()
         self.pipeline: Pipeline = _global_pipeline
 
-        # Set / restore balance
         if self.state.open_position_count() == 0:
             self.state.set_balance(balance, "startup")
         else:
@@ -52,11 +45,9 @@ class TradingCore:
                 f"positions={self.state.open_position_count()}"
             )
 
-        # ── Subsystem handles (set externally after construction) ─────────
         self.telegram: Optional[Any] = None
         self.fetcher:  Optional[Any] = None
 
-        # ── Loop state ────────────────────────────────────────────────────
         self._engine_ready = threading.Event()
         self._stop_event   = threading.Event()
         self._is_running   = False
@@ -64,9 +55,7 @@ class TradingCore:
         self._paper_trader: Optional[Any] = None
         self._risk_manager: Optional[Any] = None
 
-        logger.info(
-            f"[TradingCore] Init — balance=${balance} strategy={strategy_mode}"
-        )
+        logger.info(f"[TradingCore] Init — balance=${balance} strategy={strategy_mode}")
 
     # ── Startup / Shutdown ────────────────────────────────────────────────────
 
@@ -104,7 +93,7 @@ class TradingCore:
     def is_ready(self) -> bool:
         return self._engine_ready.is_set()
 
-    # ── Public API — positions ────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def get_positions(self) -> List[Dict]:
         return self.state.get_open_positions()
@@ -121,10 +110,7 @@ class TradingCore:
     def get_daily_stats(self) -> Dict:
         return {"daily_trades": self.state.daily_trades, "daily_pnl": self.state.daily_pnl}
 
-    # ── Public API — signals ──────────────────────────────────────────────────
-
     def get_signal_for_asset(self, asset: str) -> Optional[Dict]:
-        """On-demand pipeline run for a single asset (used by Telegram /signal)."""
         if not self.is_ready:
             return None
         try:
@@ -141,8 +127,6 @@ class TradingCore:
             logger.error(f"[TradingCore] get_signal_for_asset({asset}): {e}")
             return None
 
-    # ── Public API — cooldowns ────────────────────────────────────────────────
-
     def set_cooldown(self, asset: str, minutes: int = 60) -> None:
         canonical = self.registry.canonical(asset)
         self.state.set_cooldown(canonical, minutes)
@@ -150,12 +134,8 @@ class TradingCore:
     def get_cooldowns(self) -> Dict[str, int]:
         return self.state.get_all_cooldowns()
 
-    # ── Public API — events ───────────────────────────────────────────────────
-
     def subscribe(self, event_type: Type, callback: Callable, async_dispatch: bool = True) -> None:
         self.events.subscribe(event_type, callback, async_dispatch=async_dispatch)
-
-    # ── Public API — health ───────────────────────────────────────────────────
 
     def health_report(self) -> Dict:
         try:
@@ -183,12 +163,11 @@ class TradingCore:
     # ── Internal — init ───────────────────────────────────────────────────────
 
     def _init_subsystems(self) -> bool:
-        """Initialise fetcher, risk manager, paper trader, ML."""
         try:
-            from data.fetcher   import DataFetcher
-            from risk.manager   import RiskManager
+            from data.fetcher           import DataFetcher
+            from risk.manager           import RiskManager
             from execution.paper_trader import PaperTrader
-            from ml.registry    import ModelRegistry
+            from ml.registry            import ModelRegistry
 
             self.fetcher       = DataFetcher()
             self._risk_manager = RiskManager(account_balance=self.state.balance)
@@ -197,11 +176,9 @@ class TradingCore:
                 risk_manager=self._risk_manager,
             )
 
-            # Restore open positions into paper trader
             for pos in self.state.get_open_positions():
                 self._paper_trader.restore_position(pos)
 
-            # Load ML models (non-blocking — models load in background if missing)
             try:
                 registry = ModelRegistry()
                 registry.load_all()
@@ -234,7 +211,6 @@ class TradingCore:
             except Exception as e:
                 logger.error(f"[TradingCore] Cycle error: {e}", exc_info=True)
 
-            # Emit position update event
             try:
                 from core.events import PositionUpdateEvent
                 self.events.emit(PositionUpdateEvent(
@@ -253,17 +229,14 @@ class TradingCore:
         logger.info("[TradingCore] Loop exited")
 
     def _trading_cycle(self) -> None:
-        # Day rollover
         self.state.check_day_rollover()
 
-        # Enforce SL/TP on open positions
         if self._paper_trader:
             try:
                 self._paper_trader.update_positions(self._get_prices())
             except Exception as e:
                 logger.error(f"[TradingCore] Position update error: {e}")
 
-        # Generate and run signals through pipeline
         signals = self._generate_signals()
         if not signals:
             return
@@ -282,46 +255,40 @@ class TradingCore:
             logger.info(f"[TradingCore] Executed {processed} trade(s)")
 
     def _generate_signals(self) -> List[Signal]:
-        """Ask each strategy to generate signals for all assets."""
+        """Generate signals for all assets. all_assets() returns List[Tuple[str,str]]."""
         signals: List[Signal] = []
         try:
             from strategies.voting import VotingStrategy
-            assets = self.registry.all_assets()
+            # FIX: all_assets() returns (canonical_id, category) tuples
+            asset_list: List[Tuple[str, str]] = self.registry.all_assets()
             strategy = VotingStrategy()
-            for asset in assets:
+
+            for canonical, category in asset_list:
                 if self._stop_event.is_set():
                     break
                 try:
-                    canonical = self.registry.canonical(asset)
-                    category  = self.registry.category(canonical)
-
                     if self.state.is_cooling_down(canonical):
                         continue
                     if self.state.has_open_position_for(canonical):
                         continue
 
-                    price_data = self._fetch_price_data(asset, category)
+                    price_data = self._fetch_price_data(canonical, category)
                     if price_data is None or price_data.empty:
                         continue
 
-                    sig = strategy.generate(asset, canonical, category, price_data)
+                    sig = strategy.generate(canonical, canonical, category, price_data)
                     if sig and sig.confidence >= 0.5:
                         signals.append(sig)
                 except Exception as e:
-                    logger.debug(f"[TradingCore] Signal gen {asset}: {e}")
+                    logger.debug(f"[TradingCore] Signal gen {canonical}: {e}")
         except Exception as e:
             logger.error(f"[TradingCore] Signal generation error: {e}")
         return signals
 
     def _execute_signal(self, signal: Signal) -> bool:
-        """Run portfolio gates then execute via paper trader."""
-        canonical = signal.canonical_asset or signal.asset
-
-        # Gate: max positions
         if self.state.open_position_count() >= 5:
             return False
 
-        # Gate: category cap
         from config.config import CATEGORY_CAPS
         cat = signal.category
         cat_open = sum(
@@ -331,7 +298,6 @@ class TradingCore:
         if cat_open >= CATEGORY_CAPS.get(cat, 99):
             return False
 
-        # Execute
         try:
             trade = self._paper_trader.execute_signal(signal.to_dict())
             if trade:
@@ -373,13 +339,13 @@ class TradingCore:
 
     def _build_context(self, asset: str = "", category: str = "") -> Dict[str, Any]:
         return {
-            "asset":       asset,
-            "category":    category,
-            "balance":     self.state.balance,
-            "open_count":  self.state.open_position_count(),
-            "daily_pnl":   self.state.daily_pnl,
-            "engine":      self,
-            "fetcher":     self.fetcher,
+            "asset":      asset,
+            "category":   category,
+            "balance":    self.state.balance,
+            "open_count": self.state.open_position_count(),
+            "daily_pnl":  self.state.daily_pnl,
+            "engine":     self,
+            "fetcher":    self.fetcher,
         }
 
     def _notify_telegram_open(self, trade: Dict) -> None:
@@ -389,11 +355,31 @@ class TradingCore:
             except Exception:
                 pass
 
-    def get_asset_list(self) -> List:
+    def get_asset_list(self) -> List[Tuple[str, str]]:
         return self.registry.all_assets()
 
     def get_strategy_stats(self) -> Dict:
         return self.state.get_all_strategy_stats()
+
+    def close_position_manually(self, trade_id: str) -> Optional[Dict]:
+        pos = self.state.get_open_position(trade_id)
+        if not pos:
+            return None
+        entry    = float(pos.get("entry_price", 0))
+        direction = pos.get("direction", pos.get("signal", "BUY"))
+        size     = float(pos.get("position_size", 0))
+        pnl      = 0.0
+        if self.fetcher:
+            try:
+                price, _ = self.fetcher.get_real_time_price(
+                    pos.get("asset", ""), pos.get("category", "forex")
+                )
+                if price:
+                    pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
+                    return self.state.close_position(trade_id, price, "Manual Close", pnl)
+            except Exception:
+                pass
+        return self.state.close_position(trade_id, entry, "Manual Close", 0.0)
 
     def __repr__(self) -> str:
         return (

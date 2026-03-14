@@ -1,27 +1,6 @@
 """
 core/events.py — In-process typed EventBus for the trading platform.
-
-Design principles:
-  • Zero external dependencies — works without Redis, no network calls.
-  • Thread-safe — all subscribers called from the publishing thread or
-    optionally in their own daemon threads (async=True).
-  • Typed events — every event is a dataclass, no raw dicts.
-  • Weak references optional — use strong refs for long-lived subscribers.
-  • Fire-and-forget — a slow subscriber never blocks the engine.
-
-Usage:
-    from core.events import bus, TradeOpenedEvent
-
-    # Subscribe
-    def on_trade(evt: TradeOpenedEvent):
-        print(evt.asset, evt.pnl)
-
-    bus.subscribe(TradeOpenedEvent, on_trade)
-
-    # Publish (from anywhere in the process)
-    bus.emit(TradeOpenedEvent(asset="BTC-USD", ...))
 """
-
 from __future__ import annotations
 
 import threading
@@ -30,16 +9,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
 
-from utils.logger import logger
+from utils.logger import get_logger
+
+logger = get_logger()
 
 E = TypeVar("E", bound="BaseEvent")
 
 
-# ── Base event ────────────────────────────────────────────────────────────────
-
 @dataclass
 class BaseEvent:
-    """All events inherit from this."""
     ts: datetime = field(default_factory=datetime.utcnow, init=False)
 
     @property
@@ -47,15 +25,13 @@ class BaseEvent:
         return self.__class__.__name__
 
 
-# ── Trading events ────────────────────────────────────────────────────────────
-
 @dataclass
 class TradeOpenedEvent(BaseEvent):
     trade_id: str
     asset: str
     canonical_asset: str
     category: str
-    direction: str          # 'BUY' | 'SELL'
+    direction: str
     entry_price: float
     stop_loss: float
     take_profit_levels: List[float]
@@ -77,7 +53,7 @@ class TradeClosedEvent(BaseEvent):
     position_size: float
     pnl: float
     pnl_percent: float
-    exit_reason: str        # 'Stop Loss' | 'Take Profit 1' | 'Manual' …
+    exit_reason: str
     duration_minutes: int
     strategy_id: str
 
@@ -93,7 +69,7 @@ class SignalGeneratedEvent(BaseEvent):
     stop_loss: float
     take_profit: float
     strategy_id: str
-    layer_reached: int      # which layer passed last (1-7)
+    layer_reached: int
     reason: str
 
 
@@ -105,12 +81,12 @@ class SignalRejectedEvent(BaseEvent):
     direction: str
     confidence: float
     reject_reason: str
-    reject_layer: str       # e.g. 'risk_check', 'duplicate_guard', 'cooldown'
+    reject_layer: str
 
 
 @dataclass
 class RiskLimitHitEvent(BaseEvent):
-    limit_type: str         # 'daily_loss' | 'max_positions' | 'category_cap' | 'correlation'
+    limit_type: str
     value: float
     threshold: float
     message: str
@@ -118,7 +94,6 @@ class RiskLimitHitEvent(BaseEvent):
 
 @dataclass
 class PositionUpdateEvent(BaseEvent):
-    """Fires every monitoring tick so dashboard can refresh without polling."""
     open_positions: List[Dict]
     balance: float
     daily_pnl: float
@@ -130,22 +105,7 @@ class BalanceChangedEvent(BaseEvent):
     old_balance: float
     new_balance: float
     delta: float
-    reason: str             # 'trade_closed' | 'deposit' | 'withdrawal'
-
-
-@dataclass
-class SessionChangedEvent(BaseEvent):
-    old_session: str
-    new_session: str
-    active_markets: List[str]
-
-
-@dataclass
-class RegimeChangedEvent(BaseEvent):
-    asset: str
-    old_regime: str
-    new_regime: str
-    confidence: float
+    reason: str
 
 
 @dataclass
@@ -153,13 +113,7 @@ class CooldownActivatedEvent(BaseEvent):
     asset: str
     canonical_asset: str
     cooldown_minutes: int
-    reason: str             # 'loss' | 'manual'
-
-
-@dataclass
-class CooldownExpiredEvent(BaseEvent):
-    asset: str
-    canonical_asset: str
+    reason: str
 
 
 @dataclass
@@ -185,24 +139,10 @@ class SystemStoppingEvent(BaseEvent):
 
 @dataclass
 class HealthCheckEvent(BaseEvent):
-    status: str             # 'healthy' | 'degraded' | 'critical'
+    status: str
     issues: List[str]
     ram_pct: float
     cpu_pct: float
-
-
-@dataclass
-class PriceUpdateEvent(BaseEvent):
-    asset: str
-    price: float
-    category: str
-
-
-@dataclass
-class SentimentUpdateEvent(BaseEvent):
-    asset: str
-    score: float
-    label: str              # 'extreme_fear' | 'fear' | 'neutral' | 'greed' | 'extreme_greed'
 
 
 @dataclass
@@ -213,22 +153,12 @@ class WhaleAlertEvent(BaseEvent):
     source: str
 
 
-# ── EventBus ──────────────────────────────────────────────────────────────────
-
 class EventBus:
-    """
-    Thread-safe in-process pub/sub bus.
-
-    • Subscribers are called synchronously in the emitter's thread by default.
-    • Pass async_dispatch=True to each subscribe() call to run in a daemon thread.
-    • Exceptions in subscribers are logged but never propagate to the emitter.
-    """
+    """Thread-safe in-process pub/sub bus."""
 
     def __init__(self):
         self._lock: threading.Lock = threading.Lock()
-        # event_type → list of (callback, async_dispatch)
         self._subscribers: Dict[Type[BaseEvent], List[tuple]] = {}
-        # History ring buffer (last 500 events for debugging)
         self._history: List[BaseEvent] = []
         self._history_limit = 500
 
@@ -238,22 +168,12 @@ class EventBus:
         callback: Callable[[E], None],
         async_dispatch: bool = False,
     ) -> None:
-        """
-        Register a callback for an event type.
-
-        Args:
-            event_type: The event class to subscribe to.
-            callback:   Called with the event instance.
-            async_dispatch: If True, callback runs in a daemon thread so a
-                            slow handler doesn't block the trading loop.
-        """
         with self._lock:
             if event_type not in self._subscribers:
                 self._subscribers[event_type] = []
             self._subscribers[event_type].append((callback, async_dispatch))
 
     def unsubscribe(self, event_type: Type[E], callback: Callable[[E], None]) -> None:
-        """Remove a previously registered callback."""
         with self._lock:
             subs = self._subscribers.get(event_type, [])
             self._subscribers[event_type] = [
@@ -261,11 +181,6 @@ class EventBus:
             ]
 
     def emit(self, event: BaseEvent) -> None:
-        """
-        Publish an event to all subscribers.
-        Never raises — exceptions are caught and logged.
-        """
-        # Add to history
         with self._lock:
             self._history.append(event)
             if len(self._history) > self._history_limit:
@@ -290,7 +205,7 @@ class EventBus:
             callback(event)
         except Exception:
             logger.error(
-                f"[EventBus] Exception in subscriber {callback.__qualname__} "
+                f"[EventBus] Exception in {callback.__qualname__} "
                 f"for {event.name}:\n{traceback.format_exc()}"
             )
 
@@ -299,7 +214,6 @@ class EventBus:
         event_type: Optional[Type[BaseEvent]] = None,
         limit: int = 50,
     ) -> List[BaseEvent]:
-        """Return recent events, optionally filtered by type."""
         with self._lock:
             history = list(self._history)
         if event_type:
@@ -315,6 +229,4 @@ class EventBus:
             self._history.clear()
 
 
-# ── Global singleton ──────────────────────────────────────────────────────────
-# Import from anywhere:  from core.events import bus
 bus: EventBus = EventBus()
