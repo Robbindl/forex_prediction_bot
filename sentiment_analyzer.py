@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 import yfinance as yf
 from whale_alert_manager import WhaleAlertManager
 from market_calendar import MarketCalendar
-from logger import logger
+from utils.logger import logger
 
 # NEW: Import Reddit
 from reddit_watcher import RedditWatcher

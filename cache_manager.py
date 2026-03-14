@@ -7,7 +7,7 @@ import json
 import pickle
 from typing import Optional, Any, Dict
 from datetime import timedelta
-from logger import logger
+from utils.logger import logger
 
 class CacheManager:
     """

@@ -6,7 +6,7 @@ FULL VERSION: Complete symbol mapping, proper calculations
 from typing import Dict, Any
 from datetime import datetime
 import numpy as np
-from logger import logger
+from utils.logger import logger
 from websocket_dashboard import add_transaction  # FIXED: was dashboard_feed
 
 class WebSocketHandlers:

@@ -34,7 +34,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ===== ADD LOGGER IMPORT =====
-from logger import logger
+from utils.logger import logger
 # ============================
 
 try:

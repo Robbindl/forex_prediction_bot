@@ -10,7 +10,7 @@ import random
 from datetime import datetime, timedelta
 import websocket
 from typing import Dict, Optional, Callable, List
-from logger import logger
+from utils.logger import logger
 
 class WebSocketFetcher:
     """

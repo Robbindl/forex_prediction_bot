@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Dict, List, Callable
 from datetime import datetime
-from logger import logger
+from utils.logger import logger
 
 
 class WebSocketManager:

@@ -20,8 +20,11 @@ secrets.json
 secrets/
 whale_session*
 telegram_session*
+*.session
+*.session-journal
 *.key
 *.pem
+data/system_state.json
 
 # PYTHON
 # ------------------------------------------------
@@ -71,6 +74,7 @@ yarn-error.log*
 *.sqlite3
 *.postgres
 data/
+!data/system_state.json  # Already ignored above in SECURITY
 *.sql
 *.pid
 dump.rdb
@@ -93,11 +97,13 @@ portfolio_reports/
 # ------------------------------------------------
 ml_models/
 trained_models/
+models/
 *.pkl
 *.h5
 *.joblib
 *.onnx
 model_registry.json
+models/*.joblib
 
 # LOGS
 # ------------------------------------------------

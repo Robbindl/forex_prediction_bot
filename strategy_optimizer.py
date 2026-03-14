@@ -2,7 +2,7 @@
 Strategy Optimizer - Grid search optimization for trading strategies
 """
 
-from logger import logger
+from utils.logger import logger
 import itertools
 import pandas as pd
 import numpy as np

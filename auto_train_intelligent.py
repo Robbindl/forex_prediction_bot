@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 from data.fetcher import MarketHours
-from logger import logger
+from utils.logger import logger
 
 class IntelligentAutoTrainer:
     """

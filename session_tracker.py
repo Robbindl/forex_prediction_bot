@@ -6,7 +6,7 @@ from datetime import datetime, time
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
-from logger import logger
+from utils.logger import logger
 
 class SessionTracker:
     """

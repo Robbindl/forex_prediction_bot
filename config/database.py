@@ -1,76 +1,70 @@
 """
-Database configuration for trading bot
-This file handles connecting to PostgreSQL
+config/database.py — PostgreSQL connection. Required — bot will not start without it.
 """
-
-import os
-from sqlalchemy import create_engine
-from sqlalchemy import text
+from __future__ import annotations
+import time
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
-import time
-from logger import logger
+from utils.logger import get_logger
+from config.config import DATABASE_URL
 
-# Load your .env file
-load_dotenv()
+logger = get_logger()
 
-# Get database URL from .env
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/trading_bot')
+Base = declarative_base()
 
-def create_db_engine(max_retries=3):
-    """Create database engine with retry logic"""
-    for attempt in range(max_retries):
+
+def create_db_engine(max_retries: int = 5, retry_delay: int = 3):
+    """
+    Connect to PostgreSQL. Retries max_retries times.
+    Raises RuntimeError if all attempts fail — this is intentional.
+    The bot requires a database to run.
+    """
+    for attempt in range(1, max_retries + 1):
         try:
             engine = create_engine(
                 DATABASE_URL,
-                pool_size=5,
-                max_overflow=10,
+                pool_size=10,
+                max_overflow=20,
                 pool_pre_ping=True,
-                echo=False
+                pool_recycle=3600,
+                echo=False,
             )
-            # Test connection - FIX THIS LINE
             with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))  # Add 'text' import
-            logger.info("✅ Database connected successfully")
-
+                conn.execute(text("SELECT 1"))
+            logger.info(f"[DB] Connected to PostgreSQL — {DATABASE_URL.split('@')[-1]}")
             return engine
         except Exception as e:
-            if attempt == max_retries - 1:
-                logger.info(f"❌ Database connection failed after {max_retries} attempts: {e}")
+            logger.warning(f"[DB] Connection attempt {attempt}/{max_retries} failed: {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
 
-                return None
-            logger.info(f"⚠️ Database connection attempt {attempt + 1} failed, retrying...")
+    raise RuntimeError(
+        f"[DB] Could not connect to PostgreSQL after {max_retries} attempts.\n"
+        f"Check DATABASE_URL in your .env file: {DATABASE_URL}\n"
+        "Bot cannot start without a database connection."
+    )
 
-            time.sleep(2)
 
-# Create engine with retry
-engine = create_db_engine()
+engine       = create_db_engine()
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) if engine else None
 
-# Base class for all database tables
-Base = declarative_base()
+def init_db() -> None:
+    """Create all tables if they don't exist."""
+    from models.trade_models import (          # noqa: F401 — side-effect import
+        Trade, TradingDiary, BotPersonality,
+        MemorableMoments, HumanExplanations, WhaleAlert,
+        OpenPosition, DailyStats,
+    )
+    Base.metadata.create_all(bind=engine)
+    logger.info("[DB] All tables created / verified")
+
 
 def get_db():
-    """Get a database session"""
-    if not SessionLocal:
-        logger.info("⚠️ Database not available, using file storage only")
-
-        return None
-    
+    """FastAPI / Flask dependency-style session generator."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-def init_db():
-    """Create all tables if they don't exist"""
-    if engine:
-        Base.metadata.create_all(bind=engine)
-        logger.info("✅ Database tables created/verified")
-
-    else:
-        logger.info("⚠️ Cannot create tables - database not available")

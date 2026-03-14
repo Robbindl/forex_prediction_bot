@@ -25,7 +25,7 @@ import psutil
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from logger import logger
+from utils.logger import logger
 
 # ── Config ────────────────────────────────────────────────────────────────────
 

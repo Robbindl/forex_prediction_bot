@@ -27,7 +27,7 @@ import threading
 import os
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
-from logger import logger
+from utils.logger import logger
 
 
 class RedisBroker:

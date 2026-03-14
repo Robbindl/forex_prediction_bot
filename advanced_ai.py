@@ -12,7 +12,7 @@ from gymnasium import spaces
 import random
 from datetime import datetime, timedelta
 import warnings
-from logger import logger
+from utils.logger import logger
 warnings.filterwarnings('ignore')
 
 # ===== 1. REINFORCEMENT LEARNING TRADER =====

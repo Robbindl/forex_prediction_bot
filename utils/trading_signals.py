@@ -3,7 +3,7 @@ Trading Signal Generator
 Calculates entry points, stop loss, take profit levels, and position sizing
 """
 
-from logger import logger
+from utils.logger import logger
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Any, Tuple

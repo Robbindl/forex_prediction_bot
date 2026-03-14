@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
-from logger import logger
+from utils.logger import logger
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

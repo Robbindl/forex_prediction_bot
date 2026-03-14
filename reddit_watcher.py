@@ -11,7 +11,7 @@ from typing import List, Dict, Optional
 import time
 import threading
 from textblob import TextBlob
-from logger import logger
+from utils.logger import logger
 
 class RedditWatcher:
     """

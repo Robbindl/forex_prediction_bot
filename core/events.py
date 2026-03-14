@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
 
-from logger import logger
+from utils.logger import logger
 
 E = TypeVar("E", bound="BaseEvent")
 

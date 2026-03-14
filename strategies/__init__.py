@@ -1,2 +1,2 @@
 """Trading strategies package"""
-from .voting_engine import StrategyVotingEngine
+from .voting import StrategyVotingEngine

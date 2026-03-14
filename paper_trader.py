@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 import threading
 import uuid
 from services.database_service import DatabaseService
-from logger import logger
+from utils.logger import logger
 
 class PaperTrade:
     """Individual paper trade record"""

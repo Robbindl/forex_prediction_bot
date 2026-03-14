@@ -18,7 +18,7 @@ from typing import Dict, List, Tuple, Optional
 from scipy.optimize import minimize
 from dataclasses import dataclass
 from datetime import datetime
-from logger import logger
+from utils.logger import logger
 
 
 @dataclass

@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Any
 from collections import deque
 from pandas import Period, Timestamp
 
-from logger import logger
+from utils.logger import logger
 from telegram_manager import telegram_manager
 from websocket_dashboard import recent_transactions
 

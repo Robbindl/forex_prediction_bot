@@ -19,7 +19,7 @@ import time
 import xml.etree.ElementTree as ET
 
 # Import all config values
-from logger import logger
+from utils.logger import logger
 
 from config.config import (
     NEWSAPI_KEY, GNEWS_KEY, RAPIDAPI_KEY,

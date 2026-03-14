@@ -6,7 +6,7 @@ Handles stale PID files from crashed/force-closed previous runs
 import os
 import atexit
 from pathlib import Path
-from logger import logger
+from utils.logger import logger
 
 
 class TelegramManager:

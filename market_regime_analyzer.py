@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple
 from enum import Enum
 import requests
 from datetime import datetime, timedelta
-from logger import logger
+from utils.logger import logger
 
 
 class MarketRegime(Enum):

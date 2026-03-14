@@ -23,7 +23,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import NetworkError, TimedOut, RetryAfter
 
-from logger import logger   # ← centralized logger, NOT overwritten below
+from utils.logger import logger   # ← centralized logger, NOT overwritten below
 
 
 # ── Asset alias map (shared by /signal and /why) ──────────────────────────────

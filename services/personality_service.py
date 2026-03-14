@@ -12,7 +12,7 @@ import pandas as pd
 
 from models.trade_models import TradingDiary, BotPersonality, MemorableMoments, HumanExplanations, Trade
 from config.database import SessionLocal
-from logger import logger
+from utils.logger import logger
 
 
 class PersonalityDatabase:

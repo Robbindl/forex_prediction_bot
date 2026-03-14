@@ -17,7 +17,7 @@ import os
 import getpass
 import asyncio  # ADDED for async support
 from dotenv import load_dotenv
-from logger import logger
+from utils.logger import logger
 
 # Load environment variables
 load_dotenv()

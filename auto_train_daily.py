@@ -74,7 +74,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from data.fetcher import NASALevelFetcher
 from indicators.technical import TechnicalIndicators
-from logger import logger
+from utils.logger import logger
 
 # Suppress warnings
 import warnings

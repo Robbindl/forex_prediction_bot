@@ -3,7 +3,7 @@ Machine Learning Prediction Engine
 Supports: Random Forest, XGBoost, LSTM, Ensemble
 """
 
-from logger import logger
+from utils.logger import logger
 import pandas as pd
 import numpy as np
 from typing import Tuple, Dict, Any, List

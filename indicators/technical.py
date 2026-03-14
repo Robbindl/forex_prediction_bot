@@ -6,7 +6,7 @@ Includes: Trend, Momentum, Volatility, Volume indicators
 import pandas as pd
 import numpy as np
 from typing import Tuple
-from logger import logger
+from utils.logger import logger
 
 
 class TechnicalIndicators:

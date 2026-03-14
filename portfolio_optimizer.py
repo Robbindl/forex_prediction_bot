@@ -8,7 +8,7 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 from scipy.optimize import minimize
 from datetime import datetime, timedelta
-from logger import logger
+from utils.logger import logger
 
 
 class CorrelationChecker:

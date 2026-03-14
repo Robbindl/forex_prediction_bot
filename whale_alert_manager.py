@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from models.trade_models import WhaleAlert
 from config.database import SessionLocal
-from logger import logger
+from utils.logger import logger
 try:
     from telethon_whale_store import whale_store as _whale_store
 except Exception:

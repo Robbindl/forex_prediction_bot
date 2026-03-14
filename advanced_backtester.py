@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 import json
-from logger import logger
+from utils.logger import logger
 
 
 @dataclass
