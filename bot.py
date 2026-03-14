@@ -273,6 +273,57 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] AutoTrainer failed to start: {e}")
 
+    # ── Portfolio risk engine ─────────────────────────────────────────────────────
+    try:
+        from risk.portfolio_risk import PortfolioRiskEngine
+        portfolio_risk = PortfolioRiskEngine()
+        engine.portfolio_risk = portfolio_risk
+        logger.info("[bot] PortfolioRiskEngine attached")
+    except Exception as e:
+        logger.warning(f"[bot] PortfolioRiskEngine failed: {e}")
+
+    # ── Exchange router + paper adapter ──────────────────────────────────────────
+    try:
+        from execution.exchange_router import ExchangeRouter
+        from execution.paper_adapter   import PaperAdapter
+        router = ExchangeRouter()
+        if hasattr(engine, '_paper_trader') and engine._paper_trader:
+            router.register("paper", PaperAdapter(engine._paper_trader))
+        engine.exchange_router = router
+        logger.info("[bot] ExchangeRouter ready — paper adapter registered")
+    except Exception as e:
+        logger.warning(f"[bot] ExchangeRouter failed: {e}")
+
+    # ── ML prediction service (optional separate process) ────────────────────────
+    if not args.no_gateway:
+        try:
+            import subprocess, sys
+            ml_proc = subprocess.Popen(
+                [sys.executable, "-m", "ml.prediction_service"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            atexit.register(lambda: ml_proc.terminate())
+            # Give it 2s to start then switch the engine predictor to client
+            time.sleep(2)
+            from ml.prediction_service import PredictionClient
+            if hasattr(engine, '_paper_trader') and engine._paper_trader and hasattr(engine, 'predictor'):
+                engine.predictor = PredictionClient()
+            logger.info("[bot] ML prediction service started")
+        except Exception as e:
+            logger.warning(f"[bot] ML service failed to start ({e}) — using in-process predictor")
+
+    # ── Redis cache upgrade (if Redis available) ──────────────────────────────────
+    try:
+        from services.redis_cache import get_cache
+        upgraded_cache = get_cache(default_ttl=30)
+        import data.cache as _cache_mod
+        _cache_mod.cache = upgraded_cache
+        logger.info("[bot] Redis cache active")
+    except Exception as e:
+        logger.debug(f"[bot] Redis cache not available ({e}) — using in-process cache")
+
     # ── Node.js WebSocket gateway (optional) ─────────────────────────────
     if not args.no_gateway:
         start_gateway()
@@ -314,4 +365,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()        
+    main()

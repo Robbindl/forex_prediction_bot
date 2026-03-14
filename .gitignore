@@ -1,5 +1,5 @@
 # ==================================================
-# ULTIMATE .GITIGNORE FOR TRADING BOT
+# .GITIGNORE FOR TRADING BOT
 # ==================================================
 
 # SECURITY - NEVER COMMIT THESE!
@@ -25,6 +25,8 @@ telegram_session*
 *.key
 *.pem
 data/system_state.json
+.env.local
+*.local
 
 # PYTHON
 # ------------------------------------------------
@@ -46,6 +48,12 @@ htmlcov/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+.cache
+coverage.xml
+*.py,cover
+test_results.xml
+junit/
+test-results/
 
 # VIRTUAL ENVIRONMENTS
 # ------------------------------------------------
@@ -64,8 +72,6 @@ gateway/package-lock.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-*.pid
-*.sock
 
 # DATABASE
 # ------------------------------------------------
@@ -74,13 +80,13 @@ yarn-error.log*
 *.sqlite3
 *.postgres
 !data/cache.py
-!data/system_state.json  # Already ignored above in SECURITY
 data/
 *.sql
-*.pid
 dump.rdb
 postgresql.conf.backup
 timescaledb_tune.backup*
+redis_data/
+redis_dump.rdb
 
 # TRADING DATA
 # ------------------------------------------------
@@ -90,6 +96,10 @@ historical_data/
 cache/
 backtest_results/
 !backtest_results/example_*.csv
+backtest_reports/
+backtest_charts/
+backtest_output/
+backtest_logs/
 optimization_results/
 trade_logs/
 portfolio_reports/
@@ -99,17 +109,30 @@ portfolio_reports/
 ml_models/
 trained_models/
 models/
+ml/pickled_models/
+ml/model_cache/
+ml/prediction_service_cache/
+ml/service_logs/
 *.pkl
 *.h5
 *.joblib
 *.onnx
+*.pt
+*.pth
+*.keras
+*.hdf5
 model_registry.json
-models/*.joblib
+*.mlservice
+ml_service.pid
+ml_service.log
+ml_service_port.txt
 
 # LOGS
 # ------------------------------------------------
 logs/
+logs/**/*.log
 training_logs/
+test_logs/
 *.log
 *.log.*
 *.err
@@ -117,6 +140,10 @@ training_logs/
 master_controller.log
 health_log.txt
 health_log.json
+logs/exchange_router.log
+logs/portfolio_risk.log
+logs/circuit_breaker.log
+logs/ml_service.log
 
 # IDE
 # ------------------------------------------------
@@ -143,13 +170,19 @@ backups/
 backup_*/
 *.html
 !templates/*.html
+architecture_benchmarks/
+performance_logs/
+tests/architecture_test_output/
+tests/test_architecture_output.json
 
 # CONFIGURATION
 # ------------------------------------------------
 *.local.py
-*.session
-*.session-journal
 config/local_*.py
+execution/local_settings.py
+risk/local_settings.py
+ml/local_settings.py
+services/local_settings.py
 
 # TEMPORARY & BACKUP FILES
 # ------------------------------------------------
@@ -160,6 +193,11 @@ config/local_*.py
 *.orig
 *.backup
 *.backup2
+data/state_*.tmp
+data/state_backup.json
+data/state_*.json
+*.state
+state_*
 
 # LARGE BINARY FILES
 # ------------------------------------------------
@@ -175,138 +213,44 @@ config/local_*.py
 debug_output.txt
 sentiment_test_results.json
 installed_all.txt
+risk/portfolio_state.json
+risk/risk_metrics_cache.json
+risk/drawdown_history.json
+execution/circuit_breaker_state.json
+execution/rate_limiter_state.json
+execution/router_cache.json
+execution/routing_local.json
+execution/exchange_routes.local.json
 
 # STATIC / WEB
 # ------------------------------------------------
 static/
 
-
-# TEST ARTIFACTS (ADDED)
+# PID FILES
 # ------------------------------------------------
-.pytest_cache/
-.pytest_cache/*
-tests/__pycache__/
-tests/*.pyc
-htmlcov/
-.coverage
-.coverage.*
-.cache
-coverage.xml
-*.cover
-*.py,cover
-.pytest_cache/
-test_results.xml
-junit/
-test-results/
+*.pid
+services/*.pid
+ml/*.pid
+execution/*.pid
+risk/*.pid
 
-# ML MODEL ARTIFACTS
+# SOCKET FILES
 # ------------------------------------------------
-ml_models/
-ml/__pycache__/
-ml/models/
-ml/pickled_models/
-*.pkl
-*.h5
-*.joblib
-*.onnx
-*.pt
-*.pth
-*.keras
-*.hdf5
-model_registry.json
+*.sock
+/tmp/ml_service.sock
+/ml_service.sock
 
-# BACKTEST RESULTS
+# EXCHANGE ADAPTER CREDENTIALS
 # ------------------------------------------------
-backtest_results/
-backtest_results/*.csv
-!backtest_results/example_*.csv
-backtest_reports/
-backtest_charts/
-backtest_output/
-backtest_logs/
+execution/credentials/
+execution/api_keys/
+execution/*.key
+execution/*.pem
+execution/*.crt
+execution/paper_trader_private.json
 
-# STATE FILES
+# SERVICE CACHE & BACKUPS
 # ------------------------------------------------
-data/system_state.json
-data/state_*.tmp
-data/state_backup.json
-data/state_*.json
-*.state
-state_*
-
-# LOGS (ENHANCED)
-# ------------------------------------------------
-logs/
-*.log
-*.log.*
-logs/**/*.log
-test_logs/
-debug.log
-error.log
-access.log
-trading_bot.log
-
-# TEST ARTIFACTS (ADDED)
-# ------------------------------------------------
-.pytest_cache/
-.pytest_cache/*
-tests/__pycache__/
-tests/*.pyc
-htmlcov/
-.coverage
-.coverage.*
-.cache
-coverage.xml
-*.cover
-*.py,cover
-.pytest_cache/
-test_results.xml
-junit/
-test-results/
-
-# ML MODEL ARTIFACTS
-# ------------------------------------------------
-ml_models/
-ml/__pycache__/
-ml/models/
-ml/pickled_models/
-*.pkl
-*.h5
-*.joblib
-*.onnx
-*.pt
-*.pth
-*.keras
-*.hdf5
-model_registry.json
-
-# BACKTEST RESULTS
-# ------------------------------------------------
-backtest_results/
-backtest_results/*.csv
-!backtest_results/example_*.csv
-backtest_reports/
-backtest_charts/
-backtest_output/
-backtest_logs/
-
-# STATE FILES
-# ------------------------------------------------
-data/system_state.json
-data/state_*.tmp
-data/state_backup.json
-data/state_*.json
-*.state
-state_*
-
-# LOGS (ENHANCED)
-# ------------------------------------------------
-logs/
-*.log
-*.log.*
-logs/**/*.log
-test_logs/
-debug.log
-error.log
-access.log
-trading_bot.log
+services/cache_backup/
+services/redis_backup/
+services/redis_dump.rdb
