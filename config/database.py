@@ -4,7 +4,7 @@ config/database.py — PostgreSQL connection. Required — bot will not start wi
 from __future__ import annotations
 import time
 from sqlalchemy import create_engine, text
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 from utils.logger import get_logger
 from config.config import DATABASE_URL
@@ -67,4 +67,4 @@ def get_db():
     try:
         yield db
     finally:
-        db.close()
+        db.close()   

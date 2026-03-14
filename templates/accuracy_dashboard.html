@@ -428,25 +428,38 @@ function renderAlpha(signals) {
 }
 
 // ── WebSocket gateway connection (optional enhancement) ──────────────────
+// Checks /api/gateway/status first so the browser never logs a failed
+// WebSocket connection when the gateway isn't running.
 function connectGateway() {
-  try {
-    const ws = new WebSocket('ws://localhost:8080');
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ action: 'subscribe', channels: ['alpha', 'predictions'] }));
-    };
-    ws.onmessage = (e) => {
+  fetch('/api/gateway/status')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.running) return;   // gateway not up — skip silently
       try {
-        const env = JSON.parse(e.data);
-        if (env.channel === 'alpha') {
-          // Refresh alpha feed silently
-          fetch('/api/alpha?n=20').then(r => r.json()).then(d => {
-            if (d.success) renderAlpha(d.signals);
-          });
-        }
+        const ws = new WebSocket(d.url || 'ws://localhost:8081');
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ action: 'subscribe', channels: ['alpha', 'predictions'] }));
+        };
+        ws.onmessage = (e) => {
+          try {
+            const env = JSON.parse(e.data);
+            if (env.channel === 'alpha') {
+              fetch('/api/alpha?n=20').then(r => r.json()).then(d => {
+                if (d.success) renderAlpha(d.signals);
+              });
+            }
+            if (env.channel === 'predictions') {
+              fetch('/api/accuracy?days=7').then(r => r.json()).then(d => {
+                if (d.success) renderAccuracy(d.data);
+              });
+            }
+          } catch (_) {}
+        };
+        ws.onerror  = () => {};
+        ws.onclose  = () => {};
       } catch (_) {}
-    };
-    ws.onerror = () => {};   // silently ignore if gateway not running
-  } catch (_) {}
+    })
+    .catch(() => {});   // Flask not ready yet — silently skip
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -455,4 +468,4 @@ setInterval(() => loadData(7), 60_000);   // refresh every minute
 connectGateway();
 </script>
 </body>
-</html>
+</html>   

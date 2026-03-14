@@ -12,7 +12,7 @@ const cors     = require('cors');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 // ── Config ─────────────────────────────────────────────────────────────────
-const WS_PORT      = 8080;
+const WS_PORT      = 8081;
 const FLASK_URL    = 'http://localhost:5000';
 const REDIS_HOST   = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT   = parseInt(process.env.REDIS_PORT || '6379');
@@ -63,9 +63,16 @@ const redisOpts = {
   host:            REDIS_HOST,
   port:            REDIS_PORT,
   password:        REDIS_PASS || undefined,
-  retryStrategy:   (times) => Math.min(times * 100, 3000),
+  retryStrategy:   (times) => {
+    if (times > 5) {
+      // Stop retrying after 5 attempts — gateway runs in polling-only mode
+      return null;
+    }
+    return Math.min(times * 500, 3000);
+  },
   maxRetriesPerRequest: null,
   enableReadyCheck: true,
+  lazyConnect: true,   // don't connect until we explicitly call connect()
 };
 
 // ── Redis connections ───────────────────────────────────────────────────────
@@ -73,6 +80,16 @@ const sub = new Redis(redisOpts);
 const pub = new Redis(redisOpts);
 
 let redisConnected = false;
+let redisAttempted = false;
+
+// Attempt Redis connection — gateway starts regardless of outcome
+function tryConnectRedis() {
+  if (redisAttempted) return;
+  redisAttempted = true;
+  console.log(`[Redis] Connecting to ${REDIS_HOST}:${REDIS_PORT}…`);
+  sub.connect().catch(() => {});
+  pub.connect().catch(() => {});
+}
 
 // ── Helper to subscribe to all channels ────────────────────────────────────
 async function subscribeChannels() {
@@ -88,35 +105,34 @@ async function subscribeChannels() {
 
 // ── Subscriber connection events ───────────────────────────────────────────
 sub.on('connect', async () => {
-  console.log(`[Redis Subscriber] Connected to ${REDIS_HOST}:${REDIS_PORT}`);
+  console.log(`[Redis] Connected to ${REDIS_HOST}:${REDIS_PORT}`);
   redisConnected = true;
   await subscribeChannels();
 });
 
 sub.on('ready', async () => {
-  // This fires after a successful reconnect
   if (!redisConnected) {
-    console.log('[Redis Subscriber] Ready after reconnect, resubscribing…');
+    console.log('[Redis] Ready after reconnect, resubscribing…');
     redisConnected = true;
     await subscribeChannels();
-    
-    // Optional: Send a system message that Redis reconnected
     broadcastSystemMessage('redis_reconnected', 'Redis connection restored');
   }
 });
 
 sub.on('reconnecting', () => {
-  console.log('[Redis Subscriber] Reconnecting…');
+  console.log('[Redis] Reconnecting…');
   redisConnected = false;
 });
 
 sub.on('error', (err) => {
-  console.warn('[Redis Subscriber] Warning:', err.message);
-  // Don't set redisConnected false on every error
+  if (!redisConnected) {
+    // First-time failure — log once clearly, don't spam
+    console.warn(`[Redis] Unavailable (${err.message}) — gateway running in polling-only mode`);
+  }
 });
 
 sub.on('end', () => {
-  console.log('[Redis Subscriber] Connection ended');
+  console.log('[Redis] Connection ended — gateway continues without pub/sub');
   redisConnected = false;
 });
 
@@ -345,13 +361,16 @@ app.get('/stats', (req, res) => {
 server.listen(WS_PORT, () => {
   console.log('');
   console.log('╔══════════════════════════════════════════════╗');
-  console.log('║   Trading Intelligence Gateway (Pro)         ║');
+  console.log('║   Trading Intelligence Gateway               ║');
   console.log(`║   WebSocket  :  ws://localhost:${WS_PORT}          ║`);
   console.log(`║   REST proxy : http://localhost:${WS_PORT}/api/*   ║`);
   console.log(`║   Health     : http://localhost:${WS_PORT}/health  ║`);
   console.log('╚══════════════════════════════════════════════╝');
   console.log('');
-  console.log(`[Redis] Connecting to ${REDIS_HOST}:${REDIS_PORT}…`);
+
+  // Attempt Redis after server is up — if it fails, gateway still works
+  // for WebSocket proxying and client connections
+  tryConnectRedis();
 });
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
@@ -368,4 +387,4 @@ function shutdown() {
     console.log('[Gateway] Done.');
     process.exit(0);
   });
-}
+}        

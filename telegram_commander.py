@@ -8,7 +8,7 @@ Root causes of previous crashes fixed:
      run_coroutine_threadsafe() + a dedicated per-thread event loop.
   2. Logger overwrite — 'from logger import logger' was immediately
      clobbered by 'logger = logging.getLogger(...)'. Removed the clobber.
-  3. /signal bypassed the quality pipeline — now uses get_instant_signal().
+  3. /signal bypassed the quality pipeline — now uses TradingCore directly.
   4. cmd_market had no _require_system guard — could crash on startup.
 """
 
@@ -54,11 +54,8 @@ ALIASES = {
     'CAD':'USD/CAD','LOONIE':'USD/CAD',
     'CHF':'USD/CHF','SWISS':'USD/CHF',
     'NZD':'NZD/USD','KIWI':'NZD/USD',
-    'EURGBP':'EUR/GBP','EURJPY':'EUR/JPY',
-    'GBPJPY':'GBP/JPY','AUDJPY':'AUD/JPY',
-    'EURAUD':'EUR/AUD','GBPAUD':'GBP/AUD',
     # Indices
-    'SP500':'^GSPC','S&P':'^GSPC','SPX':'^GSPC',
+    'SP500':'^GSPC','SPX':'^GSPC','S&P':'^GSPC',
     'DOW':'^DJI','DJI':'^DJI',
     'NASDAQ':'^IXIC','IXIC':'^IXIC',
     'FTSE':'^FTSE','UK100':'^FTSE',
@@ -78,7 +75,7 @@ ALIASES = {
     'EXXON':'XOM','CHEVRON':'CVX',
 }
 
-# ── Category lookup for signal_learning ───────────────────────────────────────
+# ── Category lookup ────────────────────────────────────────────────────────────
 def _get_category(asset: str) -> str:
     if 'USD' in asset and '-' in asset: return 'crypto'
     if any(x in asset for x in ['=F', 'XAU', 'XAG', 'WTI', 'NG/', 'HG']): return 'commodities'
@@ -252,7 +249,7 @@ class TelegramCommander:
         except (TimedOut, NetworkError) as e:
             logger.warning(f"Telegram network error: {e}")
         except TypeError as e:
-            # Catches "'>=' not supported between NoneType and int" from lib internals
+            # Catches ">=' not supported between NoneType and int" from lib internals
             logger.warning(f"Telegram internal type error (ignored): {e}")
         except Exception as e:
             err_str = str(e)
@@ -549,18 +546,22 @@ class TelegramCommander:
             await update.message.chat.send_action("typing")
             searching = await update.message.reply_text(f"🔍 Building quality signal for *{asset}*…", parse_mode='Markdown')
 
-            # ── Run through the FULL 7-layer quality pipeline ──────────────
+            # ── FIX: Use TradingCore.get_signal_for_asset() instead of
+            #         deleted signal_learning module ──────────────────────────
             sig = None
             try:
-                from signal_learning import get_instant_signal
-                sig = get_instant_signal(asset, cat, self.trading_system)
+                core = getattr(self.trading_system, '_trading_core', None)
+                if core is not None and hasattr(core, 'get_signal_for_asset'):
+                    sig = core.get_signal_for_asset(asset)
+                elif hasattr(self.trading_system, 'get_signal_for_asset'):
+                    sig = self.trading_system.get_signal_for_asset(asset)
             except Exception as e:
-                logger.warning(f"signal_learning failed for {asset}: {e}")
+                logger.warning(f"Signal fetch failed for {asset}: {e}")
 
             await searching.delete()
 
-            # signal_learning returns 'direction' key; check both for compatibility
-            _sig_dir = sig.get('direction') or sig.get('signal', 'HOLD')
+            # signal dict uses 'direction' key from new architecture
+            _sig_dir = sig.get('direction') or sig.get('signal', 'HOLD') if sig else 'HOLD'
             if not sig or _sig_dir == 'HOLD':
                 await update.message.reply_text(
                     f"⏸ *{asset}* — No quality signal right now\n\n"
@@ -579,12 +580,12 @@ class TelegramCommander:
             _tp2    = sig.get('take_profit_2')
             _tp3    = sig.get('take_profit_3')
             _conf   = sig.get('confidence', 0)
-            _rr     = sig.get('rr_ratio', 0)
+            _rr     = sig.get('rr_ratio', sig.get('risk_reward', 0))
             _wr     = sig.get('win_rate', 0)
             _conf_str = sig.get('confluence', '')
             _bias   = sig.get('learning_bias', 0)
-            _sess   = sig.get('session', '')
-            _reason = sig.get('reasoning', '')
+            _sess   = sig.get('session', sig.get('metadata', {}).get('session', ''))
+            _reason = sig.get('reasoning', sig.get('kill_reason', ''))
 
             _conf_badge = {
                 'ALL3': '🔥 ALL 3 TF AGREE',
@@ -596,6 +597,13 @@ class TelegramCommander:
             _tp_lines = f"TP1: `{_tp:.5f}`"
             if _tp2: _tp_lines += f"\nTP2: `{_tp2:.5f}`"
             if _tp3: _tp_lines += f"\nTP3: `{_tp3:.5f}`"
+
+            # Use take_profit_levels from new architecture if available
+            tp_levels = sig.get('take_profit_levels', [])
+            if tp_levels and not _tp2:
+                _tp_lines = "\n".join(
+                    f"TP{i+1}: `{lv:.5f}`" for i, lv in enumerate(tp_levels[:3])
+                )
 
             msg = (
                 f"{_emoji} *{_dir} {asset}*\n"
@@ -612,7 +620,6 @@ class TelegramCommander:
                 f"Session:     {_sess}\n"
             )
             if _reason:
-                # First 2 reasons only (keep it readable on phone)
                 lines = [l for l in _reason.split('\n') if l.strip()][:2]
                 if lines:
                     msg += f"\n🧠 *Why*\n" + "\n".join(lines) + "\n"
@@ -638,29 +645,69 @@ class TelegramCommander:
             await update.message.chat.send_action("typing")
             thinking = await update.message.reply_text(f"🤔 Thinking about {asset}…")
 
-            df = self.trading_system.fetch_historical_data(asset, days=3, interval='15m')
-            if df is None or df.empty:
-                await thinking.edit_text(f"❌ No data for {asset}")
-                return
-            df         = self.trading_system.add_technical_indicators(df)
-            prediction = self.trading_system.predictor.predict_next(df)
+            # ── FIX: human_explainer_db was deleted.
+            #         Build explanation from live signal via new architecture. ─
+            explanation = None
+            try:
+                core = getattr(self.trading_system, '_trading_core', None)
+                if core is not None and hasattr(core, 'get_signal_for_asset'):
+                    sig = core.get_signal_for_asset(asset)
+                elif hasattr(self.trading_system, 'get_signal_for_asset'):
+                    sig = self.trading_system.get_signal_for_asset(asset)
+                else:
+                    sig = None
 
-            sentiment, news = {}, []
-            if hasattr(self.trading_system, 'sentiment_analyzer'):
-                try:
-                    sentiment = self.trading_system.sentiment_analyzer.get_comprehensive_sentiment('crypto')
-                except Exception:
-                    pass
+                if sig:
+                    direction = sig.get('direction', 'HOLD')
+                    confidence = sig.get('confidence', 0)
+                    regime    = sig.get('metadata', {}).get('regime', 'unknown')
+                    session   = sig.get('metadata', {}).get('session', 'unknown')
+                    sentiment = sig.get('metadata', {}).get('sentiment_score', 0)
+                    layer     = sig.get('layer_reached', 7)
+                    rr        = sig.get('risk_reward', sig.get('rr_ratio', 0))
+                    indicators = sig.get('indicators', {})
 
-            from human_explainer_db import DatabaseExplainer
-            explainer   = DatabaseExplainer(self.trading_system)
-            explanation = explainer.explain_signal(
-                asset, df, prediction, sentiment, news,
-                chat_id=str(update.effective_chat.id)
-            )
-            explainer.close()
+                    ind_lines = "\n".join(
+                        f"• {k}: {round(v, 4) if isinstance(v, float) else v}"
+                        for k, v in list(indicators.items())[:6]
+                    ) or "• No indicator data"
+
+                    explanation = (
+                        f"🧠 *Why {asset}?*\n\n"
+                        f"*Signal:* {'🟢' if direction == 'BUY' else '🔴'} {direction} "
+                        f"({confidence:.0%} confidence)\n\n"
+                        f"*Market context*\n"
+                        f"• Regime:    {regime}\n"
+                        f"• Session:   {session}\n"
+                        f"• Sentiment: {sentiment:+.3f}\n"
+                        f"• R:R ratio: {rr:.2f}:1\n\n"
+                        f"*Indicators*\n{ind_lines}\n\n"
+                        f"*Pipeline*\n"
+                        f"Signal passed {layer}/7 pipeline layers:\n"
+                        f"Voting → Quality → Regime → Session → "
+                        f"Sentiment → Whale → Calibration\n\n"
+                        f"_Use /signal {asset} for the live signal._"
+                    )
+                else:
+                    explanation = (
+                        f"🧠 *Analysis for {asset}*\n\n"
+                        f"No active signal for {asset} right now.\n\n"
+                        f"The 7-layer pipeline (Voting → Quality → Regime → "
+                        f"Session → Sentiment → Whale → Calibration) "
+                        f"did not produce a qualifying signal.\n\n"
+                        f"_Try again in a few minutes or check /signal {asset}._"
+                    )
+            except Exception as e:
+                logger.warning(f"/why signal fetch error: {e}")
+                explanation = (
+                    f"🧠 *Analysis for {asset}*\n\n"
+                    f"Signal analysis uses the 7-layer pipeline:\n"
+                    f"Voting → Quality → Regime → Session → "
+                    f"Sentiment → Whale → Calibration\n\n"
+                    f"_Use /signal {asset} for a live signal._"
+                )
+
             await thinking.delete()
-
             chunks = [explanation[i:i+4000] for i in range(0, len(explanation), 4000)]
             for chunk in chunks:
                 await update.message.reply_text(chunk, parse_mode='Markdown')
@@ -718,15 +765,14 @@ class TelegramCommander:
                 for m in report['memorable_moments'][:5]:
                     icon = "✅" if m['is_win'] else "❌"
                     pnl  = f"+${m['pnl']:.0f}" if m['is_win'] else f"-${abs(m['pnl']):.0f}"
-                    msg += f"{icon} {m['title']}: {pnl} ({m['date']})\n"
-            else:
-                msg += "No memorable moments yet — start trading!\n"
+                    msg += f"{icon} {m['title']} — {pnl}\n"
+                msg += "\n"
 
             traits = report.get('traits', {})
             if traits:
                 msg += (
-                    f"\n*Personality*\n"
-                    f"Confidence:   {traits.get('confidence',0)*100:.0f}%\n"
+                    f"*Personality*\n"
+                    f"Confidence:   {traits.get('base_confidence',0)*100:.0f}%\n"
                     f"Cautiousness: {traits.get('cautiousness',0)*100:.0f}%\n"
                     f"Optimism:     {traits.get('optimism',0)*100:.0f}%\n"
                 )

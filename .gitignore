@@ -180,3 +180,133 @@ installed_all.txt
 # ------------------------------------------------
 static/
 
+
+# TEST ARTIFACTS (ADDED)
+# ------------------------------------------------
+.pytest_cache/
+.pytest_cache/*
+tests/__pycache__/
+tests/*.pyc
+htmlcov/
+.coverage
+.coverage.*
+.cache
+coverage.xml
+*.cover
+*.py,cover
+.pytest_cache/
+test_results.xml
+junit/
+test-results/
+
+# ML MODEL ARTIFACTS
+# ------------------------------------------------
+ml_models/
+ml/__pycache__/
+ml/models/
+ml/pickled_models/
+*.pkl
+*.h5
+*.joblib
+*.onnx
+*.pt
+*.pth
+*.keras
+*.hdf5
+model_registry.json
+
+# BACKTEST RESULTS
+# ------------------------------------------------
+backtest_results/
+backtest_results/*.csv
+!backtest_results/example_*.csv
+backtest_reports/
+backtest_charts/
+backtest_output/
+backtest_logs/
+
+# STATE FILES
+# ------------------------------------------------
+data/system_state.json
+data/state_*.tmp
+data/state_backup.json
+data/state_*.json
+*.state
+state_*
+
+# LOGS (ENHANCED)
+# ------------------------------------------------
+logs/
+*.log
+*.log.*
+logs/**/*.log
+test_logs/
+debug.log
+error.log
+access.log
+trading_bot.log
+
+# TEST ARTIFACTS (ADDED)
+# ------------------------------------------------
+.pytest_cache/
+.pytest_cache/*
+tests/__pycache__/
+tests/*.pyc
+htmlcov/
+.coverage
+.coverage.*
+.cache
+coverage.xml
+*.cover
+*.py,cover
+.pytest_cache/
+test_results.xml
+junit/
+test-results/
+
+# ML MODEL ARTIFACTS
+# ------------------------------------------------
+ml_models/
+ml/__pycache__/
+ml/models/
+ml/pickled_models/
+*.pkl
+*.h5
+*.joblib
+*.onnx
+*.pt
+*.pth
+*.keras
+*.hdf5
+model_registry.json
+
+# BACKTEST RESULTS
+# ------------------------------------------------
+backtest_results/
+backtest_results/*.csv
+!backtest_results/example_*.csv
+backtest_reports/
+backtest_charts/
+backtest_output/
+backtest_logs/
+
+# STATE FILES
+# ------------------------------------------------
+data/system_state.json
+data/state_*.tmp
+data/state_backup.json
+data/state_*.json
+*.state
+state_*
+
+# LOGS (ENHANCED)
+# ------------------------------------------------
+logs/
+*.log
+*.log.*
+logs/**/*.log
+test_logs/
+debug.log
+error.log
+access.log
+trading_bot.log

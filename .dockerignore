@@ -1,79 +1,245 @@
-# Virtual Environments (from your .gitignore)
-venv/
-venv311/
-venv311_new/
-env/
-ENV/
-pythonenv*
-.venv
-venv_tf/
+# ==================================================
+# ADDITIONS TO EXISTING .GITIGNORE
+# ==================================================
 
-# Python cache
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.pyc
+# TEST ARTIFACTS
+# ------------------------------------------------
+.pytest_cache/
+.pytest_cache/*
+tests/__pycache__/
+tests/*.pyc
+htmlcov/
+.coverage
+.coverage.*
+.cache
+coverage.xml
+*.cover
+*.py,cover
+.pytest_cache/
+test_results.xml
+junit/
+test-results/
 
-# ML Models (KEEP THESE OUT - will mount them)
+# ML MODEL ARTIFACTS
+# ------------------------------------------------
 ml_models/
-trained_models/
+ml/__pycache__/
+ml/models/
+ml/pickled_models/
 *.pkl
 *.h5
 *.joblib
 *.onnx
+*.pt
+*.pth
+*.keras
+*.hdf5
 model_registry.json
-training_status.json
+ml/registry_backup.json
 
-# Logs
-logs/
-training_logs/
-*.log
-*.log.*
-master_controller.log
-health_log.txt
+# BACKTEST RESULTS
+# ------------------------------------------------
+backtest_results/
+backtest_results/*.csv
+!backtest_results/example_*.csv
+backtest_reports/
+backtest_charts/
+backtest_output/
+backtest_logs/
 
-# Trading Data
-paper_trades.json
-paper_trades_backup_*.json
+# STATE FILES
+# ------------------------------------------------
+data/system_state.json
+data/state_*.tmp
+data/state_backup.json
+data/state_*.json
+*.state
+state_*
+
+# DATABASE MIGRATIONS
+# ------------------------------------------------
+alembic/
+alembic.ini
+migrations/
 *.db
+*.db3
 *.sqlite
 *.sqlite3
-backtest_results/
-optimization_results/
+*.sql
+data/*.db
+data/*.sqlite
 
-# Reports
-reports/
-portfolio_reports/
-*.html
-!templates/*.html
+# LOGS (ENHANCED)
+# ------------------------------------------------
+logs/
+*.log
+*.log.*
+logs/**/*.log
+test_logs/
+debug.log
+error.log
+access.log
+trading_bot.log
+*.log.gz
+*.log.zip
 
-# IDE
+# CACHE FILES
+# ------------------------------------------------
+.cache/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+data/cache/
+cache/
+*.cache
+.cache-*
+
+# IDE CONFIGURATION (ENHANCED)
+# ------------------------------------------------
 .vscode/
+.vscode/*
+!.vscode/settings.json.example
+!.vscode/extensions.json
 .idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-desktop.ini
-.git/
+*.iml
+*.iws
+*.ipr
+.project
+.classpath
+.settings/
+.metadata/
+**/.settings/
+**/.project
+**/.classpath
 
-# Security (from your .gitignore)
+# ENVIRONMENT FILES (ENHANCED)
+# ------------------------------------------------
 .env
 .env.*
 !.env.example
-config/*_config.json
-*key*.py
-*secret*.py
-!config/__init__.py
+.env.local
+.env.development
+.env.test
+.env.production
+.env.staging
+secrets/
+secrets.yaml
+secrets.yml
+*.secret
+config/secrets/
+config/credentials.yml.enc
+config/master.key
 
-# Temporary
+# TEMPORARY FILES
+# ------------------------------------------------
 *.tmp
 *.temp
+*.swp
+*.swo
+*~
 *.bak
+*.backup
 *.old
 *.orig
-*.session
-*.session-journal
+*.pid
+*.sock
+*.rdb
+dump.rdb
+temp/
+tmp/
+*.part
 
+# COVERAGE REPORTS
+# ------------------------------------------------
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.coverage
+*.cover
+coverage-reports/
+cov_*.html
+
+# PROFILING DATA
+# ------------------------------------------------
+*.prof
+*.stats
+*.callgrind
+profile/
+profiling/
+performance/
+*.pstats
+
+# SECURITY FILES
+# ------------------------------------------------
+*.key
+*.pem
+*.crt
+*.csr
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.cert
+*.cer
+secrets/
+security/
+*.age
+*.gpg
+*.asc
+
+# NODE MODULES (VERIFY)
+# ------------------------------------------------
+gateway/node_modules/
+gateway/node_modules/**/*
+gateway/package-lock.json
+gateway/yarn.lock
+gateway/npm-debug.log*
+gateway/yarn-debug.log*
+gateway/yarn-error.log*
+gateway/.env
+gateway/.npm/
+gateway/.yarn/
+
+# DOCKER FILES (IF USED)
+# ------------------------------------------------
+*.docker
+docker-compose.override.yml
+.docker/
+.dockerignore
+docker-compose.*.yml
+!docker-compose.yml
+
+# VS CODE WORKSPACE
+# ------------------------------------------------
+*.code-workspace
+*.vscode-workspace
+.code-workspace
+
+# PYTHON PACKAGING
+# ------------------------------------------------
+build/
+dist/
+*.egg-info/
+*.egg
+MANIFEST
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.Python
+env/
+
+# JUPYTER NOTEBOOKS (IF USED)
+# ------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb
+!*.ipynb
+*.ipynb_checkpoints/
+*.nbconvert.*
+jupyter_execute/
+jupyter_cache/

@@ -8,14 +8,20 @@ Startup sequence:
   4. Init TradingCore
   5. Start trading loop (daemon thread)
   6. Start auto-trainer (daemon thread)
-  7. Start Telegram commander (optional)
-  8. Start Flask dashboard (blocking — main thread)
+  7. Start Node.js WebSocket gateway (optional — requires node)
+  8. Start Telegram commander (optional)
+  9. Start Flask dashboard (blocking — main thread)
 """
 from __future__ import annotations
 import argparse
 import sys
 import signal
+import subprocess
+import shutil
+import socket
 import threading
+import time
+import atexit
 from pathlib import Path
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
@@ -43,6 +49,147 @@ except RuntimeError as e:
     sys.exit(1)
 
 
+# ── Gateway management ────────────────────────────────────────────────────────
+
+_gateway_proc: subprocess.Popen | None = None
+_GATEWAY_DIR  = Path(__file__).parent / "gateway"
+_GATEWAY_PORT = 8081
+
+
+def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.3) -> bool:
+    """Return True if something is already listening on the port."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def start_gateway(force: bool = False) -> subprocess.Popen | None:
+    """
+    Start the Node.js WebSocket gateway as a background subprocess.
+
+    Steps:
+      1. Check node is installed.
+      2. Install npm dependencies if node_modules is missing.
+      3. Spawn 'node server.js' and return the process handle.
+
+    Returns None (with a warning) if node is not found, deps fail,
+    or the port is already in use.
+    """
+    global _gateway_proc
+
+    if not _GATEWAY_DIR.exists():
+        logger.warning("[Gateway] gateway/ directory not found — skipping")
+        return None
+
+    server_js = _GATEWAY_DIR / "server.js"
+    if not server_js.exists():
+        logger.warning("[Gateway] gateway/server.js not found — skipping")
+        return None
+
+    # Already running?
+    if _port_open(_GATEWAY_PORT) and not force:
+        logger.info(f"[Gateway] Port {_GATEWAY_PORT} already in use — assuming gateway is running")
+        return None
+
+    # Find node executable (Windows uses 'node.exe', Linux/Mac 'node')
+    node = shutil.which("node") or shutil.which("node.exe")
+    if not node:
+        logger.warning(
+            "[Gateway] Node.js not found — WebSocket gateway disabled.\n"
+            "          Install Node.js from https://nodejs.org to enable it."
+        )
+        return None
+
+    # Install npm dependencies if missing
+    node_modules = _GATEWAY_DIR / "node_modules"
+    if not node_modules.exists():
+        npm = shutil.which("npm") or shutil.which("npm.cmd")
+        if not npm:
+            logger.warning("[Gateway] npm not found — cannot install dependencies")
+            return None
+        logger.info("[Gateway] node_modules missing — running npm install...")
+        try:
+            result = subprocess.run(
+                [npm, "install"],
+                cwd=str(_GATEWAY_DIR),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                logger.warning(f"[Gateway] npm install failed:\n{result.stderr[:300]}")
+                return None
+            logger.info("[Gateway] npm install complete")
+        except subprocess.TimeoutExpired:
+            logger.warning("[Gateway] npm install timed out after 120s")
+            return None
+        except Exception as e:
+            logger.warning(f"[Gateway] npm install error: {e}")
+            return None
+
+    # Launch the gateway process
+    try:
+        proc = subprocess.Popen(
+            [node, "server.js"],
+            cwd=str(_GATEWAY_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            # On Windows, prevent the process from showing a console window
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        _gateway_proc = proc
+
+        # Give it up to 3 seconds to become available
+        for _ in range(30):
+            time.sleep(0.1)
+            if _port_open(_GATEWAY_PORT):
+                logger.info(
+                    f"[Gateway] Started — ws://localhost:{_GATEWAY_PORT}  (PID {proc.pid})"
+                )
+                return proc
+
+        # Port didn't open but process is running — still return it
+        if proc.poll() is None:
+            logger.info(f"[Gateway] Launched (PID {proc.pid}) — port not yet open")
+            return proc
+
+        logger.warning("[Gateway] Process exited immediately — check Redis/Node setup")
+        return None
+
+    except Exception as e:
+        logger.warning(f"[Gateway] Failed to start: {e}")
+        return None
+
+
+def stop_gateway() -> None:
+    """Terminate the gateway subprocess on shutdown."""
+    global _gateway_proc
+    if _gateway_proc and _gateway_proc.poll() is None:
+        logger.info(f"[Gateway] Stopping (PID {_gateway_proc.pid})...")
+        try:
+            _gateway_proc.terminate()
+            _gateway_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _gateway_proc.kill()
+        except Exception:
+            pass
+        _gateway_proc = None
+        logger.info("[Gateway] Stopped")
+
+
+# Register gateway cleanup on normal exit
+atexit.register(stop_gateway)
+
+
+def gateway_is_running() -> bool:
+    """Used by the dashboard /api/gateway/status endpoint."""
+    return _port_open(_GATEWAY_PORT)
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Forex/Crypto Prediction Trading Bot")
     p.add_argument("--balance",      type=float, default=DEFAULT_BALANCE,
@@ -52,6 +199,7 @@ def parse_args() -> argparse.Namespace:
                    help="Strategy mode")
     p.add_argument("--no-telegram",  action="store_true", help="Disable Telegram")
     p.add_argument("--no-dashboard", action="store_true", help="Disable web dashboard")
+    p.add_argument("--no-gateway",   action="store_true", help="Disable Node.js WebSocket gateway")
     p.add_argument("--port",         type=int,   default=5000,   help="Dashboard port")
     p.add_argument("--host",         type=str,   default="0.0.0.0", help="Dashboard host")
     p.add_argument("--backtest",     type=str,   default=None,
@@ -98,6 +246,7 @@ def main() -> None:
     # ── Graceful shutdown handler ─────────────────────────────────────────
     def _shutdown(signum, frame):
         logger.info("[bot] Shutdown signal received")
+        stop_gateway()
         engine.stop("signal")
         sys.exit(0)
 
@@ -123,6 +272,12 @@ def main() -> None:
         logger.info("[bot] AutoTrainer started")
     except Exception as e:
         logger.warning(f"[bot] AutoTrainer failed to start: {e}")
+
+    # ── Node.js WebSocket gateway (optional) ─────────────────────────────
+    if not args.no_gateway:
+        start_gateway()
+    else:
+        logger.info("[bot] Gateway disabled via --no-gateway")
 
     # ── Telegram (optional) ───────────────────────────────────────────────
     if not args.no_telegram and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
@@ -152,7 +307,6 @@ def main() -> None:
     else:
         logger.info("[bot] Running without dashboard. Ctrl+C to stop.")
         try:
-            import time
             while engine.is_running:
                 time.sleep(10)
         except KeyboardInterrupt:
@@ -160,4 +314,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main()        
