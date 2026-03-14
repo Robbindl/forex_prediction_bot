@@ -1,6 +1,6 @@
-"""ml/registry.py — Model registry: load, save, version, auto-train trigger. Replaces model_registry.py."""
+"""ml/registry.py — Model registry: load, save, version, auto-train trigger."""
 from __future__ import annotations
-import json, threading, time
+import json, threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -16,8 +16,8 @@ class ModelRegistry:
     _MANIFEST = MODEL_DIR / "registry.json"
 
     def __init__(self):
-        self._lock     = threading.RLock()
-        self._models:  Dict[str, Any]  = {}
+        self._lock      = threading.RLock()
+        self._models:   Dict[str, Any]  = {}
         self._manifest: Dict[str, Dict] = {}
         self._load_manifest()
 
@@ -62,7 +62,7 @@ class ModelRegistry:
             return True
 
     def load_all(self) -> None:
-        """Load all .pkl / .joblib model files from MODEL_DIR."""
+        """Load all .joblib model files from MODEL_DIR."""
         try:
             import joblib
         except ImportError:
@@ -93,8 +93,12 @@ class ModelRegistry:
             return {
                 name: {
                     **info,
-                    "loaded":  name in self._models,
-                    "stale":   self.is_stale(name),
+                    "loaded": name in self._models,
+                    "stale":  self.is_stale(name),
                 }
                 for name, info in self._manifest.items()
             }
+
+
+# ── Global singleton — imported by ml/trainer.py and ml/predictor.py ──────────
+registry = ModelRegistry()
