@@ -352,30 +352,31 @@ def main() -> None:
     else:
         logger.warning("[bot] Engine did not become ready in 60s — continuing anyway")
 
-    # ── Whale monitoring (optional) ───────────────────────────────────────
-    # try:
-    #     from whale_alert_manager import WhaleAlertManager
-    #     from layers.layer6_whale import ingest_whale_alert
-    #
-    #     _whale_mgr = WhaleAlertManager()
-    #
-    #     def _on_whale_alert(alert: dict) -> None:
-    #         """Bridge: WhaleAlertManager events → Layer 6 whale cache."""
-    #         try:
-    #             ingest_whale_alert(
-    #                 asset=alert.get("asset", ""),
-    #                 direction=alert.get("direction", "BUY"),
-    #                 size_usd=float(alert.get("usd_amount", 0)),
-    #                 source=alert.get("source", "whale_alert"),
-    #             )
-    #         except Exception:
-    #             pass
-    #
-    #     _whale_mgr.on_alert = _on_whale_alert
-    #     _whale_mgr.start_monitoring()
-    #     logger.info("[bot] WhaleAlertManager started — Layer 6 whale cache active")
-    # except Exception as e:
-    #     logger.warning(f"[bot] WhaleAlertManager failed to start: {e}")
+    # ── Whale monitoring ──────────────────────────────────────────────────
+    
+    try:
+        from whale_alert_manager import WhaleAlertManager
+        from layers.layer6_whale import ingest_whale_alert
+
+        _whale_mgr = WhaleAlertManager()  # singleton — same object SentimentAnalyzer will use
+
+        def _on_whale_alert(alert: dict) -> None:
+            """Bridge: WhaleAlertManager collector → Layer 6 pipeline cache."""
+            try:
+                ingest_whale_alert(
+                    asset=alert.get("asset", ""),
+                    direction=alert.get("direction", "BUY"),
+                    size_usd=float(alert.get("usd_amount", alert.get("value_usd", 0))),
+                    source=alert.get("source", "whale_alert"),
+                )
+            except Exception:
+                pass
+
+        _whale_mgr.on_alert = _on_whale_alert
+        _whale_mgr.start_monitoring()   # idempotent — won't double-start
+        logger.info("[bot] WhaleAlertManager started — Layer 6 whale cache active")
+    except Exception as e:
+        logger.warning(f"[bot] WhaleAlertManager failed to start: {e}")
 
     # ── Dashboard ─────────────────────────────────────────────────────────
     if not args.no_dashboard:

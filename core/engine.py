@@ -176,6 +176,41 @@ class TradingCore:
                 risk_manager=self._risk_manager,
             )
 
+            def _on_trade_closed(trade: dict) -> None:
+                try:
+                    trade_id    = trade.get("trade_id", "")
+                    exit_price  = float(trade.get("exit_price", 0))
+                    exit_reason = trade.get("exit_reason", "Unknown")
+                    pnl         = float(trade.get("pnl", 0))
+
+                    self.state.close_position(trade_id, exit_price, exit_reason, pnl)
+                    self._risk_manager.update_balance(self.state.balance)
+
+                    # ── Telegram close alert ──────────────────────────────────────────
+                    if self.telegram:
+                        try:
+                            target = getattr(self.telegram, "bot", self.telegram)
+                            if hasattr(target, "alert_trade_closed"):
+                                target.alert_trade_closed(trade)
+                        except Exception:
+                            pass
+
+                    # ── Robbie learns from it ─────────────────────────────────────────
+                    try:
+                        from services.personality_service import personality as _personality
+                        _personality.record_trade(trade)
+                    except Exception:
+                        pass
+
+                    logger.log_trade("CLOSE", trade_id=trade_id,
+                                    asset=trade.get("asset", ""),
+                                    pnl=round(pnl, 4), reason=exit_reason)
+                except Exception as e:
+                    logger.error(f"[TradingCore] on_trade_closed error: {e}")
+
+            self._paper_trader.on_trade_closed = _on_trade_closed
+            # ──────────────────────────────────────────────────────────────────
+
             for pos in self.state.get_open_positions():
                 self._paper_trader.restore_position(pos)
 
@@ -433,6 +468,16 @@ class TradingCore:
                 target.alert_trade_opened(trade)
         except Exception as e:
             logger.debug(f"[TradingCore] Telegram alert failed: {e}")
+
+    def _notify_telegram_close(self, trade: Dict) -> None:
+        if not self.telegram:
+            return
+        try:
+            target = getattr(self.telegram, "bot", self.telegram)
+            if hasattr(target, "alert_trade_closed"):
+                target.alert_trade_closed(trade)
+        except Exception as e:
+            logger.debug(f"[TradingCore] Telegram close alert failed: {e}")
 
     def get_asset_list(self) -> List[Tuple[str, str]]:
         return self.registry.all_assets()

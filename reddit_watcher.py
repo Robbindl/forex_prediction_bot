@@ -364,10 +364,12 @@ class RedditWatcher:
         return result
     
     def start_monitoring(self):
-        """Start background monitoring"""
+        """Start background monitoring. Safe to call multiple times."""
         if not self.enabled:
             return
-        
+        if self.is_running:
+            logger.debug("📱 Reddit monitor already running — skipping duplicate start")
+            return
         self.is_running = True
         thread = threading.Thread(target=self._monitor_loop, daemon=True)
         thread.start()

@@ -30,8 +30,8 @@ except Exception:
     _broker = None
 
 try:
-    from data.fetcher import NASALevelFetcher
-    _fetcher = NASALevelFetcher()
+    from data.fetcher import DataFetcher
+    _fetcher = DataFetcher()
 except Exception:
     _fetcher = None
 

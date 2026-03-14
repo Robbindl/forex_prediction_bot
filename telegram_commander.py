@@ -1,140 +1,172 @@
 """
-Telegram Bot Commander — Fixed for python-telegram-bot v20+
-All commands wired through the full 7-layer quality pipeline.
+telegram_commander.py — Robbie's Telegram interface.
 
-Root causes of previous crashes fixed:
-  1. asyncio event loop conflict — run_polling() and send_message() were
-     fighting over the same loop from different threads. Fixed with
-     run_coroutine_threadsafe() + a dedicated per-thread event loop.
-  2. Logger overwrite — 'from logger import logger' was immediately
-     clobbered by 'logger = logging.getLogger(...)'. Removed the clobber.
-  3. /signal bypassed the quality pipeline — now uses TradingCore directly.
-  4. cmd_market had no _require_system guard — could crash on startup.
+Architecture
+────────────
+Every interaction flows through inline keyboard buttons.
+No wall-of-text command lists — one tap navigates anywhere.
+
+Navigation model
+────────────────
+/start  → Main Menu (inline keyboard, edits in-place)
+Every button press triggers a CallbackQueryHandler that
+edits the same message — so the chat stays clean.
+
+Callback data format:  "action"  or  "action:param"
+  menu           → main menu
+  status         → live status card
+  positions      → open positions list
+  close:TRADEID  → confirm close
+  close_ok:ID    → execute close
+  balance        → balance + P&L card
+  signals        → category picker
+  cat:CATEGORY   → asset picker for category
+  sig:ASSET      → run signal through pipeline
+  why:ASSET      → Robbie explains signal
+  ask            → prompt user to type question
+  mood           → Robbie's current mood
+  diary          → memorable moments
+  pause          → pause trading
+  resume         → resume trading
+  strategies     → strategy stats
+  market         → market hours
+
+Threading
+─────────
+Bot runs in a daemon thread with its own asyncio loop.
+send_message() / alert_*() use run_coroutine_threadsafe()
+so any trading thread can send alerts safely.
 """
+from __future__ import annotations
 
 import asyncio
-import os
 import threading
 import time
-from datetime import datetime, timedelta
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram.error import NetworkError, TimedOut, RetryAfter
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
+from telegram.constants import ParseMode
+from telegram.error import NetworkError, RetryAfter, TimedOut
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 
-from utils.logger import logger   # ← centralized logger, NOT overwritten below
+from utils.logger import logger
 
+# ── Conversation state ────────────────────────────────────────────────────────
+WAITING_ASK_ASSET    = 1
+WAITING_ASK_QUESTION = 2
 
-# ── Asset alias map (shared by /signal and /why) ──────────────────────────────
-ALIASES = {
-    # Crypto
-    'BITCOIN':'BTC-USD','BTC':'BTC-USD',
-    'ETHEREUM':'ETH-USD','ETH':'ETH-USD',
-    'BINANCE':'BNB-USD','BNB':'BNB-USD',
-    'SOLANA':'SOL-USD','SOL':'SOL-USD',
-    'XRP':'XRP-USD','RIPPLE':'XRP-USD',
-    'CARDANO':'ADA-USD','ADA':'ADA-USD',
-    'DOGECOIN':'DOGE-USD','DOGE':'DOGE-USD',
-    'POLKADOT':'DOT-USD','DOT':'DOT-USD',
-    'LITECOIN':'LTC-USD','LTC':'LTC-USD',
-    'AVALANCHE':'AVAX-USD','AVAX':'AVAX-USD',
-    'CHAINLINK':'LINK-USD','LINK':'LINK-USD',
-    # Commodities
-    'GOLD':'XAU/USD','XAU':'XAU/USD',
-    'SILVER':'XAG/USD','XAG':'XAG/USD',
-    'OIL':'CL=F','WTI':'CL=F','CRUDE':'CL=F',
-    'NATURAL GAS':'NG=F','GAS':'NG=F',
-    'COPPER':'HG=F','CU':'HG=F',
-    # Forex
-    'EURO':'EUR/USD','EUR':'EUR/USD',
-    'POUND':'GBP/USD','GBP':'GBP/USD',
-    'YEN':'USD/JPY','JPY':'USD/JPY',
-    'AUD':'AUD/USD','AUSSIE':'AUD/USD',
-    'CAD':'USD/CAD','LOONIE':'USD/CAD',
-    'CHF':'USD/CHF','SWISS':'USD/CHF',
-    'NZD':'NZD/USD','KIWI':'NZD/USD',
-    # Indices
-    'SP500':'^GSPC','SPX':'^GSPC','S&P':'^GSPC',
-    'DOW':'^DJI','DJI':'^DJI',
-    'NASDAQ':'^IXIC','IXIC':'^IXIC',
-    'FTSE':'^FTSE','UK100':'^FTSE',
-    'NIKKEI':'^N225','N225':'^N225',
-    'HANG SENG':'^HSI','HSI':'^HSI',
-    'DAX':'^GDAXI','GDAXI':'^GDAXI',
-    'VIX':'^VIX','FEAR':'^VIX',
-    # Stocks
-    'APPLE':'AAPL','MICROSOFT':'MSFT',
-    'GOOGLE':'GOOGL','GOOG':'GOOGL',
-    'AMAZON':'AMZN','TESLA':'TSLA',
-    'NVIDIA':'NVDA','FACEBOOK':'META',
-    'JPMORGAN':'JPM','VISA':'V',
-    'MASTERCARD':'MA','JOHNSON':'JNJ',
-    'PFIZER':'PFE','WALMART':'WMT',
-    'PROCTER':'PG','COCA COLA':'KO',
-    'EXXON':'XOM','CHEVRON':'CVX',
+# ── Asset display names ───────────────────────────────────────────────────────
+_DISPLAY = {
+    "BTC-USD": "₿ BTC",  "ETH-USD": "Ξ ETH",   "BNB-USD": "BNB",
+    "XRP-USD": "XRP",    "SOL-USD": "SOL",      "ADA-USD": "ADA",
+    "DOGE-USD":"DOGE",   "DOT-USD": "DOT",      "LTC-USD": "LTC",
+    "AVAX-USD":"AVAX",   "LINK-USD":"LINK",
+    "EUR/USD": "EUR/USD","GBP/USD": "GBP/USD",  "USD/JPY": "USD/JPY",
+    "USD/CHF": "USD/CHF","AUD/USD": "AUD/USD",  "USD/CAD": "USD/CAD",
+    "NZD/USD": "NZD/USD","EUR/GBP": "EUR/GBP",  "GBP/JPY": "GBP/JPY",
+    "AUD/JPY": "AUD/JPY",
+    "AAPL":    "Apple",  "MSFT": "Microsoft",   "GOOGL": "Google",
+    "AMZN":    "Amazon", "TSLA": "Tesla",        "META":  "Meta",
+    "NVDA":    "Nvidia", "JPM":  "JPMorgan",     "V":     "Visa",
+    "MA":      "Mastercard",
+    "XAU/USD": "Gold",   "XAG/USD": "Silver",   "WTI/USD":"WTI Oil",
+    "GC=F":    "Gold F", "SI=F":  "Silver F",   "CL=F":  "Crude F",
+    "NG/USD":  "Nat Gas","XCU/USD":"Copper",
+    "^GSPC":   "S&P 500","^DJI":  "Dow Jones",  "^IXIC": "Nasdaq",
+    "^FTSE":   "FTSE100","^N225": "Nikkei",
 }
 
-# ── Category lookup ────────────────────────────────────────────────────────────
-def _get_category(asset: str) -> str:
-    if 'USD' in asset and '-' in asset: return 'crypto'
-    if any(x in asset for x in ['=F', 'XAU', 'XAG', 'WTI', 'NG/', 'HG']): return 'commodities'
-    if '/' in asset and 'USD' in asset: return 'forex'
-    if asset.startswith('^'): return 'indices'
-    return 'stocks'
+_CATEGORY_ASSETS: Dict[str, List[str]] = {
+    "crypto":      ["BTC-USD","ETH-USD","BNB-USD","XRP-USD","SOL-USD",
+                    "ADA-USD","DOGE-USD","DOT-USD","LTC-USD","AVAX-USD","LINK-USD"],
+    "forex":       ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD",
+                    "USD/CAD","NZD/USD","EUR/GBP","GBP/JPY","AUD/JPY"],
+    "stocks":      ["AAPL","MSFT","GOOGL","AMZN","TSLA","META","NVDA","JPM","V","MA"],
+    "commodities": ["XAU/USD","XAG/USD","WTI/USD","GC=F","SI=F","CL=F","NG/USD","XCU/USD"],
+    "indices":     ["^GSPC","^DJI","^IXIC","^FTSE","^N225"],
+}
+
+# ── Keyboard builders ─────────────────────────────────────────────────────────
+
+def _kb(*rows) -> InlineKeyboardMarkup:
+    """Helper — pass lists of (label, callback_data) tuples."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=data) for label, data in row]
+        for row in rows
+    ])
+
+def _main_menu_keyboard() -> InlineKeyboardMarkup:
+    return _kb(
+        [("📊 Status",    "status"),   ("📈 Positions", "positions")],
+        [("💰 Balance",   "balance"),  ("🎯 Signals",   "signals")],
+        [("🧠 Ask Robbie","ask"),       ("📔 Diary",     "diary")],
+        [("😶 Mood",      "mood"),      ("📡 Market",    "market")],
+        [("🧩 Strategies","strategies"),("⏸ Pause",     "pause")],
+    )
+
+def _back_button(dest: str = "menu") -> List:
+    return [("◀️ Back", dest)]
+
+def _category_keyboard() -> InlineKeyboardMarkup:
+    return _kb(
+        [("🪙 Crypto",      "cat:crypto"),  ("💱 Forex",       "cat:forex")],
+        [("📈 Stocks",      "cat:stocks"),  ("📦 Commodities", "cat:commodities")],
+        [("📉 Indices",     "cat:indices")],
+        _back_button(),
+    )
+
+def _asset_keyboard(category: str) -> InlineKeyboardMarkup:
+    assets = _CATEGORY_ASSETS.get(category, [])
+    rows   = []
+    # 3 columns
+    for i in range(0, len(assets), 3):
+        row = []
+        for asset in assets[i:i+3]:
+            label = _DISPLAY.get(asset, asset)
+            row.append((label, f"sig:{asset}"))
+        rows.append(row)
+    rows.append(_back_button("signals"))
+    return _kb(*rows)
 
 
-# ── Rate limiter ──────────────────────────────────────────────────────────────
-class RateLimiter:
-    def __init__(self, max_per_minute: int = 10):
-        self.max_per_minute = max_per_minute
-        self.requests: List[datetime] = []
+# ══════════════════════════════════════════════════════════════════════════════
+# TelegramCommander
+# ══════════════════════════════════════════════════════════════════════════════
 
-    def can_send(self) -> bool:
-        now = datetime.now()
-        self.requests = [t for t in self.requests if now - t < timedelta(minutes=1)]
-        if len(self.requests) < self.max_per_minute:
-            self.requests.append(now)
-            return True
-        return False
-
-
-# ── TelegramCommander ─────────────────────────────────────────────────────────
 class TelegramCommander:
     """
-    Commands:
-    /start         — Welcome
-    /help          — All commands
-    /status        — Bot status + performance
-    /positions     — Open trades
-    /balance       — Account balance
-    /performance   — Full P&L metrics
-    /strategies    — Strategy weights
-    /market        — Market hours
-    /signal <asset>— Quality signal through 7-layer pipeline
-    /why <asset>   — Human explanation
-    /mood          — Bot's current mood
-    /diary         — Trading diary
-    /pause         — Stop trading
-    /resume        — Resume trading
-    /close <id>    — Close a trade
+    Full-featured Telegram bot with inline keyboard navigation.
+    trading_system must be a TradingCore instance.
     """
 
-    def __init__(self, token: str, chat_id: str, trading_system):
+    def __init__(self, token: str, chat_id: str, trading_system: Any):
         self.token          = token
         self.chat_id        = str(chat_id)
         self.trading_system = trading_system
-        self.application    = None
-        self.is_running     = False
-        self.rate_limiter   = RateLimiter(max_per_minute=20)
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        logger.info(f"TelegramCommander initialised for chat {chat_id}")
+        self.application:   Optional[Application] = None
+        self.is_running:    bool = False
+        self._loop:         Optional[asyncio.AbstractEventLoop] = None
+        self._thread:       Optional[threading.Thread] = None
+        # Rate limiter: (timestamp list)
+        self._rl_times:     List[float] = []
+        self._rl_lock       = threading.Lock()
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
-    def start(self):
-        """Start the bot in a background thread with its own event loop."""
+    def start(self) -> None:
         try:
             self.application = (
                 Application.builder()
@@ -144,33 +176,14 @@ class TelegramCommander:
                 .write_timeout(30)
                 .build()
             )
-            # Register all command handlers
-            for cmd, handler in [
-                ("start",       self.cmd_start),
-                ("help",        self.cmd_help),
-                ("status",      self.cmd_status),
-                ("positions",   self.cmd_positions),
-                ("balance",     self.cmd_balance),
-                ("performance", self.cmd_performance),
-                ("strategies",  self.cmd_strategies),
-                ("market",      self.cmd_market),
-                ("signal",      self.cmd_signal),
-                ("why",         self.cmd_why),
-                ("mood",        self.cmd_mood),
-                ("diary",       self.cmd_diary),
-                ("pause",       self.cmd_pause),
-                ("resume",      self.cmd_resume),
-                ("close",       self.cmd_close),
-            ]:
-                self.application.add_handler(CommandHandler(cmd, handler))
-
+            self._register_handlers()
             self._thread = threading.Thread(
                 target=self._run_bot, daemon=True, name="telegram-bot"
             )
             self._thread.start()
 
-            # Wait up to 5s for loop to be ready, then send startup message
-            for _ in range(50):
+            # Wait for loop to be live
+            for _ in range(60):
                 if self._loop and self._loop.is_running():
                     break
                 time.sleep(0.1)
@@ -178,57 +191,85 @@ class TelegramCommander:
             self.is_running = True
             logger.info("✅ TelegramCommander started")
             self.send_message(
-                "🤖 *Commander Active*\n\n"
-                "All commands ready. Use /help to see them.\n"
-                "Status: 🟢 Running"
+                "🤖 *Robbie is online*\n\nUse /menu to open the control panel.",
             )
         except Exception as e:
-            logger.error(f"TelegramCommander start error: {e}", exc_info=True)
+            logger.error(f"[Telegram] start error: {e}", exc_info=True)
             self.is_running = False
 
-    def _run_bot(self):
-        """
-        Dedicated thread with its own event loop.
-        This is the ONLY correct way to run python-telegram-bot v20+
-        in a background thread — all async send_message calls use
-        run_coroutine_threadsafe() to schedule onto this same loop.
-        """
+    def _run_bot(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._polling())
         except Exception as e:
-            logger.error(f"Telegram polling stopped: {e}")
+            logger.error(f"[Telegram] polling stopped: {e}")
         finally:
             self._loop.close()
 
-    async def _polling(self):
+    async def _polling(self) -> None:
         async with self.application:
             await self.application.start()
             await self.application.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,   # ignore stale commands on restart
+                drop_pending_updates=True,
             )
-            # Keep running until stop() is called
             while self.is_running:
                 await asyncio.sleep(1)
             await self.application.updater.stop()
             await self.application.stop()
 
-    # ── send_message (thread-safe, works from ANY thread) ─────────────────────
+    def stop(self) -> None:
+        self.is_running = False
+        try:
+            self.send_message("🛑 Robbie going offline.")
+        except Exception:
+            pass
 
-    def send_message(self, text: str, parse_mode: str = 'Markdown') -> bool:
-        """
-        Thread-safe send. Uses run_coroutine_threadsafe() to schedule
-        the coroutine onto the bot's dedicated event loop — no loop
-        conflicts, no RuntimeError, works from trading threads.
-        """
-        if not self.rate_limiter.can_send():
-            logger.warning("Telegram rate limit — message skipped")
+    # ── Handler registration ──────────────────────────────────────────────────
+
+    def _register_handlers(self) -> None:
+        app = self.application
+
+        # /start and /menu → main menu
+        app.add_handler(CommandHandler("start", self._cmd_menu))
+        app.add_handler(CommandHandler("menu",  self._cmd_menu))
+
+        # Convenience text commands still work
+        app.add_handler(CommandHandler("status",     self._cmd_status_direct))
+        app.add_handler(CommandHandler("positions",  self._cmd_positions_direct))
+        app.add_handler(CommandHandler("balance",    self._cmd_balance_direct))
+        app.add_handler(CommandHandler("signal",     self._cmd_signal_direct))
+        app.add_handler(CommandHandler("close",      self._cmd_close_direct))
+        app.add_handler(CommandHandler("pause",      self._cmd_pause_direct))
+        app.add_handler(CommandHandler("resume",     self._cmd_resume_direct))
+
+        # /ask conversation handler
+        ask_conv = ConversationHandler(
+            entry_points=[CommandHandler("ask", self._ask_entry)],
+            states={
+                WAITING_ASK_ASSET: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self._ask_got_asset)
+                ],
+                WAITING_ASK_QUESTION: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self._ask_got_question)
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", self._ask_cancel)],
+            conversation_timeout=120,
+        )
+        app.add_handler(ask_conv)
+
+        # All inline button presses
+        app.add_handler(CallbackQueryHandler(self._on_button))
+
+    # ── send_message (thread-safe, callable from any thread) ─────────────────
+
+    def send_message(self, text: str, parse_mode: str = ParseMode.MARKDOWN,
+                     reply_markup=None) -> bool:
+        if not self._rate_ok():
             return False
-
         if not self.application or not self._loop or self._loop.is_closed():
-            logger.warning("Telegram: bot not ready, message skipped")
             return False
 
         async def _send():
@@ -236,6 +277,7 @@ class TelegramCommander:
                 chat_id=self.chat_id,
                 text=text,
                 parse_mode=parse_mode,
+                reply_markup=reply_markup,
             )
 
         try:
@@ -243,659 +285,847 @@ class TelegramCommander:
             future.result(timeout=15)
             return True
         except RetryAfter as e:
-            # retry_after can be None in some lib versions — guard it
             wait = e.retry_after if isinstance(e.retry_after, (int, float)) else 30
-            logger.warning(f"Telegram flood control: retry after {wait}s")
+            logger.warning(f"[Telegram] flood control — retry in {wait}s")
         except (TimedOut, NetworkError) as e:
-            logger.warning(f"Telegram network error: {e}")
-        except TypeError as e:
-            # Catches ">=' not supported between NoneType and int" from lib internals
-            logger.warning(f"Telegram internal type error (ignored): {e}")
+            logger.warning(f"[Telegram] network error: {e}")
         except Exception as e:
-            err_str = str(e)
-            if "Unauthorized" in err_str or "401" in err_str:
-                logger.warning("Telegram: bot token invalid or chat_id wrong — alerts disabled until restart")
-            else:
-                logger.error(f"Telegram send_message error: {e}")
+            if "Unauthorized" not in str(e) and "401" not in str(e):
+                logger.error(f"[Telegram] send error: {e}")
         return False
 
-    def stop(self):
-        self.is_running = False
-        logger.info("TelegramCommander stopped")
+    def _rate_ok(self) -> bool:
+        now = time.time()
+        with self._rl_lock:
+            self._rl_times = [t for t in self._rl_times if now - t < 60]
+            if len(self._rl_times) >= 25:
+                return False
+            self._rl_times.append(now)
+            return True
+
+    # ── Trade alert helpers (called from core/engine.py) ─────────────────────
+
+    def alert_trade_opened(self, trade: Dict) -> None:
         try:
-            self.send_message("🛑 Trading bot offline")
-        except Exception:
-            pass
-
-    # ── Guard helper ──────────────────────────────────────────────────────────
-
-    async def _require_system(self, update) -> bool:
-        if self.trading_system is None:
-            await update.message.reply_text(
-                "⏳ Trading system still initialising.\n"
-                "Wait ~30s after the dashboard loads, then try again."
-            )
-            return False
-        return True
-
-    # ── /start ────────────────────────────────────────────────────────────────
-
-    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        status = "🟢 Running" if (self.trading_system and self.trading_system.is_running) else "⏳ Initialising"
-        await update.message.reply_text(
-            "🤖 *Trading Bot Commander*\n\n"
-            "I control your Ultimate Trading System.\n"
-            "Use /help to see all commands.\n\n"
-            f"Status: {status}",
-            parse_mode='Markdown'
-        )
-
-    # ── /help ─────────────────────────────────────────────────────────────────
-
-    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        status = "🟢 Running" if (self.trading_system and self.trading_system.is_running) else "🔴 Stopped"
-        await update.message.reply_text(
-            "🤖 *Commander Help*\n\n"
-            "🔍 *Signals*\n"
-            "• `/signal BTC` — Quality signal (7-layer)\n"
-            "• `/signal GOLD` — Gold signal\n"
-            "• `/signal EUR/USD` — Forex signal\n"
-            "• `/why BTC` — Human reasoning\n\n"
-            "📊 *Trading*\n"
-            "• `/status` — Full bot status\n"
-            "• `/positions` — Open trades\n"
-            "• `/balance` — Account balance\n"
-            "• `/performance` — P&L metrics\n"
-            "• `/strategies` — Strategy weights\n"
-            "• `/market` — Market hours\n"
-            "• `/close <id>` — Close a trade\n"
-            "• `/pause` — Stop trading\n"
-            "• `/resume` — Resume trading\n\n"
-            "🧠 *Bot Brain*\n"
-            "• `/mood` — My current mood\n"
-            "• `/diary` — Trading diary\n\n"
-            f"*Status:* {status}",
-            parse_mode='Markdown'
-        )
-
-    # ── /status ───────────────────────────────────────────────────────────────
-
-    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            perf          = self.trading_system.paper_trader.get_performance()
-            open_pos      = len(self.trading_system.paper_trader.get_open_positions())
-            market_status = "🟢 RUNNING" if self.trading_system.is_running else "🔴 STOPPED"
-            today         = datetime.now().strftime('%Y-%m-%d %H:%M')
-            daily_trades  = self._get_daily_trades()
-
-            msg = (
-                f"📊 *Bot Status — {today}*\n\n"
-                f"Status: {market_status}\n"
-                f"Mode: {self.trading_system.strategy_mode.upper()}\n\n"
-                f"📈 *Performance*\n"
-                f"Open Positions: {open_pos}\n"
-                f"Today's Trades: {daily_trades}\n"
-                f"Total Trades:   {perf['total_trades']}\n"
-                f"Win Rate:       {perf['win_rate']}%\n"
-                f"Total P&L:      ${perf['total_pnl']:.2f}\n"
-                f"Balance:        ${perf['current_balance']:.2f}\n"
-            )
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"/status error: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /positions ────────────────────────────────────────────────────────────
-
-    async def cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            # PHASE 2: read from TradingCore.state if available
-            core = getattr(self.trading_system, '_trading_core', None)
-            if core is not None:
-                positions = core.state.get_open_positions()
-            else:
-                positions = self.trading_system.paper_trader.get_open_positions()
-
-            if not positions:
-                await update.message.reply_text("📭 No open positions")
-                return
-
-            msg = f"📈 *Open Positions ({len(positions)})*\n\n"
-            for i, p in enumerate(positions[:5], 1):
-                unrealized = 0
-                try:
-                    price, _ = self.trading_system.fetcher.get_real_time_price(
-                        p['asset'], p.get('category', 'unknown')
-                    )
-                    if price:
-                        if p['signal'] == 'BUY':
-                            unrealized = (price - p['entry_price']) * p['position_size']
-                        else:
-                            unrealized = (p['entry_price'] - price) * p['position_size']
-                except Exception:
-                    pass
-
-                emoji = "🟢" if p['signal'] == 'BUY' else "🔴"
-                pnl_emoji = "📈" if unrealized >= 0 else "📉"
-                msg += (
-                    f"{emoji} *{p['asset']}* ({p['signal']})\n"
-                    f"Entry: `{p['entry_price']:.5f}`\n"
-                    f"Stop:  `{p['stop_loss']:.5f}`\n"
-                    f"Unrealized: {pnl_emoji} ${unrealized:.2f}\n"
-                    f"ID: `{p['trade_id']}`\n\n"
-                )
-            if len(positions) > 5:
-                msg += f"_...and {len(positions)-5} more_"
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"/positions error: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /balance ──────────────────────────────────────────────────────────────
-
-    async def cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            # PHASE 2: read from TradingCore.state if available
-            core = getattr(self.trading_system, '_trading_core', None)
-            if core is not None:
-                perf  = core.state.get_performance()
-                pnl   = perf['total_pnl']
-                emoji = "📈" if pnl >= 0 else "📉"
-                sign  = "+" if pnl >= 0 else ""
-                await update.message.reply_text(
-                    f"💰 *Account Balance*\n\n"
-                    f"Current:       ${perf['balance']:.2f}\n"
-                    f"Total P&L:     {emoji} {sign}${pnl:.2f}\n"
-                    f"Win Rate:      {perf['win_rate']:.1f}%\n"
-                    f"Open Pos:      {perf['open_positions']}\n"
-                    f"Daily Trades:  {core.state.daily_trades}",
-                    parse_mode='Markdown'
-                )
-                return
-            # Fallback
-            perf   = self.trading_system.paper_trader.get_performance()
-            pnl    = perf['total_pnl']
-            emoji  = "📈" if pnl >= 0 else "📉"
-            sign   = "+" if pnl >= 0 else ""
-            await update.message.reply_text(
-                f"💰 *Account Balance*\n\n"
-                f"Current:       ${perf['current_balance']:.2f}\n"
-                f"Total P&L:     {emoji} {sign}${pnl:.2f}\n"
-                f"Win Rate:      {perf['win_rate']}%\n"
-                f"Open Pos:      {perf['open_positions']}",
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /performance ──────────────────────────────────────────────────────────
-
-    async def cmd_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            # PHASE 2: read from TradingCore.state if available
-            core = getattr(self.trading_system, '_trading_core', None)
-            if core is not None:
-                perf = core.state.get_performance()
-                total = perf['total_trades']
-                wins  = perf['winning_trades']
-                losses= perf['losing_trades']
-                wr    = perf['win_rate']
-                avg_w = perf['avg_win']
-                avg_l = perf['avg_loss']
-            else:
-                perf   = self.trading_system.paper_trader.get_performance()
-                total  = perf['total_trades']
-                wins   = perf.get('winning_trades', 0)
-                losses = perf.get('losing_trades', 0)
-                wr     = (wins / total * 100) if total > 0 else 0
-                avg_w  = perf.get('avg_win', 0)
-                avg_l  = perf.get('avg_loss', 0)
-
-            rr  = abs(avg_w / avg_l) if avg_l else 0
-            exp = (wr/100 * avg_w) - ((1 - wr/100) * avg_l)
-
-            await update.message.reply_text(
-                f"💰 *Performance Report*\n\n"
-                f"Total Trades:   {total}\n"
-                f"Wins:           {wins}\n"
-                f"Losses:         {losses}\n"
-                f"Win Rate:       {wr:.1f}%\n"
-                f"Avg Win:        ${avg_w:.2f}\n"
-                f"Avg Loss:       ${avg_l:.2f}\n"
-                f"Risk/Reward:    {rr:.2f}\n"
-                f"Expectancy:     ${exp:.2f}\n"
-                f"Profit Factor:  {perf.get('profit_factor', 0):.2f}\n"
-                f"Total P&L:      ${perf.get('total_pnl', perf.get('total_pnl', 0)):.2f}\n"
-                f"Balance:        ${perf.get('balance', perf.get('current_balance', 0)):.2f}",
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /strategies ───────────────────────────────────────────────────────────
-
-    async def cmd_strategies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            if not hasattr(self.trading_system, 'voting_engine'):
-                await update.message.reply_text("❌ Voting engine not available")
-                return
-            weights = self.trading_system.voting_engine.strategy_weights
-            perfs   = self.trading_system.voting_engine.strategy_performance
-            top     = sorted(weights.items(), key=lambda x: x[1], reverse=True)[:10]
-            msg     = "🧠 *Active Strategies*\n\n"
-            for strat, w in top:
-                p      = perfs.get(strat, {})
-                trades = p.get('trades', 0)
-                wr     = p.get('win_rate', 0) * 100 if trades > 0 else 0
-                icon   = "🔥" if w > 1.5 else "⚡" if w > 1.0 else "✅" if w > 0.5 else "⚠️"
-                msg   += f"{icon} *{strat}* — {w:.2f}x"
-                if trades > 0:
-                    msg += f" | {trades} trades | {wr:.0f}% WR"
-                msg += "\n"
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /market ───────────────────────────────────────────────────────────────
-
-    async def cmd_market(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # NOTE: market status doesn't need trading_system to be fully ready
-        try:
-            status = {}
-            if self.trading_system and hasattr(self.trading_system, 'fetcher'):
-                try:
-                    status = self.trading_system.fetcher.get_market_status()
-                except Exception:
-                    pass
-
-            def _o(key): return "🟢 OPEN" if status.get(key, False) else "🔴 CLOSED"
-            await update.message.reply_text(
-                f"📊 *Market Status*\n\n"
-                f"Crypto:      🟢 OPEN (24/7)\n"
-                f"Forex:       {_o('forex')}\n"
-                f"Stocks:      {_o('stocks')}\n"
-                f"Commodities: {_o('commodities')}\n"
-                f"Indices:     {_o('indices')}\n\n"
-                f"NY Time:     {status.get('ny_time', 'unknown')}\n"
-                f"EAT Time:    {datetime.now().strftime('%H:%M')}",
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /signal ───────────────────────────────────────────────────────────────
-
-    async def cmd_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        if not context.args:
-            await update.message.reply_text(
-                "Usage: `/signal BTC` or `/signal GOLD` or `/signal EUR/USD`",
-                parse_mode='Markdown'
-            )
-            return
-        try:
-            raw   = " ".join(context.args).upper().replace('"', '')
-            asset = ALIASES.get(raw, raw)
-            cat   = _get_category(asset)
-
-            await update.message.chat.send_action("typing")
-            searching = await update.message.reply_text(f"🔍 Building quality signal for *{asset}*…", parse_mode='Markdown')
-
-            # ── FIX: Use TradingCore.get_signal_for_asset() instead of
-            #         deleted signal_learning module ──────────────────────────
-            sig = None
-            try:
-                core = getattr(self.trading_system, '_trading_core', None)
-                if core is not None and hasattr(core, 'get_signal_for_asset'):
-                    sig = core.get_signal_for_asset(asset)
-                elif hasattr(self.trading_system, 'get_signal_for_asset'):
-                    sig = self.trading_system.get_signal_for_asset(asset)
-            except Exception as e:
-                logger.warning(f"Signal fetch failed for {asset}: {e}")
-
-            await searching.delete()
-
-            # signal dict uses 'direction' key from new architecture
-            _sig_dir = sig.get('direction') or sig.get('signal', 'HOLD') if sig else 'HOLD'
-            if not sig or _sig_dir == 'HOLD':
-                await update.message.reply_text(
-                    f"⏸ *{asset}* — No quality signal right now\n\n"
-                    f"_Passed quality filter but no clear direction.\n"
-                    f"Try again in a few minutes or check another asset._",
-                    parse_mode='Markdown'
-                )
-                return
-
-            # Build rich reply
-            _dir    = _sig_dir
-            _emoji  = '🟢' if _dir == 'BUY' else '🔴'
-            _entry  = sig.get('entry_price', 0)
-            _sl     = sig.get('stop_loss', 0)
-            _tp     = sig.get('take_profit', 0)
-            _tp2    = sig.get('take_profit_2')
-            _tp3    = sig.get('take_profit_3')
-            _conf   = sig.get('confidence', 0)
-            _rr     = sig.get('rr_ratio', sig.get('risk_reward', 0))
-            _wr     = sig.get('win_rate', 0)
-            _conf_str = sig.get('confluence', '')
-            _bias   = sig.get('learning_bias', 0)
-            _sess   = sig.get('session', sig.get('metadata', {}).get('session', ''))
-            _reason = sig.get('reasoning', sig.get('kill_reason', ''))
-
-            _conf_badge = {
-                'ALL3': '🔥 ALL 3 TF AGREE',
-                'BOTH': '✅ 2/3 TF AGREE',
-                '2OF3': '✅ 2/3 TF AGREE',
-                'DIVERGE': '⚠️ DIVERGING',
-            }.get(_conf_str, _conf_str or '—')
-
-            _tp_lines = f"TP1: `{_tp:.5f}`"
-            if _tp2: _tp_lines += f"\nTP2: `{_tp2:.5f}`"
-            if _tp3: _tp_lines += f"\nTP3: `{_tp3:.5f}`"
-
-            # Use take_profit_levels from new architecture if available
-            tp_levels = sig.get('take_profit_levels', [])
-            if tp_levels and not _tp2:
-                _tp_lines = "\n".join(
-                    f"TP{i+1}: `{lv:.5f}`" for i, lv in enumerate(tp_levels[:3])
-                )
-
-            msg = (
-                f"{_emoji} *{_dir} {asset}*\n"
-                f"{'─'*28}\n"
-                f"📍 Entry: `{_entry:.5f}`\n"
-                f"🛑 Stop:  `{_sl:.5f}`\n"
-                f"{_tp_lines}\n\n"
-                f"📊 *Quality*\n"
-                f"Confidence:  {_conf:.0%}\n"
-                f"R:R:         {_rr:.2f}:1\n"
-                f"Confluence:  {_conf_badge}\n"
-                f"Win Rate:    {_wr:.0f}% (learned)\n"
-                f"Bias:        {_bias:+.3f}\n"
-                f"Session:     {_sess}\n"
-            )
-            if _reason:
-                lines = [l for l in _reason.split('\n') if l.strip()][:2]
-                if lines:
-                    msg += f"\n🧠 *Why*\n" + "\n".join(lines) + "\n"
-            msg += f"{'─'*28}\n_7-layer quality filter passed_"
-
-            await update.message.reply_text(msg, parse_mode='Markdown')
-
-        except Exception as e:
-            logger.error(f"/signal error: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /why ──────────────────────────────────────────────────────────────────
-
-    async def cmd_why(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        if not context.args:
-            await update.message.reply_text("Usage: `/why BTC`", parse_mode='Markdown')
-            return
-        try:
-            raw   = " ".join(context.args).upper().replace('"', '')
-            asset = ALIASES.get(raw, raw)
-
-            await update.message.chat.send_action("typing")
-            thinking = await update.message.reply_text(f"🤔 Thinking about {asset}…")
-
-            # ── FIX: human_explainer_db was deleted.
-            #         Build explanation from live signal via new architecture. ─
-            explanation = None
-            try:
-                core = getattr(self.trading_system, '_trading_core', None)
-                if core is not None and hasattr(core, 'get_signal_for_asset'):
-                    sig = core.get_signal_for_asset(asset)
-                elif hasattr(self.trading_system, 'get_signal_for_asset'):
-                    sig = self.trading_system.get_signal_for_asset(asset)
-                else:
-                    sig = None
-
-                if sig:
-                    direction = sig.get('direction', 'HOLD')
-                    confidence = sig.get('confidence', 0)
-                    regime    = sig.get('metadata', {}).get('regime', 'unknown')
-                    session   = sig.get('metadata', {}).get('session', 'unknown')
-                    sentiment = sig.get('metadata', {}).get('sentiment_score', 0)
-                    layer     = sig.get('layer_reached', 7)
-                    rr        = sig.get('risk_reward', sig.get('rr_ratio', 0))
-                    indicators = sig.get('indicators', {})
-
-                    ind_lines = "\n".join(
-                        f"• {k}: {round(v, 4) if isinstance(v, float) else v}"
-                        for k, v in list(indicators.items())[:6]
-                    ) or "• No indicator data"
-
-                    explanation = (
-                        f"🧠 *Why {asset}?*\n\n"
-                        f"*Signal:* {'🟢' if direction == 'BUY' else '🔴'} {direction} "
-                        f"({confidence:.0%} confidence)\n\n"
-                        f"*Market context*\n"
-                        f"• Regime:    {regime}\n"
-                        f"• Session:   {session}\n"
-                        f"• Sentiment: {sentiment:+.3f}\n"
-                        f"• R:R ratio: {rr:.2f}:1\n\n"
-                        f"*Indicators*\n{ind_lines}\n\n"
-                        f"*Pipeline*\n"
-                        f"Signal passed {layer}/7 pipeline layers:\n"
-                        f"Voting → Quality → Regime → Session → "
-                        f"Sentiment → Whale → Calibration\n\n"
-                        f"_Use /signal {asset} for the live signal._"
-                    )
-                else:
-                    explanation = (
-                        f"🧠 *Analysis for {asset}*\n\n"
-                        f"No active signal for {asset} right now.\n\n"
-                        f"The 7-layer pipeline (Voting → Quality → Regime → "
-                        f"Session → Sentiment → Whale → Calibration) "
-                        f"did not produce a qualifying signal.\n\n"
-                        f"_Try again in a few minutes or check /signal {asset}._"
-                    )
-            except Exception as e:
-                logger.warning(f"/why signal fetch error: {e}")
-                explanation = (
-                    f"🧠 *Analysis for {asset}*\n\n"
-                    f"Signal analysis uses the 7-layer pipeline:\n"
-                    f"Voting → Quality → Regime → Session → "
-                    f"Sentiment → Whale → Calibration\n\n"
-                    f"_Use /signal {asset} for a live signal._"
-                )
-
-            await thinking.delete()
-            chunks = [explanation[i:i+4000] for i in range(0, len(explanation), 4000)]
-            for chunk in chunks:
-                await update.message.reply_text(chunk, parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"/why error: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /mood ─────────────────────────────────────────────────────────────────
-
-    async def cmd_mood(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            from services.personality_service import PersonalityDatabase
-            db     = PersonalityDatabase()
-            report = db.get_personality_report()
-            db.close()
-
-            mood_emojis = {
-                'euphoric':'🚀🚀🚀','confident':'😎','on_fire':'🔥',
-                'rich':'🤑','cautious':'🤔','shaken':'😰',
-                'grumpy':'😤','neutral':'😐',
-            }
-            mood  = report['current_mood']
-            emoji = mood_emojis.get(mood, '🤖')
-            stats = report['stats']
-
-            msg = f"🤖 *Mood:* {emoji} {mood.upper()}\n\n"
-            msg += f"Win rate this week: {stats['weekly_win_rate']:.0f}%\n"
-            if stats['consecutive_wins'] > 2:
-                msg += f"🔥 {stats['consecutive_wins']}-trade winning streak!\n"
-            elif stats['consecutive_losses'] > 2:
-                msg += f"😰 {stats['consecutive_losses']}-trade losing streak\n"
-            msg += (
-                f"\n*Stats*\n"
-                f"Last 10: {stats['last_10_wins']}/10 wins\n"
-                f"Last 10 P&L: ${stats['last_10_pnl']:.2f}\n"
-            )
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /diary ────────────────────────────────────────────────────────────────
-
-    async def cmd_diary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            from services.personality_service import PersonalityDatabase
-            db     = PersonalityDatabase()
-            report = db.get_personality_report()
-            db.close()
-
-            msg = "📔 *Trading Diary*\n\n"
-            if report.get('memorable_moments'):
-                msg += "*Memorable Moments*\n"
-                for m in report['memorable_moments'][:5]:
-                    icon = "✅" if m['is_win'] else "❌"
-                    pnl  = f"+${m['pnl']:.0f}" if m['is_win'] else f"-${abs(m['pnl']):.0f}"
-                    msg += f"{icon} {m['title']} — {pnl}\n"
-                msg += "\n"
-
-            traits = report.get('traits', {})
-            if traits:
-                msg += (
-                    f"*Personality*\n"
-                    f"Confidence:   {traits.get('base_confidence',0)*100:.0f}%\n"
-                    f"Cautiousness: {traits.get('cautiousness',0)*100:.0f}%\n"
-                    f"Optimism:     {traits.get('optimism',0)*100:.0f}%\n"
-                )
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /pause ────────────────────────────────────────────────────────────────
-
-    async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            if not self.trading_system.is_running:
-                await update.message.reply_text("⚠️ Already paused")
-                return
-            self.trading_system.is_running = False
-            await update.message.reply_text("⏸️ *Trading Paused*\n\nNo new trades will open.", parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /resume ───────────────────────────────────────────────────────────────
-
-    async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            if self.trading_system.is_running:
-                await update.message.reply_text("⚠️ Already running")
-                return
-            self.trading_system.is_running = True
-            await update.message.reply_text("▶️ *Trading Resumed*\n\nScanning for opportunities.", parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── /close ────────────────────────────────────────────────────────────────
-
-    async def cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await self._require_system(update): return
-        try:
-            if not context.args:
-                await update.message.reply_text("Usage: `/close <trade_id>`\nGet IDs from /positions", parse_mode='Markdown')
-                return
-            trade_id  = context.args[0]
-            positions = self.trading_system.paper_trader.get_open_positions()
-            trade     = next((p for p in positions if p['trade_id'] == trade_id), None)
-            if not trade:
-                await update.message.reply_text(f"❌ Trade `{trade_id}` not found", parse_mode='Markdown')
-                return
-            price, _ = self.trading_system.fetcher.get_real_time_price(
-                trade['asset'], trade.get('category', 'unknown')
-            )
-            if not price:
-                await update.message.reply_text(f"❌ Could not get price for {trade['asset']}")
-                return
-            result = self.trading_system.paper_trader.force_close(trade_id, price, "Manual close via Telegram")
-            if result:
-                pnl   = result.get('pnl', 0)
-                icon  = "✅" if pnl > 0 else "❌"
-                await update.message.reply_text(
-                    f"{icon} *Trade Closed*\n\n"
-                    f"Asset: {trade['asset']}\n"
-                    f"P&L:   ${pnl:.2f}\n"
-                    f"Entry: `{trade['entry_price']:.5f}`\n"
-                    f"Exit:  `{price:.5f}`",
-                    parse_mode='Markdown'
-                )
-            else:
-                await update.message.reply_text(f"❌ Failed to close {trade_id}")
-        except Exception as e:
-            logger.error(f"/close error: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
-
-    # ── Alert helpers (called from trading_system) ────────────────────────────
-
-    def alert_trade_opened(self, signal: dict):
-        try:
-            emoji = "🟢" if signal.get('signal') == 'BUY' else "🔴"
-            entry  = signal.get('entry_price', 0) or 0
-            sl     = signal.get('stop_loss',   0) or 0
-            tp     = signal.get('take_profit', 0) or 0
-            rr     = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
+            d     = trade.get("direction", trade.get("signal", "BUY"))
+            emoji = "🟢" if d == "BUY" else "🔴"
+            entry = float(trade.get("entry_price", 0))
+            sl    = float(trade.get("stop_loss",   0))
+            tp    = float(trade.get("take_profit", 0))
+            rr    = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
             self.send_message(
                 f"{emoji} *Trade Opened*\n\n"
-                f"Asset:    {signal.get('asset','?')}\n"
+                f"Asset:    {trade.get('asset', '?')}\n"
                 f"Entry:    `{entry:.5f}`\n"
                 f"Stop:     `{sl:.5f}`\n"
-                f"TP:       `{tp:.5f}`\n"
-                f"RR:       {rr:.1f}:1\n"
-                f"Conf:     {signal.get('confidence',0):.0%}\n"
-                f"Strategy: {signal.get('strategy_id','?')}"
+                f"Target:   `{tp:.5f}`\n"
+                f"R:R:      {rr:.1f}:1\n"
+                f"Conf:     {float(trade.get('confidence', 0)):.0%}\n"
+                f"Strategy: {trade.get('strategy_id', '?')}\n"
+                f"ID:       `{trade.get('trade_id', '?')}`"
             )
         except Exception as e:
-            logger.error(f"alert_trade_opened: {e}")
+            logger.error(f"[Telegram] alert_trade_opened: {e}")
 
-    def alert_trade_closed(self, trade: dict):
+    def alert_trade_closed(self, trade: Dict) -> None:
         try:
-            pnl  = trade.get('pnl', 0)
-            icon = "✅" if pnl > 0 else "❌"
+            pnl   = float(trade.get("pnl", 0))
+            icon  = "✅" if pnl >= 0 else "❌"
+            sign  = "+" if pnl >= 0 else ""
             self.send_message(
                 f"{icon} *Trade Closed*\n\n"
-                f"Asset:  {trade.get('asset','?')}\n"
-                f"P&L:    ${pnl:.2f} ({trade.get('pnl_percent',0):.2f}%)\n"
-                f"Entry:  `{trade.get('entry_price',0):.5f}`\n"
-                f"Exit:   `{trade.get('exit_price',0):.5f}`\n"
-                f"Reason: {trade.get('exit_reason','?')}"
+                f"Asset:  {trade.get('asset', '?')}\n"
+                f"P&L:    `{sign}${pnl:.2f}`\n"
+                f"Entry:  `{float(trade.get('entry_price', 0)):.5f}`\n"
+                f"Exit:   `{float(trade.get('exit_price',  0)):.5f}`\n"
+                f"Reason: {trade.get('exit_reason', '?')}"
             )
         except Exception as e:
-            logger.error(f"alert_trade_closed: {e}")
+            logger.error(f"[Telegram] alert_trade_closed: {e}")
 
-    def alert_daily_loss_limit(self, loss_pct: float):
+    def alert_daily_loss_limit(self, loss_pct: float) -> None:
         self.send_message(
-            f"⚠️ *DAILY LOSS LIMIT HIT*\n\n"
+            f"⚠️ *Daily Loss Limit Hit*\n\n"
             f"Loss: {loss_pct:.1f}%\n"
-            f"Trading paused. Use /resume to restart."
+            f"Trading paused automatically.\n"
+            f"Use /menu → ▶️ Resume to restart."
         )
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # Command handlers (direct text commands, no buttons)
+    # ══════════════════════════════════════════════════════════════════════════
 
-    def _get_daily_trades(self) -> int:
-        try:
-            today = datetime.now().date()
-            return sum(
-                1 for t in self.trading_system.paper_trader.closed_positions
-                if getattr(t, 'exit_time', None) and t.exit_time.date() == today
+    async def _cmd_menu(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        core   = self.trading_system
+        status = "🟢 Running" if (core and core.is_running) else "🔴 Stopped"
+        bal    = f"${core.get_balance():.2f}" if core else "—"
+        text   = (
+            f"🤖 *Robbie Control Panel*\n\n"
+            f"Status: {status}\n"
+            f"Balance: {bal}\n"
+            f"_{datetime.now().strftime('%H:%M:%S')}_"
+        )
+        await update.message.reply_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_main_menu_keyboard(),
+        )
+
+    async def _cmd_status_direct(self, update, ctx):
+        text, kb = await self._build_status()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _cmd_positions_direct(self, update, ctx):
+        text, kb = await self._build_positions()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _cmd_balance_direct(self, update, ctx):
+        text, kb = await self._build_balance()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _cmd_signal_direct(self, update, ctx):
+        if ctx.args:
+            raw   = " ".join(ctx.args).upper()
+            asset = _resolve_alias(raw)
+            text, kb = await self._build_signal(asset)
+        else:
+            text = "🎯 *Pick a category to scan:*"
+            kb   = _category_keyboard()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _cmd_close_direct(self, update, ctx):
+        if not ctx.args:
+            await update.message.reply_text(
+                "Usage: `/close <trade_id>`\nGet IDs from /positions",
+                parse_mode=ParseMode.MARKDOWN,
             )
+            return
+        trade_id = ctx.args[0]
+        text, kb = self._do_close(trade_id)
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _cmd_pause_direct(self, update, ctx):
+        text = self._do_pause()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_resume_direct(self, update, ctx):
+        text = self._do_resume()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # /ask conversation
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def _ask_entry(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if ctx.args and len(ctx.args) >= 2:
+            # /ask BTC should I buy? — all-in-one, skip conversation
+            raw      = ctx.args[0].upper()
+            asset    = _resolve_alias(raw)
+            question = " ".join(ctx.args[1:])
+            await update.message.chat.send_action("typing")
+            text = await self._run_ask(asset, question)
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+            return ConversationHandler.END
+
+        await update.message.reply_text(
+            "🧠 *Ask Robbie*\n\nWhich asset do you want to ask about?\n"
+            "_(type the ticker or name, e.g. BTC or GOLD)_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return WAITING_ASK_ASSET
+
+    async def _ask_got_asset(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        raw   = update.message.text.strip().upper()
+        asset = _resolve_alias(raw)
+        ctx.user_data["ask_asset"] = asset
+        await update.message.reply_text(
+            f"Got it — *{asset}*.\n\nWhat do you want to know?\n"
+            f"_(e.g. 'should I buy?', 'explain the risk', 'what do you remember?')_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return WAITING_ASK_QUESTION
+
+    async def _ask_got_question(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        asset    = ctx.user_data.get("ask_asset", "BTC-USD")
+        question = update.message.text.strip()
+        await update.message.chat.send_action("typing")
+        text = await self._run_ask(asset, question)
+        # Split if needed
+        for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+            await update.message.reply_text(
+                chunk, parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_kb(
+                    [("🔄 Ask another", "ask"), ("🏠 Menu", "menu")],
+                )
+            )
+        return ConversationHandler.END
+
+    async def _ask_cancel(self, update, ctx):
+        await update.message.reply_text("Cancelled.")
+        return ConversationHandler.END
+
+    async def _run_ask(self, asset: str, question: str) -> str:
+        try:
+            core = self.trading_system
+            sig  = None
+            df   = None
+            if core:
+                try:
+                    sig = core.get_signal_for_asset(asset)
+                except Exception:
+                    pass
+                try:
+                    from core.assets import registry
+                    cat     = registry.category(asset)
+                    fetcher = core.fetcher
+                    if fetcher:
+                        df = fetcher.get_ohlcv(asset, cat, interval="1h", periods=50)
+                        if df is not None and not df.empty:
+                            from indicators.technical import TechnicalIndicators
+                            df = TechnicalIndicators.add_all_indicators(df)
+                except Exception:
+                    pass
+
+            from services.personality_service import RobbieExplainer
+            explainer = RobbieExplainer()
+            answer    = explainer.answer(asset, question, signal=sig, df=df)
+            explainer.close()
+            return answer
+        except Exception as e:
+            logger.error(f"[Telegram] /ask error: {e}")
+            return f"❌ Robbie hit an error: {e}"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Inline button router
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def _on_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()               # acknowledge tap immediately
+        data  = query.data or ""
+
+        # Routing table
+        if data == "menu":
+            await self._btn_menu(query)
+        elif data == "status":
+            await self._btn_status(query)
+        elif data == "positions":
+            await self._btn_positions(query)
+        elif data == "balance":
+            await self._btn_balance(query)
+        elif data == "signals":
+            await self._btn_signals(query)
+        elif data.startswith("cat:"):
+            await self._btn_category(query, data[4:])
+        elif data.startswith("sig:"):
+            await self._btn_signal(query, data[4:])
+        elif data.startswith("why:"):
+            await self._btn_why(query, data[4:])
+        elif data.startswith("close:"):
+            await self._btn_close_confirm(query, data[6:])
+        elif data.startswith("close_ok:"):
+            await self._btn_close_execute(query, data[9:])
+        elif data == "ask":
+            await self._btn_ask(query)
+        elif data == "mood":
+            await self._btn_mood(query)
+        elif data == "diary":
+            await self._btn_diary(query)
+        elif data == "market":
+            await self._btn_market(query)
+        elif data == "strategies":
+            await self._btn_strategies(query)
+        elif data == "pause":
+            await self._btn_pause(query)
+        elif data == "resume":
+            await self._btn_resume(query)
+        else:
+            await query.edit_message_text("⚠️ Unknown action.")
+
+    # ── Button implementations ────────────────────────────────────────────────
+
+    async def _btn_menu(self, query) -> None:
+        core   = self.trading_system
+        status = "🟢 Running" if (core and core.is_running) else "🔴 Stopped"
+        bal    = f"${core.get_balance():.2f}" if core else "—"
+        await query.edit_message_text(
+            f"🤖 *Robbie Control Panel*\n\n"
+            f"Status: {status}\n"
+            f"Balance: {bal}\n"
+            f"_{datetime.now().strftime('%H:%M:%S')}_",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_main_menu_keyboard(),
+        )
+
+    async def _btn_status(self, query) -> None:
+        text, kb = await self._build_status()
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _btn_positions(self, query) -> None:
+        text, kb = await self._build_positions()
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _btn_balance(self, query) -> None:
+        text, kb = await self._build_balance()
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _btn_signals(self, query) -> None:
+        await query.edit_message_text(
+            "🎯 *Signals*\n\nPick a category to scan:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_category_keyboard(),
+        )
+
+    async def _btn_category(self, query, category: str) -> None:
+        label = category.capitalize()
+        await query.edit_message_text(
+            f"🎯 *{label} Signals*\n\nPick an asset:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_asset_keyboard(category),
+        )
+
+    async def _btn_signal(self, query, asset: str) -> None:
+        await query.edit_message_text(
+            f"⏳ Scanning {asset} through the 7-layer pipeline…",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        text, kb = await self._build_signal(asset)
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _btn_why(self, query, asset: str) -> None:
+        await query.edit_message_text(
+            f"🧠 Robbie is explaining {asset}…",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        text = await self._build_why(asset)
+        kb   = _kb(
+            [(f"🎯 Signal", f"sig:{asset}"), ("◀️ Back", "signals")],
+            [("🏠 Menu", "menu")],
+        )
+        for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+            await query.edit_message_text(
+                chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=kb,
+            )
+
+    async def _btn_close_confirm(self, query, trade_id: str) -> None:
+        core      = self.trading_system
+        positions = core.get_positions() if core else []
+        pos       = next((p for p in positions if p.get("trade_id") == trade_id), None)
+        if not pos:
+            await query.edit_message_text(
+                f"❌ Trade `{trade_id}` not found.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_kb([("◀️ Back", "positions"), ("🏠 Menu", "menu")]),
+            )
+            return
+        asset = pos.get("asset", trade_id)
+        d     = (pos.get("direction") or pos.get("signal", "BUY")).upper()
+        entry = float(pos.get("entry_price", 0))
+        await query.edit_message_text(
+            f"⚠️ *Confirm Close*\n\n"
+            f"Asset:  {asset}\n"
+            f"Side:   {d}\n"
+            f"Entry:  `{entry:.5f}`\n"
+            f"ID:     `{trade_id}`\n\n"
+            f"Are you sure?",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb(
+                [(f"✅ Yes, close it", f"close_ok:{trade_id}")],
+                [("❌ Cancel",          "positions")],
+            ),
+        )
+
+    async def _btn_close_execute(self, query, trade_id: str) -> None:
+        text, kb = self._do_close(trade_id)
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _btn_ask(self, query) -> None:
+        await query.edit_message_text(
+            "🧠 *Ask Robbie*\n\n"
+            "Type your question in the format:\n"
+            "`/ask <asset> <question>`\n\n"
+            "Examples:\n"
+            "• `/ask BTC should I buy?`\n"
+            "• `/ask GOLD what do you remember?`\n"
+            "• `/ask EUR/USD explain the risk`\n"
+            "• `/ask ETH how confident are you?`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb([("🏠 Menu", "menu")]),
+        )
+
+    async def _btn_mood(self, query) -> None:
+        text = self._build_mood()
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb(
+                [("📔 Diary", "diary"), ("🏠 Menu", "menu")],
+            ),
+        )
+
+    async def _btn_diary(self, query) -> None:
+        text = self._build_diary()
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb(
+                [("😶 Mood", "mood"), ("🏠 Menu", "menu")],
+            ),
+        )
+
+    async def _btn_market(self, query) -> None:
+        text = _build_market_text()
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb([("🔄 Refresh", "market"), ("🏠 Menu", "menu")]),
+        )
+
+    async def _btn_strategies(self, query) -> None:
+        text = self._build_strategies()
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb([("🏠 Menu", "menu")]),
+        )
+
+    async def _btn_pause(self, query) -> None:
+        text = self._do_pause()
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb([("▶️ Resume", "resume"), ("🏠 Menu", "menu")]),
+        )
+
+    async def _btn_resume(self, query) -> None:
+        text = self._do_resume()
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb([("⏸ Pause", "pause"), ("🏠 Menu", "menu")]),
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Content builders — return (text, keyboard) tuples
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def _build_status(self):
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready.", _kb([("🔄 Refresh", "status"), ("🏠 Menu", "menu")])
+
+        health  = core.health_report()
+        perf    = core.get_performance()
+        daily   = core.get_daily_stats()
+        status  = "🟢 Running" if core.is_running else "🔴 Stopped"
+        ready   = "✅" if core.is_ready else "⏳"
+
+        open_pos  = health.get("open_positions", 0)
+        daily_pnl = daily.get("daily_pnl", 0)
+        pnl_icon  = "📈" if daily_pnl >= 0 else "📉"
+
+        text = (
+            f"📊 *System Status*\n"
+            f"{'─' * 24}\n"
+            f"Status:    {status}\n"
+            f"Engine:    {ready} {'Ready' if core.is_ready else 'Initialising'}\n"
+            f"Mode:      {core.strategy_mode.upper()}\n\n"
+            f"💰 *Financials*\n"
+            f"Balance:   `${core.get_balance():.2f}`\n"
+            f"Daily P&L: {pnl_icon} `${daily_pnl:+.2f}`\n"
+            f"Total P&L: `${perf.get('total_pnl', 0):+.2f}`\n\n"
+            f"📈 *Trading*\n"
+            f"Open:      {open_pos} position{'s' if open_pos != 1 else ''}\n"
+            f"Today:     {daily.get('daily_trades', 0)} trades\n"
+            f"Win Rate:  {perf.get('win_rate', 0):.1f}%\n"
+            f"Total:     {perf.get('total_trades', 0)} trades\n\n"
+            f"🖥 *System*\n"
+            f"RAM:       {health.get('ram_pct', 0):.0f}%\n"
+            f"CPU:       {health.get('cpu_pct', 0):.0f}%\n"
+            f"Cooldowns: {health.get('active_cooldowns', 0)}\n"
+            f"_Updated: {datetime.now().strftime('%H:%M:%S')}_"
+        )
+        kb = _kb(
+            [("🔄 Refresh", "status"),   ("📈 Positions", "positions")],
+            [("💰 Balance",  "balance"),  ("🏠 Menu",      "menu")],
+        )
+        return text, kb
+
+    async def _build_positions(self):
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
+
+        positions = core.get_positions()
+        if not positions:
+            return (
+                "📭 *No open positions*\n\nThe bot isn't in any trades right now.",
+                _kb([("🎯 Find a signal", "signals"), ("🏠 Menu", "menu")])
+            )
+
+        lines = [f"📈 *Open Positions ({len(positions)})*\n"]
+        buttons = []
+
+        for i, p in enumerate(positions[:8], 1):
+            direction = (p.get("direction") or p.get("signal", "BUY")).upper()
+            emoji     = "🟢" if direction == "BUY" else "🔴"
+            asset     = p.get("asset", "?")
+            entry     = float(p.get("entry_price", 0))
+            sl        = float(p.get("stop_loss", 0))
+            tp        = float(p.get("take_profit", 0))
+            size      = float(p.get("position_size", 0))
+            conf      = float(p.get("confidence", 0))
+            tid       = p.get("trade_id", "")
+
+            # Try live P&L
+            pnl_str   = ""
+            try:
+                fetcher = core.fetcher
+                if fetcher:
+                    cat = p.get("category", "forex")
+                    price, _ = fetcher.get_real_time_price(asset, cat)
+                    if price:
+                        pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
+                        pnl_str = f"  P&L: `${pnl:+.2f}`\n"
+            except Exception:
+                pass
+
+            lines.append(
+                f"{emoji} *{asset}* ({direction})\n"
+                f"  Entry: `{entry:.5f}` | Stop: `{sl:.5f}`\n"
+                f"  TP:    `{tp:.5f}` | Conf: {conf:.0%}\n"
+                f"{pnl_str}"
+                f"  ID: `{tid}`\n"
+            )
+            buttons.append([(f"❌ Close {asset}", f"close:{tid}")])
+
+        if len(positions) > 8:
+            lines.append(f"_…and {len(positions) - 8} more_")
+
+        buttons.append([("🔄 Refresh", "positions"), ("🏠 Menu", "menu")])
+        return "\n".join(lines), _kb(*buttons)
+
+    async def _build_balance(self):
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
+
+        perf    = core.get_performance()
+        daily   = core.get_daily_stats()
+        bal     = core.get_balance()
+        init    = perf.get("initial_balance", bal)
+        total   = perf.get("total_pnl", 0)
+        d_pnl   = daily.get("daily_pnl", 0)
+        d_trades= daily.get("daily_trades", 0)
+        wr      = perf.get("win_rate", 0)
+        growth  = ((bal - init) / init * 100) if init else 0
+        g_icon  = "📈" if growth >= 0 else "📉"
+        d_icon  = "📈" if d_pnl >= 0 else "📉"
+
+        text = (
+            f"💰 *Account Balance*\n"
+            f"{'─' * 24}\n"
+            f"Current:  `${bal:,.2f}`\n"
+            f"Started:  `${init:,.2f}`\n"
+            f"Growth:   {g_icon} `{growth:+.2f}%`\n\n"
+            f"📊 *Performance*\n"
+            f"Total P&L:    `${total:+.2f}`\n"
+            f"Today's P&L:  {d_icon} `${d_pnl:+.2f}`\n"
+            f"Today trades: {d_trades}\n"
+            f"Win Rate:     {wr:.1f}%\n"
+            f"Total trades: {perf.get('total_trades', 0)}\n\n"
+            f"📉 *Risk*\n"
+            f"Avg Win:  `${perf.get('avg_win', 0):.2f}`\n"
+            f"Avg Loss: `${perf.get('avg_loss', 0):.2f}`\n"
+            f"P-Factor: {perf.get('profit_factor', 0):.2f}"
+        )
+        kb = _kb(
+            [("🔄 Refresh", "balance"),  ("📊 Status",   "status")],
+            [("🧩 Strategies","strategies"),("🏠 Menu",  "menu")],
+        )
+        return text, kb
+
+    async def _build_signal(self, asset: str):
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
+
+        try:
+            sig = core.get_signal_for_asset(asset)
+        except Exception as e:
+            return f"❌ Error: {e}", _kb([("◀️ Back", "signals"), ("🏠 Menu", "menu")])
+
+        display = _DISPLAY.get(asset, asset)
+
+        if not sig or sig.get("direction", "HOLD") == "HOLD":
+            text = (
+                f"⏸ *{display}* — No signal\n\n"
+                f"The 7-layer pipeline doesn't see a clean entry right now.\n"
+                f"_Try again in a few minutes._"
+            )
+            kb = _kb(
+                [(f"🧠 Ask Robbie", f"why:{asset}"), ("🔄 Retry", f"sig:{asset}")],
+                [("◀️ Back", "signals"), ("🏠 Menu", "menu")],
+            )
+            return text, kb
+
+        d      = sig.get("direction", "BUY")
+        emoji  = "🟢" if d == "BUY" else "🔴"
+        entry  = float(sig.get("entry_price", 0))
+        sl     = float(sig.get("stop_loss",   0))
+        tp     = float(sig.get("take_profit", 0))
+        conf   = float(sig.get("confidence",  0))
+        rr     = float(sig.get("risk_reward", sig.get("rr_ratio", 0)))
+        meta   = sig.get("metadata", {}) or {}
+        regime = meta.get("regime", "")
+        sess   = meta.get("session", "")
+
+        # TP levels
+        tp_levels = sig.get("take_profit_levels", [])
+        tp_lines  = ""
+        if tp_levels:
+            for i, lv in enumerate(tp_levels[:3], 1):
+                price = float(lv) if isinstance(lv, (int, float)) else float(lv.get("price", 0))
+                tp_lines += f"  TP{i}: `{price:.5f}`\n"
+        else:
+            tp_lines = f"  TP:  `{tp:.5f}`\n"
+
+        text = (
+            f"{emoji} *{d} {display}*\n"
+            f"{'─' * 26}\n"
+            f"📍 Entry:  `{entry:.5f}`\n"
+            f"🛑 Stop:   `{sl:.5f}`\n"
+            f"{tp_lines}"
+            f"\n📊 *Quality*\n"
+            f"Confidence: {conf:.0%}\n"
+            f"R:R ratio:  {rr:.2f}:1\n"
+            f"Regime:     {regime.replace('_', ' ') or '—'}\n"
+            f"Session:    {sess or '—'}\n"
+            f"Strategy:   {sig.get('strategy_id', '—')}\n\n"
+            f"_7-layer pipeline ✅_"
+        )
+        kb = _kb(
+            [(f"🧠 Why {display}?", f"why:{asset}"), ("🔄 Refresh", f"sig:{asset}")],
+            [("◀️ Assets", "signals"), ("🏠 Menu", "menu")],
+        )
+        return text, kb
+
+    async def _build_why(self, asset: str) -> str:
+        core    = self.trading_system
+        sig     = None
+        df      = None
+        display = _DISPLAY.get(asset, asset)
+
+        if core:
+            try:
+                sig = core.get_signal_for_asset(asset)
+            except Exception:
+                pass
+            try:
+                from core.assets import registry
+                cat     = registry.category(asset)
+                fetcher = core.fetcher
+                if fetcher:
+                    df = fetcher.get_ohlcv(asset, cat, interval="1h", periods=50)
+                    if df is not None and not df.empty:
+                        from indicators.technical import TechnicalIndicators
+                        df = TechnicalIndicators.add_all_indicators(df)
+            except Exception:
+                pass
+
+        try:
+            from services.personality_service import RobbieExplainer
+            explainer = RobbieExplainer()
+            text      = explainer.explain_signal(
+                asset=asset, df=df, signal=sig or {},
+            )
+            explainer.close()
+            return text
+        except Exception as e:
+            return (
+                f"🧠 *{display}*\n\n"
+                f"Couldn't get full explanation: {e}\n"
+                f"Try `/ask {asset} explain`."
+            )
+
+    def _build_mood(self) -> str:
+        try:
+            from services.personality_service import PersonalityDatabase
+            db     = PersonalityDatabase()
+            report = db.get_personality_report()
+            db.close()
         except Exception:
-            return 0
+            return "❌ Personality service unavailable."
+
+        mood   = report.get("current_mood", "neutral")
+        emoji  = report.get("mood_emoji",   "😐")
+        stats  = report.get("stats", {})
+        traits = report.get("traits", {})
+
+        text = f"😶 *Robbie's Mood: {emoji} {mood.upper()}*\n\n"
+
+        cw = stats.get("consecutive_wins", 0)
+        cl = stats.get("consecutive_losses", 0)
+        if cw >= 3:
+            text += f"🔥 On a {cw}-trade winning streak!\n"
+        elif cl >= 3:
+            text += f"😰 {cl} losses in a row — being careful.\n"
+
+        text += (
+            f"\n📊 *This Week*\n"
+            f"Win Rate:    {stats.get('weekly_win_rate', 0):.0f}%\n"
+            f"Trades:      {stats.get('weekly_trades', 0)}\n\n"
+            f"📊 *Last 10 Trades*\n"
+            f"Wins:  {stats.get('last_10_wins', 0)}/10\n"
+            f"P&L:   ${stats.get('last_10_pnl', 0):+.2f}\n\n"
+            f"🎭 *Personality*\n"
+            f"Confidence:   {traits.get('base_confidence', 0.7)*100:.0f}%\n"
+            f"Cautiousness: {traits.get('cautiousness', 0.5)*100:.0f}%\n"
+            f"Optimism:     {traits.get('optimism', 0.6)*100:.0f}%"
+        )
+        return text
+
+    def _build_diary(self) -> str:
+        try:
+            from services.personality_service import PersonalityDatabase
+            db     = PersonalityDatabase()
+            report = db.get_personality_report()
+            db.close()
+        except Exception:
+            return "❌ Diary unavailable."
+
+        moments = report.get("memorable_moments", [])
+        text    = "📔 *Trading Diary*\n\n"
+
+        if moments:
+            text += "*Memorable Moments*\n"
+            for m in moments:
+                icon  = "✅" if m.get("is_win") else "❌"
+                pnl   = m.get("pnl", 0)
+                ps    = f"+${pnl:.0f}" if pnl >= 0 else f"-${abs(pnl):.0f}"
+                text += f"{icon} {m.get('title', '—')} — {ps} _{m.get('date', '')}_\n"
+        else:
+            text += "_No memorable moments yet — go make some trades! 💪_\n"
+
+        total = report.get("stats", {}).get("total_trades_remembered", 0)
+        text += f"\n_Total trades in memory: {total}_"
+        return text
+
+    def _build_strategies(self) -> str:
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready."
+        try:
+            stats = core.get_strategy_stats()
+            if not stats:
+                return "📊 *Strategy Stats*\n\n_No completed trades yet._"
+
+            lines = ["🧩 *Strategy Performance*\n"]
+            for strat, s in sorted(
+                stats.items(), key=lambda x: x[1].get("pnl", 0), reverse=True
+            )[:10]:
+                total  = s.get("wins", 0) + s.get("losses", 0)
+                wr     = s.get("wins", 0) / total * 100 if total else 0
+                pnl    = s.get("pnl", 0)
+                icon   = "🔥" if wr > 60 else "✅" if wr > 50 else "⚠️"
+                ps     = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+                lines.append(
+                    f"{icon} *{strat}*\n"
+                    f"   {total} trades | {wr:.0f}% WR | {ps}\n"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            return f"❌ Error: {e}"
+
+    def _do_close(self, trade_id: str):
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
+        try:
+            result = core.close_position_manually(trade_id)
+            if not result:
+                return (
+                    f"❌ Trade `{trade_id}` not found.",
+                    _kb([("◀️ Positions", "positions"), ("🏠 Menu", "menu")])
+                )
+            pnl  = float(result.get("pnl", 0))
+            icon = "✅" if pnl >= 0 else "❌"
+            return (
+                f"{icon} *Closed*\n\n"
+                f"Asset:   {result.get('asset', trade_id)}\n"
+                f"P&L:     `${pnl:+.2f}`\n"
+                f"Entry:   `{float(result.get('entry_price', 0)):.5f}`\n"
+                f"Exit:    `{float(result.get('exit_price', 0)):.5f}`\n"
+                f"Reason:  {result.get('exit_reason', 'Manual')}",
+                _kb([("📈 Positions", "positions"), ("🏠 Menu", "menu")])
+            )
+        except Exception as e:
+            logger.error(f"[Telegram] close error: {e}")
+            return f"❌ Error: {e}", _kb([("🏠 Menu", "menu")])
+
+    def _do_pause(self) -> str:
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready."
+        if not core.is_running:
+            return "⚠️ Already paused."
+        try:
+            core.stop(reason="Paused via Telegram")
+            return "⏸️ *Trading Paused*\n\nNo new trades will open.\nUse ▶️ Resume to restart."
+        except Exception as e:
+            return f"❌ Error: {e}"
+
+    def _do_resume(self) -> str:
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready."
+        if core.is_running:
+            return "⚠️ Already running."
+        try:
+            core.start()
+            return "▶️ *Trading Resumed*\n\nScanning for opportunities."
+        except Exception as e:
+            return f"❌ Error: {e}"
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+_ALIASES = {
+    "BTC": "BTC-USD", "BITCOIN": "BTC-USD",
+    "ETH": "ETH-USD", "ETHEREUM": "ETH-USD",
+    "BNB": "BNB-USD", "SOL": "SOL-USD",  "SOLANA": "SOL-USD",
+    "XRP": "XRP-USD", "ADA": "ADA-USD",  "DOGE": "DOGE-USD",
+    "DOT": "DOT-USD", "LTC": "LTC-USD",  "AVAX": "AVAX-USD",
+    "LINK":"LINK-USD",
+    "GOLD":"XAU/USD", "XAU": "XAU/USD",  "SILVER": "XAG/USD",
+    "XAG": "XAG/USD", "OIL": "WTI/USD", "WTI": "WTI/USD",
+    "EURO":"EUR/USD", "EUR": "EUR/USD",   "POUND": "GBP/USD",
+    "GBP": "GBP/USD", "YEN": "USD/JPY",  "JPY":   "USD/JPY",
+    "SP500":"^GSPC",  "SPX": "^GSPC",    "DOW":   "^DJI",
+    "NASDAQ":"^IXIC", "FTSE":"^FTSE",    "NIKKEI":"^N225",
+    "APPLE":"AAPL",   "GOOGLE":"GOOGL",  "AMAZON":"AMZN",
+    "TESLA":"TSLA",   "NVIDIA":"NVDA",   "FACEBOOK":"META",
+}
+
+def _resolve_alias(raw: str) -> str:
+    return _ALIASES.get(raw.upper().strip(), raw.upper().strip())
+
+
+def _build_market_text() -> str:
+    utc_h = datetime.now(tz=timezone.utc).hour
+    dow   = datetime.now(tz=timezone.utc).weekday()
+    wd    = dow < 5
+
+    def _s(open_: bool) -> str:
+        return "🟢 Open" if open_ else "🔴 Closed"
+
+    sessions = []
+    if wd and (utc_h >= 22 or utc_h < 8):  sessions.append("🌏 Sydney/Tokyo")
+    if wd and 7 <= utc_h < 16:             sessions.append("🇬🇧 London")
+    if wd and 12 <= utc_h < 21:            sessions.append("🗽 New York")
+    if not sessions:                        sessions.append("😴 Off-hours")
+
+    return (
+        f"📡 *Market Status* _(UTC {utc_h:02d}:xx)_\n"
+        f"{'─' * 24}\n"
+        f"🪙 Crypto:      {_s(True)}\n"
+        f"💱 Forex:       {_s(wd and (utc_h < 21 or utc_h >= 22))}\n"
+        f"📈 Stocks:      {_s(wd and 13 <= utc_h < 21)}\n"
+        f"📦 Commodities: {_s(wd and 7 <= utc_h < 21)}\n"
+        f"📉 Indices:     {_s(wd and 13 <= utc_h < 21)}\n"
+        f"\n*Active sessions:*\n" +
+        "\n".join(f"  • {s}" for s in sessions)
+    )

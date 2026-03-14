@@ -17,7 +17,7 @@ import yfinance as yf
 from whale_alert_manager import WhaleAlertManager
 from market_calendar import MarketCalendar
 from utils.logger import logger
-
+import threading
 # NEW: Import Reddit
 from reddit_watcher import RedditWatcher
 
@@ -31,16 +31,33 @@ from config.config import (
 from news_sources import NewsSourceIntegrator
 
 class SentimentAnalyzer:
-    """Enhanced sentiment analyzer with all news sources + REDDIT"""
-    
+
+     # ── Singleton machinery ───────────────────────────────────────────────
+    _instance: "SentimentAnalyzer | None" = None
+    _singleton_lock: threading.Lock = threading.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is not None:
+            return cls._instance
+        with cls._singleton_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
+        # Guard: __init__ is called by Python even when __new__ returns an
+        # existing instance. Skip all setup after the first real init.
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
+
         self.sentiment_cache = {}
         self.rapidapi_key = RAPIDAPI_KEY
         self.gnews_key = GNEWS_KEY
         self.newsapi_key = NEWSAPI_KEY
         self.whale_alert_key = WHALE_ALERT_KEY
         self.twitter_token = TWITTER_BEARER_TOKEN
-        
+
         # Initialize the comprehensive news integrator
         self.news_integrator = NewsSourceIntegrator()
 
@@ -61,18 +78,17 @@ class SentimentAnalyzer:
         except Exception as e:
             logger.error(f"Could not initialize market calendar: {e}")
             self.market_calendar = None
-        
-        # Initialize Whale Alert Manager
+
         try:
             self.whale_manager = WhaleAlertManager()
-            self.whale_manager.start_monitoring()
+            self.whale_manager.start_monitoring()  # idempotent after fix
             self.whale_cache = []
             logger.info("Whale Alert Manager initialized")
         except Exception as e:
             logger.error(f"Could not initialize Whale Alert Manager: {e}")
             self.whale_manager = None
             self.whale_cache = []
-        
+
         logger.info(f"News sources initialized with {len(self.news_integrator.sources)} sources")
     
     # ===== NEW: Reddit Sentiment Methods =====

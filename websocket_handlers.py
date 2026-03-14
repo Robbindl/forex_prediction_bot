@@ -182,18 +182,26 @@ class WebSocketHandlers:
         return ema
     
     def _trigger_signal(self, asset: str, category: str, price: float, reason: str):
-        """Trigger trading signal"""
-        if not hasattr(self.bot, 'scan_asset_parallel'):
+        """
+        Trigger trading signal via TradingCore pipeline.
+        Replaces old bot.scan_asset_parallel() + bot.paper_trader.execute_signal().
+        """
+        # TradingCore path — use the 7-layer pipeline
+        if hasattr(self.bot, 'get_signal_for_asset'):
+            try:
+                sig = self.bot.get_signal_for_asset(asset)
+                if sig and sig.get('direction', 'HOLD') != 'HOLD':
+                    logger.info(
+                        f"🚀 WebSocket Signal: {asset} {sig['direction']} "
+                        f"at ${price:.2f} — {reason}"
+                    )
+                    self.last_signal_time[asset] = datetime.now()
+            except Exception as _e:
+                logger.debug(f"WebSocket signal {asset}: {_e}")
             return
-        
-        signal = self.bot.scan_asset_parallel(asset, category)
-        
-        if signal and signal.get('signal') != 'HOLD':
-            signal['entry_price'] = price
-            signal['reason'] = f"{signal.get('reason', '')} | WebSocket: {reason}"
-            
-            logger.info(f"🚀 WebSocket Signal: {asset} {signal['signal']} at ${price:.2f}")
-            
-            if hasattr(self.bot, 'paper_trader'):
-                self.bot.paper_trader.execute_signal(signal)
-                self.last_signal_time[asset] = datetime.now()
+
+        # Legacy path — scan_asset_parallel no longer exists; log and skip
+        logger.debug(
+            f"_trigger_signal: bot has no get_signal_for_asset or "
+            f"scan_asset_parallel — skipping {asset}"
+        )

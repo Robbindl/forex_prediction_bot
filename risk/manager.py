@@ -48,6 +48,14 @@ class RiskManager:
     def reset_daily(self, balance: float) -> None:
         self._daily_loss_guard.reset(balance)
 
+    def update_balance(self, new_balance: float) -> None:
+        """Sync account balance after a trade closes."""
+        self.account_balance = new_balance
+        self._daily_loss_guard = DailyLossGuard(
+            balance=new_balance,
+            limit_pct=_DAILY_LOSS_LIMIT_PCT,
+        )
+
     def calculate_position_size(
         self,
         entry_price: float,
