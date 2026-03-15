@@ -967,9 +967,9 @@ class NewsSourceIntegrator:
         return all_articles
     
     def get_sentiment_summary(self, asset=None):
-        """Get overall sentiment from all sources"""
+        """Get sentiment from all sources, filtered per asset if provided."""
         articles = self.fetch_all_sources()
-        
+
         if not articles:
             return {
                 'overall_sentiment': 'Neutral',
@@ -977,43 +977,82 @@ class NewsSourceIntegrator:
                 'article_count': 0,
                 'sources': []
             }
-        
-        total_sentiment = sum(a['sentiment'] for a in articles)
-        avg_sentiment = total_sentiment / len(articles)
-        
+
+        # ── Per-asset filtering ───────────────────────────────────────────────
+        if asset:
+            _ASSET_KEYWORDS = {
+                "BTC-USD":  ["btc", "bitcoin"],
+                "ETH-USD":  ["eth", "ethereum"],
+                "BNB-USD":  ["bnb", "binance"],
+                "SOL-USD":  ["sol", "solana"],
+                "XRP-USD":  ["xrp", "ripple"],
+                "GC=F":     ["gold", "xau", "gc=f"],
+                "SI=F":     ["silver", "xag", "si=f"],
+                "CL=F":     ["oil", "crude", "wti", "cl=f"],
+                "EUR/USD":  ["eur", "euro", "eurusd"],
+                "GBP/USD":  ["gbp", "pound", "gbpusd", "cable"],
+                "GBP/JPY":  ["gbpjpy", "gbp/jpy"],
+                "AUD/USD":  ["aud", "aussie", "audusd"],
+                "USD/JPY":  ["jpy", "yen", "usdjpy"],
+                "USD/CAD":  ["cad", "loonie", "usdcad"],
+                "^DJI":     ["dow", "us30", "dji"],
+                "^IXIC":    ["nasdaq", "us100", "ndx"],
+                "^GSPC":    ["s&p", "sp500", "us500", "spx"],
+                "^FTSE":    ["ftse", "uk100"],
+            }
+            keywords = _ASSET_KEYWORDS.get(
+                asset,
+                [asset.lower().replace("-usd", "").replace("/usd", "")]
+            )
+            filtered = [
+                a for a in articles
+                if any(
+                    kw in (a.get("title", "") + a.get("content", "")).lower()
+                    for kw in keywords
+                )
+            ]
+            # Fall back to all articles if fewer than 3 asset-specific matches
+            working = filtered if len(filtered) >= 3 else articles
+        else:
+            working = articles
+
+        total_sentiment = sum(a['sentiment'] for a in working)
+        avg_sentiment   = total_sentiment / len(working)
+
         # Count by source
         source_counts = {}
-        key_sources = []
-        free_sources = []
-        
-        for a in articles:
+        key_sources   = []
+        free_sources  = []
+        for a in working:
             source = a.get('source', 'Unknown')
             source_counts[source] = source_counts.get(source, 0) + 1
-            
-            # Track which sources need keys
-            needs_key = any(s.get('needs_key') for s in self.sources.values() if s['name'] == source)
+            needs_key = any(
+                s.get('needs_key') for s in self.sources.values()
+                if s['name'] == source
+            )
             if needs_key:
                 key_sources.append(source)
             else:
                 free_sources.append(source)
-        
+
         return {
             'overall_sentiment': self._interpret_sentiment(avg_sentiment),
-            'score': avg_sentiment,
-            'article_count': len(articles),
-            'sources': source_counts,
-            'key_sources': list(set(key_sources)),
-            'free_sources': list(set(free_sources)),
-            'recent_articles': articles[:5]
+            'score':             avg_sentiment,
+            'composite_score':   avg_sentiment,
+            'article_count':     len(working),
+            'sources':           source_counts,
+            'key_sources':       list(set(key_sources)),
+            'free_sources':      list(set(free_sources)),
+            'recent_articles':   working[:5],
+            'interpretation':    self._interpret_sentiment(avg_sentiment),
         }
     
     def _interpret_sentiment(self, score):
-        """Convert score to text"""
         if score > 0.3:
             return "Very Bullish"
-        elif score > 0.1:
+        elif score > 0.1:       
             return "Bullish"
-        elif score > -0.1:
+        elif score > -0.1:     
             return "Neutral"
         elif score > -0.3:
             return "Bearish"

@@ -20,21 +20,19 @@ const REDIS_PASS   = process.env.REDIS_PASSWORD || null;
 
 // Channels that go to ALL subscribers
 const BROADCAST_CHANNELS = [
-  'signals',
-  'prices',
-  'whale_alerts',
-  'sentiment',
-  'orderflow',
-  'alpha',
-  'predictions',
-  'positions',
+  'signals',      // trading signals that passed 7-layer pipeline
+  'prices',       // live price ticks per asset
+  'whale_alerts', // whale movement events
+  'sentiment',    // composite sentiment updates
+  'predictions',  // ML prediction outcomes
+  'positions',    // open position updates
 ];
 
 // ── Stats ───────────────────────────────────────────────────────────────────
 const stats = { messagesSent: 0, messagesReceived: 0 };
 
 // ── Message Queue Buffer (stores last 100 messages per channel) ────────────
-const messageBuffer = new Map(); // channel -> array of last 100 messages
+const messageBuffer = new Map();
 BROADCAST_CHANNELS.forEach(channel => messageBuffer.set(channel, []));
 
 // ── Express app (REST proxy to Flask) ──────────────────────────────────────
@@ -65,14 +63,13 @@ const redisOpts = {
   password:        REDIS_PASS || undefined,
   retryStrategy:   (times) => {
     if (times > 5) {
-      // Stop retrying after 5 attempts — gateway runs in polling-only mode
       return null;
     }
     return Math.min(times * 500, 3000);
   },
   maxRetriesPerRequest: null,
   enableReadyCheck: true,
-  lazyConnect: true,   // don't connect until we explicitly call connect()
+  lazyConnect: true,
 };
 
 // ── Redis connections ───────────────────────────────────────────────────────
@@ -82,7 +79,6 @@ const pub = new Redis(redisOpts);
 let redisConnected = false;
 let redisAttempted = false;
 
-// Attempt Redis connection — gateway starts regardless of outcome
 function tryConnectRedis() {
   if (redisAttempted) return;
   redisAttempted = true;
@@ -126,7 +122,6 @@ sub.on('reconnecting', () => {
 
 sub.on('error', (err) => {
   if (!redisConnected) {
-    // First-time failure — log once clearly, don't spam
     console.warn(`[Redis] Unavailable (${err.message}) — gateway running in polling-only mode`);
   }
 });
@@ -149,14 +144,9 @@ pub.on('error', (err) => {
 function broadcastSystemMessage(type, message) {
   const envelope = JSON.stringify({
     channel: 'system',
-    data: {
-      type,
-      message,
-      timestamp: Date.now(),
-    },
+    data: { type, message, timestamp: Date.now() },
     timestamp: Date.now(),
   });
-  
   wss.clients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(envelope);
@@ -167,7 +157,6 @@ function broadcastSystemMessage(type, message) {
 // ── Redis messages → broadcast + buffer ────────────────────────────────────
 sub.on('message', (channel, message) => {
   try {
-    // Parse the message
     let payload;
     try {
       payload = JSON.parse(message);
@@ -175,20 +164,17 @@ sub.on('message', (channel, message) => {
       payload = { raw: message };
     }
 
-    // Add to buffer (keep last 100 messages per channel)
     const buffer = messageBuffer.get(channel) || [];
     buffer.push({ payload, timestamp: Date.now() });
     if (buffer.length > 100) buffer.shift();
     messageBuffer.set(channel, buffer);
 
-    // Wrap in a standard envelope
     const envelope = JSON.stringify({
       channel,
       data: payload,
       timestamp: Date.now(),
     });
 
-    // Broadcast to all connected clients
     let sent = 0;
     wss.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
@@ -211,13 +197,11 @@ wss.on('connection', (ws, req) => {
   const ip = req.socket.remoteAddress;
   console.log(`[WS] Client connected  ip=${ip}  total=${wss.clients.size}`);
 
-  // Default: subscribe to all channels
   ws._subscriptions = new Set(['*']);
   ws._isAlive = true;
 
-  // Send welcome message with available channels
   ws.send(JSON.stringify({
-    channel:   'system',
+    channel: 'system',
     data: {
       type:     'welcome',
       message:  'Connected to Trading Intelligence Gateway',
@@ -227,13 +211,11 @@ wss.on('connection', (ws, req) => {
     timestamp: Date.now(),
   }));
 
-  // Handle messages from client
   ws.on('message', (raw) => {
     stats.messagesReceived++;
     try {
       const msg = JSON.parse(raw.toString());
 
-      // Subscribe to specific channels
       if (msg.action === 'subscribe' && Array.isArray(msg.channels)) {
         ws._subscriptions = new Set(msg.channels);
         ws.send(JSON.stringify({
@@ -241,8 +223,6 @@ wss.on('connection', (ws, req) => {
           data: { type: 'subscribed', channels: [...ws._subscriptions] },
           timestamp: Date.now(),
         }));
-        
-        // Send buffered messages for these channels
         if (msg.replayBuffer) {
           msg.channels.forEach(channel => {
             const buffer = messageBuffer.get(channel) || [];
@@ -259,7 +239,6 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      // Subscribe to all channels
       if (msg.action === 'subscribe_all') {
         ws._subscriptions = new Set(['*']);
         ws.send(JSON.stringify({
@@ -267,8 +246,6 @@ wss.on('connection', (ws, req) => {
           data: { type: 'subscribed', channels: ['*'] },
           timestamp: Date.now(),
         }));
-        
-        // Send buffered messages for all channels
         if (msg.replayBuffer) {
           BROADCAST_CHANNELS.forEach(channel => {
             const buffer = messageBuffer.get(channel) || [];
@@ -285,17 +262,15 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      // Ping / pong
       if (msg.type === 'ping') {
-        ws.send(JSON.stringify({ 
-          channel: 'system', 
-          data: { type: 'pong' }, 
-          timestamp: Date.now() 
+        ws.send(JSON.stringify({
+          channel: 'system',
+          data: { type: 'pong' },
+          timestamp: Date.now()
         }));
         return;
       }
 
-      // Client can publish (for testing)
       if (msg.action === 'publish' && msg.channel && msg.data) {
         pub.publish(msg.channel, JSON.stringify(msg.data));
         return;
@@ -307,11 +282,9 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('pong', () => { ws._isAlive = true; });
-
   ws.on('close', () => {
     console.log(`[WS] Client disconnected  total=${wss.clients.size}`);
   });
-
   ws.on('error', (err) => {
     console.warn(`[WS] Client error: ${err.message}`);
   });
@@ -320,10 +293,7 @@ wss.on('connection', (ws, req) => {
 // ── Heartbeat ───────────────────────────────────────────────────────────────
 const heartbeat = setInterval(() => {
   wss.clients.forEach(ws => {
-    if (ws._isAlive === false) {
-      ws.terminate();
-      return;
-    }
+    if (ws._isAlive === false) { ws.terminate(); return; }
     ws._isAlive = false;
     ws.ping();
   });
@@ -334,26 +304,26 @@ wss.on('close', () => clearInterval(heartbeat));
 // ── Health endpoint ─────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({
-    gateway:    'ok',
-    clients:    wss ? wss.clients.size : 0,
-    redis:      redisConnected ? 'ok' : 'disconnected',
-    uptime:     process.uptime(),
-    timestamp:  new Date().toISOString(),
+    gateway:   'ok',
+    clients:   wss ? wss.clients.size : 0,
+    redis:     redisConnected ? 'ok' : 'disconnected',
+    uptime:    process.uptime(),
+    timestamp: new Date().toISOString(),
   });
 });
 
 // ── Stats endpoint ──────────────────────────────────────────────────────────
 app.get('/stats', (req, res) => {
   res.json({
-    total_clients:    wss ? wss.clients.size : 0,
-    messages_sent:    stats.messagesSent,
-    messages_received:stats.messagesReceived,
-    redis_connected:  redisConnected,
-    channels:         BROADCAST_CHANNELS,
-    buffer_sizes:     Object.fromEntries(
+    total_clients:     wss ? wss.clients.size : 0,
+    messages_sent:     stats.messagesSent,
+    messages_received: stats.messagesReceived,
+    redis_connected:   redisConnected,
+    channels:          BROADCAST_CHANNELS,
+    buffer_sizes:      Object.fromEntries(
       [...messageBuffer.entries()].map(([k, v]) => [k, v.length])
     ),
-    uptime_seconds:   process.uptime(),
+    uptime_seconds: process.uptime(),
   });
 });
 
@@ -367,9 +337,6 @@ server.listen(WS_PORT, () => {
   console.log(`║   Health     : http://localhost:${WS_PORT}/health  ║`);
   console.log('╚══════════════════════════════════════════════╝');
   console.log('');
-
-  // Attempt Redis after server is up — if it fails, gateway still works
-  // for WebSocket proxying and client connections
   tryConnectRedis();
 });
 
@@ -387,4 +354,4 @@ function shutdown() {
     console.log('[Gateway] Done.');
     process.exit(0);
   });
-}        
+}

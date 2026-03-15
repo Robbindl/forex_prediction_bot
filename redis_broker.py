@@ -1,27 +1,3 @@
-"""
-redis_broker.py — Redis pub/sub layer for the trading platform
-==============================================================
-All Python services use this module to publish events to Redis.
-The Node.js gateway subscribes and broadcasts to WebSocket clients.
-
-Channels:
-  signals       — trading signals that passed the 7-layer gate
-  prices        — live price ticks {asset, price, timestamp}
-  whale_alerts  — whale movement events
-  sentiment     — sentiment score updates
-  orderflow     — bid/ask delta and imbalance data
-  alpha         — alpha discovery engine signals
-  predictions   — AI price predictions
-  positions     — open position updates
-
-Usage:
-  from redis_broker import broker
-  broker.publish('signals', signal_dict)
-  broker.publish('prices', {'asset': 'EUR/USD', 'price': 1.0841})
-
-If Redis is not running, every call is a no-op — the bot keeps working.
-"""
-
 import json
 import threading
 import os
@@ -37,8 +13,12 @@ class RedisBroker:
     """
 
     CHANNELS = [
-        'signals', 'prices', 'whale_alerts', 'sentiment',
-        'orderflow', 'alpha', 'predictions', 'positions',
+        'signals',      # trading signals that passed the 7-layer pipeline
+        'prices',       # live price ticks per asset
+        'whale_alerts', # whale movement events from WhaleAlertManager
+        'sentiment',    # composite sentiment updates
+        'predictions',  # ML prediction outcomes
+        'positions',    # open position updates
     ]
 
     def __init__(self):
@@ -148,8 +128,7 @@ class RedisBroker:
         """
         Subscribe to a channel in a background daemon thread.
         callback(data_dict) is called for every message received.
-        Includes automatic reconnect — the thread never exits permanently
-        on a Redis drop (Issue 10).
+        Includes automatic reconnect on Redis drop.
         """
         if not self._enabled:
             logger.debug(f"[RedisBroker] subscribe({channel}) skipped — Redis unavailable")
@@ -205,12 +184,6 @@ class RedisBroker:
     def publish_sentiment(self, asset: str, score: float, label: str):
         self.publish('sentiment', {'asset': asset, 'score': score, 'label': label})
 
-    def publish_orderflow(self, data: Dict):
-        self.publish('orderflow', data)
-
-    def publish_alpha(self, signal: Dict):
-        self.publish('alpha', signal)
-
     def publish_prediction(self, asset: str, direction: str,
                            target: float, confidence: float,
                            horizon_minutes: int = 60):
@@ -227,12 +200,21 @@ class RedisBroker:
 
     # ── Status ─────────────────────────────────────────────────────────────
 
-    @property
     def is_connected(self) -> bool:
-        return self._enabled
+        """Live check — ping Redis so dashboard reflects actual state."""
+        if self._redis is None:
+            self._connect()
+        try:
+            if self._redis:
+                self._redis.ping()
+                self._enabled = True
+                return True
+        except Exception:
+            self._enabled = False
+        return False
 
     def status(self) -> Dict:
-        return {'connected': self._enabled, 'channels': self.CHANNELS}
+        return {'connected': self.is_connected(), 'channels': self.CHANNELS}
 
 
 # ── Global singleton ──────────────────────────────────────────────────────────

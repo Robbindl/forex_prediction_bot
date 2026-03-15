@@ -34,28 +34,30 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .tb-btn{padding:4px 10px;border-radius:5px;font-size:11px;cursor:pointer;border:1px solid var(--bd);background:transparent;color:var(--tx2);transition:.12s}
 .tb-btn.on,.tb-btn:hover{background:var(--bl);border-color:var(--bl);color:#fff}
 .panel-body{padding:12px 16px}
-
-/* Heatmap */
 .heatmap-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:12px 16px}
 .hm-cell{border-radius:6px;padding:10px 8px;text-align:center;cursor:pointer;transition:.15s}
 .hm-cell:hover{opacity:.85;transform:scale(1.03)}
 .hm-asset{font-size:11px;font-weight:600;margin-bottom:2px}
 .hm-pct{font-size:13px;font-weight:700}
 .hm-price{font-size:10px;opacity:.7;margin-top:1px}
-
-/* Correlation matrix */
 .corr-wrap{overflow-x:auto;padding:12px 16px}
 .corr-grid{display:grid;gap:2px}
 .corr-cell{width:44px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:10px;font-weight:600;cursor:default}
 .corr-label{font-size:10px;color:var(--tx3);display:flex;align-items:center;justify-content:flex-end;padding-right:4px;height:36px}
-
-/* Chart */
 .chart-area{height:320px;position:relative}
 #lwChart{width:100%;height:100%}
 .chart-controls{display:flex;gap:4px}
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.mu{color:var(--tx2)}
 select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--tx);outline:none}
 .empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
+.skeleton{background:linear-gradient(90deg,var(--s2) 25%,var(--s3) 50%,var(--s2) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;border-radius:6px}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.sk-cell{height:70px;border-radius:6px}
+.sk-row{height:36px;border-radius:4px;margin-bottom:3px}
+.loading-bar{display:flex;align-items:center;gap:8px;padding:20px 16px;color:var(--tx3);font-size:13px}
+.spinner{width:14px;height:14px;border:2px solid var(--bd);border-top-color:var(--bl);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.status-tag{font-size:10px;padding:2px 7px;border-radius:10px;background:rgba(41,121,255,.15);color:var(--bl)}
 </style>
 </head>
 <body>
@@ -84,38 +86,82 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
         <div class="chart-controls" id="tfBtns">
           <button class="tb-btn" onclick="setTf('1m',this)">1m</button>
           <button class="tb-btn" onclick="setTf('5m',this)">5m</button>
-          <button class="tb-btn on" onclick="setTf('1h',this)">1h</button>
-          <button class="tb-btn" onclick="setTf('4h',this)">4h</button>
+          <button class="tb-btn on" onclick="setTf('1h',this)">15m</button>
+          <button class="tb-btn" onclick="setTf('4h',this)">1h</button>
           <button class="tb-btn" onclick="setTf('1d',this)">1d</button>
         </div>
       </div>
     </div>
     <div class="content">
-      <!-- Live chart full width -->
+
+      <!-- Live chart -->
       <div class="panel panel-full">
         <div class="panel-header">
           <span class="panel-title">🕯️ Live Chart</span>
+          <span id="chartStatus" class="status-tag">Loading…</span>
           <span id="livePrice" style="font-size:15px;font-weight:700;color:var(--cy);margin-left:auto">—</span>
         </div>
         <div class="chart-area"><div id="lwChart"></div></div>
       </div>
 
-      <!-- 24h heatmap -->
+      <!-- Heatmap -->
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🔥 24h Performance Heatmap</span><button class="tb-btn pb" onclick="loadHeatmap()">↻</button></div>
-        <div id="heatmapGrid" class="heatmap-grid"></div>
+        <div class="panel-header">
+          <span class="panel-title">🔥 24h Performance Heatmap</span>
+          <span id="hmStatus" class="status-tag" style="margin-left:auto">Loading…</span>
+          <button class="tb-btn pb" onclick="loadHeatmap(true)" style="margin-left:8px">↻</button>
+        </div>
+        <div id="heatmapGrid" class="heatmap-grid">
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+          <div class="hm-cell skeleton sk-cell"></div>
+        </div>
       </div>
 
-      <!-- Correlation matrix -->
+      <!-- Correlation -->
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🔗 Correlation Matrix (30d)</span></div>
-        <div id="corrWrap" class="corr-wrap"><div class="empty">Loading…</div></div>
+        <div class="panel-header">
+          <span class="panel-title">🔗 Correlation Matrix (30d)</span>
+          <span id="corrStatus" class="status-tag" style="margin-left:auto">Loading…</span>
+        </div>
+        <div id="corrWrap" class="corr-wrap">
+          <div style="padding:16px">
+            <div class="skeleton sk-row" style="width:100%;margin-bottom:4px"></div>
+            <div class="skeleton sk-row" style="width:100%;margin-bottom:4px"></div>
+            <div class="skeleton sk-row" style="width:100%;margin-bottom:4px"></div>
+            <div class="skeleton sk-row" style="width:100%;margin-bottom:4px"></div>
+            <div class="skeleton sk-row" style="width:100%;margin-bottom:4px"></div>
+            <div class="skeleton sk-row" style="width:100%;margin-bottom:4px"></div>
+          </div>
+        </div>
       </div>
+
     </div>
   </div>
 </div>
 <script>
-let lwChart,cSeries,vSeries,sseSource,currentAsset='EUR/USD',currentTf='1h';
+let lwChart,cSeries,vSeries,sseSource,currentAsset='EUR/USD',currentTf='15m';
+let candlesLoading=false;
+
+async function fetchWithTimeout(url, ms=15000){
+  const ctrl=new AbortController();
+  const id=setTimeout(()=>ctrl.abort(),ms);
+  try{
+    const r=await fetch(url,{signal:ctrl.signal});
+    clearTimeout(id);
+    return r.json();
+  }catch(e){
+    clearTimeout(id);
+    return null;
+  }
+}
 
 function initChart(){
   lwChart=LightweightCharts.createChart(document.getElementById('lwChart'),{
@@ -131,7 +177,7 @@ function initChart(){
 }
 
 async function loadAssets(){
-  const d=await fetch('/api/chart/assets').then(r=>r.json()).catch(()=>({assets:[]}));
+  const d=await fetchWithTimeout('/api/chart/assets',8000)||{assets:[]};
   const sel=document.getElementById('chartAsset');
   const grouped={};
   (d.assets||[]).forEach(a=>{(grouped[a.category]||(grouped[a.category]=[])).push(a);});
@@ -141,11 +187,22 @@ async function loadAssets(){
 }
 
 async function loadCandles(){
-  const d=await fetch(`/api/chart/candles?asset=${encodeURIComponent(currentAsset)}&interval=${currentTf}`).then(r=>r.json()).catch(()=>({}));
-  if(d.candles?.length){
+  if(candlesLoading)return;
+  candlesLoading=true;
+  document.getElementById('chartStatus').textContent='Loading…';
+  const d=await fetchWithTimeout(`/api/chart/candles?asset=${encodeURIComponent(currentAsset)}&interval=${currentTf}`,20000);
+  candlesLoading=false;
+  if(d&&d.candles&&d.candles.length){
     cSeries.setData(d.candles);
     vSeries.setData(d.candles.map(c=>({time:c.time,value:c.volume,color:c.close>=c.open?'rgba(0,208,132,.25)':'rgba(255,69,96,.25)'})));
     lwChart.timeScale().fitContent();
+    document.getElementById('chartStatus').textContent=`${d.candles.length} bars`;
+    document.getElementById('chartStatus').style.background='rgba(0,208,132,.12)';
+    document.getElementById('chartStatus').style.color='var(--gr)';
+  }else{
+    document.getElementById('chartStatus').textContent='No data';
+    document.getElementById('chartStatus').style.background='rgba(255,69,96,.12)';
+    document.getElementById('chartStatus').style.color='var(--rd)';
   }
 }
 
@@ -157,10 +214,19 @@ function startStream(){
   };
 }
 
-async function loadHeatmap(){
-  const d=await fetch('/api/market/heatmap').then(r=>r.json()).catch(()=>({items:[]}));
+async function loadHeatmap(manual=false){
   const grid=document.getElementById('heatmapGrid');
-  if(!(d.items||[]).length){grid.innerHTML='<div class="empty">No data</div>';return;}
+  const st=document.getElementById('hmStatus');
+  if(manual){
+    grid.innerHTML='<div class="hm-cell skeleton sk-cell"></div>'.repeat(10);
+    st.textContent='Loading…';st.style.background='rgba(41,121,255,.15)';st.style.color='var(--bl)';
+  }
+  const d=await fetchWithTimeout('/api/market/heatmap',25000);
+  if(!d||!d.items||!d.items.length){
+    grid.innerHTML='<div class="empty" style="grid-column:span 5">Price data loading — check back in 30s</div>';
+    st.textContent='Unavailable';st.style.background='rgba(255,69,96,.12)';st.style.color='var(--rd)';
+    return;
+  }
   const max=Math.max(...d.items.map(i=>Math.abs(i.change_pct)),0.1);
   grid.innerHTML=d.items.map(i=>{
     const pct=i.change_pct||0;
@@ -173,19 +239,22 @@ async function loadHeatmap(){
       <div class="hm-price">${i.price>10?i.price.toFixed(2):i.price.toFixed(5)}</div>
     </div>`;
   }).join('');
+  st.textContent=`${d.items.length} assets`;st.style.background='rgba(0,208,132,.12)';st.style.color='var(--gr)';
 }
 
 async function loadCorrelation(){
-  const d=await fetch('/api/correlation-matrix').then(r=>r.json()).catch(()=>({}));
   const wrap=document.getElementById('corrWrap');
-  if(!d.labels){wrap.innerHTML='<div class="empty">Correlation data unavailable</div>';return;}
-  const n=d.labels.length;
+  const st=document.getElementById('corrStatus');
+  const d=await fetchWithTimeout('/api/correlation-matrix',30000);
+  if(!d||!d.labels){
+    wrap.innerHTML='<div class="empty">Correlation data loading — needs 30d price history</div>';
+    st.textContent='Unavailable';st.style.background='rgba(255,69,96,.12)';st.style.color='var(--rd)';
+    return;
+  }
   const cols='36px '+d.labels.map(()=>'44px').join(' ');
   let html=`<div class="corr-grid" style="grid-template-columns:${cols}">`;
-  // Header row
   html+='<div></div>';
   d.labels.forEach(l=>html+=`<div class="corr-cell" style="font-size:9px;color:var(--tx3);height:20px;background:none">${l.replace('-USD','').replace('/USD','').replace('=F','').replace('^','')}</div>`);
-  // Data rows
   d.matrix.forEach((row,i)=>{
     html+=`<div class="corr-label">${d.labels[i].replace('-USD','').replace('/USD','').replace('=F','').replace('^','')}</div>`;
     row.forEach((val,j)=>{
@@ -201,6 +270,7 @@ async function loadCorrelation(){
   });
   html+='</div>';
   wrap.innerHTML=html;
+  st.textContent='Updated';st.style.background='rgba(0,208,132,.12)';st.style.color='var(--gr)';
 }
 
 function changeToAsset(a){currentAsset=a;loadCandles();startStream();}
@@ -209,7 +279,10 @@ function setTf(tf,el){currentTf=tf;document.querySelectorAll('.chart-controls .t
 
 initChart();
 loadAssets().then(()=>{loadCandles();startStream();});
-loadHeatmap();loadCorrelation();
+setTimeout(()=>loadHeatmap(),500);
+setTimeout(()=>loadCorrelation(),1500);
 setInterval(()=>{loadCandles();loadHeatmap();},60000);
 </script>
 </body></html>
+
+

@@ -48,24 +48,21 @@ TWITTER_ACCESS_TOKEN  = os.getenv("TWITTER_ACCESS_TOKEN", "")
 TWITTER_ACCESS_SECRET = os.getenv("TWITTER_ACCESS_SECRET", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TELEGRAM — COMMAND BOT (sends alerts, accepts /commands)
-# COMMAND_BOT_TOKEN takes priority; falls back to legacy TELEGRAM_TOKEN
+# TELEGRAM — COMMAND BOT
 # ─────────────────────────────────────────────────────────────────────────────
 
 TELEGRAM_TOKEN   = os.getenv("COMMAND_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("COMMAND_BOT_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TELEGRAM — WHALE BOT (reads whale channels via Telethon user account)
+# TELEGRAM — WHALE BOT
 # ─────────────────────────────────────────────────────────────────────────────
 
 WHALE_TELEGRAM_TOKEN = os.getenv("WHALE_TELEGRAM_TOKEN", "")
-
-# Telethon user credentials (from my.telegram.org)
-TELEGRAM_API_ID   = os.getenv("TELEGRAM_API_ID", "")
-TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
-TELEGRAM_PHONE    = os.getenv("TELEGRAM_PHONE", "")
-TELEGRAM_SESSION  = os.getenv("TELEGRAM_SESSION", "whale_session")
+TELEGRAM_API_ID      = os.getenv("TELEGRAM_API_ID", "")
+TELEGRAM_API_HASH    = os.getenv("TELEGRAM_API_HASH", "")
+TELEGRAM_PHONE       = os.getenv("TELEGRAM_PHONE", "")
+TELEGRAM_SESSION     = os.getenv("TELEGRAM_SESSION", "whale_session")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EMAIL
@@ -106,9 +103,9 @@ ML_SERVICE_PORT = int(os.getenv("ML_SERVICE_PORT", "9100"))
 # TRADING — ACCOUNT DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_BALANCE         = float(os.getenv("DEFAULT_BALANCE", "30"))
+DEFAULT_BALANCE         = float(os.getenv("DEFAULT_BALANCE", "10000"))
 DEFAULT_RISK            = float(os.getenv("DEFAULT_RISK", "1.0"))
-MAX_POSITIONS           = int(os.getenv("MAX_POSITIONS", "5"))
+MAX_POSITIONS           = int(os.getenv("MAX_POSITIONS", "8"))
 DEFAULT_ACCOUNT_BALANCE = float(os.getenv("DEFAULT_ACCOUNT_BALANCE", "10000"))
 DEFAULT_RISK_PER_TRADE  = float(os.getenv("DEFAULT_RISK_PER_TRADE", "1.0"))
 CRYPTO_RISK_PER_TRADE   = float(os.getenv("CRYPTO_RISK_PER_TRADE", "0.5"))
@@ -131,14 +128,14 @@ ENABLE_ALERTS             = os.getenv("ENABLE_ALERTS", "true").lower() == "true"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRADING — CATEGORY POSITION CAPS
+# Must stay in sync with core/assets.py _CATEGORY_CAPS
 # ─────────────────────────────────────────────────────────────────────────────
 
 CATEGORY_CAPS: dict = {
     "forex":       int(os.getenv("CAP_FOREX",       "3")),
-    "crypto":      int(os.getenv("CAP_CRYPTO",      "2")),
-    "stocks":      int(os.getenv("CAP_STOCKS",      "2")),
+    "crypto":      int(os.getenv("CAP_CRYPTO",      "3")),
     "commodities": int(os.getenv("CAP_COMMODITIES", "2")),
-    "indices":     int(os.getenv("CAP_INDICES",     "1")),
+    "indices":     int(os.getenv("CAP_INDICES",     "2")),
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,7 +157,7 @@ MAX_TRAINING_WORKERS    = int(os.getenv("MAX_TRAINING_WORKERS", "4"))
 TIMEFRAMES         = os.getenv("TIMEFRAMES", "1d,1h,15m").split(",")
 LOOKBACK_PERIOD    = int(os.getenv("LOOKBACK_PERIOD", "100"))
 PREDICTION_HORIZON = int(os.getenv("PREDICTION_HORIZON", "5"))
-CACHE_TTL          = int(os.getenv("CACHE_TTL", "30"))
+CACHE_TTL          = int(os.getenv("CACHE_TTL", "300"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM
@@ -170,44 +167,44 @@ LOG_LEVEL              = os.getenv("LOG_LEVEL", "INFO")
 LOG_DIR                = Path(os.getenv("LOG_DIR", "logs"))
 WS_RECONNECT_DELAY     = int(os.getenv("WS_RECONNECT_DELAY", "30"))
 WS_MAX_RECONNECT_DELAY = int(os.getenv("WS_MAX_RECONNECT_DELAY", "120"))
-SCAN_INTERVAL_SECONDS  = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
+SCAN_INTERVAL_SECONDS  = int(os.getenv("SCAN_INTERVAL_SECONDS", "30"))
 MAX_SCAN_WORKERS       = int(os.getenv("MAX_SCAN_WORKERS", "8"))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ASSET UNIVERSE
+# ASSET UNIVERSE — your 18 assets only
+# These lists are used by sentiment_analyzer, news_sources, and other
+# services that need to know which assets to track.
+# The canonical trading registry lives in core/assets.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 FOREX_PAIRS: list = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-    "AUD/USD", "USD/CAD", "NZD/USD", "EUR/GBP",
-    "GBP/JPY", "AUD/JPY",
+    "EUR/USD", "GBP/JPY", "GBP/USD",
+    "AUD/USD", "USD/JPY", "USD/CAD",
 ]
 
 CRYPTOCURRENCIES: list = [
-    "BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD",
-    "ADA-USD", "DOGE-USD", "SOL-USD", "DOT-USD",
-    "LTC-USD", "AVAX-USD", "LINK-USD",
+    "BTC-USD", "ETH-USD", "BNB-USD",
+    "SOL-USD", "XRP-USD",
 ]
 
 COMMODITIES: list = [
-    "XAU/USD", "XAG/USD",
-    "WTI/USD", "NG/USD", "XCU/USD",
-    "GC=F", "CL=F", "SI=F",
+    "GC=F",   # Gold
+    "SI=F",   # Silver
+    "CL=F",   # Oil
 ]
 
 INDICES: list = [
-    "^GSPC", "^DJI", "^IXIC", "^FTSE", "^N225",
+    "^DJI",   # US30
+    "^IXIC",  # US100
+    "^GSPC",  # US500
+    "^FTSE",  # FTSE
 ]
 
-STOCKS: list = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
-    "META", "NVDA", "JPM", "V", "MA",
-]
+STOCKS: list = []   # not trading stocks
 
 ASSET_CATEGORIES: dict = {
     "forex":       FOREX_PAIRS,
     "crypto":      CRYPTOCURRENCIES,
-    "stocks":      STOCKS,
     "commodities": COMMODITIES,
     "indices":     INDICES,
 }
@@ -234,3 +231,5 @@ FORBES_RSS: dict = {
 BINANCE_ANNOUNCEMENTS_URL = (
     "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 )
+
+

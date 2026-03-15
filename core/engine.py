@@ -322,13 +322,11 @@ class TradingCore:
 
     def _generate_signals(self) -> List[Tuple[Signal, Dict]]:
         """
-        Generate signals for all assets.
-        Returns List[Tuple[Signal, Dict]] — each signal paired with its own
-        context dict containing price_data, spread, and ml_prediction so that
-        pipeline layers receive per-asset data (Issues 2 & 9).
+        Generate signals for all assets concurrently.
         """
         result: List[Tuple[Signal, Dict]] = []
         try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             from strategies.voting import VotingStrategy
             from ml.predictor import MLPredictor
 
@@ -336,20 +334,24 @@ class TradingCore:
             strategy  = VotingStrategy()
             predictor = MLPredictor()
 
-            for canonical, category in asset_list:
-                if self._stop_event.is_set():
-                    break
-                try:
-                    if self.state.is_cooling_down(canonical):
-                        continue
-                    if self.state.has_open_position_for(canonical):
-                        continue
+            candidates = [
+                (canonical, category) for canonical, category in asset_list
+                if not self.state.is_cooling_down(canonical)
+                and not self.state.has_open_position_for(canonical)
+            ]
 
+            if not candidates or self._stop_event.is_set():
+                return result
+
+            def _process_asset(canonical_category):
+                canonical, category = canonical_category
+                if self._stop_event.is_set():
+                    return None
+                try:
                     price_data = self._fetch_price_data(canonical, category)
                     if price_data is None or price_data.empty:
-                        continue
+                        return None
 
-                    # Real-time price + spread for Layer 2 / Layer 7
                     price, spread = (0.0, 0.0)
                     if self.fetcher:
                         try:
@@ -361,7 +363,6 @@ class TradingCore:
                         except Exception:
                             pass
 
-                    # ML prediction for Layer 1 boost/reduce
                     ml_prob, ml_conf = predictor.predict(
                         canonical, category, price_data
                     )
@@ -373,10 +374,19 @@ class TradingCore:
                         ctx["spread"]        = spread
                         ctx["ml_prediction"] = ml_prob
                         ctx["ml_confidence"] = ml_conf
-                        result.append((sig, ctx))
-
+                        return (sig, ctx)
                 except Exception as e:
                     logger.debug(f"[TradingCore] Signal gen {canonical}: {e}")
+                return None
+
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = {pool.submit(_process_asset, ac): ac for ac in candidates}
+                for future in as_completed(futures):
+                    if self._stop_event.is_set():
+                        break
+                    res = future.result()
+                    if res is not None:
+                        result.append(res)
 
         except Exception as e:
             logger.error(f"[TradingCore] Signal generation error: {e}")

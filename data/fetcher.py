@@ -1,6 +1,8 @@
-"""data/fetcher.py — Unified market data fetcher. Rewrite of data/fetcher.py."""
+"""data/fetcher.py — Unified market data fetcher."""
 from __future__ import annotations
 import time
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
 from typing import Dict, Optional, Tuple
 import pandas as pd
 import yfinance as yf
@@ -21,6 +23,9 @@ _FOREX_SUFFIX    = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X",
                     "GBP/JPY": "GBPJPY=X", "AUD/JPY": "AUDJPY=X"}
 _COMMODITY_MAP   = {"XAU/USD": "GC=F", "XAG/USD": "SI=F",
                     "WTI/USD": "CL=F",  "NG/USD":  "NG=F", "XCU/USD": "HG=F"}
+
+# Futures and indices have no 1-minute intraday on Yahoo free tier
+_NO_INTRADAY = {"commodities", "indices"}
 
 
 def _normalize_symbol(asset: str, category: str) -> str:
@@ -73,7 +78,7 @@ class DataFetcher:
         symbol = _normalize_symbol(asset, category)
         df     = None
 
-        # Try Twelve Data first
+        # Try Twelve Data first for forex/crypto/commodities
         if self._td_client and category in ("forex", "crypto", "commodities"):
             df = self._fetch_td(symbol, interval, periods)
 
@@ -102,17 +107,32 @@ class DataFetcher:
     def _fetch_yf(self, symbol: str, interval: str, periods: int) -> Optional[pd.DataFrame]:
         try:
             yf_interval = _YF_INTERVAL_MAP.get(interval, "1d")
-            period_map  = {"1d": "3mo", "1h": "1mo", "15m": "5d", "60m": "1mo"}
-            yf_period   = period_map.get(yf_interval, "3mo")
+            period_map  = {
+                "1d":  "6mo",
+                "1h":  "60d",
+                "15m": "60d",
+                "60m": "60d",
+                "1m":  "7d",
+                "5m":  "60d",
+            }
+            yf_period   = period_map.get(yf_interval, "6mo")
 
             ticker = yf.Ticker(symbol)
-            df     = ticker.history(period=yf_period, interval=yf_interval, auto_adjust=True)
+            df = ticker.history(period=yf_period, interval=yf_interval,
+                    auto_adjust=True)
+
+            # Futures need a longer window on first attempt
+            if df.empty and yf_interval == "1d":
+                df = ticker.history(period="1y", interval="1d",
+                                    auto_adjust=True)
+
             if df.empty:
                 return None
+
             df = df.rename(columns={"Open": "open", "High": "high", "Low": "low",
                                     "Close": "close", "Volume": "volume"})
             df = df[["open", "high", "low", "close", "volume"]].tail(periods)
-            return df.reset_index(drop=True)
+            return df  # keep datetime index for candle rendering
         except Exception as e:
             logger.debug(f"[Fetcher] yfinance {symbol}: {e}")
             return None
@@ -146,7 +166,16 @@ class DataFetcher:
         if result is None:
             try:
                 ticker = yf.Ticker(symbol)
-                hist   = ticker.history(period="1d", interval="1m")
+
+                # Futures and indices have no free intraday on Yahoo —
+                # use daily bars to avoid "possibly delisted" warnings
+                if category in _NO_INTRADAY:
+                    hist = ticker.history(period="5d", interval="1d",
+                                         auto_adjust=True)
+                else:
+                    hist = ticker.history(period="1d", interval="1m",
+                                         auto_adjust=True)
+
                 if not hist.empty:
                     price  = float(hist["Close"].iloc[-1])
                     spread = float(hist["High"].iloc[-1] - hist["Low"].iloc[-1]) * 0.1
@@ -172,3 +201,4 @@ class DataFetcher:
             except Exception:
                 pass
         return prices
+
