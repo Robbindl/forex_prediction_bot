@@ -447,14 +447,22 @@ class TradingCore:
         return prices
 
     def _build_context(self, asset: str = "", category: str = "") -> Dict[str, Any]:
+        sentiment_score = 0.0
+        try:
+            from layers.layer5_sentiment import _fetch_sentiment
+            sentiment_score = _fetch_sentiment(asset, category)
+        except Exception:
+            pass
+
         return {
-            "asset":      asset,
-            "category":   category,
-            "balance":    self.state.balance,
-            "open_count": self.state.open_position_count(),
-            "daily_pnl":  self.state.daily_pnl,
-            "engine":     self,
-            "fetcher":    self.fetcher,
+            "asset":           asset,
+            "category":        category,
+            "balance":         self.state.balance,
+            "open_count":      self.state.open_position_count(),
+            "daily_pnl":       self.state.daily_pnl,
+            "engine":          self,
+            "fetcher":         self.fetcher,
+            "sentiment_score": sentiment_score,   # pre-fetched — L5 reads this, no API hit
         }
 
     def _notify_telegram_open(self, trade: Dict) -> None:

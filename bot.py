@@ -353,27 +353,56 @@ def main() -> None:
         logger.warning("[bot] Engine did not become ready in 60s — continuing anyway")
 
     # ── Whale monitoring ──────────────────────────────────────────────────
-    
     try:
         from whale_alert_manager import WhaleAlertManager
         from layers.layer6_whale import ingest_whale_alert
 
-        _whale_mgr = WhaleAlertManager()  # singleton — same object SentimentAnalyzer will use
+        _whale_mgr = WhaleAlertManager()
+
+        def _symbol_to_asset(symbol: str) -> str:
+            """Map raw whale symbol (e.g. 'BTC') to canonical asset ID (e.g. 'BTC-USD')."""
+            _MAP = {
+                "BTC":    "BTC-USD",  "BITCOIN":   "BTC-USD",
+                "ETH":    "ETH-USD",  "ETHEREUM":  "ETH-USD",
+                "BNB":    "BNB-USD",  "SOL":       "SOL-USD",
+                "XRP":    "XRP-USD",  "ADA":       "ADA-USD",
+                "DOGE":   "DOGE-USD", "DOT":       "DOT-USD",
+                "LTC":    "LTC-USD",  "AVAX":      "AVAX-USD",
+                "LINK":   "LINK-USD",
+                "GOLD":   "XAU/USD",  "XAU":       "XAU/USD",
+                "SILVER": "XAG/USD",  "XAG":       "XAG/USD",
+                "OIL":    "WTI/USD",  "WTI":       "WTI/USD",
+                "EUR":    "EUR/USD",  "GBP":       "GBP/USD",
+                "JPY":    "USD/JPY",  "USDT":      "BTC-USD",
+            }
+            return _MAP.get(symbol.upper(), "")
 
         def _on_whale_alert(alert: dict) -> None:
             """Bridge: WhaleAlertManager collector → Layer 6 pipeline cache."""
             try:
+                symbol   = str(alert.get("symbol", alert.get("asset", ""))).upper().strip()
+                asset    = _symbol_to_asset(symbol)
+                if not asset:
+                    return
+
+                sentiment = float(alert.get("sentiment", 0.1))
+                direction = "BUY" if sentiment >= 0.0 else "SELL"
+
+                size_usd = float(alert.get("value_usd", alert.get("usd_amount", 0)))
+                if size_usd < 500_000:
+                    return
+
                 ingest_whale_alert(
-                    asset=alert.get("asset", ""),
-                    direction=alert.get("direction", "BUY"),
-                    size_usd=float(alert.get("usd_amount", alert.get("value_usd", 0))),
+                    asset=asset,
+                    direction=direction,
+                    size_usd=size_usd,
                     source=alert.get("source", "whale_alert"),
                 )
             except Exception:
                 pass
 
         _whale_mgr.on_alert = _on_whale_alert
-        _whale_mgr.start_monitoring()   # idempotent — won't double-start
+        _whale_mgr.start_monitoring()
         logger.info("[bot] WhaleAlertManager started — Layer 6 whale cache active")
     except Exception as e:
         logger.warning(f"[bot] WhaleAlertManager failed to start: {e}")

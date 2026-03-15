@@ -1,19 +1,8 @@
-"""
-telethon_whale_store.py — Shared in-memory store for Telethon whale alerts.
-
-whale_alert_manager.py imports this as:
-    from telethon_whale_store import whale_store as _whale_store
-
-It checks:
-    len(_whale_store) > 0
-    _whale_store.format_for_dashboard(hours=hours)
-"""
 from __future__ import annotations
 
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-
 
 class TelethonWhaleStore:
     """

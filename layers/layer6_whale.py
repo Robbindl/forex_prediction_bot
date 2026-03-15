@@ -19,13 +19,15 @@ _CACHE_TTL   = timedelta(minutes=30)
 
 
 def _get_recent_whales(asset: str) -> List[Dict]:
-    """Return whale events for asset in last 30 minutes."""
-    cutoff = datetime.utcnow() - _CACHE_TTL
+    
+    cutoff       = datetime.utcnow() - _CACHE_TTL
+    asset_upper  = asset.upper()
     with _CACHE_LOCK:
         return [
             w for w in _WHALE_CACHE
-            if w.get("asset", "").upper() in asset.upper()
-            and w.get("ts", datetime.min) > cutoff
+            if w.get("ts", datetime.min) > cutoff
+            and str(w.get("asset", w.get("symbol", ""))).upper() in asset_upper
+            and str(w.get("asset", w.get("symbol", "")))  # exclude blank entries
         ]
 
 

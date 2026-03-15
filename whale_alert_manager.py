@@ -278,12 +278,14 @@ class WhaleAlertManager:
                             if 'whale_info' in a:
                                 info = a['whale_info']
                                 all_new.append({
-                                    'title': f"🐋 {info['amount']} {info['symbol']} (${info['value_usd']/1_000_000:.1f}M)",
-                                    'value_usd': info['value_usd'],
-                                    'symbol': info['symbol'],
+                                    'title':      f"🐋 {info['amount']} {info['symbol']} (${info['value_usd']/1_000_000:.1f}M)",
+                                    'value_usd':  info['value_usd'],
+                                    'symbol':     info['symbol'],
+                                    'asset':      info['symbol'],          # ← added: Layer 6 / bot.py need this
+                                    'direction':  'BUY',                   # ← added: large transfers default bullish
                                     'alert_time': a.get('created_at', datetime.now()),
-                                    'source': f"Twitter @{a['account']}",
-                                    'sentiment': 0.15 if info['value_usd'] > 10_000_000 else 0.1
+                                    'source':     f"Twitter @{a['account']}",
+                                    'sentiment':  0.15 if info['value_usd'] > 10_000_000 else 0.1,
                                 })
                         if twitter_alerts:
                             logger.info(f"🐦 Twitter: {len(twitter_alerts)} alerts")
@@ -296,12 +298,14 @@ class WhaleAlertManager:
                         telegram_alerts = self.telegram_watcher.get_recent_alerts()
                         for a in telegram_alerts:
                             all_new.append({
-                                'title': a['title'],
-                                'value_usd': a['value_usd'],
-                                'symbol': a['symbol'],
+                                'title':      a['title'],
+                                'value_usd':  a['value_usd'],
+                                'symbol':     a['symbol'],
+                                'asset':      a['symbol'],             # ← added
+                                'direction':  'BUY' if a.get('sentiment', 0.1) >= 0 else 'SELL',  # ← added: infer from sentiment
                                 'alert_time': datetime.fromisoformat(a['date']) if isinstance(a['date'], str) else a['date'],
-                                'source': a['source'],
-                                'sentiment': a.get('sentiment', 0.1)
+                                'source':     a['source'],
+                                'sentiment':  a.get('sentiment', 0.1),
                             })
                         if telegram_alerts:
                             logger.info(f"📱 Telegram: {len(telegram_alerts)} alerts")
@@ -313,12 +317,14 @@ class WhaleAlertManager:
                     free_alerts = self.free_api.fetch_transactions()
                     for a in free_alerts:
                         all_new.append({
-                            'title': a['title'],
-                            'value_usd': a['value_usd'],
-                            'symbol': a['symbol'],
+                            'title':      a['title'],
+                            'value_usd':  a['value_usd'],
+                            'symbol':     a['symbol'],
+                            'asset':      a['symbol'],             # ← added
+                            'direction':  'BUY' if a.get('sentiment', 0.1) >= 0 else 'SELL',  # ← added
                             'alert_time': a['alert_time'],
-                            'source': a['source'],
-                            'sentiment': a['sentiment']
+                            'source':     a['source'],
+                            'sentiment':  a['sentiment'],
                         })
                     if free_alerts:
                         logger.info(f"🌐 Free API: {len(free_alerts)} alerts")
@@ -331,12 +337,14 @@ class WhaleAlertManager:
                         reddit_alerts = self.reddit.get_whale_alerts()
                         for a in reddit_alerts:
                             all_new.append({
-                                'title': a['title'],
-                                'value_usd': a['value_usd'],
-                                'symbol': a['symbol'],
+                                'title':      a['title'],
+                                'value_usd':  a['value_usd'],
+                                'symbol':     a['symbol'],
+                                'asset':      a['symbol'],             # ← added
+                                'direction':  'BUY',                   # ← added: Reddit whale posts are almost always accumulation talk
                                 'alert_time': a['created'],
-                                'source': a['source'],
-                                'sentiment': 0.1
+                                'source':     a['source'],
+                                'sentiment':  0.1,
                             })
                         if reddit_alerts:
                             logger.info(f"📱 Reddit: {len(reddit_alerts)} whale mentions")
@@ -499,4 +507,4 @@ if __name__ == "__main__":
         if key != 'largest_alert':
             logger.info(f"   • {key}: {value}")
 
-    logger.info("=" * 60)
+    logger.info("=" * 60)      

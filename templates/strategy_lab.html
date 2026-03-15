@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Strategy Lab — Robbie</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--font:'Inter',system-ui,sans-serif}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:hidden}
+.layout{display:flex;height:100vh}
+.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0}
+.sb-logo{padding:20px 16px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+.sb-logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--bl),var(--pu));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#fff}
+.sb-logo-text{font-size:15px;font-weight:700}.sb-logo-text span{color:var(--cy);font-size:11px;display:block;font-weight:400;text-transform:uppercase;letter-spacing:.5px}
+.sb-section{padding:10px 8px 4px;font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px}
+.sb-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;margin:1px 6px;font-size:13px;color:var(--tx2);text-decoration:none;transition:.12s}
+.sb-link:hover{background:var(--s3);color:var(--tx)}.sb-link.active{background:rgba(41,121,255,.12);color:var(--bl);border-left:2px solid var(--bl)}
+.sb-icon{font-size:16px;width:20px;text-align:center}
+.sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid var(--bd)}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
+.page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
+.page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--pu)}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.content{flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.panel-full{grid-column:span 3}.panel-wide{grid-column:span 2}
+.panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
+.panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
+.panel-body{padding:12px 16px}
+select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--tx);outline:none}
+.btn{padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;border:none;background:var(--bl);color:#fff}
+
+/* Strategy cards */
+.strat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;padding:12px 16px}
+.strat-card{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:14px;position:relative;overflow:hidden}
+.strat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.sc-good::before{background:var(--gr)}.sc-ok::before{background:var(--am)}.sc-bad::before{background:var(--rd)}
+.sc-name{font-size:14px;font-weight:700;margin-bottom:8px}
+.sc-metrics{display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px}
+.sc-m{background:rgba(255,255,255,.04);border-radius:5px;padding:6px 8px}
+.sc-m-l{color:var(--tx3);font-size:10px;margin-bottom:2px}.sc-m-v{font-size:13px;font-weight:600}
+
+/* Trade timeline */
+.tl-chart{height:160px;padding:0 16px 12px}
+.trade-table{width:100%;border-collapse:collapse;font-size:12px}
+.trade-table th{color:var(--tx3);font-size:10px;text-transform:uppercase;letter-spacing:.4px;padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;font-weight:500}
+.trade-table td{padding:8px;border-bottom:1px solid rgba(30,38,53,.5)}
+.trade-table tr:last-child td{border:none}
+
+/* Backtest area */
+.bt-config{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--bd)}
+.bt-field{display:flex;flex-direction:column;gap:4px}
+.bt-label{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px}
+.bt-result{padding:12px 16px}
+.bt-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.bt-stat{text-align:center;padding:10px;background:var(--s2);border-radius:8px}
+.bt-s-v{font-size:18px;font-weight:700}.bt-s-l{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px;margin-top:2px}
+.eq-chart{height:160px;padding:0 0 8px}
+
+.empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
+.gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.pu{color:var(--pu)}.mu{color:var(--tx2)}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sb-logo"><div class="sb-logo-icon">R</div><div class="sb-logo-text">Robbie<span>Trading Platform</span></div></div>
+    <div class="sb-section">Dashboards</div>
+    <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
+    <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
+    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
+    <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
+    <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
+    <a href="/strategy-lab" class="sb-link active"><span class="sb-icon">🧪</span>Strategy Lab</a>
+    <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
+    <div class="sb-section" style="margin-top:8px">Legacy</div>
+    <a href="/backtest" class="sb-link"><span class="sb-icon">📈</span>Backtest</a>
+    <div class="sb-bottom"></div>
+  </nav>
+  <div class="main">
+    <div class="topbar">
+      <div class="page-title"><div class="dot"></div>Strategy Lab</div>
+    </div>
+    <div class="content">
+      <!-- Strategy performance cards -->
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🏆 Strategy Performance</span></div>
+        <div class="strat-grid" id="stratGrid"><div class="empty">Loading…</div></div>
+      </div>
+
+      <!-- Trade P&L timeline -->
+      <div class="panel panel-wide">
+        <div class="panel-header"><span class="panel-title">📈 Trade P&L Timeline</span></div>
+        <div class="tl-chart"><canvas id="tlChart"></canvas></div>
+      </div>
+
+      <!-- Win rate donut -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">🎯 Win / Loss</span></div>
+        <div style="height:200px;padding:10px 16px"><canvas id="winDonut"></canvas></div>
+      </div>
+
+      <!-- Backtest runner -->
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">⚗️ Backtest Runner</span></div>
+        <div class="bt-config">
+          <div class="bt-field"><div class="bt-label">Asset</div>
+            <select id="btA">
+              <option>BTC-USD</option><option>ETH-USD</option><option>EUR/USD</option>
+              <option>GBP/USD</option><option>XAU/USD</option><option>AAPL</option><option>NVDA</option>
+            </select>
+          </div>
+          <div class="bt-field"><div class="bt-label">Period</div>
+            <select id="btP"><option value="30d">30d</option><option value="90d" selected>90d</option><option value="180d">180d</option><option value="365d">1y</option></select>
+          </div>
+          <button class="btn" id="btBtn" onclick="runBacktest()">▶ Run</button>
+          <span id="btStatus" style="font-size:12px;color:var(--tx3)"></span>
+        </div>
+        <div class="bt-result" id="btResult" style="display:none">
+          <div class="bt-stats" id="btStats"></div>
+          <div class="eq-chart"><canvas id="eqChart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Recent trades -->
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">📋 Recent Trade Log</span></div>
+        <div class="panel-body">
+          <table class="trade-table">
+            <thead><tr><th>Asset</th><th>Dir</th><th>Strategy</th><th>P&L</th><th>Exit</th><th>Conf</th></tr></thead>
+            <tbody id="tradeBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+let tlInst=null,winInst=null,eqInst=null;
+
+async function loadStrategies(){
+  try{
+    const d=await fetch('/api/strategy/performance').then(r=>r.json());
+    const strats=d.strategies||{};
+    const sorted=Object.entries(strats).sort((a,b)=>(b[1].pnl||0)-(a[1].pnl||0));
+
+    // Strategy cards
+    const grid=document.getElementById('stratGrid');
+    if(!sorted.length){grid.innerHTML='<div class="empty">No strategy data yet</div>';}
+    else{
+      grid.innerHTML=sorted.map(([name,s])=>{
+        const wr=s.win_rate||0;
+        const pnl=s.pnl||0;
+        const cls=wr>=60?'sc-good':wr>=50?'sc-ok':'sc-bad';
+        return`<div class="strat-card ${cls}">
+          <div class="sc-name">${name}</div>
+          <div class="sc-metrics">
+            <div class="sc-m"><div class="sc-m-l">Win Rate</div><div class="sc-m-v" style="color:${wr>=50?'var(--gr)':'var(--rd)'}">${wr}%</div></div>
+            <div class="sc-m"><div class="sc-m-l">Total P&L</div><div class="sc-m-v" style="color:${pnl>=0?'var(--gr)':'var(--rd)'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</div></div>
+            <div class="sc-m"><div class="sc-m-l">Trades</div><div class="sc-m-v">${s.total||0}</div></div>
+            <div class="sc-m"><div class="sc-m-l">Avg Duration</div><div class="sc-m-v">${s.avg_duration_min||0}m</div></div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    // P&L timeline chart
+    const timeline=d.timeline||[];
+    if(tlInst)tlInst.destroy();
+    if(timeline.length){
+      const pnls=timeline.map(t=>t.pnl||0);
+      let cumulative=0;const cumPnl=pnls.map(p=>{cumulative+=p;return cumulative;});
+      tlInst=new Chart(document.getElementById('tlChart'),{
+        type:'line',
+        data:{
+          labels:timeline.map((_,i)=>i+1),
+          datasets:[{label:'Cumulative P&L',data:cumPnl,borderColor:'#2979ff',borderWidth:2,fill:true,backgroundColor:'rgba(41,121,255,.08)',tension:.3,pointRadius:0},
+                    {label:'Trade P&L',data:pnls,borderColor:'rgba(255,165,0,.5)',borderWidth:1,fill:false,tension:.1,pointRadius:3,pointBackgroundColor:pnls.map(p=>p>=0?'#00d084':'#ff4560')}]
+        },
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#4a5568',font:{size:10}}}},
+          scales:{x:{display:false},y:{ticks:{color:'#4a5568',font:{size:10}},grid:{color:'rgba(30,38,53,.8)'}}}}
+      });
+    }
+
+    // Win donut
+    const allWins=Object.values(strats).reduce((s,v)=>s+(v.wins||0),0);
+    const allLoss=Object.values(strats).reduce((s,v)=>s+(v.losses||0),0);
+    if(winInst)winInst.destroy();
+    winInst=new Chart(document.getElementById('winDonut'),{
+      type:'doughnut',
+      data:{labels:['Wins','Losses'],datasets:[{data:[allWins,allLoss],backgroundColor:['rgba(0,208,132,.5)','rgba(255,69,96,.5)'],borderColor:'#0d1117',borderWidth:2}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#7a8899',font:{size:11}}}}}
+    });
+
+    // Trade table
+    const tbody=document.getElementById('tradeBody');
+    if(!timeline.length){tbody.innerHTML='<tr><td colspan="6" class="empty">No closed trades yet</td></tr>';}
+    else{tbody.innerHTML=timeline.slice(0,20).map(t=>{
+      const pnl=t.pnl||0;const dir=(t.direction||'').toUpperCase();
+      return`<tr>
+        <td><strong>${t.asset||'?'}</strong></td>
+        <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:600">${dir}</td>
+        <td style="color:var(--tx3)">${t.strategy||'—'}</td>
+        <td style="color:${pnl>=0?'var(--gr)':'var(--rd)'};font-weight:600">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
+        <td style="color:var(--tx3)">${t.exit_time||'—'}</td>
+        <td>${((t.conf||0)*100).toFixed(0)}%</td>
+      </tr>`;
+    }).join('');}
+
+  }catch(e){console.error(e);}
+}
+
+async function runBacktest(){
+  const btn=document.getElementById('btBtn');
+  const status=document.getElementById('btStatus');
+  const asset=document.getElementById('btA').value;
+  const period=document.getElementById('btP').value;
+  btn.disabled=true;status.textContent='Running…';
+  try{
+    const d=await fetch(`/api/backtest/run?asset=${encodeURIComponent(asset)}&period=${period}`).then(r=>r.json());
+    if(!d.success){status.textContent='Failed: '+(d.error||'unknown');btn.disabled=false;return;}
+    const r=d.results||{};
+    const tp=r.total_pnl||0;const wr=r.win_rate||0;const dd=r.max_drawdown||0;
+    document.getElementById('btStats').innerHTML=`
+      <div class="bt-stat"><div class="bt-s-v ${tp>=0?'gn':'rd'}">${tp>=0?'+':''}$${Math.abs(tp).toFixed(2)}</div><div class="bt-s-l">Total P&L</div></div>
+      <div class="bt-stat"><div class="bt-s-v ${wr>=50?'gn':'rd'}">${wr.toFixed(1)}%</div><div class="bt-s-l">Win Rate</div></div>
+      <div class="bt-stat"><div class="bt-s-v">${r.total_trades||0}</div><div class="bt-s-l">Trades</div></div>
+      <div class="bt-stat"><div class="bt-s-v rd">-${dd.toFixed(2)}%</div><div class="bt-s-l">Max DD</div></div>`;
+    document.getElementById('btResult').style.display='block';
+    const ec=r.equity_curve||[];
+    if(eqInst)eqInst.destroy();
+    if(ec.length){
+      eqInst=new Chart(document.getElementById('eqChart'),{
+        type:'line',
+        data:{labels:ec.map(p=>p.date),datasets:[
+          {label:'Strategy',data:ec.map(p=>p.value),borderColor:'#2979ff',borderWidth:2,fill:true,backgroundColor:'rgba(41,121,255,.08)',tension:.3,pointRadius:0},
+          {label:'Benchmark',data:ec.map(p=>p.benchmark),borderColor:'#4a5568',borderWidth:1,borderDash:[4,4],fill:false,tension:.3,pointRadius:0},
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#4a5568',font:{size:10}}}},
+          scales:{x:{ticks:{color:'#4a5568',maxTicksLimit:6,font:{size:10}},grid:{color:'rgba(30,38,53,.8)'}},
+                  y:{ticks:{color:'#4a5568',font:{size:10}},grid:{color:'rgba(30,38,53,.8)'}}}}
+      });
+    }
+  }catch(e){status.textContent='Error';}
+  btn.disabled=false;status.textContent='';
+}
+
+loadStrategies();setInterval(loadStrategies,30000);
+</script>
+</body></html>

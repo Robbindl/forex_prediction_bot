@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Market Intelligence — Robbie</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--font:'Inter',system-ui,sans-serif}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:hidden}
+.layout{display:flex;height:100vh}
+.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0}
+.sb-logo{padding:20px 16px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+.sb-logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--bl),var(--pu));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#fff}
+.sb-logo-text{font-size:15px;font-weight:700}.sb-logo-text span{color:var(--cy);font-size:11px;display:block;font-weight:400;text-transform:uppercase;letter-spacing:.5px}
+.sb-section{padding:10px 8px 4px;font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px}
+.sb-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;margin:1px 6px;font-size:13px;color:var(--tx2);cursor:pointer;text-decoration:none;transition:.12s}
+.sb-link:hover{background:var(--s3);color:var(--tx)}
+.sb-link.active{background:rgba(41,121,255,.12);color:var(--bl);border-left:2px solid var(--bl)}
+.sb-icon{font-size:16px;width:20px;text-align:center}
+.sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid var(--bd)}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
+.page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
+.page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--cy)}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.content{flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto auto;gap:12px}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.panel-full{grid-column:span 2}
+.panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
+.pb{margin-left:auto}
+.tb-btn{padding:4px 10px;border-radius:5px;font-size:11px;cursor:pointer;border:1px solid var(--bd);background:transparent;color:var(--tx2);transition:.12s}
+.tb-btn.on,.tb-btn:hover{background:var(--bl);border-color:var(--bl);color:#fff}
+.panel-body{padding:12px 16px}
+
+/* Heatmap */
+.heatmap-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:12px 16px}
+.hm-cell{border-radius:6px;padding:10px 8px;text-align:center;cursor:pointer;transition:.15s}
+.hm-cell:hover{opacity:.85;transform:scale(1.03)}
+.hm-asset{font-size:11px;font-weight:600;margin-bottom:2px}
+.hm-pct{font-size:13px;font-weight:700}
+.hm-price{font-size:10px;opacity:.7;margin-top:1px}
+
+/* Correlation matrix */
+.corr-wrap{overflow-x:auto;padding:12px 16px}
+.corr-grid{display:grid;gap:2px}
+.corr-cell{width:44px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:10px;font-weight:600;cursor:default}
+.corr-label{font-size:10px;color:var(--tx3);display:flex;align-items:center;justify-content:flex-end;padding-right:4px;height:36px}
+
+/* Chart */
+.chart-area{height:320px;position:relative}
+#lwChart{width:100%;height:100%}
+.chart-controls{display:flex;gap:4px}
+.gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.mu{color:var(--tx2)}
+select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--tx);outline:none}
+.empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sb-logo"><div class="sb-logo-icon">R</div><div class="sb-logo-text">Robbie<span>Trading Platform</span></div></div>
+    <div class="sb-section">Dashboards</div>
+    <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
+    <a href="/market-intelligence" class="sb-link active"><span class="sb-icon">📊</span>Market Intel</a>
+    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
+    <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
+    <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
+    <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
+    <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
+    <div class="sb-section" style="margin-top:8px">Legacy</div>
+    <a href="/" class="sb-link"><span class="sb-icon">📈</span>Signals</a>
+    <a href="/chart" class="sb-link"><span class="sb-icon">🕯️</span>Chart</a>
+    <div class="sb-bottom"></div>
+  </nav>
+  <div class="main">
+    <div class="topbar">
+      <div class="page-title"><div class="dot"></div>Market Intelligence</div>
+      <div class="tb-right">
+        <select id="chartAsset" onchange="changeChartAsset()"></select>
+        <div class="chart-controls" id="tfBtns">
+          <button class="tb-btn" onclick="setTf('1m',this)">1m</button>
+          <button class="tb-btn" onclick="setTf('5m',this)">5m</button>
+          <button class="tb-btn on" onclick="setTf('1h',this)">1h</button>
+          <button class="tb-btn" onclick="setTf('4h',this)">4h</button>
+          <button class="tb-btn" onclick="setTf('1d',this)">1d</button>
+        </div>
+      </div>
+    </div>
+    <div class="content">
+      <!-- Live chart full width -->
+      <div class="panel panel-full">
+        <div class="panel-header">
+          <span class="panel-title">🕯️ Live Chart</span>
+          <span id="livePrice" style="font-size:15px;font-weight:700;color:var(--cy);margin-left:auto">—</span>
+        </div>
+        <div class="chart-area"><div id="lwChart"></div></div>
+      </div>
+
+      <!-- 24h heatmap -->
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🔥 24h Performance Heatmap</span><button class="tb-btn pb" onclick="loadHeatmap()">↻</button></div>
+        <div id="heatmapGrid" class="heatmap-grid"></div>
+      </div>
+
+      <!-- Correlation matrix -->
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🔗 Correlation Matrix (30d)</span></div>
+        <div id="corrWrap" class="corr-wrap"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+let lwChart,cSeries,vSeries,sseSource,currentAsset='EUR/USD',currentTf='1h';
+
+function initChart(){
+  lwChart=LightweightCharts.createChart(document.getElementById('lwChart'),{
+    layout:{background:{type:'solid',color:'#0d1117'},textColor:'#7a8899'},
+    grid:{vertLines:{color:'#1a2030'},horzLines:{color:'#1a2030'}},
+    crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+    rightPriceScale:{borderColor:'#1e2635'},
+    timeScale:{borderColor:'#1e2635',timeVisible:true},
+  });
+  cSeries=lwChart.addCandlestickSeries({upColor:'#00d084',downColor:'#ff4560',borderVisible:false,wickUpColor:'#00d084',wickDownColor:'#ff4560'});
+  vSeries=lwChart.addHistogramSeries({priceScaleId:'',scaleMargins:{top:.85,bottom:0}});
+  new ResizeObserver(()=>{const c=document.getElementById('lwChart');lwChart.resize(c.clientWidth,c.clientHeight);}).observe(document.getElementById('lwChart'));
+}
+
+async function loadAssets(){
+  const d=await fetch('/api/chart/assets').then(r=>r.json()).catch(()=>({assets:[]}));
+  const sel=document.getElementById('chartAsset');
+  const grouped={};
+  (d.assets||[]).forEach(a=>{(grouped[a.category]||(grouped[a.category]=[])).push(a);});
+  sel.innerHTML=Object.entries(grouped).map(([cat,list])=>
+    `<optgroup label="${cat}">${list.map(a=>`<option value="${a.symbol}" ${a.symbol===currentAsset?'selected':''}>${a.symbol}</option>`).join('')}</optgroup>`
+  ).join('');
+}
+
+async function loadCandles(){
+  const d=await fetch(`/api/chart/candles?asset=${encodeURIComponent(currentAsset)}&interval=${currentTf}`).then(r=>r.json()).catch(()=>({}));
+  if(d.candles?.length){
+    cSeries.setData(d.candles);
+    vSeries.setData(d.candles.map(c=>({time:c.time,value:c.volume,color:c.close>=c.open?'rgba(0,208,132,.25)':'rgba(255,69,96,.25)'})));
+    lwChart.timeScale().fitContent();
+  }
+}
+
+function startStream(){
+  if(sseSource)sseSource.close();
+  sseSource=new EventSource(`/api/chart/stream?asset=${encodeURIComponent(currentAsset)}`);
+  sseSource.onmessage=e=>{
+    try{const d=JSON.parse(e.data);if(d.type==='tick')document.getElementById('livePrice').textContent=d.price?.toFixed(d.price<10?5:2)||'—';}catch(err){}
+  };
+}
+
+async function loadHeatmap(){
+  const d=await fetch('/api/market/heatmap').then(r=>r.json()).catch(()=>({items:[]}));
+  const grid=document.getElementById('heatmapGrid');
+  if(!(d.items||[]).length){grid.innerHTML='<div class="empty">No data</div>';return;}
+  const max=Math.max(...d.items.map(i=>Math.abs(i.change_pct)),0.1);
+  grid.innerHTML=d.items.map(i=>{
+    const pct=i.change_pct||0;
+    const intensity=Math.min(1,Math.abs(pct)/max);
+    const bg=pct>=0?`rgba(0,208,132,${0.08+intensity*0.5})`:`rgba(255,69,96,${0.08+intensity*0.5})`;
+    const tc=pct>=0?'var(--gr)':'var(--rd)';
+    return`<div class="hm-cell" style="background:${bg}" onclick="changeToAsset('${i.asset}')">
+      <div class="hm-asset" style="color:var(--tx)">${i.asset.replace('-USD','').replace('/USD','').replace('=F','')}</div>
+      <div class="hm-pct" style="color:${tc}">${pct>=0?'+':''}${pct.toFixed(2)}%</div>
+      <div class="hm-price">${i.price>10?i.price.toFixed(2):i.price.toFixed(5)}</div>
+    </div>`;
+  }).join('');
+}
+
+async function loadCorrelation(){
+  const d=await fetch('/api/correlation-matrix').then(r=>r.json()).catch(()=>({}));
+  const wrap=document.getElementById('corrWrap');
+  if(!d.labels){wrap.innerHTML='<div class="empty">Correlation data unavailable</div>';return;}
+  const n=d.labels.length;
+  const cols='36px '+d.labels.map(()=>'44px').join(' ');
+  let html=`<div class="corr-grid" style="grid-template-columns:${cols}">`;
+  // Header row
+  html+='<div></div>';
+  d.labels.forEach(l=>html+=`<div class="corr-cell" style="font-size:9px;color:var(--tx3);height:20px;background:none">${l.replace('-USD','').replace('/USD','').replace('=F','').replace('^','')}</div>`);
+  // Data rows
+  d.matrix.forEach((row,i)=>{
+    html+=`<div class="corr-label">${d.labels[i].replace('-USD','').replace('/USD','').replace('=F','').replace('^','')}</div>`;
+    row.forEach((val,j)=>{
+      const v=parseFloat(val);
+      const abs=Math.abs(v);
+      let bg;
+      if(i===j){bg='rgba(41,121,255,.2)';}
+      else if(v>0){bg=`rgba(0,208,132,${abs*0.8})`;}
+      else{bg=`rgba(255,69,96,${abs*0.8})`;}
+      const tc=i===j?'var(--bl)':abs>0.5?(v>0?'var(--gr)':'var(--rd)'):'var(--tx2)';
+      html+=`<div class="corr-cell" style="background:${bg};color:${tc}" title="${d.labels[i]} / ${d.labels[j]}: ${v}">${v.toFixed(2)}</div>`;
+    });
+  });
+  html+='</div>';
+  wrap.innerHTML=html;
+}
+
+function changeToAsset(a){currentAsset=a;loadCandles();startStream();}
+function changeChartAsset(){currentAsset=document.getElementById('chartAsset').value;loadCandles();startStream();}
+function setTf(tf,el){currentTf=tf;document.querySelectorAll('.chart-controls .tb-btn').forEach(b=>b.classList.remove('on'));el.classList.add('on');loadCandles();}
+
+initChart();
+loadAssets().then(()=>{loadCandles();startStream();});
+loadHeatmap();loadCorrelation();
+setInterval(()=>{loadCandles();loadHeatmap();},60000);
+</script>
+</body></html>

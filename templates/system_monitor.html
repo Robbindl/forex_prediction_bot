@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>System Monitor — Robbie</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--font:'Inter','JetBrains Mono',system-ui,sans-serif;--mono:'JetBrains Mono','Fira Code',monospace}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:hidden}
+.layout{display:flex;height:100vh}
+.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0}
+.sb-logo{padding:20px 16px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+.sb-logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--bl),var(--pu));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#fff}
+.sb-logo-text{font-size:15px;font-weight:700}.sb-logo-text span{color:var(--cy);font-size:11px;display:block;font-weight:400;text-transform:uppercase;letter-spacing:.5px}
+.sb-section{padding:10px 8px 4px;font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px}
+.sb-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;margin:1px 6px;font-size:13px;color:var(--tx2);text-decoration:none;transition:.12s}
+.sb-link:hover{background:var(--s3);color:var(--tx)}.sb-link.active{background:rgba(41,121,255,.12);color:var(--bl);border-left:2px solid var(--bl)}
+.sb-icon{font-size:16px;width:20px;text-align:center}
+.sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid var(--bd)}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;flex-shrink:0}
+.page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
+.page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--gr)}
+.tb-right{margin-left:auto;font-size:12px;color:var(--tx3)}
+.content{flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.panel-wide{grid-column:span 2}.panel-full{grid-column:span 4}.panel-3{grid-column:span 3}
+.panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
+.panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
+.panel-body{padding:12px 16px}
+
+/* Resource meters */
+.meter-card{padding:16px 18px}
+.meter-label{font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;display:flex;justify-content:space-between}
+.meter-pct{font-size:13px;font-weight:700}
+.meter-bar{height:8px;background:rgba(255,255,255,.07);border-radius:4px;overflow:hidden;margin-bottom:4px}
+.meter-fill{height:100%;border-radius:4px;transition:width .6s}
+.meter-sub{font-size:11px;color:var(--tx3)}
+
+/* Process list */
+.proc-row{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid rgba(30,38,53,.5)}
+.proc-row:last-child{border:none}
+.proc-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.proc-dot-on{background:var(--gr);box-shadow:0 0 6px var(--gr)}
+.proc-dot-off{background:var(--rd)}
+.proc-name{flex:1;font-size:13px}
+.proc-status{font-size:11px;font-weight:600}
+.proc-on{color:var(--gr)}.proc-off{color:var(--rd)}
+
+/* Charts for CPU/RAM history */
+.sparkline{height:60px;padding:4px 16px 10px}
+
+/* Issues */
+.issue-row{padding:10px 16px;border-bottom:1px solid rgba(30,38,53,.5);font-size:12px;color:var(--rd);display:flex;gap:8px;align-items:center}
+.issue-row:last-child{border:none}
+.issue-row::before{content:'⚠';font-size:14px}
+.no-issues{padding:16px;text-align:center;font-size:12px;color:var(--gr)}
+.no-issues::before{content:'✓ ';font-weight:700}
+
+/* Stats small */
+.stat-mini-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:12px 16px}
+.sm{background:var(--s2);border-radius:8px;padding:10px 12px}
+.sm-val{font-size:18px;font-weight:700;margin-bottom:2px}
+.sm-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px}
+
+.gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.mu{color:var(--tx2)}
+.empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
+
+/* Uptime counter */
+.uptime-big{font-size:32px;font-weight:700;font-family:var(--mono);text-align:center;padding:16px;color:var(--gr)}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sb-logo"><div class="sb-logo-icon">R</div><div class="sb-logo-text">Robbie<span>Trading Platform</span></div></div>
+    <div class="sb-section">Dashboards</div>
+    <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
+    <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
+    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
+    <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
+    <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
+    <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
+    <a href="/system-monitor" class="sb-link active"><span class="sb-icon">🖥️</span>System</a>
+    <div class="sb-section" style="margin-top:8px">Legacy</div>
+    <a href="/status" class="sb-link"><span class="sb-icon">📊</span>Status</a>
+    <div class="sb-bottom"></div>
+  </nav>
+  <div class="main">
+    <div class="topbar">
+      <div class="page-title"><div class="dot" id="sysDot"></div>System Monitor</div>
+      <div class="tb-right" id="updateTime">—</div>
+    </div>
+    <div class="content">
+      <!-- CPU meter -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">CPU Usage</span></div>
+        <div class="meter-card">
+          <div class="meter-label"><span>CPU</span><span class="meter-pct" id="cpuPct">—</span></div>
+          <div class="meter-bar"><div class="meter-fill" id="cpuBar" style="width:0%"></div></div>
+        </div>
+        <div class="sparkline"><canvas id="cpuSpark"></canvas></div>
+      </div>
+
+      <!-- RAM meter -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Memory Usage</span></div>
+        <div class="meter-card">
+          <div class="meter-label"><span>RAM</span><span class="meter-pct" id="ramPct">—</span></div>
+          <div class="meter-bar"><div class="meter-fill" id="ramBar" style="width:0%"></div></div>
+          <div class="meter-sub" id="ramSub">Process: — MB</div>
+        </div>
+        <div class="sparkline"><canvas id="ramSpark"></canvas></div>
+      </div>
+
+      <!-- Disk meter -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Disk Usage</span></div>
+        <div class="meter-card">
+          <div class="meter-label"><span>Disk</span><span class="meter-pct" id="diskPct">—</span></div>
+          <div class="meter-bar"><div class="meter-fill" id="diskBar" style="width:0%"></div></div>
+        </div>
+        <div class="stat-mini-grid">
+          <div class="sm"><div class="sm-val cy" id="openPos">—</div><div class="sm-lbl">Open positions</div></div>
+          <div class="sm"><div class="sm-val am" id="cooldowns">—</div><div class="sm-lbl">Cooldowns</div></div>
+        </div>
+      </div>
+
+      <!-- Issues + uptime -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Uptime</span></div>
+        <div class="uptime-big" id="uptime">00:00:00</div>
+        <div class="panel-body" id="issuePanel">
+          <div class="no-issues">No issues detected</div>
+        </div>
+      </div>
+
+      <!-- Process status full width -->
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🔧 Process Status</span></div>
+        <div id="procList"></div>
+      </div>
+
+      <!-- Trading stats -->
+      <div class="panel panel-wide">
+        <div class="panel-header"><span class="panel-title">📊 Trading Stats</span></div>
+        <div class="stat-mini-grid">
+          <div class="sm"><div class="sm-val gn" id="sBalance">—</div><div class="sm-lbl">Balance</div></div>
+          <div class="sm"><div class="sm-val" id="sStrategy">—</div><div class="sm-lbl">Strategy</div></div>
+          <div class="sm"><div class="sm-val" id="sPositions">—</div><div class="sm-lbl">Open positions</div></div>
+          <div class="sm"><div class="sm-val" id="sCooldowns">—</div><div class="sm-lbl">Cooldowns</div></div>
+        </div>
+      </div>
+
+      <!-- Connection status -->
+      <div class="panel panel-wide">
+        <div class="panel-header"><span class="panel-title">🌐 Connections</span></div>
+        <div id="connPanel"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+let startTime=Date.now();
+let cpuHist=[],ramHist=[],cpuSpark=null,ramSpark=null;
+
+function initSparks(){
+  const opts=(label,color)=>({
+    type:'line',data:{labels:Array(20).fill(''),datasets:[{data:Array(20).fill(0),borderColor:color,borderWidth:1.5,fill:true,backgroundColor:color.replace('rgb','rgba').replace(')',',0.1)'),tension:.3,pointRadius:0}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},animation:false,
+      scales:{x:{display:false},y:{min:0,max:100,display:false}}}
+  });
+  cpuSpark=new Chart(document.getElementById('cpuSpark'),opts('CPU','rgb(41,121,255)'));
+  ramSpark=new Chart(document.getElementById('ramSpark'),opts('RAM','rgb(179,136,255)'));
+}
+
+function updateSpark(inst,hist,val){
+  hist.push(val);if(hist.length>20)hist.shift();
+  inst.data.datasets[0].data=[...hist];inst.update('none');
+}
+
+function barColor(pct){return pct>85?'var(--rd)':pct>70?'var(--am)':'var(--gr)'}
+
+// Uptime counter
+setInterval(()=>{
+  const s=Math.floor((Date.now()-startTime)/1000);
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
+  document.getElementById('uptime').textContent=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+},1000);
+
+async function load(){
+  try{
+    const d=await fetch('/api/system/health').then(r=>r.json());
+
+    document.getElementById('updateTime').textContent='Updated: '+(d.timestamp||'').substring(11,19)+' UTC';
+    document.getElementById('sysDot').style.background=d.processes?.['TradingCore']?'var(--gr)':'var(--rd)';
+
+    // CPU
+    const cpu=d.cpu_pct||0;
+    document.getElementById('cpuPct').textContent=cpu.toFixed(1)+'%';
+    document.getElementById('cpuPct').style.color=barColor(cpu);
+    document.getElementById('cpuBar').style.cssText=`width:${cpu}%;background:${barColor(cpu)}`;
+    updateSpark(cpuSpark,cpuHist,cpu);
+
+    // RAM
+    const ram=d.ram_pct||0;
+    document.getElementById('ramPct').textContent=ram.toFixed(1)+'%';
+    document.getElementById('ramPct').style.color=barColor(ram);
+    document.getElementById('ramBar').style.cssText=`width:${ram}%;background:${barColor(ram)}`;
+    document.getElementById('ramSub').textContent='Process: '+(d.process_mem_mb||0)+' MB';
+    updateSpark(ramSpark,ramHist,ram);
+
+    // Disk
+    const disk=d.disk_pct||0;
+    document.getElementById('diskPct').textContent=disk.toFixed(1)+'%';
+    document.getElementById('diskBar').style.cssText=`width:${disk}%;background:${barColor(disk)}`;
+    document.getElementById('openPos').textContent=d.open_positions||0;
+    document.getElementById('cooldowns').textContent=d.active_cooldowns||0;
+
+    // Trading stats
+    document.getElementById('sBalance').textContent='$'+(d.balance||0).toFixed(2);
+    document.getElementById('sStrategy').textContent=d.strategy_mode||'—';
+    document.getElementById('sPositions').textContent=d.open_positions||0;
+    document.getElementById('sCooldowns').textContent=d.active_cooldowns||0;
+
+    // Issues
+    const issues=d.issues||[];
+    const iEl=document.getElementById('issuePanel');
+    if(!issues.length){iEl.innerHTML='<div class="no-issues">All systems operational</div>';}
+    else{iEl.innerHTML=issues.map(i=>`<div class="issue-row">${i}</div>`).join('');}
+
+    // Process list
+    const procs=d.processes||{};
+    const pEl=document.getElementById('procList');
+    pEl.innerHTML=Object.entries(procs).map(([name,ok])=>`
+      <div class="proc-row">
+        <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
+        <div class="proc-name">${name}</div>
+        <div class="proc-status ${ok?'proc-on':'proc-off'}">${ok?'Running':'Stopped'}</div>
+      </div>`).join('');
+
+    // Connections
+    const connEl=document.getElementById('connPanel');
+    const connItems=[
+      {name:'Trading Engine',ok:procs['TradingCore']},
+      {name:'PostgreSQL',ok:procs['PostgreSQL']},
+      {name:'Redis',ok:procs['Redis']},
+      {name:'Telegram Bot',ok:procs['Telegram']},
+    ];
+    connEl.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px">'+
+      connItems.map(c=>`<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--s2);border-radius:7px">
+        <div style="width:8px;height:8px;border-radius:50%;background:${c.ok?'var(--gr)':'var(--rd)'}"></div>
+        <span style="font-size:12px">${c.name}</span>
+        <span style="margin-left:auto;font-size:11px;color:${c.ok?'var(--gr)':'var(--rd)'};font-weight:600">${c.ok?'OK':'Down'}</span>
+      </div>`).join('')+'</div>';
+
+  }catch(e){console.error(e);}
+}
+
+initSparks();load();setInterval(load,5000);
+</script>
+</body></html>

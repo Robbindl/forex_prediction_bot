@@ -1,8 +1,8 @@
 # type: ignore
 """
-ULTIMATE TRADING DASHBOARD — Wall-Street-Grade Signal Engine
-Patched: all UltimateTradingSystem/NASALevelFetcher references replaced with
-         TradingCore + DataFetcher API.
+dashboard/web_app_live.py — Professional Trading Intelligence Platform
+All routes for both legacy pages and the new 8-dashboard professional system.
+Wired exclusively to TradingCore — no old system references.
 """
 
 from flask import Flask, render_template, jsonify, request, Response, stream_with_context
@@ -18,6 +18,7 @@ import traceback
 from typing import Dict, List, Optional, Any
 from collections import deque
 from pandas import Period, Timestamp
+from flask import redirect
 
 from utils.logger import logger
 from telegram_manager import telegram_manager
@@ -74,7 +75,6 @@ args, _ = _parser.parse_known_args()
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# ── DataFetcher (replaces deleted NASALevelFetcher) ───────────────────────────
 from data.fetcher import DataFetcher
 
 app = Flask(__name__)
@@ -97,18 +97,14 @@ def _handle_404(e):
     return _jsonify({'success': False, 'error': f'Endpoint not found: {request.path}'}), 404
 
 
-# Module-level DataFetcher singleton
 fetcher = DataFetcher()
 
 
-# ── MarketHours helper (replaces deleted MarketHours class) ───────────────────
 class MarketHours:
-    """Replaces the deleted NASALevelFetcher.MarketHours."""
-
     @staticmethod
     def get_status() -> Dict[str, Any]:
         utc_h = datetime.utcnow().hour
-        dow   = datetime.utcnow().weekday()   # 0=Mon 6=Sun
+        dow   = datetime.utcnow().weekday()
         is_weekend = dow >= 5
         return {
             'crypto':      True,
@@ -121,7 +117,6 @@ class MarketHours:
         }
 
 
-# ── Telegram startup ──────────────────────────────────────────────────────────
 if not args.no_telegram:
     try:
         tok  = os.getenv('COMMAND_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN')
@@ -173,14 +168,12 @@ ALL_ASSETS = [
 
 _ASSET_MAP = {a: (cat, pip) for a, cat, pip in ALL_ASSETS}
 
-# ── SSE price cache ───────────────────────────────────────────────────────────
 _sse_price_cache: dict = {}
 _sse_price_lock        = threading.Lock()
 _SSE_CACHE_TTL         = 5
 
 
 def _get_sse_price(asset: str, category: str) -> Optional[float]:
-    """Fetch price using DataFetcher.get_real_time_price() with 5s cache."""
     import time as _t
     now = _t.time()
     with _sse_price_lock:
@@ -213,7 +206,7 @@ _REFRESH    = {'crypto':30,'forex':60,'commodities':60,'indices':120,'stocks':12
 _PRICE_GATE = 0.001
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PHASE 2 — TradingCore injection
+# TRADINGCORE INJECTION
 # ══════════════════════════════════════════════════════════════════════════════
 _CORE     = None
 _bot      = None
@@ -221,14 +214,12 @@ _bot_lock = threading.Lock()
 
 
 def inject_core(core) -> None:
-    """Called by bot.py after TradingCore is created."""
     global _bot, _CORE
     _CORE = core
     _bot  = core
     logger.info("[web_app] inject_core() called — TradingCore wired to dashboard")
 
 
-# ── Singleton helpers (whale / sentiment) — now backed by singleton classes ──
 _whale_mgr      = None
 _whale_mgr_lock = threading.Lock()
 
@@ -241,7 +232,7 @@ def get_whale_mgr():
             return _whale_mgr
         try:
             from whale_alert_manager import WhaleAlertManager
-            _whale_mgr = WhaleAlertManager()   # singleton — returns existing instance
+            _whale_mgr = WhaleAlertManager()
         except Exception as _e:
             logger.warning(f"WhaleAlertManager unavailable: {_e}")
     return _whale_mgr
@@ -259,18 +250,13 @@ def get_sentiment():
             return _sentiment
         try:
             from sentiment_analyzer import SentimentAnalyzer
-            _sentiment = SentimentAnalyzer()   # singleton — returns existing instance
+            _sentiment = SentimentAnalyzer()
         except Exception as _e:
             logger.warning(f"SentimentAnalyzer unavailable: {_e}")
     return _sentiment
 
 
 def get_bot():
-    """
-    Returns TradingCore (injected via inject_core) or None.
-    The old UltimateTradingSystem lazy-init is removed — this app is
-    always started by bot.py which calls inject_core() before Flask starts.
-    """
     global _bot
     if _bot is not None:
         return _bot
@@ -282,11 +268,6 @@ def get_bot():
 
 def _fetch_ohlcv(asset: str, category: str, days: int = 5,
                  interval: str = '1d') -> Optional[Any]:
-    """
-    Unified OHLCV fetch using DataFetcher.get_ohlcv().
-    Replaces all bot.fetch_historical_data() calls.
-    Maps 'days' to a period count DataFetcher understands.
-    """
     period_map = {'1m':1,'5m':5,'15m':7,'1h':30,'4h':90,'1d':days,'60m':30}
     periods    = period_map.get(interval, days)
     try:
@@ -303,7 +284,7 @@ _sig_store: Dict[str, Dict] = {}
 _sig_lock   = threading.Lock()
 _last_ref:  Dict[str, float] = {}
 _price_prev:Dict[str, float] = {}
-_signal_cache: Dict[str, Dict] = {}   # used by prediction overlay
+_signal_cache: Dict[str, Dict] = {}
 
 
 def _store_signal(asset: str, sig: Dict):
@@ -323,7 +304,6 @@ def _should_refresh(asset: str, category: str) -> bool:
 
 
 def _bg_refresh_worker():
-    """Background signal refresh thread."""
     try:
         get_sentiment()
         get_whale_mgr()
@@ -336,7 +316,6 @@ def _bg_refresh_worker():
             assets = [(a, c, p) for a, c, p in ALL_ASSETS
                       if c == 'crypto' or not status.get('is_weekend', False)]
             refreshed = 0
-
             for asset, category, _ in assets:
                 if not _should_refresh(asset, category):
                     continue
@@ -353,7 +332,6 @@ def _bg_refresh_worker():
                     logger.debug(f"BG refresh {asset}: {_e}")
                 finally:
                     _last_ref[asset] = time.time()
-
             if refreshed:
                 logger.info(f"BG refresh: {refreshed} signals updated")
         except Exception as _e:
@@ -375,17 +353,10 @@ def _closed_sig(asset: str, category: str) -> Dict:
 
 
 def _fetch_signal(asset: str, category: str) -> Optional[Dict]:
-    """
-    Build one signal using TradingCore.get_signal_for_asset() as the
-    primary source, falling back to DataFetcher + indicators when the
-    engine isn't ready.
-    Replaces all bot.fetch_historical_data() / bot.voting_engine calls.
-    """
     try:
         price, _ = fetcher.get_real_time_price(asset, category)
         if not price or price <= 0:
             return None
-
         prev = _price_prev.get(asset, 0)
         if prev and abs(price - prev) / prev < _PRICE_GATE:
             cached = _get_cached_signal(asset)
@@ -393,7 +364,6 @@ def _fetch_signal(asset: str, category: str) -> Optional[Dict]:
                 return cached
         _price_prev[asset] = price
 
-        # ── Primary: TradingCore pipeline ────────────────────────────────────
         core = get_bot()
         if core is not None and hasattr(core, 'get_signal_for_asset'):
             try:
@@ -424,32 +394,23 @@ def _fetch_signal(asset: str, category: str) -> Optional[Dict]:
             except Exception as _ce:
                 logger.debug(f"TradingCore signal for {asset}: {_ce}")
 
-        # ── Fallback: indicators only (engine not ready) ─────────────────────
         df = _fetch_ohlcv(asset, category, days=5, interval='15m')
         if df is None or df.empty:
             return None
-
         try:
             from indicators.technical import TechnicalIndicators
             df = TechnicalIndicators.add_all_indicators(df)
         except Exception:
             pass
-
         atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else price * 0.01
         rsi = float(df['rsi'].iloc[-1]) if 'rsi' in df.columns else 50.0
-
-        if rsi < 35:
-            d = 'BUY'
-        elif rsi > 65:
-            d = 'SELL'
-        else:
-            return None
-
+        if rsi < 35:   d = 'BUY'
+        elif rsi > 65: d = 'SELL'
+        else:          return None
         sl  = price - (atr * 1.5) if d == 'BUY' else price + (atr * 1.5)
         tp1 = price + (atr * 2)   if d == 'BUY' else price - (atr * 2)
         tp2 = price + (atr * 3)   if d == 'BUY' else price - (atr * 3)
         tp3 = price + (atr * 4)   if d == 'BUY' else price - (atr * 4)
-
         return {
             'asset': asset, 'category': category, 'signal': d, 'direction': d,
             'confidence': round(0.60 + abs(rsi - 50) / 100, 3),
@@ -467,7 +428,6 @@ def _fetch_signal(asset: str, category: str) -> Optional[Dict]:
             'expires_at': (datetime.now() + timedelta(hours=4)).isoformat(),
             'time_remaining': 240.0,
         }
-
     except Exception as _e:
         logger.error(f"_fetch_signal {asset}: {_e}")
         return None
@@ -482,22 +442,16 @@ def _tp_levels(sig: Dict) -> List[Dict]:
     return levels
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# HUMAN RESPONSE GENERATOR
-# ══════════════════════════════════════════════════════════════════════════════
 def generate_human_response(asset: str, df, prediction: Dict,
                              news: List, whale: str = None) -> Dict:
     direction     = prediction.get('direction', 'HOLD')
     confidence    = prediction.get('confidence', 0.5)
     current_price = float(df['close'].iloc[-1]) if df is not None and not df.empty else 0
-
     _COMM  = any(k in asset for k in ('XAU','XAG','GC=','SI=','CL=','WTI'))
     _CRYPT = any(k in asset for k in ('-USD','BTC','ETH','SOL','BNB','XRP'))
     sl_pct, tp_pct = (0.015, 0.025) if _COMM else (0.005, 0.015) if _CRYPT else (0.003, 0.008)
-
     sl = current_price * (1 - sl_pct) if direction == 'UP' else current_price * (1 + sl_pct)
     tp = current_price * (1 + tp_pct) if direction == 'UP' else current_price * (1 - tp_pct)
-
     reasons = []
     try:
         if df is not None:
@@ -508,11 +462,9 @@ def generate_human_response(asset: str, df, prediction: Dict,
                 reasons.append('MACD bullish cross' if float(df['macd'].iloc[-1]) > float(df['macd_signal'].iloc[-1]) else 'MACD bearish')
             if 'sma_20' in df.columns and 'sma_50' in df.columns:
                 reasons.append('Above 20/50 SMA (uptrend)' if float(df['sma_20'].iloc[-1]) > float(df['sma_50'].iloc[-1]) else 'Below 20/50 SMA (downtrend)')
-    except Exception as _ie:
-        logger.debug(f"Indicator fallback: {_ie}")
+    except Exception: pass
     if not reasons:
         reasons = ['Technical analysis in progress']
-
     return {
         'direction': direction, 'confidence': confidence,
         'current_price': current_price,
@@ -524,46 +476,57 @@ def generate_human_response(asset: str, df, prediction: Dict,
         'timestamp': datetime.now().isoformat(),
     }
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# ROUTES
+# PROFESSIONAL DASHBOARD PAGE ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
-
 @app.route('/')
 def index():
-    return render_template('index_live.html')
+    return redirect('/command-center')
+
+@app.route('/command-center')
+def command_center():
+    return render_template('command_center.html')
+
+@app.route('/market-intelligence')
+def market_intelligence():
+    return render_template('market_intelligence.html')
+
+@app.route('/ai-predictions')
+def ai_predictions():
+    return render_template('ai_predictions.html')
+
+@app.route('/whale-intelligence')
+def whale_intelligence():
+    return render_template('whale_intelligence.html')
+
+@app.route('/sentiment-intelligence')
+def sentiment_intelligence():
+    return render_template('sentiment_intelligence.html')
+
+@app.route('/risk-dashboard')
+def risk_dashboard():
+    return render_template('risk_dashboard.html')
+
+@app.route('/strategy-lab')
+def strategy_lab():
+    return render_template('strategy_lab.html')
+
+@app.route('/system-monitor')
+def system_monitor():
+    return render_template('system_monitor.html')
 
 
-@app.route('/status')
-def status_page():
-    return render_template('status_dashboard.html')
+# ══════════════════════════════════════════════════════════════════════════════
+# EXISTING API ROUTES
+# ══════════════════════════════════════════════════════════════════════════════
 
-
-@app.route('/sentiment')
-def sentiment_dashboard():
-    return render_template('sentiment_dashboard.html')
-
-
-@app.route('/backtest')
-def backtest_page():
-    return render_template('backtest_visualizer.html')
-
-
-@app.route('/websocket-feed')
-def websocket_feed_page():
-    return render_template('websocket_feed.html')
-
-
-# ── /api/signals/live ─────────────────────────────────────────────────────────
 @app.route('/api/signals/live')
 def get_live_signals():
     try:
         now    = datetime.now()
         filt   = request.args.get('filter', 'all')
         status = MarketHours.get_status()
-
-        # Prefer open positions from TradingCore when available
-        core = get_bot()
+        core   = get_bot()
         if core is not None:
             positions = core.get_positions()
             signals   = []
@@ -584,10 +547,13 @@ def get_live_signals():
                     'take_profit_levels': p.get('take_profit_levels', []),
                     'position_size':      float(p.get('position_size', 0)),
                     'strategy_id':        p.get('strategy_id', ''),
+                    'pnl':                float(p.get('pnl', 0)),
                     'market_open':        True,
                     'time_remaining':     240.0,
                     'generated_at':       str(p.get('open_time', ''))[:16],
                     'timestamp':          p.get('open_time', now.isoformat()),
+                    'metadata':           p.get('metadata', {}),
+                    'layer_reached':      p.get('layer_reached', 0),
                 })
             buys     = sum(1 for s in signals if s['signal'] == 'BUY')
             sells    = sum(1 for s in signals if s['signal'] == 'SELL')
@@ -601,7 +567,6 @@ def get_live_signals():
                 'last_update': now.strftime('%H:%M:%S'), 'is_updating': False,
             })
 
-        # Fallback: background signal cache
         signals = list(_sig_store.values())
         for s in signals:
             try:
@@ -609,17 +574,14 @@ def get_live_signals():
                 s['time_remaining'] = max(0.0, 240.0 - age)
             except Exception:
                 s['time_remaining'] = 240.0
-
         if filt == 'buy':             signals = [s for s in signals if s.get('signal') == 'BUY']
         elif filt == 'sell':          signals = [s for s in signals if s.get('signal') == 'SELL']
         elif filt == 'high-confidence': signals = [s for s in signals if s.get('confidence', 0) >= 0.7]
-
         open_sigs = [s for s in signals if s.get('market_open') and s.get('signal') not in ('HOLD', 'CLOSED')]
         buys      = sum(1 for s in open_sigs if s.get('signal') == 'BUY')
         sells     = sum(1 for s in open_sigs if s.get('signal') == 'SELL')
         avg_conf  = sum(s.get('confidence', 0) for s in open_sigs) / max(1, len(open_sigs))
         signals.sort(key=lambda x: (-(x.get('confidence', 0)) if x.get('market_open') else -999))
-
         return jsonify({
             'success': True, 'signals': signals, 'total_signals': len(open_sigs),
             'buy_signals': buys, 'sell_signals': sells,
@@ -632,15 +594,12 @@ def get_live_signals():
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
-# ── /api/signal/<asset> ───────────────────────────────────────────────────────
 @app.route('/api/signal/<path:asset>')
 def get_signal(asset: str):
     try:
         asset    = ASSET_ALIASES.get(asset.upper().strip(), asset.upper().strip())
         category, _ = _ASSET_MAP.get(asset, ('stocks', 0.5))
         core     = get_bot()
-
-        # Primary: TradingCore 7-layer pipeline
         if core is not None and hasattr(core, 'get_signal_for_asset'):
             try:
                 sig = core.get_signal_for_asset(asset)
@@ -656,32 +615,25 @@ def get_signal(asset: str):
                     return jsonify({'success': True, 'signal': sig, 'human_response': sig})
             except Exception as _pe:
                 logger.warning(f"TradingCore signal {asset}: {_pe}")
-
-        # Fallback: indicators + DataFetcher
         df = _fetch_ohlcv(asset, category, days=5, interval='15m')
         if df is None or df.empty:
-            # Try other intervals
             for iv in ('1h', '1d'):
                 df = _fetch_ohlcv(asset, category, days=30, interval=iv)
                 if df is not None and not df.empty:
                     break
         if df is None or df.empty:
             return jsonify({'success': False, 'error': f'No data for {asset}'}), 404
-
         try:
             from indicators.technical import TechnicalIndicators
             df = TechnicalIndicators.add_all_indicators(df)
         except Exception:
             pass
-
         price = float(df['close'].iloc[-1])
         atr   = float(df['atr'].iloc[-1]) if 'atr' in df.columns else price * 0.01
         rsi   = float(df['rsi'].iloc[-1]) if 'rsi' in df.columns else 50.0
         d     = 'BUY' if rsi < 40 else 'SELL' if rsi > 60 else 'HOLD'
         sl    = price - atr * 1.5 if d == 'BUY' else price + atr * 1.5
         tp    = price + atr * 2   if d == 'BUY' else price - atr * 2
-
-        # Whale context
         whale = None
         try:
             wm = get_whale_mgr()
@@ -695,7 +647,6 @@ def get_signal(asset: str):
                         break
         except Exception:
             pass
-
         sr = {
             'direction': d, 'signal': d, 'confidence': 0.6,
             'current_price': price, 'entry_price': price,
@@ -705,13 +656,11 @@ def get_signal(asset: str):
         }
         hr = generate_human_response(asset, df, sr, [], whale)
         return jsonify({'success': True, 'signal': sr, 'human_response': hr})
-
     except Exception as _e:
         logger.error(f"get_signal {asset}: {_e}\n{traceback.format_exc()}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
-# ── /api/signal/history ───────────────────────────────────────────────────────
 @app.route('/api/signal/history')
 def signal_history():
     try:
@@ -720,11 +669,9 @@ def signal_history():
         limit = int(request.args.get('limit', 20))
         return jsonify({'success': True, 'signals': signal_engine.get_history(asset, limit)})
     except Exception as _e:
-        logger.error(f"signal_history: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
-# ── /api/position-audit ───────────────────────────────────────────────────────
 @app.route('/api/position-audit')
 def position_audit():
     try:
@@ -732,18 +679,12 @@ def position_audit():
         if not core:
             return jsonify({'error': 'Trading system not ready', 'healthy': False})
         positions = core.get_positions()
-        return jsonify({
-            'healthy':    True,
-            'positions':  positions,
-            'count':      len(positions),
-            'timestamp':  datetime.now().isoformat(),
-        })
+        return jsonify({'healthy': True, 'positions': positions,
+                        'count': len(positions), 'timestamp': datetime.now().isoformat()})
     except Exception as _e:
-        logger.error(f"position_audit: {_e}")
         return jsonify({'error': str(_e), 'healthy': False})
 
 
-# ── /api/positions/stream — SSE ───────────────────────────────────────────────
 @app.route('/api/positions/stream')
 def positions_stream():
     def _enrich(p: dict) -> dict:
@@ -768,28 +709,15 @@ def positions_stream():
         while True:
             try:
                 positions = []
-                # TradingCore.state — always authoritative
                 if _CORE is not None:
                     try:
                         positions = [_enrich(p) for p in _CORE.state.get_open_positions()]
                     except Exception as _ce:
                         logger.debug(f"TradingCore positions: {_ce}")
-                # Fallback: state_bridge
-                if not positions:
-                    try:
-                        from state_bridge import read_trading_state
-                        state = read_trading_state()
-                        if state and state.get('open_positions'):
-                            positions = [_enrich(p) for p in state['open_positions']]
-                    except Exception:
-                        pass
-                payload = json.dumps(
-                    {'positions': positions, 'count': len(positions),
-                     'ts': datetime.now().isoformat()}, cls=_Encoder
-                )
+                payload = json.dumps({'positions': positions, 'count': len(positions),
+                                      'ts': datetime.now().isoformat()}, cls=_Encoder)
                 yield f"data: {payload}\n\n"
             except Exception as _e:
-                logger.error(f"positions_stream: {_e}")
                 yield f"data: {json.dumps({'error': str(_e)})}\n\n"
             time.sleep(5)
 
@@ -797,12 +725,10 @@ def positions_stream():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
-# ── /api/stress-test ──────────────────────────────────────────────────────────
 @app.route('/api/stress-test', methods=['GET', 'POST'])
 def stress_test():
     try:
         from signal_learning import run_stress_test
-
         if request.method == 'POST':
             body      = request.get_json(force=True) or {}
             positions = body.get('positions', [])
@@ -814,48 +740,34 @@ def stress_test():
                 for p in _CORE.state.get_open_positions():
                     asset = p.get('asset', '')
                     cat, _ = _ASSET_MAP.get(asset, ('stocks', 0))
-                    positions.append({
-                        'asset': asset, 'category': p.get('category', cat),
-                        'direction': p.get('direction', p.get('signal', 'BUY')),
-                        'size_usd': float(p.get('position_size', p.get('size', 0))),
-                    })
+                    positions.append({'asset': asset, 'category': p.get('category', cat),
+                                      'direction': p.get('direction', p.get('signal', 'BUY')),
+                                      'size_usd': float(p.get('position_size', p.get('size', 0)))})
                 balance = _CORE.state.balance
-
         result = run_stress_test(positions, balance)
         return jsonify({'success': True, **result})
     except Exception as _e:
-        logger.error(f"stress_test: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
-# ── /api/walk-forward/<asset> ─────────────────────────────────────────────────
 @app.route('/api/walk-forward/<path:asset>')
 def walk_forward(asset: str):
-    """
-    Walk-forward ML optimisation.
-    Uses DataFetcher.get_ohlcv() and ml.predictor.MLPredictor.
-    Replaces old bot.fetch_historical_data() / bot.predictor calls.
-    """
     try:
         import numpy as np
         from indicators.technical import TechnicalIndicators
         from ml.predictor import MLPredictor
-
         asset    = ASSET_ALIASES.get(asset.upper().strip(), asset.upper().strip())
         category, _ = _ASSET_MAP.get(asset, ('stocks', 0.5))
-
         df = _fetch_ohlcv(asset, category, days=90, interval='1d')
         if df is None or len(df) < 60:
             return jsonify({'success': False, 'error': 'Not enough history (need 60+ days)'}), 422
         df = TechnicalIndicators.add_all_indicators(df)
-
         predictor  = MLPredictor()
         WINDOWS    = 3
         WIN_SIZE   = len(df) // WINDOWS
         results    = []
         best_model = None
         best_sharpe = -999
-
         for w in range(WINDOWS):
             start = w * WIN_SIZE
             end   = start + WIN_SIZE
@@ -870,14 +782,12 @@ def walk_forward(asset: str):
                                                    test.iloc[:i + 1] if i > 0 else train.iloc[-5:])
                     direction = 'UP' if prob > 0.55 else 'DOWN' if prob < 0.45 else 'HOLD'
                     preds.append({'direction': direction, 'confidence': conf})
-
                 rets = []
                 for i, pred in enumerate(preds[:-1]):
                     if pred['direction'] in ('UP', 'DOWN') and pred['confidence'] > 0.3:
                         ret = float(test['close'].iloc[i + 1] - test['close'].iloc[i]) / float(test['close'].iloc[i])
                         if pred['direction'] == 'DOWN': ret = -ret
                         rets.append(ret)
-
                 if rets:
                     arr    = np.array(rets)
                     sharpe = float(arr.mean() / (arr.std() + 1e-8) * np.sqrt(252))
@@ -885,13 +795,10 @@ def walk_forward(asset: str):
                     total  = float(arr.sum() * 100)
                 else:
                     sharpe = win_r = total = 0.0
-
                 window_result = {
                     'window': w + 1,
-                    'train_start': str(train.index[0]),
-                    'train_end':   str(train.index[-1]),
-                    'test_start':  str(test.index[0]),
-                    'test_end':    str(test.index[-1]),
+                    'train_start': str(train.index[0]), 'train_end': str(train.index[-1]),
+                    'test_start':  str(test.index[0]),  'test_end':  str(test.index[-1]),
                     'signals': len(rets), 'win_rate': round(win_r, 3),
                     'total_return_pct': round(total, 2), 'sharpe': round(sharpe, 3),
                 }
@@ -900,34 +807,25 @@ def walk_forward(asset: str):
                     best_sharpe = sharpe
                     best_model  = w + 1
             except Exception as _we:
-                logger.warning(f"Walk-forward window {w}: {_we}")
                 results.append({'window': w + 1, 'error': str(_we)})
-
         if not results:
             return jsonify({'success': False, 'error': 'All windows failed'})
-
         valid   = [r for r in results if 'sharpe' in r]
         avg_sh  = round(sum(r['sharpe'] for r in valid) / max(1, len(valid)), 3)
         avg_wr  = round(sum(r['win_rate'] for r in valid) / max(1, len(valid)), 3)
-
         return jsonify({
             'success': True, 'asset': asset, 'windows': results,
-            'summary': {
-                'avg_sharpe': avg_sh, 'avg_win_rate': avg_wr,
-                'best_window': best_model,
-                'verdict': 'ROBUST' if avg_sh > 0.5 else 'MARGINAL' if avg_sh > 0 else 'POOR',
-            },
+            'summary': {'avg_sharpe': avg_sh, 'avg_win_rate': avg_wr,
+                        'best_window': best_model,
+                        'verdict': 'ROBUST' if avg_sh > 0.5 else 'MARGINAL' if avg_sh > 0 else 'POOR'},
         })
     except Exception as _e:
-        logger.error(f"walk_forward {asset}: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
-# ── /api/system-status ────────────────────────────────────────────────────────
 @app.route('/api/system-status')
 def system_status():
     try:
-        # TradingCore path (always preferred)
         if _CORE is not None:
             perf      = _CORE.state.get_performance()
             balance   = perf.get('balance', args.balance)
@@ -945,8 +843,6 @@ def system_status():
                 'engine_ready':     _CORE.is_ready,
                 'timestamp':        datetime.now().isoformat(),
             })
-
-        # Standalone fallback
         balance   = args.balance
         open_p    = closed_p = today_pnl = total_pnl = 0
         try:
@@ -966,16 +862,12 @@ def system_status():
                         pass
         except Exception as _dbe:
             logger.debug(f"DB status query: {_dbe}")
-
-        return jsonify({
-            'success': True, 'balance': round(balance, 2),
-            'pnl': round(today_pnl, 2), 'open_positions': open_p,
-            'closed_positions': closed_p,
-            'processes': {'Trading Bot': _bot is not None, 'Web Dashboard': True},
-            'timestamp': datetime.now().isoformat(),
-        })
+        return jsonify({'success': True, 'balance': round(balance, 2),
+                        'pnl': round(today_pnl, 2), 'open_positions': open_p,
+                        'closed_positions': closed_p,
+                        'processes': {'Trading Bot': _bot is not None, 'Web Dashboard': True},
+                        'timestamp': datetime.now().isoformat()})
     except Exception as _e:
-        logger.error(f"system_status: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
@@ -1000,15 +892,9 @@ def api_status():
     })
 
 
-# ── /api/backtest/run ─────────────────────────────────────────────────────────
 @app.route('/api/backtest/run')
 def api_backtest_run():
-    """
-    Backtest using BacktestEngine from backtest/engine.py.
-    Replaces old bot.backtester / bot.strategy_engine calls.
-    """
     import numpy as np
-
     asset    = request.args.get('asset', 'BTC-USD')
     period   = request.args.get('period', '90d')
     days     = {'30d': 30, '90d': 90, '180d': 180, '365d': 365, '730d': 730}.get(period, 90)
@@ -1022,8 +908,7 @@ def api_backtest_run():
             if isinstance(obj, _np.integer):  return int(obj)
             if isinstance(obj, _np.floating): return float(obj)
             if isinstance(obj, _np.ndarray):  return obj.tolist()
-        except Exception:
-            pass
+        except Exception: pass
         if hasattr(obj, 'isoformat'): return obj.isoformat()
         return obj
 
@@ -1031,61 +916,40 @@ def api_backtest_run():
         df = _fetch_ohlcv(asset, category, days=days, interval='1d')
         if df is None or df.empty:
             return jsonify({'success': False, 'error': f'No data for {asset}'}), 404
-
         try:
             from indicators.technical import TechnicalIndicators
             df = TechnicalIndicators.add_all_indicators(df)
-        except Exception:
-            pass
-
+        except Exception: pass
         try:
             from backtest.engine import BacktestEngine
             result  = BacktestEngine(initial_balance=args.balance).run(asset, category, df)
             rd      = result.to_dict()
             balance = args.balance
-
             equity_curve = []
             for i, trade in enumerate(result.trades):
                 balance += float(trade.get('pnl', 0))
-                equity_curve.append({
-                    'date':      str(trade.get('open_time', i))[:10],
-                    'value':     round(balance, 2),
-                    'benchmark': round(args.balance * (1 + i * 0.0005), 2),
-                })
-
+                equity_curve.append({'date': str(trade.get('open_time', i))[:10],
+                                     'value': round(balance, 2),
+                                     'benchmark': round(args.balance * (1 + i * 0.0005), 2)})
             from collections import defaultdict as _dd
             monthly: dict = _dd(float)
             for trade in result.trades:
                 monthly[str(trade.get('open_time', ''))[:7] or 'Unknown'] += float(trade.get('pnl', 0))
-
-            return jsonify(_clean({
-                'success': True,
-                'results': {
-                    **rd,
-                    'total_return':    rd.get('return_pct', 0),
-                    'equity_curve':    equity_curve,
-                    'monthly_returns': [
-                        {'month': k, 'return_pct': round(v / args.balance * 100, 2)}
-                        for k, v in sorted(monthly.items())
-                    ],
-                    'trades': result.trades,
-                },
-            }))
+            return jsonify(_clean({'success': True, 'results': {
+                **rd, 'total_return': rd.get('return_pct', 0),
+                'equity_curve':    equity_curve,
+                'monthly_returns': [{'month': k, 'return_pct': round(v / args.balance * 100, 2)}
+                                    for k, v in sorted(monthly.items())],
+                'trades': result.trades,
+            }}))
         except ImportError:
             pass
-
-        # Minimal fallback without BacktestEngine
-        return jsonify({'success': True, 'results': {
-            'total_trades': 0, 'win_rate': 0, 'total_pnl': 0,
-            'return_pct': 0, 'equity_curve': [], 'monthly_returns': [], 'trades': [],
-        }})
-
+        return jsonify({'success': True, 'results': {'total_trades': 0, 'win_rate': 0, 'total_pnl': 0,
+                        'return_pct': 0, 'equity_curve': [], 'monthly_returns': [], 'trades': []}})
     except Exception as _e:
-        logger.error(f"backtest {asset}: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
-# ── /api/sentiment/dashboard ──────────────────────────────────────────────────
 @app.route('/api/sentiment/dashboard')
 def api_sentiment_dashboard():
     try:
@@ -1122,7 +986,6 @@ def api_sentiment_dashboard():
             }
         return jsonify(result)
     except Exception as _e:
-        logger.error(f"sentiment_dashboard: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
@@ -1132,7 +995,6 @@ def api_market_events():
         analyzer = get_sentiment()
         return jsonify({'success': True, 'events': analyzer.get_market_events() if analyzer else []})
     except Exception as _e:
-        logger.error(f"market_events: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
@@ -1145,11 +1007,9 @@ def get_websocket_feed():
         return jsonify({'success': True, 'transactions': txs, 'count': len(txs),
                         'connection_status': connection_status})
     except Exception as _e:
-        logger.error(f"websocket_feed: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
-# ── /api/chart/* ──────────────────────────────────────────────────────────────
 @app.route('/api/chart/stream')
 def chart_stream():
     asset    = request.args.get('asset', 'EUR/USD')
@@ -1162,16 +1022,13 @@ def chart_stream():
                 import time as _t
                 now   = _t.time()
                 price = _get_sse_price(asset, category)
-
                 if price:
                     yield f"data: {json.dumps({'type': 'tick', 'asset': asset, 'price': price, 'time': int(now)})}\n\n"
-
                 if now - last_pos_push >= 5:
                     try:
                         open_pos = []
                         history  = []
                         balance  = None
-
                         if _CORE is not None:
                             positions = _CORE.state.get_open_positions()
                             for p in positions:
@@ -1179,33 +1036,24 @@ def chart_stream():
                                 try:
                                     if price and p.get('asset') == asset and p.get('entry_price'):
                                         diff = price - float(p['entry_price'])
-                                        if p.get('direction', p.get('signal', 'BUY')) == 'SELL':
-                                            diff = -diff
+                                        if p.get('direction', p.get('signal', 'BUY')) == 'SELL': diff = -diff
                                         unreal = round(diff * float(p.get('position_size', 0)), 4)
-                                except Exception:
-                                    pass
+                                except Exception: pass
                                 p['unrealized_pnl'] = unreal
                                 open_pos.append(p)
                             history = _CORE.get_closed_trades(limit=50)
                             balance = _CORE.get_balance()
-
                         yield f"data: {json.dumps({'type': 'positions', 'open': open_pos, 'history': history, 'balance': balance}, default=str)}\n\n"
                         last_pos_push = now
                     except Exception as _pe:
                         logger.debug(f"SSE positions error: {_pe}")
                 _t.sleep(2)
-        except GeneratorExit:
-            pass
+        except GeneratorExit: pass
         except Exception as _se:
             logger.debug(f"SSE stream error for {asset}: {_se}")
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
-
-
-@app.route('/chart')
-def chart_page():
-    return render_template('chart_live.html')
 
 
 @app.route('/api/chart/assets')
@@ -1219,18 +1067,15 @@ def chart_assets():
 
 @app.route('/api/chart/candles')
 def chart_candles():
-    """OHLCV candles using DataFetcher.get_ohlcv(). Replaces bot.fetch_historical_data()."""
     try:
         asset    = request.args.get('asset', 'EUR/USD')
         interval = request.args.get('interval', '1h')
         category, _ = _ASSET_MAP.get(asset, ('forex', 0.001))
         days_map = {'1m': 1, '5m': 5, '15m': 7, '1h': 30, '4h': 90, '1d': 365}
         days     = days_map.get(interval, 30)
-
         df = _fetch_ohlcv(asset, category, days=days, interval=interval)
         if df is None or df.empty:
             return jsonify({'success': False, 'error': f'No data for {asset}'}), 404
-
         df.columns = [c.lower() for c in df.columns]
         candles = []
         for ts, row in df.iterrows():
@@ -1245,29 +1090,23 @@ def chart_candles():
                     'close':  float(row.get('close', 0)),
                     'volume': float(row.get('volume', 0)),
                 })
-            except Exception:
-                continue
-
+            except Exception: continue
         seen, clean = set(), []
         for c in sorted(candles, key=lambda x: x['time']):
             if c['time'] not in seen:
                 seen.add(c['time'])
                 clean.append(c)
-
         return jsonify({'success': True, 'candles': clean, 'count': len(clean)})
     except Exception as _e:
-        logger.error(f"chart_candles: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
 @app.route('/api/chart/positions')
 def chart_positions():
-    """Positions and trade history from TradingCore. Replaces bot.paper_trader calls."""
     try:
         open_pos = []
         history  = []
         balance  = None
-
         if _CORE is not None:
             raw = _CORE.state.get_open_positions()
             for p in raw:
@@ -1277,19 +1116,15 @@ def chart_positions():
                     cur, _ = fetcher.get_real_time_price(p['asset'], cat)
                     if cur and p.get('entry_price'):
                         diff = cur - float(p['entry_price'])
-                        if p.get('direction', p.get('signal', 'BUY')) == 'SELL':
-                            diff = -diff
+                        if p.get('direction', p.get('signal', 'BUY')) == 'SELL': diff = -diff
                         unreal = round(diff * float(p.get('position_size', 0)), 4)
-                except Exception:
-                    pass
+                except Exception: pass
                 p['unrealized_pnl'] = unreal
                 open_pos.append(p)
             history = _CORE.get_closed_trades(limit=50)
             balance = _CORE.get_balance()
-
         return jsonify({'success': True, 'open': open_pos, 'history': history, 'balance': balance})
     except Exception as _e:
-        logger.error(f"chart_positions: {_e}")
         return jsonify({'success': False, 'error': str(_e)}), 500
 
 
@@ -1309,34 +1144,7 @@ def run_tests():
             success = _run_tests()
         return jsonify({'success': success, 'output': buf.getvalue()})
     except Exception as _e:
-        logger.error(f"run_tests: {_e}")
         return jsonify({'success': False, 'error': str(_e), 'output': buf.getvalue()}), 500
-
-
-@app.route('/api/install')
-def install_script():
-    script = r"""@echo off
-REM Forex Bot Auto-Installer
-python -m venv venv_tf
-call venv_tf\Scripts\activate.bat
-python -m pip install --upgrade pip
-pip install flask flask-cors pandas numpy scikit-learn yfinance sqlalchemy psycopg2-binary python-dotenv requests
-pip install ta-lib-binary pandas-ta websockets python-telegram-bot praw finnhub-python twelvedata
-pip install xgboost lightgbm optuna
-if not exist .env (
-    echo TELEGRAM_TOKEN=your_token_here > .env
-    echo Created .env template
-)
-echo Install complete!
-"""
-    return Response(script, mimetype='text/plain',
-                    headers={'Content-Disposition': 'attachment; filename=install.bat'})
-
-
-# ── Platform upgrade routes ───────────────────────────────────────────────────
-@app.route('/accuracy')
-def accuracy_page():
-    return render_template('accuracy_dashboard.html')
 
 
 @app.route('/api/orderflow/<path:asset>')
@@ -1396,8 +1204,6 @@ def api_prediction_overlay(asset: str):
     asset    = ASSET_ALIASES.get(asset.upper(), asset)
     cat, _   = _ASSET_MAP.get(asset, ('forex', 0.001))
     overlay  = None
-
-    # TradingCore pipeline
     core = get_bot()
     if core is not None and hasattr(core, 'get_signal_for_asset'):
         try:
@@ -1409,14 +1215,12 @@ def api_prediction_overlay(asset: str):
                     'target_price':    sig.get('take_profit', 0),
                     'stop_loss':       sig.get('stop_loss', 0),
                     'confidence':      sig.get('confidence', 0.5),
+                    'risk_reward':     sig.get('risk_reward', 0),
                     'horizon_minutes': 60, 'asset': asset,
                     'strategy':        sig.get('strategy_id', ''),
                     'regime':          sig.get('metadata', {}).get('regime', ''),
                 }
-        except Exception:
-            pass
-
-    # Fallback: signal cache
+        except Exception: pass
     if overlay is None:
         cached = _signal_cache.get(asset, {})
         signal = cached.get('signal') if isinstance(cached, dict) else None
@@ -1429,15 +1233,18 @@ def api_prediction_overlay(asset: str):
                     'target_price':    signal.get('take_profit', 0),
                     'stop_loss':       signal.get('stop_loss', 0),
                     'confidence':      signal.get('confidence', 0.5),
+                    'risk_reward':     signal.get('risk_reward', 0),
                     'horizon_minutes': 60, 'asset': asset,
                     'strategy':        signal.get('strategy', ''),
                     'regime':          signal.get('regime', ''),
                 }
-
     alpha_sigs = _alpha_engine.get_signals_for_asset(asset, 3) if _alpha_engine else []
     of_snap    = _orderflow_engine.get_snapshot(asset) if _orderflow_engine else None
-
-    return jsonify({'success': True, 'asset': asset, 'overlay': overlay,
+    # Flatten for chart_live.html — it reads top-level fields
+    if overlay:
+        return jsonify({'success': True, 'asset': asset, **overlay,
+                        'alpha': alpha_sigs, 'orderflow': of_snap})
+    return jsonify({'success': False, 'asset': asset, 'direction': 'HOLD',
                     'alpha': alpha_sigs, 'orderflow': of_snap})
 
 
@@ -1451,13 +1258,377 @@ def api_redis_status():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STARTUP
+# NEW PROFESSIONAL DASHBOARD API ROUTES
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/command-center')
+def api_command_center():
+    try:
+        core = get_bot()
+        perf = {}; daily = {}; positions = []; health = {}
+        if core:
+            perf      = core.get_performance()
+            daily     = core.get_daily_stats()
+            positions = core.get_positions()
+            health    = core.health_report()
+
+        sent_score = 0.0
+        try:
+            sa = get_sentiment()
+            if sa:
+                ms = sa.get_comprehensive_sentiment('general')
+                sent_score = float(ms.get('score', 0)) if ms else 0.0
+        except Exception: pass
+
+        whale_count = 0
+        try:
+            wm = get_whale_mgr()
+            if wm:
+                alerts = wm.get_top_alerts(limit=5, days=1)
+                whale_count = len(alerts)
+        except Exception: pass
+
+        signals = [s for s in list(_sig_store.values())
+                   if s.get('signal', 'HOLD') not in ('HOLD', 'CLOSED')][:5]
+
+        return jsonify({
+            'success':          True,
+            'balance':          perf.get('balance', args.balance),
+            'total_pnl':        perf.get('total_pnl', 0),
+            'daily_pnl':        daily.get('daily_pnl', 0),
+            'daily_trades':     daily.get('daily_trades', 0),
+            'win_rate':         perf.get('win_rate', 0),
+            'open_positions':   len(positions),
+            'total_trades':     perf.get('total_trades', 0),
+            'engine_running':   health.get('is_running', False),
+            'engine_ready':     health.get('engine_ready', False),
+            'sentiment_score':  round(sent_score, 3),
+            'whale_alerts_24h': whale_count,
+            'latest_signals':   signals,
+            'positions':        positions[:8],
+            'timestamp':        datetime.now().isoformat(),
+        })
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+@app.route('/api/correlation-matrix')
+def api_correlation_matrix():
+    try:
+        import pandas as pd
+        import numpy as np
+        assets = ['BTC-USD','ETH-USD','GC=F','EUR/USD','^GSPC','AAPL','NVDA','TSLA']
+        closes = {}
+        for asset in assets:
+            cat = _ASSET_MAP.get(asset, ('crypto', 0.02))[0]
+            df  = _fetch_ohlcv(asset, cat, days=30, interval='1d')
+            if df is not None and not df.empty and 'close' in df.columns:
+                closes[asset] = df['close'].astype(float)
+        if len(closes) < 2:
+            return jsonify({'success': False, 'error': 'Not enough data'})
+        frame  = pd.DataFrame(closes).pct_change().dropna()
+        corr   = frame.corr().round(3)
+        return jsonify({'success': True, 'labels': list(corr.columns),
+                        'matrix': corr.values.tolist()})
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+@app.route('/api/market/heatmap')
+def api_market_heatmap():
+    try:
+        sample = [
+            ('BTC-USD','crypto'), ('ETH-USD','crypto'), ('SOL-USD','crypto'),
+            ('XRP-USD','crypto'),  ('BNB-USD','crypto'),
+            ('EUR/USD','forex'),   ('GBP/USD','forex'),  ('USD/JPY','forex'),
+            ('GC=F','commodities'),('CL=F','commodities'),
+            ('^GSPC','indices'),   ('^IXIC','indices'),
+            ('AAPL','stocks'),     ('NVDA','stocks'),     ('TSLA','stocks'),
+        ]
+        results = []
+        for asset, cat in sample:
+            try:
+                df = _fetch_ohlcv(asset, cat, days=2, interval='1d')
+                if df is not None and len(df) >= 2 and 'close' in df.columns:
+                    closes = df['close'].astype(float)
+                    chg    = (closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100
+                    results.append({'asset': asset, 'category': cat,
+                                    'change_pct': round(float(chg), 2),
+                                    'price': round(float(closes.iloc[-1]), 5)})
+            except Exception: pass
+        results.sort(key=lambda x: x['change_pct'], reverse=True)
+        return jsonify({'success': True, 'items': results})
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+@app.route('/api/predictions/summary')
+def api_predictions_summary():
+    try:
+        stats   = {}
+        if _pred_tracker:
+            stats = _pred_tracker.get_accuracy_stats(days_back=30)
+        signals = list(_sig_store.values())
+        preds   = []
+        for s in signals:
+            d = s.get('signal', s.get('direction', 'HOLD'))
+            if d in ('HOLD', 'CLOSED'): continue
+            e  = s.get('entry_price', 0)
+            sl = s.get('stop_loss', 0)
+            tp = s.get('take_profit', 0)
+            rr = round(abs(tp - e) / max(0.0001, abs(e - sl)), 2) if sl and tp and e else 0
+            preds.append({
+                'asset':      s.get('asset', ''),
+                'direction':  d,
+                'confidence': round((s.get('confidence', 0)) * 100, 1),
+                'entry':      e, 'tp': tp, 'sl': sl, 'rr': rr,
+                'category':   s.get('category', ''),
+                'strategy':   s.get('strategy_id', ''),
+                'timestamp':  s.get('timestamp', ''),
+            })
+        return jsonify({'success': True, 'predictions': preds, 'accuracy': stats})
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+@app.route('/api/whale/summary')
+def api_whale_summary():
+    try:
+        wm = get_whale_mgr()
+        if not wm:
+            return jsonify({'success': True, 'alerts': [], 'total_volume_usd': 0,
+                            'top_assets': [], 'recent': [], 'alert_count_24h': 0})
+        alerts    = wm.get_alerts(min_value_usd=500_000, hours=24)
+        top       = wm.get_top_alerts(limit=10, days=7)
+        total_vol = sum(float(a.get('value_usd', 0)) for a in alerts)
+        by_asset  = {}
+        for a in alerts:
+            sym = a.get('symbol', a.get('asset', ''))
+            by_asset[sym] = by_asset.get(sym, 0) + float(a.get('value_usd', 0))
+        top_assets = sorted(by_asset.items(), key=lambda x: x[1], reverse=True)[:8]
+        return jsonify({
+            'success':          True,
+            'alerts':           alerts[:20],
+            'total_volume_usd': round(total_vol, 0),
+            'alert_count_24h':  len(alerts),
+            'top_assets':       [{'asset': k, 'volume': round(v)} for k, v in top_assets],
+            'recent':           top[:10],
+        })
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+@app.route('/api/risk/portfolio')
+def api_risk_portfolio():
+    try:
+        core = get_bot()
+        if not core:
+            return jsonify({'success': False, 'error': 'Engine not ready'})
+        positions = core.get_positions()
+        balance   = core.get_balance()
+        perf      = core.get_performance()
+
+        risk_stats = {}
+        try:
+            if hasattr(core, 'portfolio_risk') and core.portfolio_risk:
+                risk_stats = core.portfolio_risk.get_portfolio_stats(positions, balance)
+        except Exception: pass
+
+        by_cat = {}
+        for p in positions:
+            cat  = p.get('category', 'unknown')
+            pnl  = float(p.get('pnl', 0))
+            by_cat.setdefault(cat, {'count': 0, 'pnl': 0.0, 'exposure': 0.0})
+            by_cat[cat]['count']    += 1
+            by_cat[cat]['pnl']      += pnl
+            by_cat[cat]['exposure'] += float(p.get('position_size', 0)) * float(p.get('entry_price', 0))
+
+        closed   = core.get_closed_trades(limit=100)
+        wins     = [t for t in closed if float(t.get('pnl', 0)) > 0]
+        losses   = [t for t in closed if float(t.get('pnl', 0)) <= 0]
+        avg_win  = sum(float(t['pnl']) for t in wins)   / len(wins)   if wins   else 0
+        avg_loss = sum(float(t['pnl']) for t in losses) / len(losses) if losses else 0
+        profit_factor = abs(avg_win / avg_loss) if avg_loss else 0
+
+        return jsonify({
+            'success':        True,
+            'balance':        balance,
+            'open_positions': len(positions),
+            'total_exposure': risk_stats.get('total_exposure', 0),
+            'exposure_pct':   risk_stats.get('exposure_pct', 0),
+            'drawdown_pct':   risk_stats.get('drawdown_pct', 0),
+            'peak_balance':   risk_stats.get('peak_balance', balance),
+            'by_category':    by_cat,
+            'win_rate':       perf.get('win_rate', 0),
+            'profit_factor':  round(profit_factor, 2),
+            'avg_win':        round(avg_win, 2),
+            'avg_loss':       round(avg_loss, 2),
+            'total_trades':   perf.get('total_trades', 0),
+            'total_pnl':      perf.get('total_pnl', 0),
+        })
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+@app.route('/api/strategy/performance')
+def api_strategy_performance():
+    try:
+        core = get_bot()
+        if not core:
+            return jsonify({'success': False, 'error': 'Engine not ready'})
+        stats  = core.get_strategy_stats()
+        trades = core.get_closed_trades(limit=200)
+        enriched = {}
+        for strat, s in stats.items():
+            total = s.get('wins', 0) + s.get('losses', 0)
+            pnl   = s.get('pnl', 0)
+            wr    = s.get('wins', 0) / total * 100 if total else 0
+            strat_trades = [t for t in trades if t.get('strategy_id') == strat]
+            durs = [int(t.get('duration_minutes', 0)) for t in strat_trades if t.get('duration_minutes')]
+            avg_dur = sum(durs) / len(durs) if durs else 0
+            enriched[strat] = {
+                **s, 'total': total, 'win_rate': round(wr, 1),
+                'avg_duration_min': round(avg_dur),
+                'avg_trade_pnl': round(pnl / total, 4) if total else 0,
+            }
+        timeline = [{
+            'trade_id':  t.get('trade_id', ''),
+            'asset':     t.get('asset', ''),
+            'direction': t.get('direction', t.get('signal', '')),
+            'pnl':       float(t.get('pnl', 0)),
+            'strategy':  t.get('strategy_id', ''),
+            'exit_time': str(t.get('exit_time', ''))[:16],
+            'conf':      float(t.get('confidence', 0)),
+        } for t in trades[:50]]
+        return jsonify({'success': True, 'strategies': enriched, 'timeline': timeline})
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+@app.route('/api/system/health')
+def api_system_health():
+    try:
+        core   = get_bot()
+        health = core.health_report() if core else {}
+
+        ram_pct = cpu_pct = disk_pct = process_mem_mb = 0.0
+        try:
+            import psutil, os as _os
+            ram_pct        = psutil.virtual_memory().percent
+            cpu_pct        = psutil.cpu_percent(interval=0)
+            disk_pct       = psutil.disk_usage('/').percent
+            proc           = psutil.Process(_os.getpid())
+            process_mem_mb = round(proc.memory_info().rss / 1024 / 1024, 1)
+        except Exception: pass
+
+        redis_ok = False
+        try:
+            if _redis_broker:
+                redis_ok = bool(_redis_broker.is_connected())
+        except Exception: pass
+
+        db_ok = False
+        try:
+            from services.db_pool import get_db
+            db_ok = get_db().ping()
+        except Exception: pass
+
+        tg_ok = bool(getattr(telegram_manager, 'is_running', False))
+
+        processes = {
+            'TradingCore':       health.get('is_running', False),
+            'Engine ready':      health.get('engine_ready', False),
+            'Web dashboard':     True,
+            'Redis':             redis_ok,
+            'PostgreSQL':        db_ok,
+            'Telegram':          tg_ok,
+            'PredTracker':       _pred_tracker is not None,
+            'WebSocket manager': _redis_broker is not None,
+        }
+
+        return jsonify({
+            'success':          True,
+            'ram_pct':          round(ram_pct, 1),
+            'cpu_pct':          round(cpu_pct, 1),
+            'disk_pct':         round(disk_pct, 1),
+            'process_mem_mb':   process_mem_mb,
+            'processes':        processes,
+            'open_positions':   health.get('open_positions', 0),
+            'active_cooldowns': health.get('active_cooldowns', 0),
+            'issues':           health.get('issues', []),
+            'strategy_mode':    health.get('strategy_mode', '—'),
+            'balance':          health.get('balance', 0),
+            'timestamp':        datetime.now().isoformat(),
+        })
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+@app.route('/api/sentiment/by-asset')
+def api_sentiment_by_asset():
+    try:
+        sa = get_sentiment()
+        if not sa:
+            return jsonify({'success': False, 'error': 'SentimentAnalyzer unavailable'})
+        assets  = ['BTC-USD','ETH-USD','SOL-USD','XRP-USD','GC=F','EUR/USD','GBP/USD','AAPL','NVDA','TSLA']
+        results = []
+        for asset in assets:
+            try:
+                cat = _ASSET_MAP.get(asset, ('crypto', 0))[0]
+                r   = sa.get_comprehensive_sentiment(asset, cat)
+                score = float(r.get('composite_score', r.get('score', 0))) if r else 0.0
+                results.append({'asset': asset, 'category': cat, 'score': round(score, 3),
+                                 'label': 'Bullish' if score > 0.1 else 'Bearish' if score < -0.1 else 'Neutral'})
+            except Exception:
+                results.append({'asset': asset, 'category': _ASSET_MAP.get(asset, ('crypto',))[0],
+                                 'score': 0.0, 'label': 'Neutral'})
+        results.sort(key=lambda x: x['score'], reverse=True)
+        return jsonify({'success': True, 'assets': results})
+    except Exception as _e:
+        return jsonify({'success': False, 'error': str(_e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# start_dashboard — called by bot.py (was missing — caused ImportError)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def start_dashboard(core, host: str = '0.0.0.0', port: int = 5000) -> None:
+    """
+    Wire TradingCore into the Flask app and start the blocking server.
+    Called by bot.py after engine.start().
+    """
+    inject_core(core)
+
+    threading.Thread(target=_bg_refresh_worker, name='BgRefresh', daemon=True).start()
+
+    try:
+        from websocket_manager import WebSocketManager
+        from websocket_dashboard import add_transaction
+        def _cb(source, symbol, price, volume, side, ts=None):
+            add_transaction(source, symbol, price, volume, side)
+        ws = WebSocketManager()
+        ws.start()
+        ws.subscribe_bybit(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'], _cb)
+        ws.subscribe_finnhub(['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA', 'AMZN'], _cb)
+        ws.subscribe_twelvedata(['EUR/USD', 'XAU/USD'], _cb)
+        logger.info("[Dashboard] WebSocket streams started")
+    except Exception as _e:
+        logger.warning(f"[Dashboard] WebSocket start failed: {_e}")
+
+    logger.info(f"[Dashboard] Starting on http://{host}:{port}")
+    logger.info(f"[Dashboard] Professional system: http://{host}:{port}/command-center")
+    app.run(debug=False, host=host, port=port, threaded=True, use_reloader=False)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STANDALONE STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     logger.info("=" * 60)
-    logger.info("  ULTIMATE TRADING DASHBOARD — starting")
+    logger.info("  ROBBIE TRADING PLATFORM — starting standalone")
     logger.info(f"  Balance: ${args.balance}  |  Assets: {len(ALL_ASSETS)}")
-    logger.info("  Dashboard  : http://localhost:5000")
+    logger.info("  Dashboard      : http://localhost:5000")
+    logger.info("  Command Center : http://localhost:5000/command-center")
     logger.info("=" * 60)
 
     threading.Thread(target=_bg_refresh_worker, name='BgRefresh', daemon=True).start()
@@ -1466,7 +1637,7 @@ if __name__ == '__main__':
         try:
             from websocket_manager import WebSocketManager
             from websocket_dashboard import add_transaction
-            def _cb(source, symbol, price, volume, side, ts):
+            def _cb(source, symbol, price, volume, side, ts=None):
                 add_transaction(source, symbol, price, volume, side)
             ws = WebSocketManager()
             ws.start()

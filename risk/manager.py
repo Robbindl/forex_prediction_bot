@@ -40,28 +40,30 @@ class RiskManager:
         self._daily_loss_guard = DailyLossGuard(account_balance)
         self._lock             = threading.Lock()
 
-    def update_balance(self, balance: float) -> None:
-        with self._lock:
-            self.account_balance      = balance
-            self._sizer.account_balance = balance
-
-    def reset_daily(self, balance: float) -> None:
-        self._daily_loss_guard.reset(balance)
-
     def update_balance(self, new_balance: float) -> None:
-        """Sync account balance after a trade closes."""
-        self.account_balance = new_balance
+        """
+        Sync account balance after a trade closes.
+        Updates self.account_balance, PositionSizer, AND DailyLossGuard.
+        Previously had two definitions — second silently overwrote the first,
+        dropping the _sizer sync so position sizes never shrank after losses.
+        """
+        with self._lock:
+            self.account_balance        = new_balance
+            self._sizer.account_balance = new_balance
         self._daily_loss_guard = DailyLossGuard(
             balance=new_balance,
             limit_pct=_DAILY_LOSS_LIMIT_PCT,
         )
 
+    def reset_daily(self, balance: float) -> None:
+        self._daily_loss_guard.reset(balance)
+
     def calculate_position_size(
         self,
         entry_price: float,
-        stop_loss: float,
-        category: str = "forex",
-        confidence: float = 0.7,
+        stop_loss:   float,
+        category:    str   = "forex",
+        confidence:  float = 0.7,
     ) -> float:
         with self._lock:
             return self._sizer.calculate(entry_price, stop_loss, category, confidence)
@@ -69,8 +71,8 @@ class RiskManager:
     def validate_signal(
         self,
         confidence: float,
-        daily_pnl: float,
-        category: str = "forex",
+        daily_pnl:  float,
+        category:   str = "forex",
     ) -> Tuple[bool, str]:
         """Gate a signal through all risk checks. Returns (allowed, reason)."""
         if confidence < MIN_CONFIDENCE_SCORE:
