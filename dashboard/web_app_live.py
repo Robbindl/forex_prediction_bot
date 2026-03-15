@@ -240,6 +240,81 @@ def _bg_refresh() -> None:
         time.sleep(15)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# RESPONSE CACHE
+# Stores the last computed response for slow API routes so repeated page loads
+# hit memory instead of making external API calls every time.
+#
+# TTLs chosen per data volatility:
+#   sentiment_dashboard  — 300s (5 min): fear/greed and news change slowly
+#   sentiment_by_asset   — 300s (5 min): 18 concurrent sentiment calls, expensive
+#   market_heatmap       — 60s  (1 min): daily price change, updates once per day
+#   correlation_matrix   — 600s (10 min): 30-day correlation barely moves
+#   whale_summary        — 120s (2 min): whale alerts are collected in background
+#   command_center_slow  — 300s (5 min): sentiment + whale portion only
+#
+# Two-tier strategy:
+#   Primary  — Redis via _redis_broker.set/get (already imported above).
+#              Survives dashboard restarts. Shared across processes.
+#              A Redis GET on localhost is ~0.2ms — negligible vs the 3-8s
+#              external API calls being replaced.
+#   Fallback — _RCache (in-process memory). Used when Redis is unavailable.
+#              Data lost on restart but still prevents repeated API calls
+#              within a single run session.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _RCache:
+    """In-process TTL cache — fallback when Redis is unavailable."""
+
+    def __init__(self):
+        self._store: Dict[str, Tuple[Any, float]] = {}
+        self._lock  = threading.Lock()
+
+    def get(self, key: str) -> Optional[Any]:
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            value, expires_at = entry
+            if time.time() > expires_at:
+                del self._store[key]
+                return None
+            return value
+
+    def set(self, key: str, value: Any, ttl: int) -> None:
+        with self._lock:
+            self._store[key] = (value, time.time() + ttl)
+
+    def invalidate(self, key: str) -> None:
+        with self._lock:
+            self._store.pop(key, None)
+
+
+_mem_cache = _RCache()   # always available — in-process fallback
+
+
+def _cache_get(key: str) -> Optional[Any]:
+    """Read from Redis if available, otherwise read from in-process cache."""
+    if _redis_broker:
+        try:
+            val = _redis_broker.get(f"dash:{key}")
+            if val is not None:
+                return val
+        except Exception:
+            pass
+    return _mem_cache.get(key)
+
+
+def _cache_set(key: str, value: Any, ttl: int) -> None:
+    """Write to Redis if available. Always write to in-process cache as backup."""
+    if _redis_broker:
+        try:
+            _redis_broker.set(f"dash:{key}", value, ttl_seconds=ttl)
+        except Exception:
+            pass
+    _mem_cache.set(key, value, ttl)
+
+
 # ── JSON encoder ──────────────────────────────────────────────────────────────
 class _Enc(json.JSONEncoder):
     def default(self, obj):
@@ -397,23 +472,34 @@ def api_command_center():
             positions = core.get_positions()
             health    = core.health_report()
 
-        sent_score = 0.0
-        try:
-            sa = _get_sent()
-            if sa:
-                ms = sa.get_comprehensive_sentiment()
-                sent_score = float(ms.get("score", 0)) if ms else 0.0
-        except Exception:
-            pass
-
-        whale_count = 0; whale_recent = []
-        try:
-            wm = _get_whale()
-            if wm:
-                whale_recent = wm.get_top_alerts(limit=5, days=1)
-                whale_count  = len(whale_recent)
-        except Exception:
-            pass
+        # Sentiment and whale data are slow external calls — cache for 5 minutes.
+        # Balance, positions, and signals are fast in-memory reads — always live.
+        _cc_slow = _cache_get("cc_slow")
+        if _cc_slow is None:
+            sent_score   = 0.0
+            whale_count  = 0
+            whale_recent = []
+            try:
+                sa = _get_sent()
+                if sa:
+                    ms = sa.get_comprehensive_sentiment()
+                    sent_score = float(ms.get("score", 0)) if ms else 0.0
+            except Exception:
+                pass
+            try:
+                wm = _get_whale()
+                if wm:
+                    whale_recent = wm.get_top_alerts(limit=5, days=1)
+                    whale_count  = len(whale_recent)
+            except Exception:
+                pass
+            _cc_slow = {
+                "sentiment_score":  round(sent_score, 3),
+                "whale_alerts_24h": whale_count,
+                "alert_count_24h":  whale_count,
+                "recent":           whale_recent,
+            }
+            _cache_set("cc_slow", _cc_slow, ttl=300)
 
         with _sig_lock:
             signals = [s for s in list(_sig_store.values())
@@ -430,10 +516,10 @@ def api_command_center():
             "total_trades":     perf.get("total_trades", 0),
             "engine_running":   health.get("is_running", core.is_running if core else False),
             "engine_ready":     health.get("engine_ready", core.is_ready if core else False),
-            "sentiment_score":  round(sent_score, 3),
-            "whale_alerts_24h": whale_count,
-            "alert_count_24h":  whale_count,   # alias — template reads both keys
-            "recent":           whale_recent,   # whale panel loop
+            "sentiment_score":  _cc_slow["sentiment_score"],
+            "whale_alerts_24h": _cc_slow["whale_alerts_24h"],
+            "alert_count_24h":  _cc_slow["alert_count_24h"],
+            "recent":           _cc_slow["recent"],
             "latest_signals":   signals,
             "positions":        positions[:8],
             "timestamp":        datetime.now().isoformat(),
@@ -592,15 +678,21 @@ def api_chart_stream():
 
 @app.route("/api/market/heatmap")
 def api_market_heatmap():
+    # Cache for 60 seconds — daily % change only updates once per trading day
+    cached = _cache_get("heatmap")
+    if cached is not None:
+        return jsonify(cached)
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        # All 18 assets — was missing GBP/JPY, AUD/USD, USD/CAD from the original
         sample = [
-            ("BTC-USD", "crypto"), ("ETH-USD", "crypto"), ("SOL-USD", "crypto"),
-            ("XRP-USD", "crypto"), ("BNB-USD", "crypto"),
-            ("EUR/USD", "forex"),  ("GBP/USD", "forex"),  ("USD/JPY", "forex"),
+            ("BTC-USD", "crypto"),   ("ETH-USD", "crypto"),   ("SOL-USD", "crypto"),
+            ("XRP-USD", "crypto"),   ("BNB-USD", "crypto"),
+            ("EUR/USD", "forex"),    ("GBP/USD", "forex"),    ("GBP/JPY", "forex"),
+            ("AUD/USD", "forex"),    ("USD/JPY", "forex"),    ("USD/CAD", "forex"),
             ("GC=F", "commodities"), ("SI=F", "commodities"), ("CL=F", "commodities"),
-            ("^DJI", "indices"),  ("^IXIC", "indices"),
-            ("^GSPC", "indices"), ("^FTSE", "indices"),
+            ("^DJI", "indices"),     ("^IXIC", "indices"),
+            ("^GSPC", "indices"),    ("^FTSE", "indices"),
         ]
 
         def _fetch_one(asset_cat):
@@ -628,17 +720,24 @@ def api_market_heatmap():
                     results.append(r)
 
         results.sort(key=lambda x: x["change_pct"], reverse=True)
-        return jsonify({"success": True, "items": results})
+        payload = {"success": True, "items": results}
+        _cache_set("heatmap", payload, ttl=60)
+        return jsonify(payload)
     except Exception as _e:
         return jsonify({"success": False, "error": str(_e)}), 500
 
 
 @app.route("/api/correlation-matrix")
 def api_correlation_matrix():
+    # Cache for 10 minutes — 30-day correlation barely changes minute-to-minute
+    cached = _cache_get("correlation")
+    if cached is not None:
+        return jsonify(cached)
     try:
         import pandas as pd
         import numpy as np
         from concurrent.futures import ThreadPoolExecutor
+        # Representative cross-asset selection from your 18
         assets = [
             "BTC-USD", "ETH-USD", "GC=F", "SI=F",
             "EUR/USD", "GBP/USD", "^GSPC", "^FTSE",
@@ -663,8 +762,10 @@ def api_correlation_matrix():
             return jsonify({"success": False, "error": "Not enough data"})
         frame = pd.DataFrame(closes).pct_change().dropna()
         corr  = frame.corr().round(3)
-        return jsonify({"success": True, "labels": list(corr.columns),
-                        "matrix": corr.values.tolist()})
+        payload = {"success": True, "labels": list(corr.columns),
+                   "matrix": corr.values.tolist()}
+        _cache_set("correlation", payload, ttl=600)
+        return jsonify(payload)
     except Exception as _e:
         return jsonify({"success": False, "error": str(_e)}), 500
 
@@ -725,6 +826,11 @@ def api_predictions_summary():
 
 @app.route("/api/whale/summary")
 def api_whale_summary():
+    # Cache for 2 minutes — whale alerts are collected in background, no need to
+    # call get_alerts() on every page load
+    cached = _cache_get("whale_summary")
+    if cached is not None:
+        return jsonify(cached)
     try:
         wm = _get_whale()
         if not wm:
@@ -740,14 +846,16 @@ def api_whale_summary():
             sym = a.get("symbol", a.get("asset", ""))
             by_asset[sym] = by_asset.get(sym, 0.0) + float(a.get("value_usd", 0))
         top_assets = sorted(by_asset.items(), key=lambda x: x[1], reverse=True)[:8]
-        return jsonify({
+        payload = {
             "success":          True,
             "alerts":           alerts[:20],
             "total_volume_usd": round(total_vol, 0),
             "alert_count_24h":  len(alerts),
             "top_assets":       [{"asset": k, "volume": round(v)} for k, v in top_assets],
             "recent":           top[:10],
-        })
+        }
+        _cache_set("whale_summary", payload, ttl=120)
+        return jsonify(payload)
     except Exception as _e:
         return jsonify({"success": False, "error": str(_e)}), 500
 
@@ -758,6 +866,13 @@ def api_whale_summary():
 
 @app.route("/api/sentiment/dashboard")
 def api_sentiment_dashboard():
+    # Cache for 5 minutes — fear/greed, VIX, and news change slowly.
+    # This route makes 4 chained external calls: get_comprehensive_sentiment,
+    # fetch_fear_greed_index, fetch_vix, fetch_all_sources.
+    # Without caching every page open waits 3-6 seconds.
+    cached = _cache_get("sentiment_dashboard")
+    if cached is not None:
+        return jsonify(cached)
     try:
         sa = _get_sent()
         if sa is None:
@@ -793,21 +908,22 @@ def api_sentiment_dashboard():
         if hasattr(sa, "news_integrator"):
             try:
                 arts = sa.news_integrator.fetch_all_sources()
+                # Compute distribution on full article set before slicing for display
+                if arts:
+                    b  = sum(1 for a in arts if float(a.get("sentiment", 0)) > 0.1)
+                    be = sum(1 for a in arts if float(a.get("sentiment", 0)) < -0.1)
+                    result["sentiment_distribution"] = {
+                        "bullish": b, "neutral": len(arts) - b - be, "bearish": be,
+                    }
                 result["articles"]      = sorted(arts, key=lambda x: x.get("date", ""), reverse=True)[:20]
-                result["article_count"] = len(result["articles"])
+                result["article_count"] = len(arts)
             except Exception:
                 pass
 
         # SentimentAnalyzer.fetch_whale_alerts(self, min_value_usd=1000000)
         result["whale_alerts"] = sa.fetch_whale_alerts(min_value_usd=1_000_000)[:10]
 
-        arts = result["articles"]
-        if arts:
-            b  = sum(1 for a in arts if float(a.get("sentiment", 0)) > 0.1)
-            be = sum(1 for a in arts if float(a.get("sentiment", 0)) < -0.1)
-            result["sentiment_distribution"] = {
-                "bullish": b, "neutral": len(arts) - b - be, "bearish": be,
-            }
+        _cache_set("sentiment_dashboard", result, ttl=300)
         return jsonify(result)
     except Exception as _e:
         return jsonify({"success": False, "error": str(_e)}), 500
@@ -815,10 +931,16 @@ def api_sentiment_dashboard():
 
 @app.route("/api/sentiment/by-asset")
 def api_sentiment_by_asset():
+    # Cache for 5 minutes — calls get_comprehensive_sentiment for all 18 assets
+    # via ThreadPoolExecutor. Most expensive route: 18 concurrent external calls.
+    cached = _cache_get("sentiment_by_asset")
+    if cached is not None:
+        return jsonify(cached)
     try:
         sa = _get_sent()
         if not sa:
             return jsonify({"success": False, "error": "SentimentAnalyzer unavailable"})
+        # Exactly your 18 assets in canonical form
         watch = [
             "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD",
             "GC=F", "SI=F", "CL=F",
@@ -845,7 +967,9 @@ def api_sentiment_by_asset():
             results = list(pool.map(_sent_one, watch))
 
         results.sort(key=lambda x: x["score"], reverse=True)
-        return jsonify({"success": True, "assets": results})
+        payload = {"success": True, "assets": results}
+        _cache_set("sentiment_by_asset", payload, ttl=300)
+        return jsonify(payload)
     except Exception as _e:
         return jsonify({"success": False, "error": str(_e)}), 500
 
