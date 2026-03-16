@@ -10,6 +10,13 @@ import pandas as pd
 from utils.logger import get_logger
 from ml.registry import ModelRegistry
 
+# Phase 11 — prediction latency tracking
+try:
+    from monitoring.metrics import metrics, PREDICTION, MetricsTimer
+    _METRICS_OK = True
+except ImportError:
+    _METRICS_OK = False
+
 logger   = get_logger()
 registry = ModelRegistry()
 
@@ -52,9 +59,17 @@ class MLPredictor:
     def predict(self, asset: str, category: str, df: pd.DataFrame) -> Tuple[float, float]:
         """
         Returns (probability_of_up, confidence).
-        probability_of_up: 0.0 (down) → 1.0 (up).
-        confidence: model certainty 0.0 → 1.0.
+        Phase 11: prediction latency is tracked automatically.
         """
+        if _METRICS_OK:
+            import time as _t
+            _t0 = _t.perf_counter()
+            result = self._predict_inner(asset, category, df)
+            metrics.record(PREDICTION, (_t.perf_counter() - _t0) * 1000)
+            return result
+        return self._predict_inner(asset, category, df)
+
+    def _predict_inner(self, asset: str, category: str, df: pd.DataFrame) -> Tuple[float, float]:
         features = _build_features(df)
         if features is None:
             return 0.5, 0.0

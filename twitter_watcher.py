@@ -97,7 +97,12 @@ class OfficialAPI:
                     })
             return results
         except Exception as e:
-            logger.debug(f"Official API error for @{username}: {e}")
+            msg = str(e).lower()
+            if "402" in msg or "payment required" in msg:
+                logger.warning("⚠️ Official Twitter API 402 Payment Required: disabling official API method")
+                self.enabled = False
+            else:
+                logger.debug(f"Official API error for @{username}: {e}")
             return []
 
 

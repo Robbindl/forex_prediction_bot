@@ -154,9 +154,9 @@ class WhaleLayer:
                 f"whale flow {dominant} strongly opposes {signal.direction} "
                 f"(ratio={ratio:.2f}  buy=${buy_vol/1e6:.1f}M  sell=${sell_vol/1e6:.1f}M)"
             )
-            signal.kill(reason, LAYER)
+            signal.reduce(0.15)
             signal.journal.record(
-                layer=LAYER, name=self.name, decision=KILLED,
+                layer=LAYER, name=self.name, decision=PASS,
                 reason=reason,
                 conf_before=conf_before, conf_after=signal.confidence,
                 data={
@@ -167,7 +167,7 @@ class WhaleLayer:
                     **onchain,
                 },
             )
-            return None
+            logger.log_pipeline(signal.asset, LAYER, "WHALe_OPPOSE", reason)
 
         # ── Boost if whale confirms direction ─────────────────────────────
         boost = 0.0

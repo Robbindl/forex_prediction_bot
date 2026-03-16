@@ -63,14 +63,19 @@ class TradingLogger:
                 inst = super().__new__(cls)
                 inst._setup(log_dir, level)
                 cls._instance = inst
+            else:
+                # Allow reinitialising logger level when requested (e.g. bot startup)
+                if getattr(cls._instance, "_level", "INFO").upper() != level.upper():
+                    cls._instance._setup(log_dir, level)
         return cls._instance
 
     def _setup(self, log_dir: str, level: str) -> None:
+        self._level = level.upper()
         self._log_dir = Path(log_dir)
         self._log_dir.mkdir(parents=True, exist_ok=True)
 
         self._logger = logging.getLogger("trading_bot")
-        self._logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+        self._logger.setLevel(getattr(logging, self._level, logging.INFO))
         self._logger.propagate = False
         self._logger.handlers.clear()
 
@@ -87,7 +92,7 @@ class TradingLogger:
 
         # Console — use the original sys.stdout, not any wrapped version
         ch = logging.StreamHandler(sys.__stdout__ or sys.stdout)
-        ch.setLevel(logging.INFO)
+        ch.setLevel(getattr(logging, level.upper(), logging.INFO))
         ch.setFormatter(fmt_short)
         self._logger.addHandler(ch)
 
@@ -96,7 +101,7 @@ class TradingLogger:
             self._log_dir / "trading_bot.log",
             maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8"
         )
-        fh.setLevel(logging.INFO)
+        fh.setLevel(getattr(logging, level.upper(), logging.INFO))
         fh.setFormatter(fmt_full)
         self._logger.addHandler(fh)
 

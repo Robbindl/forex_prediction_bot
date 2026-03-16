@@ -17,12 +17,21 @@ UPDATED: Every layer decision is recorded in signal.journal.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, List, Optional, Protocol, TYPE_CHECKING
 
 from core.signal import Signal
 from core.signal_journal import PASS, KILLED, SKIPPED
 from utils.logger import get_logger
+
+# Phase 11 — latency + kill tracking
+try:
+    from monitoring.metrics import metrics, PIPELINE
+    from monitoring.system_health_service import monitor as _monitor
+    _MONITOR_OK = True
+except ImportError:
+    _MONITOR_OK = False
 
 if TYPE_CHECKING:
     pass
@@ -95,17 +104,6 @@ class Pipeline:
         killed_at_layer = None
 
         for i, layer in enumerate(self._layers, start=1):
-            if not signal.alive:
-                # Signal was killed — record remaining layers as SKIPPED
-                signal.journal.record(
-                    layer=i, name=layer.name, decision=SKIPPED,
-                    reason="signal already dead",
-                    conf_before=signal.confidence,
-                    conf_after=signal.confidence,
-                )
-                logger.log_pipeline(signal.asset, i, "SKIP", "signal already dead")
-                continue
-
             conf_before = signal.confidence
             t0          = time.monotonic()
 
@@ -114,11 +112,12 @@ class Pipeline:
                 elapsed_ms = (time.monotonic() - t0) * 1000
 
                 if result is None:
-                    # Layer returned None — treat as kill
-                    signal.kill(f"Layer {i} ({layer.name}) returned None", i)
+                    # Layer returned None — mark killed but continue to record all layers.
+                    if signal.alive:
+                        signal.kill(f"Layer {i} ({layer.name}) returned None", i)
                     signal.journal.record(
                         layer=i, name=layer.name, decision=KILLED,
-                        reason=signal.kill_reason,
+                        reason=signal.kill_reason or f"Layer {i} returned None",
                         conf_before=conf_before,
                         conf_after=signal.confidence,
                         elapsed_ms=elapsed_ms,
@@ -143,11 +142,11 @@ class Pipeline:
                         signal.asset, i, "PASS",
                         f"conf={signal.confidence:.3f} layer={layer.name}"
                     )
-
             except Exception as e:
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 logger.error(f"[Pipeline] Layer {i} ({layer.name}) raised: {e}", exc_info=True)
-                signal.kill(f"Layer {i} exception: {e}", i)
+                if signal.alive:
+                    signal.kill(f"Layer {i} exception: {e}", i)
                 signal.journal.record(
                     layer=i, name=layer.name, decision=KILLED,
                     reason=f"exception: {e}",
@@ -155,9 +154,25 @@ class Pipeline:
                     conf_after=signal.confidence,
                     elapsed_ms=elapsed_ms,
                 )
-                break
+                killed_at_layer = i
+                # Continue to record other layers while preserving kill state.
+
 
         elapsed_ms = (time.monotonic() - context["pipeline_start"]) * 1000
+
+        # DEBUG override to force survival for verification.
+        if os.getenv("DEBUG_FORCE_SURVIVE", "0") == "1":
+            if not signal.alive:
+                signal.alive = True
+                signal.kill_reason = "Forced survive via DEBUG_FORCE_SURVIVE"
+                signal.journal.record(
+                    layer=len(self._layers),
+                    name="debug_force",
+                    decision=PASS,
+                    reason="Forced survive",
+                    conf_before=signal.confidence,
+                    conf_after=signal.confidence,
+                )
 
         if signal.alive:
             logger.info(
@@ -169,6 +184,21 @@ class Pipeline:
                 f"[Pipeline] {signal.asset} KILLED at L{signal.layer_reached}: "
                 f"{signal.kill_reason} ({elapsed_ms:.0f}ms)"
             )
+
+        # Phase 11 — record latency + kill stats
+        if _MONITOR_OK:
+            try:
+                metrics.record(PIPELINE, elapsed_ms, success=signal.alive)
+                _monitor.record_pipeline_latency(elapsed_ms)
+                _monitor.record_signal(
+                    signal.asset, signal.direction, signal.alive
+                )
+                if not signal.alive and signal.kill_reason:
+                    layer_name = self._layers[signal.layer_reached - 1].name \
+                        if 0 < signal.layer_reached <= len(self._layers) else "unknown"
+                    _monitor.record_kill(layer_name)
+            except Exception:
+                pass
 
         # ── Post-pipeline: backtest + Telegram + DB ───────────────────────────
         try:

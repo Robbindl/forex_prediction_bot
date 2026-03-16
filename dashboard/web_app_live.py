@@ -1682,6 +1682,60 @@ def pg_strategy_lab_v2():
 # API — SYSTEM MONITOR
 # ══════════════════════════════════════════════════════════════════════════════
 
+@app.route("/api/monitoring/snapshot")
+def api_monitoring_snapshot():
+    """Full telemetry snapshot from SystemHealthService."""
+    cached = _cache_get("monitoring_snapshot")
+    if cached:
+        return jsonify(cached)
+    try:
+        from monitoring.system_health_service import monitor
+        snap    = monitor.snapshot()
+        payload = {"success": True, **snap}
+        _cache_set("monitoring_snapshot", payload, ttl=30)
+        return jsonify(payload)
+    except Exception as _e:
+        # Fallback: read last snapshot from Redis
+        try:
+            import json as _json
+            raw = _redis_broker.get("monitoring:latest") if _redis_broker else None
+            if raw:
+                data = _json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+                return jsonify({"success": True, **data})
+        except Exception:
+            pass
+        return jsonify({"success": False, "error": str(_e)})
+
+
+@app.route("/api/monitoring/metrics")
+def api_monitoring_metrics():
+    """Latency metrics summary from MetricsCollector."""
+    cached = _cache_get("monitoring_metrics")
+    if cached:
+        return jsonify(cached)
+    try:
+        from monitoring.metrics import metrics
+        payload = {"success": True, "metrics": metrics.summary(),
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("monitoring_metrics", payload, ttl=15)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "error": str(_e)})
+
+
+@app.route("/api/monitoring/errors")
+def api_monitoring_errors():
+    """Recent error log from SystemHealthService."""
+    try:
+        from monitoring.system_health_service import monitor
+        snap = monitor.snapshot()
+        return jsonify({"success": True,
+                        "errors":  snap.get("errors", {}),
+                        "timestamp": datetime.now().isoformat()})
+    except Exception as _e:
+        return jsonify({"success": False, "error": str(_e)})
+
+
 @app.route("/api/system/health")
 def api_system_health():
     try:

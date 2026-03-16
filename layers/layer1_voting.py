@@ -22,16 +22,16 @@ class VotingLayer:
     def process(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
         conf_before = signal.confidence
 
-        # ── Minimum confidence gate ───────────────────────────────────────
+        # ── Minimum confidence gate (no hard kill) ─────────────────────────
         if signal.confidence < MIN_CONFIDENCE_SCORE:
             reason = f"conf {signal.confidence:.3f} below minimum {MIN_CONFIDENCE_SCORE}"
-            signal.kill(reason, LAYER)
+            signal.reduce(0.08)
             signal.journal.record(
-                layer=LAYER, name=self.name, decision=KILLED,
+                layer=LAYER, name=self.name, decision=PASS,
                 reason=reason,
                 conf_before=conf_before, conf_after=signal.confidence,
             )
-            return None
+            logger.log_pipeline(signal.asset, LAYER, "LOW_CONF", reason)
 
         # ── ML agreement boost/reduce ─────────────────────────────────────
         ml_pred = context.get("ml_prediction")

@@ -22,6 +22,7 @@ import json
 import time
 from typing import Dict, List, Optional, TYPE_CHECKING
 
+from sqlalchemy import text
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -264,24 +265,25 @@ class WalletDatabase:
     # ── DB helpers ────────────────────────────────────────────────────────────
 
     def _run(self, sql: str, params: tuple = ()) -> None:
-        if not self._db_ok or not self._conn:
+        if not self._db_ok:
             return
         try:
-            with self._conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
-                conn.commit()
+            from services.db_pool import get_db
+            db = get_db()
+            with db.get_session() as conn:
+                conn.execute(text(sql), params)
         except Exception as e:
             logger.debug(f"[WalletDB] _run error: {e}")
 
     def _query(self, sql: str, params: tuple = ()) -> Optional[List]:
-        if not self._db_ok or not self._conn:
+        if not self._db_ok:
             return None
         try:
-            with self._conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
-                    return cur.fetchall()
+            from services.db_pool import get_db
+            db = get_db()
+            with db.get_session() as conn:
+                result = conn.execute(text(sql), params)
+                return result.fetchall()
         except Exception as e:
             logger.debug(f"[WalletDB] _query error: {e}")
             return None

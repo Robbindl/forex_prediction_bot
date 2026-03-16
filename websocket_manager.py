@@ -184,6 +184,9 @@ class WebSocketManager:
 
     def subscribe_twelvedata(self, symbols: List[str], callback: Callable):
         """Forex & Commodities — EUR/USD, GBP/USD, XAU/USD, XAG/USD, WTI/USD …"""
+        if not self.twelvedata_key:
+            logger.debug("⚠️ Twelve Data API key missing (TWELVEDATA_KEY). Skipping Twelve Data websocket.")
+            return
         self._schedule(self._connect_twelvedata_with_reconnect(symbols, callback))
         logger.info(f"📡 Twelve Data: subscribing to {symbols}")
 
@@ -247,9 +250,10 @@ class WebSocketManager:
                         if ok_syms:
                             logger.info(f"Twelve Data live: {ok_syms}")
                         if bad_syms:
-                            # Free tier limit hit — log clearly, don't spam warnings
-                            logger.warning(
-                                f"Twelve Data: {bad_syms} rejected — free tier limit reached. "                                f"Only {ok_syms} streaming. Upgrade at twelvedata.com for more symbols."
+                            # Free tier limit hit — log at debug to avoid noise
+                            logger.debug(
+                                f"Twelve Data symbol limit hit: {bad_syms} rejected vs requested {symbols}. "
+                                f"Streaming {ok_syms}."
                             )
                             # Update dashboard to show only confirmed symbols
                             from websocket_dashboard import set_connected

@@ -107,15 +107,16 @@ DEFAULT_BALANCE         = float(os.getenv("DEFAULT_BALANCE", "10000"))
 DEFAULT_RISK            = float(os.getenv("DEFAULT_RISK", "1.0"))
 MAX_POSITIONS           = int(os.getenv("MAX_POSITIONS", "8"))
 DEFAULT_ACCOUNT_BALANCE = float(os.getenv("DEFAULT_ACCOUNT_BALANCE", "10000"))
-DEFAULT_RISK_PER_TRADE  = float(os.getenv("DEFAULT_RISK_PER_TRADE", "1.0"))
-CRYPTO_RISK_PER_TRADE   = float(os.getenv("CRYPTO_RISK_PER_TRADE", "0.5"))
-MAX_RISK_PER_TRADE      = float(os.getenv("MAX_RISK_PER_TRADE", "3.0"))
+DEFAULT_RISK_PER_TRADE  = float(os.getenv("DEFAULT_RISK_PER_TRADE", "0.75"))
+CRYPTO_RISK_PER_TRADE   = float(os.getenv("CRYPTO_RISK_PER_TRADE", "0.35"))
+MAX_RISK_PER_TRADE      = float(os.getenv("MAX_RISK_PER_TRADE", "2.0"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRADING — RISK FILTERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-MIN_CONFIDENCE_SCORE      = float(os.getenv("MIN_CONFIDENCE_SCORE", "0.65"))
+MIN_CONFIDENCE_SCORE      = float(os.getenv("MIN_CONFIDENCE_SCORE", "0.70"))
+MIN_FINAL_CONFIDENCE      = float(os.getenv("MIN_FINAL_CONFIDENCE", "0.55"))
 ALERT_THRESHOLD           = float(os.getenv("ALERT_THRESHOLD", "0.75"))
 CRYPTO_ALERT_THRESHOLD    = float(os.getenv("CRYPTO_ALERT_THRESHOLD", "0.80"))
 MAX_CORRELATION_THRESHOLD = float(os.getenv("MAX_CORRELATION_THRESHOLD", "0.7"))
@@ -167,7 +168,7 @@ LOG_LEVEL              = os.getenv("LOG_LEVEL", "INFO")
 LOG_DIR                = Path(os.getenv("LOG_DIR", "logs"))
 WS_RECONNECT_DELAY     = int(os.getenv("WS_RECONNECT_DELAY", "30"))
 WS_MAX_RECONNECT_DELAY = int(os.getenv("WS_MAX_RECONNECT_DELAY", "120"))
-SCAN_INTERVAL_SECONDS  = int(os.getenv("SCAN_INTERVAL_SECONDS", "30"))
+SCAN_INTERVAL_SECONDS  = int(os.getenv("SCAN_INTERVAL_SECONDS", "45"))
 MAX_SCAN_WORKERS       = int(os.getenv("MAX_SCAN_WORKERS", "8"))
 
 # ─────────────────────────────────────────────────────────────────────────────

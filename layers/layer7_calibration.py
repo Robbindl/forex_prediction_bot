@@ -9,12 +9,12 @@ from typing import Any, Dict, Optional
 from core.signal import Signal
 from core.signal_journal import PASS, KILLED
 from utils.logger import get_logger
+from config.config import MIN_FINAL_CONFIDENCE
 
 logger = get_logger()
 LAYER = 7
 
-_MIN_FINAL_CONFIDENCE = 0.60
-_MAX_SPREAD_PCT       = 0.003
+_MAX_SPREAD_PCT = 0.003
 
 
 class CalibrationLayer:
@@ -46,8 +46,8 @@ class CalibrationLayer:
             data["liq_penalty"] = round(liq_penalty, 5)
 
         # ── Final confidence floor ────────────────────────────────────────
-        if signal.confidence < _MIN_FINAL_CONFIDENCE:
-            reason = f"final conf {signal.confidence:.3f} below floor {_MIN_FINAL_CONFIDENCE}"
+        if signal.confidence <= MIN_FINAL_CONFIDENCE:
+            reason = f"final conf {signal.confidence:.3f} below floor {MIN_FINAL_CONFIDENCE}"
             signal.kill(reason, LAYER)
             signal.journal.record(
                 layer=LAYER, name=self.name, decision=KILLED,

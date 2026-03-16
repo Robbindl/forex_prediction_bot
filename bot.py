@@ -325,6 +325,13 @@ def main() -> None:
     # ── Phase 7 — Intelligence Alert System (started after Telegram) ──────
     # Started later — see below after Telegram block
 
+    # ── Phase 11 — System Health Monitoring ───────────────────────────────
+    try:
+        from monitoring import start_monitoring
+        logger.info("[bot] Phase 11 system health monitoring ready")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 11 monitoring failed to load: {e}")
+
     # ── Portfolio risk engine ─────────────────────────────────────────────────────
     try:
         from risk.portfolio_risk import PortfolioRiskEngine
@@ -403,6 +410,13 @@ def main() -> None:
                     logger.info("[bot] Phase 7 intelligence alerts started")
                 except Exception as e:
                     logger.warning(f"[bot] Phase 7 intelligence alerts failed: {e}")
+                # Start Phase 11 monitoring with Telegram wired
+                try:
+                    from monitoring import start_monitoring
+                    start_monitoring(telegram_bot=telegram_manager.bot)
+                    logger.info("[bot] Phase 11 monitoring started")
+                except Exception as e:
+                    logger.warning(f"[bot] Phase 11 monitoring failed: {e}")
                 logger.info("[bot] Telegram started and wired to engine")
             else:
                 logger.warning("[bot] Telegram not started (duplicate instance or missing creds)")

@@ -101,7 +101,24 @@ class DataFetcher:
             df = df[["open", "high", "low", "close", "volume"]].astype(float)
             return df.iloc[::-1].reset_index(drop=True)
         except Exception as e:
-            logger.debug(f"[Fetcher] TwelveData {symbol}: {e}")
+            msg = str(e).lower()
+            # Disable TwelveData only for API/key/quota errors; unknown symbol issues should not disable global client.
+            if "invalid api key" in msg or ("api key" in msg and "quota" not in msg):
+                logger.warning(
+                    f"⚠️ TwelveData disabled: {symbol} — invalid API key. Check TWELVEDATA_KEY."
+                )
+                self._td_client = None
+            elif "run out of api credits" in msg or "quota" in msg:
+                logger.debug(
+                    f"TwelveData quota reached for {symbol}. Falling back to yfinance for this symbol."
+                )
+                # Keep the client alive; quota may reset. Do not disable globally.
+            elif "symbol or figi parameter is missing or invalid" in msg:
+                logger.warning(
+                    f"⚠️ TwelveData symbol error: {symbol}. This symbol may be unavailable for your plan."
+                )
+            else:
+                logger.debug(f"[Fetcher] TwelveData {symbol}: {e}")
             return None
 
     def _fetch_yf(self, symbol: str, interval: str, periods: int) -> Optional[pd.DataFrame]:

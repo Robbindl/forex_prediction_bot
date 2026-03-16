@@ -145,6 +145,11 @@ class SignalJournal:
 
     def final_decision(self) -> str:
         """SURVIVED or KILLED"""
+        # Allow manual debug override (e.g. DEBUG_FORCE_SURVIVE) to preserve
+        # a surviving signal for announcement even if earlier stages recorded kills.
+        for e in reversed(self.entries):
+            if e.name == "debug_force" and e.decision == PASS:
+                return "SURVIVED"
         for e in reversed(self.entries):
             if e.decision == KILLED:
                 return "KILLED"
@@ -161,28 +166,39 @@ class SignalJournal:
 
     # ── Telegram formatting ───────────────────────────────────────────────────
 
+    def _escape_markdown(self, text: str) -> str:
+        if not isinstance(text, str):
+            return str(text)
+        return (text.replace("\\", "\\\\")
+                    .replace("_", "\\_")
+                    .replace("*", "\\*")
+                    .replace("`", "\\`")
+                    .replace("[", "\\["))
+
     def to_telegram(self, signal=None) -> str:
         """
         Format the full journal as a Telegram Markdown message.
         Called by pipeline_reporter.py after the pipeline completes.
         """
         survived = self.final_decision() == "SURVIVED"
-        direction = self.direction
+        direction = self._escape_markdown(self.direction)
+        asset = self._escape_markdown(self.asset)
 
         if survived:
-            header = f"🔔 *NEW SIGNAL — {self.asset} {direction}*"
+            header = f"🔔 *NEW SIGNAL — {asset} {direction}*"
         else:
             kill   = self.kill_entry()
+            reason = self._escape_markdown(kill.reason if kill else 'unknown')
             header = (
-                f"💀 *SIGNAL KILLED — {self.asset} {direction}*\n"
-                f"_Reason: {kill.reason if kill else 'unknown'}_"
+                f"💀 *SIGNAL KILLED — {asset} {direction}*\n"
+                f"_Reason: {reason}_"
             )
 
         lines = [header, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
 
         for entry in self.entries:
             emoji = entry.emoji()
-            name  = entry.name.upper().replace("_", " ")
+            name  = self._escape_markdown(entry.name.upper().replace("_", " "))
 
             # Confidence delta display
             if entry.conf_delta > 0:
@@ -192,7 +208,7 @@ class SignalJournal:
             else:
                 conf_str = f"conf {entry.conf_before:.2f}"
 
-            reason_str = f"  _{entry.reason}_" if entry.reason else ""
+            reason_str = f"  _{self._escape_markdown(entry.reason)}_" if entry.reason else ""
             lines.append(f"{emoji} *{name}*   {conf_str}{reason_str}")
 
             # Show phase data inline if available
@@ -200,9 +216,9 @@ class SignalJournal:
                 data_parts = []
                 for k, v in entry.data.items():
                     if isinstance(v, float):
-                        data_parts.append(f"{k}={v:.3f}")
+                        data_parts.append(f"{self._escape_markdown(k)}={v:.3f}")
                     elif v is not None:
-                        data_parts.append(f"{k}={v}")
+                        data_parts.append(f"{self._escape_markdown(k)}={self._escape_markdown(v)}")
                 if data_parts:
                     lines.append(f"   `{'  '.join(data_parts[:4])}`")
 

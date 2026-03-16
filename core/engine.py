@@ -12,6 +12,9 @@ from utils.logger import get_logger
 from core.signal import Signal
 from core.pipeline import Pipeline, pipeline as _global_pipeline
 
+TRADE_CLOSE_COOLDOWN_MINUTES = 60
+TRADE_MIN_CONFIDENCE = 0.7
+
 logger = get_logger()
 
 
@@ -202,9 +205,25 @@ class TradingCore:
                     except Exception:
                         pass
 
+                    # ── Phase 11 — record trade result for win rate tracking ──────────
+                    try:
+                        from monitoring.system_health_service import monitor as _mon
+                        _mon.record_trade_result(pnl)
+                    except Exception:
+                        pass
+
                     logger.log_trade("CLOSE", trade_id=trade_id,
                                     asset=trade.get("asset", ""),
                                     pnl=round(pnl, 4), reason=exit_reason)
+                    try:
+                        canonical = self.registry.canonical(trade.get("asset", ""))
+                        self.state.set_cooldown(canonical, TRADE_CLOSE_COOLDOWN_MINUTES)
+                        logger.info(
+                            f"[TradingCore] Set cooldown {TRADE_CLOSE_COOLDOWN_MINUTES}m "
+                            f"for {canonical} after close"
+                        )
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.error(f"[TradingCore] on_trade_closed error: {e}")
 
@@ -314,6 +333,12 @@ class TradingCore:
         for sig in survivors[:3]:
             if self._stop_event.is_set():
                 break
+            if sig.confidence < TRADE_MIN_CONFIDENCE:
+                logger.info(
+                    f"[TradingCore] Skipping execution for {sig.asset} due to confidence "
+                    f"{sig.confidence:.3f} < {TRADE_MIN_CONFIDENCE}"
+                )
+                continue
             if self._execute_signal(sig):
                 processed += 1
 
@@ -339,6 +364,10 @@ class TradingCore:
                 if not self.state.is_cooling_down(canonical)
                 and not self.state.has_open_position_for(canonical)
             ]
+            logger.debug(
+                f"[TradingCore] Asset scan: total={len(asset_list)} candidates={len(candidates)} "
+                f"cooldowns={len(asset_list)-len(candidates)}"
+            )
 
             if not candidates or self._stop_event.is_set():
                 return result
@@ -387,6 +416,7 @@ class TradingCore:
                     res = future.result()
                     if res is not None:
                         result.append(res)
+            logger.debug(f"[TradingCore] Signal generation: candidates_processed={len(result)}")
 
         except Exception as e:
             logger.error(f"[TradingCore] Signal generation error: {e}")

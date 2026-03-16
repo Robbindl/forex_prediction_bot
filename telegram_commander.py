@@ -288,9 +288,43 @@ class TelegramCommander:
             wait = e.retry_after if isinstance(e.retry_after, (int, float)) else 30
             logger.warning(f"[Telegram] flood control — retry in {wait}s")
         except (TimedOut, NetworkError) as e:
+            msg = str(e).lower()
+            if "can't parse entities" in msg or "parse entities" in msg:
+                logger.warning(f"[Telegram] parse error: {e}. Retrying without markdown")
+                try:
+                    async def _send_plain():
+                        await self.application.bot.send_message(
+                            chat_id=self.chat_id,
+                            text=text,
+                            parse_mode=None,
+                            reply_markup=reply_markup,
+                        )
+                    future = asyncio.run_coroutine_threadsafe(_send_plain(), self._loop)
+                    future.result(timeout=15)
+                    return True
+                except Exception as e2:
+                    logger.error(f"[Telegram] send fallback plain text error: {e2}")
+                    return False
             logger.warning(f"[Telegram] network error: {e}")
         except Exception as e:
-            if "Unauthorized" not in str(e) and "401" not in str(e):
+            msg = str(e).lower()
+            if "can't parse entities" in msg or "parse entities" in msg:
+                logger.warning(f"[Telegram] parse error: {e}. Retrying without markdown")
+                try:
+                    async def _send_plain():
+                        await self.application.bot.send_message(
+                            chat_id=self.chat_id,
+                            text=text,
+                            parse_mode=None,
+                            reply_markup=reply_markup,
+                        )
+                    future = asyncio.run_coroutine_threadsafe(_send_plain(), self._loop)
+                    future.result(timeout=15)
+                    return True
+                except Exception as e2:
+                    logger.error(f"[Telegram] send fallback plain text error: {e2}")
+                    return False
+            if "unauthorized" not in msg and "401" not in msg:
                 logger.error(f"[Telegram] send error: {e}")
         return False
 

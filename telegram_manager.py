@@ -86,8 +86,11 @@ class TelegramManager:
             return False
 
         if self._check_pid_file():
-            logger.warning("Telegram bot not started — another live instance is running")
-            return False
+            if os.getenv("DEBUG_FORCE_TELEGRAM", "0") == "1":
+                logger.warning("Telegram bot existing instance detected, but DEBUG_FORCE_TELEGRAM=1: forcing start")
+            else:
+                logger.warning("Telegram bot not started — another live instance is running")
+                return False
 
         # Always clear any stale session before starting polling
         self._clear_telegram_session(token)

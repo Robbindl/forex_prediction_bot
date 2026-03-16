@@ -58,14 +58,14 @@ class SessionLayer:
 
         if not _is_market_open(signal.category):
             reason = f"market closed for {signal.category} at UTC {utc_hour:02d}:xx"
-            signal.kill(reason, LAYER)
+            signal.reduce(0.05)
             signal.journal.record(
-                layer=LAYER, name=self.name, decision=KILLED,
+                layer=LAYER, name=self.name, decision=PASS,
                 reason=reason,
                 conf_before=conf_before, conf_after=signal.confidence,
                 data={"session": session, "utc_hour": utc_hour},
             )
-            return None
+            logger.log_pipeline(signal.asset, LAYER, "MARKET_CLOSED", reason)
 
         signal.metadata["session"] = session
         boost = _SESSION_BOOST.get(session, 0.0)

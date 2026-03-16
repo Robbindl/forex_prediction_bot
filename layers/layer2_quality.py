@@ -12,7 +12,7 @@ from utils.logger import get_logger
 
 logger = get_logger()
 LAYER        = 2
-MIN_RR       = 1.5
+MIN_RR       = 1.2
 MAX_SPREAD_PCT = 0.005
 
 
@@ -34,14 +34,14 @@ class QualityLayer:
 
             if rr < MIN_RR:
                 reason = f"R:R {rr:.2f} below minimum {MIN_RR}"
-                signal.kill(reason, LAYER)
+                signal.reduce(0.08)
                 signal.journal.record(
-                    layer=LAYER, name=self.name, decision=KILLED,
+                    layer=LAYER, name=self.name, decision=PASS,
                     reason=reason,
                     conf_before=conf_before, conf_after=signal.confidence,
                     data=data,
                 )
-                return None
+                logger.log_pipeline(signal.asset, LAYER, "LOW_RR", reason)
 
         # ── Spread / liquidity proxy ──────────────────────────────────────
         spread = context.get("spread")
@@ -60,15 +60,15 @@ class QualityLayer:
                     f"spread={spread_pct:.4f} penalty={penalty:.4f}"
                 )
                 if signal.confidence < 0.5:
-                    reason = f"spread {spread_pct:.4f} killed confidence below 0.5"
-                    signal.kill(reason, LAYER)
+                    reason = f"spread {spread_pct:.4f} dropped confidence below 0.5"
+                    signal.reduce(0.05)
                     signal.journal.record(
-                        layer=LAYER, name=self.name, decision=KILLED,
+                        layer=LAYER, name=self.name, decision=PASS,
                         reason=reason,
                         conf_before=conf_before, conf_after=signal.confidence,
                         data=data,
                     )
-                    return None
+                    logger.log_pipeline(signal.asset, LAYER, "LOW_CONF_SPREAD", reason)
 
         reason = f"RR={rr:.2f}  spread={spread_pct:.4f}"
         signal.journal.record(

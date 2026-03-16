@@ -96,9 +96,9 @@ class SentimentLayer:
         # ── Kill on strongly opposing sentiment ───────────────────────────
         if aligned_score <= _KILL_THRESHOLD:
             reason = f"sentiment strongly against {signal.direction} (score={score:.3f})"
-            signal.kill(reason, LAYER)
+            signal.reduce(0.12)
             signal.journal.record(
-                layer=LAYER, name=self.name, decision=KILLED,
+                layer=LAYER, name=self.name, decision=PASS,
                 reason=reason,
                 conf_before=conf_before, conf_after=signal.confidence,
                 data={
@@ -106,7 +106,7 @@ class SentimentLayer:
                     **narrative_data,
                 },
             )
-            return None
+            logger.log_pipeline(signal.asset, LAYER, "STRONG_OPPOSE", reason)
 
         # ── Adjustments ───────────────────────────────────────────────────
         if aligned_score >= _STRONG_THRESHOLD:

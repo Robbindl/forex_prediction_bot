@@ -31,3 +31,8 @@ def start_all(exchanges=None) -> None:
 def stop_all() -> None:
     """Graceful shutdown. Wire to your SIGTERM handler."""
     stream_manager.stop()
+
+
+def is_running() -> bool:
+    """Return True if any Phase 1 exchange streams are active."""
+    return bool(stream_manager._running.is_set())

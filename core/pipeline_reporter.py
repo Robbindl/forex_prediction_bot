@@ -39,6 +39,7 @@ import threading
 import time
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
+from sqlalchemy import text
 from utils.logger import get_logger
 from core.signal_journal import PASS, KILLED, INFO
 
@@ -54,6 +55,8 @@ POSITIVE_EDGE_THRESHOLD   = 0.55   # win rate >= 55% = small boost
 WEAK_EDGE_THRESHOLD       = 0.50   # win rate < 50%  = reduce
 POOR_EDGE_THRESHOLD       = 0.40   # win rate < 40%  = bigger reduce + warn
 DAILY_OPTIMISE_HOUR       = 3      # run daily optimisation at 3 AM UTC
+TELEGRAM_ASSET_ALERT_COOLDOWN_SECS = 3600  # 1h dedupe window per asset
+TELEGRAM_SIGNAL_MIN_CONFIDENCE = 0.7  # minimum confidence to send Telegram
 
 # ── Backtest cache (avoids re-running for same asset repeatedly) ──────────────
 _backtest_cache:    Dict[str, dict] = {}   # asset → {result, ts}
@@ -86,6 +89,7 @@ class PipelineReporter:
         self._pub             = None   # Redis publisher
         self._db_ok           = False
         self._daily_thread:   Optional[threading.Thread] = None
+        self._last_telegram_sent: Dict[str, float] = {}
         self._init_redis()
         self._init_db()
         self._start_daily_optimiser()
@@ -235,36 +239,37 @@ class PipelineReporter:
             return
         try:
             from services.db_pool import get_db
+            from sqlalchemy import text
             backtest_entry = next(
                 (e for e in signal.journal.entries if e.name == "backtest"),
                 None
             )
             if not backtest_entry:
                 return
-            sql = """
+            sql = text("""
                 INSERT INTO strategy_performance
                     (asset, category, strategy_id, win_rate, sharpe_ratio,
                      total_trades, recorded_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                VALUES (:asset, :category, :strategy_id, :win_rate, :sharpe_ratio,
+                        :total_trades, NOW())
                 ON CONFLICT (asset, strategy_id)
                 DO UPDATE SET
                     win_rate     = EXCLUDED.win_rate,
                     sharpe_ratio = EXCLUDED.sharpe_ratio,
                     total_trades = EXCLUDED.total_trades,
                     recorded_at  = NOW();
-            """
+            """)
             data = backtest_entry.data
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, (
-                        signal.canonical_asset or signal.asset,
-                        signal.category,
-                        signal.strategy_id or "voting",
-                        data.get("win_rate",  0.0),
-                        data.get("sharpe",    0.0),
-                        data.get("trades",    0),
-                    ))
-                conn.commit()
+            db = get_db()
+            with db.get_session() as s:
+                s.execute(sql, {
+                    "asset": signal.canonical_asset or signal.asset,
+                    "category": signal.category,
+                    "strategy_id": signal.strategy_id or "voting",
+                    "win_rate": data.get("win_rate", 0.0),
+                    "sharpe_ratio": data.get("sharpe", 0.0),
+                    "total_trades": data.get("trades", 0),
+                })
         except Exception as e:
             logger.debug(f"[PipelineReporter] store_performance: {e}")
 
@@ -273,9 +278,33 @@ class PipelineReporter:
     def _send_telegram(self, signal: "Signal") -> None:
         if not self._telegram:
             return
+        if not signal.alive:
+            logger.debug(f"[PipelineReporter] Skipping Telegram for dead signal {signal.asset} {signal.direction}")
+            return
+
+        if signal.confidence < TELEGRAM_SIGNAL_MIN_CONFIDENCE:
+            logger.debug(
+                f"[PipelineReporter] Skipping Telegram for {signal.asset} due to low final confidence "
+                f"({signal.confidence:.3f} < {TELEGRAM_SIGNAL_MIN_CONFIDENCE})"
+            )
+            return
+
+        asset_key = signal.canonical_asset or signal.asset
+        now = time.time()
+        last = self._last_telegram_sent.get(asset_key, 0.0)
+        if now - last < TELEGRAM_ASSET_ALERT_COOLDOWN_SECS:
+            logger.debug(
+                f"[PipelineReporter] Skipping Telegram for {asset_key} due to dedupe cooldown "
+                f"({now-last:.0f}s < {TELEGRAM_ASSET_ALERT_COOLDOWN_SECS}s)"
+            )
+            return
+
         try:
             msg = signal.journal.to_telegram(signal)
+            logger.info(f"[PipelineReporter] Sending Telegram alert: {signal.journal.final_decision()} {signal.asset} {signal.direction}")
             self._telegram.send_message(msg)
+            logger.info(f"[PipelineReporter] Telegram sent for {signal.asset} {signal.direction}")
+            self._last_telegram_sent[asset_key] = now
         except Exception as e:
             logger.debug(f"[PipelineReporter] Telegram send: {e}")
 
@@ -363,26 +392,27 @@ class PipelineReporter:
             return
         try:
             from services.db_pool import get_db
-            sql = """
+            from sqlalchemy import text
+            sql = text("""
                 INSERT INTO strategy_optimisation
                     (asset, category, best_params, sharpe, win_rate, optimised_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                VALUES (:asset, :category, :best_params, :sharpe, :win_rate, NOW())
                 ON CONFLICT (asset, category)
                 DO UPDATE SET
                     best_params  = EXCLUDED.best_params,
                     sharpe       = EXCLUDED.sharpe,
                     win_rate     = EXCLUDED.win_rate,
                     optimised_at = NOW();
-            """
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, (
-                        asset, category,
-                        json.dumps(result),
-                        result.get("sharpe",   0.0),
-                        result.get("win_rate", 0.0),
-                    ))
-                conn.commit()
+            """)
+            db = get_db()
+            with db.get_session() as s:
+                s.execute(sql, {
+                    "asset": asset,
+                    "category": category,
+                    "best_params": json.dumps(result),
+                    "sharpe": result.get("sharpe", 0.0),
+                    "win_rate": result.get("win_rate", 0.0),
+                })
         except Exception as e:
             logger.debug(f"[PipelineReporter] store_optimisation: {e}")
 
@@ -400,32 +430,31 @@ class PipelineReporter:
     def _init_db(self) -> None:
         try:
             from services.db_pool import get_db
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS strategy_performance (
-                            asset        TEXT NOT NULL,
-                            category     TEXT NOT NULL,
-                            strategy_id  TEXT NOT NULL,
-                            win_rate     REAL NOT NULL DEFAULT 0,
-                            sharpe_ratio REAL NOT NULL DEFAULT 0,
-                            total_trades INT  NOT NULL DEFAULT 0,
-                            recorded_at  TIMESTAMP NOT NULL DEFAULT NOW(),
-                            PRIMARY KEY (asset, strategy_id)
-                        );
-                    """)
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS strategy_optimisation (
-                            asset         TEXT NOT NULL,
-                            category      TEXT NOT NULL,
-                            best_params   TEXT NOT NULL DEFAULT '{}',
-                            sharpe        REAL NOT NULL DEFAULT 0,
-                            win_rate      REAL NOT NULL DEFAULT 0,
-                            optimised_at  TIMESTAMP NOT NULL DEFAULT NOW(),
-                            PRIMARY KEY (asset, category)
-                        );
-                    """)
-                conn.commit()
+            db = get_db()
+            with db.get_session() as s:
+                s.execute(text("""
+                    CREATE TABLE IF NOT EXISTS strategy_performance (
+                        asset        TEXT NOT NULL,
+                        category     TEXT NOT NULL,
+                        strategy_id  TEXT NOT NULL,
+                        win_rate     REAL NOT NULL DEFAULT 0,
+                        sharpe_ratio REAL NOT NULL DEFAULT 0,
+                        total_trades INT  NOT NULL DEFAULT 0,
+                        recorded_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (asset, strategy_id)
+                    );
+                """))
+                s.execute(text("""
+                    CREATE TABLE IF NOT EXISTS strategy_optimisation (
+                        asset         TEXT NOT NULL,
+                        category      TEXT NOT NULL,
+                        best_params   TEXT NOT NULL DEFAULT '{}',
+                        sharpe        REAL NOT NULL DEFAULT 0,
+                        win_rate      REAL NOT NULL DEFAULT 0,
+                        optimised_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (asset, category)
+                    );
+                """))
             self._db_ok = True
             logger.info("[PipelineReporter] DB tables ready")
         except Exception as e:

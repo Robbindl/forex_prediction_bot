@@ -18,7 +18,8 @@ logger = get_logger()
 class VotingStrategy(BaseStrategy):
     name = "Voting"
 
-    def __init__(self, min_votes: int = 2, min_confidence: float = 0.55):
+    def __init__(self, min_votes: int = 1, min_confidence: float = 0.55):
+        # Generates more actionable signals by accepting single strong strategy votes.
         self.min_votes      = min_votes
         self.min_confidence = min_confidence
         self._strategies: List[BaseStrategy] = [
@@ -62,6 +63,7 @@ class VotingStrategy(BaseStrategy):
                 logger.debug(f"[Voting] {strat.name} error on {asset}: {e}")
 
         if not signals:
+            logger.debug(f"[Voting] {asset} no base signals at confidence>={self.min_confidence}")
             return None
 
         buy_signals  = [s for s in signals if s.direction == "BUY"]

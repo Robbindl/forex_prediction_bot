@@ -17,13 +17,14 @@ def _make_signal(confidence=0.75, direction="BUY", category="crypto",
 
 # ── Layer 1 — Voting ──────────────────────────────────────────────────────────
 
-def test_layer1_kills_low_confidence():
+def test_layer1_low_confidence_penalised():
     from layers.layer1_voting import VotingLayer
     layer = VotingLayer()
     sig   = _make_signal(confidence=0.3)
     result = layer.process(sig, {})
-    assert result is None
-    assert sig.alive is False
+    assert result is not None
+    assert sig.alive is True
+    assert sig.confidence < 0.3
 
 
 def test_layer1_passes_high_confidence():
@@ -55,13 +56,14 @@ def test_layer1_reduces_when_ml_disagrees():
 
 # ── Layer 2 — Quality ─────────────────────────────────────────────────────────
 
-def test_layer2_kills_bad_rr():
+def test_layer2_penalises_bad_rr_no_kill():
     from layers.layer2_quality import QualityLayer
     layer = QualityLayer()
-    # RR = 0.5 (reward=500, risk=1000) — below MIN_RR of 1.5
+    # RR = 0.5 (reward=500, risk=1000) — below MIN_RR
     sig = _make_signal(entry=50000, stop_loss=49000, take_profit=50500)
     result = layer.process(sig, {})
-    assert result is None
+    assert result is not None
+    assert sig.confidence < 0.75
 
 
 def test_layer2_passes_good_rr():
@@ -93,20 +95,22 @@ def test_layer3_passes_unknown_regime():
     assert result is not None
 
 
-def test_layer3_kills_volatile_regime():
+def test_layer3_penalises_volatile_regime():
     from layers.layer3_regime import RegimeLayer
     layer  = RegimeLayer()
-    sig    = _make_signal(direction="BUY")
+    sig    = _make_signal(direction="BUY", confidence=0.8)
     result = layer.process(sig, {"regime": "volatile"})
-    assert result is None
+    assert result is not None
+    assert sig.confidence < 0.8
 
 
-def test_layer3_kills_conflicting_regime():
+def test_layer3_penalises_conflicting_regime():
     from layers.layer3_regime import RegimeLayer
     layer  = RegimeLayer()
-    sig    = _make_signal(direction="BUY")
+    sig    = _make_signal(direction="BUY", confidence=0.8)
     result = layer.process(sig, {"regime": "trending_down"})
-    assert result is None
+    assert result is not None
+    assert sig.confidence < 0.8
 
 
 def test_layer3_passes_aligned_regime():
@@ -145,13 +149,14 @@ def test_layer5_passes_neutral_sentiment():
     assert result is not None
 
 
-def test_layer5_kills_strongly_negative_sentiment_for_buy():
+def test_layer5_penalises_strongly_negative_sentiment_for_buy():
     from layers.layer5_sentiment import SentimentLayer
     layer  = SentimentLayer()
-    sig    = _make_signal(direction="BUY")
-    # aligned_score = -0.8 * 1 = -0.8 < KILL_THRESHOLD (-0.6)
+    sig    = _make_signal(direction="BUY", confidence=0.7)
+    # aligned_score = -0.8 * 1 = -0.8
     result = layer.process(sig, {"sentiment_score": -0.8})
-    assert result is None
+    assert result is not None
+    assert sig.confidence < 0.7
 
 
 def test_layer5_boosts_aligned_sentiment():
@@ -173,15 +178,16 @@ def test_layer6_passes_with_no_whale_data():
     assert result is not None
 
 
-def test_layer6_ingest_and_kill():
+def test_layer6_ingest_and_penalises():
     from layers.layer6_whale import WhaleLayer, ingest_whale_alert, _WHALE_CACHE
     _WHALE_CACHE.clear()
     ingest_whale_alert("BTC-USD", "SELL", 5_000_000)
     ingest_whale_alert("BTC-USD", "SELL", 5_000_000)
     layer  = WhaleLayer()
-    sig    = _make_signal(direction="BUY")
+    sig    = _make_signal(direction="BUY", confidence=0.75)
     result = layer.process(sig, {})
-    assert result is None
+    assert result is not None
+    assert sig.confidence < 0.75
     _WHALE_CACHE.clear()
 
 

@@ -44,6 +44,11 @@ def stop_all() -> None:
     tracker.stop()
 
 
-__all__ = ["tracker", "start_all", "stop_all",
+def is_running() -> bool:
+    """Return True if Phase 2 whale tracker thread is active."""
+    return bool(getattr(tracker, "_running", False))
+
+
+__all__ = ["tracker", "start_all", "stop_all", "is_running",
            "WalletTracker", "WalletBehaviorClassifier",
            "WalletDatabase", "WalletClusterAnalyzer"]
