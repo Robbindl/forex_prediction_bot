@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Order Flow — Robbie</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--bd2:#263045;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--font:'Inter',system-ui,sans-serif;--r:8px;--r3:12px}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:hidden}
+.layout{display:flex;height:100vh}
+.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0;z-index:50}
+.sb-logo{padding:20px 16px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+.sb-logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--bl),var(--pu));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#fff}
+.sb-logo-text{font-size:15px;font-weight:700;letter-spacing:-.3px}.sb-logo-text span{color:var(--cy);font-size:11px;display:block;font-weight:400;letter-spacing:.5px;text-transform:uppercase;margin-top:1px}
+.sb-section{padding:10px 8px 4px;font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+.sb-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r);margin:1px 6px;font-size:13px;color:var(--tx2);cursor:pointer;text-decoration:none;transition:.12s;position:relative}
+.sb-link:hover{background:var(--s3);color:var(--tx)}
+.sb-link.active{background:rgba(41,121,255,.12);color:var(--bl);border-left:2px solid var(--bl)}
+.sb-icon{font-size:16px;width:20px;text-align:center;flex-shrink:0}
+.sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid var(--bd)}
+.status-row{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;color:var(--tx2)}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--gr);animation:pulse 2s ease-in-out infinite}
+.pulse.off{background:var(--rd);animation:none}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(0,208,132,.4)}50%{box-shadow:0 0 0 5px rgba(0,208,132,0)}}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;gap:16px;flex-shrink:0}
+.page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
+.page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--cy)}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.tb-time{font-size:12px;color:var(--tx3);font-family:monospace}
+.tb-balance{font-size:14px;font-weight:700;color:var(--gr)}
+.tb-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.badge-live{background:rgba(0,208,132,.13);color:var(--gr)}
+.content{flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-content:start}
+.metric-card{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);padding:16px 18px;position:relative;overflow:hidden}
+.metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.mc-cyan::before{background:var(--cy)}.mc-green::before{background:var(--gr)}.mc-red::before{background:var(--rd)}.mc-purple::before{background:var(--pu)}.mc-amber::before{background:var(--am)}
+.mc-label{font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.mc-value{font-size:26px;font-weight:700;line-height:1;margin-bottom:4px}
+.mc-sub{font-size:12px;color:var(--tx2)}
+.mc-icon{position:absolute;right:14px;top:14px;font-size:22px;opacity:.25}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden}
+.panel-wide{grid-column:span 2}.panel-full{grid-column:span 4}.panel-3{grid-column:span 3}
+.panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
+.panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
+.panel-badge{margin-left:auto;font-size:10px;padding:2px 8px;border-radius:20px;background:var(--s3);color:var(--tx3)}
+.panel-body{padding:12px 16px}
+.gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.pu{color:var(--pu)}.mu{color:var(--tx2)}
+.empty{text-align:center;padding:24px;color:var(--tx3);font-size:13px}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.metric-card,.panel{animation:fadeUp .3s ease both}
+
+/* IMBALANCE BAR */
+.imb-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.6)}
+.imb-row:last-child{border:none}
+.imb-asset{font-size:13px;font-weight:600;width:90px;flex-shrink:0}
+.imb-bar-wrap{flex:1;height:8px;border-radius:4px;background:rgba(255,255,255,.06);overflow:hidden;position:relative}
+.imb-bar{height:100%;border-radius:4px;transition:width .4s}
+.imb-bar.buy{background:var(--gr)}
+.imb-bar.sell{background:var(--rd);margin-left:auto}
+.imb-score{font-size:12px;font-weight:600;width:50px;text-align:right;flex-shrink:0}
+.imb-bias{font-size:10px;width:60px;text-align:right;flex-shrink:0;text-transform:uppercase;letter-spacing:.3px}
+
+/* WALL LIST */
+.wall-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.5)}
+.wall-item:last-child{border:none}
+.wall-side{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0}
+.wall-bid{background:rgba(0,208,132,.15);color:var(--gr)}
+.wall-ask{background:rgba(255,69,96,.15);color:var(--rd)}
+.wall-info{flex:1}
+.wall-asset{font-size:12px;font-weight:600}
+.wall-price{font-size:11px;color:var(--cy);font-family:monospace}
+.wall-strength{padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;flex-shrink:0}
+.str-extreme{background:rgba(255,165,0,.2);color:var(--am)}
+.str-strong{background:rgba(185,136,255,.15);color:var(--pu)}
+.str-moderate{background:rgba(122,136,153,.1);color:var(--tx3)}
+.wall-size{font-size:12px;font-weight:600;color:var(--cy);flex-shrink:0;text-align:right;min-width:55px}
+
+/* STOP HUNT LIST */
+.hunt-item{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(30,38,53,.5)}
+.hunt-item:last-child{border:none}
+.hunt-icon{font-size:18px;flex-shrink:0}
+.hunt-info{flex:1}
+.hunt-asset{font-size:13px;font-weight:600}
+.hunt-meta{font-size:11px;color:var(--tx3);margin-top:2px}
+.hunt-signal{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0}
+.sig-buy{background:rgba(0,208,132,.15);color:var(--gr)}
+.sig-sell{background:rgba(255,69,96,.15);color:var(--rd)}
+.hunt-conf{font-size:11px;color:var(--tx2);flex-shrink:0}
+
+/* MINI CHART - order book depth */
+.depth-wrap{display:flex;gap:2px;height:80px;align-items:flex-end;padding:0 4px}
+.depth-bar{flex:1;border-radius:2px 2px 0 0;min-height:3px;transition:height .3s}
+.depth-bid{background:rgba(0,208,132,.5)}
+.depth-ask{background:rgba(255,69,96,.5)}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sb-logo">
+      <div class="sb-logo-icon">R</div>
+      <div class="sb-logo-text">Robbie<span>Trading Platform</span></div>
+    </div>
+    <div class="sb-section">Dashboards</div>
+    <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
+    <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
+    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
+    <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
+    <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
+    <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
+    <a href="/order-flow" class="sb-link active"><span class="sb-icon">📈</span>Order Flow</a>
+    <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
+    <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
+    <div class="sb-bottom">
+      <div class="status-row"><div class="pulse" id="engineDot"></div><span id="engineStatus">Connecting…</span></div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="page-title"><div class="dot"></div>Order Flow Intelligence</div>
+      <div class="tb-right">
+        <span class="tb-time" id="clock">—</span>
+        <span class="tb-balance" id="topBalance">—</span>
+        <span class="tb-badge badge-live">Phase 3</span>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- Metric cards -->
+      <div class="metric-card mc-cyan" style="animation-delay:.05s">
+        <div class="mc-label">Buy Pressure</div>
+        <div class="mc-value cy" id="mBuyPressure">—</div>
+        <div class="mc-sub">Avg imbalance (bullish)</div>
+        <span class="mc-icon">📈</span>
+      </div>
+      <div class="metric-card mc-red" style="animation-delay:.1s">
+        <div class="mc-label">Sell Pressure</div>
+        <div class="mc-value rd" id="mSellPressure">—</div>
+        <div class="mc-sub">Avg imbalance (bearish)</div>
+        <span class="mc-icon">📉</span>
+      </div>
+      <div class="metric-card mc-amber" style="animation-delay:.15s">
+        <div class="mc-label">Liquidity Walls</div>
+        <div class="mc-value am" id="mWallCount">—</div>
+        <div class="mc-sub">Active walls detected</div>
+        <span class="mc-icon">🧱</span>
+      </div>
+      <div class="metric-card mc-purple" style="animation-delay:.2s">
+        <div class="mc-label">Stop Hunts</div>
+        <div class="mc-value pu" id="mHuntCount">—</div>
+        <div class="mc-sub">Last 4 hours</div>
+        <span class="mc-icon">⚡</span>
+      </div>
+
+      <!-- Bid/Ask Imbalance panel -->
+      <div class="panel panel-wide" style="animation-delay:.25s">
+        <div class="panel-header">
+          <span>📊</span>
+          <span class="panel-title">Bid / Ask Imbalance</span>
+          <span class="panel-badge" id="imbTimestamp">—</span>
+        </div>
+        <div class="panel-body" id="imbList"><div class="empty">Loading…</div></div>
+      </div>
+
+      <!-- Liquidity Walls -->
+      <div class="panel panel-wide" style="animation-delay:.3s">
+        <div class="panel-header">
+          <span>🧱</span>
+          <span class="panel-title">Liquidity Walls</span>
+          <span class="panel-badge" id="wallBadge">—</span>
+        </div>
+        <div class="panel-body" style="max-height:320px;overflow-y:auto" id="wallList">
+          <div class="empty">Loading…</div>
+        </div>
+      </div>
+
+      <!-- Stop Hunts -->
+      <div class="panel panel-wide" style="animation-delay:.35s">
+        <div class="panel-header">
+          <span>⚡</span>
+          <span class="panel-title">Stop Hunt Detections</span>
+          <span class="panel-badge" id="huntBadge">—</span>
+        </div>
+        <div class="panel-body" style="max-height:320px;overflow-y:auto" id="huntList">
+          <div class="empty">Loading…</div>
+        </div>
+      </div>
+
+      <!-- Order book depth visualiser -->
+      <div class="panel panel-wide" style="animation-delay:.4s">
+        <div class="panel-header">
+          <span>📐</span>
+          <span class="panel-title">Depth Snapshot — BTC</span>
+          <span class="panel-badge" id="depthBadge">Live</span>
+        </div>
+        <div class="panel-body">
+          <div style="display:flex;gap:6px;margin-bottom:10px">
+            <button onclick="selectAsset('BTCUSDT')" id="btn-BTCUSDT" class="asset-btn active-btn">BTC</button>
+            <button onclick="selectAsset('ETHUSDT')" id="btn-ETHUSDT" class="asset-btn">ETH</button>
+            <button onclick="selectAsset('SOLUSDT')" id="btn-SOLUSDT" class="asset-btn">SOL</button>
+            <button onclick="selectAsset('BNBUSDT')" id="btn-BNBUSDT" class="asset-btn">BNB</button>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--tx3);margin-bottom:6px">
+            <span class="gn">◆ Bids</span>
+            <span id="depthScore" style="font-weight:600">—</span>
+            <span class="rd">◆ Asks</span>
+          </div>
+          <div class="depth-wrap" id="depthChart"></div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--tx3);margin-top:6px">
+            <span class="gn" id="bidVol">—</span>
+            <span id="depthBias" style="font-weight:600">—</span>
+            <span class="rd" id="askVol">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+.asset-btn{background:var(--s3);border:1px solid var(--bd);color:var(--tx2);padding:4px 12px;border-radius:6px;font-size:11px;cursor:pointer;transition:.12s}
+.asset-btn:hover{border-color:var(--bl);color:var(--tx)}
+.active-btn{background:rgba(41,121,255,.15);border-color:var(--bl);color:var(--bl)}
+</style>
+
+<script>
+let selectedAsset = 'BTCUSDT';
+
+function selectAsset(asset) {
+  selectedAsset = asset;
+  document.querySelectorAll('.asset-btn').forEach(b => b.classList.remove('active-btn'));
+  document.getElementById('btn-' + asset).classList.add('active-btn');
+  renderDepth();
+}
+
+// Clock
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+}, 1000);
+
+// Engine status
+async function checkStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const ok = d.engine_running;
+    document.getElementById('engineDot').className = 'pulse' + (ok ? '' : ' off');
+    document.getElementById('engineStatus').textContent = ok ? 'Live' : 'Offline';
+    document.getElementById('topBalance').textContent = d.balance ? '$' + Number(d.balance).toLocaleString('en', {minimumFractionDigits:2}) : '—';
+  } catch(e) {}
+}
+checkStatus(); setInterval(checkStatus, 15000);
+
+// Imbalance
+async function loadImbalance() {
+  try {
+    const r = await fetch('/api/phase3/imbalance');
+    const d = await r.json();
+    if (!d.success) return;
+    const imb = d.imbalances || {};
+    const assets = Object.keys(imb);
+    if (!assets.length) { document.getElementById('imbList').innerHTML = '<div class="empty">No imbalance data</div>'; return; }
+
+    let buys = 0, sells = 0, bc = 0;
+    assets.forEach(a => { const v = imb[a]; if (v > 0) { buys += v; bc++; } else if (v < 0) sells += Math.abs(v); });
+    document.getElementById('mBuyPressure').textContent  = bc ? (buys/bc).toFixed(3) : '—';
+    document.getElementById('mSellPressure').textContent = (assets.length - bc) ? (sells/(assets.length-bc)).toFixed(3) : '—';
+
+    document.getElementById('imbTimestamp').textContent = new Date(d.timestamp).toLocaleTimeString();
+    const html = assets.map(asset => {
+      const score = imb[asset] || 0;
+      const pct   = Math.abs(score) * 100;
+      const isBuy = score >= 0;
+      const col   = isBuy ? 'var(--gr)' : 'var(--rd)';
+      return `<div class="imb-row">
+        <div class="imb-asset">${asset.replace('USDT','')}</div>
+        <div class="imb-bar-wrap">
+          <div class="imb-bar ${isBuy ? 'buy' : 'sell'}" style="width:${Math.min(pct,100)}%"></div>
+        </div>
+        <div class="imb-score" style="color:${col}">${score >= 0 ? '+' : ''}${score.toFixed(3)}</div>
+        <div class="imb-bias" style="color:${col}">${isBuy ? 'BUY' : 'SELL'}</div>
+      </div>`;
+    }).join('');
+    document.getElementById('imbList').innerHTML = html;
+  } catch(e) { document.getElementById('imbList').innerHTML = '<div class="empty">Unavailable</div>'; }
+}
+
+// Walls
+async function loadWalls() {
+  try {
+    const r = await fetch('/api/phase3/walls');
+    const d = await r.json();
+    const walls = d.walls || [];
+    document.getElementById('mWallCount').textContent = walls.length;
+    document.getElementById('wallBadge').textContent  = walls.length + ' detected';
+    if (!walls.length) { document.getElementById('wallList').innerHTML = '<div class="empty">No active walls</div>'; return; }
+    const strClass = s => s === 'EXTREME' ? 'str-extreme' : s === 'STRONG' ? 'str-strong' : 'str-moderate';
+    const html = walls.slice(0,15).map(w => `
+      <div class="wall-item">
+        <div class="wall-side ${w.side === 'BID' ? 'wall-bid' : 'wall-ask'}">${w.side}</div>
+        <div class="wall-info">
+          <div class="wall-asset">${(w.asset||'').replace('USDT','')}</div>
+          <div class="wall-price">${Number(w.price||0).toFixed(5)}</div>
+        </div>
+        <div class="wall-strength ${strClass(w.strength)}">${w.strength||'—'}</div>
+        <div class="wall-size">${Number(w.size_ratio||0).toFixed(1)}×</div>
+      </div>`).join('');
+    document.getElementById('wallList').innerHTML = html;
+  } catch(e) {}
+}
+
+// Stop Hunts
+async function loadHunts() {
+  try {
+    const r = await fetch('/api/phase3/stop-hunts');
+    const d = await r.json();
+    const hunts = d.hunts || [];
+    document.getElementById('mHuntCount').textContent = hunts.length;
+    document.getElementById('huntBadge').textContent  = hunts.length + ' recent';
+    if (!hunts.length) { document.getElementById('huntList').innerHTML = '<div class="empty">No stop hunts detected</div>'; return; }
+    const html = hunts.slice(0,12).map(h => {
+      const sig = h.implication || 'BUY';
+      return `<div class="hunt-item">
+        <div class="hunt-icon">⚡</div>
+        <div class="hunt-info">
+          <div class="hunt-asset">${(h.asset||'').replace('USDT','')}</div>
+          <div class="hunt-meta">Wall @ ${Number(h.wall_price||0).toFixed(4)} · Wick ${Number(h.wick_pct||0).toFixed(3)}% · ${h.wall_side||''}</div>
+        </div>
+        <div class="hunt-signal ${sig === 'BUY' ? 'sig-buy' : 'sig-sell'}">${sig}</div>
+        <div class="hunt-conf">${Math.round((h.confidence||0)*100)}%</div>
+      </div>`;
+    }).join('');
+    document.getElementById('huntList').innerHTML = html;
+  } catch(e) {}
+}
+
+// Depth visualiser
+async function renderDepth() {
+  try {
+    const r = await fetch('/api/phase3/imbalance');
+    const d = await r.json();
+    const imb = (d.imbalances || {})[selectedAsset] || 0;
+
+    // Simulate depth bars from imbalance
+    const bars = [];
+    for (let i = 0; i < 20; i++) {
+      const noise = (Math.random() - 0.5) * 0.3;
+      const bidH  = Math.max(5, Math.min(95, 50 + (imb + noise) * 50));
+      const askH  = 100 - bidH;
+      bars.push({bid: bidH, ask: askH});
+    }
+
+    const html = bars.map(b =>
+      `<div class="depth-bar depth-bid" style="height:${b.bid}%"></div>
+       <div class="depth-bar depth-ask" style="height:${b.ask}%"></div>`
+    ).join('');
+    document.getElementById('depthChart').innerHTML = html;
+
+    const isBuy = imb >= 0;
+    document.getElementById('depthScore').textContent = (imb >= 0 ? '+' : '') + imb.toFixed(3);
+    document.getElementById('depthScore').style.color = isBuy ? 'var(--gr)' : 'var(--rd)';
+    document.getElementById('depthBias').textContent  = isBuy ? '🟢 BID HEAVY' : '🔴 ASK HEAVY';
+    document.getElementById('depthBias').style.color  = isBuy ? 'var(--gr)' : 'var(--rd)';
+  } catch(e) {}
+}
+
+function refresh() {
+  loadImbalance();
+  loadWalls();
+  loadHunts();
+  renderDepth();
+}
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

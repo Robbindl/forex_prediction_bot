@@ -26,6 +26,30 @@ class VotingStrategy(BaseStrategy):
             MACDStrategy(),
             BollingerStrategy(),
         ]
+        # Auto-load any lab strategies registered in live_bridge.py
+        self._load_live_bridge_strategies()
+
+    def _load_live_bridge_strategies(self) -> None:
+        """
+        Automatically loads strategies from strategy_lab/live_bridge.py
+        LIVE_STRATEGY_CONFIGS on every instantiation.
+        This means adding a strategy to LIVE_STRATEGY_CONFIGS and
+        restarting bot.py is all that is needed — no other changes.
+        Silently skips if strategy_lab is not installed.
+        """
+        try:
+            from strategy_lab.live_bridge    import LIVE_STRATEGY_CONFIGS
+            from strategy_lab.live_bridge    import DynamicStrategyLive
+            for config in LIVE_STRATEGY_CONFIGS:
+                live = DynamicStrategyLive(config)
+                existing = [s.name for s in self._strategies]
+                if live.name not in existing:
+                    self._strategies.append(live)
+                    logger.info(f"[Voting] Live bridge: added '{live.name}'")
+        except ImportError:
+            pass   # strategy_lab not installed — skip silently
+        except Exception as e:
+            logger.debug(f"[Voting] Live bridge load error: {e}")
 
     def generate(self, asset, canonical, category, df) -> Optional[Signal]:
         signals: List[Signal] = []
@@ -70,3 +94,41 @@ class VotingStrategy(BaseStrategy):
             asset, canonical, category, direction, confidence,
             entry, sl, tp, combined_indicators,
         )
+
+    def add_strategy(self, strategy: BaseStrategy) -> None:
+        """
+        Add a new strategy to the voting pool at runtime.
+        Used by strategy_lab/live_bridge.py to inject lab-tested strategies.
+        Safe to call after bot startup — takes effect on the next scan cycle.
+        """
+        existing = [s.name for s in self._strategies]
+        if strategy.name in existing:
+            logger.info(f"[Voting] '{strategy.name}' already in pool — skipped")
+            return
+        self._strategies.append(strategy)
+        logger.info(
+            f"[Voting] Added '{strategy.name}' — "
+            f"pool now has {len(self._strategies)} strategies: "
+            f"{[s.name for s in self._strategies]}"
+        )
+
+    def remove_strategy(self, name: str) -> bool:
+        """
+        Remove a strategy from the voting pool by name.
+        Returns True if found and removed, False if not found.
+        Protects against removing all strategies — minimum pool size is 1.
+        """
+        if len(self._strategies) <= 1:
+            logger.warning("[Voting] Cannot remove — pool must have at least 1 strategy")
+            return False
+        before = len(self._strategies)
+        self._strategies = [s for s in self._strategies if s.name != name]
+        if len(self._strategies) < before:
+            logger.info(f"[Voting] Removed '{name}' — pool now has {len(self._strategies)} strategies")
+            return True
+        logger.warning(f"[Voting] '{name}' not found in pool")
+        return False
+
+    def list_strategies(self) -> List[str]:
+        """Return names of all strategies currently in the voting pool."""
+        return [s.name for s in self._strategies]

@@ -1,0 +1,161 @@
+PHASE 3 INTEGRATION GUIDE — Windows
+=====================================
+Trading Intelligence Platform Upgrade
+Phase 3: Order Flow Intelligence
+
+Files in this package
+---------------------
+order_flow/__init__.py
+order_flow/orderbook_processor.py
+order_flow/liquidity_wall_detector.py
+order_flow/imbalance_detector.py
+order_flow/stop_hunt_detector.py
+tests/test_orderflow.py
+
+════════════════════════════════════════════════════════════
+STEP 1 — COPY FILES
+════════════════════════════════════════════════════════════
+
+Copy the order_flow/ folder to your project root:
+
+  forex_prediction_bot-main/
+    data_ingestion/          ← Phase 1 (already done)
+    whale_intelligence/      ← Phase 2 (already done)
+    order_flow/              ← NEW — copy this folder in
+      __init__.py
+      orderbook_processor.py
+      liquidity_wall_detector.py
+      imbalance_detector.py
+      stop_hunt_detector.py
+    tests/
+      test_orderflow.py      ← NEW — copy into existing tests/ folder
+
+════════════════════════════════════════════════════════════
+STEP 2 — NO NEW DEPENDENCIES
+════════════════════════════════════════════════════════════
+
+Phase 3 uses only packages already in your requirements.txt.
+No pip installs needed.
+
+════════════════════════════════════════════════════════════
+STEP 3 — WIRE INTO bot.py
+════════════════════════════════════════════════════════════
+
+Open bot.py and find the Phase 2 block you added:
+
+  # ── Phase 2 — Whale Wallet Intelligence ────────────────
+
+Add this DIRECTLY AFTER it:
+
+    # ── Phase 3 — Order Flow Intelligence ────────────────────────────────────
+    try:
+        from order_flow import start_all as start_order_flow
+        start_order_flow()
+        logger.info("[bot] Phase 3 order flow intelligence started")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 3 order flow failed to start: {e}")
+
+════════════════════════════════════════════════════════════
+STEP 4 — RUN THE TESTS
+════════════════════════════════════════════════════════════
+
+Unit tests (no Redis needed):
+
+  pytest tests/test_orderflow.py -v -m "not integration"
+
+Full tests (requires live Redis):
+
+  pytest tests/test_orderflow.py -v
+
+Expected output (20 tests):
+  PASSED tests/test_orderflow.py::TestOrderbookProcessor::test_basic_snapshot_fields
+  PASSED tests/test_orderflow.py::TestOrderbookProcessor::test_imbalance_positive_when_more_bids
+  PASSED tests/test_orderflow.py::TestOrderbookProcessor::test_imbalance_negative_when_more_asks
+  PASSED tests/test_orderflow.py::TestOrderbookProcessor::test_remove_level_with_zero_qty
+  PASSED tests/test_orderflow.py::TestOrderbookProcessor::test_latest_snapshot_returns_last
+  PASSED tests/test_orderflow.py::TestOrderbookProcessor::test_price_history
+  PASSED tests/test_orderflow.py::TestLiquidityWallDetector::test_no_wall_with_uniform_levels
+  PASSED tests/test_orderflow.py::TestLiquidityWallDetector::test_detects_moderate_wall
+  PASSED tests/test_orderflow.py::TestLiquidityWallDetector::test_detects_ask_wall
+  PASSED tests/test_orderflow.py::TestLiquidityWallDetector::test_distance_pct_calculated
+  PASSED tests/test_orderflow.py::TestImbalanceDetector::test_no_alert_when_neutral
+  PASSED tests/test_orderflow.py::TestImbalanceDetector::test_strong_buy_alert_fires
+  PASSED tests/test_orderflow.py::TestImbalanceDetector::test_strong_sell_alert_fires
+  PASSED tests/test_orderflow.py::TestImbalanceDetector::test_current_score_range
+  PASSED tests/test_orderflow.py::TestImbalanceDetector::test_current_score_zero_when_no_data
+  PASSED tests/test_orderflow.py::TestStopHuntDetector::test_no_hunt_with_flat_price
+  PASSED tests/test_orderflow.py::TestStopHuntDetector::test_bid_stop_hunt_detected
+  PASSED tests/test_orderflow.py::TestStopHuntDetector::test_ask_stop_hunt_detected
+  PASSED tests/test_orderflow.py::TestStopHuntDetector::test_no_hunt_when_price_does_not_revert
+
+════════════════════════════════════════════════════════════
+STEP 5 — VERIFY IT IS WORKING
+════════════════════════════════════════════════════════════
+
+Start your bot normally:
+
+  python bot.py
+
+You should see these log lines within ~10 seconds:
+
+  [OrderFlow] Subscribed to ORDER_BOOK_UPDATE
+  [OrderFlow] Started — monitoring 5 assets
+
+Phase 3 is passive — it only activates when Phase 1 sends
+ORDER_BOOK_UPDATE events. Once Phase 1 connects to Binance/Bybit
+you will start seeing:
+
+  [WallDetector] BTCUSDT BID wall @ 64850.000000 size=18.50 (9.2× avg) [STRONG]
+  [ImbalanceDet] BTCUSDT imbalance=+0.412 [STRONG_BUY] bids=142.30 asks=49.80
+  [StopHunt] BTCUSDT BID hunt @ 64850.000000 wick=0.210% revert=8200ms → BUY
+
+════════════════════════════════════════════════════════════
+HOW PHASE 3 CONNECTS TO YOUR SIGNAL PIPELINE
+════════════════════════════════════════════════════════════
+
+Phase 3 exposes two functions used by the Phase 6 Meta AI model:
+
+  from order_flow import get_imbalance, get_snapshot
+
+  imbalance_score = get_imbalance("BTCUSDT")  # -1.0 … +1.0
+  snapshot        = get_snapshot("BTCUSDT")   # full book state
+
+The imbalance score plugs directly into the EnsemblePredictor
+as the 'orderflow' weight input (Phase 6).
+
+════════════════════════════════════════════════════════════
+REDIS EVENTS PUBLISHED BY PHASE 3
+════════════════════════════════════════════════════════════
+
+Channel                   Published by
+ORDERBOOK_SNAPSHOT        orderbook_processor
+LIQUIDITY_WALL_DETECTED   liquidity_wall_detector
+BID_ASK_IMBALANCE_ALERT   imbalance_detector
+STOP_HUNT_DETECTED        stop_hunt_detector
+
+These are consumed by Phase 7 (Intelligence Alerts) and
+Phase 8 (Command Center Dashboard) in later upgrades.
+
+════════════════════════════════════════════════════════════
+TROUBLESHOOTING
+════════════════════════════════════════════════════════════
+
+Problem: "[OrderFlow] Subscribed to ORDER_BOOK_UPDATE" — but no walls detected
+Phase 1 must be running and connected to an exchange for order book
+updates to arrive. Confirm you see "[ExStream] binance connected" in logs.
+
+Problem: No STOP_HUNT_DETECTED events
+Stop hunts are rare events. The detector needs MIN_PRICE_HISTORY=15
+ticks before it starts scanning, and then only fires on genuine
+wick-and-revert patterns. This is working correctly.
+
+Problem: Too many LIQUIDITY_WALL_DETECTED alerts
+Increase WALL_ALERT_COOLDOWN_SECS in liquidity_wall_detector.py
+(default 120 seconds). You can also raise WALL_MULTIPLIERS["MODERATE"]
+from 5.0 to a higher value to only catch larger walls.
+
+════════════════════════════════════════════════════════════
+NEXT: PHASE 4 — MARKET NARRATIVE AI
+════════════════════════════════════════════════════════════
+
+Once tests pass, tell Claude "Phase 3 working, give me Phase 4".

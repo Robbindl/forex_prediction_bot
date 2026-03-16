@@ -1,0 +1,319 @@
+PHASE 5 INTEGRATION GUIDE — Windows (UPDATED)
+===============================================
+Trading Intelligence Platform Upgrade
+Phase 5: Strategy Laboratory + Live Bridge
+
+Files in this package
+---------------------
+strategy_lab/__init__.py
+strategy_lab/strategy_builder.py      (15 preset strategies + all_configs())
+strategy_lab/backtest_engine_v2.py
+strategy_lab/parameter_optimizer.py
+strategy_lab/performance_analyzer.py
+strategy_lab/strategy_adapter.py      (bridges existing strategies to lab)
+strategy_lab/live_bridge.py           (bridges lab strategies to live bot)
+strategies/voting.py                  (updated — auto-loads live bridge)
+bot.py                                (updated — Phase 5 block added)
+tests/test_strategy_lab.py
+tests/test_strategy_adapter.py
+tests/test_live_bridge.py
+
+════════════════════════════════════════════════════════════
+STEP 1 — COPY FILES
+════════════════════════════════════════════════════════════
+
+  forex_prediction_bot-main/
+    strategy_lab/              ← NEW folder — copy entirely
+      __init__.py
+      strategy_builder.py
+      backtest_engine_v2.py
+      parameter_optimizer.py
+      performance_analyzer.py
+      strategy_adapter.py
+      live_bridge.py
+    strategies/
+      voting.py                ← REPLACE existing file
+    bot.py                     ← REPLACE existing file
+    tests/
+      test_strategy_lab.py     ← NEW — add to existing tests/
+      test_strategy_adapter.py ← NEW — add to existing tests/
+      test_live_bridge.py      ← NEW — add to existing tests/
+
+════════════════════════════════════════════════════════════
+STEP 2 — NO NEW DEPENDENCIES
+════════════════════════════════════════════════════════════
+
+Phase 5 uses only numpy and pandas — already in requirements.txt.
+No pip installs needed.
+
+════════════════════════════════════════════════════════════
+STEP 3 — RUN THE TESTS
+════════════════════════════════════════════════════════════
+
+Run all Phase 5 tests at once:
+
+    pytest tests/test_strategy_lab.py tests/test_strategy_adapter.py tests/test_live_bridge.py -v -m "not integration"
+
+Expected: 50+ tests all passing.
+
+Run with live market data (yfinance must be working):
+
+    pytest tests/test_strategy_lab.py tests/test_strategy_adapter.py tests/test_live_bridge.py -v
+
+════════════════════════════════════════════════════════════
+STEP 4 — RESEARCH WORKFLOW (run_lab.py)
+════════════════════════════════════════════════════════════
+
+Drop run_lab.py in your project root and run:
+
+    python run_lab.py
+
+You will see an interactive menu:
+
+  ╔══════════════════════════════════════════╗
+  ║       STRATEGY LABORATORY                ║
+  ║       Trading Intelligence Platform      ║
+  ╚══════════════════════════════════════════╝
+
+  1.  Backtest all 15 presets on one asset
+  2.  Compare presets vs your existing strategies
+  3.  Optimise parameters for a strategy
+  4.  Test one strategy across multiple assets
+  5.  Full report — all presets on all your assets
+  6.  Backtest a custom strategy config
+  0.  Exit
+
+Each option prompts you to pick an asset from your full list
+(all 18 — BTC, ETH, SOL, XRP, BNB, EUR/USD, GBP/USD, GBP/JPY,
+USD/JPY, AUD/USD, USD/CAD, Gold, Silver, Oil, DJI, NASDAQ,
+S&P500, FTSE).
+
+--- OPTION 1: Backtest all 15 presets on one asset ---
+
+Select option 1, then pick an asset.
+Output example:
+
+  ema_rsi_crossover       Sharpe=+1.12  WinRate=58.3%  PnL=+$843  Trades=12
+  rsi_mean_reversion      Sharpe=+0.84  WinRate=61.0%  PnL=+$610  Trades=18
+  golden_cross            Sharpe=+2.10  WinRate=83.3%  PnL=+$3400 Trades=6
+  triple_ema              Sharpe=+1.80  WinRate=72.2%  PnL=+$2100 Trades=18
+  ...
+
+  Best Sharpe: golden_cross (+2.10)
+
+--- OPTION 2: Compare presets vs your existing strategies ---
+
+Runs all 15 presets AND your RSI/MACD/Bollinger/Voting strategies
+side by side. Shows which approach performs best historically.
+
+--- OPTION 3: Optimise parameters ---
+
+Select a strategy, then an asset. Runs a grid search over:
+  rsi_period: [10, 14, 21]
+  stop_mult:  [1.0, 1.5, 2.0]
+  tp_mult:    [2.0, 3.0, 4.0]
+
+Output shows top 5 combinations ranked by Sharpe:
+
+  1. rsi=14  stop=2.0  tp=3.0  Sharpe=+1.84  WinRate=66.7%  PnL=+$1,240
+  2. rsi=21  stop=1.5  tp=4.0  Sharpe=+1.52  WinRate=60.0%  PnL=+$980
+  ...
+
+--- OPTION 4: Test one strategy across multiple assets ---
+
+Picks one strategy and runs it on 8 assets automatically:
+BTC, ETH, SOL, EUR/USD, GBP/USD, USD/JPY, Gold, DJI.
+Shows which assets the strategy works best on.
+
+--- OPTION 5: Full report ---
+
+Runs all 15 presets on 8 of your assets. Takes a few minutes.
+Shows best strategy per asset at the end:
+
+  BTC-USD       →  golden_cross          Sharpe=+2.10
+  ETH-USD       →  triple_ema            Sharpe=+1.80
+  EUR/USD       →  macd_rsi_confluence   Sharpe=+1.45
+  GBP/USD       →  bollinger_rsi_reversion Sharpe=+1.22
+  ...
+
+--- OPTION 6: Custom strategy config ---
+
+Edit the custom_config dict inside run_lab.py, then select
+option 6. The script shows full detailed stats including
+profit factor, expectancy, largest win/loss, avg win/loss.
+
+  To edit:
+  Open run_lab.py, find the section marked:
+  # ── Edit your custom config here ─────────────────────
+  Replace the config dict with your own, save, then run.
+
+════════════════════════════════════════════════════════════
+STEP 5 — ACTIVATING A STRATEGY FOR LIVE TRADING
+════════════════════════════════════════════════════════════
+
+After running run_lab.py you will see output like:
+
+  golden_cross           Sharpe=2.1  WinRate=83%  PnL=+$3,400  Trades=6
+  triple_ema             Sharpe=1.8  WinRate=72%  PnL=+$2,100  Trades=18
+  macd_rsi_confluence    Sharpe=1.2  WinRate=61%  PnL=+$890    Trades=22
+  rsi_scalper            Sharpe=0.3  WinRate=48%  PnL=+$180    Trades=45
+
+You decide which to activate. Say you choose golden_cross and triple_ema.
+
+Open strategy_lab/live_bridge.py and find LIVE_STRATEGY_CONFIGS.
+It looks like this by default (all commented out):
+
+    LIVE_STRATEGY_CONFIGS: List[Dict] = [
+        # StrategyBuilder.triple_ema_config(),
+        # StrategyBuilder.golden_cross_config(),
+        # StrategyBuilder.macd_rsi_confluence_config(),
+        # StrategyBuilder.adx_ema_momentum_config(),
+        # StrategyBuilder.bollinger_rsi_reversion_config(),
+    ]
+
+Uncomment the ones you want:
+
+    LIVE_STRATEGY_CONFIGS: List[Dict] = [
+        StrategyBuilder.golden_cross_config(),
+        StrategyBuilder.triple_ema_config(),
+    ]
+
+Save the file. Restart bot.py. You will see in the logs:
+
+    [Voting] Live bridge: added 'golden_cross'
+    [Voting] Live bridge: added 'triple_ema'
+    [bot] Phase 5 live strategies active: ['golden_cross', 'triple_ema']
+
+VotingStrategy now has 5 voters:
+    RSIStrategy       → vote
+    MACDStrategy      → vote
+    BollingerStrategy → vote
+    golden_cross      → vote   ← from lab
+    triple_ema        → vote   ← from lab
+
+To deactivate a strategy — comment it out again and restart.
+
+════════════════════════════════════════════════════════════
+STEP 6 — ADDING A CUSTOM STRATEGY CONFIG
+════════════════════════════════════════════════════════════
+
+You are not limited to the 15 presets. Write any config using
+the supported indicators and operators.
+
+Supported indicators:
+    rsi, ema, macd, bollinger, atr, volume_ma, stoch, adx
+
+Supported operators:
+    >  <  >=  <=  cross_above  cross_below
+
+Example — Stochastic + EMA trend filter:
+
+    from strategy_lab import run_backtest
+
+    my_config = {
+        "name":    "my_stoch_strategy",
+        "version": "1.0",
+        "indicators": [
+            {"name": "stoch", "params": {"k_period": 14, "d_period": 3}},
+            {"name": "ema",   "params": {"period": 50}},
+            {"name": "atr",   "params": {"period": 14}},
+        ],
+        "entry_rules": [
+            {"col": "stoch_k", "op": "cross_above", "col2": "stoch_d", "direction": "BUY"},
+            {"col": "stoch_k", "op": "<",  "val": 50},
+            {"col": "close",   "op": ">",  "col2": "ema_50"},
+        ],
+        "confidence_boosts": [
+            {"col": "stoch_k", "below": 30, "boost": 0.07},
+        ],
+        "stop_mult": 1.5,
+        "tp_mult":   2.5,
+    }
+
+    result = run_backtest(my_config, "BTC-USD", "crypto")
+    print(result.summary())
+
+If happy with results, add it directly to LIVE_STRATEGY_CONFIGS:
+
+    LIVE_STRATEGY_CONFIGS: List[Dict] = [
+        my_config,
+    ]
+
+════════════════════════════════════════════════════════════
+STEP 7 — VERIFY BOT IS RUNNING CORRECTLY
+════════════════════════════════════════════════════════════
+
+Start the bot:
+
+    python bot.py --strategy voting
+
+Expected log lines (in order):
+
+    [bot] Phase 4 narrative AI engine ready
+    [bot] Phase 5 ready — no lab strategies configured yet
+       OR
+    [Voting] Live bridge: added 'golden_cross'
+    [bot] Phase 5 live strategies active: ['golden_cross']
+
+════════════════════════════════════════════════════════════
+ALL 15 PRESET STRATEGY DESCRIPTIONS
+════════════════════════════════════════════════════════════
+
+ 1  ema_rsi_crossover       EMA20 crosses EMA50, RSI 45-70 filter
+ 2  rsi_mean_reversion      RSI oversold (<30) reversal
+ 3  macd_trend              MACD crosses signal line
+ 4  stoch_trend             Stoch K/D cross from oversold + EMA filter
+ 5  adx_trend               +DI/-DI cross when ADX > 25 (strong trends only)
+ 6  bollinger_breakout      Price breaks outside bands with volume
+ 7  triple_ema              EMA 8/21/55 full alignment (8>21>55)
+ 8  rsi_scalper             Fast RSI(7) cross above 30, tight stops
+ 9  volume_breakout         EMA20 breakout confirmed by above-avg volume
+10  golden_cross            EMA50 crosses EMA200 (long-term trend change)
+11  macd_rsi_confluence     MACD + RSI both confirm (reduced false signals)
+12  bollinger_rsi_reversion Lower band touch + RSI < 35 simultaneously
+13  stoch_macd_swing        Stoch oversold + MACD histogram flip
+14  adx_ema_momentum        ADX + stacked EMAs + RSI > 55 (momentum only)
+15  atr_supertrend          EMA crossover with ATR dynamic stop
+
+════════════════════════════════════════════════════════════
+HOW PHASE 5 CONNECTS TO PHASE 6
+════════════════════════════════════════════════════════════
+
+Phase 6 (Meta AI) will read backtest performance data from Phase 5
+to dynamically weight signals. Strategies with higher Sharpe ratios
+will receive more weight in the ensemble predictor.
+
+You do not need to do anything — Phase 6 will pick this up
+automatically when built.
+
+════════════════════════════════════════════════════════════
+TROUBLESHOOTING
+════════════════════════════════════════════════════════════
+
+Problem: "No OHLCV data available for BTC-USD"
+Fix: Check yfinance is working:
+     python -c "import yfinance as yf; print(yf.download('BTC-USD', period='5d'))"
+
+Problem: run_lab.py shows all strategies with 0 trades
+Fix: Increase periods in run_backtest() — default is 500 bars.
+     Some strategies like golden_cross need 200+ bars to warm up.
+
+Problem: "[Voting] Live bridge load error: ..."
+Fix: Check that strategy_lab/ folder is in your project root.
+     Run: python -c "from strategy_lab.live_bridge import LIVE_STRATEGY_CONFIGS"
+
+Problem: Strategy added to LIVE_STRATEGY_CONFIGS but not appearing in logs
+Fix: Make sure you saved live_bridge.py and fully restarted bot.py.
+     The strategies are loaded fresh on each restart.
+
+Problem: Bot making too many trades after adding lab strategies
+Fix: Increase min_votes in VotingStrategy (default is 2).
+     More voters = harder to get majority = fewer but higher quality trades.
+     Edit strategies/voting.py: VotingStrategy(min_votes=3)
+
+════════════════════════════════════════════════════════════
+NEXT: PHASE 6 — META AI MODEL
+════════════════════════════════════════════════════════════
+
+Once everything is tested and running, tell Claude
+"Phase 5 complete, give me Phase 6".

@@ -1,10 +1,16 @@
 """
 core/signal.py — Signal dataclass. The universal object passed through all pipeline layers.
+
+UPDATED: Added `journal` field (SignalJournal) that records every layer
+decision, phase input, and backtest result. Sent to Telegram after the
+pipeline completes for full transparency on every signal.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from core.signal_journal import SignalJournal
 
 
 @dataclass
@@ -46,11 +52,22 @@ class Signal:
     # ── Canonical asset ───────────────────────────────────────────────────
     canonical_asset: str = ""
 
+    # ── Signal Journal ────────────────────────────────────────────────────
+    # Automatically created — records every stage decision for Telegram reporting.
+    # Access via signal.journal.record(...) from any layer or phase.
+    journal: SignalJournal = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.journal = SignalJournal(
+            asset     = self.asset,
+            direction = self.direction,
+        )
+
     def kill(self, reason: str, layer: int) -> None:
         """Mark signal as dead. Once dead it cannot be revived."""
         if self.alive:
-            self.alive       = False
-            self.kill_reason = reason
+            self.alive         = False
+            self.kill_reason   = reason
             self.layer_reached = layer
 
     def boost(self, delta: float) -> None:

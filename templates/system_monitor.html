@@ -88,6 +88,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
     <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
     <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
+    <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
+    <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link active"><span class="sb-icon">🖥️</span>System</a>
     <div class="sb-section" style="margin-top:8px">Legacy</div>
     <a href="/status" class="sb-link"><span class="sb-icon">📊</span>Status</a>
@@ -146,6 +148,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       <div class="panel panel-full">
         <div class="panel-header"><span class="panel-title">🔧 Process Status</span></div>
         <div id="procList"></div>
+      </div>
+
+      <!-- Phase 1-7 health -->
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🚀 Intelligence Phases</span></div>
+        <div id="phaseList"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Trading stats -->
@@ -245,6 +253,29 @@ async function load(){
         <div class="proc-name">${name}</div>
         <div class="proc-status ${ok?'proc-on':'proc-off'}">${ok?'Running':'Stopped'}</div>
       </div>`).join('');
+
+    // Phase 1-7 health
+    const phases=d.phase_health||{};
+    const phaseNames={
+      phase1_data_feeds:   '① Data Feeds (Exchange Streams)',
+      phase2_whale_intel:  '② Whale Intelligence',
+      phase3_order_flow:   '③ Order Flow Intelligence',
+      phase4_narrative_ai: '④ Narrative AI',
+      phase5_strategy_lab: '⑤ Strategy Lab',
+      phase6_meta_ai:      '⑥ Meta AI (Layer 8)',
+      phase7_intel_alerts: '⑦ Intelligence Alerts',
+    };
+    const phEl=document.getElementById('phaseList');
+    if(phEl){
+      phEl.innerHTML=Object.entries(phaseNames).map(([key,name])=>{
+        const ok=phases[key];
+        return `<div class="proc-row">
+          <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
+          <div class="proc-name">${name}</div>
+          <div class="proc-status ${ok?'proc-on':'proc-off'}">${ok?'Active':'Inactive'}</div>
+        </div>`;
+      }).join('');
+    }
 
     // Connections
     const connEl=document.getElementById('connPanel');

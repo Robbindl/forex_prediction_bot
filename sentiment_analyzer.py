@@ -20,6 +20,7 @@ from utils.logger import logger
 import threading
 # NEW: Import Reddit
 from reddit_watcher import RedditWatcher
+from narrative_ai import ingest as narrative_ingest
 
 # Import from config
 from config.config import (
@@ -492,6 +493,7 @@ class SentimentAnalyzer:
                     
                     # Combine title and description for analysis
                     text = f"{title} {description}"
+                    narrative_ingest(text, source="news")
                     
                     # Analyze sentiment with TextBlob
                     blob = TextBlob(text)
@@ -564,6 +566,7 @@ class SentimentAnalyzer:
                 
                 for article in data["articles"][:10]:
                     title = article.get("title", "")
+                    narrative_ingest(title, source="crypto_news")
                     
                     # Analyze sentiment
                     blob = TextBlob(title)
@@ -761,6 +764,7 @@ class SentimentAnalyzer:
                     title = article.get('title', '')
                     description = article.get('description', '')
                     text = f"{title} {description}"
+                    narrative_ingest(text, source="gnews")
                     
                     blob = TextBlob(text)
                     sentiment = blob.sentiment.polarity
@@ -1477,6 +1481,8 @@ class SentimentAnalyzer:
         """
         try:
             articles = self.news_integrator.fetch_all_sources()
+            for _a in (articles or []):
+                narrative_ingest(_a.get("title", ""), source="news_integrator")
             
             if articles:
                 avg_sentiment = sum(a.get('sentiment', 0) for a in articles) / len(articles)

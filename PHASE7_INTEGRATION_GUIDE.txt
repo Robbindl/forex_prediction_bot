@@ -1,0 +1,198 @@
+PHASE 7 INTEGRATION GUIDE — Windows
+=====================================
+Trading Intelligence Platform Upgrade
+Phase 7: Intelligence Alert System
+
+Files in this package
+---------------------
+services/intelligence_alerts/__init__.py
+services/intelligence_alerts/intelligence_alert_service.py
+services/intelligence_alerts/alert_formatter.py
+services/intelligence_alerts/alert_router.py
+bot.py                        (updated — Phase 5/6/7 wiring)
+tests/test_intelligence_alerts.py
+
+════════════════════════════════════════════════════════════
+STEP 1 — COPY FILES
+════════════════════════════════════════════════════════════
+
+  forex_prediction_bot-main/
+    services/
+      intelligence_alerts/       ← NEW folder — copy entirely
+        __init__.py
+        intelligence_alert_service.py
+        alert_formatter.py
+        alert_router.py
+    bot.py                       ← REPLACE (adds Phase 5/6/7 wiring)
+    tests/
+      test_intelligence_alerts.py  ← NEW — add to existing tests/
+
+════════════════════════════════════════════════════════════
+STEP 2 — NO NEW DEPENDENCIES
+════════════════════════════════════════════════════════════
+
+Phase 7 uses only redis and threading — already available.
+No pip installs needed.
+
+════════════════════════════════════════════════════════════
+STEP 3 — RUN THE TESTS
+════════════════════════════════════════════════════════════
+
+    pytest tests/test_intelligence_alerts.py -v -m "not integration"
+
+Expected output (20 tests):
+  PASSED TestAlertFormatter::test_liquidation_cascade_formatted
+  PASSED TestAlertFormatter::test_whale_cluster_formatted
+  PASSED TestAlertFormatter::test_stop_hunt_formatted
+  PASSED TestAlertFormatter::test_funding_rate_formatted
+  PASSED TestAlertFormatter::test_narrative_trend_formatted
+  PASSED TestAlertFormatter::test_low_impact_macro_returns_none
+  PASSED TestAlertFormatter::test_moderate_liquidity_wall_dropped
+  PASSED TestAlertFormatter::test_strong_liquidity_wall_shown
+  PASSED TestAlertFormatter::test_generic_fallback_handles_unknown_type
+  PASSED TestAlertFormatter::test_priority_header_included
+  PASSED TestAlertFormatter::test_all_phase1_events_format_without_error
+  PASSED TestAlertFormatter::test_all_phase2_events_format_without_error
+  PASSED TestAlertRouter::test_telegram_receives_message
+  PASSED TestAlertRouter::test_redis_receives_intelligence_alert
+  PASSED TestAlertRouter::test_no_telegram_does_not_crash
+  PASSED TestAlertRouter::test_no_redis_does_not_crash
+  PASSED TestIntelligenceAlertService::test_rate_check_blocks_repeated_calls
+  PASSED TestIntelligenceAlertService::test_rate_check_allows_after_interval
+  PASSED TestIntelligenceAlertService::test_channel_priority_mapping_complete
+  PASSED TestIntelligenceAlertService::test_all_priorities_have_rate_limits
+
+════════════════════════════════════════════════════════════
+STEP 4 — VERIFY IT IS WORKING
+════════════════════════════════════════════════════════════
+
+Start the bot:
+
+    python bot.py --strategy voting
+
+Expected log lines:
+
+    [IntelAlerts] Subscribed to 15 channels
+    [bot] Phase 7 intelligence alerts started
+
+You will start receiving Telegram alerts when market events fire:
+
+    🚨 CRITICAL ALERT
+    💥 Liquidation Cascade
+    Asset:    BTCUSDT
+    Wiped:    $47,000,000
+    Window:   60s
+    Severity: CRITICAL
+
+    ⚠️ HIGH PRIORITY
+    🐋🐋🐋 Whale Cluster Alert
+    Direction:  BUY
+    Wallets:    4
+    Total:      28.5000 BTC
+    Confidence: 87%
+
+════════════════════════════════════════════════════════════
+ALERT TYPES AND THEIR PRIORITIES
+════════════════════════════════════════════════════════════
+
+CRITICAL (always fires, no rate limit):
+    LIQUIDATION_CASCADE_ALERT   — $10M+ wiped in 60 seconds
+    WHALE_CLUSTER_ALERT         — 3+ wallets coordinated move
+
+HIGH (max 1 per 5 minutes):
+    STOP_HUNT_DETECTED          — wick-and-revert pattern
+    WHALE_ACCUMULATION          — single large wallet buy
+    WHALE_DISTRIBUTION          — single large wallet sell
+    EXCHANGE_INFLOW_ALERT       — large transfer to exchange
+    EXCHANGE_OUTFLOW_ALERT      — large transfer from exchange
+    FUNDING_RATE_ALERT          — extreme funding rates
+
+MEDIUM (max 1 per 10 minutes):
+    BID_ASK_IMBALANCE_ALERT     — severe order book imbalance
+    MACRO_NEWS_EVENT            — economic data change (HIGH impact only)
+    NARRATIVE_TREND_DETECTED    — topic velocity spike
+    OI_CHANGE_ALERT             — open interest spike
+
+LOW (max 1 per 15 minutes):
+    LIQUIDITY_WALL_DETECTED     — large order level (STRONG+ only)
+    REDDIT_TOPIC_SPIKE          — subreddit narrative surge
+    TWITTER_TOPIC_SPIKE         — Twitter narrative surge
+
+════════════════════════════════════════════════════════════
+FILTERING EXPLAINED
+════════════════════════════════════════════════════════════
+
+Some events are filtered to reduce noise:
+
+    MACRO_NEWS_EVENT    — only HIGH and MEDIUM impact events sent
+                          LOW impact (routine data) silently dropped
+
+    LIQUIDITY_WALL      — only STRONG and EXTREME walls sent
+                          MODERATE walls (5× avg) silently dropped
+
+To change filters, edit alert_formatter.py:
+    _format_MACRO_NEWS_EVENT    — change impact threshold
+    _format_LIQUIDITY_WALL_DETECTED — change strength threshold
+
+════════════════════════════════════════════════════════════
+ADDING A NEW ALERT TYPE
+════════════════════════════════════════════════════════════
+
+1. Add the Redis channel to SUBSCRIBED_CHANNELS in
+   intelligence_alert_service.py
+
+2. Add the priority in CHANNEL_PRIORITY:
+   "MY_NEW_EVENT": "HIGH",
+
+3. Add a formatter method in alert_formatter.py:
+   def _format_MY_NEW_EVENT(self, e: dict) -> str:
+       return f"My formatted message for {e.get('asset')}"
+
+That's it. The service picks it up automatically.
+
+════════════════════════════════════════════════════════════
+DIFFERENCE FROM SIGNAL PIPELINE ALERTS
+════════════════════════════════════════════════════════════
+
+Signal Pipeline Alerts (Phases pipeline + reporter):
+  → fires ONLY when VotingStrategy generates a signal
+  → shows L1-L8 decisions + backtest result
+  → tells you: "here is a trade signal and why"
+
+Phase 7 Intelligence Alerts:
+  → fires from Redis market events (Phases 1-4)
+  → independent of any trade signal
+  → tells you: "here is what is happening in the market"
+
+Both arrive in Telegram but serve different purposes:
+  Pipeline alert = trade decision transparency
+  Phase 7 alert  = market intelligence briefing
+
+════════════════════════════════════════════════════════════
+TROUBLESHOOTING
+════════════════════════════════════════════════════════════
+
+Problem: No Phase 7 alerts arriving in Telegram
+Check:
+  1. Phases 1-4 are running (check logs for "[ExStream] binance connected" etc.)
+  2. Redis is running: redis-cli ping → PONG
+  3. Bot started with Telegram: not using --no-telegram flag
+
+Problem: Too many alerts / Telegram flooding
+Increase rate limit intervals in intelligence_alert_service.py:
+    PRIORITY_RATE_LIMITS = {
+        "CRITICAL": 60,
+        "HIGH":     600,    # increase from 300
+        "MEDIUM":   1200,   # increase from 600
+        "LOW":      1800,   # increase from 900
+    }
+
+Problem: "[IntelAlerts] Subscribe loop error"
+Redis disconnected. The service auto-reconnects after 30 seconds.
+Check Redis is still running.
+
+════════════════════════════════════════════════════════════
+NEXT: PHASE 8 — UNIFIED COMMAND CENTER DASHBOARD
+════════════════════════════════════════════════════════════
+
+Once tests pass, tell Claude "Phase 7 working, give me Phase 8".

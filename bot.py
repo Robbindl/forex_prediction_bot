@@ -273,6 +273,58 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] AutoTrainer failed to start: {e}")
 
+    # ── Institutional data feeds ───────────────────────────────────
+    try:
+        from data_ingestion import start_all as start_data_feeds
+        start_data_feeds(exchanges=["binance", "bybit"])
+        logger.info("[bot] Phase 1 data feeds started")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 1 data feeds failed to start: {e}")
+
+    # ── Whale Wallet Intelligence ──────────────────────────────────
+    try:
+        from whale_intelligence import start_all as start_whale_intelligence
+        start_whale_intelligence()
+        logger.info("[bot] Phase 2 whale intelligence started")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 2 whale intelligence failed to start: {e}")
+
+     # ──  Order Flow Intelligence ────────────────────────────────────
+    try:
+        from order_flow import start_all as start_order_flow
+        start_order_flow()
+        logger.info("[bot] Phase 3 order flow intelligence started")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 3 order flow failed to start: {e}")
+
+    # ── Market Narrative AI ────────────────────────────────────────────
+    try:
+        from narrative_ai import get_narrative_scores, get_dominant_narrative
+        logger.info("[bot] Phase 4 narrative AI engine ready")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 4 narrative AI failed to load: {e}")
+
+    # ── Phase 5 — Live Strategy Bridge ────────────────────────────────────
+    try:
+        from strategy_lab.live_bridge import list_live_strategies
+        active = list_live_strategies()
+        if active:
+            logger.info(f"[bot] Phase 5 live strategies active: {active}")
+        else:
+            logger.info("[bot] Phase 5 ready — no lab strategies configured yet")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 5 live bridge failed to load: {e}")
+
+    # ── Phase 6 — Meta AI (wires via pipeline Layer 8 automatically) ──────
+    try:
+        from ml.meta_model import predictor as meta_predictor  # noqa: F401
+        logger.info("[bot] Phase 6 Meta AI engine ready")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 6 Meta AI failed to load: {e}")
+
+    # ── Phase 7 — Intelligence Alert System (started after Telegram) ──────
+    # Started later — see below after Telegram block
+
     # ── Portfolio risk engine ─────────────────────────────────────────────────────
     try:
         from risk.portfolio_risk import PortfolioRiskEngine
@@ -336,11 +388,31 @@ def main() -> None:
             from telegram_manager import telegram_manager
             started = telegram_manager.start(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, engine)
             if started:
-                # Wire the inner TelegramCommander so engine can call alert methods
                 engine.telegram = telegram_manager.bot
+                # Wire Telegram into PipelineReporter for signal journal alerts
+                try:
+                    from core.pipeline_reporter import reporter
+                    reporter.wire_telegram(telegram_manager.bot)
+                    logger.info("[bot] PipelineReporter wired to Telegram")
+                except Exception as e:
+                    logger.warning(f"[bot] PipelineReporter Telegram wire failed: {e}")
+                # Wire Telegram into Phase 7 Intelligence Alert System
+                try:
+                    from services.intelligence_alerts import start_all as start_intel_alerts
+                    start_intel_alerts(telegram_bot=telegram_manager.bot)
+                    logger.info("[bot] Phase 7 intelligence alerts started")
+                except Exception as e:
+                    logger.warning(f"[bot] Phase 7 intelligence alerts failed: {e}")
                 logger.info("[bot] Telegram started and wired to engine")
             else:
                 logger.warning("[bot] Telegram not started (duplicate instance or missing creds)")
+                # Start Phase 7 without Telegram (Redis + log only)
+                try:
+                    from services.intelligence_alerts import start_all as start_intel_alerts
+                    start_intel_alerts()
+                    logger.info("[bot] Phase 7 intelligence alerts started (no Telegram)")
+                except Exception as e:
+                    logger.warning(f"[bot] Phase 7 intelligence alerts failed: {e}")
         except Exception as e:
             logger.warning(f"[bot] Telegram init failed: {e}")
 
@@ -425,4 +497,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()     
+    main()

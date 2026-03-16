@@ -1,8 +1,13 @@
-"""Layer 4 — Trading session / market hours filter."""
+"""
+layers/layer4_session.py — Trading session / market hours filter.
+
+Writes full decision to signal.journal.
+"""
 from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from core.signal import Signal
+from core.signal_journal import PASS, KILLED
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -14,23 +19,12 @@ def _utc_hour() -> int:
 
 
 def _active_session() -> str:
-    """
-    Real session windows (UTC):
-      Tokyo:    00:00 – 09:00   (Asian session)
-      Sydney:   22:00 – 24:00   (late Pacific — overlaps Tokyo open)
-      London:   07:00 – 16:00
-      New York: 12:00 – 21:00
-
-    Bug fixed: original code checked (22 ≤ h OR h < 7) → "sydney" first,
-    which swallowed 00:00–06:59 UTC and left Tokyo with only 07:00–08:59.
-    Now Tokyo is checked first for 00:00–08:59, Sydney only for 22:00+.
-    """
     h = _utc_hour()
-    if 0 <= h < 9:    return "tokyo"     # full Asian session 00:00–09:00
-    if 22 <= h:       return "sydney"    # late Pacific  22:00–23:59
-    if 7 <= h < 16:   return "london"
-    if 12 <= h < 21:  return "new_york"
-    return "off"                          # 21:00–22:00 gap between NY close and Sydney open
+    if 0  <= h < 9:  return "tokyo"
+    if 22 <= h:      return "sydney"
+    if 7  <= h < 16: return "london"
+    if 12 <= h < 21: return "new_york"
+    return "off"
 
 
 def _is_market_open(category: str) -> bool:
@@ -41,7 +35,7 @@ def _is_market_open(category: str) -> bool:
     if category == "forex":
         return session != "off"
     if category in ("stocks", "indices"):
-        return 13 <= h < 21               # NYSE hours approx UTC
+        return 13 <= h < 21
     if category == "commodities":
         return session in ("london", "new_york")
     return True
@@ -50,7 +44,7 @@ def _is_market_open(category: str) -> bool:
 _SESSION_BOOST: Dict[str, float] = {
     "london":   0.04,
     "new_york": 0.03,
-    "tokyo":    0.02,   # small boost — Asian session is valid but lower liquidity
+    "tokyo":    0.02,
 }
 
 
@@ -58,18 +52,32 @@ class SessionLayer:
     name = "session"
 
     def process(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
+        conf_before = signal.confidence
+        session     = _active_session()
+        utc_hour    = _utc_hour()
+
         if not _is_market_open(signal.category):
-            signal.kill(
-                f"Market closed for {signal.category} at UTC {_utc_hour():02d}:xx", LAYER
+            reason = f"market closed for {signal.category} at UTC {utc_hour:02d}:xx"
+            signal.kill(reason, LAYER)
+            signal.journal.record(
+                layer=LAYER, name=self.name, decision=KILLED,
+                reason=reason,
+                conf_before=conf_before, conf_after=signal.confidence,
+                data={"session": session, "utc_hour": utc_hour},
             )
             return None
 
-        session = _active_session()
         signal.metadata["session"] = session
-
         boost = _SESSION_BOOST.get(session, 0.0)
         if boost:
             signal.boost(boost)
 
+        reason = f"session={session}  UTC {utc_hour:02d}:xx"
+        signal.journal.record(
+            layer=LAYER, name=self.name, decision=PASS,
+            reason=reason,
+            conf_before=conf_before, conf_after=signal.confidence,
+            data={"session": session, "utc_hour": utc_hour, "boost": boost},
+        )
         logger.log_pipeline(signal.asset, LAYER, "PASS", f"session={session}")
         return signal

@@ -1,12 +1,19 @@
 """
-core/pipeline.py — Seven-layer signal pipeline.
+core/pipeline.py — Eight-layer signal pipeline.
 
 Flow:
     Signal → L1(Voting) → L2(Quality) → L3(Regime) → L4(Session)
-           → L5(Sentiment) → L6(Whale) → L7(Calibration) → execute | discard
+           → L5(Sentiment) → L6(Whale) → L7(Calibration)
+           → L8(MetaAI)
+           → PipelineReporter (backtest + Telegram + DB)
+           → execute | discard
 
 Each layer implements process(signal, context) → Signal | None.
 Returning None is equivalent to signal.kill(). Both are handled.
+
+UPDATED: Every layer decision is recorded in signal.journal.
+         PipelineReporter runs after the pipeline for every signal
+         — pass or fail. No stage left behind.
 """
 from __future__ import annotations
 
@@ -14,6 +21,7 @@ import time
 from typing import Any, Dict, List, Optional, Protocol, TYPE_CHECKING
 
 from core.signal import Signal
+from core.signal_journal import PASS, KILLED, SKIPPED
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -33,11 +41,12 @@ class Pipeline:
     """
     Ordered chain of layers. Each layer may modify or kill the signal.
     Context dict is shared across all layers in one pass.
+    After the pipeline completes, PipelineReporter runs automatically.
     """
 
     def __init__(self) -> None:
         self._layers: List[Any] = []
-        self._loaded = False
+        self._loaded  = False
 
     def _lazy_load(self) -> None:
         """Import layers at first use to avoid circular imports at startup."""
@@ -51,6 +60,7 @@ class Pipeline:
             from layers.layer5_sentiment   import SentimentLayer
             from layers.layer6_whale       import WhaleLayer
             from layers.layer7_calibration import CalibrationLayer
+            from layers.layer8_meta_ai     import MetaAILayer
 
             self._layers = [
                 VotingLayer(),
@@ -60,17 +70,20 @@ class Pipeline:
                 SentimentLayer(),
                 WhaleLayer(),
                 CalibrationLayer(),
+                MetaAILayer(),
             ]
             self._loaded = True
             logger.info(f"[Pipeline] Loaded {len(self._layers)} layers")
         except Exception as e:
             logger.error(f"[Pipeline] Layer load failed: {e}")
             self._layers = []
-            self._loaded = True   # prevent infinite retry — run with empty layers
+            self._loaded = True
 
     def run(self, signal: Signal, context: Optional[Dict[str, Any]] = None) -> Optional[Signal]:
         """
         Run signal through all layers.
+        Records every decision in signal.journal.
+        Calls PipelineReporter after completion (pass or fail).
         Returns the (possibly modified) Signal if it survives, else None.
         """
         self._lazy_load()
@@ -79,47 +92,92 @@ class Pipeline:
             context = {}
 
         context.setdefault("pipeline_start", time.monotonic())
+        killed_at_layer = None
 
         for i, layer in enumerate(self._layers, start=1):
             if not signal.alive:
+                # Signal was killed — record remaining layers as SKIPPED
+                signal.journal.record(
+                    layer=i, name=layer.name, decision=SKIPPED,
+                    reason="signal already dead",
+                    conf_before=signal.confidence,
+                    conf_after=signal.confidence,
+                )
                 logger.log_pipeline(signal.asset, i, "SKIP", "signal already dead")
-                break
+                continue
+
+            conf_before = signal.confidence
+            t0          = time.monotonic()
+
             try:
                 result = layer.process(signal, context)
+                elapsed_ms = (time.monotonic() - t0) * 1000
 
-                # Layer returned None — treat as kill
                 if result is None:
+                    # Layer returned None — treat as kill
                     signal.kill(f"Layer {i} ({layer.name}) returned None", i)
+                    signal.journal.record(
+                        layer=i, name=layer.name, decision=KILLED,
+                        reason=signal.kill_reason,
+                        conf_before=conf_before,
+                        conf_after=signal.confidence,
+                        elapsed_ms=elapsed_ms,
+                    )
                     logger.log_pipeline(signal.asset, i, "KILLED", f"layer={layer.name}")
-                    break
+                    killed_at_layer = i
 
-                # Layer returned a signal — use it (may be same object or new)
-                signal = result
-                signal.layer_reached = i
+                else:
+                    signal = result
+                    signal.layer_reached = i
+                    decision = PASS
 
-                logger.log_pipeline(
-                    signal.asset, i, "PASS",
-                    f"conf={signal.confidence:.3f} layer={layer.name}"
-                )
+                    signal.journal.record(
+                        layer=i, name=layer.name, decision=decision,
+                        reason=signal.metadata.get(f"l{i}_reason", ""),
+                        conf_before=conf_before,
+                        conf_after=signal.confidence,
+                        data=signal.metadata.get(f"l{i}_data", {}),
+                        elapsed_ms=elapsed_ms,
+                    )
+                    logger.log_pipeline(
+                        signal.asset, i, "PASS",
+                        f"conf={signal.confidence:.3f} layer={layer.name}"
+                    )
 
             except Exception as e:
+                elapsed_ms = (time.monotonic() - t0) * 1000
                 logger.error(f"[Pipeline] Layer {i} ({layer.name}) raised: {e}", exc_info=True)
                 signal.kill(f"Layer {i} exception: {e}", i)
+                signal.journal.record(
+                    layer=i, name=layer.name, decision=KILLED,
+                    reason=f"exception: {e}",
+                    conf_before=conf_before,
+                    conf_after=signal.confidence,
+                    elapsed_ms=elapsed_ms,
+                )
                 break
 
         elapsed_ms = (time.monotonic() - context["pipeline_start"]) * 1000
+
         if signal.alive:
             logger.info(
                 f"[Pipeline] {signal.asset} SURVIVED all {len(self._layers)} layers "
                 f"conf={signal.confidence:.3f} ({elapsed_ms:.0f}ms)"
             )
-            return signal
         else:
             logger.debug(
                 f"[Pipeline] {signal.asset} KILLED at L{signal.layer_reached}: "
                 f"{signal.kill_reason} ({elapsed_ms:.0f}ms)"
             )
-            return None
+
+        # ── Post-pipeline: backtest + Telegram + DB ───────────────────────────
+        try:
+            from core.pipeline_reporter import reporter
+            signal = reporter.report(signal, context)
+        except Exception as e:
+            logger.debug(f"[Pipeline] reporter error: {e}")
+
+        return signal if signal.alive else None
 
     def run_batch(
         self,
@@ -129,7 +187,7 @@ class Pipeline:
         """Run a list of signals. Returns only the survivors."""
         survivors = []
         for sig in signals:
-            ctx = dict(context or {})
+            ctx    = dict(context or {})
             result = self.run(sig, ctx)
             if result is not None:
                 survivors.append(result)

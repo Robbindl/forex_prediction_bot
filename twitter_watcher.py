@@ -18,6 +18,7 @@ import getpass
 import asyncio  # ADDED for async support
 from dotenv import load_dotenv
 from utils.logger import logger
+from narrative_ai import ingest as narrative_ingest
 
 # Load environment variables
 load_dotenv()
@@ -450,6 +451,7 @@ class TwitterWhaleWatcher:
                 tweets = self.active_client.get_user_tweets(account, count=10)
                 
                 for tweet in tweets:
+                    narrative_ingest(tweet.get('text', ''), source="twitter")
                     whale_info = self.extract_whale_info(tweet.get('text', ''))
                     if whale_info:
                         all_tweets.append({

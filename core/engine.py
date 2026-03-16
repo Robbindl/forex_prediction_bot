@@ -464,6 +464,20 @@ class TradingCore:
         except Exception:
             pass
 
+        # ── Phase 1: funding rates + OI for Meta AI Layer 8 ──────────────
+        funding_bias = "NEUTRAL"
+        oi_signal    = "NEUTRAL"
+        try:
+            from data_ingestion import funding_monitor, oi_monitor
+            # Normalise asset to exchange symbol format
+            symbol = (asset.replace("-USD", "USDT")
+                           .replace("/", "")
+                           .replace("-", ""))
+            funding_bias = funding_monitor.get_bias(symbol)
+            oi_signal    = oi_monitor.get_signal(symbol)
+        except Exception:
+            pass
+
         return {
             "asset":           asset,
             "category":        category,
@@ -472,7 +486,9 @@ class TradingCore:
             "daily_pnl":       self.state.daily_pnl,
             "engine":          self,
             "fetcher":         self.fetcher,
-            "sentiment_score": sentiment_score,   # pre-fetched — L5 reads this, no API hit
+            "sentiment_score": sentiment_score,
+            "funding_bias":    funding_bias,    # Phase 1 → Layer 8 Meta AI
+            "oi_signal":       oi_signal,       # Phase 1 → Layer 8 Meta AI
         }
 
     def _notify_telegram_open(self, trade: Dict) -> None:

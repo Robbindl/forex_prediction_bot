@@ -1,4 +1,3 @@
-
 import os
 """
 Reddit Watcher - Free source for whale alerts and news sentiment
@@ -13,6 +12,7 @@ import time
 import threading
 from textblob import TextBlob
 from utils.logger import logger
+from narrative_ai import ingest as narrative_ingest
 
 class RedditWatcher:
     """
@@ -248,6 +248,7 @@ class RedditWatcher:
                 for post in subreddit.hot(limit=30):
                     # Analyze title sentiment
                     title_sentiment = self.analyze_sentiment(post.title)
+                    narrative_ingest(post.title, source="reddit")
                     
                     # Get top comments for deeper sentiment
                     post.comment_sort = 'top'
@@ -338,6 +339,7 @@ class RedditWatcher:
                     title_lower = post.title.lower()
                     if any(term.lower() in title_lower for term in search_terms):
                         sentiment = self.analyze_sentiment(post.title)
+                        narrative_ingest(post.title, source="reddit")
                         relevant_posts.append({
                             'title': post.title,
                             'sentiment': sentiment,

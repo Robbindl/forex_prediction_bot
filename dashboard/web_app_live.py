@@ -1103,70 +1103,579 @@ def api_strategy_performance():
         return jsonify({"success": False, "error": str(_e)}), 500
 
 
+# ── Lab helpers ───────────────────────────────────────────────────────────────
+def _clean_obj(obj):
+    """Recursively clean numpy types and datetimes for JSON serialisation."""
+    if isinstance(obj, dict):  return {k: _clean_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):  return [_clean_obj(v) for v in obj]
+    try:
+        import numpy as np
+        if isinstance(obj, np.integer):  return int(obj)
+        if isinstance(obj, np.floating): return float(obj)
+    except ImportError:
+        pass
+    if hasattr(obj, "isoformat"): return obj.isoformat()
+    return obj
+
+
+# ── Backtest: single strategy on one asset ────────────────────────────────────
 @app.route("/api/backtest/run")
 def api_backtest_run():
+    """
+    Replaces the old backtest engine.
+    Uses strategy_lab/backtest_engine_v2.py — same engine as run_lab.py option 1.
+    Params:
+        asset    — e.g. BTC-USD
+        strategy — preset name OR "voting"|"rsi"|"macd"|"bollinger" (existing)
+        periods  — number of bars (default 300)
+    """
     try:
-        asset  = request.args.get("asset", "BTC-USD")
-        period = request.args.get("period", "90d")
-        days   = {"30d": 30, "90d": 90, "180d": 180, "365d": 365, "730d": 730}.get(period, 90)
-        cat    = _cat(asset)
+        asset    = request.args.get("asset",    "BTC-USD")
+        strategy = request.args.get("strategy", "ema_rsi_crossover")
+        periods  = int(request.args.get("periods", 300))
+        cat      = _cat(asset)
 
-        df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=days)
+        df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
-        try:
-            from indicators.technical import TechnicalIndicators
-            df = TechnicalIndicators.add_all_indicators(df)
-        except Exception:
-            pass
+        from strategy_lab.backtest_engine_v2 import BacktestEngineV2
+        from strategy_lab.performance_analyzer import PerformanceAnalyzer
 
-        # BacktestEngine.run(self, asset, category, df, warmup=50) → BacktestResult
-        from backtest.engine import BacktestEngine
-        result = BacktestEngine(initial_balance=_args.balance).run(asset, cat, df)
+        # Resolve strategy
+        strat_obj = None
+        existing  = {"voting": "VotingStrategy", "rsi": "RSIStrategy",
+                     "macd":   "MACDStrategy",   "bollinger": "BollingerStrategy"}
+        if strategy in existing:
+            from strategy_lab.strategy_adapter import StrategyAdapter
+            cls_name = existing[strategy]
+            import strategies.voting    as _sv
+            import strategies.rsi       as _sr
+            import strategies.macd      as _sm
+            import strategies.bollinger as _sb
+            cls_map  = {"VotingStrategy": _sv.VotingStrategy,
+                        "RSIStrategy":    _sr.RSIStrategy,
+                        "MACDStrategy":   _sm.MACDStrategy,
+                        "BollingerStrategy": _sb.BollingerStrategy}
+            strat_obj = StrategyAdapter(cls_map[cls_name](), asset=asset, category=cat)
+        else:
+            from strategy_lab.strategy_builder import StrategyBuilder
+            configs = StrategyBuilder.all_configs()
+            if strategy not in configs:
+                return jsonify({"success": False,
+                                "error": f"Unknown strategy '{strategy}'"}), 400
+            from strategy_lab.strategy_builder import DynamicStrategy
+            strat_obj = DynamicStrategy(configs[strategy])
+
+        engine = BacktestEngineV2(strategy=strat_obj, initial_balance=_args.balance)
+        result = engine.run(df)
         rd     = result.to_dict()
+        ana    = PerformanceAnalyzer()
+        ext    = ana.extended_stats(result)
 
-        bal = _args.balance
-        equity_curve = []
-        for i, trade in enumerate(result.trades):
+        # Build equity curve
+        bal          = _args.balance
+        equity_curve = [{"i": 0, "value": round(bal, 2)}]
+        monthly: Dict[str, float] = defaultdict(float)
+        for i, trade in enumerate(result.trades, 1):
             bal += float(trade.get("pnl", 0))
-            equity_curve.append({
-                "date":      str(trade.get("open_time", i))[:10],
-                "value":     round(bal, 2),
-                "benchmark": round(_args.balance * (1 + i * 0.0005), 2),
-            })
-
-        monthly: Dict = defaultdict(float)
-        for trade in result.trades:
-            key = str(trade.get("open_time", ""))[:7] or "Unknown"
+            equity_curve.append({"i": i, "value": round(bal, 2)})
+            key = str(trade.get("entry_bar", i))[:7] or f"T{i}"
             monthly[key] += float(trade.get("pnl", 0))
 
-        def _clean(obj):
-            if isinstance(obj, dict):  return {k: _clean(v) for k, v in obj.items()}
-            if isinstance(obj, list):  return [_clean(v) for v in obj]
-            try:
-                import numpy as np
-                if isinstance(obj, np.integer):  return int(obj)
-                if isinstance(obj, np.floating): return float(obj)
-            except ImportError:
-                pass
-            if hasattr(obj, "isoformat"): return obj.isoformat()
-            return obj
-
-        return jsonify(_clean({
-            "success": True,
-            "results": {
+        return jsonify(_clean_obj({
+            "success":  True,
+            "asset":    asset,
+            "strategy": strategy,
+            "periods":  periods,
+            "metrics": {
                 **rd,
+                **ext,
                 "equity_curve": equity_curve,
                 "monthly_returns": [
                     {"month": k, "return_pct": round(v / _args.balance * 100, 2)}
                     for k, v in sorted(monthly.items())
                 ],
-                "trades": result.trades,
             },
+            "trades": result.trades[:100],
+        }))
+    except Exception as _e:
+        logger.error(f"[dashboard] api_backtest_run: {_e}", exc_info=True)
+        return jsonify({"success": False, "error": str(_e)}), 500
+
+
+# ── Backtest: compare all strategies on one asset ─────────────────────────────
+@app.route("/api/backtest/compare")
+def api_backtest_compare():
+    """
+    Mirrors run_lab.py option 2 — compare all presets + existing strategies.
+    Params: asset, periods
+    """
+    try:
+        asset   = request.args.get("asset",   "BTC-USD")
+        periods = int(request.args.get("periods", 300))
+        cat     = _cat(asset)
+
+        df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=periods)
+        if df is None or df.empty:
+            return jsonify({"success": False, "error": f"No data for {asset}"}), 404
+
+        from strategy_lab import StrategyBuilder
+        from strategy_lab.backtest_engine_v2 import BacktestEngineV2
+        from strategy_lab.strategy_adapter   import compare_all_strategies
+        from strategy_lab.performance_analyzer import PerformanceAnalyzer
+
+        results    = []
+        analyzer   = PerformanceAnalyzer()
+
+        # 1. All 15 lab presets
+        for name, config in StrategyBuilder.all_configs().items():
+            try:
+                from strategy_lab.strategy_builder import DynamicStrategy
+                s      = DynamicStrategy(config)
+                eng    = BacktestEngineV2(strategy=s, initial_balance=_args.balance)
+                r      = eng.run(df)
+                results.append({
+                    "name":      name,
+                    "type":      "lab",
+                    "sharpe":    round(r.sharpe_ratio, 3),
+                    "win_rate":  round(r.win_rate, 4),
+                    "total_pnl": round(r.total_pnl, 2),
+                    "max_dd":    round(r.max_drawdown, 4),
+                    "trades":    r.total_trades,
+                    "pf":        round(r.profit_factor, 3),
+                })
+            except Exception:
+                pass
+
+        # 2. Existing live strategies
+        existing_results = compare_all_strategies(df, asset=asset, category=cat,
+                                                   initial_balance=_args.balance)
+        for r in existing_results:
+            results.append({
+                "name":      r["label"],
+                "type":      "live",
+                "sharpe":    round(r["sharpe"], 3),
+                "win_rate":  round(r["win_rate"], 4),
+                "total_pnl": round(r["total_pnl"], 2),
+                "max_dd":    round(r["max_drawdown"], 4),
+                "trades":    r["trades"],
+                "pf":        round(r.get("profit_factor", 0), 3),
+            })
+
+        results.sort(key=lambda x: x["sharpe"], reverse=True)
+
+        return jsonify(_clean_obj({
+            "success": True,
+            "asset":   asset,
+            "periods": periods,
+            "results": results,
+            "best":    results[0]["name"] if results else None,
         }))
     except Exception as _e:
         return jsonify({"success": False, "error": str(_e)}), 500
+
+
+# ── Backtest: parameter optimiser ─────────────────────────────────────────────
+@app.route("/api/backtest/optimize")
+def api_backtest_optimize():
+    """
+    Mirrors run_lab.py option 3 — grid search best parameters.
+    Params: asset, strategy, periods
+    """
+    try:
+        asset    = request.args.get("asset",    "BTC-USD")
+        strategy = request.args.get("strategy", "ema_rsi_crossover")
+        periods  = int(request.args.get("periods", 300))
+        cat      = _cat(asset)
+
+        df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=periods)
+        if df is None or df.empty:
+            return jsonify({"success": False, "error": f"No data for {asset}"}), 404
+
+        from strategy_lab import StrategyBuilder
+        from strategy_lab.parameter_optimizer import ParameterOptimizer
+
+        configs = StrategyBuilder.all_configs()
+        if strategy not in configs:
+            return jsonify({"success": False,
+                            "error": f"Unknown strategy '{strategy}'"}), 400
+
+        optimizer = ParameterOptimizer(
+            base_config     = configs[strategy],
+            df              = df,
+            initial_balance = _args.balance,
+        )
+        results = optimizer.grid_search({
+            "rsi_period": [10, 14, 21],
+            "stop_mult":  [1.0, 1.5, 2.0],
+            "tp_mult":    [2.0, 3.0, 4.0],
+        })
+
+        return jsonify(_clean_obj({
+            "success":  True,
+            "asset":    asset,
+            "strategy": strategy,
+            "top5":     results[:5],
+            "total":    len(results),
+        }))
+    except Exception as _e:
+        return jsonify({"success": False, "error": str(_e)}), 500
+
+
+# ── Backtest: multi-asset test ────────────────────────────────────────────────
+@app.route("/api/backtest/multi-asset")
+def api_backtest_multi_asset():
+    """
+    Mirrors run_lab.py option 4 — one strategy across multiple assets.
+    Params: strategy, periods
+    """
+    try:
+        strategy = request.args.get("strategy", "golden_cross")
+        periods  = int(request.args.get("periods", 300))
+
+        from strategy_lab import StrategyBuilder
+        from strategy_lab.backtest_engine_v2 import BacktestEngineV2
+        from strategy_lab.strategy_builder   import DynamicStrategy
+
+        configs = StrategyBuilder.all_configs()
+        if strategy not in configs:
+            return jsonify({"success": False,
+                            "error": f"Unknown strategy '{strategy}'"}), 400
+
+        test_assets = [
+            ("BTC-USD", "crypto"), ("ETH-USD", "crypto"), ("SOL-USD", "crypto"),
+            ("EUR/USD", "forex"),  ("GBP/USD", "forex"),  ("USD/JPY", "forex"),
+            ("GC=F",    "commodities"), ("^DJI", "indices"),
+        ]
+        results = []
+        for asset, cat in test_assets:
+            try:
+                df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=periods)
+                if df is None or df.empty:
+                    continue
+                s   = DynamicStrategy(configs[strategy])
+                eng = BacktestEngineV2(strategy=s, initial_balance=_args.balance)
+                r   = eng.run(df)
+                results.append({
+                    "asset":     asset,
+                    "category":  cat,
+                    "sharpe":    round(r.sharpe_ratio, 3),
+                    "win_rate":  round(r.win_rate, 4),
+                    "total_pnl": round(r.total_pnl, 2),
+                    "max_dd":    round(r.max_drawdown, 4),
+                    "trades":    r.total_trades,
+                })
+            except Exception:
+                continue
+
+        results.sort(key=lambda x: x["sharpe"], reverse=True)
+        return jsonify(_clean_obj({
+            "success":  True,
+            "strategy": strategy,
+            "results":  results,
+            "best":     results[0]["asset"] if results else None,
+        }))
+    except Exception as _e:
+        return jsonify({"success": False, "error": str(_e)}), 500
+
+
+# ── Backtest: list available strategies ──────────────────────────────────────
+@app.route("/api/backtest/strategies")
+def api_backtest_strategies():
+    """Return all available strategy names for the dropdown."""
+    try:
+        from strategy_lab import StrategyBuilder
+        presets  = list(StrategyBuilder.all_configs().keys())
+        existing = ["voting", "rsi", "macd", "bollinger"]
+        return jsonify({
+            "success":  True,
+            "presets":  presets,
+            "existing": existing,
+        })
+    except Exception as _e:
+        return jsonify({"success": False, "error": str(_e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — PHASE 1: MARKET INTELLIGENCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/phase1/funding-rates")
+def api_phase1_funding():
+    """Live funding rates from FundingRateMonitor (Phase 1)."""
+    cached = _cache_get("p1_funding")
+    if cached:
+        return jsonify(cached)
+    try:
+        from data_ingestion import funding_monitor
+        data = funding_monitor.get_all_rates() if hasattr(funding_monitor, "get_all_rates") else {}
+        payload = {"success": True, "rates": data, "timestamp": datetime.now().isoformat()}
+        _cache_set("p1_funding", payload, ttl=30)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "rates": {}, "error": str(_e)})
+
+
+@app.route("/api/phase1/open-interest")
+def api_phase1_oi():
+    """Open interest data from OIMonitor (Phase 1)."""
+    cached = _cache_get("p1_oi")
+    if cached:
+        return jsonify(cached)
+    try:
+        from data_ingestion import oi_monitor
+        data = oi_monitor.get_all_signals() if hasattr(oi_monitor, "get_all_signals") else {}
+        payload = {"success": True, "data": data, "timestamp": datetime.now().isoformat()}
+        _cache_set("p1_oi", payload, ttl=60)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "data": {}, "error": str(_e)})
+
+
+@app.route("/api/phase1/liquidations")
+def api_phase1_liquidations():
+    """Recent liquidation events from Redis."""
+    cached = _cache_get("p1_liq")
+    if cached:
+        return jsonify(cached)
+    try:
+        import redis as _redis
+        from config.config import REDIS_URL
+        r     = _redis.from_url(REDIS_URL)
+        raw   = r.lrange("LIQUIDATION_EVENTS", 0, 49)
+        events = []
+        for item in raw:
+            try:
+                events.append(json.loads(item))
+            except Exception:
+                pass
+        payload = {"success": True, "events": events, "count": len(events),
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p1_liq", payload, ttl=15)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "events": [], "error": str(_e)})
+
+
+@app.route("/api/phase1/macro")
+def api_phase1_macro():
+    """Latest macro data from MacroDataCollector (Phase 1)."""
+    cached = _cache_get("p1_macro")
+    if cached:
+        return jsonify(cached)
+    try:
+        from data_ingestion import macro_collector
+        data = macro_collector.get_latest() if hasattr(macro_collector, "get_latest") else {}
+        payload = {"success": True, "data": data, "timestamp": datetime.now().isoformat()}
+        _cache_set("p1_macro", payload, ttl=300)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "data": {}, "error": str(_e)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — PHASE 2: WHALE TRACKING (enhanced)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/phase2/wallets")
+def api_phase2_wallets():
+    """Tracked wallet states and behaviors from Phase 2."""
+    cached = _cache_get("p2_wallets")
+    if cached:
+        return jsonify(cached)
+    try:
+        from whale_intelligence import tracker
+        wallets = tracker.get_wallet_states() if hasattr(tracker, "get_wallet_states") else []
+        payload = {"success": True, "wallets": wallets, "count": len(wallets),
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p2_wallets", payload, ttl=60)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "wallets": [], "error": str(_e)})
+
+
+@app.route("/api/phase2/clusters")
+def api_phase2_clusters():
+    """Whale cluster alerts from Phase 2 Redis channel."""
+    cached = _cache_get("p2_clusters")
+    if cached:
+        return jsonify(cached)
+    try:
+        import redis as _redis
+        from config.config import REDIS_URL
+        r      = _redis.from_url(REDIS_URL)
+        raw    = r.lrange("WHALE_CLUSTER_EVENTS", 0, 19)
+        events = []
+        for item in raw:
+            try:
+                events.append(json.loads(item))
+            except Exception:
+                pass
+        payload = {"success": True, "clusters": events,
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p2_clusters", payload, ttl=60)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "clusters": [], "error": str(_e)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — PHASE 3: ORDER FLOW INTELLIGENCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/phase3/imbalance")
+def api_phase3_imbalance():
+    """Current bid/ask imbalance scores from Phase 3."""
+    cached = _cache_get("p3_imbalance")
+    if cached:
+        return jsonify(cached)
+    try:
+        from order_flow import get_imbalance, get_all_imbalances
+        if hasattr(__builtins__, "get_all_imbalances"):
+            data = get_all_imbalances()
+        else:
+            assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+            data   = {a: get_imbalance(a) for a in assets}
+        payload = {"success": True, "imbalances": data,
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p3_imbalance", payload, ttl=10)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "imbalances": {}, "error": str(_e)})
+
+
+@app.route("/api/phase3/walls")
+def api_phase3_walls():
+    """Detected liquidity walls from Phase 3."""
+    cached = _cache_get("p3_walls")
+    if cached:
+        return jsonify(cached)
+    try:
+        import redis as _redis
+        from config.config import REDIS_URL
+        r    = _redis.from_url(REDIS_URL)
+        raw  = r.lrange("LIQUIDITY_WALL_EVENTS", 0, 29)
+        walls = []
+        for item in raw:
+            try:
+                walls.append(json.loads(item))
+            except Exception:
+                pass
+        payload = {"success": True, "walls": walls, "count": len(walls),
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p3_walls", payload, ttl=20)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "walls": [], "error": str(_e)})
+
+
+@app.route("/api/phase3/stop-hunts")
+def api_phase3_stop_hunts():
+    """Recent stop hunt detections from Phase 3."""
+    cached = _cache_get("p3_hunts")
+    if cached:
+        return jsonify(cached)
+    try:
+        import redis as _redis
+        from config.config import REDIS_URL
+        r     = _redis.from_url(REDIS_URL)
+        raw   = r.lrange("STOP_HUNT_EVENTS", 0, 19)
+        hunts = []
+        for item in raw:
+            try:
+                hunts.append(json.loads(item))
+            except Exception:
+                pass
+        payload = {"success": True, "hunts": hunts,
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p3_hunts", payload, ttl=15)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "hunts": [], "error": str(_e)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — PHASE 7: INTELLIGENCE ALERTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/phase7/alerts")
+def api_phase7_alerts():
+    """Recent intelligence alerts from Phase 7 Redis channel."""
+    cached = _cache_get("p7_alerts")
+    if cached:
+        return jsonify(cached)
+    try:
+        import redis as _redis
+        from config.config import REDIS_URL
+        r      = _redis.from_url(REDIS_URL)
+        raw    = r.lrange("INTELLIGENCE_ALERT_LOG", 0, 49)
+        alerts = []
+        for item in raw:
+            try:
+                alerts.append(json.loads(item))
+            except Exception:
+                pass
+        # Group by priority
+        by_priority: Dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for a in alerts:
+            p = a.get("priority", "LOW")
+            by_priority[p] = by_priority.get(p, 0) + 1
+        payload = {
+            "success":     True,
+            "alerts":      alerts,
+            "count":       len(alerts),
+            "by_priority": by_priority,
+            "timestamp":   datetime.now().isoformat(),
+        }
+        _cache_set("p7_alerts", payload, ttl=10)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "alerts": [], "error": str(_e)})
+
+
+@app.route("/api/phase7/signal-journal")
+def api_phase7_signal_journal():
+    """Recent signal pipeline journals from Redis."""
+    cached = _cache_get("p7_journal")
+    if cached:
+        return jsonify(cached)
+    try:
+        import redis as _redis
+        from config.config import REDIS_URL
+        r       = _redis.from_url(REDIS_URL)
+        raw     = r.lrange("SIGNAL_JOURNAL_LOG", 0, 19)
+        journals = []
+        for item in raw:
+            try:
+                journals.append(json.loads(item))
+            except Exception:
+                pass
+        payload = {"success": True, "journals": journals,
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p7_journal", payload, ttl=10)
+        return jsonify(payload)
+    except Exception as _e:
+        return jsonify({"success": False, "journals": [], "error": str(_e)})
+
+
+# ── New page routes ────────────────────────────────────────────────────────────
+
+@app.route("/order-flow")
+def pg_order_flow():
+    return render_template("order_flow.html")
+
+
+@app.route("/intelligence-alerts")
+def pg_intelligence_alerts():
+    return render_template("intelligence_alerts.html")
+
+
+@app.route("/strategy-lab-v2")
+def pg_strategy_lab_v2():
+    return render_template("strategy_lab.html")   # reuses existing template (upgraded below)
+
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1217,6 +1726,46 @@ def api_system_health():
             "WebSocket streams": _ws_ok,
         }
 
+        # ── Phase 1-7 health checks ───────────────────────────────────────────
+        phase_health: Dict[str, Any] = {}
+        try:
+            from data_ingestion import exchange_stream_manager as _esm
+            phase_health["phase1_data_feeds"] = getattr(_esm, "is_running", False)
+        except Exception:
+            phase_health["phase1_data_feeds"] = False
+        try:
+            from whale_intelligence import tracker as _wt
+            phase_health["phase2_whale_intel"] = getattr(_wt, "_running", False)
+        except Exception:
+            phase_health["phase2_whale_intel"] = False
+        try:
+            from order_flow import is_running as _of_running
+            phase_health["phase3_order_flow"] = _of_running()
+        except Exception:
+            phase_health["phase3_order_flow"] = False
+        try:
+            from narrative_ai import get_dominant_narrative
+            get_dominant_narrative()
+            phase_health["phase4_narrative_ai"] = True
+        except Exception:
+            phase_health["phase4_narrative_ai"] = False
+        try:
+            from strategy_lab import StrategyBuilder
+            StrategyBuilder.all_configs()
+            phase_health["phase5_strategy_lab"] = True
+        except Exception:
+            phase_health["phase5_strategy_lab"] = False
+        try:
+            from ml.meta_model import predictor as _mp
+            phase_health["phase6_meta_ai"] = _mp is not None
+        except Exception:
+            phase_health["phase6_meta_ai"] = False
+        try:
+            from services.intelligence_alerts import alert_service as _as
+            phase_health["phase7_intel_alerts"] = getattr(_as, "_running", False)
+        except Exception:
+            phase_health["phase7_intel_alerts"] = False
+
         return jsonify({
             "success":          True,
             "ram_pct":          round(ram_pct, 1),
@@ -1224,6 +1773,7 @@ def api_system_health():
             "disk_pct":         round(disk_pct, 1),
             "process_mem_mb":   proc_mb,
             "processes":        processes,
+            "phase_health":     phase_health,
             "open_positions":   health.get("open_positions", 0),
             "active_cooldowns": health.get("active_cooldowns", 0),
             "issues":           health.get("issues", []),

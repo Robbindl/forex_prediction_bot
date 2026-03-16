@@ -6,7 +6,7 @@ FIXED: True singleton — WhaleAlertManager.__init__ runs exactly once per proce
        start_monitoring() is idempotent — safe to call multiple times.
 """
 
-from twitter_whale_watcher import TwitterWhaleWatcher
+from twitter_watcher import TwitterWhaleWatcher
 from telegram_whale_watcher import TelegramWhaleWatcher
 from reddit_watcher import RedditWatcher
 import threading
