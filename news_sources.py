@@ -1,14 +1,3 @@
-"""
-📰 COMPREHENSIVE NEWS SOURCES INTEGRATION
-All your requested sources: Binance, Watcher Guru, Whale Alert, Kobeissi Letter,
-Walter Bloomberg, Bloomberg, Forbes, Forbes Crypto, Bloomberg Crypto,
-Wall Street Journal, Bloomberg Markets
-PLUS: Investing.com, DailyFX, FXStreet, TradingView, FRED, ECB, MarketAux, ForexFactory
-
-🔑 = Requires API Key (you have these already)
-🌐 = Completely Free (RSS or no key needed)
-"""
-
 import requests
 import feedparser
 from datetime import datetime, timedelta

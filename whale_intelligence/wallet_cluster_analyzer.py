@@ -1,27 +1,3 @@
-"""
-whale_intelligence/wallet_cluster_analyzer.py — Coordinated whale detector.
-
-Detects when multiple wallets move in the same direction within a short
-time window. Coordinated movements are far more market-moving than a
-single whale acting alone — three whales buying simultaneously is a
-stronger signal than one whale buying three times as much.
-
-Detection logic
----------------
-    1. Every incoming wallet event is added to a rolling 5-minute window.
-    2. After each ingest(), wallets are grouped by direction (buy / sell).
-    3. If 3+ wallets moved the same direction in the window → CLUSTER ALERT.
-    4. Rate-limited to one alert per direction per asset per minute.
-
-Redis events published
-----------------------
-WHALE_CLUSTER_ALERT  {direction, wallet_count, total_asset, window_s,
-                       labels, confidence, ts}
-
-Run tests
----------
-    pytest tests/test_whale_intelligence.py::test_cluster -v
-"""
 from __future__ import annotations
 
 import json
@@ -89,7 +65,9 @@ class WalletClusterAnalyzer:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.warning(f"[ClusterAnalyzer] Redis unavailable: {e}")

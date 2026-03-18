@@ -1,21 +1,3 @@
-"""
-whale_intelligence/wallet_database.py — Persistent wallet storage.
-
-Stores wallet profiles and balance history using your existing
-PostgreSQL connection (config/database.py). Falls back to an
-in-memory dict when the database is unavailable — the tracker
-still runs, you just lose history across restarts.
-
-Tables created automatically on init()
----------------------------------------
-    whale_wallets        — wallet registry (address, label, chain, type)
-    whale_balances       — latest balance snapshot per wallet
-    whale_movements      — every detected balance change (delta, ts)
-
-Run tests
----------
-    pytest tests/test_whale_intelligence.py::test_database -v -m "not integration"
-"""
 from __future__ import annotations
 
 import json

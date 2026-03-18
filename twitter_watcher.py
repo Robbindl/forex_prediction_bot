@@ -1,10 +1,3 @@
-"""
-Twitter Whale Alert Watcher
-Tracks whale accounts for large crypto transactions
-NOW WITH: Official API + Chrome Extension + Open Source Scraper (ALL FREE OPTIONS)
-FIXED: Async warnings + Increased rate limits
-"""
-
 import tweepy
 import re
 import requests

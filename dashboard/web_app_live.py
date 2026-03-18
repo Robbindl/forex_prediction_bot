@@ -601,7 +601,7 @@ def api_chart_candles():
     try:
         import pandas as pd
         asset    = request.args.get("asset", "EUR/USD")
-        interval = request.args.get("interval", "1h")
+        interval = request.args.get("interval", "15m")
         periods_map = {"1m": 60, "5m": 200, "15m": 200, "1h": 168, "4h": 200, "1d": 365}
         periods  = periods_map.get(interval, 100)
         df = _fetcher.get_ohlcv(asset, _cat(asset), interval=interval, periods=periods)
@@ -1135,7 +1135,11 @@ def api_backtest_run():
         periods  = int(request.args.get("periods", 300))
         cat      = _cat(asset)
 
-        df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=periods)
+        try:
+            from config.config import TRADING_TIMEFRAME as _TF
+        except Exception:
+            _TF = "15m"
+        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1216,7 +1220,11 @@ def api_backtest_compare():
         periods = int(request.args.get("periods", 300))
         cat     = _cat(asset)
 
-        df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=periods)
+        try:
+            from config.config import TRADING_TIMEFRAME as _TF
+        except Exception:
+            _TF = "15m"
+        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1289,7 +1297,11 @@ def api_backtest_optimize():
         periods  = int(request.args.get("periods", 300))
         cat      = _cat(asset)
 
-        df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=periods)
+        try:
+            from config.config import TRADING_TIMEFRAME as _TF
+        except Exception:
+            _TF = "15m"
+        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1351,7 +1363,11 @@ def api_backtest_multi_asset():
         results = []
         for asset, cat in test_assets:
             try:
-                df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=periods)
+                try:
+            from config.config import TRADING_TIMEFRAME as _TF
+        except Exception:
+            _TF = "15m"
+        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
                 if df is None or df.empty:
                     continue
                 s   = DynamicStrategy(configs[strategy])

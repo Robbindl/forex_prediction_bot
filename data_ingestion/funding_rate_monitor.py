@@ -1,17 +1,3 @@
-"""
-services/data_ingestion/funding_rate_monitor.py
-Phase 1 — Perpetual futures funding rate monitor.
-
-Funding rates are paid between longs and shorts every 8 hours.
-Extreme positive rates → over-leveraged longs → potential long squeeze.
-Extreme negative rates → over-leveraged shorts → potential short squeeze.
-
-Polls Bybit (no API key required for public endpoints).
-
-Redis events published
-----------------------
-FUNDING_RATE_ALERT  {asset, rate, bias, implication, ts}
-"""
 from __future__ import annotations
 
 import json
@@ -93,7 +79,9 @@ class FundingRateMonitor:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.warning(f"[FundingMonitor] Redis unavailable: {e}")

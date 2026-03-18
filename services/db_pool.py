@@ -1,7 +1,3 @@
-"""
-services/db_pool.py — Thread-safe DatabaseService singleton.
-No NullDB fallback — database is required.
-"""
 from __future__ import annotations
 import threading
 from utils.logger import get_logger

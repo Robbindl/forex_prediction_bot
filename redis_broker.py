@@ -30,24 +30,17 @@ class RedisBroker:
     # ── Connection ─────────────────────────────────────────────────────────
 
     def _connect(self):
-        """Try to connect to Redis. Silently fails if unavailable."""
+        """Try to connect using shared pool. Silently fails if unavailable."""
         try:
-            import redis
-            host     = os.getenv('REDIS_HOST', '127.0.0.1')
-            port     = int(os.getenv('REDIS_PORT', '6379'))
-            password = os.getenv('REDIS_PASSWORD') or None
-            db       = int(os.getenv('REDIS_DB', '0'))
-
-            self._redis = redis.Redis(
-                host=host, port=port, password=password, db=db,
-                socket_connect_timeout=2,
-                socket_timeout=2,
-                decode_responses=True,
-                retry_on_timeout=True,
-            )
+            from services.redis_pool import get_client as _get_pool_client, is_available
+            if not is_available():
+                self._enabled = False
+                return
+            self._redis   = _get_pool_client()
             self._redis.ping()
             self._enabled = True
-            logger.info(f"[RedisBroker] Connected to {host}:{port}")
+            from config.config import REDIS_URL
+            logger.info(f"[RedisBroker] Connected via shared pool")
         except ImportError:
             logger.warning("[RedisBroker] redis-py not installed — install with: pip install redis")
             self._enabled = False
@@ -139,16 +132,11 @@ class RedisBroker:
             while True:
                 try:
                     import redis as _r
-                    host     = os.getenv('REDIS_HOST', '127.0.0.1')
-                    port     = int(os.getenv('REDIS_PORT', '6379'))
-                    password = os.getenv('REDIS_PASSWORD') or None
-
-                    sub_client = _r.Redis(
-                        host=host, port=port, password=password,
-                        socket_connect_timeout=5,
-                        decode_responses=True,
-                    )
-                    ps = sub_client.pubsub()
+                    from services.redis_pool import get_pubsub as _get_pubsub
+                    ps = _get_pubsub()
+                    if ps is None:
+                        logger.warning(f"[RedisBroker] pubsub unavailable for {channel}")
+                        return
                     ps.subscribe(channel)
                     logger.info(f"[RedisBroker] Listening on channel '{channel}'")
 

@@ -1,35 +1,3 @@
-"""
-order_flow/stop_hunt_detector.py — Stop-hunt wick pattern detector.
-
-A stop hunt occurs when price briefly spikes through a key level
-(triggering retail stop-loss orders), then rapidly reverses back.
-Market makers and large players intentionally engineer these moves
-to accumulate / distribute at better prices.
-
-Pattern signature
------------------
-    1. Price trades near a known liquidity wall (support/resistance).
-    2. A wick pierces through the wall by >= WICK_THRESHOLD %.
-    3. Price reverses back through the wall within REVERT_WINDOW ms.
-    4. The reversal implies the opposite direction to the wick.
-
-Example
--------
-    Large BID wall at 65,000.
-    Price wicks down to 64,800 (–0.31% through wall).
-    Price snaps back above 65,000 within 15 seconds.
-    → STOP_HUNT_DETECTED: BID side, implication = BUY
-
-Redis events published
-----------------------
-    STOP_HUNT_DETECTED  {asset, wall_price, wall_side, spike_price,
-                         revert_price, wick_pct, revert_ms,
-                         implication, confidence, ts}
-
-Run tests
----------
-    pytest tests/test_orderflow.py::TestStopHuntDetector -v
-"""
 from __future__ import annotations
 
 import json
@@ -88,7 +56,9 @@ class StopHuntDetector:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.debug(f"[StopHunt] Redis unavailable for {self.asset}: {e}")

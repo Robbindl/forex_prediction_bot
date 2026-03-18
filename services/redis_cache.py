@@ -1,15 +1,3 @@
-"""
-services/redis_cache.py — Redis-backed cache with in-memory fallback.
-
-Drop-in upgrade for data/cache.py. If Redis is unavailable the system
-continues using the in-process TTL cache — no crash, no data loss.
-
-Usage:
-    from services.redis_cache import get_cache
-    cache = get_cache()
-    cache.set("key", value, ttl=30)
-    value = cache.get("key")
-"""
 from __future__ import annotations
 import json
 import os
@@ -22,14 +10,15 @@ _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 class RedisCache:
-    """Redis-backed cache. Serialises values as JSON."""
+    """Redis-backed cache. Uses shared connection pool."""
 
     def __init__(self, url: str = _REDIS_URL, default_ttl: int = 30):
-        import redis
-        self._r = redis.from_url(url, decode_responses=True, socket_timeout=1.0)
+        from services.redis_pool import get_client as _get_redis_client
+        self._r   = _get_redis_client()
         self._ttl = default_ttl
-        self._r.ping()
-        logger.info(f"[Cache] Redis connected at {url}")
+        if self._r:
+            self._r.ping()
+            logger.info(f"[Cache] Redis pool connected")
 
     def get(self, key: str) -> Optional[Any]:
         try:

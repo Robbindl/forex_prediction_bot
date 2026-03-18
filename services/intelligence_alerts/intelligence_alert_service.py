@@ -1,26 +1,3 @@
-"""
-services/intelligence_alerts/intelligence_alert_service.py — Core alert dispatcher.
-
-Subscribes to all Redis market event channels from Phases 1-4.
-Applies priority classification, rate limiting, and routes each alert
-to Telegram, email, and the dashboard Redis channel.
-
-The service runs in a background thread — one subscriber loop that
-handles all channels. Each alert is processed in a separate thread
-so a slow Telegram send never blocks the next alert.
-
-Design principles
------------------
-    1. Never miss a CRITICAL alert — no rate limiting on CRITICAL
-    2. Rate limit lower priorities to prevent Telegram flooding
-    3. Always include enough context to understand the alert
-    4. Future alert types register themselves — no code changes needed
-    5. Degrade gracefully — if Telegram is down, log and continue
-
-Run tests
----------
-    pytest tests/test_intelligence_alerts.py::TestIntelligenceAlertService -v
-"""
 from __future__ import annotations
 
 import json
@@ -136,8 +113,8 @@ class IntelligenceAlertService:
         try:
             import redis
             from config.config import REDIS_URL
-            r  = redis.from_url(REDIS_URL)
-            ps = r.pubsub()
+            from services.redis_pool import get_pubsub as _get_pubsub
+            ps = _get_pubsub()
             ps.subscribe(*SUBSCRIBED_CHANNELS)
             logger.info(f"[IntelAlerts] Subscribed to {len(SUBSCRIBED_CHANNELS)} channels")
 

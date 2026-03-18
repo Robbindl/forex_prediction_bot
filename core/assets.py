@@ -1,13 +1,3 @@
-"""
-core/assets.py — Canonical asset registry.
-
-Your 18 tradeable assets:
-  Commodities : Gold (GC=F), Silver (SI=F), Oil (CL=F)
-  Forex       : EUR/USD, GBP/JPY, GBP/USD, AUD/USD, USD/JPY, USD/CAD
-  Indices     : US30 (^DJI), US100 (^IXIC), US500 (^GSPC), FTSE (^FTSE)
-  Crypto      : BTC-USD, ETH-USD, BNB-USD, SOL-USD, XRP-USD
-"""
-
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple

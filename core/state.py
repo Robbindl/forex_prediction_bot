@@ -1,14 +1,3 @@
-"""
-core/state.py — SystemState: single source of truth for all mutable state.
-
-Persistence strategy:
-  PRIMARY:   PostgreSQL via DatabaseService (all trades, open positions, daily stats)
-  SECONDARY: data/system_state.json (fast local cache for balance/cooldowns/counters)
-
-On startup: open positions are restored from DB (OpenPosition table).
-On trade open: written to DB immediately.
-On trade close: DB updated, open_position row deleted.
-"""
 from __future__ import annotations
 
 import json

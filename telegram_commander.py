@@ -512,7 +512,11 @@ class TelegramCommander:
                     cat     = registry.category(asset)
                     fetcher = core.fetcher
                     if fetcher:
-                        df = fetcher.get_ohlcv(asset, cat, interval="1h", periods=50)
+                        try:
+                        from config.config import TRADING_TIMEFRAME as _TF
+                        except Exception:
+                            _TF = "15m"
+                        df = fetcher.get_ohlcv(asset, cat, interval=_TF, periods=100)
                         if df is not None and not df.empty:
                             from indicators.technical import TechnicalIndicators
                             df = TechnicalIndicators.add_all_indicators(df)
@@ -953,7 +957,11 @@ class TelegramCommander:
                 cat     = registry.category(asset)
                 fetcher = core.fetcher
                 if fetcher:
-                    df = fetcher.get_ohlcv(asset, cat, interval="1h", periods=50)
+                    try:
+                        from config.config import TRADING_TIMEFRAME as _TF
+                        except Exception:
+                            _TF = "15m"
+                        df = fetcher.get_ohlcv(asset, cat, interval=_TF, periods=100)
                     if df is not None and not df.empty:
                         from indicators.technical import TechnicalIndicators
                         df = TechnicalIndicators.add_all_indicators(df)

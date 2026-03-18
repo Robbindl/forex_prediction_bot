@@ -1,19 +1,3 @@
-"""
-services/intelligence_alerts/alert_formatter.py — Rich alert formatter.
-
-Converts raw Redis event dicts into formatted Telegram messages.
-Each event type has its own template with relevant data highlighted.
-
-Adding a new alert type
------------------------
-    1. Add a method _format_MY_EVENT(event) -> str
-    2. Register it in _FORMAT_MAP at the bottom of the class
-    That's it — no other changes needed.
-
-Run tests
----------
-    pytest tests/test_intelligence_alerts.py::TestAlertFormatter -v
-"""
 from __future__ import annotations
 
 from typing import Dict, Optional

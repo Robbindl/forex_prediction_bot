@@ -1,20 +1,3 @@
-"""
-core/pipeline.py — Eight-layer signal pipeline.
-
-Flow:
-    Signal → L1(Voting) → L2(Quality) → L3(Regime) → L4(Session)
-           → L5(Sentiment) → L6(Whale) → L7(Calibration)
-           → L8(MetaAI)
-           → PipelineReporter (backtest + Telegram + DB)
-           → execute | discard
-
-Each layer implements process(signal, context) → Signal | None.
-Returning None is equivalent to signal.kill(). Both are handled.
-
-UPDATED: Every layer decision is recorded in signal.journal.
-         PipelineReporter runs after the pipeline for every signal
-         — pass or fail. No stage left behind.
-"""
 from __future__ import annotations
 
 import os

@@ -1,9 +1,3 @@
-"""
-layers/layer2_quality.py — Signal quality gate.
-
-Checks R:R ratio and spread/liquidity proxy.
-Writes full decision to signal.journal.
-"""
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from core.signal import Signal

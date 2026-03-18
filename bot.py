@@ -322,6 +322,14 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] Phase 6 Meta AI failed to load: {e}")
 
+    # ── News Event Monitor — economic calendar integration ─────────────────
+    try:
+        from data_ingestion.news_event_monitor import start_news_monitor
+        start_news_monitor()
+        logger.info("[bot] News event monitor started — Finnhub calendar active")
+    except Exception as e:
+        logger.warning(f"[bot] News event monitor failed to start: {e}")
+
     # ── Phase 7 — Intelligence Alert System (started after Telegram) ──────
     # Started later — see below after Telegram block
 

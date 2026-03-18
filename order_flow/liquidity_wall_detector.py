@@ -1,30 +1,3 @@
-"""
-order_flow/liquidity_wall_detector.py — Large order cluster detector.
-
-Scans the order book for price levels whose size is significantly larger
-than the average level. These "walls" act as:
-  • Support  (large bid wall below price) — absorbs selling pressure
-  • Resistance (large ask wall above price) — absorbs buying pressure
-  • Price magnets — price tends to gravitate toward and test large walls
-
-A wall also reveals institutional intent: a large bid wall signals a
-buyer willing to defend that level; a large ask wall signals a seller.
-
-Detection thresholds
---------------------
-    MODERATE  — level size >= 5× average level size
-    STRONG    — level size >= 10× average level size
-    EXTREME   — level size >= 20× average level size
-
-Redis events published
-----------------------
-    LIQUIDITY_WALL_DETECTED  {asset, side, price, size, size_ratio,
-                               strength, distance_pct, ts}
-
-Run tests
----------
-    pytest tests/test_orderflow.py::TestLiquidityWallDetector -v
-"""
 from __future__ import annotations
 
 import json
@@ -82,7 +55,9 @@ class LiquidityWallDetector:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.debug(f"[WallDetector] Redis unavailable for {self.asset}: {e}")

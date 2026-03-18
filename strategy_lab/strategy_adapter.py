@@ -1,55 +1,3 @@
-"""
-strategy_lab/strategy_adapter.py — Adapter for existing BaseStrategy classes.
-
-Wraps any strategy that inherits from strategies/base.py so it can be
-used with BacktestEngineV2 and ParameterOptimizer without modifying
-any of the original strategy code.
-
-The gap being bridged
----------------------
-    BaseStrategy.generate(asset, canonical, category, df) → Signal
-    BacktestEngineV2 expects:  strategy.generate(df)       → dict | None
-
-StrategyAdapter handles the translation in both directions:
-  - Calls generate() with the required positional arguments
-  - Converts the returned Signal object into the dict schema
-    BacktestEngineV2 understands
-
-Supported strategies (out of the box)
---------------------------------------
-    RSIStrategy, MACDStrategy, BollingerStrategy, VotingStrategy
-    Any future strategy that extends BaseStrategy also works automatically.
-
-Usage
------
-    from strategy_lab.strategy_adapter import StrategyAdapter
-    from strategies.rsi       import RSIStrategy
-    from strategies.macd      import MACDStrategy
-    from strategies.bollinger import BollingerStrategy
-    from strategies.voting    import VotingStrategy
-    from strategy_lab         import BacktestEngineV2, PerformanceAnalyzer
-
-    # Single strategy backtest
-    adapter = StrategyAdapter(RSIStrategy(), asset="BTC-USD", category="crypto")
-    engine  = BacktestEngineV2(strategy=adapter, initial_balance=10_000)
-    result  = engine.run(df)
-    print(result.summary())
-
-    # Compare all your strategies head-to-head
-    from strategy_lab.strategy_adapter import compare_all_strategies
-    results = compare_all_strategies(df, asset="BTC-USD", category="crypto")
-    for r in results:
-        print(r)
-
-    # Backtest directly from asset name (fetches data automatically)
-    from strategy_lab.strategy_adapter import backtest_existing
-    result = backtest_existing(RSIStrategy(), asset="BTC-USD", category="crypto")
-    print(result.summary())
-
-Run tests
----------
-    pytest tests/test_strategy_adapter.py -v -m "not integration"
-"""
 from __future__ import annotations
 
 from typing import Dict, List, Optional, TYPE_CHECKING
@@ -142,7 +90,7 @@ def backtest_existing(
     category:        str   = "crypto",
     initial_balance: float = 10_000.0,
     periods:         int   = 500,
-    interval:        str   = "1d",
+    interval:        str   = "15m",
 ) -> "BacktestResult":
     """
     Fetch historical data and run a full backtest on any existing strategy.
@@ -257,7 +205,11 @@ def compare_all_strategies_from_asset(
     """
     from data.fetcher import DataFetcher
     fetcher = DataFetcher()
-    df      = fetcher.get_ohlcv(asset, category, "1d", periods)
+    try:
+    from config.config import TRADING_TIMEFRAME as _TF
+except Exception:
+    _TF = "15m"
+df      = fetcher.get_ohlcv(asset, category, _TF, periods)
     if df is None or df.empty:
         raise ValueError(f"No OHLCV data for {asset} ({category})")
     return compare_all_strategies(df, asset=asset, category=category,

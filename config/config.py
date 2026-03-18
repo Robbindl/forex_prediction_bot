@@ -59,6 +59,10 @@ TELEGRAM_CHAT_ID = os.getenv("COMMAND_BOT_CHAT_ID") or os.getenv("TELEGRAM_CHAT_
 # ─────────────────────────────────────────────────────────────────────────────
 
 WHALE_TELEGRAM_TOKEN = os.getenv("WHALE_TELEGRAM_TOKEN", "")
+# Chat ID for intelligence alerts (Phase 7 + Phase 11 monitoring).
+# Set INTELLIGENCE_CHAT_ID in .env to send to a different chat.
+# Defaults to your main chat ID if not set.
+INTELLIGENCE_CHAT_ID = os.getenv("INTELLIGENCE_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_API_ID      = os.getenv("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH    = os.getenv("TELEGRAM_API_HASH", "")
 TELEGRAM_PHONE       = os.getenv("TELEGRAM_PHONE", "")
@@ -232,5 +236,3 @@ FORBES_RSS: dict = {
 BINANCE_ANNOUNCEMENTS_URL = (
     "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 )
-
-

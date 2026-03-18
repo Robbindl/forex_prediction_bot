@@ -1,10 +1,3 @@
-"""
-core/signal.py — Signal dataclass. The universal object passed through all pipeline layers.
-
-UPDATED: Added `journal` field (SignalJournal) that records every layer
-decision, phase input, and backtest result. Sent to Telegram after the
-pipeline completes for full transparency on every signal.
-"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime

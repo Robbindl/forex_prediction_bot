@@ -1,25 +1,3 @@
-"""
-whale_intelligence/wallet_tracker.py — On-chain wallet movement tracker.
-
-Polls Blockchair (BTC) and Etherscan (ETH) for balance changes on known
-large wallets. Detects accumulation, distribution, and exchange flows.
-Feeds WalletBehaviorClassifier and WalletClusterAnalyzer on every event.
-
-Requires (optional — tracker degrades gracefully without them)
----------------------------------------------------------------
-    ETHERSCAN_API_KEY  in .env   free at https://etherscan.io/myapikey
-
-Redis events published
-----------------------
-WHALE_ACCUMULATION      {address, label, wallet_type, delta, asset, ts}
-WHALE_DISTRIBUTION      {address, label, wallet_type, delta, asset, ts}
-EXCHANGE_INFLOW_ALERT   {address, label, delta, asset, usd_est, ts}
-EXCHANGE_OUTFLOW_ALERT  {address, label, delta, asset, usd_est, ts}
-
-Run tests
----------
-    pytest tests/test_whale_intelligence.py::test_tracker -v -m "not integration"
-"""
 from __future__ import annotations
 
 import json
@@ -135,7 +113,9 @@ class WalletTracker:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
             logger.info("[WalletTracker] Redis publisher connected")
         except Exception as e:

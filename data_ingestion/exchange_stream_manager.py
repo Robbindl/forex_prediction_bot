@@ -1,20 +1,3 @@
-"""
-services/data_ingestion/exchange_stream_manager.py
-Phase 1 — Unified WebSocket manager for exchange price / order-book /
-liquidation feeds. Supports Binance, Bybit, and OKX out of the box.
-
-Redis events published
-----------------------
-MARKET_DATA_UPDATE   — normalised ticker (price, volume, change %)
-ORDER_BOOK_UPDATE    — top-of-book bids / asks
-LIQUIDATION_EVENT    — individual liquidation (side, size, price)
-
-Usage
------
-    from services.data_ingestion.exchange_stream_manager import stream_manager
-    stream_manager.start(["binance", "bybit"])   # call from bot.py main()
-    stream_manager.stop()                         # call from shutdown handler
-"""
 from __future__ import annotations
 
 import json
@@ -300,7 +283,9 @@ class ExchangeStreamManager:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
             self._redis_ok = True
             logger.info("[ExStream] Redis publisher connected")

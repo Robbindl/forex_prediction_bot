@@ -1,38 +1,3 @@
-"""
-strategy_lab/backtest_engine_v2.py — Professional backtesting engine.
-
-Simulates trading a DynamicStrategy against historical OHLCV data.
-Handles position sizing, stop-loss / take-profit management, slippage,
-commission, and produces a detailed BacktestResult.
-
-Features
---------
-    - Realistic execution: fills on next candle's open after signal
-    - Configurable commission (default 0.1%) and slippage (default 0.05%)
-    - Position sizing: fixed risk % of current balance per trade
-    - Forced exit at end of data if position still open
-    - Full trade log with entry/exit price, PnL, duration, and outcome
-
-BacktestResult fields
----------------------
-    total_trades    — number of completed trades
-    win_rate        — proportion of winning trades (0.0–1.0)
-    total_pnl       — net profit/loss in account currency
-    total_pnl_pct   — total PnL as % of initial balance
-    max_drawdown    — largest peak-to-trough decline as % of peak balance
-    sharpe_ratio    — annualised Sharpe (assumes daily bars, rf=0)
-    profit_factor   — gross profit / gross loss
-    expectancy      — average PnL per trade
-    avg_win         — average winning trade PnL
-    avg_loss        — average losing trade PnL (negative)
-    largest_win     — single best trade PnL
-    largest_loss    — single worst trade PnL (negative)
-    trades          — list of individual trade dicts
-
-Run tests
----------
-    pytest tests/test_strategy_lab.py::TestBacktestEngineV2 -v
-"""
 from __future__ import annotations
 
 import math

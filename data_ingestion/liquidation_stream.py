@@ -1,14 +1,3 @@
-"""
-services/data_ingestion/liquidation_stream.py
-Phase 1 — Liquidation aggregator and cascade detector.
-
-Subscribes to LIQUIDATION_EVENT (published by exchange_stream_manager)
-and detects when a cascade is forming (many liquidations in a short window).
-
-Redis events published
-----------------------
-LIQUIDATION_CASCADE_ALERT  {asset, usd_total, window_s, severity, ts}
-"""
 from __future__ import annotations
 
 import json
@@ -75,7 +64,9 @@ class LiquidationStream:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.warning(f"[LiqStream] Redis unavailable: {e}")
@@ -88,8 +79,8 @@ class LiquidationStream:
         try:
             import redis
             from config.config import REDIS_URL
-            r  = redis.from_url(REDIS_URL)
-            ps = r.pubsub()
+            from services.redis_pool import get_pubsub as _get_pubsub
+            ps = _get_pubsub()
             ps.subscribe("LIQUIDATION_EVENT")
             logger.info("[LiqStream] Subscribed to LIQUIDATION_EVENT")
             for msg in ps.listen():

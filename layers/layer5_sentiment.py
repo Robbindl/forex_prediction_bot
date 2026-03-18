@@ -1,12 +1,3 @@
-"""
-layers/layer5_sentiment.py — Sentiment filter.
-
-Reads sentiment from existing SentimentAnalyzer.
-NOW WIRED TO PHASE 4: enriches context with narrative scores
-and dominant narrative from narrative_ai module.
-
-Writes full decision to signal.journal including Phase 4 data.
-"""
 from __future__ import annotations
 import threading
 from typing import Any, Dict, Optional

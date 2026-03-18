@@ -138,7 +138,16 @@ class AutoTrainer:
         for asset in assets[:5]:    # limit to 5 assets per category for speed
             if self._fetcher:
                 try:
-                    df = self._fetcher.get_ohlcv(asset, category, "1d", LOOKBACK_PERIOD)
+                    # Train on same timeframe as trading — reads TRADING_TIMEFRAME from config
+                    try:
+                        from config.config import TRADING_TIMEFRAME
+                        tf = TRADING_TIMEFRAME   # "15m", "1h", or "1d"
+                    except Exception:
+                        tf = "1d"
+                    # More periods for intraday — 15m needs more bars than daily
+                    periods_map = {"15m": 500, "1h": 300, "4h": 200, "1d": LOOKBACK_PERIOD}
+                    periods = periods_map.get(tf, LOOKBACK_PERIOD)
+                    df = self._fetcher.get_ohlcv(asset, category, tf, periods)
                     if df is not None and not df.empty:
                         all_dfs.append(df)
                 except Exception:

@@ -1,12 +1,3 @@
-"""
-layers/layer3_regime.py — Market regime filter.
-
-Detects trending / ranging / volatile regime from price data.
-NOW WIRED TO PHASE 3: reads order flow imbalance score from
-order_flow module to enrich regime context.
-
-Writes full decision to signal.journal including Phase 3 data.
-"""
 from __future__ import annotations
 from typing import Any, Dict, Optional
 import pandas as pd
@@ -27,7 +18,16 @@ def _detect_regime(df: pd.DataFrame) -> str:
         sma20   = close.rolling(20).mean()
         sma50   = close.rolling(50).mean() if len(df) >= 50 else sma20
         returns = close.pct_change().dropna()
-        vol     = returns.std() * np.sqrt(252)
+
+        # Annualise volatility correctly for the active timeframe
+        # Daily=252, 1h=252*24=6048, 15m=252*96=24192, 4h=252*6=1512
+        try:
+            from config.config import TRADING_TIMEFRAME
+            _bars_per_year = {"15m": 24192, "1h": 6048, "4h": 1512, "1d": 252}
+            ann_factor = _bars_per_year.get(TRADING_TIMEFRAME, 252)
+        except Exception:
+            ann_factor = 252
+        vol = returns.std() * np.sqrt(ann_factor)
 
         if vol > 0.4:
             return "volatile"

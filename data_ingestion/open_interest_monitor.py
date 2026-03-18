@@ -1,18 +1,3 @@
-"""
-services/data_ingestion/open_interest_monitor.py
-Phase 1 — Open Interest (OI) tracker for perpetual futures.
-
-OI = total number of open contracts.
-Rising OI + rising price  → trend continuation (strong conviction)
-Rising OI + falling price → bearish continuation
-Falling OI               → position unwinding / trend exhaustion
-
-Polls Bybit public API (no key required).
-
-Redis events published
-----------------------
-OI_CHANGE_ALERT  {asset, prev_oi, current_oi, change_pct, signal, ts}
-"""
 from __future__ import annotations
 
 import json
@@ -90,7 +75,9 @@ class OpenInterestMonitor:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.warning(f"[OIMonitor] Redis unavailable: {e}")

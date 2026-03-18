@@ -1,7 +1,3 @@
-"""
-execution/paper_trader.py — Paper trading execution engine.
-Clean rewrite of paper_trader.py. No synthetic data.
-"""
 from __future__ import annotations
 import uuid
 import threading

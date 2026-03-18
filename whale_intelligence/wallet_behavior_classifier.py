@@ -1,33 +1,3 @@
-"""
-whale_intelligence/wallet_behavior_classifier.py — Wallet pattern classifier.
-
-Analyses a wallet's movement history and assigns a behaviour label.
-The label is used by the signal pipeline to weight whale events — an
-accumulator building a position carries far more signal weight than a
-known exchange hot wallet doing routine transfers.
-
-Behaviour labels
-----------------
-    accumulator      — consistently buys, rarely sells
-    distributor      — consistently sells / reduces holdings
-    flipper          — buys and sells frequently (noise trader)
-    exchange         — identified exchange wallet (ambiguous signal)
-    dormant          — inactive for 180+ days (waking up = high signal)
-    mixed            — no clear pattern
-    insufficient_data — fewer than MIN_HISTORY movements recorded
-
-Signal weights returned by .signal_weight()
---------------------------------------------
-    accumulator  → 0.90   (strong bullish confirmation)
-    distributor  → 0.90   (strong bearish confirmation)
-    dormant      → 0.75   (rare — waking dormant whale is significant)
-    flipper      → 0.30   (noisy — low weight)
-    exchange     → 0.15   (ambiguous — almost ignore)
-
-Run tests
----------
-    pytest tests/test_whale_intelligence.py::test_classifier -v
-"""
 from __future__ import annotations
 
 import time

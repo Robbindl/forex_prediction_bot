@@ -1,10 +1,3 @@
-"""
-execution/paper_adapter.py — PaperTrader wrapped as an ExchangeAdapter.
-
-This lets the rest of the system treat paper trading the same as a
-real exchange. When a real exchange connector is added, swap the
-adapter in ExchangeRouter without touching strategy code.
-"""
 from __future__ import annotations
 import uuid
 from typing import Optional

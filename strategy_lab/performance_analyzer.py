@@ -1,31 +1,3 @@
-"""
-strategy_lab/performance_analyzer.py — Backtest performance metrics engine.
-
-Computes a complete suite of professional performance metrics from
-a list of trades and an equity curve produced by BacktestEngineV2.
-
-Metrics computed
-----------------
-    win_rate        — % of trades that were profitable
-    total_pnl       — net profit/loss in currency
-    total_pnl_pct   — total PnL as % of initial balance
-    max_drawdown    — largest peak-to-trough % decline in equity curve
-    sharpe_ratio    — annualised Sharpe ratio (daily bars, rf=0)
-    sortino_ratio   — Sharpe using only downside deviation
-    profit_factor   — gross profit / gross loss
-    expectancy      — average PnL per trade (positive = edge exists)
-    avg_win         — average winning trade size
-    avg_loss        — average losing trade size (negative)
-    largest_win     — single best trade
-    largest_loss    — single worst trade (negative)
-    avg_duration    — average bars held per trade
-    consecutive_wins  — longest winning streak
-    consecutive_losses — longest losing streak
-
-Run tests
----------
-    pytest tests/test_strategy_lab.py::TestPerformanceAnalyzer -v
-"""
 from __future__ import annotations
 
 import math

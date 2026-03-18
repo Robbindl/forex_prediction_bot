@@ -179,7 +179,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <span class="panel-title">⚡ Pipeline Latency</span>
           <span class="panel-badge" id="latBadge">—</span>
         </div>
-        <div class="panel-body" id="latencyPanel"><div class="empty">Loading…</div></div>
+        <div class="panel-body" id="latencyPanel" style="max-height:200px;overflow-y:auto"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Phase 11: Error tracker -->
@@ -199,7 +199,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <span class="panel-title">📊 Signal Performance</span>
           <span class="panel-badge" id="sigBadge">—</span>
         </div>
-        <div class="panel-body" id="signalPerfPanel"><div class="empty">Loading…</div></div>
+        <div class="panel-body" id="signalPerfPanel" style="max-height:200px;overflow-y:auto"><div class="empty">Loading…</div></div>
       </div>
     </div>
   </div>
@@ -253,7 +253,7 @@ async function load(){
   try{
     const d=await fetch('/api/system/health').then(r=>r.json());
 
-    document.getElementById('updateTime').textContent='Updated: '+(d.timestamp||'').substring(11,19)+' UTC';
+    document.getElementById('updateTime').textContent='Updated: '+new Date(new Date(d.timestamp||Date.now()).getTime()+3*3600000).toISOString().substring(11,19)+' EAT';
     document.getElementById('sysDot').style.background=d.processes?.['TradingCore']?'var(--gr)':'var(--rd)';
 
     // CPU

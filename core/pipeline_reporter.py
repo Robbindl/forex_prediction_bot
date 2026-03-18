@@ -216,7 +216,12 @@ class PipelineReporter:
             from data.fetcher import DataFetcher
 
             fetcher = DataFetcher()
-            df      = fetcher.get_ohlcv(asset, category, "1d", 300)
+            try:
+                from config.config import TRADING_TIMEFRAME as _TF
+            except Exception:
+                _TF = "15m"
+            _periods = {"15m": 500, "1h": 300, "4h": 200, "1d": 300}.get(_TF, 300)
+            df      = fetcher.get_ohlcv(asset, category, _TF, _periods)
             if df is None or df.empty:
                 return None
 

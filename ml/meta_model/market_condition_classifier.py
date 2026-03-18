@@ -1,27 +1,3 @@
-"""
-ml/meta_model/market_condition_classifier.py — Market regime detector.
-
-Classifies current market conditions from price data and context signals.
-The regime determines which signal engines get high vs low weight in the
-ensemble predictor.
-
-Regimes and their characteristics
------------------------------------
-    trending_bull    ADX > 25, price > EMA20 > EMA50, low volatility
-                     → trust technical signals most
-    trending_bear    ADX > 25, price < EMA20 < EMA50, low volatility
-                     → trust whale + technical signals most
-    ranging          ADX < 20, price oscillating around EMAs
-                     → trust orderflow + sentiment most
-    high_volatility  Annualised vol > 80%, ADX mixed
-                     → trust whale + macro signals most
-    crisis           Annualised vol > 150% OR extreme macro event detected
-                     → trust macro signals almost exclusively
-
-Run tests
----------
-    pytest tests/test_meta_model.py::TestMarketConditionClassifier -v
-"""
 from __future__ import annotations
 
 from typing import Dict, Optional

@@ -1,40 +1,3 @@
-"""
-narrative_ai/topic_cluster_engine.py — Core NLP narrative detector.
-
-Maintains rolling mention counts for a set of pre-defined market
-narratives. When a narrative's mention velocity accelerates past a
-threshold, a NARRATIVE_TREND_DETECTED event is published to Redis.
-
-How it works
-------------
-    1. Any text (news headline, Reddit title, tweet) is passed to ingest().
-    2. The text is matched against keyword lists for each narrative.
-    3. Match counts accumulate in a rolling window of N texts.
-    4. Every SNAPSHOT_INTERVAL ingestions, counts are compared to the
-       previous snapshot. A spike in velocity triggers an alert.
-
-Narrative labels
-----------------
-    AI_TOKENS        — AI/LLM-related crypto projects trending
-    ETF_NEWS         — ETF approval/rejection news
-    MACRO_SHOCK      — Fed, CPI, recession, interest rate events
-    DEFI_TREND       — DeFi protocol activity, TVL, yield farming
-    REGULATION       — SEC, bans, compliance, crackdowns
-    LAYER2_TREND     — L2 rollups, Arbitrum, Optimism, zkEVM
-    BTC_DOMINANCE    — Bitcoin dominance shifts, altcoin season
-    EXCHANGE_NEWS    — Exchange hacks, listings, delistings
-    STABLECOIN_NEWS  — Depeg events, USDT/USDC concerns
-    HALVING_BUZZ     — Bitcoin halving anticipation content
-
-Redis events published
-----------------------
-    NARRATIVE_TREND_DETECTED  {narrative, count, prev, velocity,
-                                strength, keywords_matched, ts}
-
-Run tests
----------
-    pytest tests/test_narrative_ai.py::TestTopicClusterEngine -v
-"""
 from __future__ import annotations
 
 import json
@@ -178,7 +141,9 @@ class TopicClusterEngine:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.debug(f"[TopicCluster] Redis unavailable: {e}")

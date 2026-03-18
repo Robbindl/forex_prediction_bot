@@ -1,30 +1,3 @@
-"""
-order_flow/__init__.py — Order Flow Intelligence Engine.
-
-Processes real-time order book data to detect professional-grade
-market microstructure events that precede large price moves.
-All detectors subscribe to ORDER_BOOK_UPDATE (published by Phase 1)
-and publish their findings back to Redis for the signal pipeline.
-
-Detectors included
-------------------
-    OrderbookProcessor    — maintains live order book state per asset
-    LiquidityWallDetector — finds abnormally large bid/ask levels
-    ImbalanceDetector     — measures bid vs ask pressure ratio
-    StopHuntDetector      — detects wick-and-revert stop-hunt patterns
-
-Redis events published
-----------------------
-    ORDERBOOK_SNAPSHOT        — normalised book state every update
-    LIQUIDITY_WALL_DETECTED   — large order cluster found (support/resistance)
-    BID_ASK_IMBALANCE_ALERT   — severe imbalance detected (directional pressure)
-    STOP_HUNT_DETECTED        — stop-hunt wick pattern confirmed
-
-Run tests
----------
-    pytest tests/test_orderflow.py -v -m "not integration"
-    pytest tests/test_orderflow.py -v                        # needs Redis
-"""
 from __future__ import annotations
 
 import threading
@@ -103,8 +76,8 @@ def _subscribe_loop() -> None:
     try:
         import json, redis
         from config.config import REDIS_URL
-        r  = redis.from_url(REDIS_URL)
-        ps = r.pubsub()
+        from services.redis_pool import get_pubsub as _get_pubsub
+        ps = _get_pubsub()
         ps.subscribe("ORDER_BOOK_UPDATE")
         logger.info("[OrderFlow] Subscribed to ORDER_BOOK_UPDATE")
 

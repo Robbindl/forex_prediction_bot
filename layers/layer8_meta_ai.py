@@ -1,22 +1,3 @@
-"""
-layers/layer8_meta_ai.py — Meta AI ensemble layer.
-
-Layer 8 in the signal pipeline. Runs after all 7 existing layers.
-Calls EnsemblePredictor to combine all signal engine scores and
-make a final confidence adjustment.
-
-Because it uses signal.journal.record() the decision appears
-automatically in the Telegram signal report — no extra wiring needed.
-
-Future additions
-----------------
-    Any new signal source can be added to EnsemblePredictor._collect_scores()
-    and it will automatically be included in the ensemble and Telegram report.
-
-Run tests
----------
-    pytest tests/test_meta_model.py::TestMetaAILayer -v
-"""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -42,11 +23,6 @@ class MetaAILayer:
         return self._predictor
 
     def process(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
-        """
-        Called by pipeline.py as Layer 8.
-        Delegates to EnsemblePredictor which handles scoring,
-        confidence adjustment, and journal recording.
-        """
         try:
             predictor = self._get_predictor()
             signal    = predictor.process(signal, context)

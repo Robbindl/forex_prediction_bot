@@ -1,16 +1,3 @@
-"""
-prediction_tracker.py — AI Prediction Accuracy Tracker
-=======================================================
-Records every signal generated, then checks the outcome at 1H, 4H, and 24H.
-Builds rolling accuracy stats that power the accuracy dashboard.
-
-A prediction is "correct" if:
-  - Direction was right (price moved the correct way)
-  - Bonus: target price was actually hit within the horizon
-
-Stores all data in PostgreSQL.  Publishes live accuracy to Redis.
-"""
-
 import os
 import sys
 import time

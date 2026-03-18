@@ -1,17 +1,3 @@
-"""
-execution/exchange_adapter.py — Exchange abstraction layer.
-
-Every real exchange connector must implement ExchangeAdapter.
-PaperAdapter wraps the existing PaperTrader so paper trading
-works through the same interface.
-
-Adding a new exchange:
-    1. Subclass ExchangeAdapter
-    2. Implement the five abstract methods
-    3. Register it in ExchangeRouter
-
-Strategy code never imports exchange modules directly.
-"""
 from __future__ import annotations
 import time
 import threading

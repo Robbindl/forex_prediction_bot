@@ -1,7 +1,3 @@
-"""
-services/database_service.py — All database operations.
-Database is REQUIRED. Methods raise on failure — no silent skipping.
-"""
 from __future__ import annotations
 import uuid
 from contextlib import contextmanager

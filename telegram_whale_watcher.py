@@ -1,14 +1,3 @@
-"""
-telegram_whale_watcher.py — Real Telethon-based whale channel watcher.
-
-Reads whale alert channels using your Telegram user account (Telethon)
-and your whale bot token. Credentials come from .env:
-  WHALE_TELEGRAM_TOKEN  — bot token for the whale alert bot
-  TELEGRAM_API_ID       — from my.telegram.org
-  TELEGRAM_API_HASH     — from my.telegram.org
-  TELEGRAM_PHONE        — your phone number e.g. +254746204130
-  TELEGRAM_SESSION      — session file name (default: whale_session)
-"""
 from __future__ import annotations
 
 import os

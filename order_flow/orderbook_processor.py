@@ -1,32 +1,3 @@
-"""
-order_flow/orderbook_processor.py — Live order book state manager.
-
-Maintains a real-time level-2 order book for a single asset by
-applying incremental delta updates received from the exchange stream.
-Calculates derived metrics (mid price, spread, imbalance, depth) and
-publishes a normalised ORDERBOOK_SNAPSHOT to Redis on every update.
-
-Metrics calculated
-------------------
-    mid          — (best_bid + best_ask) / 2
-    spread       — best_ask - best_bid  (absolute)
-    spread_pct   — spread / mid * 100
-    bid_vol      — total qty across top-N bid levels
-    ask_vol      — total qty across top-N ask levels
-    imbalance    — (bid_vol - ask_vol) / (bid_vol + ask_vol)  — range -1 … +1
-                   positive = more buying pressure, negative = more selling pressure
-    top_bids     — [[price, qty], …] sorted descending (best first)
-    top_asks     — [[price, qty], …] sorted ascending  (best first)
-
-Redis events published
-----------------------
-    ORDERBOOK_SNAPSHOT  {asset, mid, spread, spread_pct, bid_vol, ask_vol,
-                         imbalance, top_bids, top_asks, ts}
-
-Run tests
----------
-    pytest tests/test_orderflow.py::TestOrderbookProcessor -v
-"""
 from __future__ import annotations
 
 import json
@@ -102,7 +73,9 @@ class OrderbookProcessor:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.debug(f"[OrderbookProc] Redis unavailable for {self.asset}: {e}")

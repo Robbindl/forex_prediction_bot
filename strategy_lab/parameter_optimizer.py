@@ -1,31 +1,3 @@
-"""
-strategy_lab/parameter_optimizer.py — Strategy parameter grid searcher.
-
-Runs a full backtest for every combination of parameters in a grid,
-ranks results by Sharpe ratio, and returns the top-N configurations.
-
-Supported search modes
-----------------------
-    grid_search   — exhaustive search over all combinations (default)
-    random_search — random sample of N combinations (faster for large grids)
-
-How parameters are applied
---------------------------
-    Parameters are injected into the strategy config's indicator params
-    and entry rule values by key name. For example, a param_grid of
-    {"rsi_period": [10, 14, 21]} finds the first indicator with
-    name="rsi" and sets its "period" param to each value.
-
-    Supported param keys
-    --------------------
-        rsi_period, ema_fast, ema_slow, macd_fast, macd_slow,
-        macd_signal, atr_period, bb_period, bb_std,
-        stop_mult, tp_mult, rsi_oversold, rsi_overbought
-
-Run tests
----------
-    pytest tests/test_strategy_lab.py::TestParameterOptimizer -v
-"""
 from __future__ import annotations
 
 import copy

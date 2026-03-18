@@ -13,9 +13,18 @@ from core.signal import Signal
 from core.pipeline import Pipeline, pipeline as _global_pipeline
 
 TRADE_CLOSE_COOLDOWN_MINUTES = 60
-TRADE_MIN_CONFIDENCE = 0.7
+TRADE_MIN_CONFIDENCE = 0.62
 
 logger = get_logger()
+
+
+def _get_news_event(category: str) -> dict:
+    """Get current news event state — graceful fallback if monitor not started."""
+    try:
+        from data_ingestion.news_event_monitor import news_monitor
+        return news_monitor.get_event_state(category)
+    except Exception:
+        return {"state": "clear", "event": "", "impact": "", "direction": "", "mins_to": 0}
 
 
 class TradingCore:
@@ -519,6 +528,7 @@ class TradingCore:
             "sentiment_score": sentiment_score,
             "funding_bias":    funding_bias,    # Phase 1 → Layer 8 Meta AI
             "oi_signal":       oi_signal,       # Phase 1 → Layer 8 Meta AI
+            "news_event":      _get_news_event(category),  # news event state
         }
 
     def _notify_telegram_open(self, trade: Dict) -> None:

@@ -32,10 +32,10 @@ class RSIStrategy(BaseStrategy):
             direction = None
             if prev <= self.oversold and latest > self.oversold:
                 direction  = "BUY"
-                confidence = 0.55 + min(0.2, (self.oversold - prev) / 30)
+                confidence = 0.60 + min(0.2, (self.oversold - prev) / 30)
             elif prev >= self.overbought and latest < self.overbought:
                 direction  = "SELL"
-                confidence = 0.55 + min(0.2, (prev - self.overbought) / 30)
+                confidence = 0.60 + min(0.2, (prev - self.overbought) / 30)
 
             if direction is None:
                 return None

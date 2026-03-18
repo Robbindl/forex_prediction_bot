@@ -46,12 +46,12 @@ class BollingerStrategy(BaseStrategy):
             # Price crosses below lower band then bounces back above
             if prev_close <= cur_lower and cur_close > cur_lower:
                 direction  = "BUY"
-                confidence = 0.55 + min(0.2, (cur_lower - prev_close) / (cur_mid * 0.01 + 1e-9))
+                confidence = 0.60 + min(0.2, (cur_lower - prev_close) / (cur_mid * 0.01 + 1e-9))
 
             # Price crosses above upper band then drops back below
             elif prev_close >= cur_upper and cur_close < cur_upper:
                 direction  = "SELL"
-                confidence = 0.55 + min(0.2, (prev_close - cur_upper) / (cur_mid * 0.01 + 1e-9))
+                confidence = 0.60 + min(0.2, (prev_close - cur_upper) / (cur_mid * 0.01 + 1e-9))
 
             if direction is None:
                 return None

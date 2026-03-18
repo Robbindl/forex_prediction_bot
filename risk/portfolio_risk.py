@@ -1,15 +1,3 @@
-"""
-risk/portfolio_risk.py — Portfolio-level risk controls.
-
-Enforces constraints no single trade-level check can see:
-  • maximum exposure per asset / category / total
-  • correlation between open positions
-  • portfolio drawdown halt
-  • asset allocation targets
-
-Sits between the signal aggregator and the execution router.
-RiskManager handles per-trade checks. This handles the portfolio view.
-"""
 from __future__ import annotations
 import threading
 from typing import Dict, List, Optional, Tuple

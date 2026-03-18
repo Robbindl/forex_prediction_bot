@@ -1,42 +1,3 @@
-"""
-order_flow/imbalance_detector.py — Bid/ask pressure imbalance detector.
-
-Measures the ratio of buying pressure (total bid volume) vs selling
-pressure (total ask volume) in the order book. A severe imbalance
-precedes directional moves — market makers must absorb the dominant
-side, which eventually causes price to move in that direction.
-
-Imbalance score
----------------
-    +1.0 = all volume is bids  (extreme buy pressure)
-     0.0 = perfectly balanced
-    -1.0 = all volume is asks  (extreme sell pressure)
-
-    Formula: (bid_vol - ask_vol) / (bid_vol + ask_vol)
-
-Alert levels
-------------
-    STRONG_BUY   imbalance >= +0.40
-    MILD_BUY     imbalance >= +0.20
-    NEUTRAL      -0.20 < imbalance < +0.20
-    MILD_SELL    imbalance <= -0.20
-    STRONG_SELL  imbalance <= -0.40
-
-Rolling behaviour
------------------
-    Imbalance fluctuates tick-by-tick. To avoid spam, alerts only fire
-    when the ROLLING AVERAGE over the last N snapshots crosses a threshold,
-    AND the current snapshot confirms the direction.
-
-Redis events published
-----------------------
-    BID_ASK_IMBALANCE_ALERT  {asset, score, rolling_score, bias,
-                               bid_vol, ask_vol, implication, ts}
-
-Run tests
----------
-    pytest tests/test_orderflow.py::TestImbalanceDetector -v
-"""
 from __future__ import annotations
 
 import json
@@ -137,7 +98,9 @@ class ImbalanceDetector:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.debug(f"[ImbalanceDet] Redis unavailable for {self.asset}: {e}")

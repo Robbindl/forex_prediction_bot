@@ -1,50 +1,3 @@
-"""
-monitoring/system_health_service.py — Production-level observability.
-
-Collects telemetry from every part of the platform and publishes
-it to Redis so the dashboard can display live health metrics.
-Sends Telegram alerts when anything goes wrong.
-
-Metrics collected
------------------
-System
-    CPU usage, RAM usage, disk usage, process memory
-    Thread count, open file handles, uptime
-
-Pipeline
-    Signals generated per hour
-    Signals killed per layer (which layer kills the most)
-    Average pipeline latency (ms)
-    Prediction latency (ms)
-    Win rate (live, rolling 24h)
-
-Phase health
-    Phase 1-8 alive/dead status
-    Redis connected, PostgreSQL connected, Telegram connected
-    Last heartbeat per phase
-
-Error tracking
-    Error count per module in last hour
-    Last 10 errors with stack trace
-    Error rate (errors per minute)
-
-Alerts fired (Telegram) when
-    CPU > 90% for 2 minutes
-    RAM > 85%
-    Any phase goes silent for > 5 minutes
-    Pipeline latency > 5000ms
-    Error rate > 10 errors/minute
-    Daily loss > configured drawdown limit
-
-Published to Redis
-    SYSTEM_TELEMETRY      — full metrics snapshot (every 30s)
-    SYSTEM_ALERT          — alert events (when thresholds crossed)
-
-Run
----
-    Called from bot.py — start_monitoring()
-    Or as standalone: python monitoring/system_health_service.py
-"""
 from __future__ import annotations
 
 import os
@@ -400,7 +353,9 @@ class SystemHealthService:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.debug(f"[Monitor] Redis: {e}")

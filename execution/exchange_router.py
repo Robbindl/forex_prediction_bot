@@ -1,16 +1,3 @@
-"""
-execution/exchange_router.py — Routes orders to the correct exchange.
-
-Strategy code calls router.submit(signal) and never knows which
-exchange handled it. The routing table is config-driven.
-
-Default routing:
-    crypto      → paper (until Binance connector added)
-    forex       → paper (until forex broker connector added)
-    commodities → paper
-    stocks      → paper
-    indices     → paper
-"""
 from __future__ import annotations
 import time
 from typing import Dict, Optional

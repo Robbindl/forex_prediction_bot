@@ -1,19 +1,3 @@
-"""
-run_lab.py — Strategy Laboratory Research Script.
-
-Run from your project root:
-    python run_lab.py
-
-Menu options
-------------
-    1  Backtest all 15 preset strategies on one asset
-    2  Compare lab presets vs your existing strategies (RSI/MACD/Bollinger/Voting)
-    3  Optimise parameters for a chosen strategy
-    4  Test one strategy across multiple assets
-    5  Full report — all presets on all your trading assets
-    6  Backtest a custom strategy config
-    0  Exit
-"""
 from __future__ import annotations
 
 import sys

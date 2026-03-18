@@ -1,15 +1,3 @@
-"""
-ml/prediction_service.py — ML prediction as an isolated service.
-
-Runs in a separate process. Accepts requests over a local socket.
-The trading engine calls PredictionClient.predict() which is
-identical in signature to Predictor.predict_next().
-
-To start the service standalone:
-    python -m ml.prediction_service
-
-Or let bot.py start it automatically (see Step 7 — bot.py update).
-"""
 from __future__ import annotations
 import json
 import os

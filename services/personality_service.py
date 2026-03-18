@@ -1,20 +1,3 @@
-"""
-services/personality_service.py — Robbie's personality, memory, and signal explanation engine.
-
-Robbie is the bot's human persona. He:
-  - Remembers every trade in a diary (TradingDiary table)
-  - Has moods that shift based on recent P&L (BotPersonality table)
-  - Records memorable wins and losses (MemorableMoments table)
-  - Explains signals in plain English with context from his history
-  - Answers free-form questions via /ask
-
-Wiring (called from core/engine.py on_trade_closed):
-    from services.personality_service import personality
-    personality.record_trade(trade_dict)
-
-/ask, /mood, /diary all call PersonalityDatabase directly.
-"""
-
 from __future__ import annotations
 
 import random

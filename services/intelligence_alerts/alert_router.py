@@ -1,18 +1,3 @@
-"""
-services/intelligence_alerts/alert_router.py — Alert delivery router.
-
-Routes formatted alerts to:
-  1. Telegram — rich Markdown messages via existing TelegramCommander
-  2. Redis     — INTELLIGENCE_ALERT channel for the dashboard live feed
-  3. Logger    — always logged regardless of other destinations
-
-Designed to fail gracefully — if Telegram is down, Redis still gets
-the alert. If both are down, the logger records it.
-
-Run tests
----------
-    pytest tests/test_intelligence_alerts.py::TestAlertRouter -v
-"""
 from __future__ import annotations
 
 import json
@@ -109,7 +94,9 @@ class AlertRouter:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.debug(f"[AlertRouter] Redis unavailable: {e}")

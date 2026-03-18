@@ -1,13 +1,3 @@
-"""
-layers/layer6_whale.py — Whale / institutional flow filter.
-
-Uses real whale alerts from the existing cache (ingest_whale_alert).
-NOW WIRED TO PHASE 2: also subscribes to WHALE_ACCUMULATION and
-WHALE_CLUSTER_ALERT events from whale_intelligence module to enrich
-the whale picture with on-chain wallet data.
-
-Writes full decision to signal.journal including Phase 2 data.
-"""
 from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional

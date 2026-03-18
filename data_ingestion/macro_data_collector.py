@@ -1,17 +1,3 @@
-"""
-services/data_ingestion/macro_data_collector.py
-Phase 1 — Macro-economic data collector.
-
-Polls the FRED API (St. Louis Fed) for high-impact economic series.
-Detects meaningful changes and publishes MACRO_NEWS_EVENT to Redis.
-
-Requires FRED_API_KEY in your .env (free at https://fred.stlouisfed.org/docs/api/)
-Falls back to no-op if the key is missing — the rest of the bot still runs.
-
-Redis events published
-----------------------
-MACRO_NEWS_EVENT  {series_id, label, prev, current, change_pct, impact, ts}
-"""
 from __future__ import annotations
 
 import json
@@ -87,7 +73,9 @@ class MacroDataCollector:
         try:
             import redis
             from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+
+            self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
             logger.warning(f"[MacroCollector] Redis unavailable: {e}")

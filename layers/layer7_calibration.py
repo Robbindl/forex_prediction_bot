@@ -1,9 +1,3 @@
-"""
-layers/layer7_calibration.py — Final calibration layer.
-
-Spread/liquidity proxy, position sizing, SL/TP refinement.
-Writes full decision to signal.journal.
-"""
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from core.signal import Signal

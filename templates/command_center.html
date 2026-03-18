@@ -174,7 +174,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <span class="panel-title">⚡ Active Signals</span>
           <span class="panel-badge" id="sigCount">0</span>
         </div>
-        <div class="panel-body" id="signalsPanel"><div class="spinner">Loading…</div></div>
+        <div class="panel-body" id="signalsPanel" style="max-height:280px;overflow-y:auto"><div class="spinner">Loading…</div></div>
       </div>
 
       <div class="panel" style="animation-delay:.3s">
@@ -193,7 +193,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <span class="panel-title">🐋 Whale Alerts</span>
           <span class="panel-badge" id="whaleCount">—</span>
         </div>
-        <div class="panel-body" id="whalePanel"><div class="spinner">Loading…</div></div>
+        <div class="panel-body" id="whalePanel" style="max-height:280px;overflow-y:auto"><div class="spinner">Loading…</div></div>
       </div>
 
       <!-- Row 3: open positions full width -->
@@ -216,7 +216,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
 <script>
 // Clock
-setInterval(()=>{document.getElementById('clock').textContent=new Date().toUTCString().substring(17,25)+' UTC';},1000);
+setInterval(()=>{document.getElementById('clock').textContent=new Date(Date.now()+3*3600000).toUTCString().substring(17,25)+' EAT';},1000);
 
 function fmtNum(n,dec=2){return n==null?'—':(n>=0?'+':'')+Number(n).toFixed(dec)}
 function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}

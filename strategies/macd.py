@@ -38,10 +38,10 @@ class MACDStrategy(BaseStrategy):
             direction = None
             if prev_hist < 0 and curr_hist > 0:
                 direction  = "BUY"
-                confidence = 0.55 + min(0.2, abs(curr_hist) / (abs(price) * 0.001 + 1e-9))
+                confidence = 0.60 + min(0.2, abs(curr_hist) / (abs(price) * 0.001 + 1e-9))
             elif prev_hist > 0 and curr_hist < 0:
                 direction  = "SELL"
-                confidence = 0.55 + min(0.2, abs(curr_hist) / (abs(price) * 0.001 + 1e-9))
+                confidence = 0.60 + min(0.2, abs(curr_hist) / (abs(price) * 0.001 + 1e-9))
 
             if direction is None:
                 return None
