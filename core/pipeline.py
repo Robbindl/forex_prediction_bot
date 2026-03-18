@@ -1,3 +1,13 @@
+"""
+core/pipeline.py — 8-layer signal pipeline with data integrity gating.
+
+Changes vs original:
+  - Data integrity gate: after all layers run, counts how many sources
+    provided REAL data.  If fewer than profile.min_valid_layers sources
+    contributed, the signal is killed with reason "Insufficient real data".
+  - All exception handlers log errors (no silent pass).
+  - DEBUG_FORCE_SURVIVE env var still works for testing.
+"""
 from __future__ import annotations
 
 import os
@@ -6,9 +16,9 @@ from typing import Any, Dict, List, Optional, Protocol, TYPE_CHECKING
 
 from core.signal import Signal
 from core.signal_journal import PASS, KILLED, SKIPPED
+from core.asset_profiles import get_profile
 from utils.logger import get_logger
 
-# Phase 11 — latency + kill tracking
 try:
     from monitoring.metrics import metrics, PIPELINE
     from monitoring.system_health_service import monitor as _monitor
@@ -23,25 +33,62 @@ logger = get_logger()
 
 
 class Layer(Protocol):
-    """Interface every pipeline layer must satisfy."""
     name: str
-    def process(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
-        ...
+    def process(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]: ...
+
+
+def _count_valid_sources(signal: Signal) -> int:
+    """
+    Count how many intelligence sources provided REAL data for this signal.
+    Based on metadata flags set by each layer.
+    """
+    count = 0
+
+    # Layer 1: ML prediction (always present or fallback)
+    if signal.metadata.get("ml_prediction_real", True):
+        count += 1
+
+    # Layer 3: regime is always computable from price data
+    if signal.metadata.get("regime") not in (None, "unknown"):
+        count += 1
+
+    # Layer 5: sentiment sources
+    sources_applied = signal.metadata.get("sentiment_sources", [])
+    if sources_applied:
+        count += 1   # at least one sentiment source contributed
+
+    # Layer 6: whale data (crypto only — skipped = not penalised)
+    whale_data = signal.metadata.get("whale_data")
+    if whale_data == "real":
+        count += 1
+    elif signal.metadata.get("whale_skipped"):
+        count += 1   # intentionally skipped — not a missing source
+
+    # Layer 8: meta AI
+    if signal.metadata.get("meta_ai_ensemble") is not None:
+        count += 1
+
+    # Order flow (crypto only)
+    if signal.metadata.get("orderflow_applicable") is True:
+        if signal.metadata.get("orderflow_imbalance", 0.0) != 0.0:
+            count += 1
+    elif signal.metadata.get("orderflow_applicable") is False:
+        count += 1   # not applicable — not penalised
+
+    return count
 
 
 class Pipeline:
     """
-    Ordered chain of layers. Each layer may modify or kill the signal.
-    Context dict is shared across all layers in one pass.
-    After the pipeline completes, PipelineReporter runs automatically.
+    Ordered chain of 8 layers.  After all layers run, a data integrity check
+    ensures the signal was backed by sufficient real intelligence sources.
     """
 
     def __init__(self) -> None:
         self._layers: List[Any] = []
-        self._loaded  = False
+        self._loaded = False
 
     def _lazy_load(self) -> None:
-        """Import layers at first use to avoid circular imports at startup."""
         if self._loaded:
             return
         try:
@@ -72,52 +119,38 @@ class Pipeline:
             self._loaded = True
 
     def run(self, signal: Signal, context: Optional[Dict[str, Any]] = None) -> Optional[Signal]:
-        """
-        Run signal through all layers.
-        Records every decision in signal.journal.
-        Calls PipelineReporter after completion (pass or fail).
-        Returns the (possibly modified) Signal if it survives, else None.
-        """
         self._lazy_load()
 
         if context is None:
             context = {}
 
         context.setdefault("pipeline_start", time.monotonic())
-        killed_at_layer = None
 
         for i, layer in enumerate(self._layers, start=1):
             conf_before = signal.confidence
-            t0          = time.monotonic()
+            t0 = time.monotonic()
 
             try:
-                result = layer.process(signal, context)
+                result     = layer.process(signal, context)
                 elapsed_ms = (time.monotonic() - t0) * 1000
 
                 if result is None:
-                    # Layer returned None — mark killed but continue to record all layers.
                     if signal.alive:
                         signal.kill(f"Layer {i} ({layer.name}) returned None", i)
                     signal.journal.record(
                         layer=i, name=layer.name, decision=KILLED,
                         reason=signal.kill_reason or f"Layer {i} returned None",
-                        conf_before=conf_before,
-                        conf_after=signal.confidence,
+                        conf_before=conf_before, conf_after=signal.confidence,
                         elapsed_ms=elapsed_ms,
                     )
                     logger.log_pipeline(signal.asset, i, "KILLED", f"layer={layer.name}")
-                    killed_at_layer = i
-
                 else:
                     signal = result
                     signal.layer_reached = i
-                    decision = PASS
-
                     signal.journal.record(
-                        layer=i, name=layer.name, decision=decision,
+                        layer=i, name=layer.name, decision=PASS,
                         reason=signal.metadata.get(f"l{i}_reason", ""),
-                        conf_before=conf_before,
-                        conf_after=signal.confidence,
+                        conf_before=conf_before, conf_after=signal.confidence,
                         data=signal.metadata.get(f"l{i}_data", {}),
                         elapsed_ms=elapsed_ms,
                     )
@@ -133,29 +166,42 @@ class Pipeline:
                 signal.journal.record(
                     layer=i, name=layer.name, decision=KILLED,
                     reason=f"exception: {e}",
-                    conf_before=conf_before,
-                    conf_after=signal.confidence,
+                    conf_before=conf_before, conf_after=signal.confidence,
                     elapsed_ms=elapsed_ms,
                 )
-                killed_at_layer = i
-                # Continue to record other layers while preserving kill state.
 
+        # ── Data integrity gate ───────────────────────────────────────────────
+        if signal.alive:
+            profile       = get_profile(signal.asset)
+            valid_sources = _count_valid_sources(signal)
+            min_required  = profile.min_valid_layers
+
+            signal.metadata["valid_sources_count"] = valid_sources
+            signal.metadata["min_sources_required"] = min_required
+
+            if valid_sources < min_required:
+                reason = (
+                    f"Insufficient real data: {valid_sources}/{min_required} "
+                    f"sources for {signal.asset} ({signal.category})"
+                )
+                signal.kill(reason, len(self._layers))
+                signal.journal.record(
+                    layer=len(self._layers), name="data_integrity_gate",
+                    decision=KILLED,
+                    reason=reason,
+                    conf_before=signal.confidence, conf_after=signal.confidence,
+                    data={"valid_sources": valid_sources,
+                          "min_required": min_required,
+                          "category": signal.category},
+                )
+                logger.warning(f"[Pipeline] DATA INTEGRITY KILL — {signal.asset}: {reason}")
 
         elapsed_ms = (time.monotonic() - context["pipeline_start"]) * 1000
 
-        # DEBUG override to force survival for verification.
-        if os.getenv("DEBUG_FORCE_SURVIVE", "0") == "1":
-            if not signal.alive:
-                signal.alive = True
-                signal.kill_reason = "Forced survive via DEBUG_FORCE_SURVIVE"
-                signal.journal.record(
-                    layer=len(self._layers),
-                    name="debug_force",
-                    decision=PASS,
-                    reason="Forced survive",
-                    conf_before=signal.confidence,
-                    conf_after=signal.confidence,
-                )
+        # DEBUG override
+        if os.getenv("DEBUG_FORCE_SURVIVE", "0") == "1" and not signal.alive:
+            signal.alive      = True
+            signal.kill_reason = "Forced survive via DEBUG_FORCE_SURVIVE"
 
         if signal.alive:
             logger.info(
@@ -168,27 +214,26 @@ class Pipeline:
                 f"{signal.kill_reason} ({elapsed_ms:.0f}ms)"
             )
 
-        # Phase 11 — record latency + kill stats
         if _MONITOR_OK:
             try:
                 metrics.record(PIPELINE, elapsed_ms, success=signal.alive)
                 _monitor.record_pipeline_latency(elapsed_ms)
-                _monitor.record_signal(
-                    signal.asset, signal.direction, signal.alive
-                )
+                _monitor.record_signal(signal.asset, signal.direction, signal.alive)
                 if not signal.alive and signal.kill_reason:
-                    layer_name = self._layers[signal.layer_reached - 1].name \
-                        if 0 < signal.layer_reached <= len(self._layers) else "unknown"
+                    layer_name = (
+                        self._layers[signal.layer_reached - 1].name
+                        if 0 < signal.layer_reached <= len(self._layers)
+                        else "unknown"
+                    )
                     _monitor.record_kill(layer_name)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"[Pipeline] Monitoring record failed: {e}")
 
-        # ── Post-pipeline: backtest + Telegram + DB ───────────────────────────
         try:
             from core.pipeline_reporter import reporter
             signal = reporter.report(signal, context)
         except Exception as e:
-            logger.debug(f"[Pipeline] reporter error: {e}")
+            logger.error(f"[Pipeline] Reporter error: {e}")
 
         return signal if signal.alive else None
 
@@ -197,7 +242,6 @@ class Pipeline:
         signals: List[Signal],
         context: Optional[Dict[str, Any]] = None,
     ) -> List[Signal]:
-        """Run a list of signals. Returns only the survivors."""
         survivors = []
         for sig in signals:
             ctx    = dict(context or {})
@@ -216,5 +260,4 @@ class Pipeline:
         return len(self._layers)
 
 
-# ── Global singleton ──────────────────────────────────────────────────────────
 pipeline = Pipeline()

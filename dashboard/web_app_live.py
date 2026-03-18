@@ -30,7 +30,8 @@ from flask_cors import CORS
 # ── project path ──────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.assets import registry        # AssetRegistry singleton — all_assets(), category()
+from core.assets import registry        # AssetRegistry singleton
+from dashboard.market_hours import is_market_open_for_asset, all_market_statuses
 from data.fetcher import DataFetcher
 from utils.logger import logger
 
@@ -193,7 +194,7 @@ def _fallback_signal(asset: str) -> Optional[Dict]:
         "stop_loss":   round(sl, 6),
         "take_profit": round(tp, 6),
         "strategy_id": "Indicators",
-        "market_open": True,
+        "market_open": is_market_open_for_asset(asset)[0],
         "timestamp":   datetime.now().isoformat(),
         "generated_at": datetime.now().strftime("%H:%M:%S"),
     }
@@ -559,7 +560,7 @@ def api_signals_live():
                     "position_size": float(p.get("position_size", 0)),
                     "strategy_id":   p.get("strategy_id", ""),
                     "pnl":           float(p.get("pnl", 0)),
-                    "market_open":   True,
+                    "market_open":   is_market_open_for_asset(p.get("asset", ""))[0],
                     "generated_at":  str(p.get("open_time", ""))[:16],
                     "metadata":      p.get("metadata", {}),
                     "layer_reached": p.get("layer_reached", 0),
@@ -1139,7 +1140,7 @@ def api_backtest_run():
             from config.config import TRADING_TIMEFRAME as _TF
         except Exception:
             _TF = "15m"
-        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+            df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1224,7 +1225,7 @@ def api_backtest_compare():
             from config.config import TRADING_TIMEFRAME as _TF
         except Exception:
             _TF = "15m"
-        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+            df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1301,7 +1302,7 @@ def api_backtest_optimize():
             from config.config import TRADING_TIMEFRAME as _TF
         except Exception:
             _TF = "15m"
-        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+            df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1364,10 +1365,10 @@ def api_backtest_multi_asset():
         for asset, cat in test_assets:
             try:
                 try:
-            from config.config import TRADING_TIMEFRAME as _TF
-        except Exception:
-            _TF = "15m"
-        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+                    from config.config import TRADING_TIMEFRAME as _TF
+                except Exception:
+                    _TF = "15m"
+                    df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
                 if df is None or df.empty:
                     continue
                 s   = DynamicStrategy(configs[strategy])

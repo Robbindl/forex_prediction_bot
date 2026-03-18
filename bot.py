@@ -4,13 +4,14 @@ bot.py — Single entry point for the trading platform.
 Startup sequence:
   1. Load config
   2. Init logger
-  3. Connect to database (required — exits if unavailable)
-  4. Init TradingCore
-  5. Start trading loop (daemon thread)
-  6. Start auto-trainer (daemon thread)
-  7. Start Node.js WebSocket gateway (optional — requires node)
-  8. Start Telegram commander (optional)
-  9. Start Flask dashboard (blocking — main thread)
+  3. Validate API keys (raises if required keys missing)
+  4. Connect to database (required — exits if unavailable)
+  5. Init TradingCore
+  6. Start trading loop (daemon thread)
+  7. Start auto-trainer (daemon thread)
+  8. Start Node.js WebSocket gateway (optional)
+  9. Start Telegram commander (optional)
+ 10. Start Flask dashboard (blocking — main thread)
 """
 from __future__ import annotations
 import argparse
@@ -38,6 +39,16 @@ logger.info("=" * 60)
 logger.info(" FOREX PREDICTION BOT — STARTING")
 logger.info("=" * 60)
 
+# ── API key validation (before anything else) ─────────────────────────────────
+logger.info("[bot] Validating API keys...")
+try:
+    from config.api_validation import validate_apis
+    validate_apis()
+    logger.info("[bot] API validation passed")
+except RuntimeError as e:
+    logger.critical(f"[bot] API validation failed: {e}")
+    sys.exit(1)
+
 # ── Database (required) ───────────────────────────────────────────────────────
 logger.info("[bot] Connecting to database...")
 try:
@@ -57,7 +68,6 @@ _GATEWAY_PORT = 8081
 
 
 def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.3) -> bool:
-    """Return True if something is already listening on the port."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -66,17 +76,6 @@ def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.3) -> bool
 
 
 def start_gateway(force: bool = False) -> subprocess.Popen | None:
-    """
-    Start the Node.js WebSocket gateway as a background subprocess.
-
-    Steps:
-      1. Check node is installed.
-      2. Install npm dependencies if node_modules is missing.
-      3. Spawn 'node server.js' and return the process handle.
-
-    Returns None (with a warning) if node is not found, deps fail,
-    or the port is already in use.
-    """
     global _gateway_proc
 
     if not _GATEWAY_DIR.exists():
@@ -88,12 +87,10 @@ def start_gateway(force: bool = False) -> subprocess.Popen | None:
         logger.warning("[Gateway] gateway/server.js not found — skipping")
         return None
 
-    # Already running?
     if _port_open(_GATEWAY_PORT) and not force:
         logger.info(f"[Gateway] Port {_GATEWAY_PORT} already in use — assuming gateway is running")
         return None
 
-    # Find node executable (Windows uses 'node.exe', Linux/Mac 'node')
     node = shutil.which("node") or shutil.which("node.exe")
     if not node:
         logger.warning(
@@ -102,7 +99,6 @@ def start_gateway(force: bool = False) -> subprocess.Popen | None:
         )
         return None
 
-    # Install npm dependencies if missing
     node_modules = _GATEWAY_DIR / "node_modules"
     if not node_modules.exists():
         npm = shutil.which("npm") or shutil.which("npm.cmd")
@@ -129,28 +125,22 @@ def start_gateway(force: bool = False) -> subprocess.Popen | None:
             logger.warning(f"[Gateway] npm install error: {e}")
             return None
 
-    # Launch the gateway process
     try:
         proc = subprocess.Popen(
             [node, "server.js"],
             cwd=str(_GATEWAY_DIR),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            # On Windows, prevent the process from showing a console window
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         _gateway_proc = proc
 
-        # Give it up to 3 seconds to become available
         for _ in range(30):
             time.sleep(0.1)
             if _port_open(_GATEWAY_PORT):
-                logger.info(
-                    f"[Gateway] Started — ws://localhost:{_GATEWAY_PORT}  (PID {proc.pid})"
-                )
+                logger.info(f"[Gateway] Started — ws://localhost:{_GATEWAY_PORT}  (PID {proc.pid})")
                 return proc
 
-        # Port didn't open but process is running — still return it
         if proc.poll() is None:
             logger.info(f"[Gateway] Launched (PID {proc.pid}) — port not yet open")
             return proc
@@ -164,7 +154,6 @@ def start_gateway(force: bool = False) -> subprocess.Popen | None:
 
 
 def stop_gateway() -> None:
-    """Terminate the gateway subprocess on shutdown."""
     global _gateway_proc
     if _gateway_proc and _gateway_proc.poll() is None:
         logger.info(f"[Gateway] Stopping (PID {_gateway_proc.pid})...")
@@ -179,12 +168,10 @@ def stop_gateway() -> None:
         logger.info("[Gateway] Stopped")
 
 
-# Register gateway cleanup on normal exit
 atexit.register(stop_gateway)
 
 
 def gateway_is_running() -> bool:
-    """Used by the dashboard /api/gateway/status endpoint."""
     return _port_open(_GATEWAY_PORT)
 
 
@@ -192,20 +179,16 @@ def gateway_is_running() -> bool:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Forex/Crypto Prediction Trading Bot")
-    p.add_argument("--balance",      type=float, default=DEFAULT_BALANCE,
-                   help=f"Starting balance (default: {DEFAULT_BALANCE})")
+    p.add_argument("--balance",      type=float, default=DEFAULT_BALANCE)
     p.add_argument("--strategy",     type=str,   default="voting",
-                   choices=["voting", "rsi", "macd", "bollinger"],
-                   help="Strategy mode")
-    p.add_argument("--no-telegram",  action="store_true", help="Disable Telegram")
-    p.add_argument("--no-dashboard", action="store_true", help="Disable web dashboard")
-    p.add_argument("--no-gateway",   action="store_true", help="Disable Node.js WebSocket gateway")
-    p.add_argument("--port",         type=int,   default=5000,   help="Dashboard port")
-    p.add_argument("--host",         type=str,   default="0.0.0.0", help="Dashboard host")
-    p.add_argument("--backtest",     type=str,   default=None,
-                   help="Run backtest on asset (e.g. BTC-USD) and exit")
-    p.add_argument("--backtest-cat", type=str,   default="crypto",
-                   help="Category for backtest asset")
+                   choices=["voting", "rsi", "macd", "bollinger"])
+    p.add_argument("--no-telegram",  action="store_true")
+    p.add_argument("--no-dashboard", action="store_true")
+    p.add_argument("--no-gateway",   action="store_true")
+    p.add_argument("--port",         type=int,   default=5000)
+    p.add_argument("--host",         type=str,   default="0.0.0.0")
+    p.add_argument("--backtest",     type=str,   default=None)
+    p.add_argument("--backtest-cat", type=str,   default="crypto")
     return p.parse_args()
 
 
@@ -230,12 +213,11 @@ def run_backtest(asset: str, category: str) -> None:
 def main() -> None:
     args = parse_args()
 
-    # ── Backtest mode (no live trading) ──────────────────────────────────
     if args.backtest:
         run_backtest(args.backtest, args.backtest_cat)
         return
 
-    # ── Initialise TradingCore ────────────────────────────────────────────
+    # ── TradingCore ───────────────────────────────────────────────────────
     from core.engine import TradingCore
     engine = TradingCore(
         balance       = args.balance,
@@ -243,7 +225,7 @@ def main() -> None:
         no_telegram   = args.no_telegram,
     )
 
-    # ── Graceful shutdown handler ─────────────────────────────────────────
+    # ── Graceful shutdown ─────────────────────────────────────────────────
     def _shutdown(signum, frame):
         logger.info("[bot] Shutdown signal received")
         stop_gateway()
@@ -253,10 +235,9 @@ def main() -> None:
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # ── Start trading loop ────────────────────────────────────────────────
     engine.start()
 
-    # ── Wire data fetcher to engine ───────────────────────────────────────
+    # ── DataFetcher ───────────────────────────────────────────────────────
     try:
         from data.fetcher import DataFetcher
         engine.fetcher = DataFetcher()
@@ -264,7 +245,7 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] DataFetcher init failed: {e}")
 
-    # ── Start auto-trainer ────────────────────────────────────────────────
+    # ── AutoTrainer ───────────────────────────────────────────────────────
     try:
         from ml.trainer import AutoTrainer
         trainer = AutoTrainer(fetcher=engine.fetcher)
@@ -273,7 +254,7 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] AutoTrainer failed to start: {e}")
 
-    # ── Institutional data feeds ───────────────────────────────────
+    # ── Phase 1 — Institutional data feeds ───────────────────────────────
     try:
         from data_ingestion import start_all as start_data_feeds
         start_data_feeds(exchanges=["binance", "bybit"])
@@ -281,7 +262,7 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] Phase 1 data feeds failed to start: {e}")
 
-    # ── Whale Wallet Intelligence ──────────────────────────────────
+    # ── Phase 2 — Whale wallet intelligence ──────────────────────────────
     try:
         from whale_intelligence import start_all as start_whale_intelligence
         start_whale_intelligence()
@@ -289,7 +270,7 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] Phase 2 whale intelligence failed to start: {e}")
 
-     # ──  Order Flow Intelligence ────────────────────────────────────
+    # ── Phase 3 — Order flow intelligence ────────────────────────────────
     try:
         from order_flow import start_all as start_order_flow
         start_order_flow()
@@ -297,14 +278,14 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] Phase 3 order flow failed to start: {e}")
 
-    # ── Market Narrative AI ────────────────────────────────────────────
+    # ── Phase 4 — Narrative AI ────────────────────────────────────────────
     try:
         from narrative_ai import get_narrative_scores, get_dominant_narrative
         logger.info("[bot] Phase 4 narrative AI engine ready")
     except Exception as e:
         logger.warning(f"[bot] Phase 4 narrative AI failed to load: {e}")
 
-    # ── Phase 5 — Live Strategy Bridge ────────────────────────────────────
+    # ── Phase 5 — Live strategy bridge ────────────────────────────────────
     try:
         from strategy_lab.live_bridge import list_live_strategies
         active = list_live_strategies()
@@ -315,14 +296,14 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] Phase 5 live bridge failed to load: {e}")
 
-    # ── Phase 6 — Meta AI (wires via pipeline Layer 8 automatically) ──────
+    # ── Phase 6 — Meta AI ─────────────────────────────────────────────────
     try:
         from ml.meta_model import predictor as meta_predictor  # noqa: F401
         logger.info("[bot] Phase 6 Meta AI engine ready")
     except Exception as e:
         logger.warning(f"[bot] Phase 6 Meta AI failed to load: {e}")
 
-    # ── News Event Monitor — economic calendar integration ─────────────────
+    # ── News event monitor ────────────────────────────────────────────────
     try:
         from data_ingestion.news_event_monitor import start_news_monitor
         start_news_monitor()
@@ -330,17 +311,14 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] News event monitor failed to start: {e}")
 
-    # ── Phase 7 — Intelligence Alert System (started after Telegram) ──────
-    # Started later — see below after Telegram block
-
-    # ── Phase 11 — System Health Monitoring ───────────────────────────────
+    # ── Phase 11 — System health monitoring ──────────────────────────────
     try:
         from monitoring import start_monitoring
         logger.info("[bot] Phase 11 system health monitoring ready")
     except Exception as e:
         logger.warning(f"[bot] Phase 11 monitoring failed to load: {e}")
 
-    # ── Portfolio risk engine ─────────────────────────────────────────────────────
+    # ── Portfolio risk engine ─────────────────────────────────────────────
     try:
         from risk.portfolio_risk import PortfolioRiskEngine
         portfolio_risk = PortfolioRiskEngine()
@@ -349,7 +327,7 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] PortfolioRiskEngine failed: {e}")
 
-    # ── Exchange router + paper adapter ──────────────────────────────────────────
+    # ── Exchange router + paper adapter ──────────────────────────────────
     try:
         from execution.exchange_router import ExchangeRouter
         from execution.paper_adapter   import PaperAdapter
@@ -361,10 +339,9 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] ExchangeRouter failed: {e}")
 
-    # ── ML prediction service (optional separate process) ────────────────────────
+    # ── ML prediction service ─────────────────────────────────────────────
     if not args.no_gateway:
         try:
-            import subprocess, sys
             ml_proc = subprocess.Popen(
                 [sys.executable, "-m", "ml.prediction_service"],
                 stdout=subprocess.DEVNULL,
@@ -372,7 +349,6 @@ def main() -> None:
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
             atexit.register(lambda: ml_proc.terminate())
-            # Give it 2s to start then switch the engine predictor to client
             time.sleep(2)
             from ml.prediction_service import PredictionClient
             if hasattr(engine, '_paper_trader') and engine._paper_trader and hasattr(engine, 'predictor'):
@@ -381,7 +357,7 @@ def main() -> None:
         except Exception as e:
             logger.warning(f"[bot] ML service failed to start ({e}) — using in-process predictor")
 
-    # ── Redis cache upgrade (if Redis available) ──────────────────────────────────
+    # ── Redis cache upgrade ───────────────────────────────────────────────
     try:
         from services.redis_cache import get_cache
         upgraded_cache = get_cache(default_ttl=30)
@@ -391,34 +367,31 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"[bot] Redis cache not available ({e}) — using in-process cache")
 
-    # ── Node.js WebSocket gateway (optional) ─────────────────────────────
+    # ── Node.js WebSocket gateway ─────────────────────────────────────────
     if not args.no_gateway:
         start_gateway()
     else:
         logger.info("[bot] Gateway disabled via --no-gateway")
 
-    # ── Telegram (optional) ───────────────────────────────────────────────
+    # ── Telegram ──────────────────────────────────────────────────────────
     if not args.no_telegram and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
             from telegram_manager import telegram_manager
             started = telegram_manager.start(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, engine)
             if started:
                 engine.telegram = telegram_manager.bot
-                # Wire Telegram into PipelineReporter for signal journal alerts
                 try:
                     from core.pipeline_reporter import reporter
                     reporter.wire_telegram(telegram_manager.bot)
                     logger.info("[bot] PipelineReporter wired to Telegram")
                 except Exception as e:
                     logger.warning(f"[bot] PipelineReporter Telegram wire failed: {e}")
-                # Wire Telegram into Phase 7 Intelligence Alert System
                 try:
                     from services.intelligence_alerts import start_all as start_intel_alerts
                     start_intel_alerts(telegram_bot=telegram_manager.bot)
                     logger.info("[bot] Phase 7 intelligence alerts started")
                 except Exception as e:
                     logger.warning(f"[bot] Phase 7 intelligence alerts failed: {e}")
-                # Start Phase 11 monitoring with Telegram wired
                 try:
                     from monitoring import start_monitoring
                     start_monitoring(telegram_bot=telegram_manager.bot)
@@ -428,7 +401,6 @@ def main() -> None:
                 logger.info("[bot] Telegram started and wired to engine")
             else:
                 logger.warning("[bot] Telegram not started (duplicate instance or missing creds)")
-                # Start Phase 7 without Telegram (Redis + log only)
                 try:
                     from services.intelligence_alerts import start_all as start_intel_alerts
                     start_intel_alerts()
@@ -438,7 +410,7 @@ def main() -> None:
         except Exception as e:
             logger.warning(f"[bot] Telegram init failed: {e}")
 
-    # ── Wait for engine to be ready ───────────────────────────────────────
+    # ── Wait for engine ───────────────────────────────────────────────────
     logger.info("[bot] Waiting for engine to be ready...")
     ready = engine.wait_until_ready(timeout=60.0)
     if ready:
@@ -450,39 +422,30 @@ def main() -> None:
     try:
         from whale_alert_manager import WhaleAlertManager
         from layers.layer6_whale import ingest_whale_alert
+        from core.asset_profiles import is_crypto
 
         _whale_mgr = WhaleAlertManager()
 
+        _SYMBOL_MAP = {
+            "BTC":    "BTC-USD", "BITCOIN":   "BTC-USD",
+            "ETH":    "ETH-USD", "ETHEREUM":  "ETH-USD",
+            "BNB":    "BNB-USD", "SOL":       "SOL-USD",
+            "XRP":    "XRP-USD", "RIPPLE":    "XRP-USD",
+        }
+
         def _symbol_to_asset(symbol: str) -> str:
-            """Map raw whale symbol (e.g. 'BTC') to canonical asset ID (e.g. 'BTC-USD')."""
-            _MAP = {
-                "BTC":    "BTC-USD",  "BITCOIN":   "BTC-USD",
-                "ETH":    "ETH-USD",  "ETHEREUM":  "ETH-USD",
-                "BNB":    "BNB-USD",  "SOL":       "SOL-USD",
-                "XRP":    "XRP-USD",  "ADA":       "ADA-USD",
-                "DOGE":   "DOGE-USD", "DOT":       "DOT-USD",
-                "LTC":    "LTC-USD",  "AVAX":      "AVAX-USD",
-                "LINK":   "LINK-USD",
-                "GOLD":   "XAU/USD",  "XAU":       "XAU/USD",
-                "SILVER": "XAG/USD",  "XAG":       "XAG/USD",
-                "OIL":    "WTI/USD",  "WTI":       "WTI/USD",
-                "EUR":    "EUR/USD",  "GBP":       "GBP/USD",
-                "JPY":    "USD/JPY",  "USDT":      "BTC-USD",
-            }
-            return _MAP.get(symbol.upper(), "")
+            return _SYMBOL_MAP.get(symbol.upper(), "")
 
         def _on_whale_alert(alert: dict) -> None:
-            """Bridge: WhaleAlertManager collector → Layer 6 pipeline cache."""
             try:
-                symbol   = str(alert.get("symbol", alert.get("asset", ""))).upper().strip()
-                asset    = _symbol_to_asset(symbol)
-                if not asset:
-                    return
+                symbol = str(alert.get("symbol", alert.get("asset", ""))).upper().strip()
+                asset  = _symbol_to_asset(symbol)
+                if not asset or not is_crypto(asset):
+                    return   # only crypto whale data is valid
 
                 sentiment = float(alert.get("sentiment", 0.1))
                 direction = "BUY" if sentiment >= 0.0 else "SELL"
-
-                size_usd = float(alert.get("value_usd", alert.get("usd_amount", 0)))
+                size_usd  = float(alert.get("value_usd", alert.get("usd_amount", 0)))
                 if size_usd < 500_000:
                     return
 
@@ -492,8 +455,8 @@ def main() -> None:
                     size_usd=size_usd,
                     source=alert.get("source", "whale_alert"),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"[bot] on_whale_alert callback error: {e}")
 
         _whale_mgr.on_alert = _on_whale_alert
         _whale_mgr.start_monitoring()

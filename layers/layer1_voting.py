@@ -1,14 +1,15 @@
 """
 layers/layer1_voting.py — Strategy voting gate.
 
-Kills signals below minimum confidence.
-Boosts/reduces based on ML prediction agreement.
-Writes full decision to signal.journal.
+Changes vs original:
+  - Marks signal.metadata["ml_prediction_real"] so the pipeline data
+    integrity gate can distinguish a genuine ML prediction from a fallback.
+  - All exceptions logged (no silent pass).
 """
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from core.signal import Signal
-from core.signal_journal import PASS, KILLED
+from core.signal_journal import PASS
 from utils.logger import get_logger
 from config.config import MIN_CONFIDENCE_SCORE
 
@@ -22,7 +23,7 @@ class VotingLayer:
     def process(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
         conf_before = signal.confidence
 
-        # ── Minimum confidence gate (no hard kill) ─────────────────────────
+        # ── Minimum confidence gate (soft — reduces, does not kill) ───────
         if signal.confidence < MIN_CONFIDENCE_SCORE:
             reason = f"conf {signal.confidence:.3f} below minimum {MIN_CONFIDENCE_SCORE}"
             signal.reduce(0.08)
@@ -35,8 +36,13 @@ class VotingLayer:
 
         # ── ML agreement boost/reduce ─────────────────────────────────────
         ml_pred = context.get("ml_prediction")
+        ml_conf = context.get("ml_confidence", 0.0)
         ml_note = ""
+
         if ml_pred is not None:
+            # Mark that we have a real ML prediction for the data integrity gate
+            signal.metadata["ml_prediction_real"] = True
+
             ml_direction = "BUY" if ml_pred > 0.5 else "SELL"
             if ml_direction == signal.direction:
                 signal.boost(0.05)
@@ -45,6 +51,10 @@ class VotingLayer:
             else:
                 signal.reduce(0.05)
                 ml_note = f"ML disagrees (pred={ml_pred:.3f}) -0.05"
+        else:
+            # Momentum fallback — mark as not a real model prediction
+            signal.metadata["ml_prediction_real"] = False
+            logger.debug(f"[VotingLayer] No ML prediction for {signal.asset} — using fallback")
 
         reason = f"conf {conf_before:.3f} → {signal.confidence:.3f}"
         if ml_note:
@@ -55,9 +65,11 @@ class VotingLayer:
             reason=reason,
             conf_before=conf_before, conf_after=signal.confidence,
             data={
-                "ml_prediction": round(ml_pred, 3) if ml_pred is not None else None,
-                "strategy_id":   signal.strategy_id,
-                "votes":         signal.indicators.get("votes", 1),
+                "ml_prediction":      round(ml_pred, 3) if ml_pred is not None else None,
+                "ml_prediction_real": signal.metadata["ml_prediction_real"],
+                "ml_confidence":      round(ml_conf, 3),
+                "strategy_id":        signal.strategy_id,
+                "votes":              signal.indicators.get("votes", 1),
             },
         )
         logger.log_pipeline(signal.asset, LAYER, "PASS", f"conf={signal.confidence:.3f}")

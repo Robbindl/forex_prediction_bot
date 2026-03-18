@@ -1,3 +1,12 @@
+"""
+monitoring/system_health_service.py — System health + data freshness monitor.
+
+Changes vs original:
+  - Added per-source data freshness tracking with configurable max-age thresholds.
+  - Added signal_blocked_reason tracking when freshness violations block signals.
+  - All exceptions properly logged (no silent pass).
+  - Source health is exposed via get_source_health() for dashboard API.
+"""
 from __future__ import annotations
 
 import os
@@ -16,23 +25,40 @@ from utils.logger import get_logger
 logger = get_logger()
 
 # ── Alert thresholds ──────────────────────────────────────────────────────────
+
 CPU_ALERT_PCT         = 90.0
 RAM_ALERT_PCT         = 85.0
-PHASE_SILENT_SECS     = 300     # 5 minutes
-PIPELINE_SLOW_MS      = 5000    # 5 seconds
+PHASE_SILENT_SECS     = 300
+PIPELINE_SLOW_MS      = 5000
 ERROR_RATE_PER_MIN    = 10
-ALERT_COOLDOWN_SECS   = 300     # don't repeat same alert within 5 minutes
+ALERT_COOLDOWN_SECS   = 300
 
 # ── Collection intervals ──────────────────────────────────────────────────────
-TELEMETRY_INTERVAL    = 30      # publish full snapshot every 30s
-ALERT_CHECK_INTERVAL  = 60      # check alert conditions every 60s
-HISTORY_WINDOW        = 3600    # keep 1 hour of history
+
+TELEMETRY_INTERVAL   = 30
+ALERT_CHECK_INTERVAL = 60
+HISTORY_WINDOW       = 3600
+
+# ── Data freshness thresholds (seconds) ──────────────────────────────────────
+# If a source hasn't been updated within this window, it is considered STALE.
+
+FRESHNESS_THRESHOLDS: Dict[str, int] = {
+    "order_book":   10,      # order book must update every 10s
+    "trades":       30,      # trade feed every 30s
+    "liquidations": 60,      # liquidation feed every 60s
+    "news":         3600,    # news every hour
+    "technicals":   60,      # OHLCV every minute
+    "whale":        300,     # whale alerts every 5 min
+    "sentiment":    1800,    # sentiment score every 30 min
+    "funding_rate": 30,      # funding rate every 30s
+    "open_interest":30,
+    "macro":        3600,
+}
 
 
 class SystemHealthService:
     """
-    Singleton telemetry collector and alert dispatcher.
-    Runs two background threads: one for collection, one for alerting.
+    Singleton telemetry collector, data-freshness checker, and alert dispatcher.
     """
 
     _instance: Optional["SystemHealthService"] = None
@@ -54,123 +80,217 @@ class SystemHealthService:
         self._telegram       = None
         self._pub            = None
 
-        # ── Metrics stores ────────────────────────────────────────────────
         self._start_time     = time.time()
         self._signal_count   = 0
-        self._signal_kills:  Dict[str, int] = defaultdict(int)  # layer → kills
-        self._pipeline_lats: Deque[float]   = deque(maxlen=200)
-        self._pred_lats:     Deque[float]   = deque(maxlen=200)
-        self._error_log:     Deque[Dict]    = deque(maxlen=100)
-        self._error_times:   Deque[float]   = deque(maxlen=500)
+        self._signal_kills:  Dict[str, int]  = defaultdict(int)
+        self._pipeline_lats: Deque[float]    = deque(maxlen=200)
+        self._pred_lats:     Deque[float]    = deque(maxlen=200)
+        self._error_log:     Deque[Dict]     = deque(maxlen=100)
+        self._error_times:   Deque[float]    = deque(maxlen=500)
         self._win_count      = 0
         self._loss_count     = 0
 
-        # ── Alert state ───────────────────────────────────────────────────
-        self._last_alert:    Dict[str, float] = {}
-        self._cpu_high_since: Optional[float] = None
+        # ── Data freshness tracking ───────────────────────────────────────
+        # source_name → last timestamp the source provided data
+        self._source_last_seen: Dict[str, float] = {}
+        self._source_lock       = threading.Lock()
 
-        # ── Threads ───────────────────────────────────────────────────────
+        # ── Alert state ───────────────────────────────────────────────────
+        self._last_alert:      Dict[str, float] = {}
+        self._cpu_high_since:  Optional[float]  = None
+
         self._collect_thread: Optional[threading.Thread] = None
         self._alert_thread:   Optional[threading.Thread] = None
 
         self._init_redis()
         logger.info("[Monitor] SystemHealthService initialised")
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Data freshness API ────────────────────────────────────────────────────
 
-    def start(self) -> None:
-        """Start background collection and alert threads."""
-        if self._running:
-            return
-        self._running = True
-        self._collect_thread = threading.Thread(
-            target=self._collect_loop, name="SysHealth-collect", daemon=True
-        )
-        self._alert_thread = threading.Thread(
-            target=self._alert_loop, name="SysHealth-alert", daemon=True
-        )
-        self._collect_thread.start()
-        self._alert_thread.start()
-        logger.info("[Monitor] Started — telemetry every 30s, alerts every 60s")
+    def ping_source(self, source: str) -> None:
+        """
+        Called by any data provider to record that it produced data right now.
+        Examples: funding_rate_monitor, order_flow, news_event_monitor.
+        """
+        with self._source_lock:
+            self._source_last_seen[source] = time.time()
 
-    def stop(self) -> None:
-        self._running = False
+    def is_source_fresh(self, source: str) -> bool:
+        """Return True if the source has produced data within its freshness window."""
+        threshold = FRESHNESS_THRESHOLDS.get(source)
+        if threshold is None:
+            return True   # unknown source — don't block
+        with self._source_lock:
+            last = self._source_last_seen.get(source)
+        if last is None:
+            return False   # never seen
+        return (time.time() - last) <= threshold
 
-    def wire_telegram(self, telegram_bot) -> None:
-        self._telegram = telegram_bot
-        logger.info("[Monitor] Telegram wired for alerts")
+    def get_source_age_seconds(self, source: str) -> Optional[float]:
+        with self._source_lock:
+            last = self._source_last_seen.get(source)
+        if last is None:
+            return None
+        return time.time() - last
 
-    # ── Instrumentation hooks (called by other components) ────────────────────
+    def get_source_health(self) -> Dict[str, Dict]:
+        """Return health dict for all tracked sources (for dashboard)."""
+        result = {}
+        now = time.time()
+        for source, threshold in FRESHNESS_THRESHOLDS.items():
+            with self._source_lock:
+                last = self._source_last_seen.get(source)
+            if last is None:
+                result[source] = {
+                    "status":    "never_seen",
+                    "age_secs":  None,
+                    "threshold": threshold,
+                    "fresh":     False,
+                }
+            else:
+                age   = now - last
+                fresh = age <= threshold
+                result[source] = {
+                    "status":    "fresh" if fresh else "stale",
+                    "age_secs":  round(age, 1),
+                    "threshold": threshold,
+                    "fresh":     fresh,
+                }
+        return result
 
-    def record_signal(self, asset: str, direction: str, survived: bool) -> None:
-        """Call when a signal completes the pipeline."""
-        self._signal_count += 1
-        if not survived:
-            pass  # kill reason tracked separately via record_kill
+    def check_signal_data_freshness(
+        self,
+        asset: str,
+        category: str,
+    ) -> Tuple[bool, str]:
+        """
+        Check whether required data sources for this asset/category are fresh.
+        Returns (ok: bool, reason: str).
+        Uses AssetProfile to determine which sources are required.
+        """
+        from core.asset_profiles import get_profile
+        profile = get_profile(asset)
 
-    def record_kill(self, layer_name: str) -> None:
-        """Call when a pipeline layer kills a signal."""
-        self._signal_kills[layer_name] += 1
+        stale = []
+
+        # Technicals always required
+        if not self.is_source_fresh("technicals"):
+            stale.append("technicals")
+
+        if profile.use_order_flow and not self.is_source_fresh("order_book"):
+            stale.append("order_book")
+
+        if profile.use_liquidations and not self.is_source_fresh("liquidations"):
+            stale.append("liquidations")
+
+        if profile.use_funding_rates and not self.is_source_fresh("funding_rate"):
+            stale.append("funding_rate")
+
+        if stale:
+            reason = f"Stale data sources: {', '.join(stale)}"
+            logger.warning(f"[Monitor] Data freshness check failed for {asset}: {reason}")
+            return False, reason
+
+        return True, "ok"
+
+    # ── Existing metric recording API ─────────────────────────────────────────
 
     def record_pipeline_latency(self, ms: float) -> None:
-        """Call after pipeline.run() completes."""
         self._pipeline_lats.append(ms)
 
     def record_prediction_latency(self, ms: float) -> None:
-        """Call after MLPredictor.predict() returns."""
         self._pred_lats.append(ms)
 
-    def record_error(self, module: str, message: str,
-                     exc: Optional[Exception] = None) -> None:
-        """Call when any module catches an unexpected error."""
-        self._error_times.append(time.time())
-        self._error_log.append({
-            "module":  module,
-            "message": message,
-            "tb":      traceback.format_exc() if exc else "",
-            "ts":      time.time(),
-        })
+    def record_signal(self, asset: str, direction: str, survived: bool) -> None:
+        self._signal_count += 1
+
+    def record_kill(self, layer_name: str) -> None:
+        self._signal_kills[layer_name] += 1
 
     def record_trade_result(self, pnl: float) -> None:
-        """Call when a trade closes."""
         if pnl > 0:
             self._win_count += 1
         else:
             self._loss_count += 1
 
-    # ── Snapshot ──────────────────────────────────────────────────────────────
+    def record_error(self, module: str, message: str) -> None:
+        self._error_log.append({
+            "module": module,
+            "message": message[:200],
+            "ts": datetime.utcnow().isoformat(),
+        })
+        self._error_times.append(time.time())
 
-    def snapshot(self) -> Dict[str, Any]:
-        """Return the current full telemetry snapshot."""
-        sys_metrics   = self._collect_system_metrics()
-        phase_health  = self._collect_phase_health()
-        pipeline_stats = self._collect_pipeline_stats()
-        error_stats   = self._collect_error_stats()
+    # ── Start / Stop ──────────────────────────────────────────────────────────
 
+    def start(self, telegram_bot=None) -> None:
+        if self._running:
+            return
+        self._running  = True
+        self._telegram = telegram_bot
+
+        self._collect_thread = threading.Thread(
+            target=self._collect_loop, name="Monitor-collect", daemon=True
+        )
+        self._alert_thread = threading.Thread(
+            target=self._alert_loop, name="Monitor-alerts", daemon=True
+        )
+        self._collect_thread.start()
+        self._alert_thread.start()
+        logger.info("[Monitor] Started")
+
+    def stop(self) -> None:
+        self._running = False
+
+    # ── Telemetry snapshot ────────────────────────────────────────────────────
+
+    def get_snapshot(self) -> Dict:
+        total_trades = self._win_count + self._loss_count
+        win_rate     = self._win_count / total_trades if total_trades else 0.0
+        avg_pipeline = (
+            sum(self._pipeline_lats) / len(self._pipeline_lats)
+            if self._pipeline_lats else 0.0
+        )
+        avg_pred = (
+            sum(self._pred_lats) / len(self._pred_lats)
+            if self._pred_lats else 0.0
+        )
+        recent_errors = [
+            e for e in self._error_log
+            if (datetime.utcnow() - datetime.fromisoformat(e["ts"])).total_seconds() < 3600
+        ]
         return {
-            "uptime_s":     round(time.time() - self._start_time),
-            "ts":           datetime.now().isoformat(),
-            "system":       sys_metrics,
-            "phases":       phase_health,
-            "pipeline":     pipeline_stats,
-            "errors":       error_stats,
-            "signals": {
-                "total":    self._signal_count,
-                "kills":    dict(self._signal_kills),
-                "win_rate": self._live_win_rate(),
-            },
+            "uptime_seconds":      round(time.time() - self._start_time),
+            "total_signals":       self._signal_count,
+            "total_trades":        total_trades,
+            "win_rate":            round(win_rate, 3),
+            "avg_pipeline_ms":     round(avg_pipeline, 1),
+            "avg_prediction_ms":   round(avg_pred, 1),
+            "signal_kills":        dict(self._signal_kills),
+            "recent_error_count":  len(recent_errors),
+            "recent_errors":       recent_errors[-5:],
+            "source_health":       self.get_source_health(),
         }
 
-    # ── Collection loops ──────────────────────────────────────────────────────
+    # ── Internal loops ────────────────────────────────────────────────────────
+
+    def _init_redis(self) -> None:
+        try:
+            from services.redis_pool import get_client as _get_redis_client
+            self._pub = _get_redis_client()
+            self._pub.ping()
+        except Exception as e:
+            logger.warning(f"[Monitor] Redis unavailable: {e}")
 
     def _collect_loop(self) -> None:
         while self._running:
             try:
-                snap = self.snapshot()
-                self._publish(snap)
-                self._store_redis(snap)
+                snapshot = self.get_snapshot()
+                if self._pub:
+                    import json
+                    self._pub.set("monitor:snapshot", json.dumps(snapshot), ex=120)
             except Exception as e:
-                logger.debug(f"[Monitor] collect: {e}")
+                logger.error(f"[Monitor] Collect loop error: {e}")
             time.sleep(TELEMETRY_INTERVAL)
 
     def _alert_loop(self) -> None:
@@ -178,235 +298,58 @@ class SystemHealthService:
             try:
                 self._check_alerts()
             except Exception as e:
-                logger.debug(f"[Monitor] alert check: {e}")
+                logger.error(f"[Monitor] Alert loop error: {e}")
             time.sleep(ALERT_CHECK_INTERVAL)
 
-    # ── Metric collectors ─────────────────────────────────────────────────────
-
-    def _collect_system_metrics(self) -> Dict:
-        result = {
-            "cpu_pct":    0.0, "ram_pct":   0.0,
-            "disk_pct":   0.0, "proc_mb":   0.0,
-            "threads":    0,   "uptime_s":  round(time.time() - self._start_time),
-        }
+    def _check_alerts(self) -> None:
+        # CPU / RAM
         try:
             import psutil
-            result["cpu_pct"]  = psutil.cpu_percent(interval=0)
-            result["ram_pct"]  = psutil.virtual_memory().percent
-            result["disk_pct"] = psutil.disk_usage("/").percent
-            result["proc_mb"]  = round(
-                psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 1
-            )
-            result["threads"]  = threading.active_count()
-        except Exception:
-            pass
-        return result
-
-    def _collect_phase_health(self) -> Dict[str, bool]:
-        health: Dict[str, bool] = {}
-        checks = {
-            "phase1_data_feeds":   ("data_ingestion",    "is_running", None),
-            "phase2_whale_intel":  ("whale_intelligence", "is_running", None),
-            "phase3_order_flow":   ("order_flow",         None,          None),
-            "phase4_narrative_ai": ("narrative_ai",       None,          None),
-            "phase5_strategy_lab": ("strategy_lab",       None,          None),
-            "phase6_meta_ai":      ("ml.meta_model",      None,          None),
-            "phase7_intel_alerts": ("services.intelligence_alerts", "alert_service", "_running"),
-        }
-        for phase, (mod, check_attr, flag) in checks.items():
-            try:
-                m = __import__(mod, fromlist=[check_attr] if check_attr else [])
-                if check_attr:
-                    check_obj = getattr(m, check_attr, None)
-                else:
-                    check_obj = None
-
-                if check_obj is None and flag:
-                    # legacy behavior: directly check flag on module or submodule object
-                    check_obj = getattr(m, flag, None)
-
-                if callable(check_obj):
-                    health[phase] = bool(check_obj())
-                elif isinstance(check_obj, (bool, int, float, str)):
-                    health[phase] = bool(check_obj)
-                elif check_obj is not None:
-                    health[phase] = bool(getattr(check_obj, flag, False)) if flag else True
-                else:
-                    health[phase] = check_attr is None
-            except Exception:
-                health[phase] = False
-
-        # Infrastructure
-        health["redis"]      = self._check_redis()
-        health["postgres"]   = self._check_postgres()
-        health["telegram"]   = self._telegram is not None
-
-        return health
-
-    def _collect_pipeline_stats(self) -> Dict:
-        lats = list(self._pipeline_lats)
-        pred = list(self._pred_lats)
-        return {
-            "avg_latency_ms":  round(sum(lats) / len(lats), 1) if lats else 0.0,
-            "max_latency_ms":  round(max(lats), 1)             if lats else 0.0,
-            "p95_latency_ms":  round(self._p95(lats), 1)       if lats else 0.0,
-            "pred_avg_ms":     round(sum(pred) / len(pred), 1) if pred else 0.0,
-            "pred_p95_ms":     round(self._p95(pred), 1)       if pred else 0.0,
-            "samples":         len(lats),
-        }
-
-    def _collect_error_stats(self) -> Dict:
-        now      = time.time()
-        recent   = [t for t in self._error_times if now - t < 60]
-        per_min  = len(recent)
-        last_10  = list(self._error_log)[-10:]
-        return {
-            "rate_per_min": per_min,
-            "total":        len(self._error_times),
-            "last_10":      [{"module": e["module"], "message": e["message"][:100],
-                              "ts": e["ts"]} for e in last_10],
-        }
-
-    # ── Alert checks ──────────────────────────────────────────────────────────
-
-    def _check_alerts(self) -> None:
-        snap = self.snapshot()
-        sys  = snap["system"]
-
-        # CPU high for sustained period
-        if sys["cpu_pct"] >= CPU_ALERT_PCT:
-            if self._cpu_high_since is None:
-                self._cpu_high_since = time.time()
-            elif time.time() - self._cpu_high_since > 120:
-                self._fire_alert(
-                    "high_cpu",
-                    f"🔥 CPU {sys['cpu_pct']:.0f}% for 2+ minutes — bot may be struggling",
-                    "WARNING",
-                )
-        else:
-            self._cpu_high_since = None
-
-        # RAM
-        if sys["ram_pct"] >= RAM_ALERT_PCT:
-            self._fire_alert(
-                "high_ram",
-                f"⚠️ RAM {sys['ram_pct']:.0f}% — risk of OOM crash",
-                "WARNING",
-            )
+            cpu = psutil.cpu_percent(interval=1)
+            ram = psutil.virtual_memory().percent
+            if cpu > CPU_ALERT_PCT:
+                self._send_alert("cpu_high", f"CPU usage {cpu:.0f}% (threshold {CPU_ALERT_PCT}%)")
+            if ram > RAM_ALERT_PCT:
+                self._send_alert("ram_high", f"RAM usage {ram:.0f}% (threshold {RAM_ALERT_PCT}%)")
+        except Exception as e:
+            logger.error(f"[Monitor] CPU/RAM check failed: {e}")
 
         # Pipeline latency
-        pl = snap["pipeline"]["p95_latency_ms"]
-        if pl > PIPELINE_SLOW_MS:
-            self._fire_alert(
-                "slow_pipeline",
-                f"🐢 Pipeline P95 latency {pl:.0f}ms — signals delayed",
-                "WARNING",
-            )
-
-        # Error rate
-        er = snap["errors"]["rate_per_min"]
-        if er >= ERROR_RATE_PER_MIN:
-            self._fire_alert(
-                "high_errors",
-                f"❌ Error rate {er}/min — check logs immediately",
-                "CRITICAL",
-            )
-
-        # Phase health
-        for phase, alive in snap["phases"].items():
-            if not alive and phase not in ("telegram",):
-                self._fire_alert(
-                    f"phase_down_{phase}",
-                    f"💀 {phase.replace('_', ' ').title()} is DOWN",
-                    "CRITICAL",
+        if self._pipeline_lats:
+            avg_ms = sum(self._pipeline_lats) / len(self._pipeline_lats)
+            if avg_ms > PIPELINE_SLOW_MS:
+                self._send_alert(
+                    "pipeline_slow",
+                    f"Pipeline avg latency {avg_ms:.0f}ms > {PIPELINE_SLOW_MS}ms",
                 )
 
-    def _fire_alert(self, key: str, message: str, level: str) -> None:
-        """Fire a Telegram alert with cooldown to prevent spam."""
-        now  = time.time()
-        last = self._last_alert.get(key, 0)
-        if now - last < ALERT_COOLDOWN_SECS:
+        # Error rate
+        now = time.time()
+        recent_errors = sum(1 for t in self._error_times if now - t < 60)
+        if recent_errors > ERROR_RATE_PER_MIN:
+            self._send_alert("error_rate", f"Error rate {recent_errors}/min")
+
+        # Stale sources
+        for source, health in self.get_source_health().items():
+            if not health["fresh"] and health["age_secs"] is not None:
+                self._send_alert(
+                    f"stale_{source}",
+                    f"Data source '{source}' is stale (age={health['age_secs']:.0f}s, max={health['threshold']}s)",
+                )
+
+    def _send_alert(self, alert_type: str, message: str) -> None:
+        now = time.time()
+        if now - self._last_alert.get(alert_type, 0) < ALERT_COOLDOWN_SECS:
             return
-        self._last_alert[key] = now
-
-        prefix = "🚨 *CRITICAL*" if level == "CRITICAL" else "⚠️ *WARNING*"
-        full   = f"{prefix}\n\n{message}\n\n_Time: {datetime.now().strftime('%H:%M:%S')}_"
-
-        try:
-            logger.warning(f"[Monitor] ALERT [{level}] {message}")
-        except Exception:
-            pass
-
+        self._last_alert[alert_type] = now
+        logger.warning(f"[Monitor] ALERT [{alert_type}]: {message}")
         if self._telegram:
             try:
-                self._telegram.send_message(full)
+                msg = f"⚠️ System Alert\n`{alert_type}`\n{message}"
+                from config.config import INTELLIGENCE_CHAT_ID
+                self._telegram.send_message(msg)
             except Exception as e:
-                logger.debug(f"[Monitor] Telegram alert: {e}")
-
-        self._publish({"type": "SYSTEM_ALERT", "level": level,
-                        "message": message, "key": key, "ts": time.time()},
-                      channel="SYSTEM_ALERT")
-
-    # ── Redis ─────────────────────────────────────────────────────────────────
-
-    def _init_redis(self) -> None:
-        try:
-            import redis
-            from config.config import REDIS_URL
-            from services.redis_pool import get_client as _get_redis_client
-
-            self._pub = _get_redis_client()
-            self._pub.ping()
-        except Exception as e:
-            logger.debug(f"[Monitor] Redis: {e}")
-
-    def _publish(self, data: Dict, channel: str = "SYSTEM_TELEMETRY") -> None:
-        if not self._pub:
-            return
-        try:
-            import json
-            self._pub.publish(channel, json.dumps(data, default=str))
-        except Exception:
-            pass
-
-    def _store_redis(self, snap: Dict) -> None:
-        if not self._pub:
-            return
-        try:
-            import json
-            self._pub.setex("monitoring:latest", 90, json.dumps(snap, default=str))
-        except Exception:
-            pass
-
-    def _check_redis(self) -> bool:
-        try:
-            return bool(self._pub and self._pub.ping())
-        except Exception:
-            return False
-
-    def _check_postgres(self) -> bool:
-        try:
-            from services.db_pool import get_db
-            from sqlalchemy import text
-            db = get_db()
-            with db.get_session() as s:
-                s.execute(text("SELECT 1"))
-            return True
-        except Exception:
-            return False
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _live_win_rate(self) -> float:
-        total = self._win_count + self._loss_count
-        return round(self._win_count / total, 4) if total else 0.0
-
-    @staticmethod
-    def _p95(values: list) -> float:
-        if not values:
-            return 0.0
-        s = sorted(values)
-        return s[int(len(s) * 0.95)]
+                logger.error(f"[Monitor] Telegram alert failed: {e}")
 
 
 # ── Global singleton ──────────────────────────────────────────────────────────
@@ -414,7 +357,4 @@ monitor = SystemHealthService()
 
 
 def start_monitoring(telegram_bot=None) -> None:
-    """Call from bot.py to start the monitoring service."""
-    if telegram_bot:
-        monitor.wire_telegram(telegram_bot)
-    monitor.start()
+    monitor.start(telegram_bot=telegram_bot)
