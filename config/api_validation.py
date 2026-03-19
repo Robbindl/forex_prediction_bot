@@ -51,12 +51,12 @@ def validate_apis() -> None:
             "Set a real PostgreSQL connection string in .env."
         )
 
-    # ── Optional: Whale Alert ─────────────────────────────────────────────
-    whale_key = os.getenv("WHALE_ALERT_KEY", "")
-    if _is_placeholder(whale_key):
+    # ── Optional: AlphaVantage ────────────────────────────────────────────
+    av_key = os.getenv("ALPHA_VANTAGE_KEY", "")
+    if _is_placeholder(av_key):
         warnings.append(
-            "WHALE_ALERT_KEY not set.  "
-            "On-chain whale data disabled — crypto signals will use Twitter/Telegram only."
+            "ALPHA_VANTAGE_KEY not set.  "
+            "AlphaVantage sentiment disabled."
         )
 
     # ── Optional: Reddit ──────────────────────────────────────────────────

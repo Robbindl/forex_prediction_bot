@@ -71,7 +71,7 @@ def _train_model(name: str, df: pd.DataFrame) -> bool:
     try:
         from xgboost import XGBClassifier as XGB
         model = XGB(n_estimators=100, max_depth=4, learning_rate=0.1,
-                    use_label_encoder=False, eval_metric="logloss", random_state=42)
+                    eval_metric="logloss", random_state=42)
     except ImportError:
         from sklearn.ensemble import GradientBoostingClassifier
         model = GradientBoostingClassifier(n_estimators=100, max_depth=4)

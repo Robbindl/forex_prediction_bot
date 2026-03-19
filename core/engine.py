@@ -248,6 +248,23 @@ class TradingCore:
             except Exception as me:
                 logger.warning(f"[TradingCore] ML registry load warning: {me}")
 
+            # Pre-warm OHLCV cache in background — avoids slow first trading cycle
+            import threading as _threading
+            def _prewarm():
+                try:
+                    asset_list = self.registry.all_assets()
+                    for canonical, category in asset_list:
+                        if self._stop_event.is_set():
+                            break
+                        try:
+                            self.fetcher.get_ohlcv(canonical, category)
+                        except Exception:
+                            pass
+                    logger.info("[TradingCore] OHLCV cache pre-warmed")
+                except Exception as e:
+                    logger.debug(f"[TradingCore] Pre-warm error: {e}")
+            _threading.Thread(target=_prewarm, name="ohlcv-prewarm", daemon=True).start()
+
             self._engine_ready.set()
             logger.info("[TradingCore] All subsystems ready")
             return True

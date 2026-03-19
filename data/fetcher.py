@@ -93,11 +93,17 @@ class DataFetcher:
 
     def _init_clients(self) -> None:
         if TWELVE_DATA_API_KEY:
-            try:
-                import twelvedata as td
-                self._td_client = td.TDClient(apikey=TWELVE_DATA_API_KEY)
-            except Exception as e:
-                logger.error(f"[DataFetcher] TwelveData client init failed: {e}")
+            for attempt in range(2):
+                try:
+                    import twelvedata as td
+                    self._td_client = td.TDClient(apikey=TWELVE_DATA_API_KEY)
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        logger.warning(f"[DataFetcher] TwelveData init failed, retrying in 5s: {e}")
+                        import time; time.sleep(5)
+                    else:
+                        logger.warning(f"[DataFetcher] TwelveData unavailable — falling back to yfinance: {e}")
         if FINNHUB_API_KEY:
             try:
                 import finnhub

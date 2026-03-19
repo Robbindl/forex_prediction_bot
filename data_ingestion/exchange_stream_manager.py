@@ -24,7 +24,9 @@ SUBSCRIPTIONS: Dict[str, dict] = {
         "method": "SUBSCRIBE",
         "params": [
             "btcusdt@ticker", "ethusdt@ticker", "solusdt@ticker",
-            "btcusdt@depth5", "ethusdt@depth5",
+            "btcusdt@depth@100ms", "ethusdt@depth@100ms",
+            "solusdt@depth@100ms", "bnbusdt@depth@100ms",
+            "xrpusdt@depth@100ms",
             "btcusdt@aggTrade",
         ],
         "id": 1,
@@ -116,7 +118,10 @@ class _ExchangeConnection:
                 logger.debug(f"[ExStream] {self.exchange} parse: {e}")
 
         def on_error(ws, err):
-            logger.warning(f"[ExStream] {self.exchange} WS error: {err}")
+            if "ping/pong timed out" in str(err):
+                logger.debug(f"[ExStream] {self.exchange} WS ping timeout — reconnecting")
+            else:
+                logger.warning(f"[ExStream] {self.exchange} WS error: {err}")
 
         def on_close(ws, code, msg):
             logger.info(f"[ExStream] {self.exchange} closed (code={code})")
@@ -128,7 +133,7 @@ class _ExchangeConnection:
             on_error=on_error,
             on_close=on_close,
         )
-        ws.run_forever(ping_interval=30, ping_timeout=20)
+        ws.run_forever(ping_interval=45, ping_timeout=30)
 
 
 # ── Normalisation ──────────────────────────────────────────────────────────────
@@ -150,7 +155,7 @@ def _normalise(exchange: str, data: dict) -> Optional[dict]:
                     "change":   float(inner["P"]),
                     "ts":       inner["E"],
                 }
-            if ev == "depthUpdate":
+            if ev == "depthUpdate" or (not ev and "lastUpdateId" in inner):
                 return {
                     "type":     "ORDER_BOOK_UPDATE",
                     "exchange": exchange,
@@ -312,4 +317,4 @@ class ExchangeStreamManager:
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────
-stream_manager = ExchangeStreamManager()
+stream_manager = ExchangeStreamManager()       

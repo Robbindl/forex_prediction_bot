@@ -30,8 +30,11 @@ from flask_cors import CORS
 # ── project path ──────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.assets import registry        # AssetRegistry singleton
-from dashboard.market_hours import is_market_open_for_asset, all_market_statuses
+from core.assets import registry        # AssetRegistry singleton — all_assets(), category()
+try:
+    from dashboard.market_hours import is_market_open_for_asset
+except Exception:
+    def is_market_open_for_asset(asset): return (True, 'unknown')
 from data.fetcher import DataFetcher
 from utils.logger import logger
 
@@ -560,7 +563,7 @@ def api_signals_live():
                     "position_size": float(p.get("position_size", 0)),
                     "strategy_id":   p.get("strategy_id", ""),
                     "pnl":           float(p.get("pnl", 0)),
-                    "market_open":   is_market_open_for_asset(p.get("asset", ""))[0],
+                    "market_open":   is_market_open_for_asset(p.get("asset",""))[0],
                     "generated_at":  str(p.get("open_time", ""))[:16],
                     "metadata":      p.get("metadata", {}),
                     "layer_reached": p.get("layer_reached", 0),
@@ -1136,11 +1139,8 @@ def api_backtest_run():
         periods  = int(request.args.get("periods", 300))
         cat      = _cat(asset)
 
-        try:
-            from config.config import TRADING_TIMEFRAME as _TF
-        except Exception:
-            _TF = "15m"
-            df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+        _TF = "15m"
+        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1221,11 +1221,8 @@ def api_backtest_compare():
         periods = int(request.args.get("periods", 300))
         cat     = _cat(asset)
 
-        try:
-            from config.config import TRADING_TIMEFRAME as _TF
-        except Exception:
-            _TF = "15m"
-            df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+        _TF = "15m"
+        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1298,11 +1295,8 @@ def api_backtest_optimize():
         periods  = int(request.args.get("periods", 300))
         cat      = _cat(asset)
 
-        try:
-            from config.config import TRADING_TIMEFRAME as _TF
-        except Exception:
-            _TF = "15m"
-            df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+        _TF = "15m"
+        df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 404
 
@@ -1364,11 +1358,8 @@ def api_backtest_multi_asset():
         results = []
         for asset, cat in test_assets:
             try:
-                try:
-                    from config.config import TRADING_TIMEFRAME as _TF
-                except Exception:
-                    _TF = "15m"
-                    df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+                _TF = "15m"
+                df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
                 if df is None or df.empty:
                     continue
                 s   = DynamicStrategy(configs[strategy])
@@ -1548,15 +1539,21 @@ def api_phase3_imbalance():
     if cached:
         return jsonify(cached)
     try:
-        from order_flow import get_imbalance, get_all_imbalances
-        if hasattr(__builtins__, "get_all_imbalances"):
-            data = get_all_imbalances()
-        else:
-            assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-            data   = {a: get_imbalance(a) for a in assets}
-        payload = {"success": True, "imbalances": data,
-                   "timestamp": datetime.now().isoformat()}
-        _cache_set("p3_imbalance", payload, ttl=10)
+        from order_flow import get_imbalance, TRACKED_ASSETS
+        data = {a: round(get_imbalance(a), 4) for a in TRACKED_ASSETS}
+        scores   = list(data.values())
+        bullish  = [s for s in scores if s > 0.05]
+        bearish  = [s for s in scores if s < -0.05]
+        payload = {
+            "success":       True,
+            "imbalances":    data,
+            "avg_buy":       round(sum(bullish)/len(bullish), 4) if bullish else 0.0,
+            "avg_sell":      round(sum(bearish)/len(bearish), 4) if bearish else 0.0,
+            "bullish_count": len(bullish),
+            "bearish_count": len(bearish),
+            "timestamp":     datetime.now().isoformat(),
+        }
+        _cache_set("p3_imbalance", payload, ttl=5)
         return jsonify(payload)
     except Exception as _e:
         return jsonify({"success": False, "imbalances": {}, "error": str(_e)})
@@ -1800,8 +1797,8 @@ def api_system_health():
         # ── Phase 1-7 health checks ───────────────────────────────────────────
         phase_health: Dict[str, Any] = {}
         try:
-            from data_ingestion import exchange_stream_manager as _esm
-            phase_health["phase1_data_feeds"] = getattr(_esm, "is_running", False)
+            from data_ingestion.exchange_stream_manager import stream_manager as _esm_sm
+            phase_health["phase1_data_feeds"] = _esm_sm._running.is_set()
         except Exception:
             phase_health["phase1_data_feeds"] = False
         try:
@@ -1810,8 +1807,8 @@ def api_system_health():
         except Exception:
             phase_health["phase2_whale_intel"] = False
         try:
-            from order_flow import is_running as _of_running
-            phase_health["phase3_order_flow"] = _of_running()
+            import order_flow as _of_mod
+            phase_health["phase3_order_flow"] = bool(_of_mod._running)
         except Exception:
             phase_health["phase3_order_flow"] = False
         try:

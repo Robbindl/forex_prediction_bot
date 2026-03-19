@@ -24,11 +24,8 @@ def run_backtest(
     try:
         from data.fetcher import DataFetcher
         fetcher  = DataFetcher()
-        try:
-            from config.config import TRADING_TIMEFRAME as _TF
-        except Exception:
-            _TF = "15m"
-            df       = fetcher.get_ohlcv(asset, category, _TF, periods)
+        _TF = "15m"
+        df = fetcher.get_ohlcv(asset, category, _TF, periods)
         if df is None or df.empty:
             raise ValueError(f"No OHLCV data available for {asset}")
         strategy = StrategyBuilder.from_dict(strategy_config)
@@ -55,11 +52,8 @@ def optimize_strategy(
     try:
         from data.fetcher import DataFetcher
         fetcher  = DataFetcher()
-        try:
-            from config.config import TRADING_TIMEFRAME as _TF
-        except Exception:
-            _TF = "15m"
-            df       = fetcher.get_ohlcv(asset, category, _TF, periods)
+        _TF = "15m"
+        df = fetcher.get_ohlcv(asset, category, _TF, periods)
         if df is None or df.empty:
             raise ValueError(f"No OHLCV data available for {asset}")
         optimizer = ParameterOptimizer(

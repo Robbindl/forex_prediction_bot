@@ -1,51 +1,23 @@
-"""
-layers/layer6_whale.py — Whale intelligence layer.
-
-Changes vs original:
-  - Whale data is ONLY applied to crypto assets.
-    For all other asset types the layer passes immediately (SKIPPED).
-  - Zero fake/dummy data returned under any condition.
-  - ingest_whale_alert() validates that the asset is crypto before storing.
-  - Sources tracking written to signal.metadata for pipeline data-integrity gate.
-"""
 from __future__ import annotations
-
-import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-
+import threading
 from core.signal import Signal
 from core.signal_journal import PASS, KILLED
-from core.asset_profiles import is_crypto, get_profile
+from core.asset_profiles import get_profile
 from utils.logger import get_logger
 
 logger = get_logger()
 LAYER = 6
 
-# ── In-memory caches ──────────────────────────────────────────────────────────
-
+# ── Whale alert cache (fed by bot.py WhaleAlertManager) ──────────────────────
 _WHALE_CACHE: List[Dict] = []
 _CACHE_LOCK  = threading.Lock()
 _CACHE_TTL   = timedelta(minutes=30)
 
+# ── Phase 2 on-chain wallet cache ─────────────────────────────────────────────
 _ONCHAIN_CACHE: List[Dict] = []
 _ONCHAIN_LOCK  = threading.Lock()
-
-
-# ── Canonical crypto symbol helper ───────────────────────────────────────────
-
-_CRYPTO_SYMBOL_MAP: Dict[str, str] = {
-    "BTC":   "BTC-USD", "BITCOIN":   "BTC-USD",
-    "ETH":   "ETH-USD", "ETHEREUM":  "ETH-USD",
-    "BNB":   "BNB-USD",
-    "SOL":   "SOL-USD", "SOLANA":    "SOL-USD",
-    "XRP":   "XRP-USD", "RIPPLE":    "XRP-USD",
-}
-
-
-def _symbol_to_canonical(symbol: str) -> Optional[str]:
-    """Convert a raw symbol (e.g. 'BTC') to canonical form ('BTC-USD')."""
-    return _CRYPTO_SYMBOL_MAP.get(symbol.upper())
 
 
 def _get_recent_whales(asset: str) -> List[Dict]:
@@ -56,13 +28,13 @@ def _get_recent_whales(asset: str) -> List[Dict]:
             w for w in _WHALE_CACHE
             if w.get("ts", datetime.min) > cutoff
             and str(w.get("asset", w.get("symbol", ""))).upper() in asset_upper
+            and str(w.get("asset", w.get("symbol", "")))
         ]
 
 
 def _get_onchain_data(asset: str) -> Dict:
-    """Pull Phase 2 on-chain whale intelligence for this asset."""
+    """Pull Phase 2 on-chain whale intelligence. Crypto only."""
     try:
-        from whale_intelligence import tracker  # noqa: F401
         cutoff = (datetime.utcnow() - timedelta(hours=2)).timestamp() * 1000
         with _ONCHAIN_LOCK:
             relevant = [
@@ -84,26 +56,13 @@ def _get_onchain_data(asset: str) -> Dict:
             "cluster_alerts": len(clusters),
             "phase2":         "whale_intelligence",
         }
-    except Exception as e:
-        logger.error(f"[WhaleLayer] On-chain data fetch failed for {asset}: {e}")
+    except Exception:
         return {"phase2": "unavailable"}
 
 
-def ingest_whale_alert(
-    asset: str,
-    direction: str,
-    size_usd: float,
-    source: str = "",
-) -> None:
-    """
-    Called by WhaleAlertManager to register an alert event.
-    Silently rejects non-crypto assets — whale flow is only meaningful for crypto.
-    """
-    if not is_crypto(asset):
-        logger.debug(f"[WhaleLayer] Ignoring whale alert for non-crypto asset: {asset}")
-        return
-    if size_usd < 500_000:
-        return
+def ingest_whale_alert(asset: str, direction: str, size_usd: float,
+                       source: str = "") -> None:
+    """Called by WhaleAlertManager to register an alert event."""
     with _CACHE_LOCK:
         _WHALE_CACHE.append({
             "asset":     asset,
@@ -117,10 +76,7 @@ def ingest_whale_alert(
 
 
 def ingest_onchain_event(event: Dict) -> None:
-    """
-    Called when Phase 2 publishes WHALE_ACCUMULATION / WHALE_DISTRIBUTION
-    / WHALE_CLUSTER_ALERT to Redis.
-    """
+    """Called when Phase 2 publishes whale events to Redis."""
     with _ONCHAIN_LOCK:
         _ONCHAIN_CACHE.append(event)
         cutoff = (datetime.utcnow() - timedelta(hours=2)).timestamp() * 1000
@@ -136,20 +92,18 @@ class WhaleLayer:
         conf_before = signal.confidence
         profile     = get_profile(signal.asset)
 
-        # ── Hard skip for non-crypto assets ──────────────────────────────
+        # ── Skip entirely for non-crypto assets ───────────────────────────
         if not profile.use_whale_data:
-            reason = f"whale layer N/A for {signal.category} ({signal.asset})"
-            signal.metadata["whale_skipped"] = reason
             signal.journal.record(
                 layer=LAYER, name=self.name, decision=PASS,
-                reason=reason,
+                reason="whale data not applicable for this asset class — skipping",
                 conf_before=conf_before, conf_after=signal.confidence,
-                data={"skipped": True, "category": signal.category},
+                data={"category": signal.category},
             )
-            logger.log_pipeline(signal.asset, LAYER, "SKIPPED", reason)
+            logger.log_pipeline(signal.asset, LAYER, "PASS", "n/a (non-crypto)")
             return signal
 
-        # ── Fetch whale data ──────────────────────────────────────────────
+        # ── Whale alert data ──────────────────────────────────────────────
         whales   = _get_recent_whales(signal.asset)
         buy_vol  = sum(w["size_usd"] for w in whales
                        if w["direction"] == "BUY"  and w["size_usd"] >= self._MIN_WHALE_USD)
@@ -157,19 +111,18 @@ class WhaleLayer:
                        if w["direction"] == "SELL" and w["size_usd"] >= self._MIN_WHALE_USD)
         total    = buy_vol + sell_vol
 
+        # ── Phase 2: On-chain wallet intelligence ─────────────────────────
         onchain = _get_onchain_data(signal.asset)
 
         signal.metadata["whale_buy_vol"]  = buy_vol
         signal.metadata["whale_sell_vol"] = sell_vol
 
-        # No data at all — pass neutral (NOT fake data, just no signal)
-        if total == 0 and onchain.get("phase2") in ("no_recent_activity", "unavailable"):
-            signal.metadata["whale_data"] = "no_recent_data"
+        if total == 0 and onchain.get("phase2") == "no_recent_activity":
             signal.journal.record(
                 layer=LAYER, name=self.name, decision=PASS,
-                reason="no whale data in window — passing neutral",
+                reason="no whale data — passing neutral",
                 conf_before=conf_before, conf_after=signal.confidence,
-                data={"phase2": onchain.get("phase2"), "whale_data": "none"},
+                data={"phase2": "no_data"},
             )
             logger.log_pipeline(signal.asset, LAYER, "PASS", "no whale data")
             return signal
@@ -179,7 +132,6 @@ class WhaleLayer:
         ratio    = max(buy_vol, sell_vol) / total if total > 0 else 0.5
 
         signal.metadata["whale_dominant"] = dominant
-        signal.metadata["whale_data"]     = "real"
 
         # Incorporate Phase 2 on-chain signal
         onchain_buys  = onchain.get("onchain_buys",  0)
@@ -190,7 +142,7 @@ class WhaleLayer:
         elif onchain_sells > onchain_buys:
             dominant = "SELL"
 
-        # ── Kill confidence if whale strongly opposes signal ──────────────
+        # ── Kill if whale strongly opposes signal ─────────────────────────
         if dominant != signal.direction and ratio > 0.7:
             reason = (
                 f"whale flow {dominant} strongly opposes {signal.direction} "
