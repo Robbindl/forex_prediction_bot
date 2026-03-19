@@ -10,7 +10,7 @@ BASE = "http://localhost:5000"
 TESTS = [
     ("/api/status",                                      ["bot_ready"],                    10),
     ("/api/system-status",                               ["balance", "engine_ready"],      10),
-    ("/api/command-center",                              ["balance", "latest_signals"],    60),
+    ("/api/command-center",                              ["balance", "signals"],            30),
     ("/api/chart/assets",                                ["assets"],                       10),
     ("/api/chart/candles?asset=BTC-USD&interval=1d",     ["candles"],                      15),
     ("/api/market/heatmap",                              ["items"],                        20),
@@ -18,7 +18,7 @@ TESTS = [
     ("/api/predictions/summary",                         ["predictions", "accuracy"],      10),
     ("/api/accuracy",                                    ["data"],                         10),
     ("/api/whale/summary",                               ["alerts", "total_volume_usd"],   15),
-    ("/api/sentiment/dashboard",                         ["score", "overall_sentiment"],   60),
+    ("/api/sentiment/dashboard",                         ["composite_score"],              60),
     ("/api/sentiment/by-asset",                          ["assets"],                       60),
     ("/api/market/events",                               [],                               15),
     ("/api/risk/portfolio",                              ["balance", "win_rate"],          10),

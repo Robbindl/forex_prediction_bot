@@ -200,8 +200,8 @@ function load(){
     document.getElementById('mcBalance').textContent  = '$'+fmt(d.balance);
     document.getElementById('mcExposure').textContent = '$'+fmt(d.total_exposure);
     document.getElementById('mcExposurePct').textContent = fmtPct(d.exposure_pct/100)+' of balance';
-    document.getElementById('mcDrawdown').textContent = fmtPct(d.drawdown_pct/100);
-    document.getElementById('mcWinRate').textContent  = fmtPct(d.win_rate);
+    document.getElementById('mcDrawdown').textContent = (d.drawdown_pct||0).toFixed(1)+'%';
+    document.getElementById('mcWinRate').textContent  = (d.win_rate||0).toFixed(1)+'%';
     document.getElementById('mcTrades').textContent   = (d.total_trades||0)+' trades';
     document.getElementById('mcPF').textContent       = fmt(d.profit_factor);
 
@@ -244,7 +244,7 @@ function load(){
       ['Average Win',   '$'+fmt(d.avg_win)],
       ['Average Loss',  '$'+fmt(d.avg_loss)],
       ['Profit Factor', fmt(d.profit_factor)+'x'],
-      ['Win Rate',      fmtPct(d.win_rate)],
+      ['Win Rate',      (d.win_rate||0).toFixed(1)+'%'],
       ['Total Trades',  d.total_trades||0],
       ['Peak Balance',  '$'+fmt(d.peak_balance)],
     ].map(function(r){

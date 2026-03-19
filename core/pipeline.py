@@ -229,6 +229,26 @@ class Pipeline:
             except Exception as e:
                 logger.error(f"[Pipeline] Monitoring record failed: {e}")
 
+        # Record surviving signals in PredictionTracker for accuracy tracking
+        if signal.alive:
+            try:
+                from prediction_tracker import prediction_tracker as _pt
+                _pt.record_signal({
+                    "asset":       signal.asset,
+                    "direction":   signal.direction,
+                    "signal":      signal.direction,
+                    "entry_price": signal.entry_price,
+                    "take_profit": signal.take_profit,
+                    "stop_loss":   signal.stop_loss,
+                    "confidence":  signal.confidence,
+                    "category":    signal.category,
+                    "strategy":    signal.strategy_id,
+                    "session":     signal.metadata.get("session", ""),
+                    "regime":      signal.metadata.get("regime", ""),
+                })
+            except Exception as _pe:
+                logger.debug(f"[Pipeline] PredTracker record failed: {_pe}")
+
         try:
             from core.pipeline_reporter import reporter
             signal = reporter.report(signal, context)
