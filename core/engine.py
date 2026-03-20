@@ -584,17 +584,59 @@ class TradingCore:
         direction = pos.get("direction", pos.get("signal", "BUY"))
         size      = float(pos.get("position_size", 0))
         pnl       = 0.0
+        exit_price = entry
+
         if self.fetcher:
             try:
                 price, _ = self.fetcher.get_real_time_price(
                     pos.get("asset", ""), pos.get("category", "forex")
                 )
                 if price:
+                    exit_price = price
                     pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
-                    return self.state.close_position(trade_id, price, "Manual Close", pnl)
             except Exception:
                 pass
-        return self.state.close_position(trade_id, entry, "Manual Close", 0.0)
+
+        # 1. Close in SystemState + DB
+        closed = self.state.close_position(trade_id, exit_price, "Manual Close", pnl)
+        if not closed:
+            return None
+
+        if self._paper_trader:
+            with self._paper_trader._lock:
+                self._paper_trader.open_positions.pop(trade_id, None)
+
+        try:
+            canonical = self.registry.canonical(closed.get("asset", ""))
+            self.state.set_cooldown(canonical, TRADE_CLOSE_COOLDOWN_MINUTES)
+            logger.info(
+                f"[TradingCore] Manual close — set cooldown {TRADE_CLOSE_COOLDOWN_MINUTES}m "
+                f"for {canonical}"
+            )
+        except Exception as e:
+            logger.debug(f"[TradingCore] Manual close cooldown error: {e}")
+
+        # 4. Telegram close alert
+        self._notify_telegram_close(closed)
+
+        # 5. Personality + monitoring — same side effects as automatic close
+        try:
+            from services.personality_service import personality as _personality
+            _personality.record_trade(closed)
+        except Exception:
+            pass
+        try:
+            from monitoring.system_health_service import monitor as _mon
+            _mon.record_trade_result(pnl)
+        except Exception:
+            pass
+
+        logger.log_trade(
+            "CLOSE", trade_id=trade_id,
+            asset=closed.get("asset", ""),
+            pnl=round(pnl, 4), reason="Manual Close",
+        )
+        return closed
 
     def __repr__(self) -> str:
         return (
