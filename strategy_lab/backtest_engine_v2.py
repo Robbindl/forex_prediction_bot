@@ -178,7 +178,8 @@ class BacktestEngineV2:
         df = df.reset_index(drop=True)
         return df
 
-    def _check_exit(self, position: Dict, bar) -> tuple:
+    @staticmethod
+    def _check_exit(position: Dict, bar) -> tuple:
         """Check if SL or TP was hit on this bar. Returns (exit_price, outcome)."""
         direction   = position["direction"]
         sl          = position["stop_loss"]

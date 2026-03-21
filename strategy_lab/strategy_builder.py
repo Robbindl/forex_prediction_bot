@@ -225,7 +225,8 @@ class DynamicStrategy:
         df["minus_di"] = minus_di
         return df
 
-    def _noop(self, df: pd.DataFrame, **kwargs) -> pd.DataFrame:
+    @staticmethod
+    def _noop(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
         return df
 
 

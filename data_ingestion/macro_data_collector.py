@@ -92,7 +92,8 @@ class MacroDataCollector:
                 time.sleep(0.5)   # gentle rate-limiting between FRED calls
             time.sleep(self._interval)
 
-    def _fetch_latest(self, series_id: str) -> Optional[float]:
+    @staticmethod
+    def _fetch_latest(series_id: str) -> Optional[float]:
         """Return the most recent observation value from FRED."""
         try:
             resp = requests.get(

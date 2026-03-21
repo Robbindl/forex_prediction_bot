@@ -57,7 +57,6 @@ class StopHuntDetector:
             import redis
             from config.config import REDIS_URL
             from services.redis_pool import get_client as _get_redis_client
-
             self._pub = _get_redis_client()
             self._pub.ping()
         except Exception as e:
@@ -82,8 +81,8 @@ class StopHuntDetector:
                 self._cooldown[rate_key] = time.time()
                 self._publish_hunt(wall, hunt)
 
+    @staticmethod
     def _detect_hunt(
-        self,
         ticks: List[Dict],
         level: float,
         side: str,

@@ -47,7 +47,8 @@ class MarketCalendar:
         self.economic_events = get_high_impact_events(days=days)
         return self.economic_events
 
-    def fetch_earnings_calendar(self, days: int = 7):
+    @staticmethod
+    def fetch_earnings_calendar(days: int = 7):
         return []
 
     def get_halving_countdown(self, crypto: str = "bitcoin"):
@@ -58,7 +59,7 @@ class MarketCalendar:
         return {
             "crypto": crypto, "days_until": days_until,
             "current_reward": data["block_reward"], "next_reward": data["next_reward"],
-            "reduction_percent": (data["block_reward"]-data["next_reward"])/data["block_reward"]*100,
+            "reduction_percent": (data["block_reward"]-data["next_reward"]) / data["block_reward"] * 100,
             "halving_date": data["next_halving"].strftime("%Y-%m-%d"),
             "is_soon": days_until <= 90,
         }

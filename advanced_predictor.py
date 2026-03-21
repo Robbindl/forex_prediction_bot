@@ -80,7 +80,8 @@ class AdvancedPredictionEngine:
         self.training_data_points = 0
         logger.info(f"AdvancedPredictionEngine initialized with model_type={model_type}")
         
-    def create_advanced_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    @staticmethod
+    def create_advanced_features(df: pd.DataFrame) -> pd.DataFrame:
         """Create advanced engineered features"""
         df = df.copy()
         
@@ -198,7 +199,8 @@ class AdvancedPredictionEngine:
         logger.info(f"Augmented data from {len(df)} to {len(augmented)} rows")
         return augmented
 
-    def _create_synthetic_data(self) -> pd.DataFrame:
+    @staticmethod
+    def _create_synthetic_data() -> pd.DataFrame:
         """Create completely synthetic data for testing/training"""
         logger.warning("Creating synthetic training data")
         
@@ -222,7 +224,7 @@ class AdvancedPredictionEngine:
         df['low'] = np.minimum(df['low'], df[['open', 'close']].min(axis=1))
         
         return df
-    
+
     def build_model_ensemble(self) -> dict:
         """Build ensemble of multiple ML models"""
         models = {}

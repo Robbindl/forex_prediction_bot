@@ -122,14 +122,15 @@ class SignalJournal:
 
     # ── Telegram formatting ───────────────────────────────────────────────────
 
-    def _escape_markdown(self, text: str) -> str:
-        if not isinstance(text, str):
-            return str(text)
-        return (text.replace("\\", "\\\\")
-                    .replace("_", "\\_")
-                    .replace("*", "\\*")
-                    .replace("`", "\\`")
-                    .replace("[", "\\["))
+        @staticmethod
+        def _escape_markdown(text: str) -> str:
+            if not isinstance(text, str):
+                return str(text)
+            return (text.replace("\\", "\\\\")
+                        .replace("_", "\\_")
+                        .replace("*", "\\*")
+                        .replace("`", "\\`")
+                        .replace("[", "\\["))
 
     def to_telegram(self, signal=None) -> str:
         """

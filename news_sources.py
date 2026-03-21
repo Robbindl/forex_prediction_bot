@@ -290,10 +290,11 @@ class NewsSourceIntegrator:
             'function': self.fetch_rapidapi,
             'api_key': RAPIDAPI_KEY
         }
-    
+
     # ===== FETCH METHODS =====
-    
-    def fetch_binance_announcements(self, limit=10):
+
+    @staticmethod
+    def fetch_binance_announcements(limit=10):
         """Fetch Binance official announcements (🌐 FREE)"""
         try:
             params = {
@@ -333,8 +334,9 @@ class NewsSourceIntegrator:
         except Exception as e:
             logger.error(f"Binance error: {e}")
             return []
-    
-    def fetch_whale_alerts(self, min_value_usd=1000000):
+
+    @staticmethod
+    def fetch_whale_alerts(min_value_usd=1000000):
         """Fetch large crypto transactions from Whale Alert (🔑 needs key)"""
         if not WHALE_ALERT_KEY:
             return []
@@ -369,8 +371,9 @@ class NewsSourceIntegrator:
         except Exception as e:
             logger.error(f"Whale Alert error: {e}")
             return []
-    
-    def fetch_twitter_user(self, username, limit=10):
+
+    @staticmethod
+    def fetch_twitter_user(username, limit=10):
         """Fetch tweets from a Twitter user (🔑 needs key)"""
         if not TWITTER_BEARER_TOKEN:
             return []
@@ -420,8 +423,9 @@ class NewsSourceIntegrator:
         except Exception as e:
             logger.error(f"Twitter error for @{username}: {e}")
             return []
-    
-    def fetch_rss_feed(self, url, limit=10):
+
+    @staticmethod
+    def fetch_rss_feed(url, limit=10):
         """Fetch and parse RSS feed (🌐 FREE)"""
         try:
             feed = feedparser.parse(url)
@@ -445,7 +449,7 @@ class NewsSourceIntegrator:
         except Exception as e:
             logger.error(f"RSS error for {url}: {e}")
             return []
-    
+
     def fetch_wsj_newsapi(self, days=1):
         """Fetch WSJ articles using NewsAPI (🔑 needs key) — 6-hour cache to stay within 100/day free tier"""
         if not NEWSAPI_KEY:
@@ -730,8 +734,9 @@ class NewsSourceIntegrator:
             setattr(self, _cache_key, [])
             setattr(self, _cache_time_key, _now)
             return []
-    
-    def fetch_gnews(self, query="finance", limit=10):
+
+    @staticmethod
+    def fetch_gnews(query="finance", limit=10):
         """Fetch from GNews API (🔑 needs key)"""
         if not GNEWS_KEY:
             return []
@@ -767,8 +772,9 @@ class NewsSourceIntegrator:
         except Exception as e:
             logger.error(f"GNews error: {e}")
             return []
-    
-    def fetch_rapidapi(self, symbol="AAPL", limit=10):
+
+    @staticmethod
+    def fetch_rapidapi(symbol="AAPL", limit=10):
         """Fetch from RapidAPI Finance (🔑 needs key)"""
         if not RAPIDAPI_KEY:
             return []
@@ -823,7 +829,6 @@ class NewsSourceIntegrator:
                 'language': 'en',
                 'limit': limit
             }
-            
             response = requests.get(url, params=params, timeout=5)
             data = response.json()
             
@@ -847,8 +852,9 @@ class NewsSourceIntegrator:
             self._maux_cache = []
             self._maux_cache_time = __import__('time').time()
             return []
-    
-    def fetch_by_symbol(self, symbol, limit=5):
+
+    @staticmethod
+    def fetch_by_symbol(symbol, limit=5):
         """Fetch symbol-specific news from TradingView (🌐 FREE)"""
         try:
             url = f"https://www.tradingview.com/feed/?symbol={symbol}"
@@ -873,7 +879,6 @@ class NewsSourceIntegrator:
         except Exception as e:
             logger.error(f"TradingView symbol error: {e}")
             return []
-    
     # ===== MAIN METHODS =====
     
     def fetch_all_sources(self, asset_type='general'):
@@ -1035,8 +1040,9 @@ class NewsSourceIntegrator:
             'recent_articles':   working[:5],
             'interpretation':    self._interpret_sentiment(avg_sentiment),
         }
-    
-    def _interpret_sentiment(self, score):
+
+    @staticmethod
+    def _interpret_sentiment(score):
         if score > 0.3:
             return "Very Bullish"
         elif score > 0.1:       

@@ -88,7 +88,8 @@ class ParameterOptimizer:
         )
         return self._run_all(keys, combos)
 
-    def top_n(self, results: List[Dict], n: int = 5) -> List[Dict]:
+    @staticmethod
+    def top_n(results: List[Dict], n: int = 5) -> List[Dict]:
         """Return top-N results by Sharpe ratio."""
         return sorted(results, key=lambda x: x.get("sharpe", -999),
                       reverse=True)[:n]

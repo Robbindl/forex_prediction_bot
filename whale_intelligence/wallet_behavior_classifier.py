@@ -103,7 +103,8 @@ class WalletBehaviorClassifier:
             "exchange":          0.15,
         }.get(behavior, 0.25)
 
-    def get_signal_direction(self, profile: WalletProfile) -> Optional[str]:
+    @staticmethod
+    def get_signal_direction(profile: WalletProfile) -> Optional[str]:
         """
         Returns 'BUY', 'SELL', or None based on the last movement + behaviour.
         """

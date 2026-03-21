@@ -85,7 +85,8 @@ class MarketConditionClassifier:
             narrative_str= context.get("narrative_strength", 0.0),
         )
 
-    def get_regime_description(self, regime: str) -> str:
+    @staticmethod
+    def get_regime_description(regime: str) -> str:
         return {
             "trending_bull":   "Strong uptrend — ADX > 25, price above EMAs",
             "trending_bear":   "Strong downtrend — ADX > 25, price below EMAs",

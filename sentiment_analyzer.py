@@ -1098,6 +1098,7 @@ class SentimentAnalyzer:
         return self._build_result(components, weights)
 
     @staticmethod
+    @staticmethod
     def _build_result(components: Dict[str, float], weights: Dict[str, float]) -> Dict:
         if not components:
             score = 0.0
@@ -1221,7 +1222,8 @@ class SentimentAnalyzer:
 class _NewsIntegratorShim:
     """Provides news_integrator.fetch_all_sources() for dashboard."""
 
-    def fetch_all_sources(self) -> List[Dict]:
+    @staticmethod
+    def fetch_all_sources() -> List[Dict]:
         return _NewsSentiment.get_articles_for_dashboard(limit=20)
 
     def get_sentiment_summary(self, asset: str = None) -> Dict:

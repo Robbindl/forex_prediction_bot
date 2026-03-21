@@ -122,8 +122,9 @@ class WebSocketHandlers:
             
         except Exception as e:
             logger.error(f"❌ Price update error: {e}")
-    
-    def _get_category(self, asset: str) -> str:
+
+    @staticmethod
+    def _get_category(asset: str) -> str:
         """Get asset category"""
         if asset in ['BTC-USD', 'ETH-USD', 'BNB-USD', 'SOL-USD', 'XRP-USD']:
             return 'crypto'
@@ -133,7 +134,7 @@ class WebSocketHandlers:
             return 'commodities'
         else:
             return 'stocks'
-    
+
     def _check_trading_opportunity(self, asset: str, category: str, price: float, symbol: str):
         """Check for trading opportunities using EMA"""
         if asset not in self.price_history or len(self.price_history[asset]) < 20:
@@ -167,8 +168,9 @@ class WebSocketHandlers:
                 self._trigger_signal(asset, category, price, "BULLISH CROSS")
             elif ema_fast < ema_slow and price_change < 0:
                 self._trigger_signal(asset, category, price, "BEARISH CROSS")
-    
-    def _calculate_ema(self, prices: list, period: int) -> float:
+
+    @staticmethod
+    def _calculate_ema(prices: list, period: int) -> float:
         """Calculate EMA"""
         if len(prices) < period:
             return None
@@ -180,7 +182,7 @@ class WebSocketHandlers:
             ema = price * alpha + ema * (1 - alpha)
         
         return ema
-    
+
     def _trigger_signal(self, asset: str, category: str, price: float, reason: str):
         """
         Trigger trading signal via TradingCore pipeline.
