@@ -123,6 +123,15 @@ model_registry.json
 ml_service.pid
 ml_service.log
 ml_service_port.txt
+models/__init__.py
+models/registry.json
+models/*.zip
+models/*.h5
+models/*.pkl
+models/*.joblib
+models/*.pt
+models/*.pth
+!models/trade_models.py
 
 # LOGS
 # ------------------------------------------------
