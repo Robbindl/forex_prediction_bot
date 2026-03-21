@@ -462,41 +462,67 @@ def api_command_center():
             }
             _cache_set("cc_slow", _cc_slow, ttl=300)
 
-        # Use real open positions as signals — they ARE the active signals
+        # Fetch live prices for all open positions in one pass,
+        # then use same prices for both latest_signals and positions table.
+        _live_prices: Dict[str, float] = {}
+        for p in positions[:8]:
+            _asset = p.get("asset", "")
+            if _asset and _asset not in _live_prices:
+                try:
+                    _r2, _ = _fetcher.get_real_time_price(_asset, p.get("category", "forex"))
+                    if _r2:
+                        _live_prices[_asset] = float(_r2)
+                except Exception:
+                    pass
+
+        # Build signals list (Active Signals panel)
         signals = []
         for p in positions[:6]:
-            _cp2 = 0.0
-            try:
-                _r2, _ = _fetcher.get_real_time_price(
-                    p.get("asset", ""), p.get("category", "forex")
-                )
-                if _r2:
-                    _cp2 = float(_r2)
-            except Exception:
-                pass
+            _cp2 = _live_prices.get(p.get("asset", ""), 0.0)
             signals.append({
                 "asset":         p.get("asset", ""),
                 "signal":        p.get("direction", p.get("signal", "BUY")),
                 "direction":     p.get("direction", p.get("signal", "BUY")),
-                "confidence":    p.get("confidence", 0),
-                "entry_price":   p.get("entry_price", 0),
+                "confidence":    float(p.get("confidence", 0) or 0),
+                "entry_price":   float(p.get("entry_price", 0) or 0),
                 "current_price": _cp2,
-                "stop_loss":     p.get("stop_loss", 0),
-                "take_profit":   p.get("take_profit", 0),
+                "stop_loss":     float(p.get("stop_loss", 0) or 0),
+                "take_profit":   float(p.get("take_profit", 0) or 0),
                 "category":      p.get("category", ""),
                 "strategy_id":   p.get("strategy_id", ""),
-                "pnl":           p.get("pnl", 0),
+                "pnl":           float(p.get("pnl", 0) or 0),
+            })
+
+        # Build enriched positions list (Open Positions table)
+        # Each entry is guaranteed to have all numeric fields as Python floats
+        # and includes current_price so the table can show live movement colour.
+        enriched_positions = []
+        for p in positions[:8]:
+            _cp3 = _live_prices.get(p.get("asset", ""), 0.0)
+            enriched_positions.append({
+                "trade_id":      p.get("trade_id", ""),
+                "asset":         p.get("asset", ""),
+                "category":      p.get("category", ""),
+                "direction":     p.get("direction", p.get("signal", "BUY")),
+                "confidence":    float(p.get("confidence", 0) or 0),
+                "entry_price":   float(p.get("entry_price", 0) or 0),
+                "current_price": _cp3,
+                "stop_loss":     float(p.get("stop_loss", 0) or 0),
+                "take_profit":   float(p.get("take_profit", 0) or 0),
+                "pnl":           float(p.get("pnl", 0) or 0),
+                "strategy_id":   p.get("strategy_id", ""),
+                "open_time":     str(p.get("open_time", ""))[:16],
             })
 
         return jsonify({
             "success":          True,
-            "balance":          perf.get("balance", _args.balance),
-            "total_pnl":        perf.get("total_pnl", 0),
-            "daily_pnl":        daily.get("daily_pnl", 0),
-            "daily_trades":     daily.get("daily_trades", 0),
+            "balance":          float(perf.get("balance", _args.balance) or _args.balance),
+            "total_pnl":        float(perf.get("total_pnl", 0) or 0),
+            "daily_pnl":        float(daily.get("daily_pnl", 0) or 0),
+            "daily_trades":     int(daily.get("daily_trades", 0) or 0),
             "win_rate":         _wr(perf.get("win_rate", 0)),
-            "open_positions":   len(positions),
-            "total_trades":     perf.get("total_trades", 0),
+            "open_positions":   len(enriched_positions),
+            "total_trades":     int(perf.get("total_trades", 0) or 0),
             "engine_running":   health.get("is_running", core.is_running if core else False),
             "engine_ready":     health.get("engine_ready", core.is_ready if core else False),
             "sentiment_score":  _cc_slow["sentiment_score"],
@@ -504,7 +530,7 @@ def api_command_center():
             "alert_count_24h":  _cc_slow["alert_count_24h"],
             "recent":           _cc_slow["recent"],
             "latest_signals":   signals,
-            "positions":        positions[:8],
+            "positions":        enriched_positions,
             "timestamp":        datetime.now().isoformat(),
         })
     except Exception as e:
@@ -906,7 +932,7 @@ def api_sentiment_by_asset():
             return jsonify({"success": False, "error": "SentimentAnalyzer unavailable"})
 
         watch = [a for a, _ in ALL_ASSETS]
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 
         def _sent_one(asset):
             try:
@@ -922,17 +948,36 @@ def api_sentiment_by_asset():
             }
 
         results = []
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        # Reduced workers to 3 to avoid hammering Reddit's rate limiter.
+        # On timeout, collect whatever completed rather than returning an error.
+        with ThreadPoolExecutor(max_workers=3) as pool:
             futures = {pool.submit(_sent_one, a): a for a in watch}
-            for future in as_completed(futures, timeout=60):
-                try:
-                    results.append(future.result())
-                except Exception:
-                    pass
+            try:
+                for future in as_completed(futures, timeout=90):
+                    try:
+                        results.append(future.result())
+                    except Exception:
+                        pass
+            except FuturesTimeout:
+                # Collect any futures that already finished
+                for future, asset in futures.items():
+                    if future.done():
+                        try:
+                            results.append(future.result())
+                        except Exception:
+                            pass
+                    elif not future.running():
+                        # Asset never started — add neutral placeholder
+                        results.append({
+                            "asset": asset, "category": _cat(asset),
+                            "score": 0.0, "label": "Neutral",
+                        })
+                logger.warning(f"[Sentiment] by-asset timeout — returning {len(results)}/{len(watch)} assets")
 
         results.sort(key=lambda x: x["score"], reverse=True)
         payload = {"success": True, "assets": results}
-        _cache_set("sentiment_by_asset", payload, ttl=300)
+        # Cache 10 minutes — Reddit data doesn't change that fast
+        _cache_set("sentiment_by_asset", payload, ttl=600)
         return jsonify(payload)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

@@ -414,6 +414,20 @@ class TradingCore:
                 canonical, category = canonical_category
                 if self._stop_event.is_set():
                     return None
+
+                # ── Market hours pre-filter ───────────────────────────────────
+                # Skip non-crypto assets when their market is closed.
+                # Layer 4 would kill them anyway — this avoids wasted
+                # price fetches, ML inference, and misleading MetaAI logs
+                # for forex/indices/commodities on weekends and outside hours.
+                try:
+                    from layers.layer4_session import _is_market_open
+                    if not _is_market_open(category):
+                        return None
+                except Exception:
+                    pass
+                # ─────────────────────────────────────────────────────────────
+
                 try:
                     price_data = self._fetch_price_data(canonical, category)
                     if price_data is None or price_data.empty:

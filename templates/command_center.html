@@ -254,30 +254,34 @@ function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString(undefined
 function colorClass(n){return n>=0?'gn':'rd'}
 
 async function loadMain(){
+  let d;
   try{
-    const d=await fetch('/api/command-center').then(r=>r.json());
-    if(!d.success)return;
+    d=await fetch('/api/command-center').then(r=>r.json());
+    if(!d||!d.success)return;
+  }catch(e){console.error('[CC] fetch:',e);return;}
 
-    // Metrics
+  // ── Metrics + engine status ──────────────────────────────────────────────
+  try{
     document.getElementById('mBal').textContent=fmtMoney(d.balance);
     document.getElementById('topBalance').textContent=fmtMoney(d.balance);
-    const dp=d.daily_pnl||0;
+    const dp=Number(d.daily_pnl||0);
     const dpEl=document.getElementById('mDPnl');
     dpEl.textContent=fmtNum(dp);dpEl.className='mc-value '+(dp>=0?'gn':'rd');
-    document.getElementById('mDTrades').textContent=d.daily_trades+' trades today';
+    document.getElementById('mDTrades').textContent=(d.daily_trades||0)+' trades today';
     document.getElementById('mWr').textContent=(d.win_rate||0).toFixed(1)+'%';
-    document.getElementById('mWrSub').textContent=d.total_trades+' total trades';
-    document.getElementById('mPos').textContent=(d.positions||[]).length;
-    document.getElementById('posCount').textContent=(d.positions||[]).length;
-
-    // Engine status
+    document.getElementById('mWrSub').textContent=(d.total_trades||0)+' total trades';
+    const posLen=(d.positions||[]).length;
+    document.getElementById('mPos').textContent=posLen;
+    document.getElementById('posCount').textContent=posLen;
     const running=d.engine_running;
     document.getElementById('engineDot').className='pulse'+(running?'':' off');
     document.getElementById('engineStatus').textContent=running?'Engine running':'Engine stopped';
     document.getElementById('engineBadge').textContent=running?'Live':'Offline';
     document.getElementById('engineBadge').className='tb-badge '+(running?'badge-live':'badge-off');
+  }catch(e){console.error('[CC] metrics:',e);}
 
-    // Signals
+  // ── Active signals ───────────────────────────────────────────────────────
+  try{
     const sigs=(d.latest_signals||[]).filter(s=>(s.signal||s.direction||'HOLD')!=='HOLD');
     document.getElementById('sigCount').textContent=sigs.length;
     const sEl=document.getElementById('signalsPanel');
@@ -285,7 +289,8 @@ async function loadMain(){
     else{
       sEl.innerHTML=sigs.slice(0,6).map(s=>{
         const dir=(s.signal||s.direction||'HOLD').toUpperCase();
-        const c=s.confidence||0;const cp=(c*100).toFixed(0);
+        const c=Number(s.confidence||0);
+        const cp=(c*100).toFixed(0);
         const barCol=c>=0.75?'var(--gr)':c>=0.62?'var(--am)':'var(--rd)';
         return`<div class="sig-row">
           <span class="sig-dir ${dir==='BUY'?'sig-buy':'sig-sell'}">${dir}</span>
@@ -300,9 +305,11 @@ async function loadMain(){
         </div>`;
       }).join('');
     }
+  }catch(e){console.error('[CC] signals:',e);}
 
-    // Sentiment
-    const ss=d.sentiment_score||0;
+  // ── Sentiment ────────────────────────────────────────────────────────────
+  try{
+    const ss=Number(d.sentiment_score||0);
     const ssLabel=ss>0.2?'Bullish':ss<-0.2?'Bearish':'Neutral';
     const ssColor=ss>0.2?'var(--gr)':ss<-0.2?'var(--rd)':'var(--am)';
     document.getElementById('sentScore').textContent=(ss>=0?'+':'')+ss.toFixed(3);
@@ -310,31 +317,38 @@ async function loadMain(){
     document.getElementById('sentLabel').textContent=ssLabel;
     document.getElementById('sentBar').style.width=((ss+1)/2*100)+'%';
     document.getElementById('sentBar').style.background=ssColor;
+  }catch(e){console.error('[CC] sentiment:',e);}
 
-    // Positions table
+  // ── Open positions table ─────────────────────────────────────────────────
+  try{
     const pos=d.positions||[];
     const tbody=document.getElementById('posBody');
-    if(!pos.length){tbody.innerHTML='<tr><td colspan="8" class="empty">No open positions</td></tr>';}
-    else{
+    if(!pos.length){
+      tbody.innerHTML='<tr><td colspan="8" class="empty">No open positions</td></tr>';
+    }else{
       tbody.innerHTML=pos.map(p=>{
         const dir=(p.direction||p.signal||'BUY').toUpperCase();
-        const pnl=p.pnl||0;
-        const e=p.entry_price||0;const sl=p.stop_loss||0;const tp=p.take_profit||0;const sm=e<10;
-        const cur=p.current_price||0;
+        const pnl=Number(p.pnl||0);
+        const e=Number(p.entry_price||0);
+        const sl=Number(p.stop_loss||0);
+        const tp=Number(p.take_profit||0);
+        const cur=Number(p.current_price||0);
+        const sm=e>0&&e<10;
+        const fmt=n=>n>0?(sm?n.toFixed(5):n.toFixed(2)):'—';
         const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
         return`<tr>
           <td><strong>${p.asset||'?'}</strong> <span style="font-size:10px;color:var(--tx3)">${p.category||''}</span></td>
           <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:600">${dir}</td>
-          <td style="font-family:monospace">${sm?e.toFixed(5):e.toFixed(2)}</td>
-          <td style="font-family:monospace;font-weight:600;color:${curCol}">${cur>0?(sm?cur.toFixed(5):cur.toFixed(2)):'—'}</td>
-          <td style="font-family:monospace;color:var(--rd)">${sm?sl.toFixed(5):sl.toFixed(2)}</td>
-          <td style="font-family:monospace;color:var(--gr)">${sm?tp.toFixed(5):tp.toFixed(2)}</td>
+          <td style="font-family:monospace">${fmt(e)}</td>
+          <td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td>
+          <td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td>
+          <td style="font-family:monospace;color:var(--gr)">${fmt(tp)}</td>
           <td class="${pnl>=0?'pnl-pos':'pnl-neg'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-          <td>${((p.confidence||0)*100).toFixed(0)}%</td>
+          <td>${(Number(p.confidence||0)*100).toFixed(0)}%</td>
         </tr>`;
       }).join('');
     }
-  }catch(e){console.error(e);}
+  }catch(e){console.error('[CC] positions:',e);}
 }
 
 async function loadWhales(){

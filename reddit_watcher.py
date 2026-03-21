@@ -23,14 +23,14 @@ def _rate_limited_request(url: str, headers: Dict, timeout: int = 10) -> request
     Global rate limiter for ALL RedditWatcher instances.
     Ensures:
     - No more than 3 concurrent requests
-    - Minimum 2 seconds between requests
+    - Minimum 5 seconds between requests
     """
     with _global_request_semaphore:
         with _request_lock:
             global _last_request_time
             elapsed = time.time() - _last_request_time
-            if elapsed < 2.0:
-                sleep_time = 2.0 - elapsed
+            if elapsed < 5.0:
+                sleep_time = 5.0 - elapsed
                 logger.debug(f"[RedditWatcher] Rate limit: sleeping {sleep_time:.2f}s")
                 time.sleep(sleep_time)
             _last_request_time = time.time()
@@ -173,8 +173,8 @@ class RedditWatcher:
         # Rate limiting (increased delay)
         self.request_delay = 3.0  # Increased from 2.0 to 3.0 seconds
         
-        # Cache TTL (5 minutes)
-        self._cache_ttl = 300
+        # Cache TTL (15 minutes — reduces Reddit request frequency)
+        self._cache_ttl = 900
         
         # All subreddits to monitor
         self.subreddits: List[str] = []
@@ -236,6 +236,19 @@ class RedditWatcher:
                     _shared_cache[cache_key] = (result, now)
                 logger.debug(f"[RedditWatcher] Fetched {len(result)} posts from r/{subreddit}")
                 return result
+            elif response.status_code == 429:
+                # Rate limited — back off 60s and extend any existing cache entry
+                logger.warning(
+                    f"[RedditWatcher] HTTP 429 for r/{subreddit} — backing off 60s"
+                )
+                # Extend existing cache entry TTL so we serve stale rather than hammer again
+                with _cache_lock:
+                    existing = _shared_cache.get(cache_key)
+                    if existing:
+                        _shared_cache[cache_key] = (existing[0], now)
+                        return existing[0]
+                time.sleep(60)
+                return None
             else:
                 logger.warning(
                     f"[RedditWatcher] HTTP {response.status_code} for r/{subreddit}"
