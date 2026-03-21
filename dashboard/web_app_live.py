@@ -1,0 +1,1611 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import threading
+import time
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+from flask import Flask, Response, jsonify, redirect, render_template, request, stream_with_context
+from flask_cors import CORS
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.assets  import registry
+from data.fetcher import DataFetcher
+from utils.logger import get_logger
+
+logger = get_logger()
+
+# ── Market hours helper ───────────────────────────────────────────────────────
+try:
+    from dashboard.market_hours import is_market_open_for_asset
+except Exception:
+    def is_market_open_for_asset(asset): return (True, "unknown")
+
+# ── Optional services ─────────────────────────────────────────────────────────
+try:
+    from prediction_tracker import prediction_tracker as _pred_tracker
+    _pred_tracker.start()
+except Exception as _e:
+    _pred_tracker = None
+    logger.warning(f"[dashboard] PredictionTracker unavailable: {_e}")
+
+try:
+    from redis_broker import broker as _redis_broker
+except Exception:
+    _redis_broker = None
+
+try:
+    from websocket_dashboard import add_transaction, get_feed
+    _ws_ok = True
+except Exception:
+    _ws_ok = False
+    def add_transaction(*a, **kw): pass
+    def get_feed(**kw): return []
+
+try:
+    from telegram_manager import telegram_manager
+except Exception:
+    telegram_manager = None
+
+# ── Flask app ─────────────────────────────────────────────────────────────────
+app = Flask(
+    __name__,
+    template_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"),
+    static_folder  =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"),
+)
+CORS(app)
+
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--balance", type=float, default=10000.0)
+_args, _ = _parser.parse_known_args()
+
+# ── Engine singleton ──────────────────────────────────────────────────────────
+_CORE: Any = None
+
+def inject_core(core) -> None:
+    global _CORE
+    _CORE = core
+    logger.info("[dashboard] TradingCore injected")
+
+def _core() -> Optional[Any]:
+    return _CORE
+
+# ── Asset registry ────────────────────────────────────────────────────────────
+ALL_ASSETS: List[Tuple[str, str]] = registry.all_assets()
+_CAT: Dict[str, str] = {a: c for a, c in ALL_ASSETS}
+
+def _cat(asset: str) -> str:
+    return _CAT.get(asset, "crypto")
+
+# ── DataFetcher singleton ─────────────────────────────────────────────────────
+_fetcher = DataFetcher()
+
+def _ohlcv(asset: str, interval: str = "1d", periods: int = 60):
+    try:
+        return _fetcher.get_ohlcv(asset, _cat(asset), interval=interval, periods=periods)
+    except Exception as e:
+        logger.debug(f"[dashboard] ohlcv {asset}: {e}")
+        return None
+
+# ── Lazy sentiment singleton ──────────────────────────────────────────────────
+_sent_svc  = None
+_sent_lock = threading.Lock()
+
+def _get_sent():
+    global _sent_svc
+    if _sent_svc is not None:
+        return _sent_svc
+    with _sent_lock:
+        if _sent_svc is None:
+            try:
+                from sentiment_analyzer import SentimentAnalyzer
+                _sent_svc = SentimentAnalyzer()
+            except Exception as e:
+                logger.warning(f"[dashboard] SentimentAnalyzer: {e}")
+    return _sent_svc
+
+# ── Lazy whale singleton ──────────────────────────────────────────────────────
+_whale_svc  = None
+_whale_lock = threading.Lock()
+
+def _get_whale():
+    global _whale_svc
+    if _whale_svc is not None:
+        return _whale_svc
+    with _whale_lock:
+        if _whale_svc is None:
+            try:
+                from whale_alert_manager import WhaleAlertManager
+                _whale_svc = WhaleAlertManager()
+            except Exception as e:
+                logger.warning(f"[dashboard] WhaleAlertManager: {e}")
+    return _whale_svc
+
+# ── Response cache (in-process TTL cache) ─────────────────────────────────────
+_cache_store: Dict[str, Tuple[Any, float]] = {}
+_cache_lock  = threading.Lock()
+
+def _cache_get(key: str) -> Optional[Any]:
+    with _cache_lock:
+        entry = _cache_store.get(key)
+        if entry and time.time() < entry[1]:
+            return entry[0]
+        _cache_store.pop(key, None)
+    return None
+
+def _cache_set(key: str, value: Any, ttl: int = 30) -> None:
+    with _cache_lock:
+        _cache_store[key] = (value, time.time() + ttl)
+
+# ── Signal store (background refresh) ────────────────────────────────────────
+_sig_store: Dict[str, Dict] = {}
+_sig_lock   = threading.Lock()
+_last_ref:  Dict[str, float] = {}
+_REFRESH_TTL = {"crypto": 30, "forex": 60, "commodities": 60, "indices": 120}
+
+def _store(asset: str, sig: Dict) -> None:
+    with _sig_lock:
+        _sig_store[asset] = sig
+
+def _due(asset: str) -> bool:
+    return (time.time() - _last_ref.get(asset, 0)) >= _REFRESH_TTL.get(_cat(asset), 60)
+
+# ── Phase 3 pub/sub buffers ───────────────────────────────────────────────────
+_p3_walls: list = []
+_p3_hunts: list = []
+_p3_wall_lock = threading.Lock()
+_p3_hunt_lock = threading.Lock()
+_p3_started   = False
+
+def _start_p3_listener():
+    global _p3_started
+    if _p3_started:
+        return
+    _p3_started = True
+    def _listen():
+        try:
+            import redis as _r
+            from config.config import REDIS_URL
+            ps = _r.from_url(REDIS_URL).pubsub()
+            ps.subscribe("LIQUIDITY_WALL_DETECTED", "STOP_HUNT_DETECTED")
+            for msg in ps.listen():
+                if msg["type"] != "message":
+                    continue
+                try:
+                    data = json.loads(msg["data"])
+                    ch   = msg["channel"]
+                    if isinstance(ch, bytes): ch = ch.decode()
+                    if ch == "LIQUIDITY_WALL_DETECTED":
+                        with _p3_wall_lock:
+                            _p3_walls.append(data)
+                            if len(_p3_walls) > 50: _p3_walls.pop(0)
+                    elif ch == "STOP_HUNT_DETECTED":
+                        with _p3_hunt_lock:
+                            _p3_hunts.append(data)
+                            if len(_p3_hunts) > 30: _p3_hunts.pop(0)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[Phase3Listener] {e}")
+    threading.Thread(target=_listen, name="p3-listener", daemon=True).start()
+
+# ── Phase 7 intel alerts pub/sub buffer ──────────────────────────────────────
+_p7_alerts: list = []
+_p7_lock    = threading.Lock()
+_p7_started = False
+
+def _start_p7_listener():
+    global _p7_started
+    if _p7_started:
+        return
+    _p7_started = True
+    def _listen():
+        try:
+            import redis as _r
+            from config.config import REDIS_URL
+            ps = _r.from_url(REDIS_URL).pubsub()
+            ps.subscribe("INTELLIGENCE_ALERT")
+            for msg in ps.listen():
+                if msg["type"] != "message":
+                    continue
+                try:
+                    data = json.loads(msg["data"])
+                    with _p7_lock:
+                        _p7_alerts.append(data)
+                        if len(_p7_alerts) > 100: _p7_alerts.pop(0)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[IntelListener] {e}")
+    threading.Thread(target=_listen, name="p7-listener", daemon=True).start()
+
+# ── Background signal refresh ─────────────────────────────────────────────────
+def _bg_refresh() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    _get_sent()
+    _get_whale()
+    while True:
+        try:
+            core = _core()
+            due  = [(a, c) for a, c in ALL_ASSETS if _due(a)]
+            if not due:
+                time.sleep(15)
+                continue
+
+            def _refresh_one(ac):
+                asset, _ = ac
+                try:
+                    sig = None
+                    if core:
+                        try:
+                            sig = core.get_signal_for_asset(asset)
+                        except Exception:
+                            pass
+                    if not sig:
+                        sig = _fallback_signal(asset)
+                    if sig:
+                        _store(asset, sig)
+                except Exception as e:
+                    logger.debug(f"[dashboard] refresh {asset}: {e}")
+                finally:
+                    _last_ref[asset] = time.time()
+
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                list(pool.map(_refresh_one, due))
+        except Exception as e:
+            logger.error(f"[dashboard] bg_refresh: {e}")
+        time.sleep(15)
+
+def _fallback_signal(asset: str) -> Optional[Dict]:
+    """Generate a simple RSI-based fallback signal when engine unavailable."""
+    df = _ohlcv(asset, "15m", 50)
+    if df is None or df.empty:
+        return None
+    try:
+        from indicators.technical import TechnicalIndicators
+        df = TechnicalIndicators.add_all_indicators(df)
+    except Exception:
+        pass
+    price = float(df["close"].iloc[-1])
+    rsi   = float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0
+    atr   = float(df["atr"].iloc[-1]) if "atr" in df.columns else price * 0.01
+    if rsi < 35:    d = "BUY"
+    elif rsi > 65:  d = "SELL"
+    else:           return None
+    sl = price - atr * 1.5 if d == "BUY" else price + atr * 1.5
+    tp = price + atr * 2.0 if d == "BUY" else price - atr * 2.0
+    return {
+        "asset": asset, "category": _cat(asset),
+        "signal": d, "direction": d,
+        "confidence": round(0.60 + abs(rsi - 50) / 100, 3),
+        "entry_price": round(price, 6),
+        "stop_loss":   round(sl, 6),
+        "take_profit": round(tp, 6),
+        "strategy_id": "Indicators",
+        "market_open": is_market_open_for_asset(asset)[0],
+        "timestamp":   datetime.now().isoformat(),
+        "generated_at": datetime.now().strftime("%H:%M:%S"),
+    }
+
+# ── Sentiment prewarm ─────────────────────────────────────────────────────────
+def _prewarm_sentiment() -> None:
+    time.sleep(12)
+    try:
+        logger.info("[dashboard] Pre-warming sentiment cache...")
+        _get_sent()
+        with app.test_request_context():
+            try:
+                api_sentiment_dashboard()
+                logger.info("[dashboard] sentiment/dashboard warmed")
+            except Exception as e:
+                logger.debug(f"[dashboard] sentiment/dashboard prewarm: {e}")
+            try:
+                api_sentiment_by_asset()
+                logger.info("[dashboard] sentiment/by-asset warmed")
+            except Exception as e:
+                logger.debug(f"[dashboard] sentiment/by-asset prewarm: {e}")
+    except Exception as e:
+        logger.debug(f"[dashboard] sentiment prewarm failed: {e}")
+
+# ── Win rate normaliser (DB returns decimal 0.XX, we display as %) ────────────
+def _wr(raw) -> float:
+    v = float(raw or 0)
+    return round(v * 100, 2) if v <= 1.0 else round(v, 2)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE ROUTES
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/")
+def pg_root():
+    return redirect("/command-center")
+
+@app.route("/command-center")
+def pg_command_center():
+    return render_template("command_center.html")
+
+@app.route("/market-intelligence")
+def pg_market_intelligence():
+    return render_template("market_intelligence.html")
+
+@app.route("/ai-predictions")
+def pg_ai_predictions():
+    return render_template("ai_predictions.html")
+
+@app.route("/whale-intelligence")
+def pg_whale_intelligence():
+    return render_template("whale_intelligence.html")
+
+@app.route("/sentiment-intelligence")
+def pg_sentiment_intelligence():
+    return render_template("sentiment_intelligence.html")
+
+@app.route("/risk-dashboard")
+def pg_risk_dashboard():
+    return render_template("risk_dashboard.html")
+
+@app.route("/strategy-lab")
+def pg_strategy_lab():
+    return render_template("strategy_lab.html")
+
+@app.route("/system-monitor")
+def pg_system_monitor():
+    return render_template("system_monitor.html")
+
+@app.route("/order-flow")
+def pg_order_flow():
+    return render_template("order_flow.html")
+
+@app.route("/intelligence-alerts")
+def pg_intelligence_alerts():
+    return render_template("intelligence_alerts.html")
+
+# Legacy redirects
+@app.route("/chart")
+def _r_chart():    return redirect("/market-intelligence")
+@app.route("/accuracy")
+def _r_accuracy(): return redirect("/ai-predictions")
+@app.route("/sentiment")
+def _r_sentiment():return redirect("/sentiment-intelligence")
+@app.route("/backtest")
+def _r_backtest(): return redirect("/strategy-lab")
+@app.route("/status")
+def _r_status():   return redirect("/system-monitor")
+@app.route("/websocket-feed")
+def _r_ws():       return redirect("/market-intelligence")
+@app.route("/strategy-lab-v2")
+def _r_lab2():     return redirect("/strategy-lab")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — STATUS (used by all templates for the live dot)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/status")
+def api_status():
+    core = _core()
+    return jsonify({
+        "bot_ready":      core.is_ready    if core else False,
+        "engine_running": core.is_running  if core else False,
+        "architecture":   "TradingCore"    if core else "standalone",
+        "balance":        core.get_balance() if core else _args.balance,
+        "assets_cached":  len(_sig_store),
+    })
+
+@app.route("/api/system-status")
+def api_system_status():
+    core = _core()
+    if core:
+        perf  = core.get_performance()
+        daily = core.get_daily_stats()
+        return jsonify({
+            "success":          True,
+            "balance":          round(core.get_balance(), 2),
+            "pnl":              round(daily.get("daily_pnl", 0), 2),
+            "total_pnl":        round(perf.get("total_pnl", 0), 2),
+            "open_positions":   perf.get("open_positions", 0),
+            "closed_positions": perf.get("total_trades", 0),
+            "daily_trades":     daily.get("daily_trades", 0),
+            "win_rate":         _wr(perf.get("win_rate", 0)),
+            "engine_ready":     core.is_ready,
+            "timestamp":        datetime.now().isoformat(),
+        })
+    return jsonify({
+        "success": True, "balance": _args.balance, "pnl": 0,
+        "total_pnl": 0, "open_positions": 0, "closed_positions": 0,
+        "daily_trades": 0, "win_rate": 0, "engine_ready": False,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — COMMAND CENTER
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/command-center")
+def api_command_center():
+    try:
+        core = _core()
+        perf = {}; daily = {}; positions = []; health = {}
+        if core:
+            perf      = core.get_performance()
+            daily     = core.get_daily_stats()
+            positions = core.get_positions()
+            health    = core.health_report()
+
+        # Slow external calls cached 5 minutes
+        _cc_slow = _cache_get("cc_slow")
+        if _cc_slow is None:
+            sent_score = 0.0; whale_count = 0; whale_recent = []
+            try:
+                sa = _get_sent()
+                if sa:
+                    ms = sa.get_comprehensive_sentiment()
+                    sent_score = float(ms.get("score", 0)) if ms else 0.0
+            except Exception:
+                pass
+            try:
+                wm = _get_whale()
+                if wm:
+                    whale_recent = wm.get_top_alerts(limit=5, days=1)
+                    whale_count  = len(whale_recent)
+            except Exception:
+                pass
+            _cc_slow = {
+                "sentiment_score":  round(sent_score, 3),
+                "whale_alerts_24h": whale_count,
+                "alert_count_24h":  whale_count,
+                "recent":           whale_recent,
+            }
+            _cache_set("cc_slow", _cc_slow, ttl=300)
+
+        # Use real open positions as signals — they ARE the active signals
+        signals = []
+        for p in positions[:6]:
+            _cp2 = 0.0
+            try:
+                _r2, _ = _fetcher.get_real_time_price(
+                    p.get("asset", ""), p.get("category", "forex")
+                )
+                if _r2:
+                    _cp2 = float(_r2)
+            except Exception:
+                pass
+            signals.append({
+                "asset":         p.get("asset", ""),
+                "signal":        p.get("direction", p.get("signal", "BUY")),
+                "direction":     p.get("direction", p.get("signal", "BUY")),
+                "confidence":    p.get("confidence", 0),
+                "entry_price":   p.get("entry_price", 0),
+                "current_price": _cp2,
+                "stop_loss":     p.get("stop_loss", 0),
+                "take_profit":   p.get("take_profit", 0),
+                "category":      p.get("category", ""),
+                "strategy_id":   p.get("strategy_id", ""),
+                "pnl":           p.get("pnl", 0),
+            })
+
+        return jsonify({
+            "success":          True,
+            "balance":          perf.get("balance", _args.balance),
+            "total_pnl":        perf.get("total_pnl", 0),
+            "daily_pnl":        daily.get("daily_pnl", 0),
+            "daily_trades":     daily.get("daily_trades", 0),
+            "win_rate":         _wr(perf.get("win_rate", 0)),
+            "open_positions":   len(positions),
+            "total_trades":     perf.get("total_trades", 0),
+            "engine_running":   health.get("is_running", core.is_running if core else False),
+            "engine_ready":     health.get("engine_ready", core.is_ready if core else False),
+            "sentiment_score":  _cc_slow["sentiment_score"],
+            "whale_alerts_24h": _cc_slow["whale_alerts_24h"],
+            "alert_count_24h":  _cc_slow["alert_count_24h"],
+            "recent":           _cc_slow["recent"],
+            "latest_signals":   signals,
+            "positions":        positions[:8],
+            "timestamp":        datetime.now().isoformat(),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — SIGNALS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/signals/live")
+def api_signals_live():
+    try:
+        core   = _core()
+        filt   = request.args.get("filter", "all")
+        signals = []
+
+        if core:
+            for p in core.get_positions():
+                d = (p.get("direction") or p.get("signal", "BUY")).upper()
+                c = float(p.get("confidence", 0))
+                if filt == "buy"  and d != "BUY":  continue
+                if filt == "sell" and d != "SELL": continue
+                if filt == "high" and c < 0.70:    continue
+                # Fetch live price for current_price display
+                _cur_price = 0.0
+                try:
+                    _cp, _ = _fetcher.get_real_time_price(
+                        p.get("asset", ""), p.get("category", "forex")
+                    )
+                    if _cp:
+                        _cur_price = float(_cp)
+                except Exception:
+                    pass
+
+                signals.append({
+                    "asset":         p.get("asset", ""),
+                    "signal":        d, "direction": d,
+                    "category":      p.get("category", ""),
+                    "confidence":    c,
+                    "entry_price":   float(p.get("entry_price", 0)),
+                    "current_price": _cur_price,
+                    "stop_loss":     float(p.get("stop_loss", 0)),
+                    "take_profit":   float(p.get("take_profit", 0)),
+                    "position_size": float(p.get("position_size", 0)),
+                    "strategy_id":   p.get("strategy_id", ""),
+                    "pnl":           float(p.get("pnl", 0)),
+                    "market_open":   is_market_open_for_asset(p.get("asset", ""))[0],
+                    "generated_at":  str(p.get("open_time", ""))[:16],
+                    "metadata":      p.get("metadata", {}),
+                    "layer_reached": p.get("layer_reached", 0),
+                })
+        else:
+            with _sig_lock:
+                sigs = list(_sig_store.values())
+            active = [s for s in sigs if s.get("signal", "HOLD") not in ("HOLD", "CLOSED")]
+            if filt == "buy":    active = [s for s in active if s.get("signal") == "BUY"]
+            elif filt == "sell": active = [s for s in active if s.get("signal") == "SELL"]
+            elif filt == "high": active = [s for s in active if s.get("confidence", 0) >= 0.70]
+            signals = active
+
+        buys     = sum(1 for s in signals if s.get("signal") == "BUY")
+        sells    = sum(1 for s in signals if s.get("signal") == "SELL")
+        avg_conf = sum(s.get("confidence", 0) for s in signals) / max(1, len(signals))
+        return jsonify({
+            "success": True, "signals": signals,
+            "total_signals": len(signals), "buy_signals": buys,
+            "sell_signals": sells, "avg_confidence": round(avg_conf * 100, 1),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — MARKET INTELLIGENCE (Chart + Heatmap + Correlation)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/chart/assets")
+def api_chart_assets():
+    return jsonify({"success": True,
+                    "assets": [{"symbol": a, "category": c} for a, c in ALL_ASSETS]})
+
+@app.route("/api/chart/candles")
+def api_chart_candles():
+    try:
+        import pandas as pd
+        asset    = request.args.get("asset", "EUR/USD")
+        interval = request.args.get("interval", "15m")
+        periods  = {"1m": 60, "5m": 200, "15m": 200, "1h": 168, "4h": 200, "1d": 365}.get(interval, 100)
+        cat      = _cat(asset)
+
+        # Try requested interval then fall back for forex/indices intraday gaps
+        fallbacks = {"1m": ["5m","15m","1h","1d"], "5m": ["15m","1h","1d"],
+                     "15m": ["1h","1d"], "1h": ["4h","1d"], "4h": ["1d"]}
+        df = _fetcher.get_ohlcv(asset, cat, interval=interval, periods=periods)
+        used = interval
+        if (df is None or df.empty) and interval in fallbacks:
+            for fb in fallbacks[interval]:
+                df = _fetcher.get_ohlcv(asset, cat, interval=fb,
+                                        periods={"1h": 168, "4h": 200, "1d": 365}.get(fb, 100))
+                if df is not None and not df.empty:
+                    used = fb
+                    break
+
+        if df is None or df.empty:
+            return jsonify({"success": True, "candles": [],
+                            "message": f"No data for {asset}", "interval_used": interval})
+
+        df.columns = [c.lower() for c in df.columns]
+        timestamps = []
+        for idx_val in df.index:
+            try:
+                ts = pd.Timestamp(idx_val)
+                if ts.tzinfo is not None:
+                    ts = ts.tz_convert("UTC").tz_localize(None)
+                timestamps.append(int(ts.timestamp()))
+            except Exception:
+                timestamps.append(0)
+
+        seen: set = set()
+        candles   = []
+        for t, (_, row) in zip(timestamps, df.iterrows()):
+            if t == 0 or t in seen:
+                continue
+            seen.add(t)
+            candles.append({
+                "time":   t,
+                "open":   float(row["open"]),
+                "high":   float(row["high"]),
+                "low":    float(row["low"]),
+                "close":  float(row["close"]),
+                "volume": float(row.get("volume", 0)),
+            })
+        candles.sort(key=lambda x: x["time"])
+        return jsonify({"success": True, "candles": candles, "interval_used": used})
+    except Exception as e:
+        logger.error(f"[candles] {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/chart/stream")
+def api_chart_stream():
+    asset = request.args.get("asset", "EUR/USD")
+    cat   = _cat(asset)
+    def _gen():
+        while True:
+            try:
+                price, _ = _fetcher.get_real_time_price(asset, cat)
+                if price:
+                    yield f"data: {json.dumps({'price': price, 'asset': asset, 'ts': int(time.time())})}\n\n"
+            except Exception:
+                pass
+            time.sleep(3)
+    return Response(stream_with_context(_gen()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+@app.route("/api/market/heatmap")
+def api_market_heatmap():
+    cached = _cache_get("heatmap")
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        def _fetch_one(ac):
+            asset, cat = ac
+            try:
+                df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=3)
+                if df is not None and len(df) >= 2 and "close" in df.columns:
+                    closes = df["close"].astype(float)
+                    chg    = (closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100
+                    return {"asset": asset, "category": cat,
+                            "change_pct": round(float(chg), 2),
+                            "price": round(float(closes.iloc[-1]), 5)}
+            except Exception:
+                pass
+            return None
+
+        results = []
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for r in as_completed({pool.submit(_fetch_one, ac): ac for ac in ALL_ASSETS}, timeout=25):
+                try:
+                    v = r.result()
+                    if v: results.append(v)
+                except Exception:
+                    pass
+
+        results.sort(key=lambda x: x["change_pct"], reverse=True)
+        payload = {"success": True, "items": results}
+        _cache_set("heatmap", payload, ttl=60)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/correlation-matrix")
+def api_correlation_matrix():
+    cached = _cache_get("correlation")
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        import pandas as pd
+        import numpy as np
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        assets = ["BTC-USD", "ETH-USD", "GC=F", "SI=F", "EUR/USD", "GBP/USD", "^GSPC", "^FTSE"]
+
+        def _fetch_close(a):
+            try:
+                df = _fetcher.get_ohlcv(a, _cat(a), interval="1d", periods=35)
+                if df is not None and not df.empty and "close" in df.columns:
+                    return a, df["close"].astype(float)
+            except Exception:
+                pass
+            return a, None
+
+        closes: Dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch_close, a): a for a in assets}
+            for future in as_completed(futures, timeout=20):
+                try:
+                    a, series = future.result()
+                    if series is not None: closes[a] = series
+                except Exception:
+                    pass
+
+        if len(closes) < 2:
+            return jsonify({"success": False, "error": "Not enough price data — try again in 30s"})
+
+        frame = pd.DataFrame(closes).pct_change().dropna()
+        corr  = frame.corr().round(3)
+        payload = {"success": True, "labels": list(corr.columns), "matrix": corr.values.tolist()}
+        _cache_set("correlation", payload, ttl=600)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — AI PREDICTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/accuracy")
+def api_accuracy():
+    days = min(int(request.args.get("days", 30)), 90)
+    if _pred_tracker:
+        return jsonify({"success": True, "data": _pred_tracker.get_accuracy_stats(days_back=days)})
+    return jsonify({"success": False, "data": {
+        "by_horizon": {
+            "1H":  {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
+            "4H":  {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
+            "24H": {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
+        },
+        "by_asset": {}, "recent": [], "days_back": days,
+    }})
+
+@app.route("/api/predictions/summary")
+def api_predictions_summary():
+    try:
+        stats = _pred_tracker.get_accuracy_stats(days_back=30) if _pred_tracker else {}
+        core  = _core()
+        preds = []
+
+        # Use real positions as predictions — they are active pipeline signals
+        if core:
+            for p in core.get_positions():
+                d  = (p.get("direction") or p.get("signal", "BUY")).upper()
+                e  = float(p.get("entry_price", 0) or 0)
+                sl = float(p.get("stop_loss", 0) or 0)
+                tp = float(p.get("take_profit", 0) or 0)
+                rr = round(abs(tp - e) / max(0.0001, abs(e - sl)), 2) if sl and tp and e else 0
+                preds.append({
+                    "asset":      p.get("asset", ""),
+                    "direction":  d,
+                    "confidence": round(float(p.get("confidence", 0)) * 100, 1),
+                    "entry": e, "tp": tp, "sl": sl, "rr": rr,
+                    "category":  p.get("category", ""),
+                    "strategy":  p.get("strategy_id", ""),
+                    "timestamp": str(p.get("open_time", ""))[:16],
+                })
+        else:
+            with _sig_lock:
+                sigs = list(_sig_store.values())
+            for s in sigs:
+                d = s.get("signal", s.get("direction", "HOLD"))
+                if d in ("HOLD", "CLOSED"): continue
+                e  = float(s.get("entry_price", 0) or 0)
+                sl = float(s.get("stop_loss", 0) or 0)
+                tp = float(s.get("take_profit", 0) or 0)
+                rr = round(abs(tp - e) / max(0.0001, abs(e - sl)), 2) if sl and tp and e else 0
+                preds.append({
+                    "asset":      s.get("asset", ""),
+                    "direction":  d,
+                    "confidence": round(float(s.get("confidence", 0)) * 100, 1),
+                    "entry": e, "tp": tp, "sl": sl, "rr": rr,
+                    "category":  s.get("category", ""),
+                    "strategy":  s.get("strategy_id", ""),
+                    "timestamp": s.get("timestamp", ""),
+                })
+        return jsonify({"success": True, "predictions": preds, "accuracy": stats})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — WHALE INTELLIGENCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/whale/summary")
+def api_whale_summary():
+    cached = _cache_get("whale_summary")
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        wm = _get_whale()
+        if not wm:
+            return jsonify({"success": True, "alerts": [], "total_volume_usd": 0,
+                            "top_assets": [], "recent": [], "alert_count_24h": 0})
+        alerts    = wm.get_alerts(min_value_usd=500_000, hours=24)
+        top       = wm.get_top_alerts(limit=10, days=7)
+        total_vol = sum(float(a.get("value_usd", 0)) for a in alerts)
+        by_asset: Dict[str, float] = {}
+        for a in alerts:
+            sym = a.get("symbol", a.get("asset", ""))
+            by_asset[sym] = by_asset.get(sym, 0.0) + float(a.get("value_usd", 0))
+        top_assets = sorted(by_asset.items(), key=lambda x: x[1], reverse=True)[:8]
+        payload = {
+            "success":          True,
+            "alerts":           alerts[:20],
+            "total_volume_usd": round(total_vol, 0),
+            "alert_count_24h":  len(alerts),
+            "top_assets":       [{"asset": k, "volume": round(v)} for k, v in top_assets],
+            "recent":           top[:10],
+        }
+        _cache_set("whale_summary", payload, ttl=120)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — SENTIMENT INTELLIGENCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/sentiment/dashboard")
+def api_sentiment_dashboard():
+    cached = _cache_get("sentiment_dashboard")
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        sa = _get_sent()
+        if sa is None:
+            return jsonify({"success": False, "error": "SentimentAnalyzer unavailable"}), 503
+
+        result: Dict = {
+            "success": True, "overall_sentiment": "Neutral", "score": 0.0,
+            "fear_greed": {"value": 50, "classification": "Neutral"},
+            "vix": {"value": 20, "classification": "Normal"},
+            "article_count": 0,
+            "sentiment_distribution": {"bullish": 0, "neutral": 0, "bearish": 0},
+            "articles": [], "whale_alerts": [],
+        }
+
+        ms = sa.get_comprehensive_sentiment()
+        if ms:
+            result["score"]             = float(ms.get("score", 0))
+            result["overall_sentiment"] = ms.get("interpretation", "Neutral")
+
+        fg = sa.fetch_fear_greed_index()
+        if fg:
+            result["fear_greed"] = {"value": fg.get("value", 50),
+                                    "classification": fg.get("classification", "Neutral")}
+
+        vix = sa.fetch_vix()
+        if vix:
+            result["vix"] = {"value": vix.get("value", 20),
+                             "classification": vix.get("classification", "Normal")}
+
+        # News articles via news_integrator shim
+        try:
+            arts = sa.news_integrator.fetch_all_sources()
+            if arts:
+                b  = sum(1 for a in arts if float(a.get("sentiment", 0)) > 0.1)
+                be = sum(1 for a in arts if float(a.get("sentiment", 0)) < -0.1)
+                result["sentiment_distribution"] = {
+                    "bullish": b, "neutral": len(arts) - b - be, "bearish": be,
+                }
+                result["articles"]      = sorted(arts, key=lambda x: x.get("date", ""), reverse=True)[:20]
+                result["article_count"] = len(arts)
+        except Exception:
+            pass
+
+        result["whale_alerts"] = sa.fetch_whale_alerts(min_value_usd=1_000_000)[:10]
+
+        _cache_set("sentiment_dashboard", result, ttl=300)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/sentiment/by-asset")
+def api_sentiment_by_asset():
+    cached = _cache_get("sentiment_by_asset")
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        sa = _get_sent()
+        if not sa:
+            return jsonify({"success": False, "error": "SentimentAnalyzer unavailable"})
+
+        watch = [a for a, _ in ALL_ASSETS]
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _sent_one(asset):
+            try:
+                r     = sa.get_comprehensive_sentiment(asset)
+                score = float(r.get("composite_score", r.get("score", 0))) if r else 0.0
+            except Exception:
+                score = 0.0
+            return {
+                "asset":    asset,
+                "category": _cat(asset),
+                "score":    round(score, 3),
+                "label":    "Bullish" if score > 0.1 else "Bearish" if score < -0.1 else "Neutral",
+            }
+
+        results = []
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {pool.submit(_sent_one, a): a for a in watch}
+            for future in as_completed(futures, timeout=60):
+                try:
+                    results.append(future.result())
+                except Exception:
+                    pass
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        payload = {"success": True, "assets": results}
+        _cache_set("sentiment_by_asset", payload, ttl=300)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/market/events")
+def api_market_events():
+    try:
+        events: List = []
+        sa = _get_sent()
+        if sa:
+            raw = sa.get_market_events()
+            if isinstance(raw, dict):
+                events = raw.get("events", raw.get("calendar", []))
+            elif isinstance(raw, list):
+                events = raw
+        try:
+            from market_calendar import get_high_impact_events
+            cal = get_high_impact_events()
+            if cal:
+                events = (events + list(cal))[:20]
+        except Exception:
+            pass
+        return jsonify({"success": True, "events": events[:20]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — RISK DASHBOARD
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/risk/portfolio")
+def api_risk_portfolio():
+    try:
+        core = _core()
+        if not core:
+            return jsonify({"success": False, "error": "Engine not ready"})
+
+        positions = core.get_positions()
+        balance   = core.get_balance()
+        perf      = core.get_performance()
+
+        risk_stats: Dict = {}
+        try:
+            if hasattr(core, "portfolio_risk") and core.portfolio_risk:
+                risk_stats = core.portfolio_risk.get_portfolio_stats(positions, balance)
+        except Exception:
+            pass
+
+        by_cat: Dict = {}
+        for p in positions:
+            cat = p.get("category", "unknown")
+            by_cat.setdefault(cat, {"count": 0, "pnl": 0.0, "exposure": 0.0})
+            by_cat[cat]["count"]    += 1
+            by_cat[cat]["pnl"]      += float(p.get("pnl") or 0)
+            by_cat[cat]["exposure"] += float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
+
+        closed  = core.get_closed_trades(limit=100)
+        wins    = [t for t in closed if float(t.get("pnl") or 0) > 0]
+        losses  = [t for t in closed if float(t.get("pnl") or 0) <= 0 and float(t.get("pnl") or 0) != 0]
+        avg_win = sum(float(t.get("pnl") or 0) for t in wins)   / len(wins)   if wins   else 0.0
+        avg_los = sum(float(t.get("pnl") or 0) for t in losses) / len(losses) if losses else 0.0
+        pf      = abs(avg_win / avg_los) if avg_los else 0.0
+
+        return jsonify({
+            "success":        True,
+            "balance":        balance,
+            "open_positions": len(positions),
+            "total_exposure": risk_stats.get("total_exposure", 0),
+            "exposure_pct":   risk_stats.get("exposure_pct", 0),
+            "drawdown_pct":   risk_stats.get("drawdown_pct", 0),
+            "peak_balance":   risk_stats.get("peak_balance", balance),
+            "by_category":    by_cat,
+            "win_rate":       _wr(perf.get("win_rate", 0)),
+            "profit_factor":  round(pf, 2),
+            "avg_win":        round(avg_win, 2),
+            "avg_loss":       round(avg_los, 2),
+            "total_trades":   perf.get("total_trades", 0),
+            "total_pnl":      perf.get("total_pnl", 0),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — STRATEGY LAB
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/strategy/performance")
+def api_strategy_performance():
+    try:
+        core = _core()
+        if not core:
+            return jsonify({"success": False, "error": "Engine not ready"})
+        stats  = core.get_strategy_stats()
+        trades = core.get_closed_trades(limit=200)
+        enriched: Dict = {}
+        for strat, s in stats.items():
+            total   = s.get("wins", 0) + s.get("losses", 0)
+            pnl     = s.get("pnl", 0)
+            wr      = s.get("wins", 0) / total * 100 if total else 0
+            durs    = [int(t.get("duration_minutes", 0)) for t in trades
+                       if t.get("strategy_id") == strat and t.get("duration_minutes")]
+            avg_dur = sum(durs) / len(durs) if durs else 0
+            enriched[strat] = {**s, "total": total, "win_rate": round(wr, 1),
+                               "avg_duration_min": round(avg_dur),
+                               "avg_trade_pnl": round(pnl / total, 4) if total else 0}
+        timeline = [{"asset": t.get("asset", ""), "direction": t.get("direction", ""),
+                     "pnl": float(t.get("pnl") or 0), "strategy": t.get("strategy_id", ""),
+                     "exit_time": str(t.get("exit_time", ""))[:16],
+                     "conf": float(t.get("confidence") or 0)} for t in trades[:50]]
+        return jsonify({"success": True, "strategies": enriched, "timeline": timeline})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/backtest/strategies")
+def api_backtest_strategies():
+    try:
+        from strategy_lab import StrategyBuilder
+        presets  = list(StrategyBuilder.all_configs().keys())
+        existing = ["voting", "rsi", "macd", "bollinger"]
+        return jsonify({"success": True, "presets": presets, "existing": existing})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/backtest/run")
+def api_backtest_run():
+    try:
+        asset    = request.args.get("asset", "BTC-USD")
+        cat      = _cat(asset)
+        strategy = request.args.get("strategy", "voting")
+        periods  = int(request.args.get("periods", 500))
+        balance  = float(request.args.get("balance", _args.balance))
+        _TF = "15m"
+        df  = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+        if df is None or df.empty:
+            return jsonify({"success": False, "error": f"No data for {asset}"})
+        from strategy_lab import StrategyBuilder, BacktestEngineV2
+        from strategy_lab.strategy_adapter import StrategyAdapter
+        configs = StrategyBuilder.all_configs()
+
+        # Live strategies (RSI, MACD, Bollinger, Voting) — wrap via StrategyAdapter
+        # so they use the same logic as the live trading loop.
+        # Lab preset strategies — use DynamicStrategy via StrategyBuilder.from_dict().
+        _live_map = {
+            "voting":   "VotingStrategy",
+            "rsi":      "RSIStrategy",
+            "macd":     "MACDStrategy",
+            "bollinger":"BollingerStrategy",
+        }
+        if strategy in _live_map:
+            try:
+                if strategy == "voting":
+                    from strategies.voting import VotingStrategy
+                    _strat_obj = VotingStrategy()
+                elif strategy == "rsi":
+                    from strategies.rsi import RSIStrategy
+                    _strat_obj = RSIStrategy()
+                elif strategy == "macd":
+                    from strategies.macd import MACDStrategy
+                    _strat_obj = MACDStrategy()
+                else:
+                    from strategies.bollinger import BollingerStrategy
+                    _strat_obj = BollingerStrategy()
+                s = StrategyAdapter(_strat_obj, asset=asset, category=cat)
+            except Exception as _e:
+                return jsonify({"success": False, "error": f"Strategy load failed: {_e}"}), 500
+        elif strategy in configs:
+            s = StrategyBuilder.from_dict(configs[strategy])
+        else:
+            return jsonify({"success": False, "error": f"Unknown strategy: {strategy}"}), 400
+
+        eng  = BacktestEngineV2(strategy=s, initial_balance=balance)
+        r    = eng.run(df)
+
+        # Build response matching exactly what the template reads:
+        # d.metrics.*  — all performance metrics
+        # d.trades     — per-trade list with entry_bar, exit_bar, direction, pnl, outcome, duration
+        # d.metrics.equity_curve — [{value: x}, ...] for the chart
+        metrics = {
+            "total_trades":  r.total_trades,
+            "win_rate":      round(r.win_rate, 4),        # raw 0-1, template does *100
+            "total_pnl":     round(r.total_pnl, 2),
+            "total_pnl_pct": round(r.total_pnl_pct, 4),
+            "max_drawdown":  round(r.max_drawdown, 4),
+            "sharpe_ratio":  round(r.sharpe_ratio, 3),
+            "profit_factor": round(r.profit_factor, 4) if r.profit_factor != float("inf") else 9999,
+            "avg_win":       round(r.avg_win, 2),
+            "avg_loss":      round(r.avg_loss, 2),
+            "equity_curve":  [{"value": round(v, 2)} for v in r.equity_curve],
+        }
+        return jsonify({
+            "success":  True,
+            "asset":    asset,
+            "strategy": strategy,
+            "metrics":  metrics,
+            "trades":   r.trades,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/backtest/compare")
+def api_backtest_compare():
+    try:
+        asset    = request.args.get("asset", "BTC-USD")
+        cat      = _cat(asset)
+        periods  = int(request.args.get("periods", 500))
+        balance  = float(request.args.get("balance", _args.balance))
+        _TF = "15m"
+        df  = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+        if df is None or df.empty:
+            return jsonify({"success": False, "error": f"No data for {asset}"})
+        from strategy_lab import StrategyBuilder, BacktestEngineV2
+        results = []
+        for name, cfg in StrategyBuilder.all_configs().items():
+            try:
+                s   = StrategyBuilder.from_dict(cfg)
+                eng = BacktestEngineV2(strategy=s, initial_balance=balance)
+                r   = eng.run(df)
+                results.append({"strategy": name, "total_pnl": round(r.total_pnl, 2),
+                                 "win_rate": round(r.win_rate * 100, 2),
+                                 "sharpe": round(r.sharpe_ratio, 3),
+                                 "total_trades": r.total_trades,
+                                 "max_drawdown": round(r.max_drawdown, 4)})
+            except Exception:
+                pass
+        results.sort(key=lambda x: x["sharpe"], reverse=True)
+        return jsonify({"success": True, "asset": asset, "results": results})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/backtest/optimize")
+def api_backtest_optimize():
+    try:
+        asset    = request.args.get("asset", "BTC-USD")
+        cat      = _cat(asset)
+        strategy = request.args.get("strategy", "ema_rsi_crossover")
+        periods  = int(request.args.get("periods", 300))
+        _TF = "15m"
+        df  = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+        if df is None or df.empty:
+            return jsonify({"success": False, "error": f"No data for {asset}"}), 400
+        from strategy_lab import StrategyBuilder
+        from strategy_lab.parameter_optimizer import ParameterOptimizer
+        from strategy_lab.backtest_engine_v2 import BacktestEngineV2
+        configs = StrategyBuilder.all_configs()
+        if strategy not in configs:
+            return jsonify({"success": False, "error": f"Strategy '{strategy}' not in lab presets. Optimise only works on lab preset strategies."}), 400
+        base_cfg   = configs[strategy]
+        param_grid = {
+            "rsi_period": [10, 14, 21],
+            "stop_mult":  [1.0, 1.5, 2.0],
+            "tp_mult":    [2.0, 3.0, 4.0],
+        }
+        optimizer = ParameterOptimizer(
+            base_config     = base_cfg,
+            df              = df,
+            initial_balance = float(request.args.get("balance", _args.balance)),
+        )
+        results = optimizer.grid_search(param_grid)
+        top5    = results[:5] if results else []
+        return jsonify({
+            "success":  True,
+            "asset":    asset,
+            "strategy": strategy,
+            "total":    len(results),
+            "top5":     top5,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/backtest/multi-asset")
+def api_backtest_multi_asset():
+    try:
+        strategy = request.args.get("strategy", "voting")
+        periods  = int(request.args.get("periods", 300))
+        balance  = float(request.args.get("balance", _args.balance))
+        _TF = "15m"
+        from strategy_lab import StrategyBuilder, BacktestEngineV2
+        from strategy_lab.strategy_adapter import StrategyAdapter
+        configs = StrategyBuilder.all_configs()
+        _live_map = {"voting": "VotingStrategy", "rsi": "RSIStrategy",
+                     "macd": "MACDStrategy", "bollinger": "BollingerStrategy"}
+        test_assets = [("BTC-USD","crypto"),("ETH-USD","crypto"),("SOL-USD","crypto"),
+                       ("EUR/USD","forex"),("GBP/USD","forex"),("USD/JPY","forex"),
+                       ("GC=F","commodities"),("^DJI","indices")]
+        results = []
+        for asset, cat in test_assets:
+            try:
+                df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+                if df is None or df.empty: continue
+                if strategy in _live_map:
+                    if strategy == "voting":
+                        from strategies.voting import VotingStrategy
+                        _obj = VotingStrategy()
+                    elif strategy == "rsi":
+                        from strategies.rsi import RSIStrategy
+                        _obj = RSIStrategy()
+                    elif strategy == "macd":
+                        from strategies.macd import MACDStrategy
+                        _obj = MACDStrategy()
+                    else:
+                        from strategies.bollinger import BollingerStrategy
+                        _obj = BollingerStrategy()
+                    s = StrategyAdapter(_obj, asset=asset, category=cat)
+                elif strategy in configs:
+                    s = StrategyBuilder.from_dict(configs[strategy])
+                else:
+                    continue
+                eng = BacktestEngineV2(strategy=s, initial_balance=balance)
+                r   = eng.run(df)
+                results.append({
+                    "asset":     asset,
+                    "category":  cat,
+                    "sharpe":    round(r.sharpe_ratio, 3),
+                    "win_rate":  round(r.win_rate, 4),
+                    "total_pnl": round(r.total_pnl, 2),
+                    "max_dd":    round(r.max_drawdown, 4),
+                    "trades":    r.total_trades,
+                })
+            except Exception:
+                pass
+        results.sort(key=lambda x: x.get("sharpe", -999), reverse=True)
+        best = results[0]["asset"] if results else None
+        return jsonify({"success": True, "strategy": strategy, "results": results, "best": best})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — PHASE 1: DATA INGESTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/phase1/funding-rates")
+def api_phase1_funding():
+    cached = _cache_get("p1_funding")
+    if cached: return jsonify(cached)
+    try:
+        from data_ingestion import funding_monitor
+        data = funding_monitor.get_all_rates() if hasattr(funding_monitor, "get_all_rates") else {}
+        payload = {"success": True, "rates": data, "timestamp": datetime.now().isoformat()}
+        _cache_set("p1_funding", payload, ttl=30)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "rates": {}, "error": str(e)})
+
+@app.route("/api/phase1/open-interest")
+def api_phase1_oi():
+    cached = _cache_get("p1_oi")
+    if cached: return jsonify(cached)
+    try:
+        from data_ingestion import oi_monitor
+        data = oi_monitor.get_all_signals() if hasattr(oi_monitor, "get_all_signals") else {}
+        payload = {"success": True, "data": data, "timestamp": datetime.now().isoformat()}
+        _cache_set("p1_oi", payload, ttl=60)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "data": {}, "error": str(e)})
+
+@app.route("/api/phase1/liquidations")
+def api_phase1_liquidations():
+    cached = _cache_get("p1_liq")
+    if cached: return jsonify(cached)
+    try:
+        import redis as _r
+        from config.config import REDIS_URL
+        raw = _r.from_url(REDIS_URL).lrange("LIQUIDATION_EVENTS", 0, 49)
+        events = [json.loads(i) for i in raw if i]
+        payload = {"success": True, "events": events, "count": len(events),
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p1_liq", payload, ttl=15)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "events": [], "error": str(e)})
+
+@app.route("/api/phase1/macro")
+def api_phase1_macro():
+    cached = _cache_get("p1_macro")
+    if cached: return jsonify(cached)
+    try:
+        from data_ingestion import macro_collector
+        data = macro_collector.get_latest() if hasattr(macro_collector, "get_latest") else {}
+        payload = {"success": True, "data": data, "timestamp": datetime.now().isoformat()}
+        _cache_set("p1_macro", payload, ttl=300)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "data": {}, "error": str(e)})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — PHASE 2: WHALE INTELLIGENCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/phase2/wallets")
+def api_phase2_wallets():
+    cached = _cache_get("p2_wallets")
+    if cached: return jsonify(cached)
+    try:
+        from whale_intelligence import tracker
+        wallets = tracker.get_wallet_states() if hasattr(tracker, "get_wallet_states") else []
+        payload = {"success": True, "wallets": wallets, "count": len(wallets),
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("p2_wallets", payload, ttl=60)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "wallets": [], "error": str(e)})
+
+@app.route("/api/phase2/clusters")
+def api_phase2_clusters():
+    cached = _cache_get("p2_clusters")
+    if cached: return jsonify(cached)
+    try:
+        import redis as _r
+        from config.config import REDIS_URL
+        raw    = _r.from_url(REDIS_URL).lrange("WHALE_CLUSTER_EVENTS", 0, 19)
+        events = [json.loads(i) for i in raw if i]
+        payload = {"success": True, "clusters": events, "timestamp": datetime.now().isoformat()}
+        _cache_set("p2_clusters", payload, ttl=60)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "clusters": [], "error": str(e)})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — PHASE 3: ORDER FLOW
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/phase3/imbalance")
+def api_phase3_imbalance():
+    cached = _cache_get("p3_imbalance")
+    if cached: return jsonify(cached)
+    try:
+        from order_flow import get_imbalance, TRACKED_ASSETS
+        data     = {a: round(get_imbalance(a), 4) for a in TRACKED_ASSETS}
+        scores   = list(data.values())
+        bullish  = [s for s in scores if s > 0.05]
+        bearish  = [s for s in scores if s < -0.05]
+        payload  = {
+            "success":       True,
+            "imbalances":    data,
+            "avg_buy":       round(sum(bullish) / len(bullish), 4) if bullish else 0.0,
+            "avg_sell":      round(sum(bearish) / len(bearish), 4) if bearish else 0.0,
+            "bullish_count": len(bullish),
+            "bearish_count": len(bearish),
+            "timestamp":     datetime.now().isoformat(),
+        }
+        _cache_set("p3_imbalance", payload, ttl=5)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "imbalances": {}, "error": str(e)})
+
+@app.route("/api/phase3/walls")
+def api_phase3_walls():
+    _start_p3_listener()
+    with _p3_wall_lock:
+        walls = list(_p3_walls[-30:])
+    return jsonify({"success": True, "walls": walls, "count": len(walls),
+                    "timestamp": datetime.now().isoformat()})
+
+@app.route("/api/phase3/stop-hunts")
+def api_phase3_stop_hunts():
+    _start_p3_listener()
+    with _p3_hunt_lock:
+        hunts = list(_p3_hunts[-20:])
+    return jsonify({"success": True, "hunts": hunts,
+                    "timestamp": datetime.now().isoformat()})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — PHASE 7: INTELLIGENCE ALERTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/phase7/alerts")
+def api_phase7_alerts():
+    _start_p7_listener()
+    with _p7_lock:
+        alerts = list(_p7_alerts[-50:])
+    by_priority: Dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for a in alerts:
+        p = a.get("priority", "LOW")
+        by_priority[p] = by_priority.get(p, 0) + 1
+    return jsonify({"success": True, "alerts": alerts, "count": len(alerts),
+                    "by_priority": by_priority, "timestamp": datetime.now().isoformat()})
+
+@app.route("/api/phase7/signal-journal")
+def api_phase7_signal_journal():
+    cached = _cache_get("p7_journal")
+    if cached: return jsonify(cached)
+    try:
+        import redis as _r
+        from config.config import REDIS_URL
+        raw      = _r.from_url(REDIS_URL).lrange("SIGNAL_JOURNAL_LOG", 0, 19)
+        journals = [json.loads(i) for i in raw if i]
+        payload  = {"success": True, "journals": journals, "timestamp": datetime.now().isoformat()}
+        _cache_set("p7_journal", payload, ttl=10)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "journals": [], "error": str(e)})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — SYSTEM MONITOR + MONITORING
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/system/health")
+def api_system_health():
+    try:
+        core   = _core()
+        health = core.health_report() if core else {}
+
+        ram_pct = cpu_pct = disk_pct = proc_mb = 0.0
+        try:
+            import psutil
+            ram_pct  = psutil.virtual_memory().percent
+            cpu_pct  = psutil.cpu_percent(interval=0)
+            disk_pct = psutil.disk_usage("/").percent
+            proc_mb  = round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 1)
+        except Exception:
+            pass
+
+        redis_ok = False
+        try:
+            if _redis_broker: redis_ok = bool(_redis_broker.is_connected())
+        except Exception:
+            pass
+
+        db_ok = False
+        try:
+            from services.db_pool import get_db
+            db_ok = bool(get_db().ping())
+        except Exception:
+            pass
+
+        tg_ok = bool(getattr(telegram_manager, "is_running", False))
+
+        processes = {
+            "TradingCore":       health.get("is_running", core.is_running if core else False),
+            "Engine ready":      health.get("engine_ready", core.is_ready if core else False),
+            "Web dashboard":     True,
+            "Redis":             redis_ok,
+            "PostgreSQL":        db_ok,
+            "Telegram":          tg_ok,
+            "PredTracker":       _pred_tracker is not None,
+            "WebSocket streams": _ws_ok,
+        }
+
+        phase_health: Dict[str, Any] = {}
+        try:
+            from data_ingestion.exchange_stream_manager import stream_manager as _esm
+            phase_health["phase1_data_feeds"] = _esm._running.is_set()
+        except Exception:
+            phase_health["phase1_data_feeds"] = False
+        try:
+            from whale_intelligence import is_running as _wi_running
+            phase_health["phase2_whale_intel"] = _wi_running()
+        except Exception:
+            phase_health["phase2_whale_intel"] = False
+        try:
+            import order_flow as _of
+            phase_health["phase3_order_flow"] = bool(_of._running)
+        except Exception:
+            phase_health["phase3_order_flow"] = False
+        try:
+            from narrative_ai import get_dominant_narrative
+            get_dominant_narrative()
+            phase_health["phase4_narrative_ai"] = True
+        except Exception:
+            phase_health["phase4_narrative_ai"] = False
+        try:
+            from strategy_lab import StrategyBuilder
+            StrategyBuilder.all_configs()
+            phase_health["phase5_strategy_lab"] = True
+        except Exception:
+            phase_health["phase5_strategy_lab"] = False
+        try:
+            from ml.meta_model import predictor as _mp
+            phase_health["phase6_meta_ai"] = _mp is not None
+        except Exception:
+            phase_health["phase6_meta_ai"] = False
+        try:
+            from services.intelligence_alerts import alert_service as _as
+            phase_health["phase7_intel_alerts"] = getattr(_as, "_running", False)
+        except Exception:
+            phase_health["phase7_intel_alerts"] = False
+
+        return jsonify({
+            "success":          True,
+            "ram_pct":          round(ram_pct, 1),
+            "cpu_pct":          round(cpu_pct, 1),
+            "disk_pct":         round(disk_pct, 1),
+            "process_mem_mb":   proc_mb,
+            "processes":        processes,
+            "phase_health":     phase_health,
+            "open_positions":   health.get("open_positions", 0),
+            "active_cooldowns": health.get("active_cooldowns", 0),
+            "issues":           health.get("issues", []),
+            "strategy_mode":    health.get("strategy_mode", "—"),
+            "balance":          health.get("balance", _args.balance),
+            "timestamp":        datetime.now().isoformat(),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/monitoring/snapshot")
+def api_monitoring_snapshot():
+    cached = _cache_get("monitoring_snapshot")
+    if cached: return jsonify(cached)
+    try:
+        from monitoring.system_health_service import monitor
+        snap    = monitor.snapshot()
+        payload = {"success": True, **snap}
+        _cache_set("monitoring_snapshot", payload, ttl=30)
+        return jsonify(payload)
+    except Exception as e:
+        try:
+            raw = _redis_broker.get("monitoring:latest") if _redis_broker else None
+            if raw:
+                data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+                return jsonify({"success": True, **data})
+        except Exception:
+            pass
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route("/api/monitoring/metrics")
+def api_monitoring_metrics():
+    cached = _cache_get("monitoring_metrics")
+    if cached: return jsonify(cached)
+    try:
+        from monitoring.metrics import metrics
+        payload = {"success": True, "metrics": metrics.summary(),
+                   "timestamp": datetime.now().isoformat()}
+        _cache_set("monitoring_metrics", payload, ttl=15)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route("/api/monitoring/errors")
+def api_monitoring_errors():
+    try:
+        from monitoring.system_health_service import monitor
+        snap = monitor.snapshot()
+        return jsonify({"success": True, "errors": snap.get("errors", {}),
+                        "timestamp": datetime.now().isoformat()})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STARTUP
+# ══════════════════════════════════════════════════════════════════════════════
+
+def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000) -> None:
+    """Called by bot.py after engine.start(). Blocking — never returns."""
+    inject_core(core)
+
+    # Start background threads
+    threading.Thread(target=_bg_refresh,       name="DashBgRefresh",     daemon=True).start()
+    threading.Thread(target=_prewarm_sentiment, name="SentimentPrewarm",  daemon=True).start()
+
+    # Start pub/sub listeners
+    _start_p3_listener()
+    _start_p7_listener()
+
+    # Optional WebSocket manager
+    try:
+        from websocket_manager import WebSocketManager
+        def _cb(source, symbol, price, volume, side, ts=None):
+            add_transaction(source, symbol, price, volume, side)
+        ws = WebSocketManager()
+        ws.start()
+        ws.subscribe_bybit(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"], _cb)
+        ws.subscribe_twelvedata(["EUR/USD", "XAU/USD"], _cb)
+        logger.info("[dashboard] WebSocket streams started")
+    except Exception as e:
+        logger.warning(f"[dashboard] WebSocket streams failed (non-fatal): {e}")
+
+    logger.info(f"[dashboard] http://{host}:{port}/command-center")
+    app.run(debug=False, host=host, port=port, threaded=True, use_reloader=False)
+
+
+# Standalone mode (python -m dashboard.web_app_live)
+if __name__ == "__main__":
+    logger.info("[dashboard] Standalone mode — engine not connected")
+    app.run(debug=True, host="0.0.0.0", port=5000, threaded=True)

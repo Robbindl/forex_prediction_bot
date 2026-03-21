@@ -1,0 +1,1 @@
+"""Services package — empty init to prevent premature DB connection."""

@@ -1,0 +1,256 @@
+# ==================================================
+# .GITIGNORE FOR TRADING BOT
+# ==================================================
+
+# SECURITY - NEVER COMMIT THESE!
+# ------------------------------------------------
+.env
+.env.*
+!.env.example
+config/*_config.json
+config/telegram_config.json
+config/email_config.json
+config/bot_runtime.json
+config/local_*.py
+twitter_cookies.json
+*key*.py
+*secret*.py
+api_keys.txt
+secrets.json
+secrets/
+whale_session*
+telegram_session*
+*.session
+*.session-journal
+*.key
+*.pem
+data/system_state.json
+.env.local
+*.local
+
+# PYTHON
+# ------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.cache
+coverage.xml
+*.py,cover
+test_results.xml
+junit/
+test-results/
+
+# VIRTUAL ENVIRONMENTS
+# ------------------------------------------------
+venv/
+venv311/
+venv_tf/
+.venv/
+env/
+ENV/
+pythonenv*
+
+# NODE.JS / GATEWAY
+# ------------------------------------------------
+gateway/node_modules/
+gateway/package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# DATABASE
+# ------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.postgres
+!data/cache.py
+data/
+*.sql
+dump.rdb
+postgresql.conf.backup
+timescaledb_tune.backup*
+redis_data/
+redis_dump.rdb
+
+# TRADING DATA
+# ------------------------------------------------
+paper_trades.json
+paper_trades_backup_*.json
+historical_data/
+cache/
+backtest_results/
+!backtest_results/example_*.csv
+backtest_reports/
+backtest_charts/
+backtest_output/
+backtest_logs/
+optimization_results/
+trade_logs/
+portfolio_reports/
+
+# ML MODELS
+# ------------------------------------------------
+ml_models/
+trained_models/
+models/
+ml/pickled_models/
+ml/model_cache/
+ml/prediction_service_cache/
+ml/service_logs/
+*.pkl
+*.h5
+*.joblib
+*.onnx
+*.pt
+*.pth
+*.keras
+*.hdf5
+model_registry.json
+*.mlservice
+ml_service.pid
+ml_service.log
+ml_service_port.txt
+
+# LOGS
+# ------------------------------------------------
+logs/
+logs/**/*.log
+training_logs/
+test_logs/
+*.log
+*.log.*
+*.err
+*.out
+master_controller.log
+health_log.txt
+health_log.json
+logs/exchange_router.log
+logs/portfolio_risk.log
+logs/circuit_breaker.log
+logs/ml_service.log
+
+# IDE
+# ------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PYTHON PACKAGE BUILD
+# ------------------------------------------------
+*.egg-info/
+build/
+dist/
+*.egg
+
+# REPORTS & OUTPUTS
+# ------------------------------------------------
+reports/
+backups/
+backup_*/
+*.html
+!templates/*.html
+architecture_benchmarks/
+performance_logs/
+tests/architecture_test_output/
+tests/test_architecture_output.json
+
+# CONFIGURATION
+# ------------------------------------------------
+*.local.py
+config/local_*.py
+execution/local_settings.py
+risk/local_settings.py
+ml/local_settings.py
+services/local_settings.py
+
+# TEMPORARY & BACKUP FILES
+# ------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.backup
+*.backup2
+data/state_*.tmp
+data/state_backup.json
+data/state_*.json
+*.state
+state_*
+
+# LARGE BINARY FILES
+# ------------------------------------------------
+*.dll
+*.so
+*.exe
+*.bin
+
+# DATA FILES
+# ------------------------------------------------
+*.csv
+!example.csv
+debug_output.txt
+sentiment_test_results.json
+installed_all.txt
+risk/portfolio_state.json
+risk/risk_metrics_cache.json
+risk/drawdown_history.json
+execution/circuit_breaker_state.json
+execution/rate_limiter_state.json
+execution/router_cache.json
+execution/routing_local.json
+execution/exchange_routes.local.json
+
+# STATIC / WEB
+# ------------------------------------------------
+static/
+
+# PID FILES
+# ------------------------------------------------
+*.pid
+services/*.pid
+ml/*.pid
+execution/*.pid
+risk/*.pid
+
+# SOCKET FILES
+# ------------------------------------------------
+*.sock
+/tmp/ml_service.sock
+/ml_service.sock
+
+# EXCHANGE ADAPTER CREDENTIALS
+# ------------------------------------------------
+execution/credentials/
+execution/api_keys/
+execution/*.key
+execution/*.pem
+execution/*.crt
+execution/paper_trader_private.json
+
+# SERVICE CACHE & BACKUPS
+# ------------------------------------------------
+services/cache_backup/
+services/redis_backup/
+services/redis_dump.rdb

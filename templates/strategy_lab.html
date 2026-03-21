@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Strategy Lab — Robbie</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--bd2:#263045;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--font:'Inter',system-ui,sans-serif;--r:8px;--r3:12px}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:hidden}
+.layout{display:flex;height:100vh}
+.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0}
+.sb-logo{padding:20px 16px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+.sb-logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--bl),var(--pu));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#fff}
+.sb-logo-text{font-size:15px;font-weight:700}.sb-logo-text span{color:var(--cy);font-size:11px;display:block;font-weight:400;text-transform:uppercase;letter-spacing:.5px}
+.sb-section{padding:10px 8px 4px;font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px}
+.sb-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;margin:1px 6px;font-size:13px;color:var(--tx2);text-decoration:none;transition:.12s}
+.sb-link:hover{background:var(--s3);color:var(--tx)}.sb-link.active{background:rgba(41,121,255,.12);color:var(--bl);border-left:2px solid var(--bl)}
+.sb-icon{font-size:16px;width:20px;text-align:center}.sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid var(--bd)}
+.status-row{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;color:var(--tx2)}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--gr);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(0,208,132,.4)}50%{box-shadow:0 0 0 5px rgba(0,208,132,0)}}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
+.page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
+.page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--pu)}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.tb-time{font-size:12px;color:var(--tx3);font-family:monospace}
+.tb-balance{font-size:14px;font-weight:700;color:var(--gr)}
+.tb-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:rgba(179,136,255,.13);color:var(--pu)}
+
+/* CONTENT AREA — two-column layout */
+.content{flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:340px 1fr;gap:12px;align-content:start}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden;min-height:80px}
+.panel-full{grid-column:span 2}
+.panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
+.panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
+.panel-badge{margin-left:auto;font-size:10px;padding:2px 8px;border-radius:20px;background:var(--s3);color:var(--tx3)}
+.panel-body{padding:12px 16px}
+
+/* MODE TABS */
+.mode-tabs{display:flex;border-bottom:1px solid var(--bd);background:var(--s2)}
+.mode-tab{flex:1;padding:11px 8px;font-size:12px;font-weight:600;color:var(--tx3);cursor:pointer;text-align:center;transition:.12s;border-bottom:2px solid transparent}
+.mode-tab:hover{color:var(--tx);background:var(--s3)}
+.mode-tab.active{color:var(--pu);border-bottom-color:var(--pu);background:transparent}
+
+/* FORM CONTROLS */
+.form-group{margin-bottom:12px}
+.form-label{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;display:block}
+select,input[type=number]{width:100%;background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:7px 10px;font-size:13px;color:var(--tx);outline:none;transition:.12s}
+select:focus,input[type=number]:focus{border-color:var(--bl)}
+.btn{padding:9px 20px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:.12s;display:flex;align-items:center;gap:6px}
+.btn-primary{background:var(--pu);color:#fff}
+.btn-primary:hover{background:#a070f0}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-secondary{background:var(--s3);color:var(--tx2);border:1px solid var(--bd)}
+.btn-secondary:hover{color:var(--tx)}
+.btn-full{width:100%;justify-content:center}
+.btn-row{display:flex;gap:8px;margin-top:4px}
+
+/* RESULTS */
+.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}
+.stat-card{background:var(--s2);border:1px solid var(--bd);border-radius:9px;padding:10px 12px;text-align:center}
+.sc-val{font-size:20px;font-weight:700;line-height:1;margin-bottom:3px}
+.sc-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px}
+.gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.pu{color:var(--pu)}.mu{color:var(--tx2)}
+
+/* COMPARE TABLE */
+.cmp-table{width:100%;border-collapse:collapse;font-size:12px}
+.cmp-table th{color:var(--tx3);font-size:10px;text-transform:uppercase;letter-spacing:.4px;padding:6px 10px;border-bottom:1px solid var(--bd);text-align:left;font-weight:500}
+.cmp-table td{padding:8px 10px;border-bottom:1px solid rgba(30,38,53,.5)}
+.cmp-table tr:last-child td{border:none}
+.cmp-table tr:hover td{background:rgba(255,255,255,.02)}
+.rank-badge{padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700}
+.rank-1{background:rgba(0,208,132,.15);color:var(--gr)}
+.rank-2{background:rgba(41,121,255,.12);color:var(--bl)}
+.rank-3{background:rgba(255,165,0,.12);color:var(--am)}
+.type-lab{font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(179,136,255,.12);color:var(--pu)}
+.type-live{font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,229,255,.1);color:var(--cy)}
+
+/* TRADE LOG */
+.trade-row{display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(30,38,53,.5);font-size:12px}
+.trade-row:last-child{border:none}
+.t-dir{padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0}
+.t-buy{background:rgba(0,208,132,.15);color:var(--gr)}.t-sell{background:rgba(255,69,96,.15);color:var(--rd)}
+.t-info{flex:1}
+.t-pnl{font-weight:600;flex-shrink:0}
+
+/* LOADING */
+.loading{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
+.spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--bd);border-top-color:var(--pu);border-radius:50%;animation:spin .6s linear infinite;margin-bottom:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty{text-align:center;padding:24px;color:var(--tx3);font-size:13px}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.panel{animation:fadeUp .3s ease both}
+
+/* EQUITY CHART */
+.eq-wrap{height:180px;position:relative;padding:0 0 8px}
+
+/* ── MOBILE HAMBURGER & SIDEBAR OVERLAY ─────────────────────────────── */
+.hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;
+  width:36px;height:36px;cursor:pointer;padding:6px;border-radius:6px;
+  background:transparent;border:none;flex-shrink:0}
+.hamburger span{display:block;height:2px;background:var(--tx);border-radius:2px;transition:.25s}
+.hamburger.open span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+.hamburger.open span:nth-child(2){opacity:0}
+.hamburger.open span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+.sb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
+  z-index:49;backdrop-filter:blur(2px)}
+@media(max-width:768px){
+  .hamburger{display:flex}
+  .sidebar{position:fixed;left:-240px;top:0;height:100vh;z-index:50;
+    transition:left .25s cubic-bezier(.4,0,.2,1);width:240px;
+    box-shadow:4px 0 24px rgba(0,0,0,.5);overflow-y:auto}
+  .sidebar.open{left:0}
+  .sb-overlay.open{display:block}
+  .topbar{padding:0 12px}
+}
+
+/* ── MOBILE SCROLL FIX ───────────────────────────────────────────────── */
+@media(max-width:768px){
+  html,body{overflow:auto!important}
+  .layout{height:auto;min-height:100vh;flex-direction:column}
+  .main{overflow:visible!important;height:auto}
+  .content{overflow:visible!important;height:auto;display:block}
+  .content>*{margin-bottom:10px}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sb-logo">
+      <div class="sb-logo-icon">R</div>
+      <div class="sb-logo-text">Robbie<span>Trading Platform</span></div>
+    </div>
+    <div class="sb-section">Dashboards</div>
+    <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
+    <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
+    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
+    <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
+    <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
+    <a href="/strategy-lab" class="sb-link active"><span class="sb-icon">🧪</span>Strategy Lab</a>
+    <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
+    <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
+    <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
+    <div class="sb-bottom">
+      <div class="status-row"><div class="pulse" id="engineDot"></div><span id="engineStatus">Connecting…</span></div>
+    </div>
+  </nav>
+  <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
+
+  <div class="main">
+    <div class="topbar">
+      <button class="hamburger" id="menuBtn" aria-label="Menu" onclick="toggleSidebar()"><span></span><span></span><span></span></button>
+      <div class="page-title"><div class="dot"></div>Strategy Lab</div>
+      <div class="tb-right">
+        <span class="tb-time" id="clock">—</span>
+        <span class="tb-balance" id="topBalance">—</span>
+        <span class="tb-badge">Phase 5</span>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- LEFT: Controls -->
+      <div>
+        <div class="panel" style="animation-delay:.05s">
+          <div class="mode-tabs">
+            <div class="mode-tab active" onclick="switchMode('backtest')">Backtest</div>
+            <div class="mode-tab" onclick="switchMode('compare')">Compare</div>
+            <div class="mode-tab" onclick="switchMode('optimize')">Optimise</div>
+            <div class="mode-tab" onclick="switchMode('multiasset')">Multi-Asset</div>
+          </div>
+
+          <!-- MODE: Backtest -->
+          <div id="mode-backtest" class="panel-body">
+            <div class="form-group">
+              <label class="form-label">Asset</label>
+              <select id="btAsset" onchange="updateStrategyOptions()">
+                <optgroup label="Crypto">
+                  <option value="BTC-USD">BTC-USD</option>
+                  <option value="ETH-USD">ETH-USD</option>
+                  <option value="SOL-USD">SOL-USD</option>
+                  <option value="BNB-USD">BNB-USD</option>
+                  <option value="XRP-USD">XRP-USD</option>
+                </optgroup>
+                <optgroup label="Forex">
+                  <option value="EUR/USD">EUR/USD</option>
+                  <option value="GBP/USD">GBP/USD</option>
+                  <option value="GBP/JPY">GBP/JPY</option>
+                  <option value="USD/JPY">USD/JPY</option>
+                  <option value="AUD/USD">AUD/USD</option>
+                </optgroup>
+                <optgroup label="Commodities">
+                  <option value="GC=F">Gold (GC=F)</option>
+                  <option value="SI=F">Silver (SI=F)</option>
+                  <option value="CL=F">Oil (CL=F)</option>
+                </optgroup>
+                <optgroup label="Indices">
+                  <option value="^DJI">Dow Jones</option>
+                  <option value="^IXIC">NASDAQ</option>
+                  <option value="^GSPC">S&P 500</option>
+                  <option value="^FTSE">FTSE 100</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Strategy</label>
+              <select id="btStrategy">
+                <optgroup label="Lab Presets" id="labOptgroup"></optgroup>
+                <optgroup label="Live Strategies">
+                  <option value="voting">Voting (Your Live)</option>
+                  <option value="rsi">RSI Strategy</option>
+                  <option value="macd">MACD Strategy</option>
+                  <option value="bollinger">Bollinger Strategy</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Historical Bars</label>
+              <select id="btPeriods">
+                <option value="100">100 bars (~3 months)</option>
+                <option value="200">200 bars (~6 months)</option>
+                <option value="300" selected>300 bars (~1 year)</option>
+                <option value="500">500 bars (~2 years)</option>
+              </select>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary btn-full" id="btBtn" onclick="runBacktest()">
+                <span>▶</span> Run Backtest
+              </button>
+            </div>
+          </div>
+
+          <!-- MODE: Compare -->
+          <div id="mode-compare" class="panel-body" style="display:none">
+            <div class="form-group">
+              <label class="form-label">Asset</label>
+              <select id="cmpAsset">
+                <option value="BTC-USD">BTC-USD</option>
+                <option value="ETH-USD">ETH-USD</option>
+                <option value="EUR/USD">EUR/USD</option>
+                <option value="GBP/USD">GBP/USD</option>
+                <option value="GC=F">Gold</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Historical Bars</label>
+              <select id="cmpPeriods">
+                <option value="200">200 bars</option>
+                <option value="300" selected>300 bars</option>
+                <option value="500">500 bars</option>
+              </select>
+            </div>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs all 15 presets + 4 live strategies. May take ~30 seconds.</p>
+            <button class="btn btn-primary btn-full" id="cmpBtn" onclick="runCompare()">
+              <span>⚖</span> Compare All Strategies
+            </button>
+          </div>
+
+          <!-- MODE: Optimise -->
+          <div id="mode-optimize" class="panel-body" style="display:none">
+            <div class="form-group">
+              <label class="form-label">Asset</label>
+              <select id="optAsset">
+                <option value="BTC-USD">BTC-USD</option>
+                <option value="ETH-USD">ETH-USD</option>
+                <option value="EUR/USD">EUR/USD</option>
+                <option value="GBP/USD">GBP/USD</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Strategy to Optimise</label>
+              <select id="optStrategy" style="width:100%"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Historical Bars</label>
+              <select id="optPeriods">
+                <option value="200">200 bars</option>
+                <option value="300" selected>300 bars</option>
+              </select>
+            </div>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Grid: RSI 10/14/21 × stop 1.0/1.5/2.0 × TP 2.0/3.0/4.0 (27 combinations)</p>
+            <button class="btn btn-primary btn-full" id="optBtn" onclick="runOptimize()">
+              <span>🔍</span> Find Best Parameters
+            </button>
+          </div>
+
+          <!-- MODE: Multi-Asset -->
+          <div id="mode-multiasset" class="panel-body" style="display:none">
+            <div class="form-group">
+              <label class="form-label">Strategy</label>
+              <select id="maStrategy" style="width:100%"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Historical Bars</label>
+              <select id="maPeriods">
+                <option value="200">200 bars</option>
+                <option value="300" selected>300 bars</option>
+              </select>
+            </div>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Tests on BTC, ETH, SOL, EUR/USD, GBP/USD, USD/JPY, Gold, DJI simultaneously.</p>
+            <button class="btn btn-primary btn-full" id="maBtn" onclick="runMultiAsset()">
+              <span>🌐</span> Test Across All Assets
+            </button>
+          </div>
+        </div>
+
+        <!-- Live strategy performance -->
+        <div class="panel" style="margin-top:12px;animation-delay:.1s">
+          <div class="panel-header">
+            <span>📊</span>
+            <span class="panel-title">Live Strategy Stats</span>
+          </div>
+          <div class="panel-body" id="liveStats" style="max-height:200px;overflow-y:auto"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Results -->
+      <div id="resultsPanel">
+        <div class="panel" style="animation-delay:.15s">
+          <div class="panel-header">
+            <span>📈</span>
+            <span class="panel-title" id="resultsTitle">Results</span>
+            <span class="panel-badge" id="resultsBadge">—</span>
+          </div>
+          <div id="resultsBody">
+            <div style="text-align:center;padding:60px 20px">
+              <div style="font-size:40px;margin-bottom:12px">🧪</div>
+              <div style="font-size:14px;color:var(--tx2);margin-bottom:6px">Select a mode and run a backtest</div>
+              <div style="font-size:12px;color:var(--tx3)">Results appear here — equity curve, trade log, metrics</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let eqChart = null;
+let currentMode = 'backtest';
+
+setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }, 1000);
+
+async function checkStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    document.getElementById('engineDot').className = 'pulse' + (d.engine_running ? '' : '');
+    document.getElementById('engineStatus').textContent = d.engine_running ? 'Live' : 'Offline';
+    document.getElementById('topBalance').textContent = d.balance ? '$' + Number(d.balance).toLocaleString('en',{minimumFractionDigits:2}) : '—';
+  } catch(e) {}
+}
+checkStatus(); setInterval(checkStatus, 30000);
+
+// Load available strategies
+async function loadStrategies() {
+  try {
+    const r = await fetch('/api/backtest/strategies');
+    const d = await r.json();
+    const presets = d.presets || [];
+    const labOpt  = document.getElementById('labOptgroup');
+    labOpt.innerHTML = presets.map(p => `<option value="${p}">${p.replace(/_/g,' ')}</option>`).join('');
+    // Populate optimize and multi-asset selects
+    ['optStrategy','maStrategy'].forEach(id => {
+      document.getElementById(id).innerHTML = presets.map(p =>
+        `<option value="${p}">${p.replace(/_/g,' ')}</option>`
+      ).join('');
+    });
+  } catch(e) {}
+}
+loadStrategies();
+
+function switchMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  ['backtest','compare','optimize','multiasset'].forEach(m => {
+    document.getElementById('mode-' + m).style.display = m === mode ? 'block' : 'none';
+  });
+}
+
+function setLoading(btn, msg) {
+  document.getElementById(btn).disabled = true;
+  document.getElementById(btn).innerHTML = `<div class="spinner"></div> ${msg}`;
+  document.getElementById('resultsBody').innerHTML = '<div class="loading"><div class="spinner"></div><br>' + msg + '</div>';
+}
+function clearLoading(btn, label) {
+  document.getElementById(btn).disabled = false;
+  document.getElementById(btn).innerHTML = label;
+}
+
+// ── Backtest ──────────────────────────────────────────────────────────────────
+async function runBacktest() {
+  const asset  = document.getElementById('btAsset').value;
+  const strat  = document.getElementById('btStrategy').value;
+  const periods= document.getElementById('btPeriods').value;
+  setLoading('btBtn', 'Running…');
+  try {
+    const r = await fetch(`/api/backtest/run?asset=${encodeURIComponent(asset)}&strategy=${strat}&periods=${periods}`);
+    const d = await r.json();
+    clearLoading('btBtn', '<span>▶</span> Run Backtest');
+    if (!d.success) { showError(d.error); return; }
+    document.getElementById('resultsTitle').textContent = `${strat.replace(/_/g,' ')} — ${asset}`;
+    document.getElementById('resultsBadge').textContent = periods + ' bars';
+    renderBacktestResult(d);
+  } catch(e) { clearLoading('btBtn', '<span>▶</span> Run Backtest'); showError(e.message); }
+}
+
+function renderBacktestResult(d) {
+  const m = d.metrics || {};
+  const trades = d.trades || [];
+  const wr = m.win_rate != null ? (m.win_rate * 100).toFixed(1) : '—';
+  const pnlColor = m.total_pnl >= 0 ? 'gn' : 'rd';
+  const sharpe = m.sharpe_ratio != null ? m.sharpe_ratio.toFixed(2) : '—';
+  const pf = m.profit_factor != null && m.profit_factor !== Infinity ? m.profit_factor.toFixed(2) : '∞';
+
+  const stats = `
+    <div class="stats-grid">
+      <div class="stat-card"><div class="sc-val ${pnlColor}">$${Number(m.total_pnl||0).toFixed(2)}</div><div class="sc-lbl">Total P&L</div></div>
+      <div class="stat-card"><div class="sc-val cy">${wr}%</div><div class="sc-lbl">Win Rate</div></div>
+      <div class="stat-card"><div class="sc-val pu">${sharpe}</div><div class="sc-lbl">Sharpe Ratio</div></div>
+      <div class="stat-card"><div class="sc-val am">${((m.max_drawdown||0)*100).toFixed(1)}%</div><div class="sc-lbl">Max Drawdown</div></div>
+      <div class="stat-card"><div class="sc-val bl">${m.total_trades||0}</div><div class="sc-lbl">Total Trades</div></div>
+      <div class="stat-card"><div class="sc-val gn">${pf}</div><div class="sc-lbl">Profit Factor</div></div>
+      <div class="stat-card"><div class="sc-val mu">$${Number(m.avg_win||0).toFixed(2)}</div><div class="sc-lbl">Avg Win</div></div>
+      <div class="stat-card"><div class="sc-val rd">$${Number(m.avg_loss||0).toFixed(2)}</div><div class="sc-lbl">Avg Loss</div></div>
+    </div>`;
+
+  const tradeHtml = trades.slice(0,20).map(t => {
+    const pnl = Number(t.pnl||0);
+    return `<div class="trade-row">
+      <div class="t-dir ${t.direction === 'BUY' ? 't-buy' : 't-sell'}">${t.direction||'—'}</div>
+      <div class="t-info">
+        <div style="font-size:12px">Bar ${t.entry_bar} → ${t.exit_bar}</div>
+        <div style="font-size:10px;color:var(--tx3)">${t.outcome||'—'} · ${t.duration||0} bars</div>
+      </div>
+      <div class="t-pnl ${pnl >= 0 ? 'gn' : 'rd'}">$${pnl.toFixed(2)}</div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('resultsBody').innerHTML = `
+    <div style="padding:14px 16px">${stats}</div>
+    <div style="padding:0 16px 14px">
+      <div style="font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Equity Curve</div>
+      <div class="eq-wrap"><canvas id="eqCanvas"></canvas></div>
+    </div>
+    <div style="padding:0 16px 14px">
+      <div style="font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Trade Log (last 20)</div>
+      <div style="max-height:200px;overflow-y:auto">${tradeHtml || '<div class="empty">No trades</div>'}</div>
+    </div>`;
+
+  // Draw equity chart
+  const eq = (m.equity_curve || []).map(p => p.value);
+  drawEquityChart(eq);
+}
+
+function drawEquityChart(values) {
+  const ctx = document.getElementById('eqCanvas');
+  if (!ctx) return;
+  if (eqChart) { eqChart.destroy(); eqChart = null; }
+  const base = values[0] || 10000;
+  eqChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: values.map((_, i) => i),
+      datasets: [{
+        data: values,
+        borderColor: '#b388ff',
+        backgroundColor: 'rgba(179,136,255,.08)',
+        fill: true,
+        pointRadius: 0,
+        borderWidth: 2,
+        tension: 0.3,
+      }, {
+        data: values.map((_, i) => base),
+        borderColor: 'rgba(122,136,153,.25)',
+        borderDash: [4, 4],
+        pointRadius: 0,
+        borderWidth: 1,
+        fill: false,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: {
+        label: c => '$' + Number(c.raw).toFixed(2),
+      }}},
+      scales: {
+        x: { display: false },
+        y: { grid: { color: 'rgba(30,38,53,.8)' }, ticks: { color: '#4a5568', font: { size: 10 },
+             callback: v => '$' + v.toLocaleString() }},
+      },
+    },
+  });
+}
+
+// ── Compare ───────────────────────────────────────────────────────────────────
+async function runCompare() {
+  const asset   = document.getElementById('cmpAsset').value;
+  const periods = document.getElementById('cmpPeriods').value;
+  setLoading('cmpBtn', 'Comparing…');
+  try {
+    const r = await fetch(`/api/backtest/compare?asset=${encodeURIComponent(asset)}&periods=${periods}`);
+    const d = await r.json();
+    clearLoading('cmpBtn', '<span>⚖</span> Compare All Strategies');
+    if (!d.success) { showError(d.error); return; }
+    document.getElementById('resultsTitle').textContent = `Strategy Comparison — ${asset}`;
+    document.getElementById('resultsBadge').textContent = d.results.length + ' strategies';
+    renderCompareResult(d);
+  } catch(e) { clearLoading('cmpBtn', '<span>⚖</span> Compare All Strategies'); showError(e.message); }
+}
+
+function renderCompareResult(d) {
+  const best  = d.best || '';
+  const rows  = (d.results || []).map((r, i) => {
+    const rankClass = i === 0 ? 'rank-1' : i === 1 ? 'rank-2' : i === 2 ? 'rank-3' : '';
+    const pnlColor  = r.total_pnl >= 0 ? 'color:var(--gr)' : 'color:var(--rd)';
+    return `<tr>
+      <td>${rankClass ? `<span class="rank-badge ${rankClass}">#${i+1}</span>` : `<span style="color:var(--tx3)">#${i+1}</span>`}</td>
+      <td><span style="font-size:13px;font-weight:600">${r.name}</span><br><span class="${r.type === 'lab' ? 'type-lab' : 'type-live'}">${r.type}</span></td>
+      <td><span style="font-weight:700;color:var(--pu)">${r.sharpe.toFixed(2)}</span></td>
+      <td>${(r.win_rate * 100).toFixed(1)}%</td>
+      <td style="${pnlColor};font-weight:600">$${r.total_pnl.toFixed(0)}</td>
+      <td style="color:var(--rd)">${(r.max_dd * 100).toFixed(1)}%</td>
+      <td style="color:var(--tx2)">${r.trades}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('resultsBody').innerHTML = `
+    ${best ? `<div style="padding:12px 16px;border-bottom:1px solid var(--bd);font-size:12px;color:var(--tx2)">
+      🏆 Best: <span style="color:var(--gr);font-weight:700">${best.replace(/_/g,' ')}</span>
+    </div>` : ''}
+    <div style="overflow-x:auto">
+      <table class="cmp-table" style="padding:0 16px">
+        <thead><tr>
+          <th>#</th><th>Strategy</th><th>Sharpe</th><th>Win Rate</th><th>P&L</th><th>Max DD</th><th>Trades</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// ── Optimise ──────────────────────────────────────────────────────────────────
+async function runOptimize() {
+  const asset  = document.getElementById('optAsset').value;
+  const strat  = document.getElementById('optStrategy').value;
+  const periods= document.getElementById('optPeriods').value;
+  setLoading('optBtn', 'Optimising…');
+  try {
+    const r = await fetch(`/api/backtest/optimize?asset=${encodeURIComponent(asset)}&strategy=${strat}&periods=${periods}`);
+    const d = await r.json();
+    clearLoading('optBtn', '<span>🔍</span> Find Best Parameters');
+    if (!d.success) { showError(d.error); return; }
+    document.getElementById('resultsTitle').textContent = `Optimisation — ${strat.replace(/_/g,' ')}`;
+    document.getElementById('resultsBadge').textContent = d.total + ' combos tested';
+    renderOptimizeResult(d);
+  } catch(e) { clearLoading('optBtn', '<span>🔍</span> Find Best Parameters'); showError(e.message); }
+}
+
+function renderOptimizeResult(d) {
+  const top5 = d.top5 || [];
+  if (!top5.length) { document.getElementById('resultsBody').innerHTML = '<div class="empty">No results</div>'; return; }
+
+  const rows = top5.map((r, i) => {
+    const rankClass = i === 0 ? 'rank-1' : i === 1 ? 'rank-2' : i === 2 ? 'rank-3' : '';
+    return `<tr>
+      <td>${rankClass ? `<span class="rank-badge ${rankClass}">#${i+1}</span>` : `<span style="color:var(--tx3)">#${i+1}</span>`}</td>
+      <td>${r.rsi_period ?? '—'}</td>
+      <td>${r.stop_mult ?? '—'}</td>
+      <td>${r.tp_mult ?? '—'}</td>
+      <td style="font-weight:700;color:var(--pu)">${Number(r.sharpe||0).toFixed(3)}</td>
+      <td>${Number((r.win_rate||0)*100).toFixed(1)}%</td>
+      <td style="${r.total_pnl >= 0 ? 'color:var(--gr)' : 'color:var(--rd)'};font-weight:600">$${Number(r.total_pnl||0).toFixed(0)}</td>
+      <td style="color:var(--tx2)">${r.trades}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('resultsBody').innerHTML = `
+    <div style="padding:12px 16px;border-bottom:1px solid var(--bd);font-size:12px;color:var(--tx2)">
+      Searched ${d.total} parameter combinations · Best Sharpe: 
+      <span style="color:var(--pu);font-weight:700">${Number(top5[0]?.sharpe||0).toFixed(3)}</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="cmp-table">
+        <thead><tr>
+          <th>Rank</th><th>RSI Period</th><th>Stop ×</th><th>TP ×</th><th>Sharpe</th><th>Win Rate</th><th>P&L</th><th>Trades</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="padding:12px 16px;font-size:11px;color:var(--tx3)">
+      💡 Apply best params by updating <code style="background:var(--s3);padding:1px 5px;border-radius:3px">LIVE_STRATEGY_CONFIGS</code> in strategy_lab/live_bridge.py
+    </div>`;
+}
+
+// ── Multi-Asset ───────────────────────────────────────────────────────────────
+async function runMultiAsset() {
+  const strat  = document.getElementById('maStrategy').value;
+  const periods= document.getElementById('maPeriods').value;
+  setLoading('maBtn', 'Testing…');
+  try {
+    const r = await fetch(`/api/backtest/multi-asset?strategy=${strat}&periods=${periods}`);
+    const d = await r.json();
+    clearLoading('maBtn', '<span>🌐</span> Test Across All Assets');
+    if (!d.success) { showError(d.error); return; }
+    document.getElementById('resultsTitle').textContent = `Multi-Asset — ${strat.replace(/_/g,' ')}`;
+    document.getElementById('resultsBadge').textContent = d.results.length + ' assets';
+    renderMultiAssetResult(d);
+  } catch(e) { clearLoading('maBtn', '<span>🌐</span> Test Across All Assets'); showError(e.message); }
+}
+
+function renderMultiAssetResult(d) {
+  const results = d.results || [];
+  const rows = results.map((r, i) => {
+    const rankClass = i === 0 ? 'rank-1' : i === 1 ? 'rank-2' : i === 2 ? 'rank-3' : '';
+    return `<tr>
+      <td>${rankClass ? `<span class="rank-badge ${rankClass}">#${i+1}</span>` : `#${i+1}`}</td>
+      <td style="font-weight:600">${r.asset}</td>
+      <td style="color:var(--tx3);font-size:11px">${r.category}</td>
+      <td style="font-weight:700;color:var(--pu)">${r.sharpe.toFixed(2)}</td>
+      <td>${(r.win_rate*100).toFixed(1)}%</td>
+      <td style="${r.total_pnl >= 0 ? 'color:var(--gr)' : 'color:var(--rd)'};font-weight:600">$${r.total_pnl.toFixed(0)}</td>
+      <td style="color:var(--rd)">${(r.max_dd*100).toFixed(1)}%</td>
+      <td style="color:var(--tx2)">${r.trades}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('resultsBody').innerHTML = `
+    ${d.best ? `<div style="padding:12px 16px;border-bottom:1px solid var(--bd);font-size:12px;color:var(--tx2)">
+      🏆 Best asset: <span style="color:var(--gr);font-weight:700">${d.best}</span>
+    </div>` : ''}
+    <div style="overflow-x:auto">
+      <table class="cmp-table">
+        <thead><tr>
+          <th>Rank</th><th>Asset</th><th>Category</th><th>Sharpe</th><th>Win Rate</th><th>P&L</th><th>Max DD</th><th>Trades</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// ── Live stats ────────────────────────────────────────────────────────────────
+async function loadLiveStats() {
+  try {
+    const r = await fetch('/api/strategy/performance');
+    const d = await r.json();
+    if (!d.success) return;
+    const strats = d.strategies || {};
+    const names  = Object.keys(strats);
+    if (!names.length) { document.getElementById('liveStats').innerHTML = '<div class="empty">No live data</div>'; return; }
+    const html = names.map(n => {
+      const s  = strats[n];
+      const wr = s.win_rate || 0;
+      return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid rgba(30,38,53,.5)">
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">${n}</div>
+          <div style="font-size:10px;color:var(--tx3)">${s.total||0} trades · ${wr.toFixed(1)}% win</div>
+        </div>
+        <div style="font-size:14px;font-weight:700;${s.pnl >= 0 ? 'color:var(--gr)' : 'color:var(--rd)'}">$${Number(s.pnl||0).toFixed(0)}</div>
+      </div>`;
+    }).join('');
+    document.getElementById('liveStats').innerHTML = html;
+  } catch(e) {}
+}
+loadLiveStats(); setInterval(loadLiveStats, 60000);
+
+function showError(msg) {
+  document.getElementById('resultsBody').innerHTML = `
+    <div style="text-align:center;padding:40px 20px">
+      <div style="font-size:28px;margin-bottom:10px">⚠️</div>
+      <div style="font-size:13px;color:var(--rd);margin-bottom:6px">Error</div>
+      <div style="font-size:12px;color:var(--tx3)">${msg}</div>
+    </div>`;
+}
+</script>
+
+<script>
+function toggleSidebar(){
+  var sb=document.querySelector('.sidebar'),ov=document.getElementById('sbOverlay'),btn=document.getElementById('menuBtn');
+  var open=sb.classList.toggle('open');
+  ov.classList.toggle('open',open);btn.classList.toggle('open',open);
+  document.body.style.overflow=open?'hidden':'';
+}
+document.querySelectorAll('.sb-link').forEach(function(a){
+  a.addEventListener('click',function(){if(document.querySelector('.sidebar').classList.contains('open'))toggleSidebar();});
+});
+</script>
+</body>
+</html>
