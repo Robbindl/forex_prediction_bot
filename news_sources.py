@@ -613,8 +613,9 @@ class NewsSourceIntegrator:
             self._ecb_cache = []
             self._ecb_cache_time = time.time()
             return []
-    
-    def fetch_forexfactory_api(self, limit=10):
+
+    @staticmethod
+    def fetch_forexfactory_api(limit=10):
         """
         Fetch economic calendar — tries 3 sources in order:
           1. ForexFactory official JSON feed (nfs.faireconomy.media)

@@ -121,7 +121,8 @@ class WalletBehaviorClassifier:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _avg_hold_time(self, history: List[dict]) -> float:
+    @staticmethod
+    def _avg_hold_time(history: List[dict]) -> float:
         """Average time in seconds between consecutive movements."""
         if len(history) < 2:
             return float("inf")

@@ -1099,6 +1099,7 @@ class SentimentAnalyzer:
 
     @staticmethod
     @staticmethod
+    @staticmethod
     def _build_result(components: Dict[str, float], weights: Dict[str, float]) -> Dict:
         if not components:
             score = 0.0

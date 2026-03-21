@@ -629,7 +629,8 @@ class RobbieExplainer:
             lines.append(f"\nOn {asset} — feeling balanced, just going with what the data says.")
         return "\n".join(lines)
 
-    def _answer_why_no_signal(self, asset, mood) -> str:
+    @staticmethod
+    def _answer_why_no_signal(asset, mood) -> str:
         return (
             f"I don't have an active signal on {asset} right now, so I can't give you a full breakdown. "
             f"Run `/signal {asset}` to check the live pipeline, then `/ask {asset} why` once a signal is active."

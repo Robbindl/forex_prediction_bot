@@ -225,7 +225,8 @@ class AdvancedPredictionEngine:
         
         return df
 
-    def build_model_ensemble(self) -> dict:
+    @staticmethod
+    def build_model_ensemble() -> dict:
         """Build ensemble of multiple ML models"""
         models = {}
         

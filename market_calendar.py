@@ -64,11 +64,12 @@ class MarketCalendar:
             "is_soon": days_until <= 90,
         }
 
-    def get_high_impact_events(self, days: int = 3):
+    @staticmethod
+    def get_high_impact_events(days: int = 3):
         return get_high_impact_events(days=days)
 
     def should_reduce_risk(self):
-        hi = self.get_high_impact_events(days=2)
+        hi = MarketCalendar.get_high_impact_events(days=2)
         hv = self.get_halving_countdown()
         m  = 1.0
         if hi: m *= 0.7

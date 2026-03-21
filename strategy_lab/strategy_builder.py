@@ -143,7 +143,8 @@ class DynamicStrategy:
                 base = min(1.0, base + float(rule.get("boost", 0.05)))
         return base
 
-    def _snapshot(self, df: pd.DataFrame) -> Dict:
+    @staticmethod
+    def _snapshot(df: pd.DataFrame) -> Dict:
         cols = ["rsi", "ema_20", "ema_50", "macd", "signal", "atr",
                 "bb_upper", "bb_lower", "adx"]
         return {
@@ -228,7 +229,6 @@ class DynamicStrategy:
     @staticmethod
     def _noop(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
         return df
-
 
 # ── Factory ───────────────────────────────────────────────────────────────────
 
