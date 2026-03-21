@@ -47,6 +47,40 @@ _SYMBOL_PATTERN = re.compile(
 )
 
 
+# ── Whale text scorer — financial keyword matching, no external deps ─────────
+_WHALE_BEARISH = {
+    "dump", "dumped", "dumping", "sell", "selling", "sold", "distribution",
+    "distributing", "outflow", "withdrawal", "withdrew", "exit", "exiting",
+    "crash", "crashing", "fear", "panic", "warning", "alert", "suspect",
+    "hack", "hacked", "stolen", "fraud", "scam", "liquidation", "liquidated",
+    "exchange", "moved to exchange", "sent to exchange", "bearish",
+}
+_WHALE_BULLISH = {
+    "buy", "buying", "bought", "accumulation", "accumulating", "inflow",
+    "deposit", "deposited", "holding", "hodl", "transfer from exchange",
+    "from exchange", "cold wallet", "cold storage", "bullish", "long",
+    "institutional", "treasury", "reserve", "staking", "locked",
+}
+
+def _score_whale_text(text: str) -> float:
+    """
+    Score a whale alert message using financial keywords.
+    Returns -1.0 (sell pressure) to +1.0 (buy pressure).
+    Neutral large transfers default to slightly positive (accumulation bias).
+    """
+    if not text:
+        return 0.1
+    words   = set(text.lower().split())
+    words   = {w.strip(".,!?;:") for w in words}
+    bearish = len(words & _WHALE_BEARISH)
+    bullish = len(words & _WHALE_BULLISH)
+    total   = bearish + bullish
+    if total == 0:
+        return 0.1   # unknown transfer — slight accumulation bias
+    raw = (bullish - bearish) / total
+    return round(max(-1.0, min(1.0, raw)), 3)
+
+
 def _parse_value_usd(text: str) -> float:
     """Extract USD value from a whale alert message."""
     for pattern in _VALUE_PATTERNS:
@@ -92,13 +126,16 @@ def _parse_alert(text: str, source: str, date: datetime) -> Optional[Dict]:
     value_m = value_usd / 1_000_000
     title   = f"🐋 {symbol} ${value_m:.1f}M — {source}"
 
+    # Score the raw message text through the financial keyword scorer
+    sentiment = _score_whale_text(text)
+
     return {
         "title":     title,
         "value_usd": value_usd,
         "symbol":    symbol,
         "date":      date.isoformat(),
         "source":    f"Telegram/{source}",
-        "sentiment": 0.15 if value_usd > 10_000_000 else 0.1,
+        "sentiment": sentiment,
         "raw_text":  text[:200],
     }
 

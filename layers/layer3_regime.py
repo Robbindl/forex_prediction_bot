@@ -72,6 +72,11 @@ class RegimeLayer:
         imbalance = 0.0
         if profile.use_order_flow:
             imbalance = _get_orderflow_imbalance(signal.asset)
+            signal.metadata["orderflow_applicable"] = True
+        else:
+            # Non-crypto: mark as not applicable so data integrity gate
+            # does not penalise this signal for missing order flow data
+            signal.metadata["orderflow_applicable"] = False
         signal.metadata["orderflow_imbalance"] = round(imbalance, 3)
 
         # ── Regime gate ───────────────────────────────────────────────────

@@ -10,7 +10,7 @@ Startup sequence:
   6. Start trading loop (daemon thread)
   7. Start auto-trainer (daemon thread)
   8. Start Node.js WebSocket gateway (optional)
-  9. Start Telegram commander (optional)
+  9. Start Telegram commander 
  10. Start Flask dashboard (blocking — main thread)
 """
 from __future__ import annotations
@@ -374,41 +374,73 @@ def main() -> None:
         logger.info("[bot] Gateway disabled via --no-gateway")
 
     # ── Telegram ──────────────────────────────────────────────────────────
+    #
+    # TWO-BOT ARCHITECTURE:
+    #
+    #   Bot 1 — Command Bot (TelegramCommander, polling)
+    #     Receives: trade open/close alerts, pipeline signal journals,
+    #               daily loss limit alerts.
+    #     Handles:  /menu /signal /ask /close /pause /resume commands.
+    #     Why Bot 1: these messages are immediately actionable — you tap
+    #               a button directly after seeing a trade alert.
+    #
+    #   Bot 2 — Intelligence Bot (IntelligenceBot, send-only via requests)
+    #     Receives: Phase 7 market intelligence alerts (whale accumulation,
+    #               liquidation cascades, order flow, narrative trends).
+    #               Phase 11 system health alerts (CPU, RAM, pipeline
+    #               latency, stale data sources).
+    #     Why Bot 2: passive information — no commands needed, no buttons,
+    #               no polling. Raw requests.post, zero conflict risk.
+    #
+    # Bot 2 is always started regardless of whether Bot 1 starts, because
+    # it has its own token and does not depend on Bot 1 in any way.
+    # ──────────────────────────────────────────────────────────────────────
+
+    # ── Bot 2 — Intelligence Bot (always started first, no polling) ───────
+    _intel_bot = None
+    try:
+        from intelligence_bot import intelligence_bot as _intel_bot
+        if _intel_bot.is_ready:
+            logger.info("[bot] Intelligence Bot (Bot 2) ready — send-only")
+        else:
+            logger.warning("[bot] Intelligence Bot (Bot 2) not ready — check WHALE_TELEGRAM_TOKEN in .env")
+    except Exception as e:
+        logger.warning(f"[bot] Intelligence Bot init failed: {e}")
+
+    # Phase 7 and Phase 11 always go to Bot 2
+    try:
+        from services.intelligence_alerts import start_all as start_intel_alerts
+        start_intel_alerts(telegram_bot=_intel_bot)
+        logger.info("[bot] Phase 7 intelligence alerts → Bot 2")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 7 intelligence alerts failed: {e}")
+
+    try:
+        from monitoring import start_monitoring
+        start_monitoring(telegram_bot=_intel_bot)
+        logger.info("[bot] Phase 11 monitoring → Bot 2")
+    except Exception as e:
+        logger.warning(f"[bot] Phase 11 monitoring failed: {e}")
+
+    # ── Bot 1 — Command Bot (polling, interactive) ────────────────────────
     if not args.no_telegram and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
             from telegram_manager import telegram_manager
             started = telegram_manager.start(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, engine)
             if started:
+                # Trade alerts and pipeline journals → Bot 1 only
                 engine.telegram = telegram_manager.bot
                 try:
                     from core.pipeline_reporter import reporter
                     reporter.wire_telegram(telegram_manager.bot)
-                    logger.info("[bot] PipelineReporter wired to Telegram")
+                    logger.info("[bot] PipelineReporter → Bot 1")
                 except Exception as e:
                     logger.warning(f"[bot] PipelineReporter Telegram wire failed: {e}")
-                try:
-                    from services.intelligence_alerts import start_all as start_intel_alerts
-                    start_intel_alerts(telegram_bot=telegram_manager.bot)
-                    logger.info("[bot] Phase 7 intelligence alerts started")
-                except Exception as e:
-                    logger.warning(f"[bot] Phase 7 intelligence alerts failed: {e}")
-                try:
-                    from monitoring import start_monitoring
-                    start_monitoring(telegram_bot=telegram_manager.bot)
-                    logger.info("[bot] Phase 11 monitoring started")
-                except Exception as e:
-                    logger.warning(f"[bot] Phase 11 monitoring failed: {e}")
-                logger.info("[bot] Telegram started and wired to engine")
+                logger.info("[bot] Command Bot (Bot 1) started and wired to engine")
             else:
-                logger.warning("[bot] Telegram not started (duplicate instance or missing creds)")
-                try:
-                    from services.intelligence_alerts import start_all as start_intel_alerts
-                    start_intel_alerts()
-                    logger.info("[bot] Phase 7 intelligence alerts started (no Telegram)")
-                except Exception as e:
-                    logger.warning(f"[bot] Phase 7 intelligence alerts failed: {e}")
+                logger.warning("[bot] Command Bot (Bot 1) not started — duplicate instance or missing creds")
         except Exception as e:
-            logger.warning(f"[bot] Telegram init failed: {e}")
+            logger.warning(f"[bot] Command Bot init failed: {e}")
 
     # ── Wait for engine ───────────────────────────────────────────────────
     logger.info("[bot] Waiting for engine to be ready...")
@@ -454,6 +486,7 @@ def main() -> None:
                     direction=direction,
                     size_usd=size_usd,
                     source=alert.get("source", "whale_alert"),
+                    sentiment=sentiment,
                 )
             except Exception as e:
                 logger.error(f"[bot] on_whale_alert callback error: {e}")

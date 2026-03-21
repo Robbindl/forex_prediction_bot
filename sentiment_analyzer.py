@@ -1,36 +1,3 @@
-"""
-sentiment_analyzer.py — Robbie Sentiment Engine v2.
-
-Architecture
-------------
-Three independent signal families are combined per asset type:
-
-1. MARKET INSTRUMENTS  (VIX, Fear & Greed, Put/Call, AAII)
-   — These are real market prices / surveys. They move WITH the market.
-   — Primary weight for all non-crypto assets.
-
-2. PRICE MOMENTUM      (actual returns from yfinance)
-   — Price IS sentiment. Gold down 5% today = bearish. No NLP needed.
-   — Reliable, fast, always available.
-
-3. NEWS / SOCIAL       (NewsAPI, GNews, RapidAPI, Reddit)
-   — Filtered by asset-specific keywords.
-   — Lower weight — NLP misreads financial context ("oil surges" ≠ bullish
-     for equities). Used as confirmation signal, not primary driver.
-
-Scoring
--------
-All scores normalised to -1.0 (max bearish) → +1.0 (max bullish).
-Composite score = weighted average of available signals only.
-Missing sources are skipped rather than defaulting to 0 (neutral).
-
-Asset routing
--------------
-  crypto      → Fear & Greed + Price Momentum + On-chain + News + Reddit + Whale
-  forex       → Price Momentum + VIX + News (filtered)
-  commodities → Price Momentum + VIX + CNN F&G + News (filtered)
-  indices     → Price Momentum + VIX + CNN F&G + AAII + Put/Call + News
-"""
 from __future__ import annotations
 
 import threading
@@ -312,8 +279,8 @@ class _PriceMomentum:
             # Weighted multi-horizon momentum
             r1  = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]   # 1-day
             r5  = (close.iloc[-1] - close.iloc[0])  / close.iloc[0]    # 5-day
-            # Scale: 1% move ≈ 0.1 score, 5% ≈ 0.5
-            score = _clamp(r1 * 5 * 0.6 + r5 * 2 * 0.4)
+            # Intraday-first: 85% weight on today vs yesterday, 15% on 5-day trend
+            score = _clamp(r1 * 5 * 0.85 + r5 * 2 * 0.15)
             return round(score, 3)
         except Exception as e:
             logger.debug(f"[Sentiment] Price momentum {asset}: {e}")
@@ -333,22 +300,66 @@ class _NewsSentiment:
 
     # Words that score BEARISH in financial headlines
     _BEARISH_WORDS = {
-        "crash", "collapse", "plunge", "tumble", "drop", "fall", "sink",
-        "slump", "decline", "loss", "losses", "fear", "panic", "crisis",
-        "recession", "downturn", "selloff", "sell-off", "dump", "dumps",
-        "concern", "concerns", "warning", "warns", "threat", "threatens",
-        "tariff", "tariffs", "sanctions", "conflict", "war", "tension",
-        "miss", "misses", "disappoint", "disappointing", "weak", "weakness",
-        "below", "cut", "cuts", "layoff", "layoffs", "shutdown", "halt",
+        # Price action
+        "crash", "crashes", "collapse", "collapses", "plunge", "plunges",
+        "tumble", "tumbles", "drop", "drops", "fall", "falls", "sink", "sinks",
+        "slump", "slumps", "decline", "declines", "dip", "dips", "dump", "dumps",
+        "selloff", "sell-off", "correction", "tank", "tanks", "tanking",
+        "bleeding", "bleed", "wipe", "wiped", "erased",
+        # Sentiment / fear
+        "loss", "losses", "fear", "fears", "panic", "crisis", "crises",
+        "recession", "depression", "downturn", "downgrades", "downgrade",
+        "concern", "concerns", "warning", "warns", "worried", "worry",
+        "threat", "threatens", "risk", "risks", "risky", "vulnerable",
+        "uncertainty", "uncertain", "volatile", "volatility",
+        # Geopolitical / macro
+        "war", "wars", "conflict", "conflicts", "tension", "tensions",
+        "strike", "attack", "invasion", "invaded", "escalation", "escalates",
+        "sanctions", "sanctioned", "tariff", "tariffs", "ban", "banned",
+        "catastrophe", "disaster", "emergency", "assassination",
+        # Business / earnings
+        "miss", "misses", "disappoint", "disappointing", "disappoints",
+        "weak", "weakness", "below", "shortfall", "deficit", "negative",
+        "cut", "cuts", "cutting", "layoff", "layoffs", "fired", "bankrupt",
+        "bankruptcy", "insolvent", "default", "defaulted", "shutdown",
+        "halt", "halted", "suspend", "suspended", "freeze", "frozen",
+        "fraud", "scam", "hack", "hacked", "exploit", "exploited", "stolen",
+        "investigation", "probe", "lawsuit", "sued", "charges", "arrested",
+        # Crypto-specific
+        "rug", "rugpull", "depegged", "depeg", "liquidated", "liquidation",
+        "death", "dying", "dead", "worthless", "ponzi", "bubble",
+        # Macro indicators bearish
+        "inflation", "stagflation", "unemployment", "tightening",
+        "hawkish", "overtightening", "contagion",
     }
 
     # Words that score BULLISH in financial headlines
     _BULLISH_WORDS = {
-        "rally", "surge", "rise", "gain", "gains", "soar", "jump", "climb",
-        "recover", "recovery", "rebound", "strong", "strength", "beat",
-        "beats", "exceed", "exceeds", "positive", "growth", "boom",
-        "optimism", "optimistic", "upgrade", "lifted", "boost", "boosted",
-        "record", "high", "milestone", "breakthrough", "demand",
+        # Price action
+        "rally", "rallies", "surge", "surges", "rise", "rises", "rising",
+        "gain", "gains", "soar", "soars", "jump", "jumps", "climb", "climbs",
+        "recover", "recovery", "recovers", "rebound", "rebounds", "bounce",
+        "breakout", "breakthrough", "explode", "moon", "mooning",
+        "accelerate", "accelerating", "spike", "spiked",
+        # Sentiment / confidence
+        "strong", "strength", "strengthens", "beat", "beats", "exceed",
+        "exceeds", "outperform", "outperforms", "positive", "positively",
+        "optimism", "optimistic", "confident", "confidence", "bullish",
+        "upbeat", "enthusiasm", "enthusiastic",
+        # Growth / fundamentals
+        "growth", "grows", "growing", "boom", "booming", "expansion",
+        "upgrade", "upgraded", "lifted", "boost", "boosted", "stimulus",
+        "demand", "adoption", "milestone", "record", "high", "all-time",
+        "ath", "profit", "profits", "earnings", "revenue", "inflow", "inflows",
+        # Institutional / macro bullish
+        "approval", "approved", "etf", "institutional", "investment",
+        "halving", "accumulation", "accumulating", "buyback", "buying",
+        "partnership", "deal", "agreement", "merger", "acquisition",
+        "dovish", "easing", "cut", "rate-cut", "stimulus", "bailout",
+        "resolution", "ceasefire", "truce", "peace", "deal",
+        # Crypto-specific
+        "launched", "launch", "mainnet", "upgrade", "integration",
+        "listed", "listing", "staking", "yield", "airdrop",
     }
 
     # Commodity-specific: "surges" for oil/gold is NOT bullish for equities
@@ -356,6 +367,41 @@ class _NewsSentiment:
     _COMMODITY_WORDS = {
         "surge", "surges", "surge in", "oil surge", "gold rally", "rally in oil",
     }
+
+    # ── Macro event keywords — posts containing these affect multiple assets ──
+    # If a Reddit post title contains any of these AND has high engagement,
+    # it is treated as a macro event and its signal is applied cross-asset.
+    _MACRO_BEARISH = {
+        "war", "strike", "attack", "invasion", "conflict", "explosion",
+        "crisis", "recession", "depression", "collapse", "default",
+        "sanctions", "emergency", "shutdown", "contagion", "pandemic",
+        "catastrophe", "disaster", "assassination", "coup", "escalation",
+    }
+    _MACRO_BULLISH = {
+        "ceasefire", "peace", "deal", "agreement", "stimulus", "bailout",
+        "rescue", "recovery", "breakthrough", "resolution", "truce",
+    }
+
+    # Cross-asset implications of macro events by category
+    # -1.0 = strongly bearish, +1.0 = strongly bullish
+    _MACRO_IMPACT: Dict[str, Dict[str, float]] = {
+        "bearish": {
+            "crypto":      -0.25,   # risk-off hurts crypto
+            "indices":     -0.35,   # equities sell off
+            "forex":       -0.10,   # currency volatility — mild
+            "commodities": +0.30,   # safe havens (gold) and supply disruption (oil)
+        },
+        "bullish": {
+            "crypto":      +0.15,
+            "indices":     +0.25,
+            "forex":       +0.05,
+            "commodities": -0.10,   # risk-on reduces safe haven demand
+        },
+    }
+
+    # Shared macro event cache — populated by any asset lookup, read by all
+    _macro_event_cache: Dict[str, Tuple[float, float]] = {}  # category → (score, expiry)
+    _macro_lock = threading.Lock()
 
     @classmethod
     def get(cls, asset: str) -> Optional[float]:
@@ -372,14 +418,156 @@ class _NewsSentiment:
 
     @classmethod
     def _compute(cls, asset: str) -> Optional[float]:
-        articles = cls._fetch_articles(asset)
-        if not articles:
+        """
+        Compute sentiment score for an asset.
+        Combines traditional news sources with Reddit as a live news feed.
+        Reddit posts are scored by the same financial keyword system — not TextBlob.
+        High-engagement posts get more weight (engagement-weighted average).
+        Macro events detected from Reddit are stored cross-asset.
+        """
+        # ── Standard news sources ─────────────────────────────────────────
+        std_articles = cls._fetch_articles(asset)
+        std_scores   = [cls._score_headline(h, asset) for h in std_articles]
+        std_scores   = [s for s in std_scores if s is not None]
+
+        # ── Reddit as live news feed ──────────────────────────────────────
+        reddit_weighted = cls._fetch_reddit_scored(asset)
+
+        # ── Check macro event cache for cross-asset signals ───────────────
+        cat = _cat(asset)
+        macro_boost = 0.0
+        with cls._macro_lock:
+            entry = cls._macro_event_cache.get(cat)
+            if entry and time.time() < entry[1]:
+                macro_boost = entry[0]
+
+        # ── Combine ───────────────────────────────────────────────────────
+        all_scores: List[float] = []
+        all_weights: List[float] = []
+
+        # Standard news — equal weight 1.0 each
+        for s in std_scores:
+            all_scores.append(s)
+            all_weights.append(1.0)
+
+        # Reddit — weighted by engagement
+        for score, weight in reddit_weighted:
+            all_scores.append(score)
+            all_weights.append(weight)
+
+        if not all_scores and macro_boost == 0.0:
             return None
-        scores = [cls._score_headline(h, asset) for h in articles]
-        scores = [s for s in scores if s is not None]
-        if not scores:
-            return None
-        return round(_clamp(sum(scores) / len(scores)), 3)
+
+        if all_scores:
+            total_w  = sum(all_weights)
+            base     = sum(s * w for s, w in zip(all_scores, all_weights)) / total_w
+        else:
+            base = 0.0
+
+        # Macro event boosts the final score
+        combined = _clamp(base + macro_boost * 0.4)
+        return round(combined, 3)
+
+    @classmethod
+    def _fetch_reddit_scored(cls, asset: str) -> List[Tuple[float, float]]:
+        """
+        Pull Reddit posts for this asset, score each title through the
+        financial keyword scorer, and return (score, engagement_weight) pairs.
+
+        Also detects macro events and stores cross-asset signals.
+        """
+        results: List[Tuple[float, float]] = []
+        try:
+            from reddit_watcher import RedditWatcher
+            rw      = RedditWatcher()
+            data    = rw.get_asset_sentiment(asset)
+            posts   = data.get("posts", [])
+            if not posts:
+                return results
+
+            # Normalise engagement weights across this batch
+            engagements = [
+                max(1, p.get("score", 0) + p.get("comments", 0))
+                for p in posts
+            ]
+            max_eng = max(engagements) if engagements else 1
+
+            now = time.time()
+            macro_signals: List[Tuple[str, float, float]] = []  # (direction, weight, velocity)
+
+            for post, eng in zip(posts, engagements):
+                title   = post.get("title", "")
+                if not title:
+                    continue
+
+                # Score through financial keyword system — same as NewsAPI articles
+                kw_score = cls._score_headline(title, asset)
+                if kw_score is None:
+                    continue
+
+                # Normalised engagement weight (0.5 → 2.0 range)
+                norm_weight = 0.5 + 1.5 * (eng / max_eng)
+
+                # ── Velocity: upvote rate as breaking-news signal ─────────
+                created = post.get("created")
+                velocity_mult = 1.0
+                if created:
+                    try:
+                        from datetime import datetime as _dt
+                        if hasattr(created, "timestamp"):
+                            age_hours = (now - created.timestamp()) / 3600
+                        else:
+                            age_hours = 1.0
+                        if age_hours < 2.0 and eng > 100:
+                            # Breaking news — posts less than 2h old with >100 engagement
+                            velocity = eng / max(0.1, age_hours)
+                            # Scale: 500 upvotes/hr = 1.5x multiplier
+                            velocity_mult = min(2.0, 1.0 + velocity / 1000)
+                    except Exception:
+                        pass
+
+                final_score  = _clamp(kw_score * velocity_mult)
+                final_weight = norm_weight * velocity_mult
+                results.append((final_score, final_weight))
+
+                # ── Macro event detection ─────────────────────────────────
+                words = set(title.lower().split())
+                words = {w.strip(".,!?;:") for w in words}
+                is_macro_bearish = bool(words & cls._MACRO_BEARISH)
+                is_macro_bullish = bool(words & cls._MACRO_BULLISH)
+
+                if is_macro_bearish and eng > 200:
+                    macro_signals.append(("bearish", norm_weight, velocity_mult))
+                elif is_macro_bullish and eng > 200:
+                    macro_signals.append(("bullish", norm_weight, velocity_mult))
+
+            # ── Store macro signals cross-asset ───────────────────────────
+            if macro_signals:
+                total_macro_w = sum(w * v for _, w, v in macro_signals)
+                bearish_w = sum(w * v for d, w, v in macro_signals if d == "bearish")
+                bullish_w = sum(w * v for d, w, v in macro_signals if d == "bullish")
+                net = (bullish_w - bearish_w) / max(1, total_macro_w)
+
+                # Write cross-asset implications into cache (30 min TTL)
+                expiry = now + 1800
+                with cls._macro_lock:
+                    for cat_name, impact_map in cls._MACRO_IMPACT.items():
+                        direction = "bearish" if net < 0 else "bullish"
+                        raw_impact = impact_map.get(direction, {}).get(cat_name, 0.0)
+                        # Weight impact by signal strength
+                        impact = raw_impact * min(1.0, abs(net) * 2)
+                        existing = cls._macro_event_cache.get(cat_name)
+                        if not existing or time.time() >= existing[1]:
+                            cls._macro_event_cache[cat_name] = (impact, expiry)
+                            logger.info(
+                                f"[NewsSentiment] Macro {'bearish' if net < 0 else 'bullish'} "
+                                f"event detected → {cat_name} impact={impact:+.3f}"
+                            )
+
+        except Exception as e:
+            logger.debug(f"[NewsSentiment] Reddit scored fetch failed for {asset}: {e}")
+
+        return results
 
     @classmethod
     def _fetch_articles(cls, asset: str) -> List[str]:
@@ -464,35 +652,83 @@ class _NewsSentiment:
                     if any(kw in a.lower() for kw in kws)]
         return filtered if filtered else articles[:5]  # fallback to any articles
 
+    # ── Bearish phrases — score -2 each (stronger signal than single words) ──
+    _BEARISH_PHRASES = [
+        "interest rate hike", "rate hike", "rate hikes", "rates rise",
+        "below expectations", "miss expectations", "worse than expected",
+        "trade war", "bank run", "bank runs", "bank failure", "bank crisis",
+        "credit crunch", "debt crisis", "supply chain", "recession fears",
+        "inflation surge", "inflation spike", "tighter policy",
+        "regulatory crackdown", "sec charges", "doj charges", "criminal charges",
+        "emergency meeting", "market crash", "flash crash", "black swan",
+        "exchange hack", "exchange collapsed", "exit scam",
+        "mass layoffs", "job cuts", "earning miss",
+    ]
+
+    # ── Bullish phrases — score +2 each ───────────────────────────────────────
+    _BULLISH_PHRASES = [
+        "interest rate cut", "rate cut", "rate cuts", "rates fall",
+        "beats expectations", "beat expectations", "better than expected",
+        "above expectations", "record high", "all time high", "all-time high",
+        "etf approval", "etf approved", "spot etf", "institutional buying",
+        "trade deal", "peace deal", "ceasefire agreement",
+        "earnings beat", "profit surge", "revenue growth",
+        "dovish fed", "dovish pivot", "fed pivot", "quantitative easing",
+        "strategic reserve", "national reserve", "bitcoin reserve",
+        "mass adoption", "mainstream adoption", "major partnership",
+    ]
+
     @classmethod
     def _score_headline(cls, text: str, asset: str) -> Optional[float]:
         """
         Score a headline -1 to +1 using financial keyword sets.
-        Context-aware: commodity words are ignored for non-commodity assets.
+        Phrase matching scores first (stronger signal), then single word matching.
+        Context-aware: commodity surges are not bullish for equities.
         """
         if not text:
             return None
-        words   = text.lower().split()
-        score   = 0.0
-        matches = 0
-        cat     = _cat(asset)
 
+        text_lower = text.lower()
+        words      = text_lower.split()
+        score      = 0.0
+        matches    = 0
+        cat        = _cat(asset)
+
+        # ── Phase 1: phrase matching (weight 2x single words) ─────────────
+        for phrase in cls._BEARISH_PHRASES:
+            if phrase in text_lower:
+                score   -= 2
+                matches += 2
+
+        for phrase in cls._BULLISH_PHRASES:
+            if phrase in text_lower:
+                score   += 2
+                matches += 2
+
+        # ── Phase 2: single word matching ─────────────────────────────────
         for word in words:
-            w = word.strip(".,!?;:'\"")
+            w = word.strip(".,!?;:")
             if w in cls._BEARISH_WORDS:
-                score  -= 1
+                score   -= 1
                 matches += 1
             elif w in cls._BULLISH_WORDS:
-                # Skip commodity-specific bullish words for non-commodity assets
-                if w in {"surge", "surges", "rally"} and cat not in ("commodities", "crypto"):
-                    continue
-                score  += 1
+                # Commodity surge words are not bullish for equities/forex
+                if w in {"surge", "surges", "rally", "rallies", "explode", "moon", "spike", "spiked"}:
+                    if cat not in ("commodities", "crypto"):
+                        continue
+                score   += 1
                 matches += 1
 
         if matches == 0:
             return None
+
+        # Negation dampener — "not rally", "no growth", "never recovered"
+        negation_words = {"not", "no", "never", "without", "despite", "fails", "fail"}
+        if any(neg in words for neg in negation_words):
+            score *= 0.6   # dampen score when negation present
+
         raw = score / matches   # -1 to +1
-        return round(_clamp(raw * 0.8), 3)  # scale to keep within ±0.8
+        return round(_clamp(raw * 0.8), 3)  # scale to ±0.8
 
     @classmethod
     def get_articles_for_dashboard(cls, limit: int = 20) -> List[Dict]:
@@ -612,6 +848,32 @@ class _CryptoSignals:
         return None
 
 
+# ── Reddit sentiment helper ───────────────────────────────────────────────────
+
+def _reddit_score(asset: str) -> Optional[float]:
+    """
+    Fetch Reddit sentiment for any asset using the new public-JSON RedditWatcher.
+    Falls back to _CryptoSignals.reddit() for crypto if RedditWatcher returns nothing.
+    Cached inside RedditWatcher's own 5-minute cache so repeated calls are free.
+    """
+    try:
+        from reddit_watcher import RedditWatcher
+        rw     = RedditWatcher()
+        result = rw.get_asset_sentiment(asset)
+        if result and result.get("total_mentions", 0) > 0:
+            score = result.get("score")
+            if score is not None:
+                return float(_clamp(score))
+    except Exception:
+        pass
+    # Crypto-only fallback
+    try:
+        return _CryptoSignals.reddit(asset)
+    except Exception:
+        pass
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Main SentimentAnalyzer
 # ══════════════════════════════════════════════════════════════════════════════
@@ -718,8 +980,8 @@ class SentimentAnalyzer:
             components["news"] = ns
             weights["news"]    = 0.20
 
-        # 4. Reddit
-        rd = _CryptoSignals.reddit(asset)
+        # 4. Reddit — uses new public-JSON watcher (all subreddits per asset)
+        rd = _reddit_score(asset)
         if rd is not None:
             components["reddit"] = rd
             weights["reddit"]    = 0.20
@@ -734,7 +996,7 @@ class SentimentAnalyzer:
         pm = _PriceMomentum.get(asset)
         if pm is not None:
             components["price_momentum"] = pm
-            weights["price_momentum"]    = 0.45
+            weights["price_momentum"]    = 0.35
 
         # 2. News (asset-specific — gold/oil articles)
         ns = _NewsSentiment.get(asset)
@@ -742,7 +1004,13 @@ class SentimentAnalyzer:
             components["news"] = ns
             weights["news"]    = 0.30
 
-        # 3. VIX (risk-off = gold up, oil complex)
+        # 3. Reddit — r/Gold, r/Silverbugs, r/oil via public JSON
+        rd = _reddit_score(asset)
+        if rd is not None:
+            components["reddit"] = rd
+            weights["reddit"]    = 0.15
+
+        # 4. VIX (risk-off = gold up, oil complex)
         vix = _MarketInstruments.vix()
         if vix:
             # For gold: high VIX = bullish (safe haven). For oil: high VIX = bearish.
@@ -752,7 +1020,7 @@ class SentimentAnalyzer:
             elif asset == "SI=F":
                 v_score = -v_score * 0.7
             components["vix"] = v_score
-            weights["vix"]    = 0.25
+            weights["vix"]    = 0.15
 
         return self._build_result(components, weights)
 
@@ -764,7 +1032,7 @@ class SentimentAnalyzer:
         pm = _PriceMomentum.get(asset)
         if pm is not None:
             components["price_momentum"] = pm
-            weights["price_momentum"]    = 0.50
+            weights["price_momentum"]    = 0.40
 
         # 2. News (asset-filtered)
         ns = _NewsSentiment.get(asset)
@@ -772,7 +1040,13 @@ class SentimentAnalyzer:
             components["news"] = ns
             weights["news"]    = 0.30
 
-        # 3. VIX — high VIX = risk-off = USD strength = bearish non-USD pairs
+        # 3. Reddit — r/Forex, r/Forexstrategy, r/trading via public JSON
+        rd = _reddit_score(asset)
+        if rd is not None:
+            components["reddit"] = rd
+            weights["reddit"]    = 0.15
+
+        # 4. VIX — high VIX = risk-off = USD strength = bearish non-USD pairs
         vix = _MarketInstruments.vix()
         if vix:
             components["vix"] = vix["score"]
@@ -789,9 +1063,15 @@ class SentimentAnalyzer:
         pm = _PriceMomentum.get(asset)
         if pm is not None:
             components["price_momentum"] = pm
-            weights["price_momentum"]    = 0.30
+            weights["price_momentum"]    = 0.20
 
-        # 2. VIX (primary fear gauge for equities)
+        # 2. Reddit — r/stocks, r/investing, r/wallstreetbets via public JSON
+        rd = _reddit_score(asset)
+        if rd is not None:
+            components["reddit"] = rd
+            weights["reddit"]    = 0.10
+
+        # 3. VIX (primary fear gauge for equities)
         vix = _MarketInstruments.vix()
         if vix:
             components["vix"] = vix["score"]

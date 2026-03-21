@@ -49,9 +49,15 @@ class TradingCore:
         self.registry = AssetRegistry()
         self.pipeline: Pipeline = _global_pipeline
 
-        if self.state.open_position_count() == 0:
+        from pathlib import Path as _Path
+        _state_file_exists = _Path("data/system_state.json").exists()
+
+        if self.state.open_position_count() == 0 and not _state_file_exists:
+            # First ever run — no saved state at all — use the supplied balance
             self.state.set_balance(balance, "startup")
+            logger.info(f"[TradingCore] Fresh start — balance=${balance}")
         else:
+            # Restart — preserve accumulated balance from previous session
             logger.info(
                 f"[TradingCore] Restored balance=${self.state.balance:.2f} "
                 f"positions={self.state.open_position_count()}"
@@ -241,6 +247,12 @@ class TradingCore:
 
             for pos in self.state.get_open_positions():
                 self._paper_trader.restore_position(pos)
+
+            # ── Offline gap-fill check ────────────────────────────────────────
+            # For every restored position, scan OHLCV history from open_time
+            # to now and close any position whose SL or TP was breached while
+            # the bot was offline. First breach chronologically wins.
+            self._check_offline_sl_tp()
 
             try:
                 registry = ModelRegistry()
@@ -450,7 +462,8 @@ class TradingCore:
         return result
 
     def _execute_signal(self, signal: Signal) -> bool:
-        if self.state.open_position_count() >= 5:
+        from config.config import MAX_POSITIONS
+        if self.state.open_position_count() >= MAX_POSITIONS:
             return False
 
         from config.config import CATEGORY_CAPS
@@ -576,6 +589,152 @@ class TradingCore:
     def get_strategy_stats(self) -> Dict:
         return self.state.get_all_strategy_stats()
 
+    def _check_offline_sl_tp(self) -> None:
+        """
+        Runs once on startup after positions are restored.
+        For each open position, fetches 5m OHLCV bars from open_time to now
+        and checks if SL or TP was breached while the bot was offline.
+        If breached, closes the position at the breach price so P&L and
+        trade history are accurate.
+        """
+        import yfinance as yf
+        from datetime import datetime, timezone
+        from data.fetcher import _yf_symbol
+
+        positions = self.state.get_open_positions()
+        if not positions:
+            return
+
+        logger.info(f"[TradingCore] Offline gap-fill: checking {len(positions)} position(s)")
+
+        for pos in positions:
+            trade_id    = pos.get("trade_id", "")
+            asset       = pos.get("asset", "")
+            category    = pos.get("category", "forex")
+            direction   = pos.get("direction", pos.get("signal", "BUY"))
+            entry       = float(pos.get("entry_price", 0))
+            stop_loss   = float(pos.get("stop_loss", 0))
+            take_profit = float(pos.get("take_profit", 0))
+            open_time   = pos.get("open_time", "")
+            size        = float(pos.get("position_size", 0))
+
+            if not entry or not stop_loss or not asset:
+                continue
+
+            try:
+                # Parse open_time to a datetime
+                try:
+                    dt_open = datetime.fromisoformat(open_time)
+                    if dt_open.tzinfo is None:
+                        dt_open = dt_open.replace(tzinfo=timezone.utc)
+                except Exception:
+                    logger.debug(f"[GapFill] Cannot parse open_time for {asset} — skipping")
+                    continue
+
+                dt_now = datetime.now(tz=timezone.utc)
+                minutes_offline = (dt_now - dt_open).total_seconds() / 60
+
+                # No gap to check — bot just started
+                if minutes_offline < 5:
+                    continue
+
+                # Fetch 5m bars covering the offline period
+                # yfinance supports 5m for up to 60 days
+                sym = _yf_symbol(asset, category)
+                ticker = yf.Ticker(sym)
+                df = ticker.history(period="7d", interval="5m", auto_adjust=True)
+
+                if df is None or df.empty:
+                    logger.debug(f"[GapFill] No 5m data for {asset} — skipping")
+                    continue
+
+                # Filter to bars after open_time
+                df.index = df.index.tz_convert("UTC") if df.index.tzinfo else df.index.tz_localize("UTC")
+                df = df[df.index > dt_open].copy()
+
+                if df.empty:
+                    continue
+
+                # Scan each bar chronologically — first breach wins
+                breach_price  = None
+                breach_reason = None
+                breach_time   = None
+
+                for bar_time, bar in df.iterrows():
+                    bar_low  = float(bar["Low"])
+                    bar_high = float(bar["High"])
+
+                    if direction == "BUY":
+                        if bar_low <= stop_loss:
+                            breach_price  = stop_loss
+                            breach_reason = "Stop Loss (offline)"
+                            breach_time   = bar_time
+                            break
+                        if take_profit and bar_high >= take_profit:
+                            breach_price  = take_profit
+                            breach_reason = "Take Profit (offline)"
+                            breach_time   = bar_time
+                            break
+                    else:  # SELL
+                        if bar_high >= stop_loss:
+                            breach_price  = stop_loss
+                            breach_reason = "Stop Loss (offline)"
+                            breach_time   = bar_time
+                            break
+                        if take_profit and bar_low <= take_profit:
+                            breach_price  = take_profit
+                            breach_reason = "Take Profit (offline)"
+                            breach_time   = bar_time
+                            break
+
+                if breach_price is None:
+                    logger.debug(f"[GapFill] {asset}: no breach found — position remains open")
+                    continue
+
+                # Calculate P&L at breach price
+                pnl = (breach_price - entry) * size if direction == "BUY" else (entry - breach_price) * size
+
+                # Close in state + DB
+                closed = self.state.close_position(trade_id, breach_price, breach_reason, pnl)
+                if not closed:
+                    continue
+
+                # Remove from PaperTrader
+                if self._paper_trader:
+                    with self._paper_trader._lock:
+                        self._paper_trader.open_positions.pop(trade_id, None)
+
+                # Set cooldown
+                try:
+                    canonical = self.registry.canonical(asset)
+                    self.state.set_cooldown(canonical, TRADE_CLOSE_COOLDOWN_MINUTES)
+                except Exception:
+                    pass
+
+                # Telegram alert
+                self._notify_telegram_close(closed)
+
+                # Side effects
+                try:
+                    from services.personality_service import personality as _personality
+                    _personality.record_trade(closed)
+                except Exception:
+                    pass
+                try:
+                    from monitoring.system_health_service import monitor as _mon
+                    _mon.record_trade_result(pnl)
+                except Exception:
+                    pass
+
+                logger.info(
+                    f"[GapFill] {asset} {direction} closed offline — "
+                    f"{breach_reason} @ {breach_price:.5f}  "
+                    f"PnL=${pnl:.2f}  breached at {breach_time}"
+                )
+
+            except Exception as e:
+                logger.error(f"[GapFill] {asset} gap-fill error: {e}")
+
     def close_position_manually(self, trade_id: str) -> Optional[Dict]:
         pos = self.state.get_open_position(trade_id)
         if not pos:
@@ -602,10 +761,16 @@ class TradingCore:
         if not closed:
             return None
 
+        # 2. Remove from PaperTrader so it stops monitoring this ghost position.
+        #    Without this the position stays in PaperTrader.open_positions forever,
+        #    and when SL/TP eventually triggers it fires on_trade_closed a second time.
         if self._paper_trader:
             with self._paper_trader._lock:
                 self._paper_trader.open_positions.pop(trade_id, None)
 
+        # 3. Set cooldown so the asset is not immediately re-scanned and re-opened.
+        #    Without this the next 45-second scan cycle treats the asset as a fresh
+        #    candidate and re-opens the position the user just closed.
         try:
             canonical = self.registry.canonical(closed.get("asset", ""))
             self.state.set_cooldown(canonical, TRADE_CLOSE_COOLDOWN_MINUTES)

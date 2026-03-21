@@ -175,7 +175,7 @@ class BacktestEngine:
             # ── Open trade at next bar open ────────────────────────────────
             entry = float(df.iloc[i]["open"]) if i + 1 < len(df) else price
             size  = self._risk_manager.calculate_position_size(
-                entry, sig.stop_loss, category, sig.confidence
+                entry, sig.stop_loss, category, sig.confidence, asset
             )
             if size <= 0:
                 equity.append(balance)

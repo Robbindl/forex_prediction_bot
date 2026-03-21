@@ -72,7 +72,25 @@ def _fetch_put_call(asset: str) -> Optional[float]:
 
 
 def _fetch_reddit_sentiment(asset: str) -> Optional[float]:
-    """Fetch Reddit sentiment. Only valid for crypto."""
+    """
+    Fetch Reddit sentiment for any asset.
+    First tries the new RedditWatcher.get_asset_sentiment() which supports
+    all 18 assets with proper subreddit mappings.
+    Falls back to _CryptoSignals.reddit() for crypto if RedditWatcher fails.
+    """
+    # Primary — new RedditWatcher with per-asset subreddit mappings
+    try:
+        from reddit_watcher import RedditWatcher
+        rw = RedditWatcher()
+        result = rw.get_asset_sentiment(asset)
+        if result and result.get("total_mentions", 0) > 0:
+            score = result.get("score")
+            if score is not None:
+                return float(score)
+    except Exception:
+        pass
+
+    # Fallback — _CryptoSignals.reddit() via SentimentAnalyzer (crypto only)
     try:
         sa = _get_analyzer()
         if sa is None or not sa.reddit or not sa.reddit.enabled:
@@ -140,7 +158,7 @@ class SentimentLayer:
                 elif pc_aligned < -0.3:
                     signal.reduce(0.02)
 
-        # Reddit — crypto only
+        # Reddit — all assets that have subreddit mappings
         if profile.use_reddit:
             reddit_score = _fetch_reddit_sentiment(signal.asset)
             if reddit_score is not None:
@@ -148,6 +166,8 @@ class SentimentLayer:
                 reddit_aligned = reddit_score * direction_sign
                 if reddit_aligned > 0.3:
                     signal.boost(0.02)
+                elif reddit_aligned < -0.3:
+                    signal.reduce(0.02)
 
         # ── Kill on strongly opposing sentiment ───────────────────────────
         if aligned_score <= _KILL_THRESHOLD:

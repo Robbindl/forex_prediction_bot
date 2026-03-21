@@ -55,11 +55,15 @@ class PaperTrader:
             logger.warning(f"[PaperTrader] Missing price data for {asset}")
             return None
 
-        # Position size
+        # Position size with asset-aware pip values
         pos_size = float(signal.get("position_size", 0))
         if not pos_size:
             pos_size = self._risk_manager.calculate_position_size(
-                entry, stop_loss, category, confidence
+                entry_price=entry,
+                stop_loss=stop_loss,
+                category=category,
+                confidence=confidence,
+                asset=asset,  # Pass asset for pip value calculation
             )
 
         if not pos_size or pos_size <= 0:

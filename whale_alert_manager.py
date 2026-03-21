@@ -42,6 +42,44 @@ except Exception:
     _whale_store = None
 
 
+# ── Whale text scorer — shared by all sources in this module ─────────────────
+_WHALE_BEARISH_WORDS = {
+    "dump", "dumped", "dumping", "sell", "selling", "sold", "distribution",
+    "distributing", "outflow", "withdrawal", "withdrew", "exit", "exiting",
+    "crash", "crashing", "fear", "panic", "warning", "suspect",
+    "hack", "hacked", "stolen", "fraud", "scam", "liquidation", "liquidated",
+    "bearish", "offload", "offloading", "drops", "falls", "declines",
+}
+_WHALE_BULLISH_WORDS = {
+    "buy", "buying", "bought", "accumulation", "accumulating", "inflow",
+    "deposit", "deposited", "holding", "hodl", "cold wallet", "cold storage",
+    "bullish", "long", "institutional", "treasury", "reserve",
+    "staking", "locked", "accumulate", "rises", "gains",
+}
+
+def _score_whale_text(text: str) -> float:
+    """
+    Score a whale alert text using financial keywords.
+    Returns -1.0 (strong sell pressure) to +1.0 (strong buy pressure).
+    Unknown transfers default to slightly positive (accumulation bias).
+    """
+    if not text:
+        return 0.1
+    lower   = text.lower()
+    words   = {w.strip(".,!?;:") for w in lower.split()}
+    bearish = len(words & _WHALE_BEARISH_WORDS)
+    bullish = len(words & _WHALE_BULLISH_WORDS)
+    if "to exchange" in lower or "exchange inflow" in lower:
+        bearish += 1
+    if "from exchange" in lower or "exchange outflow" in lower:
+        bullish += 1
+    total = bearish + bullish
+    if total == 0:
+        return 0.1
+    raw = (bullish - bearish) / total
+    return round(max(-1.0, min(1.0, raw)), 3)
+
+
 class WhaleAlertAPI:
     """Authenticated whale-alert.io API. No fake data ever returned."""
 
@@ -83,17 +121,40 @@ class WhaleAlertAPI:
                 if value_usd < 1_000_000:
                     continue
                 symbol = str(tx.get("symbol", "")).upper()
+                # Derive direction from transaction type — from/to exchange metadata
+                tx_type   = str(tx.get("transaction_type", "")).lower()
+                from_owner = str(tx.get("from", {}).get("owner", "")).lower()
+                to_owner   = str(tx.get("to", {}).get("owner", "")).lower()
+
+                # Exchange inflow = whale selling, outflow = whale accumulating
+                if "exchange" in to_owner:
+                    direction = "SELL"   # moving TO exchange = selling intent
+                elif "exchange" in from_owner:
+                    direction = "BUY"    # moving FROM exchange = accumulation
+                elif "unknown" in from_owner and "unknown" in to_owner:
+                    direction = "BUY"    # wallet-to-wallet = accumulation bias
+                else:
+                    direction = "BUY"    # default accumulation bias
+
+                # Sentiment scales with transaction size — larger = stronger signal
+                if value_usd >= 100_000_000:    # $100M+
+                    sentiment = 0.40 if direction == "BUY" else -0.40
+                elif value_usd >= 10_000_000:   # $10M+
+                    sentiment = 0.25 if direction == "BUY" else -0.25
+                else:                            # $1M+
+                    sentiment = 0.10 if direction == "BUY" else -0.10
+
                 alerts.append({
                     "title":      f"🐋 {tx['amount']:.2f} {symbol} (${value_usd/1e6:.1f}M)",
                     "value_usd":  value_usd,
                     "symbol":     symbol,
                     "asset":      symbol,
                     "amount":     float(tx.get("amount", 0)),
-                    "direction":  "BUY" if float(tx.get("amount", 0)) > 0 else "SELL",
+                    "direction":  direction,
                     "alert_time": datetime.fromtimestamp(int(tx.get("timestamp", time.time()))),
                     "source":     "whale-alert.io",
                     "url":        tx.get("url", ""),
-                    "sentiment":  0.15 if value_usd > 10_000_000 else 0.1,
+                    "sentiment":  sentiment,
                 })
             except Exception as e:
                 logger.warning(f"[WhaleAPI] Transaction parse error: {e}")
@@ -267,9 +328,9 @@ class WhaleAlertManager:
         if RedditWatcher:
             try:
                 rw = RedditWatcher()
-                self.reddit = rw if rw.enabled else None
-                if not rw.enabled:
-                    logger.info("[WhaleManager] Reddit: disabled (no credentials)")
+                # New RedditWatcher uses public JSON — always enabled, no credentials needed
+                self.reddit = rw
+                logger.info("[WhaleManager] Reddit: enabled (public JSON, no auth required)")
             except Exception as e:
                 logger.warning(f"[WhaleManager] RedditWatcher init failed: {e}")
 
@@ -335,16 +396,20 @@ class WhaleAlertManager:
             try:
                 for a in self.twitter_watcher.get_recent_alerts():
                     if "whale_info" in a:
-                        info = a["whale_info"]
+                        info     = a["whale_info"]
+                        raw_text = a.get("text", "")
+                        # Score the actual tweet text — not a hardcoded constant
+                        sentiment = _score_whale_text(raw_text) if raw_text else 0.1
+                        direction = "BUY" if sentiment >= 0 else "SELL"
                         all_new.append({
                             "title":      f"🐋 {info['amount']} {info['symbol']} (${info['value_usd']/1e6:.1f}M)",
                             "value_usd":  info["value_usd"],
                             "symbol":     info["symbol"],
                             "asset":      info["symbol"],
-                            "direction":  "BUY",
+                            "direction":  direction,
                             "alert_time": a.get("created_at", datetime.utcnow()),
                             "source":     f"Twitter @{a['account']}",
-                            "sentiment":  0.1,
+                            "sentiment":  sentiment,
                         })
             except Exception as e:
                 logger.warning(f"[WhaleManager] Twitter collect error: {e}")
@@ -362,15 +427,21 @@ class WhaleAlertManager:
                     # Normalise to naive datetime
                     if hasattr(alert_time, "tzinfo") and alert_time.tzinfo is not None:
                         alert_time = alert_time.replace(tzinfo=None)
+                    # Use pre-scored sentiment from TelegramWhaleWatcher if available,
+                    # otherwise score the raw title text directly
+                    sentiment = a.get("sentiment")
+                    if sentiment is None or sentiment == 0.1:
+                        sentiment = _score_whale_text(a.get("title", ""))
+                    direction = "BUY" if sentiment >= 0 else "SELL"
                     all_new.append({
                         "title":      a["title"],
                         "value_usd":  a["value_usd"],
                         "symbol":     a["symbol"],
                         "asset":      a["symbol"],
-                        "direction":  "BUY" if a.get("sentiment", 0.1) >= 0 else "SELL",
+                        "direction":  direction,
                         "alert_time": alert_time,
                         "source":     a["source"],
-                        "sentiment":  a.get("sentiment", 0.1),
+                        "sentiment":  sentiment,
                     })
             except Exception as e:
                 logger.warning(f"[WhaleManager] Telegram collect error: {e}")
@@ -382,15 +453,18 @@ class WhaleAlertManager:
                     alert_time = a["created"]
                     if hasattr(alert_time, "tzinfo") and alert_time.tzinfo is not None:
                         alert_time = alert_time.replace(tzinfo=None)
+                    # Score the Reddit post title through the financial keyword scorer
+                    sentiment = _score_whale_text(a.get("title", ""))
+                    direction = "BUY" if sentiment >= 0 else "SELL"
                     all_new.append({
                         "title":      a["title"],
                         "value_usd":  a["value_usd"],
                         "symbol":     a["symbol"],
                         "asset":      a["symbol"],
-                        "direction":  "BUY",
+                        "direction":  direction,
                         "alert_time": alert_time,
                         "source":     a["source"],
-                        "sentiment":  0.1,
+                        "sentiment":  sentiment,
                     })
             except Exception as e:
                 logger.warning(f"[WhaleManager] Reddit collect error: {e}")

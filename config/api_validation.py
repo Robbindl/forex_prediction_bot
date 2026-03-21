@@ -1,10 +1,3 @@
-"""
-config/api_validation.py — Startup API key validation.
-
-Call validate_apis() from bot.py before starting the trading loop.
-Raises RuntimeError for any [REQUIRED] key that is missing/placeholder.
-Logs warnings for optional keys that are not set.
-"""
 from __future__ import annotations
 
 import os
@@ -59,14 +52,7 @@ def validate_apis() -> None:
             "AlphaVantage sentiment disabled."
         )
 
-    # ── Optional: Reddit ──────────────────────────────────────────────────
-    reddit_id  = os.getenv("REDDIT_CLIENT_ID", "")
-    reddit_sec = os.getenv("REDDIT_CLIENT_SECRET", "")
-    if _is_placeholder(reddit_id) or _is_placeholder(reddit_sec):
-        warnings.append(
-            "REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET not set.  "
-            "Reddit crypto sentiment disabled."
-        )
+    # Reddit — no credentials needed (uses public JSON endpoints)
 
     # ── Optional: FMP for put/call ────────────────────────────────────────
     fmp_key = os.getenv("FMP_API_KEY", "")

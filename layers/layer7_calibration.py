@@ -1,11 +1,3 @@
-"""
-layers/layer7_calibration.py — Final calibration gate.
-
-Changes vs original:
-  - Position sizing errors explicitly logged (no silent debug pass).
-  - Take-profit level calculation errors logged.
-  - All exceptions use logger.error not logger.debug.
-"""
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from core.signal import Signal
@@ -70,6 +62,7 @@ class CalibrationLayer:
                     entry_price = signal.entry_price,
                     stop_loss   = signal.stop_loss,
                     category    = signal.category,
+                    asset       = signal.asset,
                 )
                 signal.position_size                    = size
                 signal.risk_parameters["position_size"] = size

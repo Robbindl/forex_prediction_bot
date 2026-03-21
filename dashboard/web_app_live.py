@@ -1,11 +1,3 @@
-"""
-dashboard/web_app_live.py — Robbie Trading Intelligence Dashboard
-
-Clean rewrite. No legacy code. Every route documented.
-bot.py contract:
-    from dashboard.web_app_live import start_dashboard
-    start_dashboard(engine, host="0.0.0.0", port=5000)  # blocking
-"""
 from __future__ import annotations
 
 import argparse
@@ -471,18 +463,30 @@ def api_command_center():
             _cache_set("cc_slow", _cc_slow, ttl=300)
 
         # Use real open positions as signals — they ARE the active signals
-        signals = [{
-            "asset":       p.get("asset", ""),
-            "signal":      p.get("direction", p.get("signal", "BUY")),
-            "direction":   p.get("direction", p.get("signal", "BUY")),
-            "confidence":  p.get("confidence", 0),
-            "entry_price": p.get("entry_price", 0),
-            "stop_loss":   p.get("stop_loss", 0),
-            "take_profit": p.get("take_profit", 0),
-            "category":    p.get("category", ""),
-            "strategy_id": p.get("strategy_id", ""),
-            "pnl":         p.get("pnl", 0),
-        } for p in positions[:6]]
+        signals = []
+        for p in positions[:6]:
+            _cp2 = 0.0
+            try:
+                _r2, _ = _fetcher.get_real_time_price(
+                    p.get("asset", ""), p.get("category", "forex")
+                )
+                if _r2:
+                    _cp2 = float(_r2)
+            except Exception:
+                pass
+            signals.append({
+                "asset":         p.get("asset", ""),
+                "signal":        p.get("direction", p.get("signal", "BUY")),
+                "direction":     p.get("direction", p.get("signal", "BUY")),
+                "confidence":    p.get("confidence", 0),
+                "entry_price":   p.get("entry_price", 0),
+                "current_price": _cp2,
+                "stop_loss":     p.get("stop_loss", 0),
+                "take_profit":   p.get("take_profit", 0),
+                "category":      p.get("category", ""),
+                "strategy_id":   p.get("strategy_id", ""),
+                "pnl":           p.get("pnl", 0),
+            })
 
         return jsonify({
             "success":          True,
@@ -524,12 +528,24 @@ def api_signals_live():
                 if filt == "buy"  and d != "BUY":  continue
                 if filt == "sell" and d != "SELL": continue
                 if filt == "high" and c < 0.70:    continue
+                # Fetch live price for current_price display
+                _cur_price = 0.0
+                try:
+                    _cp, _ = _fetcher.get_real_time_price(
+                        p.get("asset", ""), p.get("category", "forex")
+                    )
+                    if _cp:
+                        _cur_price = float(_cp)
+                except Exception:
+                    pass
+
                 signals.append({
                     "asset":         p.get("asset", ""),
                     "signal":        d, "direction": d,
                     "category":      p.get("category", ""),
                     "confidence":    c,
                     "entry_price":   float(p.get("entry_price", 0)),
+                    "current_price": _cur_price,
                     "stop_loss":     float(p.get("stop_loss", 0)),
                     "take_profit":   float(p.get("take_profit", 0)),
                     "position_size": float(p.get("position_size", 0)),
@@ -970,14 +986,14 @@ def api_risk_portfolio():
             cat = p.get("category", "unknown")
             by_cat.setdefault(cat, {"count": 0, "pnl": 0.0, "exposure": 0.0})
             by_cat[cat]["count"]    += 1
-            by_cat[cat]["pnl"]      += float(p.get("pnl", 0))
+            by_cat[cat]["pnl"]      += float(p.get("pnl") or 0)
             by_cat[cat]["exposure"] += float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
 
         closed  = core.get_closed_trades(limit=100)
-        wins    = [t for t in closed if float(t.get("pnl", 0)) > 0]
-        losses  = [t for t in closed if float(t.get("pnl", 0)) <= 0]
-        avg_win = sum(float(t["pnl"]) for t in wins)   / len(wins)   if wins   else 0.0
-        avg_los = sum(float(t["pnl"]) for t in losses) / len(losses) if losses else 0.0
+        wins    = [t for t in closed if float(t.get("pnl") or 0) > 0]
+        losses  = [t for t in closed if float(t.get("pnl") or 0) <= 0 and float(t.get("pnl") or 0) != 0]
+        avg_win = sum(float(t.get("pnl") or 0) for t in wins)   / len(wins)   if wins   else 0.0
+        avg_los = sum(float(t.get("pnl") or 0) for t in losses) / len(losses) if losses else 0.0
         pf      = abs(avg_win / avg_los) if avg_los else 0.0
 
         return jsonify({
@@ -1023,9 +1039,9 @@ def api_strategy_performance():
                                "avg_duration_min": round(avg_dur),
                                "avg_trade_pnl": round(pnl / total, 4) if total else 0}
         timeline = [{"asset": t.get("asset", ""), "direction": t.get("direction", ""),
-                     "pnl": float(t.get("pnl", 0)), "strategy": t.get("strategy_id", ""),
+                     "pnl": float(t.get("pnl") or 0), "strategy": t.get("strategy_id", ""),
                      "exit_time": str(t.get("exit_time", ""))[:16],
-                     "conf": float(t.get("confidence", 0))} for t in trades[:50]]
+                     "conf": float(t.get("confidence") or 0)} for t in trades[:50]]
         return jsonify({"success": True, "strategies": enriched, "timeline": timeline})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -1053,18 +1069,66 @@ def api_backtest_run():
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"})
         from strategy_lab import StrategyBuilder, BacktestEngineV2
-        configs  = StrategyBuilder.all_configs()
-        existing = {"voting": {}, "rsi": {"type": "rsi"}, "macd": {"type": "macd"},
-                    "bollinger": {"type": "bollinger"}}
-        cfg  = configs.get(strategy, existing.get(strategy, {}))
-        s    = StrategyBuilder.from_dict(cfg)
+        from strategy_lab.strategy_adapter import StrategyAdapter
+        configs = StrategyBuilder.all_configs()
+
+        # Live strategies (RSI, MACD, Bollinger, Voting) — wrap via StrategyAdapter
+        # so they use the same logic as the live trading loop.
+        # Lab preset strategies — use DynamicStrategy via StrategyBuilder.from_dict().
+        _live_map = {
+            "voting":   "VotingStrategy",
+            "rsi":      "RSIStrategy",
+            "macd":     "MACDStrategy",
+            "bollinger":"BollingerStrategy",
+        }
+        if strategy in _live_map:
+            try:
+                if strategy == "voting":
+                    from strategies.voting import VotingStrategy
+                    _strat_obj = VotingStrategy()
+                elif strategy == "rsi":
+                    from strategies.rsi import RSIStrategy
+                    _strat_obj = RSIStrategy()
+                elif strategy == "macd":
+                    from strategies.macd import MACDStrategy
+                    _strat_obj = MACDStrategy()
+                else:
+                    from strategies.bollinger import BollingerStrategy
+                    _strat_obj = BollingerStrategy()
+                s = StrategyAdapter(_strat_obj, asset=asset, category=cat)
+            except Exception as _e:
+                return jsonify({"success": False, "error": f"Strategy load failed: {_e}"}), 500
+        elif strategy in configs:
+            s = StrategyBuilder.from_dict(configs[strategy])
+        else:
+            return jsonify({"success": False, "error": f"Unknown strategy: {strategy}"}), 400
+
         eng  = BacktestEngineV2(strategy=s, initial_balance=balance)
         r    = eng.run(df)
-        return jsonify({"success": True, "result": {
-            "asset": asset, "strategy": strategy, "total_trades": r.total_trades,
-            "win_rate": round(r.win_rate * 100, 2), "total_pnl": round(r.total_pnl, 2),
-            "max_drawdown": round(r.max_drawdown, 4), "sharpe_ratio": round(r.sharpe_ratio, 3),
-        }})
+
+        # Build response matching exactly what the template reads:
+        # d.metrics.*  — all performance metrics
+        # d.trades     — per-trade list with entry_bar, exit_bar, direction, pnl, outcome, duration
+        # d.metrics.equity_curve — [{value: x}, ...] for the chart
+        metrics = {
+            "total_trades":  r.total_trades,
+            "win_rate":      round(r.win_rate, 4),        # raw 0-1, template does *100
+            "total_pnl":     round(r.total_pnl, 2),
+            "total_pnl_pct": round(r.total_pnl_pct, 4),
+            "max_drawdown":  round(r.max_drawdown, 4),
+            "sharpe_ratio":  round(r.sharpe_ratio, 3),
+            "profit_factor": round(r.profit_factor, 4) if r.profit_factor != float("inf") else 9999,
+            "avg_win":       round(r.avg_win, 2),
+            "avg_loss":      round(r.avg_loss, 2),
+            "equity_curve":  [{"value": round(v, 2)} for v in r.equity_curve],
+        }
+        return jsonify({
+            "success":  True,
+            "asset":    asset,
+            "strategy": strategy,
+            "metrics":  metrics,
+            "trades":   r.trades,
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1100,7 +1164,43 @@ def api_backtest_compare():
 
 @app.route("/api/backtest/optimize")
 def api_backtest_optimize():
-    return jsonify({"success": False, "error": "Use /api/backtest/compare for strategy comparison"}), 501
+    try:
+        asset    = request.args.get("asset", "BTC-USD")
+        cat      = _cat(asset)
+        strategy = request.args.get("strategy", "ema_rsi_crossover")
+        periods  = int(request.args.get("periods", 300))
+        _TF = "15m"
+        df  = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
+        if df is None or df.empty:
+            return jsonify({"success": False, "error": f"No data for {asset}"}), 400
+        from strategy_lab import StrategyBuilder
+        from strategy_lab.parameter_optimizer import ParameterOptimizer
+        from strategy_lab.backtest_engine_v2 import BacktestEngineV2
+        configs = StrategyBuilder.all_configs()
+        if strategy not in configs:
+            return jsonify({"success": False, "error": f"Strategy '{strategy}' not in lab presets. Optimise only works on lab preset strategies."}), 400
+        base_cfg   = configs[strategy]
+        param_grid = {
+            "rsi_period": [10, 14, 21],
+            "stop_mult":  [1.0, 1.5, 2.0],
+            "tp_mult":    [2.0, 3.0, 4.0],
+        }
+        optimizer = ParameterOptimizer(
+            base_config     = base_cfg,
+            df              = df,
+            initial_balance = float(request.args.get("balance", _args.balance)),
+        )
+        results = optimizer.grid_search(param_grid)
+        top5    = results[:5] if results else []
+        return jsonify({
+            "success":  True,
+            "asset":    asset,
+            "strategy": strategy,
+            "total":    len(results),
+            "top5":     top5,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/backtest/multi-asset")
 def api_backtest_multi_asset():
@@ -1110,25 +1210,52 @@ def api_backtest_multi_asset():
         balance  = float(request.args.get("balance", _args.balance))
         _TF = "15m"
         from strategy_lab import StrategyBuilder, BacktestEngineV2
-        configs  = StrategyBuilder.all_configs()
-        cfg      = configs.get(strategy, {})
-        test_assets = [("BTC-USD", "crypto"), ("ETH-USD", "crypto"), ("EUR/USD", "forex"),
-                       ("GBP/USD", "forex"), ("GC=F", "commodities"), ("^DJI", "indices")]
+        from strategy_lab.strategy_adapter import StrategyAdapter
+        configs = StrategyBuilder.all_configs()
+        _live_map = {"voting": "VotingStrategy", "rsi": "RSIStrategy",
+                     "macd": "MACDStrategy", "bollinger": "BollingerStrategy"}
+        test_assets = [("BTC-USD","crypto"),("ETH-USD","crypto"),("SOL-USD","crypto"),
+                       ("EUR/USD","forex"),("GBP/USD","forex"),("USD/JPY","forex"),
+                       ("GC=F","commodities"),("^DJI","indices")]
         results = []
         for asset, cat in test_assets:
             try:
                 df = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
                 if df is None or df.empty: continue
-                s   = StrategyBuilder.from_dict(cfg)
+                if strategy in _live_map:
+                    if strategy == "voting":
+                        from strategies.voting import VotingStrategy
+                        _obj = VotingStrategy()
+                    elif strategy == "rsi":
+                        from strategies.rsi import RSIStrategy
+                        _obj = RSIStrategy()
+                    elif strategy == "macd":
+                        from strategies.macd import MACDStrategy
+                        _obj = MACDStrategy()
+                    else:
+                        from strategies.bollinger import BollingerStrategy
+                        _obj = BollingerStrategy()
+                    s = StrategyAdapter(_obj, asset=asset, category=cat)
+                elif strategy in configs:
+                    s = StrategyBuilder.from_dict(configs[strategy])
+                else:
+                    continue
                 eng = BacktestEngineV2(strategy=s, initial_balance=balance)
                 r   = eng.run(df)
-                results.append({"asset": asset, "category": cat,
-                                 "sharpe": round(r.sharpe_ratio, 3),
-                                 "win_rate": round(r.win_rate * 100, 2),
-                                 "total_pnl": round(r.total_pnl, 2)})
+                results.append({
+                    "asset":     asset,
+                    "category":  cat,
+                    "sharpe":    round(r.sharpe_ratio, 3),
+                    "win_rate":  round(r.win_rate, 4),
+                    "total_pnl": round(r.total_pnl, 2),
+                    "max_dd":    round(r.max_drawdown, 4),
+                    "trades":    r.total_trades,
+                })
             except Exception:
                 pass
-        return jsonify({"success": True, "strategy": strategy, "results": results})
+        results.sort(key=lambda x: x.get("sharpe", -999), reverse=True)
+        best = results[0]["asset"] if results else None
+        return jsonify({"success": True, "strategy": strategy, "results": results, "best": best})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

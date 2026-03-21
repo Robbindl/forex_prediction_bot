@@ -15,6 +15,19 @@ _PRIORITY_HEADER = {
 }
 
 
+def _fmt_price(price: float) -> str:
+    """Smart price formatting — no hardcoded decimal places."""
+    if price == 0:
+        return "0"
+    if price >= 1000:
+        return f"{price:,.2f}"
+    if price >= 10:
+        return f"{price:.2f}"
+    if price >= 0.1:
+        return f"{price:.4f}"
+    return f"{price:.5f}"
+
+
 class AlertFormatter:
     """
     Formats event dicts into Telegram Markdown messages.
@@ -183,7 +196,7 @@ class AlertFormatter:
             f"{icon} *Liquidity Wall*\n\n"
             f"Asset:    `{asset}`\n"
             f"Side:     `{side}`\n"
-            f"Level:    `{price:.5f}`\n"
+            f"Level:    `{_fmt_price(price)}`\n"
             f"Size:     `{ratio:.1f}× average`\n"
             f"Strength: `{strength}`\n\n"
             f"_{impl}_"
@@ -219,7 +232,7 @@ class AlertFormatter:
         return (
             f"{icon} *Stop Hunt Detected*\n\n"
             f"Asset:      `{asset}`\n"
-            f"Wall level: `{wall_price:.5f}` ({wall_side})\n"
+            f"Wall level: `{_fmt_price(wall_price)}` ({wall_side})\n"
             f"Wick:       `{wick_pct:.3f}%` through level\n"
             f"Reverted:   `{revert_ms}ms`\n"
             f"Signal:     `{impl}`\n"

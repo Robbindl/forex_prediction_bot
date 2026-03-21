@@ -44,8 +44,6 @@ class RiskManager:
         """
         Sync account balance after a trade closes.
         Updates self.account_balance, PositionSizer, AND DailyLossGuard.
-        Previously had two definitions — second silently overwrote the first,
-        dropping the _sizer sync so position sizes never shrank after losses.
         """
         with self._lock:
             self.account_balance        = new_balance
@@ -64,9 +62,13 @@ class RiskManager:
         stop_loss:   float,
         category:    str   = "forex",
         confidence:  float = 0.7,
+        asset:       str   = "",  # Added for pip value calculation
     ) -> float:
+        """Calculate position size with asset-aware pip values."""
         with self._lock:
-            return self._sizer.calculate(entry_price, stop_loss, category, confidence)
+            return self._sizer.calculate(
+                entry_price, stop_loss, category, confidence, asset
+            )
 
     def validate_signal(
         self,

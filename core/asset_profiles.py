@@ -1,10 +1,3 @@
-"""
-core/asset_profiles.py — Asset-aware data profiles.
-
-Single source of truth for which layers/data sources are applicable
-to each asset category.  Every layer must consult these profiles before
-processing — applying crypto data to forex is a hard bug.
-"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, Set
@@ -79,7 +72,7 @@ _FOREX_PROFILE = AssetProfile(
     use_whale_data    = False,
     use_aaii          = False,
     use_put_call      = False,
-    use_reddit        = False,
+    use_reddit        = True,
     use_session_gates = True,
     use_macro_news    = True,
     min_valid_layers  = 3,
@@ -96,7 +89,7 @@ _US_INDEX_PROFILE = AssetProfile(
     use_whale_data    = False,
     use_aaii          = True,    # AAII valid for US indices only
     use_put_call      = True,    # Put/call valid for US indices only
-    use_reddit        = False,
+    use_reddit        = True,
     use_session_gates = True,
     use_macro_news    = True,
     min_valid_layers  = 3,
@@ -113,7 +106,7 @@ _UK_INDEX_PROFILE = AssetProfile(
     use_whale_data    = False,
     use_aaii          = False,   # AAII not applicable to UK
     use_put_call      = False,   # US put/call not applicable to UK
-    use_reddit        = False,
+    use_reddit        = True,
     use_session_gates = True,
     use_macro_news    = True,
     min_valid_layers  = 3,
@@ -130,7 +123,7 @@ _COMMODITY_PROFILE = AssetProfile(
     use_whale_data    = False,
     use_aaii          = False,
     use_put_call      = False,
-    use_reddit        = False,
+    use_reddit        = True,
     use_session_gates = True,
     use_macro_news    = True,
     min_valid_layers  = 3,
@@ -219,3 +212,12 @@ def is_us_index(asset: str) -> bool:
 
 def is_commodity(asset: str) -> bool:
     return asset in COMMODITY_ASSETS
+
+def get_pip_value(asset: str) -> float:
+    from risk.position_sizer import PositionSizer
+    return PositionSizer.ASSET_PIP_VALUES.get(asset, 0.0001)
+
+
+def get_pip_value_per_lot(asset: str) -> float:
+    from risk.position_sizer import PositionSizer
+    return PositionSizer.PIP_VALUE_PER_LOT.get(asset, 10.0)

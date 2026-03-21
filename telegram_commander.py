@@ -1,42 +1,3 @@
-"""
-telegram_commander.py — Robbie's Telegram interface.
-
-Architecture
-────────────
-Every interaction flows through inline keyboard buttons.
-No wall-of-text command lists — one tap navigates anywhere.
-
-Navigation model
-────────────────
-/start  → Main Menu (inline keyboard, edits in-place)
-Every button press triggers a CallbackQueryHandler that
-edits the same message — so the chat stays clean.
-
-Callback data format:  "action"  or  "action:param"
-  menu           → main menu
-  status         → live status card
-  positions      → open positions list
-  close:TRADEID  → confirm close
-  close_ok:ID    → execute close
-  balance        → balance + P&L card
-  signals        → category picker
-  cat:CATEGORY   → asset picker for category
-  sig:ASSET      → run signal through pipeline
-  why:ASSET      → Robbie explains signal
-  ask            → prompt user to type question
-  mood           → Robbie's current mood
-  diary          → memorable moments
-  pause          → pause trading
-  resume         → resume trading
-  strategies     → strategy stats
-  market         → market hours
-
-Threading
-─────────
-Bot runs in a daemon thread with its own asyncio loop.
-send_message() / alert_*() use run_coroutine_threadsafe()
-so any trading thread can send alerts safely.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -265,6 +226,23 @@ class TelegramCommander:
 
     # ── send_message (thread-safe, callable from any thread) ─────────────────
 
+    @staticmethod
+    def _fmt_price(price: float, asset: str = "") -> str:
+        """
+        Format price with correct decimal places for the asset type.
+        Forex/low-price pairs: 5dp. Crypto major / commodities: 2dp.
+        Indices / large values: 2dp with comma separator.
+        """
+        if price == 0:
+            return "0"
+        if price >= 1000:
+            return f"{price:,.2f}"
+        if price >= 10:
+            return f"{price:.2f}"
+        if price >= 0.1:
+            return f"{price:.4f}"
+        return f"{price:.5f}"
+
     def send_message(self, text: str, parse_mode: str = ParseMode.MARKDOWN,
                      reply_markup=None) -> bool:
         if not self._rate_ok():
@@ -347,12 +325,13 @@ class TelegramCommander:
             sl    = float(trade.get("stop_loss",   0))
             tp    = float(trade.get("take_profit", 0))
             rr    = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
+            _a = trade.get('asset', '?')
             self.send_message(
                 f"{emoji} *Trade Opened*\n\n"
-                f"Asset:    {trade.get('asset', '?')}\n"
-                f"Entry:    `{entry:.5f}`\n"
-                f"Stop:     `{sl:.5f}`\n"
-                f"Target:   `{tp:.5f}`\n"
+                f"Asset:    {_a}\n"
+                f"Entry:    `{self._fmt_price(entry, _a)}`\n"
+                f"Stop:     `{self._fmt_price(sl, _a)}`\n"
+                f"Target:   `{self._fmt_price(tp, _a)}`\n"
                 f"R:R:      {rr:.1f}:1\n"
                 f"Conf:     {float(trade.get('confidence', 0)):.0%}\n"
                 f"Strategy: {trade.get('strategy_id', '?')}\n"
@@ -366,12 +345,15 @@ class TelegramCommander:
             pnl   = float(trade.get("pnl", 0))
             icon  = "✅" if pnl >= 0 else "❌"
             sign  = "+" if pnl >= 0 else ""
+            _a2 = trade.get('asset', '?')
+            _en = float(trade.get('entry_price', 0))
+            _ex = float(trade.get('exit_price',  0))
             self.send_message(
                 f"{icon} *Trade Closed*\n\n"
-                f"Asset:  {trade.get('asset', '?')}\n"
+                f"Asset:  {_a2}\n"
                 f"P&L:    `{sign}${pnl:.2f}`\n"
-                f"Entry:  `{float(trade.get('entry_price', 0)):.5f}`\n"
-                f"Exit:   `{float(trade.get('exit_price',  0)):.5f}`\n"
+                f"Entry:  `{self._fmt_price(_en, _a2)}`\n"
+                f"Exit:   `{self._fmt_price(_ex, _a2)}`\n"
                 f"Reason: {trade.get('exit_reason', '?')}"
             )
         except Exception as e:
@@ -659,7 +641,7 @@ class TelegramCommander:
             f"⚠️ *Confirm Close*\n\n"
             f"Asset:  {asset}\n"
             f"Side:   {d}\n"
-            f"Entry:  `{entry:.5f}`\n"
+            f"Entry:  `{self._fmt_price(entry, asset)}`\n"
             f"ID:     `{trade_id}`\n\n"
             f"Are you sure?",
             parse_mode=ParseMode.MARKDOWN,
@@ -820,8 +802,8 @@ class TelegramCommander:
 
             lines.append(
                 f"{emoji} *{asset}* ({direction})\n"
-                f"  Entry: `{entry:.5f}` | Stop: `{sl:.5f}`\n"
-                f"  TP:    `{tp:.5f}` | Conf: {conf:.0%}\n"
+                f"  Entry: `{self._fmt_price(entry, asset)}` | Stop: `{self._fmt_price(sl, asset)}`\n"
+                f"  TP:    `{self._fmt_price(tp, asset)}` | Conf: {conf:.0%}\n"
                 f"{pnl_str}"
                 f"  ID: `{tid}`\n"
             )
@@ -914,15 +896,15 @@ class TelegramCommander:
         if tp_levels:
             for i, lv in enumerate(tp_levels[:3], 1):
                 price = float(lv) if isinstance(lv, (int, float)) else float(lv.get("price", 0))
-                tp_lines += f"  TP{i}: `{price:.5f}`\n"
+                tp_lines += f"  TP{i}: `{self._fmt_price(price, asset)}`\n"
         else:
-            tp_lines = f"  TP:  `{tp:.5f}`\n"
+            tp_lines = f"  TP:  `{self._fmt_price(tp, asset)}`\n"
 
         text = (
             f"{emoji} *{d} {display}*\n"
             f"{'─' * 26}\n"
-            f"📍 Entry:  `{entry:.5f}`\n"
-            f"🛑 Stop:   `{sl:.5f}`\n"
+            f"📍 Entry:  `{self._fmt_price(entry, asset)}`\n"
+            f"🛑 Stop:   `{self._fmt_price(sl, asset)}`\n"
             f"{tp_lines}"
             f"\n📊 *Quality*\n"
             f"Confidence: {conf:.0%}\n"
@@ -1083,8 +1065,8 @@ class TelegramCommander:
                 f"{icon} *Closed*\n\n"
                 f"Asset:   {result.get('asset', trade_id)}\n"
                 f"P&L:     `${pnl:+.2f}`\n"
-                f"Entry:   `{float(result.get('entry_price', 0)):.5f}`\n"
-                f"Exit:    `{float(result.get('exit_price', 0)):.5f}`\n"
+                f"Entry:   `{self._fmt_price(float(result.get('entry_price', 0)), result.get('asset', ''))}`\n"
+                f"Exit:    `{self._fmt_price(float(result.get('exit_price', 0)), result.get('asset', ''))}`\n"
                 f"Reason:  {result.get('exit_reason', 'Manual')}",
                 _kb([("📈 Positions", "positions"), ("🏠 Menu", "menu")])
             )

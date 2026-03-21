@@ -39,7 +39,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .badge-live{background:rgba(0,208,132,.13);color:var(--gr)}
 .badge-off{background:rgba(255,69,96,.13);color:var(--rd)}
 
-.content{flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:auto auto auto;gap:12px;min-height:0}
+.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-content:start;min-height:0}
 
 /* METRIC CARDS */
 .metric-card{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);padding:16px 18px;position:relative;overflow:hidden}
@@ -52,7 +52,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.pu{color:var(--pu)}.mu{color:var(--tx2)}
 
 /* PANELS */
-.panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden;min-height:80px}
 .panel-wide{grid-column:span 2}.panel-full{grid-column:span 4}.panel-3{grid-column:span 3}
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
@@ -137,7 +137,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 <body>
 <div class="layout">
   <!-- SIDEBAR -->
-  <nav class="sidebar">
+    <nav class="sidebar">
     <div class="sb-logo">
       <div class="sb-logo-icon">R</div>
       <div class="sb-logo-text">Robbie<span>Trading Platform</span></div>
@@ -150,13 +150,13 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
     <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
     <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
+    <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
+    <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
     <div class="sb-section" style="margin-top:8px">Legacy</div>
     <a href="/" class="sb-link"><span class="sb-icon">📈</span>Signals</a>
-    <a href="/chart" class="sb-link"><span class="sb-icon">🕯️</span>Chart</a>
-    <div class="sb-bottom">
-      <div class="status-row"><div class="pulse" id="engineDot"></div><span id="engineStatus">Connecting…</span></div>
-    </div>
+    <a href="/accuracy" class="sb-link"><span class="sb-icon">🎯</span>Accuracy</a>
+    <div class="sb-bottom"></div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
 
@@ -235,8 +235,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <a href="/risk-dashboard" style="margin-left:8px;font-size:11px;color:var(--bl);text-decoration:none">Risk →</a>
         </div>
         <div class="panel-body">
-          <div class="pos-table-wrap"><table class="pos-table">
-            <thead><tr><th>Asset</th><th>Direction</th><th>Entry</th><th>Stop</th><th>Target</th><th>Size</th><th>P&L</th><th>Conf</th></tr></thead>
+          <div class="pos-table-wrap" style="max-height:280px;overflow-y:auto"><table class="pos-table">
+            <thead><tr><th>Asset</th><th>Dir</th><th>Entry</th><th>Current</th><th>Stop</th><th>Target</th><th>P&L</th><th>Conf</th></tr></thead>
             <tbody id="posBody"><tr><td colspan="8" class="empty">No open positions</td></tr></tbody>
           </table>
         </div>
@@ -320,13 +320,15 @@ async function loadMain(){
         const dir=(p.direction||p.signal||'BUY').toUpperCase();
         const pnl=p.pnl||0;
         const e=p.entry_price||0;const sl=p.stop_loss||0;const tp=p.take_profit||0;const sm=e<10;
+        const cur=p.current_price||0;
+        const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
         return`<tr>
           <td><strong>${p.asset||'?'}</strong> <span style="font-size:10px;color:var(--tx3)">${p.category||''}</span></td>
           <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:600">${dir}</td>
           <td style="font-family:monospace">${sm?e.toFixed(5):e.toFixed(2)}</td>
+          <td style="font-family:monospace;font-weight:600;color:${curCol}">${cur>0?(sm?cur.toFixed(5):cur.toFixed(2)):'—'}</td>
           <td style="font-family:monospace;color:var(--rd)">${sm?sl.toFixed(5):sl.toFixed(2)}</td>
           <td style="font-family:monospace;color:var(--gr)">${sm?tp.toFixed(5):tp.toFixed(2)}</td>
-          <td>${(p.position_size||0).toFixed(4)}</td>
           <td class="${pnl>=0?'pnl-pos':'pnl-neg'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
           <td>${((p.confidence||0)*100).toFixed(0)}%</td>
         </tr>`;

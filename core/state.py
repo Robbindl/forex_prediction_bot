@@ -37,8 +37,9 @@ class SystemState:
         self._asset_stats:      Dict[str, Dict] = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
 
         # ── Load ──────────────────────────────────────────────────────────
-        self._load_json()        # load balance / cooldowns / counters
+        self._load_json()                # load balance / cooldowns / counters
         self._load_positions_from_db()   # restore open positions from DB
+        self._rebuild_stats_from_db()    # rebuild strategy/asset stats from trades table
 
     # ── Positions ─────────────────────────────────────────────────────────────
 
@@ -358,6 +359,84 @@ class SystemState:
                 logger.info(f"[State] Restored {len(positions)} open position(s) from DB")
         except Exception as e:
             logger.error(f"[State] DB position restore failed: {e}")
+
+    def _rebuild_stats_from_db(self) -> None:
+        """
+        Rebuild strategy_stats and asset_stats from the trades table.
+        Called on startup after _load_json() so stats survive even if
+        system_state.json is deleted or corrupted.
+        If _load_json() already populated the stats dicts, those values
+        take precedence — this only fills in what is missing.
+        """
+        try:
+            from services.db_pool import get_db
+            from sqlalchemy import text
+            db = get_db()
+            with db.get_session() as s:
+                rows = s.execute(text("""
+                    SELECT strategy_id, asset, pnl
+                    FROM   trades
+                    WHERE  exit_time IS NOT NULL
+                      AND  pnl IS NOT NULL
+                      AND  strategy_id IS NOT NULL
+                      AND  strategy_id != ''
+                """)).fetchall()
+
+            if not rows:
+                return
+
+            # Build counts from DB
+            db_strategy: dict = {}
+            db_asset:    dict = {}
+
+            for strategy_id, canonical_asset, pnl_raw in rows:
+                pnl = float(pnl_raw)
+                win = pnl > 0
+
+                # Strategy stats
+                if strategy_id not in db_strategy:
+                    db_strategy[strategy_id] = {"wins": 0, "losses": 0, "pnl": 0.0}
+                db_strategy[strategy_id]["pnl"] += pnl
+                if win:
+                    db_strategy[strategy_id]["wins"]   += 1
+                else:
+                    db_strategy[strategy_id]["losses"] += 1
+
+                # Asset stats
+                asset_key = canonical_asset or ""
+                if asset_key:
+                    if asset_key not in db_asset:
+                        db_asset[asset_key] = {"wins": 0, "losses": 0, "pnl": 0.0}
+                    db_asset[asset_key]["pnl"] += pnl
+                    if win:
+                        db_asset[asset_key]["wins"]   += 1
+                    else:
+                        db_asset[asset_key]["losses"] += 1
+
+            # Merge into in-memory dicts — DB is source of truth if JSON was empty
+            with self._lock:
+                json_has_strategy = any(
+                    v["wins"] + v["losses"] > 0
+                    for v in self._strategy_stats.values()
+                )
+                json_has_asset = any(
+                    v["wins"] + v["losses"] > 0
+                    for v in self._asset_stats.values()
+                )
+
+                if not json_has_strategy:
+                    for sid, s in db_strategy.items():
+                        self._strategy_stats[sid].update(s)
+                    logger.info(
+                        f"[State] Rebuilt strategy stats from DB "                        f"({len(db_strategy)} strategies, {len(rows)} trades)"
+                    )
+
+                if not json_has_asset:
+                    for asset, s in db_asset.items():
+                        self._asset_stats[asset].update(s)
+
+        except Exception as e:
+            logger.error(f"[State] _rebuild_stats_from_db failed: {e}")
 
     def force_save(self) -> None:
         with self._lock:
