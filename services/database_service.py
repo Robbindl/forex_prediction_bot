@@ -5,13 +5,13 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from sqlalchemy import desc, func, text
+from sqlalchemy import desc, text
 from sqlalchemy.orm import Session
 
 from config.database import SessionLocal
 from models.trade_models import (
     Trade, OpenPosition, DailyStats,
-    TradingDiary, WhaleAlert, BotPersonality,
+    WhaleAlert,
 )
 from utils.logger import get_logger
 

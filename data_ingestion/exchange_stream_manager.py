@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import json
-import socket
-import ssl
 import threading
 import time
 from typing import Callable, Dict, List, Optional
 
 from utils.logger import get_logger
-
-logger = get_logger()
 
 # ── Exchange WebSocket endpoints ───────────────────────────────────────────────
 EXCHANGE_WS_URLS: Dict[str, str] = {

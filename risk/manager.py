@@ -4,7 +4,7 @@ import threading
 from typing import Dict, Optional, Tuple
 from risk.position_sizer import PositionSizer
 from utils.logger import get_logger
-from config.config import MAX_RISK_PER_TRADE, MIN_CONFIDENCE_SCORE
+from config.config import MIN_CONFIDENCE_SCORE
 
 logger = get_logger()
 

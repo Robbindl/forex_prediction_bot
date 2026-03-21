@@ -15,7 +15,7 @@ import time
 from typing import Any, Dict, List, Optional, Protocol, TYPE_CHECKING
 
 from core.signal import Signal
-from core.signal_journal import PASS, KILLED, SKIPPED
+from core.signal_journal import PASS, KILLED
 from core.asset_profiles import get_profile
 from utils.logger import get_logger
 
@@ -41,6 +41,7 @@ def _count_valid_sources(signal: Signal) -> int:
     """
     Count how many intelligence sources provided REAL data for this signal.
     Based on metadata flags set by each layer.
+"""
     """
     count = 0
 

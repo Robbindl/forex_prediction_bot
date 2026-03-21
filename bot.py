@@ -20,7 +20,6 @@ import signal
 import subprocess
 import shutil
 import socket
-import threading
 import time
 import atexit
 from pathlib import Path
@@ -46,6 +45,7 @@ try:
     validate_apis()
     logger.info("[bot] API validation passed")
 except RuntimeError as e:
+    
     logger.critical(f"[bot] API validation failed: {e}")
     sys.exit(1)
 

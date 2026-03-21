@@ -9,7 +9,7 @@ import yfinance as yf
 from data.cache import cache
 from utils.logger import get_logger
 from config.config import (
-    FINNHUB_API_KEY, TWELVE_DATA_API_KEY, ALPHA_VANTAGE_API_KEY,
+    FINNHUB_API_KEY, TWELVE_DATA_API_KEY,
     CACHE_TTL, LOOKBACK_PERIOD,
 )
 

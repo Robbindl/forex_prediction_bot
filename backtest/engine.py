@@ -3,12 +3,9 @@ backtest/engine.py — Full pipeline backtester.
 Merges: engines/backtest_engine.py + backtest logic from trading_system.py
 """
 from __future__ import annotations
-import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 import pandas as pd
 import numpy as np
-from core.signal import Signal
 from core.pipeline import Pipeline
 from strategies.voting import VotingStrategy
 from risk.manager import RiskManager

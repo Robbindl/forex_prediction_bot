@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections import defaultdict
 from typing import Dict, List, Optional, Set
 
 from utils.logger import get_logger
