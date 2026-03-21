@@ -160,26 +160,41 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   </div>
 </div>
 <script>
+const MY_CRYPTO = new Set(['BTC','ETH','BNB','SOL','XRP','BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','BTC-USD','ETH-USD','BNB-USD','SOL-USD','XRP-USD']);
+
+function isMyCrypto(sym) {
+  if (!sym || sym === 'UNKNOWN' || sym === '?') return false;
+  const s = (sym || '').toUpperCase().replace('-USD','').replace('USDT','').replace('/USD','');
+  return MY_CRYPTO.has(s) || MY_CRYPTO.has(sym.toUpperCase());
+}
+
 let barChart=null;
 async function load(){
   try{
     const d=await fetch('/api/whale/summary').then(r=>r.json());
-    const vol=d.total_volume_usd||0;
+
+    // Filter everything to only our crypto assets
+    const rawRecent = (d.recent||[]).filter(a => isMyCrypto(a.symbol||a.asset));
+    const rawAlerts = (d.alerts||[]).filter(a => isMyCrypto(a.symbol||a.asset));
+    const rawTopAssets = (d.top_assets||[]).filter(a => isMyCrypto(a.asset));
+
+    // Recompute totals from filtered data
+    const filteredVol = rawAlerts.reduce((s,a) => s+(a.value_usd||0), 0);
+    const vol = filteredVol || (d.total_volume_usd||0);
     document.getElementById('wTotal').textContent=vol>=1e9?'$'+(vol/1e9).toFixed(1)+'B':vol>=1e6?'$'+(vol/1e6).toFixed(0)+'M':'$'+vol.toLocaleString();
-    document.getElementById('wCount').textContent=d.alert_count_24h||0;
-    const topAssets=d.top_assets||[];
-    document.getElementById('wTop').textContent=topAssets.length?topAssets[0].asset:'—';
+    document.getElementById('wCount').textContent=rawAlerts.length||0;
+    document.getElementById('wTop').textContent=rawTopAssets.length?rawTopAssets[0].asset.replace('-USD','').replace('/USD','').replace('=F',''):'—';
 
     // Bar chart
     if(barChart)barChart.destroy();
-    if(topAssets.length){
+    if(rawTopAssets.length){
       barChart=new Chart(document.getElementById('whaleBarChart'),{
         type:'bar',
         data:{
-          labels:topAssets.map(a=>a.asset.replace('-USD','').replace('/USD','').replace('=F','')),
+          labels:rawTopAssets.map(a=>a.asset.replace('-USD','').replace('/USD','').replace('=F','')),
           datasets:[{
             label:'Volume $',
-            data:topAssets.map(a=>a.volume),
+            data:rawTopAssets.map(a=>a.volume),
             backgroundColor:'rgba(0,229,255,.25)',
             borderColor:'rgba(0,229,255,.7)',
             borderWidth:1,borderRadius:4,
@@ -192,18 +207,17 @@ async function load(){
     }
 
     // Timeline
-    const recent=d.recent||[];
     const tl=document.getElementById('whaleTimeline');
-    if(!recent.length){tl.innerHTML='<div class="empty">No recent activity</div>';}
+    if(!rawRecent.length){tl.innerHTML='<div class="empty">No recent activity for your crypto assets</div>';}
     else{
-      tl.innerHTML=recent.slice(0,6).map((a,i)=>{
+      tl.innerHTML=rawRecent.slice(0,6).map((a,i)=>{
         const usd=a.value_usd||0;
         const color=usd>=1e8?'var(--pu)':usd>=1e7?'var(--cy)':usd>=1e6?'var(--am)':'var(--tx2)';
         return`<div class="tl-item">
           <div class="tl-dot" style="background:${color}"></div>
           ${i<5?`<div class="tl-line" style="background:var(--bd)"></div>`:''}
           <div class="tl-body">
-            <div class="tl-title">${a.symbol||a.asset||'?'}</div>
+            <div class="tl-title">${(a.symbol||a.asset||'?').replace('-USD','').replace('USDT','')}</div>
             <div class="tl-meta">${a.source||''}</div>
           </div>
           <div class="tl-amount" style="color:${color}">$${(usd/1e6).toFixed(1)}M</div>
@@ -212,19 +226,19 @@ async function load(){
     }
 
     // Table
-    const alerts=d.alerts||[];
     const tbody=document.getElementById('alertBody');
-    if(!alerts.length){tbody.innerHTML='<tr><td colspan="5" class="empty">No whale alerts in 24h</td></tr>';}
+    if(!rawAlerts.length){tbody.innerHTML='<tr><td colspan="5" class="empty">No whale alerts for your crypto assets in 24h</td></tr>';}
     else{
-      tbody.innerHTML=alerts.slice(0,20).map(a=>{
+      tbody.innerHTML=rawAlerts.slice(0,30).map(a=>{
         const usd=a.value_usd||0;
         let sizeClass='whale-size-sm',sizeLbl='Small ($1M+)';
         if(usd>=1e8){sizeClass='whale-size-xl';sizeLbl='Mega ($100M+)';}
         else if(usd>=1e7){sizeClass='whale-size-lg';sizeLbl='Large ($10M+)';}
         else if(usd>=5e6){sizeClass='whale-size-md';sizeLbl='Medium ($5M+)';}
         const dir=a.direction||'—';
+        const sym=(a.symbol||a.asset||'?').replace('-USD','').replace('USDT','');
         return`<tr>
-          <td><strong>${a.symbol||a.asset||'?'}</strong></td>
+          <td><strong>${sym}</strong></td>
           <td class="${sizeClass}">$${(usd/1e6).toFixed(2)}M</td>
           <td class="${sizeClass}">${sizeLbl}</td>
           <td style="color:var(--tx3)">${a.source||'—'}</td>

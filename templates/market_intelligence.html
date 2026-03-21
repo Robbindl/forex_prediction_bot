@@ -45,7 +45,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .resize-handle:hover::after{background:var(--bl)}
 
 /* HEATMAP */
-.heatmap-scroll{overflow-y:auto;max-height:320px}
+.heatmap-scroll{overflow:visible}
 .heatmap-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:12px 16px}
 .hm-cell{border-radius:6px;padding:10px 8px;text-align:center;cursor:pointer;transition:.15s}
 .hm-cell:hover{opacity:.85;transform:scale(1.03)}
@@ -54,7 +54,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .hm-price{font-size:10px;opacity:.7;margin-top:1px}
 
 /* CORRELATION */
-.corr-scroll{overflow:auto;max-height:360px;padding:12px 16px}
+.corr-scroll{overflow:auto;padding:12px 16px}
 .corr-grid{display:grid;gap:2px}
 .corr-cell{width:44px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:10px;font-weight:600;cursor:default}
 .corr-label{font-size:10px;color:var(--tx3);display:flex;align-items:center;justify-content:flex-end;padding-right:4px;height:36px;white-space:nowrap}

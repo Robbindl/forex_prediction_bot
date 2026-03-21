@@ -80,7 +80,6 @@ yarn-error.log*
 *.sqlite3
 *.postgres
 !data/cache.py
-# data/
 *.sql
 dump.rdb
 postgresql.conf.backup
@@ -107,8 +106,6 @@ portfolio_reports/
 # ML MODELS
 # ------------------------------------------------
 ml_models/
-trained_models/
-models/
 ml/pickled_models/
 ml/model_cache/
 ml/prediction_service_cache/
