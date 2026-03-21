@@ -4,15 +4,14 @@ Merges: auto_train_daily.py, auto_train_intelligent.py, training_monitor.py, sig
 """
 from __future__ import annotations
 import threading
-import time
 from datetime import datetime
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from utils.logger import get_logger
-from ml.registry import ModelRegistry, registry
+from ml.registry import registry
 from config.config import (
-    ASSET_CATEGORIES, LOOKBACK_PERIOD, TRAIN_TEST_SPLIT, MODEL_MAX_AGE_HOURS
+    ASSET_CATEGORIES, LOOKBACK_PERIOD, TRAIN_TEST_SPLIT
 )
 
 logger = get_logger()

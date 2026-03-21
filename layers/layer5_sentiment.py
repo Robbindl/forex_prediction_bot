@@ -2,7 +2,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Dict, Optional
 from core.signal import Signal
-from core.signal_journal import PASS, KILLED
+from core.signal_journal import PASS
 from core.asset_profiles import get_profile
 from utils.logger import get_logger
 

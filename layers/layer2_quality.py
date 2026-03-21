@@ -8,7 +8,7 @@ Changes vs original:
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from core.signal import Signal
-from core.signal_journal import PASS, KILLED
+from core.signal_journal import PASS
 from utils.logger import get_logger
 
 logger = get_logger()

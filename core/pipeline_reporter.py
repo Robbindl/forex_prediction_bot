@@ -17,7 +17,7 @@ this module:
   4. Sends the full Signal Journal to Telegram — every stage's decision
      in one formatted message, including the backtest result.
 
-  5. Publishes SIGNAL_JOURNAL_UPDATE to Redis — for the dashboard live feed.
+ 5. Publishes SIGNAL_JOURNAL_UPDATE to Redis — for the dashboard live feed.
 
 Confidence adjustment rules
 ----------------------------
@@ -41,7 +41,7 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from sqlalchemy import text
 from utils.logger import get_logger
-from core.signal_journal import PASS, KILLED, INFO
+from core.signal_journal import INFO
 
 if TYPE_CHECKING:
     from core.signal import Signal

@@ -2,7 +2,6 @@
 from __future__ import annotations
 import json, threading
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, Dict, Optional
 from utils.logger import get_logger
 from config.config import MODEL_DIR, MODEL_MAX_AGE_HOURS

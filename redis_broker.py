@@ -1,6 +1,5 @@
 import json
 import threading
-import os
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 from utils.logger import logger

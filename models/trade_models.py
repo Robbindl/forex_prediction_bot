@@ -4,7 +4,6 @@ Added: OpenPosition (for restart recovery), DailyStats.
 Fixed imports to use config/database.py Base.
 """
 from __future__ import annotations
-import uuid
 from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, Index,
     Integer, JSON, Numeric, String, ForeignKey, Text,

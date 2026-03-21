@@ -21,7 +21,6 @@ from sklearn.linear_model import Ridge, ElasticNet
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import warnings
 import cloudpickle
 from datetime import datetime

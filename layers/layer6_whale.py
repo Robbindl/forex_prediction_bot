@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 import threading
 from core.signal import Signal
-from core.signal_journal import PASS, KILLED
+from core.signal_journal import PASS
 from core.asset_profiles import get_profile
 from utils.logger import get_logger
 

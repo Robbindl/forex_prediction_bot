@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from datetime import datetime, time, timezone, timedelta
 from typing import Dict, Tuple, Optional
-import pytz  # or stdlib zoneinfo if Python 3.9+
 
 try:
     from zoneinfo import ZoneInfo
@@ -20,10 +19,9 @@ except ImportError:
     _USE_ZONEINFO = False
 
 from core.asset_profiles import (
-    is_crypto, is_forex, is_index, is_commodity,
+    is_crypto, is_forex, is_commodity,
     US_INDEX_ASSETS, UK_INDEX_ASSETS,
 )
-
 
 def _now_in(tz_name: str) -> datetime:
     if _USE_ZONEINFO:

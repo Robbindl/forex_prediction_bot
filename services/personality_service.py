@@ -10,7 +10,7 @@ import pandas as pd
 from config.database import SessionLocal
 from models.trade_models import (
     BotPersonality, HumanExplanations,
-    MemorableMoments, Trade, TradingDiary,
+    MemorableMoments, TradingDiary,
 )
 from utils.logger import logger
 

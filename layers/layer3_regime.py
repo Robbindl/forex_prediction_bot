@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 import numpy as np
 from core.signal import Signal
-from core.signal_journal import PASS, KILLED
+from core.signal_journal import PASS
 from core.asset_profiles import get_profile
 from utils.logger import get_logger
 

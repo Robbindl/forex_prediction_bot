@@ -48,7 +48,7 @@ def api_market_status_asset(asset: str):
 
 # This module can also be imported for testing:
 
-from dashboard.market_hours import is_market_open_for_asset, all_market_statuses
+from dashboard.market_hours import is_market_open_for_asset
 
 
 def get_asset_market_open(asset: str) -> bool:
