@@ -524,7 +524,8 @@ class RobbieExplainer:
         # Default — general take
         return self._answer_general(asset, question, signal, mood, memory)
 
-    def _answer_trade_question(self, asset, question, signal, df, mood, memory) -> str:
+    @staticmethod
+    def _answer_trade_question(asset, question, signal, df, mood, memory) -> str:
         if not signal or signal.get("direction", "HOLD") == "HOLD":
             no_sig = random.choice([
                 f"Honestly? I'm not seeing a clean entry on {asset} right now. 🤷",
@@ -670,7 +671,8 @@ class RobbieExplainer:
 
         return "\n".join(lines) if lines else f"No active signal on {asset} to assess risk against."
 
-    def _answer_sentiment_question(self, asset, mood) -> str:
+    @staticmethod
+    def _answer_sentiment_question(asset, mood) -> str:
         return (
             f"I don't have a live news feed wired into this command right now. "
             f"For sentiment context, check `/why {asset}` which pulls from the "

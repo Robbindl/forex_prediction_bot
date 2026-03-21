@@ -190,7 +190,8 @@ class WhaleAlertDB:
         else:
             logger.warning("[WhaleDB] Not connected — DB persistence disabled")
 
-    def _get_session(self):
+    @staticmethod
+    def _get_session():
         """Always return a fresh session — never reuse across threads."""
         return SessionLocal()
 

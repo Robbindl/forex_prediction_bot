@@ -53,7 +53,8 @@ class AlertFormatter:
 
     # ── Phase 1 formatters ────────────────────────────────────────────────────
 
-    def _format_LIQUIDATION_CASCADE_ALERT(self, e: dict) -> str:
+    @staticmethod
+    def _format_LIQUIDATION_CASCADE_ALERT(e: dict) -> str:
         usd   = float(e.get("usd_total", 0))
         sev   = e.get("severity", "HIGH")
         asset = e.get("asset", "?")
@@ -281,7 +282,7 @@ class AlertFormatter:
             f"Tweets:    `{tweet_count}` matching"
         )
 
-    # ── Generic fallback ──────────────────────────────────────────────────────
+    # ── Generic fallback ─────────────────────────────────────────────────────
 
     def _format_generic(self, e: dict) -> str:
         event_type = e.get("type", "UNKNOWN")
@@ -309,4 +310,5 @@ class AlertFormatter:
             "flipper":     f"Active trader {action} — lower signal weight.",
             "exchange":    f"Exchange wallet {action} — routine transfer.",
             "unknown":     f"Unknown wallet {action}.",
+        }.get(behavior, f"Unknown wallet {action}.")
         }.get(behavior, f"Whale {action}.")

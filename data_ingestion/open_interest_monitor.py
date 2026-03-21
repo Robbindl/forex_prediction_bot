@@ -94,7 +94,8 @@ class OpenInterestMonitor:
                 time.sleep(0.3)
             time.sleep(self._interval)
 
-    def _fetch_bybit(self, symbol: str) -> Optional[float]:
+    @staticmethod
+    def _fetch_bybit(symbol: str) -> Optional[float]:
         try:
             resp = requests.get(
                 BYBIT_OI_URL,

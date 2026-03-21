@@ -45,7 +45,8 @@ class RedisCache:
         except Exception:
             pass
 
-    def purge_expired(self) -> int:
+    @staticmethod
+    def purge_expired() -> int:
         return 0  # Redis handles expiry natively
 
     def __contains__(self, key: str) -> bool:

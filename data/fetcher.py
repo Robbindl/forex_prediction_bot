@@ -173,7 +173,8 @@ class DataFetcher:
                 logger.error(f"[DataFetcher] TwelveData fetch failed for {symbol}: {e}")
             return None
 
-    def _fetch_yf(self, symbol: str, interval: str, periods: int) -> Optional[pd.DataFrame]:
+    @staticmethod
+    def _fetch_yf(symbol: str, interval: str, periods: int) -> Optional[pd.DataFrame]:
         try:
             yf_interval = _YF_INTERVAL_MAP.get(interval, "1d")
             period_map  = {

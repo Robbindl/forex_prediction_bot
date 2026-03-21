@@ -22,7 +22,8 @@ class TelegramManager:
             cls._instance.bot = None
         return cls._instance
 
-    def _is_pid_alive(self, pid: int) -> bool:
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
         """Check if a PID is actually running on this OS."""
         try:
             if os.name == 'nt':  # Windows

@@ -174,7 +174,8 @@ class WalletTracker:
 
     # ── Blockchain API fetchers ───────────────────────────────────────────────
 
-    def _fetch_btc_balance(self, address: str) -> Optional[float]:
+    @staticmethod
+    def _fetch_btc_balance(address: str) -> Optional[float]:
         try:
             resp = requests.get(
                 BLOCKCHAIR_BTC.format(addr=address),

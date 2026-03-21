@@ -86,7 +86,8 @@ class PerformanceAnalyzer:
             equity_curve    = equity_curve,
         )
 
-    def compare(self, results: List[BacktestResult],
+    @staticmethod
+    def compare(results: List[BacktestResult],
                 labels: Optional[List[str]] = None) -> List[Dict]:
         """
         Rank multiple BacktestResults by Sharpe ratio.

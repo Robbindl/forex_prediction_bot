@@ -49,7 +49,8 @@ class PredictionTracker:
 
     # ── DB setup ───────────────────────────────────────────────────────────
 
-    def _ensure_table(self):
+    @staticmethod
+    def _ensure_table():
         if not _DB_AVAILABLE:
             return
         try:
@@ -190,7 +191,8 @@ class PredictionTracker:
             except Exception as e:
                 logger.debug(f"[PredTracker] Eval error {rec.get('asset')}: {e}")
 
-    def _get_current_price(self, asset: str, category: str) -> Optional[float]:
+    @staticmethod
+    def _get_current_price(asset: str, category: str) -> Optional[float]:
         try:
             price, _ = _fetcher.get_real_time_price(asset, category)
             return float(price) if price else None
@@ -199,7 +201,8 @@ class PredictionTracker:
 
     # ── Storage ────────────────────────────────────────────────────────────
 
-    def _store_pending(self, records: List[Dict]):
+    @staticmethod
+    def _store_pending(records: List[Dict]):
         if not _DB_AVAILABLE:
             return
         try:
@@ -233,7 +236,8 @@ class PredictionTracker:
         except Exception as e:
             logger.debug(f"[PredTracker] Store pending failed: {e}")
 
-    def _store_outcome(self, rec: Dict):
+    @staticmethod
+    def _store_outcome(rec: Dict):
         if not _DB_AVAILABLE:
             return
         try:
@@ -380,7 +384,8 @@ class PredictionTracker:
             logger.warning(f"[PredTracker] Stats query failed: {e}")
             return self._empty_stats()
 
-    def _empty_stats(self) -> Dict:
+    @staticmethod
+    def _empty_stats() -> Dict:
         return {
             'by_horizon': {
                 '1H':  {'total':0,'correct':0,'accuracy_pct':0,'targets_hit':0,'avg_move_pct':0,'avg_confidence':0},

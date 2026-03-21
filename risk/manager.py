@@ -86,7 +86,8 @@ class RiskManager:
 
         return True, "OK"
 
-    def get_stop_loss(self, entry: float, direction: str, category: str, atr: float = 0.0) -> float:
+    @staticmethod
+    def get_stop_loss(entry: float, direction: str, category: str, atr: float = 0.0) -> float:
         """Calculate SL based on ATR or fixed percentage."""
         mult = {"crypto": 2.0, "forex": 1.5, "stocks": 1.8}.get(category, 1.5)
         if atr:
@@ -95,6 +96,7 @@ class RiskManager:
             dist = entry * 0.015   # 1.5% default
         return entry - dist if direction == "BUY" else entry + dist
 
-    def get_take_profit(self, entry: float, stop_loss: float, direction: str, rr: float = 2.0) -> float:
+    @staticmethod
+    def get_take_profit(entry: float, stop_loss: float, direction: str, rr: float = 2.0) -> float:
         dist = abs(entry - stop_loss)
         return entry + dist * rr if direction == "BUY" else entry - dist * rr

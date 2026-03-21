@@ -87,7 +87,8 @@ class MetricsCollector:
 
     # ── Forwarding ────────────────────────────────────────────────────────────
 
-    def _forward(self, name: str, elapsed_ms: float) -> None:
+    @staticmethod
+    def _forward(name: str, elapsed_ms: float) -> None:
         """Forward specific metrics to SystemHealthService."""
         try:
             from monitoring.system_health_service import monitor

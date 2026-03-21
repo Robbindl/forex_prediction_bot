@@ -449,7 +449,8 @@ class TelegramCommander:
         )
         return WAITING_ASK_ASSET
 
-    async def _ask_got_asset(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    @staticmethod
+    async def _ask_got_asset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         raw   = update.message.text.strip().upper()
         asset = _resolve_alias(raw)
         ctx.user_data["ask_asset"] = asset
@@ -475,7 +476,8 @@ class TelegramCommander:
             )
         return ConversationHandler.END
 
-    async def _ask_cancel(self, update, ctx):
+    @staticmethod
+    async def _ask_cancel(update, ctx):
         await update.message.reply_text("Cancelled.")
         return ConversationHandler.END
 
@@ -585,14 +587,16 @@ class TelegramCommander:
         text, kb = await self._build_balance()
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
-    async def _btn_signals(self, query) -> None:
+    @staticmethod
+    async def _btn_signals(query) -> None:
         await query.edit_message_text(
             "🎯 *Signals*\n\nPick a category to scan:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_category_keyboard(),
         )
 
-    async def _btn_category(self, query, category: str) -> None:
+    @staticmethod
+    async def _btn_category(query, category: str) -> None:
         label = category.capitalize()
         await query.edit_message_text(
             f"🎯 *{label} Signals*\n\nPick an asset:",
@@ -687,7 +691,8 @@ class TelegramCommander:
             ),
         )
 
-    async def _btn_market(self, query) -> None:
+    @staticmethod
+    async def _btn_market(query) -> None:
         text = _build_market_text()
         await query.edit_message_text(
             text, parse_mode=ParseMode.MARKDOWN,
@@ -713,6 +718,7 @@ class TelegramCommander:
         await query.edit_message_text(
             text, parse_mode=ParseMode.MARKDOWN,
             reply_markup=_kb([("⏸ Pause", "pause"), ("🏠 Menu", "menu")]),
+        )
         )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -959,7 +965,8 @@ class TelegramCommander:
                 f"Try `/ask {asset} explain`."
             )
 
-    def _build_mood(self) -> str:
+    @staticmethod
+    def _build_mood() -> str:
         try:
             from services.personality_service import PersonalityDatabase
             db     = PersonalityDatabase()
@@ -996,7 +1003,8 @@ class TelegramCommander:
         )
         return text
 
-    def _build_diary(self) -> str:
+    @staticmethod
+    def _build_diary() -> str:
         try:
             from services.personality_service import PersonalityDatabase
             db     = PersonalityDatabase()

@@ -195,7 +195,6 @@ class EnsemblePredictor:
         f_score = funding_map.get(funding, 0.5)
         o_score = oi_map.get(oi, 0.5)
         return round((f_score * 0.6) + (o_score * 0.4), 4)
-
     # ── Ensemble calculation ──────────────────────────────────────────────────
 
     @staticmethod
@@ -220,7 +219,8 @@ class EnsemblePredictor:
 
         return round(active_score / active_weight, 4), active_count
 
-    def _adjust_confidence(self, signal: "Signal", ensemble_score: float) -> str:
+    @staticmethod
+    def _adjust_confidence(signal: "Signal", ensemble_score: float) -> str:
         distance = abs(ensemble_score - 0.5) * 2
 
         if ensemble_score >= BOOST_THRESHOLD:
