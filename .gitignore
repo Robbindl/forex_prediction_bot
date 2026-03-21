@@ -80,7 +80,7 @@ yarn-error.log*
 *.sqlite3
 *.postgres
 !data/cache.py
-data/
+# data/
 *.sql
 dump.rdb
 postgresql.conf.backup
