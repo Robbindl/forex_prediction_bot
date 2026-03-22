@@ -115,28 +115,38 @@ class PositionSizer:
         # Stop distance in price units
         stop_distance = abs(entry_price - stop_loss)
         
-        # Get pip value for this asset (default to forex standard)
-        pip_value = self.ASSET_PIP_VALUES.get(asset, 0.0001)
-        
-        # Convert stop distance to number of pips
-        stop_pips = stop_distance / pip_value if pip_value > 0 else 0
-        
-        if stop_pips <= 0:
-            # Fallback to simple distance-based sizing
-            size = risk_amount / stop_distance
-        else:
-            # Calculate position size based on pip value
-            pip_value_per_lot = self.PIP_VALUE_PER_LOT.get(asset, 10.0)
-            size = risk_amount / (stop_pips * pip_value_per_lot)
-        
-        # Convert forex lots to units (1 standard lot = 100,000 units)
-        if category == "forex":
-            size = size * 100000
-        
-        # Crypto cap
         if category == "crypto":
-            max_size = self.account_balance * CRYPTO_MAX_POSITION_SIZE / entry_price
-            size = min(size, max_size)
+            # Crypto: direct dollar-based sizing — no pip conversion needed
+            # size = risk_amount / stop_distance_in_dollars
+            size = risk_amount / stop_distance
+
+        elif category == "forex":
+            # Forex: pip-based sizing → convert lots to units
+            pip_value = self.ASSET_PIP_VALUES.get(asset, 0.0001)
+            stop_pips = stop_distance / pip_value if pip_value > 0 else 0
+            if stop_pips <= 0:
+                size = risk_amount / stop_distance * 100000
+            else:
+                pip_value_per_lot = self.PIP_VALUE_PER_LOT.get(asset, 10.0)
+                size = (risk_amount / (stop_pips * pip_value_per_lot)) * 100000
+
+        elif category in ("commodities", "indices"):
+            # Commodities/Indices: pip-based but no lot conversion
+            pip_value = self.ASSET_PIP_VALUES.get(asset, 1.0)
+            stop_pips = stop_distance / pip_value if pip_value > 0 else 0
+            if stop_pips <= 0:
+                size = risk_amount / stop_distance
+            else:
+                pip_value_per_lot = self.PIP_VALUE_PER_LOT.get(asset, 10.0)
+                size = risk_amount / (stop_pips * pip_value_per_lot)
+
+        else:
+            # Fallback
+            size = risk_amount / stop_distance
+        
+        # Note: CRYPTO_MAX_POSITION_SIZE cap removed — risk % controls sizing directly.
+        # Each crypto trade risks exactly CRYPTO_RISK_PER_TRADE % of balance.
+        # This is paper trading — position value is notional, actual risk = $200 max.
         
         # Apply minimum size protection
         min_size = self.MIN_POSITION_UNITS.get(category, 0.001)
