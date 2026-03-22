@@ -197,8 +197,10 @@ def run_backtest(asset: str, category: str) -> None:
     try:
         from data.fetcher    import DataFetcher
         from backtest.engine import BacktestEngine
-        fetcher = DataFetcher()
-        df      = fetcher.get_ohlcv(asset, category, "1d", 500)
+        from config.config   import TRADING_TIMEFRAME
+        fetcher  = DataFetcher()
+        _periods = {"15m": 500, "1h": 300, "4h": 200, "1d": 500}.get(TRADING_TIMEFRAME, 500)
+        df       = fetcher.get_ohlcv(asset, category, TRADING_TIMEFRAME, _periods)
         if df is None or df.empty:
             logger.error(f"[bot] No data for {asset}")
             return
@@ -237,13 +239,47 @@ def main() -> None:
 
     engine.start()
 
-    # ── DataFetcher ───────────────────────────────────────────────────────
+    # ── API key expiry notifications ──────────────────────────────────────
     try:
-        from data.fetcher import DataFetcher
-        engine.fetcher = DataFetcher()
-        logger.info("[bot] DataFetcher wired to engine")
+        import threading, datetime as _dt
+        def _check_api_expiry():
+            expiry_alerts = [
+                ("QOS API trial key", _dt.date(2026, 3, 29)),
+            ]
+            while True:
+                try:
+                    from core.engine import _CORE_INSTANCE
+                    tc = _CORE_INSTANCE
+                    if tc and hasattr(tc, "telegram") and tc.telegram:
+                        today = _dt.date.today()
+                        for name, exp_date in expiry_alerts:
+                            days_left = (exp_date - today).days
+                            if days_left in (7, 3, 1, 0):
+                                msg = (
+                                    f"⚠️ *API Key Expiry Alert*\n\n"
+                                    f"*{name}* expires in *{days_left} day{'s' if days_left != 1 else ''}* "
+                                    f"({exp_date.strftime('%B %d, %Y')}).\n\n"
+                                    f"{'🚨 Renew immediately!' if days_left == 0 else 'Please renew soon to avoid data gaps.'}"
+                                )
+                                tc.telegram.send_message(msg)
+                except Exception:
+                    pass
+                # Check once per day
+                import time
+                time.sleep(86400)
+        threading.Thread(target=_check_api_expiry, name="APIExpiryChecker", daemon=True).start()
+        logger.info("[bot] API expiry checker started")
     except Exception as e:
-        logger.warning(f"[bot] DataFetcher init failed: {e}")
+        logger.warning(f"[bot] API expiry checker failed: {e}")
+
+    # ── Register engine singleton for cross-module access ─────────────────
+    try:
+        import core.engine as _eng_mod
+        _eng_mod._CORE_INSTANCE = engine
+    except Exception:
+        pass
+
+    # DataFetcher check moved to after wait_until_ready — see below
 
     # ── AutoTrainer ───────────────────────────────────────────────────────
     try:
@@ -449,6 +485,19 @@ def main() -> None:
         logger.info(f"[bot] Engine ready — balance=${engine.get_balance():.2f}")
     else:
         logger.warning("[bot] Engine did not become ready in 60s — continuing anyway")
+
+    # ── DataFetcher ───────────────────────────────────────────────────────
+    # Checked AFTER wait_until_ready so engine._init_subsystems() has
+    # completed and engine.fetcher is guaranteed to exist if init succeeded.
+    if engine.fetcher:
+        logger.info("[bot] DataFetcher ready (reusing engine singleton)")
+    else:
+        try:
+            from data.fetcher import DataFetcher
+            engine.fetcher = DataFetcher()
+            logger.info("[bot] DataFetcher created (engine singleton was None)")
+        except Exception as e:
+            logger.warning(f"[bot] DataFetcher init failed: {e}")
 
     # ── Whale monitoring ──────────────────────────────────────────────────
     try:

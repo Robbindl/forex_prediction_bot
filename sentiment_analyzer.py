@@ -732,54 +732,159 @@ class _NewsSentiment:
 
     @classmethod
     def get_articles_for_dashboard(cls, limit: int = 20) -> List[Dict]:
-        """Fetch recent general market articles for the dashboard news feed."""
+        """Fetch recent general market articles for the dashboard news feed.
+        Priority:
+          1. NewsAPI 'everything' endpoint (free tier — top-headlines is paid)
+          2. GNews search endpoint (free tier)
+          3. RSS feeds via feedparser — no API key, always works
+          4. Reddit public search — no credentials needed
+        """
         articles_out = []
+
+        # ── 1. NewsAPI — 'everything' works on free tier ─────────────────────
         if NEWSAPI_KEY:
             try:
                 r = requests.get(
-                    "https://newsapi.org/v2/top-headlines",
-                    params={"category": "business", "language": "en",
-                            "pageSize": limit, "apiKey": NEWSAPI_KEY},
+                    "https://newsapi.org/v2/everything",
+                    params={
+                        "q":        "forex OR crypto OR ""stock market"" OR trading OR bitcoin",
+                        "language": "en",
+                        "sortBy":   "publishedAt",
+                        "pageSize": limit,
+                        "apiKey":   NEWSAPI_KEY,
+                    },
                     timeout=10
                 )
                 if r.status_code == 200:
                     for a in r.json().get("articles", []):
-                        text  = (a.get("title", "") + " " + (a.get("description") or ""))
+                        title = (a.get("title") or "").strip()
+                        if not title or "[Removed]" in title:
+                            continue
+                        text  = title + " " + (a.get("description") or "")
                         score = cls._score_headline(text, "^GSPC") or 0.0
                         articles_out.append({
-                            "title":       a.get("title", ""),
-                            "source":      a.get("source", {}).get("name", ""),
-                            "date":        (a.get("publishedAt", "") or "")[:10],
-                            "url":         a.get("url", ""),
-                            "sentiment":   round(score, 2),
+                            "title":     title,
+                            "source":    a.get("source", {}).get("name", ""),
+                            "date":      (a.get("publishedAt") or "")[:10],
+                            "url":       a.get("url", ""),
+                            "sentiment": round(score, 2),
                         })
-                    return articles_out
+                    if articles_out:
+                        return articles_out[:limit]
             except Exception as e:
                 if not _is_quota_error(e):
-                    logger.debug(f"[Sentiment] News feed: {e}")
+                    logger.debug(f"[Sentiment] NewsAPI feed: {e}")
+
+        # ── 2. GNews fallback ─────────────────────────────────────────────────
         if GNEWS_KEY:
             try:
                 r = requests.get(
-                    "https://gnews.io/api/v4/top-headlines",
-                    params={"category": "business", "lang": "en",
+                    "https://gnews.io/api/v4/search",
+                    params={"q": "finance trading market", "lang": "en",
                             "max": limit, "token": GNEWS_KEY},
                     timeout=10
                 )
                 if r.status_code == 200:
                     for a in r.json().get("articles", []):
-                        text  = (a.get("title", "") + " " + (a.get("description") or ""))
+                        title = (a.get("title") or "").strip()
+                        if not title:
+                            continue
+                        text  = title + " " + (a.get("description") or "")
                         score = cls._score_headline(text, "^GSPC") or 0.0
                         articles_out.append({
-                            "title":    a.get("title", ""),
-                            "source":   a.get("source", {}).get("name", ""),
-                            "date":     (a.get("publishedAt", "") or "")[:10],
-                            "url":      a.get("url", ""),
+                            "title":     title,
+                            "source":    a.get("source", {}).get("name", ""),
+                            "date":      (a.get("publishedAt") or "")[:10],
+                            "url":       a.get("url", ""),
                             "sentiment": round(score, 2),
                         })
+                    if articles_out:
+                        return articles_out[:limit]
             except Exception as e:
                 if not _is_quota_error(e):
                     logger.debug(f"[Sentiment] GNews feed: {e}")
-        return articles_out
+
+        # ── 3. RSS feeds — no API key needed, always available ────────────────
+        _RSS = [
+            ("Reuters Markets",    "https://feeds.reuters.com/reuters/businessNews"),
+            ("CNBC Markets",       "https://www.cnbc.com/id/10001147/device/rss/rss.html"),
+            ("CoinDesk",           "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+            ("Cointelegraph",      "https://cointelegraph.com/rss"),
+            ("FX Street",          "https://www.fxstreet.com/rss"),
+            ("Investing.com News", "https://www.investing.com/rss/news.rss"),
+        ]
+        try:
+            import feedparser
+            from datetime import datetime as _dt
+            seen = set()
+            for source_name, url in _RSS:
+                if len(articles_out) >= limit:
+                    break
+                try:
+                    feed = feedparser.parse(url)
+                    for entry in feed.entries[:5]:
+                        title = (entry.get("title") or "").strip()
+                        if not title or title in seen:
+                            continue
+                        seen.add(title)
+                        pub   = entry.get("published", "")
+                        # Parse date
+                        date_str = ""
+                        try:
+                            import email.utils
+                            ts = email.utils.parsedate_to_datetime(pub)
+                            date_str = ts.strftime("%Y-%m-%d")
+                        except Exception:
+                            date_str = pub[:10] if pub else ""
+                        text  = title + " " + (entry.get("summary") or "")
+                        score = cls._score_headline(text, "^GSPC") or 0.0
+                        articles_out.append({
+                            "title":     title,
+                            "source":    source_name,
+                            "date":      date_str,
+                            "url":       entry.get("link", ""),
+                            "sentiment": round(score, 2),
+                        })
+                except Exception:
+                    continue
+            if articles_out:
+                return sorted(articles_out, key=lambda x: x.get("date", ""), reverse=True)[:limit]
+        except ImportError:
+            logger.debug("[Sentiment] feedparser not installed — RSS fallback unavailable")
+        except Exception as e:
+            logger.debug(f"[Sentiment] RSS feed: {e}")
+
+        # ── 4. Reddit public search — no credentials needed ───────────────────
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 TradingBot/1.0"}
+            r = requests.get(
+                "https://www.reddit.com/r/investing+stocks+forex+CryptoCurrency/search.json",
+                params={"q": "market", "sort": "new", "limit": limit, "t": "day"},
+                headers=headers,
+                timeout=10,
+            )
+            if r.status_code == 200:
+                posts = r.json().get("data", {}).get("children", [])
+                for p in posts:
+                    d = p.get("data", {})
+                    title = (d.get("title") or "").strip()
+                    if not title:
+                        continue
+                    score = cls._score_headline(title, "^GSPC") or 0.0
+                    import datetime
+                    ts = d.get("created_utc", 0)
+                    date_str = datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
+                    articles_out.append({
+                        "title":     title,
+                        "source":    f"r/{d.get('subreddit', 'investing')}",
+                        "date":      date_str,
+                        "url":       f"https://reddit.com{d.get('permalink', '')}",
+                        "sentiment": round(score, 2),
+                    })
+        except Exception as e:
+            logger.debug(f"[Sentiment] Reddit public: {e}")
+
+        return articles_out[:limit]
 
 
 class _CryptoSignals:

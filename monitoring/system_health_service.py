@@ -47,7 +47,7 @@ FRESHNESS_THRESHOLDS: Dict[str, int] = {
     "trades":       30,      # trade feed every 30s
     "liquidations": 60,      # liquidation feed every 60s
     "news":         3600,    # news every hour
-    "technicals":   60,      # OHLCV every minute
+    "technicals":   300,     # OHLCV cached for 180s (CACHE_TTL) — allow 300s before stale
     "whale":        300,     # whale alerts every 5 min
     "sentiment":    1800,    # sentiment score every 30 min
     "funding_rate": 30,      # funding rate every 30s

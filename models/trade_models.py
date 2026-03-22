@@ -19,7 +19,7 @@ class Trade(Base):
     __tablename__ = "trades"
 
     id            = Column(BigInteger, primary_key=True, autoincrement=True)
-    trade_id      = Column(String(20),  unique=True, nullable=False, index=True)
+    trade_id      = Column(String(50),  unique=True, nullable=False, index=True)
     asset         = Column(String(20),  nullable=False, index=True)
     category      = Column(String(20),  nullable=False)
     direction     = Column(String(4),   nullable=False)       # BUY | SELL
@@ -123,10 +123,10 @@ class TradingDiary(Base):
 
     id           = Column(BigInteger, primary_key=True, autoincrement=True)
     asset        = Column(String(20), nullable=False, index=True)
-    trade_id     = Column(String(20), ForeignKey("trades.trade_id"), nullable=True)
+    trade_id     = Column(String(50), ForeignKey("trades.trade_id"), nullable=True)
     setup_type   = Column(String(50))
     pnl          = Column(Numeric(20, 8))
-    exit_reason  = Column(String(20))
+    exit_reason  = Column(String(100))
     entry_price  = Column(Numeric(20, 8))
     exit_price   = Column(Numeric(20, 8))
     confidence   = Column(Numeric(5, 4))

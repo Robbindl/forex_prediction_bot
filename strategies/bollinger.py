@@ -57,8 +57,10 @@ class BollingerStrategy(BaseStrategy):
                 return None
 
             atr = self._atr(df, 14).iloc[-1]
-            sl  = price - 1.5 * atr if direction == "BUY" else price + 1.5 * atr
-            tp  = cur_mid if direction == "BUY" else cur_mid   # target the middle band
+            # Tight multipliers for 15m intraday trading — closes in hours not weeks
+            # TP uses 1.5×ATR instead of middle band — middle band on 1d was too far
+            sl  = price - 1.0 * atr if direction == "BUY" else price + 1.0 * atr
+            tp  = price + 1.5 * atr if direction == "BUY" else price - 1.5 * atr
 
             return self._make_signal(
                 asset, canonical, category, direction, min(0.85, confidence),

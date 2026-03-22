@@ -21,7 +21,7 @@ def _detect_regime(df: pd.DataFrame) -> str:
         returns = close.pct_change().dropna()
 
         try:
-            _TF = "15m"
+            from config.config import TRADING_TIMEFRAME as _TF
             _bars_per_year = {"15m": 24192, "1h": 6048, "4h": 1512, "1d": 252}
             ann_factor = _bars_per_year.get(_TF, 252)
         except Exception:

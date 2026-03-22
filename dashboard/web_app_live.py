@@ -82,8 +82,29 @@ _CAT: Dict[str, str] = {a: c for a, c in ALL_ASSETS}
 def _cat(asset: str) -> str:
     return _CAT.get(asset, "crypto")
 
-# ── DataFetcher singleton ─────────────────────────────────────────────────────
-_fetcher = DataFetcher()
+# ── DataFetcher — use engine singleton when available ────────────────────────
+# The engine already holds a DataFetcher (self.fetcher). We reuse it so the
+# dashboard doesn't maintain its own TwelveData/Finnhub connections.
+# Falls back to a local instance only if the engine isn't ready yet.
+_fetcher_local: Optional[Any] = None
+
+def _get_fetcher():
+    """Return engine's DataFetcher if available, else local fallback."""
+    core = _core()
+    if core and getattr(core, "fetcher", None):
+        return core.fetcher
+    global _fetcher_local
+    if _fetcher_local is None:
+        _fetcher_local = DataFetcher()
+    return _fetcher_local
+
+# Module-level alias so existing code using _fetcher still works
+class _FetcherProxy:
+    """Proxy that always delegates to the current best fetcher."""
+    def __getattr__(self, name):
+        return getattr(_get_fetcher(), name)
+
+_fetcher = _FetcherProxy()
 
 def _ohlcv(asset: str, interval: str = "1d", periods: int = 60):
     try:
@@ -152,8 +173,25 @@ def _store(asset: str, sig: Dict) -> None:
     with _sig_lock:
         _sig_store[asset] = sig
 
+def _is_market_weekend(category: str) -> bool:
+    """True when non-crypto markets are closed (weekend window)."""
+    if category == "crypto":
+        return False
+    from datetime import datetime as _dt, timezone as _tz
+    _now  = _dt.now(tz=_tz.utc)
+    _wd   = _now.weekday()
+    _hour = _now.hour
+    return (
+        _wd == 5
+        or (_wd == 6 and _hour < 22)
+        or (_wd == 4 and _hour >= 22)
+    )
+
 def _due(asset: str) -> bool:
-    return (time.time() - _last_ref.get(asset, 0)) >= _REFRESH_TTL.get(_cat(asset), 60)
+    cat = _cat(asset)
+    if _is_market_weekend(cat):
+        return False   # non-crypto never refreshes when market is closed
+    return (time.time() - _last_ref.get(asset, 0)) >= _REFRESH_TTL.get(cat, 60)
 
 # ── Phase 3 pub/sub buffers ───────────────────────────────────────────────────
 _p3_walls: list = []
@@ -169,9 +207,10 @@ def _start_p3_listener():
     _p3_started = True
     def _listen():
         try:
-            import redis as _r
-            from config.config import REDIS_URL
-            ps = _r.from_url(REDIS_URL).pubsub()
+            from services.redis_pool import get_pubsub as _get_pubsub
+            ps = _get_pubsub()
+            if ps is None:
+                raise RuntimeError("Redis unavailable")
             ps.subscribe("LIQUIDITY_WALL_DETECTED", "STOP_HUNT_DETECTED")
             for msg in ps.listen():
                 if msg["type"] != "message":
@@ -206,9 +245,10 @@ def _start_p7_listener():
     _p7_started = True
     def _listen():
         try:
-            import redis as _r
-            from config.config import REDIS_URL
-            ps = _r.from_url(REDIS_URL).pubsub()
+            from services.redis_pool import get_pubsub as _get_pubsub
+            ps = _get_pubsub()
+            if ps is None:
+                raise RuntimeError("Redis unavailable")
             ps.subscribe("INTELLIGENCE_ALERT")
             for msg in ps.listen():
                 if msg["type"] != "message":
@@ -224,11 +264,65 @@ def _start_p7_listener():
             logger.warning(f"[IntelListener] {e}")
     threading.Thread(target=_listen, name="p7-listener", daemon=True).start()
 
-# ── Background signal refresh ─────────────────────────────────────────────────
+# ── Background signal listener — Redis subscriber ────────────────────────────
+# The trading loop publishes every pipeline survivor to the Redis 'signals'
+# channel immediately after it passes all 8 layers. The dashboard subscribes
+# here and updates _sig_store directly — no pipeline re-runs, no duplicate
+# SURVIVED log lines, no wasted CPU. One pipeline run per signal, period.
+#
+# Fallback: if Redis is unavailable, _bg_refresh_fallback() polls the engine
+# using get_signal_for_asset() — this is the old behaviour but only activates
+# when Redis is genuinely down.
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _bg_refresh() -> None:
-    from concurrent.futures import ThreadPoolExecutor
+    """Entry point — prefer Redis subscriber, fall back to polling."""
     _get_sent()
     _get_whale()
+    try:
+        from services.redis_pool import is_available as _redis_available
+        if _redis_available():
+            logger.info("[dashboard] Signal source: Redis subscriber (zero pipeline re-runs)")
+            _bg_refresh_redis()
+            return   # _bg_refresh_redis() blocks forever while Redis is up
+    except Exception:
+        pass
+    logger.info("[dashboard] Signal source: engine polling fallback (Redis unavailable)")
+    _bg_refresh_fallback()
+
+
+def _bg_refresh_redis() -> None:
+    """Subscribe to the 'signals' Redis channel published by the trading loop."""
+    import json
+    while True:
+        try:
+            from services.redis_pool import get_pubsub as _get_pubsub
+            ps = _get_pubsub()
+            if ps is None:
+                raise RuntimeError("pubsub unavailable")
+            ps.subscribe("signals")
+            logger.info("[dashboard] Subscribed to Redis 'signals' channel")
+            for msg in ps.listen():
+                if msg.get("type") != "message":
+                    continue
+                try:
+                    data = msg.get("data", "{}")
+                    sig  = json.loads(data) if isinstance(data, (str, bytes)) else data
+                    asset = sig.get("asset", "")
+                    if asset:
+                        _store(asset, sig)
+                        _last_ref[asset] = time.time()
+                except Exception as _pe:
+                    logger.debug(f"[dashboard] signal parse: {_pe}")
+        except Exception as e:
+            logger.warning(f"[dashboard] Redis subscriber dropped ({e}) — reconnecting in 10s")
+            time.sleep(10)
+
+
+def _bg_refresh_fallback() -> None:
+    """Fallback: poll engine when Redis is unavailable. Runs the pipeline once
+    per asset per TTL — only used when Redis is genuinely down."""
+    from concurrent.futures import ThreadPoolExecutor
     while True:
         try:
             core = _core()
@@ -255,10 +349,10 @@ def _bg_refresh() -> None:
                 finally:
                     _last_ref[asset] = time.time()
 
-            with ThreadPoolExecutor(max_workers=6) as pool:
+            with ThreadPoolExecutor(max_workers=4) as pool:
                 list(pool.map(_refresh_one, due))
         except Exception as e:
-            logger.error(f"[dashboard] bg_refresh: {e}")
+            logger.error(f"[dashboard] bg_refresh_fallback: {e}")
         time.sleep(15)
 
 def _fallback_signal(asset: str) -> Optional[Dict]:
@@ -693,6 +787,8 @@ def api_market_heatmap():
         from concurrent.futures import ThreadPoolExecutor, as_completed
         def _fetch_one(ac):
             asset, cat = ac
+            if _is_market_weekend(cat):
+                return None   # market closed — skip heatmap fetch
             try:
                 df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=3)
                 if df is not None and len(df) >= 2 and "close" in df.columns:
@@ -733,8 +829,11 @@ def api_correlation_matrix():
         assets = ["BTC-USD", "ETH-USD", "GC=F", "SI=F", "EUR/USD", "GBP/USD", "^GSPC", "^FTSE"]
 
         def _fetch_close(a):
+            cat = _cat(a)
+            if _is_market_weekend(cat):
+                return a, None   # market closed — skip correlation fetch
             try:
-                df = _fetcher.get_ohlcv(a, _cat(a), interval="1d", periods=35)
+                df = _fetcher.get_ohlcv(a, cat, interval="1d", periods=35)
                 if df is not None and not df.empty and "close" in df.columns:
                     return a, df["close"].astype(float)
             except Exception:
@@ -911,8 +1010,28 @@ def api_sentiment_dashboard():
                 }
                 result["articles"]      = sorted(arts, key=lambda x: x.get("date", ""), reverse=True)[:20]
                 result["article_count"] = len(arts)
-        except Exception:
-            pass
+        except Exception as _ae:
+            logger.debug(f"[dashboard] articles error: {_ae}")
+
+        # Distribution fallback — if no articles, derive from per-asset scores
+        if result["sentiment_distribution"] == {"bullish": 0, "neutral": 0, "bearish": 0}:
+            try:
+                from core.assets import registry as _reg
+                b = be = n = 0
+                for asset, _ in _reg.all_assets():
+                    try:
+                        score = float(sa.get_comprehensive_sentiment(asset).get("score", 0) or 0)
+                        if score > 0.05:   b  += 1
+                        elif score < -0.05: be += 1
+                        else:               n  += 1
+                    except Exception:
+                        n += 1
+                if b + be + n > 0:
+                    result["sentiment_distribution"] = {
+                        "bullish": b, "neutral": n, "bearish": be
+                    }
+            except Exception as _de:
+                logger.debug(f"[dashboard] distribution fallback error: {_de}")
 
         result["whale_alerts"] = sa.fetch_whale_alerts(min_value_usd=1_000_000)[:10]
 
@@ -935,6 +1054,14 @@ def api_sentiment_by_asset():
         from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 
         def _sent_one(asset):
+            cat = _cat(asset)
+            if _is_market_weekend(cat):
+                return {
+                    "asset":    asset,
+                    "category": cat,
+                    "score":    0.0,
+                    "label":    "Market Closed",
+                }
             try:
                 r     = sa.get_comprehensive_sentiment(asset)
                 score = float(r.get("composite_score", r.get("score", 0))) if r else 0.0
@@ -942,7 +1069,7 @@ def api_sentiment_by_asset():
                 score = 0.0
             return {
                 "asset":    asset,
-                "category": _cat(asset),
+                "category": cat,
                 "score":    round(score, 3),
                 "label":    "Bullish" if score > 0.1 else "Bearish" if score < -0.1 else "Neutral",
             }
@@ -1339,9 +1466,11 @@ def api_phase1_liquidations():
     cached = _cache_get("p1_liq")
     if cached: return jsonify(cached)
     try:
-        import redis as _r
-        from config.config import REDIS_URL
-        raw = _r.from_url(REDIS_URL).lrange("LIQUIDATION_EVENTS", 0, 49)
+        from services.redis_pool import get_client as _get_redis_client
+        _rc = _get_redis_client()
+        if not _rc:
+            raise RuntimeError("Redis unavailable")
+        raw = _rc.lrange("LIQUIDATION_EVENTS", 0, 49)
         events = [json.loads(i) for i in raw if i]
         payload = {"success": True, "events": events, "count": len(events),
                    "timestamp": datetime.now().isoformat()}
@@ -1386,9 +1515,11 @@ def api_phase2_clusters():
     cached = _cache_get("p2_clusters")
     if cached: return jsonify(cached)
     try:
-        import redis as _r
-        from config.config import REDIS_URL
-        raw    = _r.from_url(REDIS_URL).lrange("WHALE_CLUSTER_EVENTS", 0, 19)
+        from services.redis_pool import get_client as _get_redis_client
+        _rc = _get_redis_client()
+        if not _rc:
+            raise RuntimeError("Redis unavailable")
+        raw = _rc.lrange("WHALE_CLUSTER_EVENTS", 0, 19)
         events = [json.loads(i) for i in raw if i]
         payload = {"success": True, "clusters": events, "timestamp": datetime.now().isoformat()}
         _cache_set("p2_clusters", payload, ttl=60)
@@ -1461,9 +1592,11 @@ def api_phase7_signal_journal():
     cached = _cache_get("p7_journal")
     if cached: return jsonify(cached)
     try:
-        import redis as _r
-        from config.config import REDIS_URL
-        raw      = _r.from_url(REDIS_URL).lrange("SIGNAL_JOURNAL_LOG", 0, 19)
+        from services.redis_pool import get_client as _get_redis_client
+        _rc = _get_redis_client()
+        if not _rc:
+            raise RuntimeError("Redis unavailable")
+        raw = _rc.lrange("SIGNAL_JOURNAL_LOG", 0, 19)
         journals = [json.loads(i) for i in raw if i]
         payload  = {"success": True, "journals": journals, "timestamp": datetime.now().isoformat()}
         _cache_set("p7_journal", payload, ttl=10)

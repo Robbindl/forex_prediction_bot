@@ -80,6 +80,7 @@ class PaperTrader:
             "confidence":         round(confidence, 4),
             "entry_price":        entry,
             "stop_loss":          stop_loss,
+            "original_sl":        stop_loss,   # preserved for trailing stop detection
             "take_profit":        take_profit,
             "take_profit_levels": tp_levels,
             "position_size":      pos_size,
@@ -156,11 +157,76 @@ class PaperTrader:
 
         pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
 
+        # ── Weekend market-closed guard ───────────────────────────────────────
+        # Non-crypto markets (forex, commodities, indices) are closed on
+        # Saturday all day and Sunday before 22:00 UTC.  SL and TP must not
+        # trigger during this window — MT5 brokers hold the position open and
+        # only execute when the market reopens.  Crypto is 24/7 so it is
+        # always exempt from this guard.
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            _category = pos.get("category", "forex")
+            if _category != "crypto":
+                _now  = _dt.now(tz=_tz.utc)
+                _wd   = _now.weekday()   # 5=Sat 6=Sun
+                _hour = _now.hour
+                _weekend = (
+                    _wd == 5                          # all Saturday
+                    or (_wd == 6 and _hour < 22)      # Sunday before 22:00
+                    or (_wd == 4 and _hour >= 22)     # Friday after 22:00
+                )
+                if _weekend:
+                    pos["pnl"] = round(pnl, 6)
+                    return None   # hold — market is closed
+        except Exception:
+            pass
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── Trailing stop + break-even ───────────────────────────────────────
+        # Break-even at 60% toward TP — protects profit without cutting too early.
+        # Trail at 90% toward TP with 0.5×ATR buffer — gives room to breathe on
+        # 15m crypto candles which easily swing 0.3×ATR in one bar.
+        if take_profit and entry and stop_loss:
+            tp_dist = abs(take_profit - entry)
+            sl_dist = abs(entry - stop_loss)
+            if tp_dist > 0:
+                if direction == "BUY":
+                    progress = (price - entry) / tp_dist
+                    if progress >= 0.90:
+                        # Trail SL 0.5×ATR behind highest price reached
+                        atr_approx = float(pos.get("original_sl", stop_loss))
+                        atr_approx = abs(entry - atr_approx)  # original SL dist = 1×ATR
+                        trail_sl = float(pos.get("highest_price", price)) - (0.5 * atr_approx)
+                        if trail_sl > stop_loss:
+                            pos["stop_loss"] = trail_sl
+                            stop_loss = trail_sl
+                    elif progress >= 0.60:
+                        # Move SL to break-even — never lose on a trade that went 60% your way
+                        if entry > stop_loss:
+                            pos["stop_loss"] = entry
+                            stop_loss = entry
+                else:  # SELL
+                    progress = (entry - price) / tp_dist
+                    if progress >= 0.90:
+                        atr_approx = float(pos.get("original_sl", stop_loss))
+                        atr_approx = abs(entry - atr_approx)
+                        trail_sl = float(pos.get("lowest_price", price)) + (0.5 * atr_approx)
+                        if trail_sl < stop_loss:
+                            pos["stop_loss"] = trail_sl
+                            stop_loss = trail_sl
+                    elif progress >= 0.60:
+                        if entry < stop_loss:
+                            pos["stop_loss"] = entry
+                            stop_loss = entry
+        # ─────────────────────────────────────────────────────────────────────
+
         # Stop loss
         if direction == "BUY"  and price <= stop_loss:
-            return self._close(pos, price, "Stop Loss", pnl)
+            reason = "Trailing Stop" if stop_loss != float(pos.get("original_sl", stop_loss)) else "Stop Loss"
+            return self._close(pos, price, reason, pnl)
         if direction == "SELL" and price >= stop_loss:
-            return self._close(pos, price, "Stop Loss", pnl)
+            reason = "Trailing Stop" if stop_loss != float(pos.get("original_sl", stop_loss)) else "Stop Loss"
+            return self._close(pos, price, reason, pnl)
 
         # Take profit levels (partial)
         if tp_levels:

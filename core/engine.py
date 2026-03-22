@@ -63,8 +63,10 @@ class TradingCore:
                 f"positions={self.state.open_position_count()}"
             )
 
-        self.telegram: Optional[Any] = None
-        self.fetcher:  Optional[Any] = None
+        self.telegram:    Optional[Any] = None
+        self.fetcher:     Optional[Any] = None
+        self._strategy:   Optional[Any] = None   # VotingStrategy singleton
+        self._predictor:  Optional[Any] = None   # MLPredictor singleton
 
         self._engine_ready = threading.Event()
         self._stop_event   = threading.Event()
@@ -134,7 +136,26 @@ class TradingCore:
         try:
             canonical = self.registry.canonical(asset)
             category  = self.registry.category(canonical)
-            ctx       = self._build_context(canonical, category)
+
+            # ── Weekend market-hours guard ─────────────────────────────────
+            # The dashboard calls this for every asset on a refresh loop.
+            # Without this guard it sends forex/commodities/indices through
+            # the full pipeline on weekends, producing misleading MetaAI logs.
+            if category != "crypto":
+                from datetime import datetime as _dt, timezone as _tz
+                _now  = _dt.now(tz=_tz.utc)
+                _wd   = _now.weekday()
+                _hour = _now.hour
+                _closed = (
+                    _wd == 5
+                    or (_wd == 6 and _hour < 22)
+                    or (_wd == 4 and _hour >= 22)
+                )
+                if _closed:
+                    return None
+            # ──────────────────────────────────────────────────────────────
+
+            ctx = self._build_context(canonical, category)
             sig = Signal(
                 asset=asset, canonical_asset=canonical,
                 direction="BUY", category=category, confidence=0.5,
@@ -189,6 +210,13 @@ class TradingCore:
 
             self.fetcher       = DataFetcher()
             self._risk_manager = RiskManager(account_balance=self.state.balance)
+
+            # ── Singleton strategy + predictor — created once, reused every cycle ──
+            from strategies.voting import VotingStrategy
+            from ml.predictor      import MLPredictor
+            self._strategy  = VotingStrategy()
+            self._predictor = MLPredictor()
+            logger.info("[TradingCore] VotingStrategy + MLPredictor initialised (singletons)")
             self._paper_trader = PaperTrader(
                 account_balance=self.state.balance,
                 risk_manager=self._risk_manager,
@@ -361,6 +389,15 @@ class TradingCore:
             result = self.pipeline.run(sig, ctx)
             if result is not None:
                 survivors.append(result)
+                # Publish every survivor to Redis immediately so the dashboard
+                # _sig_store is updated in real time without running the pipeline
+                # a second time. Previously only executed trades were published,
+                # forcing the dashboard to independently re-run the pipeline.
+                try:
+                    from redis_broker import broker as _redis_broker
+                    _redis_broker.publish_signal(result.to_dict())
+                except Exception:
+                    pass
 
         logger.info(
             f"[TradingCore] {len(signal_ctx_pairs)} signals → "
@@ -390,12 +427,15 @@ class TradingCore:
         result: List[Tuple[Signal, Dict]] = []
         try:
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            from strategies.voting import VotingStrategy
-            from ml.predictor import MLPredictor
 
             asset_list: List[Tuple[str, str]] = self.registry.all_assets()
-            strategy  = VotingStrategy()
-            predictor = MLPredictor()
+            # Reuse the singletons initialised in _init_subsystems —
+            # no new object creation every 45 seconds
+            strategy  = self._strategy
+            predictor = self._predictor
+            if strategy is None or predictor is None:
+                logger.warning("[TradingCore] Strategy/predictor not ready — skipping cycle")
+                return result
 
             candidates = [
                 (canonical, category) for canonical, category in asset_list
@@ -417,15 +457,52 @@ class TradingCore:
 
                 # ── Market hours pre-filter ───────────────────────────────────
                 # Skip non-crypto assets when their market is closed.
-                # Layer 4 would kill them anyway — this avoids wasted
-                # price fetches, ML inference, and misleading MetaAI logs
-                # for forex/indices/commodities on weekends and outside hours.
+                # Implemented inline so a failed import never silently lets
+                # closed-market signals through to the pipeline.
+                # Previously used `except Exception: pass` which caused forex,
+                # commodities and indices to leak through on Saturdays.
                 try:
-                    from layers.layer4_session import _is_market_open
-                    if not _is_market_open(category):
-                        return None
-                except Exception:
-                    pass
+                    from datetime import datetime as _dt, timezone as _tz
+                    _now  = _dt.now(tz=_tz.utc)
+                    _wd   = _now.weekday()   # 0=Mon … 5=Sat … 6=Sun
+                    _hour = _now.hour
+
+                    if category == "crypto":
+                        pass  # 24/7 — always open
+
+                    elif _wd >= 5:
+                        # Saturday (5) or Sunday (6) — all non-crypto closed
+                        # Exception: forex and commodities open Sunday ≥ 22:00
+                        if _wd == 6 and _hour >= 22 and category in ("forex", "commodities"):
+                            pass  # Sunday evening session open
+                        else:
+                            return None
+
+                    else:
+                        # Weekday — apply per-category hours
+                        if category == "forex":
+                            # Closed Friday after 22:00 UTC
+                            if _wd == 4 and _hour >= 22:
+                                return None
+
+                        elif category in ("stocks", "indices"):
+                            # NYSE/Nasdaq: 13:00–21:00 UTC (09:30–16:00 ET approx)
+                            if not (13 <= _hour < 21):
+                                return None
+
+                        elif category == "commodities":
+                            # CME: closed daily 21:00–22:00 UTC (settlement break)
+                            if _hour == 21:
+                                return None
+
+                except Exception as _mh_err:
+                    # Log the error rather than silently passing — if this fails
+                    # we want to know why, not accidentally trade closed markets.
+                    logger.warning(
+                        f"[TradingCore] Market-hours pre-filter error for "
+                        f"{canonical} ({category}): {_mh_err} — skipping asset"
+                    )
+                    return None
                 # ─────────────────────────────────────────────────────────────
 
                 try:
@@ -520,7 +597,14 @@ class TradingCore:
     def _fetch_price_data(self, asset: str, category: str):
         if self.fetcher:
             try:
-                return self.fetcher.get_ohlcv(asset, category)
+                from config.config import TRADING_TIMEFRAME
+                _auto_periods = {"15m": 500, "1h": 300, "4h": 200, "1d": 100}
+                _periods = _auto_periods.get(TRADING_TIMEFRAME, 100)
+                return self.fetcher.get_ohlcv(
+                    asset, category,
+                    interval=TRADING_TIMEFRAME,
+                    periods=_periods,
+                )
             except Exception:
                 pass
         return None
@@ -824,3 +908,9 @@ class TradingCore:
             f"running={self._is_running}, "
             f"positions={self.state.open_position_count()})"
         )
+
+
+# ── Module-level singleton reference ──────────────────────────────────────────
+# Set by bot.py after engine.start() so pipeline_reporter and other modules
+# can access the live engine instance without circular imports.
+_CORE_INSTANCE: Optional["TradingCore"] = None

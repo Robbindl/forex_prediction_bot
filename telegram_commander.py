@@ -102,6 +102,53 @@ def _asset_keyboard(category: str) -> InlineKeyboardMarkup:
     rows.append(_back_button("signals"))
     return _kb(*rows)
 
+# ── Ask Robbie keyboard builders ──────────────────────────────────────────────
+
+# Only the 18 assets your bot actually trades
+_ASK_CATEGORY_ASSETS: Dict[str, List[str]] = {
+    "🪙 Crypto":      ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD"],
+    "💱 Forex":       ["EUR/USD", "GBP/JPY", "GBP/USD", "AUD/USD", "USD/JPY", "USD/CAD"],
+    "📦 Commodities": ["GC=F",    "SI=F",    "CL=F"],
+    "📉 Indices":     ["^DJI",    "^IXIC",   "^GSPC",  "^FTSE"],
+}
+
+_ASK_QUESTIONS = [
+    ("📊 Should I trade?",       "trade"),
+    ("🔍 Explain the signal",    "explain"),
+    ("⚠️ Risk analysis",         "risk"),
+    ("🧠 What do you remember?", "remember"),
+    ("💬 What's the sentiment?",  "sentiment"),
+    ("🎯 How confident are you?", "confidence"),
+]
+
+def _ask_category_keyboard() -> InlineKeyboardMarkup:
+    rows = [(emoji_cat, f"askcat:{emoji_cat}") for emoji_cat in _ASK_CATEGORY_ASSETS]
+    # 2 per row
+    paired = [rows[i:i+2] for i in range(0, len(rows), 2)]
+    return _kb(*paired, _back_button())
+
+def _ask_asset_keyboard(emoji_cat: str) -> InlineKeyboardMarkup:
+    assets = _ASK_CATEGORY_ASSETS.get(emoji_cat, [])
+    rows   = []
+    for i in range(0, len(assets), 3):
+        row = []
+        for asset in assets[i:i+3]:
+            label = _DISPLAY.get(asset, asset)
+            row.append((label, f"askasset:{asset}"))
+        rows.append(row)
+    rows.append([("◀️ Back", "ask")])
+    return _kb(*rows)
+
+def _ask_question_keyboard(asset: str) -> InlineKeyboardMarkup:
+    rows = []
+    for i in range(0, len(_ASK_QUESTIONS), 2):
+        row = []
+        for label, qkey in _ASK_QUESTIONS[i:i+2]:
+            row.append((label, f"askq:{asset}:{qkey}"))
+        rows.append(row)
+    rows.append([("◀️ Back", "ask")])
+    return _kb(*rows)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TelegramCommander
@@ -243,12 +290,61 @@ class TelegramCommander:
             return f"{price:.4f}"
         return f"{price:.5f}"
 
+    @staticmethod
+    def _sanitise_markdown(text: str) -> str:
+        """
+        Fix common Markdown issues that cause Telegram parse errors.
+        Strategy: balance every special character so Telegram never sees
+        an unclosed entity. Handles text from OpenAI, news APIs, price feeds.
+        """
+        if not text:
+            return text
+
+        # 1. Replace smart quotes and dashes that look like markdown
+        text = text.replace("‘", "'").replace("’", "'")
+        text = text.replace("“", '"').replace("”", '"')
+        text = text.replace("—", "--").replace("–", "-")
+
+        # 2. Escape raw URLs that contain underscores (breaks italic parsing)
+        import re
+        # Temporarily protect intentional *bold* and _italic_ and `code`
+        # by checking they are balanced. If not — strip the markers entirely.
+
+        def _balance(s: str, char: str) -> str:
+            """If char count is odd, remove all bare occurrences of char."""            # Only strip if unbalanced AND not part of a word boundary pair
+            count = s.count(char)
+            if count % 2 == 0:
+                return s
+            # Odd count — strip all standalone markers
+            # Keep ones inside words (e.g. snake_case, C++ operators)
+            if char == "_":
+                # Replace _ that are surrounded by spaces/newlines (markdown italic)
+                return re.sub(r'(?<![\w])_(?![\w])|(?<=[\w])_(?=[\s\n])|(?<=[\s\n])_(?=[\w])', '', s)
+            if char in ("*", "`"):
+                return s.replace(char, "")
+            return s
+
+        for marker in ("*", "_", "`"):
+            text = _balance(text, marker)
+
+        # 3. Ensure [ always has a matching ] (broken links)
+        open_b  = text.count("[")
+        close_b = text.count("]")
+        if open_b != close_b:
+            text = text.replace("[", "").replace("]", "")
+
+        return text
+
     def send_message(self, text: str, parse_mode: str = ParseMode.MARKDOWN,
                      reply_markup=None) -> bool:
         if not self._rate_ok():
             return False
         if not self.application or not self._loop or self._loop.is_closed():
             return False
+
+        # Sanitise before sending to prevent parse entity errors
+        if parse_mode == ParseMode.MARKDOWN:
+            text = self._sanitise_markdown(text)
 
         async def _send():
             await self.application.bot.send_message(
@@ -543,6 +639,12 @@ class TelegramCommander:
             await self._btn_close_execute(query, data[9:])
         elif data == "ask":
             await self._btn_ask(query)
+        elif data.startswith("askcat:"):
+            await self._btn_ask_category(query, data[7:])
+        elif data.startswith("askasset:"):
+            await self._btn_ask_asset(query, data[9:])
+        elif data.startswith("askq:"):
+            await self._btn_ask_question(query, data[5:])
         elif data == "mood":
             await self._btn_mood(query)
         elif data == "diary":
@@ -656,18 +758,84 @@ class TelegramCommander:
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
     async def _btn_ask(self, query) -> None:
+        """Entry point — show category picker."""
         await query.edit_message_text(
             "🧠 *Ask Robbie*\n\n"
-            "Type your question in the format:\n"
-            "`/ask <asset> <question>`\n\n"
-            "Examples:\n"
-            "• `/ask BTC should I buy?`\n"
-            "• `/ask GOLD what do you remember?`\n"
-            "• `/ask EUR/USD explain the risk`\n"
-            "• `/ask ETH how confident are you?`",
+            "Pick a market category:",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_kb([("🏠 Menu", "menu")]),
+            reply_markup=_ask_category_keyboard(),
         )
+
+    async def _btn_ask_category(self, query, emoji_cat: str) -> None:
+        """Show asset picker for the chosen category."""
+        await query.edit_message_text(
+            f"🧠 *Ask Robbie — {emoji_cat}*\n\n"
+            "Pick an asset:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_ask_asset_keyboard(emoji_cat),
+        )
+
+    async def _btn_ask_asset(self, query, asset: str) -> None:
+        """Show question picker for the chosen asset."""
+        display = _DISPLAY.get(asset, asset)
+        await query.edit_message_text(
+            f"🧠 *Ask Robbie — {display}*\n\n"
+            "What do you want to know?",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_ask_question_keyboard(asset),
+        )
+
+    async def _btn_ask_question(self, query, payload: str) -> None:
+        """Run the question — payload is 'asset:qkey'."""
+        try:
+            asset, qkey = payload.split(":", 1)
+        except ValueError:
+            await query.edit_message_text("❌ Invalid question.")
+            return
+
+        display = _DISPLAY.get(asset, asset)
+
+        _question_map = {
+            "trade":      f"Should I trade {display} right now?",
+            "explain":    f"Explain the current signal for {display}.",
+            "risk":       f"What is the risk on {display} right now?",
+            "remember":   f"What do you remember about {display}?",
+            "sentiment":  f"What is the sentiment for {display}?",
+            "confidence": f"How confident are you about {display}?",
+        }
+        question = _question_map.get(qkey, f"Tell me about {display}.")
+
+        await query.edit_message_text(
+            f"🧠 *Robbie is thinking about {display}...*\n"            f"_{question}_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        try:
+            answer = await self._run_ask(asset, question)
+        except Exception as e:
+            answer = f"❌ Error: {e}"
+
+        # Sanitise OpenAI output before sending — prevents parse entity errors
+        answer = self._sanitise_markdown(answer)
+
+        # Split long answers into chunks
+        chunks = [answer[i:i+4000] for i in range(0, max(len(answer), 1), 4000)]
+        for i, chunk in enumerate(chunks):
+            kb = _kb(
+                [("🔄 Ask again", f"askasset:{asset}"), ("🏠 Menu", "menu")],
+            ) if i == len(chunks) - 1 else None
+            if i == 0:
+                await query.edit_message_text(
+                    chunk,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=kb,
+                )
+            else:
+                await query.message.reply_text(
+                    chunk,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=kb,
+                )
 
     async def _btn_mood(self, query) -> None:
         text = self._build_mood()
@@ -998,10 +1166,8 @@ class TelegramCommander:
 
     def _build_diary(self) -> str:
         try:
-            from services.personality_service import PersonalityDatabase
-            db     = PersonalityDatabase()
-            report = db.get_personality_report()
-            db.close()
+            from services.personality_service import personality as _pers
+            report = _pers.get_report()
         except Exception:
             return "❌ Diary unavailable."
 
@@ -1048,11 +1214,44 @@ class TelegramCommander:
         except Exception as e:
             return f"❌ Error: {e}"
 
+    @staticmethod
+    def _is_weekend_for_category(category: str) -> bool:
+        """Returns True if the market for this category is closed right now."""
+        if category == "crypto":
+            return False   # crypto never sleeps
+        from datetime import datetime as _dt, timezone as _tz
+        _now  = _dt.now(tz=_tz.utc)
+        _wd   = _now.weekday()   # 5=Sat 6=Sun 4=Fri
+        _hour = _now.hour
+        return (
+            _wd == 5                          # all Saturday
+            or (_wd == 6 and _hour < 22)      # Sunday before 22:00 UTC
+            or (_wd == 4 and _hour >= 22)     # Friday after 22:00 UTC
+        )
+
     def _do_close(self, trade_id: str):
         core = self.trading_system
         if not core:
             return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
         try:
+            # ── Weekend block — non-crypto cannot be closed when market is shut ──
+            positions = core.get_positions()
+            pos       = next((p for p in positions if p.get("trade_id") == trade_id), None)
+            if pos:
+                category = pos.get("category", "forex")
+                if self._is_weekend_for_category(category):
+                    asset = pos.get("asset", trade_id)
+                    return (
+                        f"🚫 *Market Closed — Cannot Close Position*\n\n"
+                        f"*{asset}* ({category}) cannot be closed right now "
+                        f"because {category} markets are closed on weekends.\n\n"
+                        f"Your position will remain open and SL/TP will resume "
+                        f"automatically when the market reopens:\n"
+                        f"• *Forex & Commodities* — Sunday 22:00 UTC\n"
+                        f"• *Indices* — Monday market open\n\n"
+                        f"_Only crypto positions can be closed on weekends._",
+                        _kb([("📈 Positions", "positions"), ("🏠 Menu", "menu")])
+                    )
             result = core.close_position_manually(trade_id)
             if not result:
                 return (

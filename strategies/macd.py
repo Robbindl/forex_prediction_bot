@@ -47,8 +47,9 @@ class MACDStrategy(BaseStrategy):
                 return None
 
             atr = self._atr(df, 14).iloc[-1]
-            sl  = price - 1.8 * atr if direction == "BUY" else price + 1.8 * atr
-            tp  = price + 3.0 * atr if direction == "BUY" else price - 3.0 * atr
+            # Tight multipliers for 15m intraday trading — closes in hours not weeks
+            sl  = price - 1.2 * atr if direction == "BUY" else price + 1.2 * atr
+            tp  = price + 2.0 * atr if direction == "BUY" else price - 2.0 * atr
 
             return self._make_signal(
                 asset, canonical, category, direction, min(0.85, confidence),

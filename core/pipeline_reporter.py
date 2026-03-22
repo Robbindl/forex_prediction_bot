@@ -56,7 +56,10 @@ WEAK_EDGE_THRESHOLD       = 0.50   # win rate < 50%  = reduce
 POOR_EDGE_THRESHOLD       = 0.40   # win rate < 40%  = bigger reduce + warn
 DAILY_OPTIMISE_HOUR       = 3      # run daily optimisation at 3 AM UTC
 TELEGRAM_ASSET_ALERT_COOLDOWN_SECS = 3600  # 1h dedupe window per asset
-TELEGRAM_SIGNAL_MIN_CONFIDENCE = 0.7  # minimum confidence to send Telegram
+TELEGRAM_SIGNAL_MIN_CONFIDENCE = 0.62  # matches TRADE_MIN_CONFIDENCE in engine.py
+# Only alert on signals that will actually be executed as trades.
+# Layer 7 floor is 0.55 — signals between 0.55-0.62 survive the pipeline
+# but are skipped by the trading loop, so no need to alert on them.
 
 # ── Backtest cache (avoids re-running for same asset repeatedly) ──────────────
 _backtest_cache:    Dict[str, dict] = {}   # asset → {result, ts}
@@ -210,21 +213,37 @@ class PipelineReporter:
     def _run_fresh_backtest(asset: str, category: str) -> Optional[Dict]:
         """Run a quick backtest using the best known config for this asset."""
         try:
-            from strategy_lab import run_backtest, StrategyBuilder
-            from strategy_lab.strategy_adapter import StrategyAdapter
-            from strategies.voting import VotingStrategy
-            from data.fetcher import DataFetcher
+            from strategy_lab.strategy_adapter   import StrategyAdapter
+            from strategy_lab.backtest_engine_v2 import BacktestEngineV2
+            from config.config import TRADING_TIMEFRAME
 
-            fetcher = DataFetcher()
-            _TF = "15m"
-            _periods = {"15m": 500, "1h": 300, "4h": 200, "1d": 300}.get(_TF, 300)
-            df      = fetcher.get_ohlcv(asset, category, _TF, _periods)
+            # Reuse the engine's DataFetcher and VotingStrategy singletons —
+            # avoids a new TwelveData/Finnhub connection per backtest call
+            fetcher  = None
+            strategy = None
+            try:
+                from core.state import state as _state   # lightweight import
+                import core.engine as _eng_mod
+                _inst = getattr(_eng_mod, "_CORE_INSTANCE", None)
+                if _inst:
+                    fetcher  = getattr(_inst, "fetcher",   None)
+                    strategy = getattr(_inst, "_strategy", None)
+            except Exception:
+                pass
+
+            if fetcher is None:
+                from data.fetcher import DataFetcher
+                fetcher = DataFetcher()
+            if strategy is None:
+                from strategies.voting import VotingStrategy
+                strategy = VotingStrategy()
+
+            _periods = {"15m": 500, "1h": 300, "4h": 200, "1d": 300}.get(TRADING_TIMEFRAME, 300)
+            df = fetcher.get_ohlcv(asset, category, TRADING_TIMEFRAME, _periods)
             if df is None or df.empty:
                 return None
 
-            # Use VotingStrategy (the live strategy) via adapter
-            adapter = StrategyAdapter(VotingStrategy(), asset=asset, category=category)
-            from strategy_lab.backtest_engine_v2 import BacktestEngineV2
+            adapter = StrategyAdapter(strategy, asset=asset, category=category)
             engine  = BacktestEngineV2(strategy=adapter, initial_balance=10_000)
             result  = engine.run(df)
             return result.to_dict()
@@ -422,9 +441,10 @@ class PipelineReporter:
 
     def _init_redis(self) -> None:
         try:
-            import redis
-            from config.config import REDIS_URL
-            self._pub = redis.from_url(REDIS_URL)
+            from services.redis_pool import get_client as _get_redis_client
+            self._pub = _get_redis_client()
+            if not self._pub:
+                raise RuntimeError("Redis pool unavailable")
             self._pub.ping()
         except Exception as e:
             logger.debug(f"[PipelineReporter] Redis unavailable: {e}")

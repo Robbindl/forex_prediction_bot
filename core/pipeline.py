@@ -144,6 +144,7 @@ class Pipeline:
                         elapsed_ms=elapsed_ms,
                     )
                     logger.log_pipeline(signal.asset, i, "KILLED", f"layer={layer.name}")
+                    break  # hard kill — remaining layers must not run on a dead signal
                 else:
                     signal = result
                     signal.layer_reached = i
@@ -169,6 +170,7 @@ class Pipeline:
                     conf_before=conf_before, conf_after=signal.confidence,
                     elapsed_ms=elapsed_ms,
                 )
+                break  # exception kill — stop the loop
 
         # ── Data integrity gate ───────────────────────────────────────────────
         if signal.alive:

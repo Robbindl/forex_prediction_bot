@@ -40,8 +40,9 @@ class RSIStrategy(BaseStrategy):
             if direction is None:
                 return None
 
-            sl = price - 1.5 * atr if direction == "BUY" else price + 1.5 * atr
-            tp = price + 2.5 * atr if direction == "BUY" else price - 2.5 * atr
+            # Tight multipliers for 15m intraday trading — closes in hours not weeks
+            sl = price - 1.0 * atr if direction == "BUY" else price + 1.0 * atr
+            tp = price + 1.5 * atr if direction == "BUY" else price - 1.5 * atr
 
             return self._make_signal(
                 asset, canonical, category, direction, confidence,

@@ -111,9 +111,11 @@ DEFAULT_BALANCE         = float(os.getenv("DEFAULT_BALANCE", "10000"))
 DEFAULT_RISK            = float(os.getenv("DEFAULT_RISK", "1.0"))
 MAX_POSITIONS           = int(os.getenv("MAX_POSITIONS", "8"))
 DEFAULT_ACCOUNT_BALANCE = float(os.getenv("DEFAULT_ACCOUNT_BALANCE", "10000"))
-DEFAULT_RISK_PER_TRADE  = float(os.getenv("DEFAULT_RISK_PER_TRADE", "0.75"))
-CRYPTO_RISK_PER_TRADE   = float(os.getenv("CRYPTO_RISK_PER_TRADE", "0.35"))
-MAX_RISK_PER_TRADE      = float(os.getenv("MAX_RISK_PER_TRADE", "2.0"))
+DEFAULT_RISK_PER_TRADE      = float(os.getenv("DEFAULT_RISK_PER_TRADE",      "1.5"))
+CRYPTO_RISK_PER_TRADE       = float(os.getenv("CRYPTO_RISK_PER_TRADE",       "2.0"))
+COMMODITIES_RISK_PER_TRADE  = float(os.getenv("COMMODITIES_RISK_PER_TRADE",  "2.0"))
+INDICES_RISK_PER_TRADE      = float(os.getenv("INDICES_RISK_PER_TRADE",      "1.5"))
+MAX_RISK_PER_TRADE          = float(os.getenv("MAX_RISK_PER_TRADE",          "3.0"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRADING — RISK FILTERS
@@ -163,6 +165,16 @@ TIMEFRAMES         = os.getenv("TIMEFRAMES", "1d,1h,15m").split(",")
 LOOKBACK_PERIOD    = int(os.getenv("LOOKBACK_PERIOD", "100"))
 PREDICTION_HORIZON = int(os.getenv("PREDICTION_HORIZON", "5"))
 CACHE_TTL          = int(os.getenv("CACHE_TTL", "300"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRADING TIMEFRAME
+# TRADING_TIMEFRAME — the candle interval used for signal generation and ML.
+#   "15m" = ATR-based SL/TP distances are small → trades hit TP or SL
+#           naturally within minutes to a few hours depending on market.
+#   "1d"  = daily ATR distances → trades last days or weeks (old behaviour).
+# ─────────────────────────────────────────────────────────────────────────────
+
+TRADING_TIMEFRAME = os.getenv("TRADING_TIMEFRAME", "15m")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM

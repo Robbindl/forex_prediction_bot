@@ -3,6 +3,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 from config.config import (
     DEFAULT_RISK_PER_TRADE, CRYPTO_RISK_PER_TRADE, MAX_RISK_PER_TRADE,
+    COMMODITIES_RISK_PER_TRADE, INDICES_RISK_PER_TRADE,
     CRYPTO_MAX_POSITION_SIZE,
 )
 
@@ -97,8 +98,15 @@ class PositionSizer:
         if not entry_price or not stop_loss or entry_price == stop_loss:
             return 0.0
 
-        # Risk percentage based on category
-        risk_pct = CRYPTO_RISK_PER_TRADE if category == "crypto" else DEFAULT_RISK_PER_TRADE
+        # Risk percentage based on category — each has its own tuned setting
+        if category == "crypto":
+            risk_pct = CRYPTO_RISK_PER_TRADE
+        elif category == "commodities":
+            risk_pct = COMMODITIES_RISK_PER_TRADE
+        elif category == "indices":
+            risk_pct = INDICES_RISK_PER_TRADE
+        else:
+            risk_pct = DEFAULT_RISK_PER_TRADE  # forex
         risk_pct = min(risk_pct * (0.7 + confidence * 0.6), MAX_RISK_PER_TRADE)
         
         # Risk amount in dollars
