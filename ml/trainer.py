@@ -76,11 +76,19 @@ def _train_model(name: str, df: pd.DataFrame) -> bool:
         from sklearn.ensemble import GradientBoostingClassifier
         model = GradientBoostingClassifier(n_estimators=100, max_depth=4)
 
-    model.fit(X_tr, y_tr)
+    try:
+        model.fit(X_tr, y_tr)
+    except Exception as fit_err:
+        logger.error(f"[Trainer] Model fit failed for {name}: {fit_err}")
+        return False
     acc = model.score(X_te, y_te) if len(X_te) > 0 else 0.0
 
-    registry.save(name, model)
-    logger.info(f"[Trainer] Trained {name} — acc={acc:.3f} samples={len(X)}")
+    try:
+        registry.save(name, model)
+    except Exception as save_err:
+        logger.error(f"[Trainer] Model save failed for {name}: {save_err}")
+        return False
+    logger.info(f"[Trainer] ✅ Trained {name} — acc={acc:.3f} samples={len(X)}")
     return True
 
 
@@ -121,12 +129,27 @@ class AutoTrainer:
             self._train_category(cat)
 
     def _loop(self) -> None:
+        # Wait for engine to warm up OHLCV cache before first training attempt.
+        # Without this, training fires before iTick/TwelveData clients are ready
+        # and the fetcher returns None for all assets.
+        logger.info("[AutoTrainer] Waiting 120s for OHLCV cache to warm up...")
+        self._stop.wait(timeout=120)
+        if self._stop.is_set():
+            return
+        logger.info("[AutoTrainer] Starting initial model check")
+
         while not self._stop.is_set():
+            trained_any = False
             for cat in ASSET_CATEGORIES:
                 model_key = f"{cat}_classifier"
-                if registry.is_stale(model_key):
-                    logger.info(f"[AutoTrainer] Model {model_key} is stale — retraining")
+                stale = registry.is_stale(model_key)
+                logger.info(f"[AutoTrainer] {model_key} stale={stale}")
+                if stale:
+                    logger.info(f"[AutoTrainer] Training {model_key}...")
                     self._train_category(cat)
+                    trained_any = True
+            if not trained_any:
+                logger.info("[AutoTrainer] All models up to date — next check in 1h")
             self._stop.wait(timeout=3600)   # check every hour
 
     def _train_category(self, category: str) -> None:
@@ -134,24 +157,33 @@ class AutoTrainer:
         if not assets:
             return
 
+        # Try engine singleton fetcher first, fall back to self._fetcher
+        try:
+            import core.engine as _eng_mod
+            _fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
+        except Exception:
+            _fetcher = None
+        if _fetcher is None:
+            _fetcher = self._fetcher
+        if _fetcher is None:
+            logger.warning(f"[AutoTrainer] No fetcher available for {category} — skipping")
+            return
+
         all_dfs: List[pd.DataFrame] = []
         for asset in assets[:5]:    # limit to 5 assets per category for speed
-            if self._fetcher:
-                try:
-                    # Train on same timeframe as trading — reads TRADING_TIMEFRAME from config
-                    try:
-                        from config.config import TRADING_TIMEFRAME
-                        tf = TRADING_TIMEFRAME   # "15m", "1h", or "1d"
-                    except Exception:
-                        tf = "1d"
-                    # More periods for intraday — 15m needs more bars than daily
-                    periods_map = {"15m": 500, "1h": 300, "4h": 200, "1d": LOOKBACK_PERIOD}
-                    periods = periods_map.get(tf, LOOKBACK_PERIOD)
-                    df = self._fetcher.get_ohlcv(asset, category, tf, periods)
-                    if df is not None and not df.empty:
-                        all_dfs.append(df)
-                except Exception:
-                    pass
+            try:
+                from config.config import TRADING_TIMEFRAME
+                tf = TRADING_TIMEFRAME
+                periods_map = {"15m": 500, "1h": 300, "4h": 200, "1d": LOOKBACK_PERIOD}
+                periods = periods_map.get(tf, LOOKBACK_PERIOD)
+                df = _fetcher.get_ohlcv(asset, category, tf, periods)
+                if df is not None and not df.empty:
+                    all_dfs.append(df)
+                    logger.info(f"[AutoTrainer] Got {len(df)} bars for {asset}")
+                else:
+                    logger.warning(f"[AutoTrainer] No OHLCV data for {asset} ({category}) tf={tf}")
+            except Exception as _te:
+                logger.warning(f"[AutoTrainer] Fetch error {asset}: {_te}")
 
         if not all_dfs:
             logger.warning(f"[AutoTrainer] No data available for {category}")

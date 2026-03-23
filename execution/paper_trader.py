@@ -155,7 +155,12 @@ class PaperTrader:
         else:
             pos["lowest_price"]  = min(float(pos.get("lowest_price", entry)), price)
 
-        pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
+        # MT5-accurate P&L using pip-based calculation (JustMarkets model)
+        try:
+            from risk.position_sizer import PositionSizer as _PS
+            pnl = _PS.pnl(asset, category, entry, price, size, direction)
+        except Exception:
+            pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
 
         # ── Weekend market-closed guard ───────────────────────────────────────
         # Non-crypto markets (forex, commodities, indices) are closed on
@@ -254,7 +259,21 @@ class PaperTrader:
     @staticmethod
     def _close(pos: Dict, exit_price: float, reason: str, pnl: float) -> Dict:
         entry     = float(pos.get("entry_price", exit_price))
-        pnl_pct   = (pnl / (entry * float(pos.get("position_size", 1)))) * 100 if entry else 0.0
+        # pnl_pct: percentage of account balance gained/lost
+        # Use balance from pos if available, else approximate from position_size
+        try:
+            from risk.position_sizer import MT5_SPECS, _DEFAULTS
+            asset    = pos.get("asset", "")
+            category = pos.get("category", "forex")
+            spec     = MT5_SPECS.get(asset) or _DEFAULTS.get(category, {})
+            contract = spec.get("contract", 1)
+            lots     = float(pos.get("position_size", 1)) / contract if contract else 1
+            base_lots= spec.get("base_lots", 1)
+            # Approximate risk per trade as 1% of $10k = $100 per base lot
+            approx_balance = float(pos.get("balance", 10000))
+            pnl_pct  = (pnl / approx_balance) * 100 if approx_balance else 0.0
+        except Exception:
+            pnl_pct = (pnl / 10000) * 100
         open_time = pos.get("open_time", datetime.utcnow().isoformat())
         try:
             from datetime import datetime as dt

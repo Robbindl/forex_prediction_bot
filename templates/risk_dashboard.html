@@ -152,7 +152,22 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <!-- Exposure bars -->
       <div class="panel">
-        <div class="panel-header"><span class="panel-title">📊 Exposure Breakdown</span><span class="panel-badge" id="posCount">0 open</span></div>
+        <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="panel-title">📊 Exposure Breakdown</span>
+            <span class="panel-badge" id="posCount">0 open</span>
+          </div>
+          <select onchange="riskClose(this.value);this.value=''" style="background:var(--s2);border:1px solid var(--bd);color:var(--tx);padding:3px 8px;border-radius:6px;font-size:11px">
+            <option value="">Close…</option>
+            <option value="forex">Close Forex</option>
+            <option value="crypto">Close Crypto</option>
+            <option value="commodities">Close Commodities</option>
+            <option value="indices">Close Indices</option>
+            <option value="losing">Close Losing</option>
+            <option value="winning">Close Winning</option>
+            <option value="all">Close All</option>
+          </select>
+        </div>
         <div class="panel-body" id="exposurePanel" style="max-height:260px;overflow-y:auto"><div class="empty">Loading…</div></div>
       </div>
 
@@ -261,6 +276,24 @@ function load(){
 
 load();
 setInterval(load, 15000);
+
+async function riskClose(mode){
+  const isCategory=['forex','crypto','commodities','indices'].includes(mode);
+  const label={forex:'Forex',crypto:'Crypto',commodities:'Commodities',indices:'Indices',losing:'Losing',winning:'Winning',all:'ALL'}[mode]||mode;
+  if(!confirm(`Close all ${label} positions?`))return;
+  try{
+    let r;
+    if(isCategory){
+      r=await fetch('/api/position/close-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'category',category:mode})}).then(r=>r.json());
+    } else if(mode==='all'){
+      r=await fetch('/api/position/close-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'all'})}).then(r=>r.json());
+    } else {
+      r=await fetch('/api/position/close-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode})}).then(r=>r.json());
+    }
+    alert(r.success?`✅ Closed ${r.closed} position(s)`:`❌ ${r.error||'Failed'}`);
+    setTimeout(()=>window.location.reload(),800);
+  }catch(e){alert('❌ Network error');}
+}
 </script>
 </body>
 </html>

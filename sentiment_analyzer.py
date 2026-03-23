@@ -549,19 +549,20 @@ class _NewsSentiment:
                 net = (bullish_w - bearish_w) / max(1, total_macro_w)
 
                 # Write cross-asset implications into cache (30 min TTL)
+                # Structure: _MACRO_IMPACT[direction][category] = impact_value
                 expiry = now + 1800
+                direction = "bearish" if net < 0 else "bullish"
+                category_impacts = cls._MACRO_IMPACT.get(direction, {})
                 with cls._macro_lock:
-                    for cat_name, impact_map in cls._MACRO_IMPACT.items():
-                        direction = "bearish" if net < 0 else "bullish"
-                        raw_impact = impact_map.get(direction, {}).get(cat_name, 0.0)
-                        # Weight impact by signal strength
+                    for cat_name, raw_impact in category_impacts.items():
+                        # Weight impact by signal strength (net ranges -1 to +1)
                         impact = raw_impact * min(1.0, abs(net) * 2)
                         existing = cls._macro_event_cache.get(cat_name)
                         if not existing or time.time() >= existing[1]:
                             cls._macro_event_cache[cat_name] = (impact, expiry)
                             logger.info(
-                                f"[NewsSentiment] Macro {'bearish' if net < 0 else 'bullish'} "
-                                f"event detected → {cat_name} impact={impact:+.3f}"
+                                f"[NewsSentiment] Macro {direction} event → "
+                                f"{cat_name} impact={impact:+.3f} (strength={abs(net):.2f})"
                             )
 
         except Exception as e:

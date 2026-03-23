@@ -18,19 +18,29 @@ _shared_cache: Dict[str, Tuple[Any, float]] = {}        # Shared cache across in
 _cache_lock = threading.Lock()
 
 
+_rate_limit_until: float = 0.0  # global 429 backoff — block ALL requests until this time
+
 def _rate_limited_request(url: str, headers: Dict, timeout: int = 10) -> requests.Response:
     """
     Global rate limiter for ALL RedditWatcher instances.
     Ensures:
     - No more than 3 concurrent requests
     - Minimum 5 seconds between requests
+    - Global 429 backoff — if any request hits 429, ALL requests pause for 60s
     """
+    global _rate_limit_until
+    # Check global 429 backoff
+    wait = _rate_limit_until - time.time()
+    if wait > 0:
+        logger.debug(f"[RedditWatcher] Global backoff active — waiting {wait:.0f}s")
+        time.sleep(wait)
+
     with _global_request_semaphore:
         with _request_lock:
             global _last_request_time
             elapsed = time.time() - _last_request_time
-            if elapsed < 5.0:
-                sleep_time = 5.0 - elapsed
+            if elapsed < 8.0:
+                sleep_time = 8.0 - elapsed
                 logger.debug(f"[RedditWatcher] Rate limit: sleeping {sleep_time:.2f}s")
                 time.sleep(sleep_time)
             _last_request_time = time.time()
@@ -171,7 +181,7 @@ class RedditWatcher:
         self.is_running = False
         
         # Rate limiting (increased delay)
-        self.request_delay = 3.0  # Increased from 2.0 to 3.0 seconds
+        self.request_delay = 8.0  # Enough gap to prevent rate limiting
         
         # Cache TTL (15 minutes — reduces Reddit request frequency)
         self._cache_ttl = 900
@@ -194,7 +204,7 @@ class RedditWatcher:
         self, 
         subreddit: str, 
         sort: str = "hot", 
-        limit: int = 25  # Reduced from 50 to 25
+        limit: int = 20  # Standardised to 20 for cache key consistency
     ) -> Optional[List[Dict]]:
         """
         Fetch posts from a subreddit with SHARED caching.
@@ -237,17 +247,17 @@ class RedditWatcher:
                 logger.debug(f"[RedditWatcher] Fetched {len(result)} posts from r/{subreddit}")
                 return result
             elif response.status_code == 429:
-                # Rate limited — back off 60s and extend any existing cache entry
+                # Rate limited — set global backoff so ALL subreddit requests pause
+                global _rate_limit_until
+                _rate_limit_until = time.time() + 60
                 logger.warning(
-                    f"[RedditWatcher] HTTP 429 for r/{subreddit} — backing off 60s"
+                    f"[RedditWatcher] HTTP 429 for r/{subreddit} — global backoff 60s"
                 )
-                # Extend existing cache entry TTL so we serve stale rather than hammer again
+                # Return stale cache if available
                 with _cache_lock:
                     existing = _shared_cache.get(cache_key)
                     if existing:
-                        _shared_cache[cache_key] = (existing[0], now)
                         return existing[0]
-                time.sleep(60)
                 return None
             else:
                 logger.warning(
@@ -519,7 +529,7 @@ class RedditWatcher:
             'timestamp': datetime.utcnow().isoformat(),
         }
     
-    def get_asset_sentiment(self, asset: str, limit: int = 30) -> Dict:
+    def get_asset_sentiment(self, asset: str, limit: int = 20) -> Dict:
         """
         Get sentiment for a specific asset.
         Reduced subreddit count per asset to 2 (was 3).
@@ -537,8 +547,8 @@ class RedditWatcher:
         all_posts = []
         sentiments = []
         
-        # Reduced from 3 to 2 subreddits per asset
-        for subreddit in subreddits[:2]:
+        # 1 subreddit per asset — prevents burst traffic causing 429
+        for subreddit in subreddits[:1]:
             posts = self._fetch_subreddit(subreddit, "hot", min(limit, 20))
             if not posts:
                 continue

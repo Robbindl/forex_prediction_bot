@@ -294,10 +294,11 @@ def _bg_refresh() -> None:
 def _bg_refresh_redis() -> None:
     """Subscribe to the 'signals' Redis channel published by the trading loop."""
     import json
+    ps = None
     while True:
         try:
             from services.redis_pool import get_pubsub as _get_pubsub
-            ps = _get_pubsub()
+            ps = _get_pubsub(old_pubsub=ps)  # closes old connection before new one
             if ps is None:
                 raise RuntimeError("pubsub unavailable")
             ps.subscribe("signals")
@@ -592,18 +593,32 @@ def api_command_center():
         # and includes current_price so the table can show live movement colour.
         enriched_positions = []
         for p in positions[:8]:
-            _cp3 = _live_prices.get(p.get("asset", ""), 0.0)
+            _cp3   = _live_prices.get(p.get("asset", ""), 0.0)
+            _entry = float(p.get("entry_price", 0) or 0)
+            _size  = float(p.get("position_size", 0) or 0)
+            _dir   = p.get("direction", p.get("signal", "BUY"))
+            _asset = p.get("asset", "")
+            _cat   = p.get("category", "forex")
+            # Recalculate live P&L using pip-based formula
+            _live_pnl = float(p.get("pnl", 0) or 0)
+            if _cp3 and _entry and _size:
+                try:
+                    from risk.position_sizer import PositionSizer as _PS
+                    _live_pnl = _PS.pnl(_asset, _cat, _entry, _cp3, _size, _dir)
+                except Exception:
+                    _live_pnl = (_cp3 - _entry) * _size if _dir == "BUY" else (_entry - _cp3) * _size
             enriched_positions.append({
                 "trade_id":      p.get("trade_id", ""),
-                "asset":         p.get("asset", ""),
-                "category":      p.get("category", ""),
-                "direction":     p.get("direction", p.get("signal", "BUY")),
+                "asset":         _asset,
+                "category":      _cat,
+                "direction":     _dir,
                 "confidence":    float(p.get("confidence", 0) or 0),
-                "entry_price":   float(p.get("entry_price", 0) or 0),
+                "entry_price":   _entry,
                 "current_price": _cp3,
                 "stop_loss":     float(p.get("stop_loss", 0) or 0),
                 "take_profit":   float(p.get("take_profit", 0) or 0),
-                "pnl":           float(p.get("pnl", 0) or 0),
+                "pnl":           round(_live_pnl, 2),
+                "position_size": _size,
                 "strategy_id":   p.get("strategy_id", ""),
                 "open_time":     str(p.get("open_time", ""))[:16],
             })
@@ -785,25 +800,40 @@ def api_market_heatmap():
         return jsonify(cached)
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        from config.config import TRADING_TIMEFRAME
+        from data.cache import cache as _ohlcv_cache
         def _fetch_one(ac):
             asset, cat = ac
             if _is_market_weekend(cat):
-                return None   # market closed — skip heatmap fetch
+                return None
             try:
-                df = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=3)
-                if df is not None and len(df) >= 2 and "close" in df.columns:
-                    closes = df["close"].astype(float)
-                    chg    = (closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100
-                    return {"asset": asset, "category": cat,
-                            "change_pct": round(float(chg), 2),
-                            "price": round(float(closes.iloc[-1]), 5)}
-            except Exception:
-                pass
-            return None
+                # Try 15m cache first (warm from trading loop)
+                cache_key = f"ohlcv:{asset}:{TRADING_TIMEFRAME}"
+                df = _ohlcv_cache.get(cache_key)
+                if df is None:
+                    # Cache miss — fetch fresh
+                    df = _fetcher.get_ohlcv(asset, cat, interval=TRADING_TIMEFRAME, periods=100)
+                if df is None or df.empty or "close" not in df.columns:
+                    return None
+                closes = df["close"].astype(float)
+                opens  = df["open"].astype(float)
+                current_price = float(closes.iloc[-1])
+                # Compare last 2 closes for % change if can't find today's open
+                if len(closes) >= 2:
+                    ref_price = float(opens.iloc[-1]) if float(opens.iloc[-1]) > 0 else float(closes.iloc[-2])
+                else:
+                    ref_price = float(opens.iloc[-1])
+                chg = (current_price - ref_price) / ref_price * 100 if ref_price > 0 else 0.0
+                return {"asset": asset, "category": cat,
+                        "change_pct": round(float(chg), 3),
+                        "price": round(current_price, 5)}
+            except Exception as _he:
+                logger.debug(f"[Heatmap] {asset}: {_he}")
+                return None
 
         results = []
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for r in as_completed({pool.submit(_fetch_one, ac): ac for ac in ALL_ASSETS}, timeout=25):
+        with ThreadPoolExecutor(max_workers=18) as pool:
+            for r in as_completed({pool.submit(_fetch_one, ac): ac for ac in ALL_ASSETS}, timeout=10):
                 try:
                     v = r.result()
                     if v: results.append(v)
@@ -812,7 +842,7 @@ def api_market_heatmap():
 
         results.sort(key=lambda x: x["change_pct"], reverse=True)
         payload = {"success": True, "items": results}
-        _cache_set("heatmap", payload, ttl=60)
+        _cache_set("heatmap", payload, ttl=60)   # refresh every 60s for live price changes
         return jsonify(payload)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -826,14 +856,19 @@ def api_correlation_matrix():
         import pandas as pd
         import numpy as np
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        assets = ["BTC-USD", "ETH-USD", "GC=F", "SI=F", "EUR/USD", "GBP/USD", "^GSPC", "^FTSE"]
+        from config.config import TRADING_TIMEFRAME
+        assets = [a for a, _ in ALL_ASSETS]  # all 18 tradeable assets
 
         def _fetch_close(a):
             cat = _cat(a)
-            if _is_market_weekend(cat):
-                return a, None   # market closed — skip correlation fetch
             try:
-                df = _fetcher.get_ohlcv(a, cat, interval="1d", periods=35)
+                from data.cache import cache as _ohlcv_cache
+                cache_key = f"ohlcv:{a}:{TRADING_TIMEFRAME}"
+                df = _ohlcv_cache.get(cache_key)
+                if df is None:
+                    # Cache miss — fetch fresh regardless of weekend
+                    # Correlation uses historical closes so weekend data is fine
+                    df = _fetcher.get_ohlcv(a, cat, interval=TRADING_TIMEFRAME, periods=50)
                 if df is not None and not df.empty and "close" in df.columns:
                     return a, df["close"].astype(float)
             except Exception:
@@ -841,9 +876,10 @@ def api_correlation_matrix():
             return a, None
 
         closes: Dict[str, Any] = {}
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        # Use 18 workers — one per asset, all fetch in parallel from cache
+        with ThreadPoolExecutor(max_workers=18) as pool:
             futures = {pool.submit(_fetch_close, a): a for a in assets}
-            for future in as_completed(futures, timeout=20):
+            for future in as_completed(futures, timeout=30):
                 try:
                     a, series = future.result()
                     if series is not None: closes[a] = series
@@ -853,7 +889,13 @@ def api_correlation_matrix():
         if len(closes) < 2:
             return jsonify({"success": False, "error": "Not enough price data — try again in 30s"})
 
-        frame = pd.DataFrame(closes).pct_change().dropna()
+        # Align all series to same length before correlation
+        frame = pd.DataFrame(closes)
+        # Drop columns with too many NaN (less than 10 data points)
+        frame = frame.dropna(axis=1, thresh=10)
+        frame = frame.pct_change().dropna()
+        if frame.shape[1] < 2:
+            return jsonify({"success": False, "error": "Not enough aligned data"})
         corr  = frame.corr().round(3)
         payload = {"success": True, "labels": list(corr.columns), "matrix": corr.values.tolist()}
         _cache_set("correlation", payload, ttl=600)
@@ -1075,26 +1117,35 @@ def api_sentiment_by_asset():
             }
 
         results = []
-        # Reduced workers to 3 to avoid hammering Reddit's rate limiter.
-        # On timeout, collect whatever completed rather than returning an error.
+        seen = set()  # prevent duplicates
+
         with ThreadPoolExecutor(max_workers=3) as pool:
             futures = {pool.submit(_sent_one, a): a for a in watch}
             try:
-                for future in as_completed(futures, timeout=90):
+                for future in as_completed(futures, timeout=60):
                     try:
-                        results.append(future.result())
+                        r = future.result()
+                        asset_key = r.get("asset", "")
+                        if asset_key and asset_key not in seen:
+                            seen.add(asset_key)
+                            results.append(r)
                     except Exception:
                         pass
             except FuturesTimeout:
-                # Collect any futures that already finished
+                # On timeout — collect completed futures, fill rest with neutral
                 for future, asset in futures.items():
+                    if asset in seen:
+                        continue
                     if future.done():
                         try:
-                            results.append(future.result())
+                            r = future.result()
+                            seen.add(asset)
+                            results.append(r)
                         except Exception:
                             pass
-                    elif not future.running():
-                        # Asset never started — add neutral placeholder
+                    if asset not in seen:
+                        # Never completed — neutral placeholder
+                        seen.add(asset)
                         results.append({
                             "asset": asset, "category": _cat(asset),
                             "score": 0.0, "label": "Neutral",
@@ -1236,7 +1287,7 @@ def api_backtest_run():
         strategy = request.args.get("strategy", "voting")
         periods  = int(request.args.get("periods", 500))
         balance  = float(request.args.get("balance", _args.balance))
-        _TF = "15m"
+        from config.config import TRADING_TIMEFRAME as _TF  # use env var not hardcoded
         df  = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"})
@@ -1311,7 +1362,7 @@ def api_backtest_compare():
         cat      = _cat(asset)
         periods  = int(request.args.get("periods", 500))
         balance  = float(request.args.get("balance", _args.balance))
-        _TF = "15m"
+        from config.config import TRADING_TIMEFRAME as _TF  # use env var not hardcoded
         df  = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"})
@@ -1341,7 +1392,7 @@ def api_backtest_optimize():
         cat      = _cat(asset)
         strategy = request.args.get("strategy", "ema_rsi_crossover")
         periods  = int(request.args.get("periods", 300))
-        _TF = "15m"
+        from config.config import TRADING_TIMEFRAME as _TF  # use env var not hardcoded
         df  = _fetcher.get_ohlcv(asset, cat, interval=_TF, periods=periods)
         if df is None or df.empty:
             return jsonify({"success": False, "error": f"No data for {asset}"}), 400
@@ -1380,7 +1431,7 @@ def api_backtest_multi_asset():
         strategy = request.args.get("strategy", "voting")
         periods  = int(request.args.get("periods", 300))
         balance  = float(request.args.get("balance", _args.balance))
-        _TF = "15m"
+        from config.config import TRADING_TIMEFRAME as _TF  # use env var not hardcoded
         from strategy_lab import StrategyBuilder, BacktestEngineV2
         from strategy_lab.strategy_adapter import StrategyAdapter
         configs = StrategyBuilder.all_configs()
@@ -1603,6 +1654,113 @@ def api_phase7_signal_journal():
         return jsonify(payload)
     except Exception as e:
         return jsonify({"success": False, "journals": [], "error": str(e)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — TRADE HISTORY + POSITION CLOSE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/trade-history")
+def api_trade_history():
+    """Return last N closed trades with full details for the history panel."""
+    try:
+        limit = int(request.args.get("limit", 50))
+        from models.trade_models import Trade
+        from config.database import SessionLocal
+        db = SessionLocal()
+        try:
+            trades = (db.query(Trade)
+                      .filter(Trade.exit_time.isnot(None))
+                      .order_by(Trade.exit_time.desc())
+                      .limit(limit)
+                      .all())
+            from datetime import datetime as _dt
+            def _enrich(t):
+                d = t.to_dict()
+                # Calculate duration server-side — both times treated as UTC
+                try:
+                    if t.entry_time and t.exit_time:
+                        et = t.entry_time.replace(tzinfo=None) if hasattr(t.entry_time,'replace') else t.entry_time
+                        xt = t.exit_time.replace(tzinfo=None) if hasattr(t.exit_time,'replace') else t.exit_time
+                        secs = abs((xt - et).total_seconds())
+                        mins = int(secs / 60)
+                        if mins < 60:
+                            d["duration_str"] = f"{mins}m"
+                        elif mins < 1440:
+                            d["duration_str"] = f"{mins//60}h {mins%60}m"
+                        else:
+                            d["duration_str"] = f"{mins//1440}d {(mins%1440)//60}h"
+                    else:
+                        d["duration_str"] = "—"
+                except Exception:
+                    d["duration_str"] = "—"
+                return d
+            return jsonify({
+                "success": True,
+                "trades": [_enrich(t) for t in trades],
+                "count": len(trades),
+            })
+        finally:
+            db.close()
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/position/close", methods=["POST"])
+def api_close_position():
+    """Close a single position by trade_id."""
+    try:
+        data     = request.get_json() or {}
+        trade_id = data.get("trade_id", "")
+        if not trade_id:
+            return jsonify({"success": False, "error": "trade_id required"}), 400
+        core = _core()
+        if not core:
+            return jsonify({"success": False, "error": "Engine unavailable"}), 503
+        result = core.close_position_manually(trade_id)
+        return jsonify({"success": bool(result), "trade_id": trade_id,
+                        "message": "Position closed"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/position/close-bulk", methods=["POST"])
+def api_close_bulk():
+    """Close multiple positions by filter: all | category | losing | winning."""
+    try:
+        data     = request.get_json() or {}
+        mode     = data.get("mode", "all")
+        category = data.get("category", "")
+        core = _core()
+        if not core:
+            return jsonify({"success": False, "error": "Engine unavailable"}), 503
+        positions = core.state.get_open_positions()
+        closed, skipped = [], []
+        for pos in positions:
+            cat  = pos.get("category", "")
+            pnl  = float(pos.get("pnl", 0) or 0)
+            tid  = pos.get("trade_id", "")
+            if not tid:
+                continue
+            if mode == "category" and cat != category:
+                continue
+            if mode == "losing"   and pnl >= 0:
+                continue
+            if mode == "winning"  and pnl <= 0:
+                continue
+            try:
+                core.close_position_manually(tid)
+                closed.append(tid)
+            except Exception:
+                skipped.append(tid)
+        return jsonify({
+            "success": True,
+            "closed":  len(closed),
+            "skipped": len(skipped),
+            "mode":    mode,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — SYSTEM MONITOR + MONITORING

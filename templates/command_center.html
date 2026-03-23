@@ -6,8 +6,8 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--bd2:#263045;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--font:'Inter',system-ui,sans-serif}
-html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:hidden}
-.layout{display:flex;height:100vh}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:auto}
+.layout{display:flex;min-height:100vh;height:auto}
 
 /* SIDEBAR */
 .sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0;z-index:50}
@@ -94,6 +94,23 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .whale-amount{font-size:13px;font-weight:700;color:var(--cy);white-space:nowrap}
 
 .empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
+
+/* ── CLOSE BUTTONS ─────────────────────────────────────────────────── */
+.close-btn{padding:5px 10px;border-radius:7px;border:1px solid;font-size:11px;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap}
+.close-forex{border-color:rgba(41,121,255,.4);background:rgba(41,121,255,.08);color:var(--bl)}
+.close-forex:hover{background:rgba(41,121,255,.25)}
+.close-crypto{border-color:rgba(255,165,0,.4);background:rgba(255,165,0,.08);color:var(--am)}
+.close-crypto:hover{background:rgba(255,165,0,.25)}
+.close-comm{border-color:rgba(255,215,0,.4);background:rgba(255,215,0,.08);color:#ffd700}
+.close-comm:hover{background:rgba(255,215,0,.25)}
+.close-idx{border-color:rgba(0,208,132,.4);background:rgba(0,208,132,.08);color:var(--gr)}
+.close-idx:hover{background:rgba(0,208,132,.25)}
+.close-lose{border-color:rgba(255,69,96,.4);background:rgba(255,69,96,.08);color:var(--rd)}
+.close-lose:hover{background:rgba(255,69,96,.25)}
+.close-win{border-color:rgba(0,208,132,.4);background:rgba(0,208,132,.08);color:var(--gr)}
+.close-win:hover{background:rgba(0,208,132,.25)}
+.close-all{border-color:rgba(255,69,96,.6);background:rgba(255,69,96,.15);color:var(--rd);font-weight:700}
+.close-all:hover{background:rgba(255,69,96,.35)}
 .spinner{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
 
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -102,7 +119,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 /* Scrollable panel bodies */
 #signalsPanel{max-height:300px;overflow-y:auto}
 #whalePanel{max-height:300px;overflow-y:auto}
-.pos-table-wrap{max-height:220px;overflow-y:auto}
+.pos-table-wrap{max-height:none;overflow-y:visible}
 
 /* ── MOBILE HAMBURGER & SIDEBAR OVERLAY ─────────────────────────────── */
 .hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;
@@ -229,16 +246,102 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <!-- Row 3: open positions full width -->
       <div class="panel panel-full" style="animation-delay:.4s">
-        <div class="panel-header">
-          <span class="panel-title">📈 Open Positions</span>
-          <span class="panel-badge" id="posCount">0</span>
-          <a href="/risk-dashboard" style="margin-left:8px;font-size:11px;color:var(--bl);text-decoration:none">Risk →</a>
+        <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="panel-title">📈 Open Positions</span>
+            <span class="panel-badge" id="posCount">0</span>
+            <a href="/risk-dashboard" style="font-size:11px;color:var(--bl);text-decoration:none">Risk →</a>
+          </div>
+          <!-- Always visible — same style as Trade History dropdowns -->
+          <div style="display:flex;align-items:center;gap:8px">
+            <select id="posFilter" onchange="filterPositions()" style="background:var(--s2);border:1px solid var(--bd);color:var(--tx);padding:3px 8px;border-radius:6px;font-size:11px">
+              <option value="all">All</option>
+              <option value="forex">Forex</option>
+              <option value="crypto">Crypto</option>
+              <option value="commodities">Commodities</option>
+              <option value="indices">Indices</option>
+              <option value="winning">Winning</option>
+              <option value="losing">Losing</option>
+            </select>
+            <select id="closeDropdown" onchange="handleCloseDropdown(this)" style="background:var(--s2);border:1px solid var(--bd);color:var(--tx);padding:3px 8px;border-radius:6px;font-size:11px">
+              <option value="">Close…</option>
+              <option value="forex">Close Forex</option>
+              <option value="crypto">Close Crypto</option>
+              <option value="commodities">Close Commodities</option>
+              <option value="indices">Close Indices</option>
+              <option value="losing">Close Losing</option>
+              <option value="winning">Close Winning</option>
+              <option value="all">Close All</option>
+            </select>
+          </div>
         </div>
         <div class="panel-body">
-          <div class="pos-table-wrap" style="flex:1;overflow-y:auto;min-height:100px"><table class="pos-table">
-            <thead><tr><th>Asset</th><th>Dir</th><th>Entry</th><th>Current</th><th>Stop</th><th>Target</th><th>P&L</th><th>Conf</th></tr></thead>
-            <tbody id="posBody"><tr><td colspan="8" class="empty">No open positions</td></tr></tbody>
+          <div class="pos-table-wrap" style="flex:1;overflow-x:auto;overflow-y:auto;max-height:300px">
+            <table class="pos-table" id="posTable">
+              <thead><tr>
+                <th>Asset</th><th>Dir</th><th>Entry</th><th>Current</th>
+                <th>Stop</th><th>Target</th><th>P&L</th><th>Conf</th>
+                <th>Opened</th><th>Action</th>
+              </tr></thead>
+              <tbody id="posBody"><tr><td colspan="10" class="empty">No open positions</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+
+      <!-- ── Trade History Panel ──────────────────────────────────────────── -->
+      <div class="panel panel-full" style="margin-top:16px">
+        <!-- Sticky header stays visible while scrolling the table -->
+        <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+          <span>📋 TRADE HISTORY</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <select id="historyFilter" onchange="loadHistory()" style="background:var(--s2);border:1px solid var(--bd);color:var(--tx);padding:3px 8px;border-radius:6px;font-size:11px">
+              <option value="all">All</option>
+              <option value="forex">Forex</option>
+              <option value="crypto">Crypto</option>
+              <option value="commodities">Commodities</option>
+              <option value="indices">Indices</option>
+              <option value="won">Winners</option>
+              <option value="lost">Losers</option>
+            </select>
+            <span id="historyCount" style="background:var(--s2);padding:2px 8px;border-radius:10px;font-size:11px;color:var(--tx3)">0</span>
+          </div>
+        </div>
+        <!-- Fixed height container — scrolls internally regardless of number of rows -->
+        <div class="panel-body" style="padding:0;height:380px;overflow-y:auto;overflow-x:auto;flex:1">
+          <table class="pos-table" id="historyTable" style="width:100%;min-width:800px">
+            <thead style="position:sticky;top:0;background:var(--s1);z-index:1">
+              <tr>
+                <th>Asset</th>
+                <th>Dir</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>Opened</th>
+                <th>Closed</th>
+                <th>Duration</th>
+                <th>P&L</th>
+                <th>Reason</th>
+                <th>Conf</th>
+              </tr>
+            </thead>
+            <tbody id="historyBody">
+              <tr><td colspan="10" class="empty">Loading history…</td></tr>
+            </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Close confirmation modal -->
+      <div id="closeModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:999;align-items:center;justify-content:center">
+        <div style="background:var(--s1);border:1px solid var(--bd);border-radius:14px;padding:28px;max-width:380px;width:90%;text-align:center">
+          <div style="font-size:32px;margin-bottom:12px">⚠️</div>
+          <div id="closeModalText" style="font-size:15px;font-weight:600;margin-bottom:8px">Close position?</div>
+          <div id="closeModalSub" style="font-size:12px;color:var(--tx3);margin-bottom:24px"></div>
+          <div style="display:flex;gap:10px;justify-content:center">
+            <button onclick="document.getElementById('closeModal').style.display='none'" style="padding:10px 24px;border-radius:8px;border:1px solid var(--bd);background:transparent;color:var(--tx);cursor:pointer;font-size:13px">Cancel</button>
+            <button id="closeModalConfirm" style="padding:10px 24px;border-radius:8px;border:none;background:var(--rd);color:#fff;cursor:pointer;font-size:13px;font-weight:600">Close</button>
+          </div>
         </div>
       </div>
     </div>
@@ -322,32 +425,10 @@ async function loadMain(){
   // ── Open positions table ─────────────────────────────────────────────────
   try{
     const pos=d.positions||[];
-    const tbody=document.getElementById('posBody');
-    if(!pos.length){
-      tbody.innerHTML='<tr><td colspan="8" class="empty">No open positions</td></tr>';
-    }else{
-      tbody.innerHTML=pos.map(p=>{
-        const dir=(p.direction||p.signal||'BUY').toUpperCase();
-        const pnl=Number(p.pnl||0);
-        const e=Number(p.entry_price||0);
-        const sl=Number(p.stop_loss||0);
-        const tp=Number(p.take_profit||0);
-        const cur=Number(p.current_price||0);
-        const sm=e>0&&e<10;
-        const fmt=n=>n>0?(sm?n.toFixed(5):n.toFixed(2)):'—';
-        const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
-        return`<tr>
-          <td><strong>${p.asset||'?'}</strong> <span style="font-size:10px;color:var(--tx3)">${p.category||''}</span></td>
-          <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:600">${dir}</td>
-          <td style="font-family:monospace">${fmt(e)}</td>
-          <td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td>
-          <td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td>
-          <td style="font-family:monospace;color:var(--gr)">${fmt(tp)}</td>
-          <td class="${pnl>=0?'pnl-pos':'pnl-neg'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-          <td>${(Number(p.confidence||0)*100).toFixed(0)}%</td>
-        </tr>`;
-      }).join('');
-    }
+    document.getElementById('posCount').textContent=pos.length||0;
+    _allPositions = pos;
+    const pf=document.getElementById('posFilter'); if(pf) pf.value='all';
+    renderPositions(pos);
   }catch(e){console.error('[CC] positions:',e);}
 }
 
@@ -370,8 +451,207 @@ async function loadWhales(){
   }catch(e){}
 }
 
-loadMain();loadWhales();
-setInterval(loadMain,15000);setInterval(loadWhales,30000);
+loadMain();loadWhales();loadHistory();
+setInterval(loadMain,15000);setInterval(loadWhales,30000);setInterval(loadHistory,60000);
+
+
+// ── Trade History ─────────────────────────────────────────────────────────
+async function loadHistory(){
+  try{
+    const filter=document.getElementById('historyFilter')?.value||'all';
+    const d=await fetch('/api/trade-history?limit=50').then(r=>r.json());
+    if(!d.success)return;
+    let trades=d.trades||[];
+
+    // Apply filter
+    if(filter==='forex')      trades=trades.filter(t=>t.category==='forex');
+    else if(filter==='crypto') trades=trades.filter(t=>t.category==='crypto');
+    else if(filter==='commodities') trades=trades.filter(t=>t.category==='commodities');
+    else if(filter==='indices') trades=trades.filter(t=>t.category==='indices');
+    else if(filter==='won')   trades=trades.filter(t=>(t.pnl||0)>0);
+    else if(filter==='lost')  trades=trades.filter(t=>(t.pnl||0)<0);
+
+    document.getElementById('historyCount').textContent=trades.length;
+    const tbody=document.getElementById('historyBody');
+    if(!trades.length){
+      tbody.innerHTML='<tr><td colspan="10" class="empty">No closed trades</td></tr>';
+      return;
+    }
+
+    const _utc=iso=>{
+      if(!iso)return null;
+      // Always parse as UTC — append Z if no tz info present
+      const s=iso.endsWith('Z')||iso.includes('+00')||iso.includes('+0')?iso:iso+'Z';
+      const d=new Date(s);
+      return isNaN(d)?null:d;
+    };
+    const fmtTime=iso=>{
+      const d=_utc(iso);
+      if(!d)return'—';
+      return d.toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+    };
+    const fmtDur=ms=>{
+      const m=Math.floor(ms/60000);
+      if(m<60)return m+'m';
+      if(m<1440)return Math.floor(m/60)+'h '+m%60+'m';
+      return Math.floor(m/1440)+'d '+Math.floor((m%1440)/60)+'h';
+    };
+    const reasonEmoji=r=>{
+      if(!r)return'—';
+      if(r.includes('Take Profit'))return'🎯 '+r;
+      if(r.includes('Stop Loss'))return'🛑 '+r;
+      if(r.includes('Trail'))return'📈 '+r;
+      if(r.includes('Manual'))return'👆 '+r;
+      if(r.includes('Break'))return'⚖️ '+r;
+      return r;
+    };
+    const sm=p=>p>0&&p<10;
+
+    tbody.innerHTML=trades.map(t=>{
+      const pnl=Number(t.pnl||0);
+      const pnlCol=pnl>=0?'var(--gr)':'var(--rd)';
+      const dir=(t.direction||'BUY').toUpperCase();
+      const ep=Number(t.entry_price||0);
+      const xp=Number(t.exit_price||0);
+      const fmt=n=>n>0?(sm(n)?n.toFixed(5):n.toFixed(2)):'—';
+      const dur=t.duration_str||'—';  // pre-calculated server-side in UTC
+      const catEmoji={forex:'💱',crypto:'₿',commodities:'🥇',indices:'📈'}[t.category]||'📊';
+      return`<tr style="opacity:0.9">
+        <td>
+          <strong>${t.asset||'?'}</strong>
+          <span style="font-size:10px;color:var(--tx3);margin-left:4px">${catEmoji}</span>
+        </td>
+        <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
+        <td style="font-family:monospace;font-size:11px">${fmt(ep)}</td>
+        <td style="font-family:monospace;font-size:11px">${fmt(xp)}</td>
+        <td style="font-size:11px;color:var(--tx3)">${fmtTime(t.entry_time)}</td>
+        <td style="font-size:11px;color:var(--tx3)">${fmtTime(t.exit_time)}</td>
+        <td style="font-size:11px;color:var(--am)">${dur}</td>
+        <td style="font-weight:700;color:${pnlCol}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
+        <td style="font-size:10px;color:var(--tx3)">${reasonEmoji(t.exit_reason)}</td>
+        <td style="font-size:11px">${t.confidence?Math.round(t.confidence*100)+'%':'—'}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){console.error('[History]',e);}
+}
+
+// ── Position filter + close dropdown functions ───────────────────────────────
+let _allPositions = [];
+
+function renderPositions(pos){
+  const tbody=document.getElementById('posBody');
+  if(!tbody)return;
+  if(!pos.length){
+    tbody.innerHTML='<tr><td colspan="10" class="empty">No open positions</td></tr>';
+    return;
+  }
+  tbody.innerHTML=pos.map(p=>{
+    const dir=(p.direction||p.signal||'BUY').toUpperCase();
+    const pnl=Number(p.pnl||0);
+    const e=Number(p.entry_price||0);
+    const sl=Number(p.stop_loss||0);
+    const tp=Number(p.take_profit||0);
+    const cur=Number(p.current_price||0);
+    const sm=e>0&&e<10;
+    const fmt=n=>n>0?(sm?n.toFixed(5):n.toFixed(2)):'—';
+    const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
+    const tid=p.trade_id||'';
+    // Open time + duration — force UTC parsing
+    let openStr='—';
+    try{
+      const raw=p.open_time||'';
+      if(raw){
+        const s=raw.endsWith('Z')||raw.includes('+')?raw:raw+'Z';
+        const ot=new Date(s);
+        if(!isNaN(ot)){
+          const mins=Math.floor((Date.now()-ot)/60000);
+          const absMins=Math.abs(mins);
+          const dur=absMins<60?absMins+'m':absMins<1440?Math.floor(absMins/60)+'h '+absMins%60+'m':Math.floor(absMins/1440)+'d';
+          const timeStr=ot.toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+          openStr=timeStr+' <span style="color:var(--tx3);font-size:10px">('+dur+')</span>';
+        }
+      }
+    }catch(ex){}
+    // Progress bar toward TP
+    let progress=0;
+    if(tp&&e&&sl){
+      const tpDist=Math.abs(tp-e);
+      const curDist=dir==='BUY'?cur-e:e-cur;
+      progress=tpDist>0?Math.max(0,Math.min(100,(curDist/tpDist*100))):0;
+    }
+    const pBar=`<div style="height:3px;background:var(--bd);border-radius:2px;margin-top:2px"><div style="height:3px;width:${progress.toFixed(0)}%;background:${progress>80?'var(--gr)':progress>50?'var(--am)':'var(--bl)'};border-radius:2px;transition:width .5s"></div></div>`;
+    return`<tr>
+      <td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${pBar}</td>
+      <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
+      <td style="font-family:monospace">${fmt(e)}</td>
+      <td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td>
+      <td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td>
+      <td style="font-family:monospace;color:var(--gr)">${fmt(tp)}</td>
+      <td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
+      <td>${(Number(p.confidence||0)*100).toFixed(0)}%</td>
+      <td style="font-size:11px;white-space:nowrap">${openStr}</td>
+      <td><button onclick="confirmClose('${tid}','${p.asset||'?'}')" style="padding:4px 10px;border-radius:6px;border:none;background:rgba(255,69,96,.15);color:var(--rd);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap" onmouseover="this.style.background='var(--rd)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,69,96,.15)';this.style.color='var(--rd)'">✕ Close</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function filterPositions(){
+  const filter = document.getElementById('posFilter')?.value || 'all';
+  if(!_allPositions.length){
+    document.getElementById('posBody').innerHTML='<tr><td colspan="10" class="empty">No open positions</td></tr>';
+    return;
+  }
+  const filtered = filter === 'all' ? _allPositions :
+    filter === 'winning' ? _allPositions.filter(p => Number(p.pnl||0) > 0) :
+    filter === 'losing'  ? _allPositions.filter(p => Number(p.pnl||0) <= 0) :
+    _allPositions.filter(p => (p.category||'').toLowerCase() === filter.toLowerCase());
+  if(!filtered.length){
+    document.getElementById('posBody').innerHTML=`<tr><td colspan="10" class="empty">No ${filter} positions</td></tr>`;
+    return;
+  }
+  renderPositions(filtered);
+}
+
+function handleCloseDropdown(sel){
+  const val = sel.value;
+  if(!val){ return; }
+  sel.value = '';  // reset dropdown
+  const labels = {forex:'Forex',crypto:'Crypto',commodities:'Commodities',indices:'Indices',losing:'Losing',winning:'Winning',all:'ALL'};
+  _pendingClose = val === 'all' ? {mode:'all'} :
+    ['forex','crypto','commodities','indices'].includes(val) ? {mode:'category',cat:val} :
+    {mode:'filter',filter:val};
+  document.getElementById('closeModalText').textContent = `Close all ${labels[val]} positions?`;
+  document.getElementById('closeModalSub').textContent = val === 'all' ? 'All open positions will be closed.' : `All ${labels[val]} positions will be closed.`;
+  document.getElementById('closeModalConfirm').onclick = executeClose;
+  document.getElementById('closeModal').style.display = 'flex';
+}
+
+// ── Position close functions ──────────────────────────────────────────────
+let _pendingClose=null;
+function confirmClose(tid,asset){_pendingClose={tid,asset,mode:'single'};document.getElementById('closeModalText').textContent=`Close ${asset}?`;document.getElementById('closeModalSub').textContent='This will close at current market price.';document.getElementById('closeModalConfirm').onclick=executeClose;document.getElementById('closeModal').style.display='flex';}
+function closeAllConfirm(){const c=document.getElementById('posCount').textContent||0;_pendingClose={mode:'all'};document.getElementById('closeModalText').textContent=`Close all ${c} positions?`;document.getElementById('closeModalSub').textContent='All open positions will be closed at market price.';document.getElementById('closeModalConfirm').onclick=executeClose;document.getElementById('closeModal').style.display='flex';}
+function closeByCategory(cat){_pendingClose={mode:'category',cat};document.getElementById('closeModalText').textContent=`Close all ${cat} positions?`;document.getElementById('closeModalSub').textContent=`All ${cat} positions will be closed.`;document.getElementById('closeModalConfirm').onclick=executeClose;document.getElementById('closeModal').style.display='flex';}
+function closeFiltered(filter){_pendingClose={mode:'filter',filter};const label=filter==='losing'?'🔴 losing':'🟢 winning';document.getElementById('closeModalText').textContent=`Close all ${label} positions?`;document.getElementById('closeModalSub').textContent=`All ${filter} positions will be closed.`;document.getElementById('closeModalConfirm').onclick=executeClose;document.getElementById('closeModal').style.display='flex';}
+async function executeClose(){
+  document.getElementById('closeModal').style.display='none';
+  if(!_pendingClose)return;
+  const{mode,tid,cat,filter}=_pendingClose;_pendingClose=null;
+  try{
+    let r;
+    if(mode==='single'){
+      r=await fetch('/api/position/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trade_id:tid})}).then(r=>r.json());
+    } else {
+      const payload={mode:mode==='category'?'category':mode==='filter'?filter:'all'};
+      if(mode==='category')payload.category=cat;
+      r=await fetch('/api/position/close-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(r=>r.json());
+    }
+    const ok=r.success||(r.closed>0);
+    showToast(ok?`✅ ${r.closed!=null?r.closed+' position(s) closed':r.message||'Closed'}`:`❌ ${r.error||'Failed'}`,ok?'success':'error');
+    setTimeout(loadMain,800);
+    setTimeout(loadHistory,1200);
+  }catch(e){showToast('❌ Network error','error');}
+}
+function showToast(msg,type){const t=document.createElement('div');t.textContent=msg;t.style.cssText=`position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:10px;background:${type==='success'?'rgba(0,208,132,.9)':'rgba(255,69,96,.9)'};color:#fff;font-weight:600;font-size:13px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.3)`;document.body.appendChild(t);setTimeout(()=>t.remove(),3500);}
 </script>
 
 <script>

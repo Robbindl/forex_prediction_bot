@@ -14,7 +14,9 @@ logger = get_logger()
 # ── Default parameters ────────────────────────────────────────────────────────
 DEFAULT_COMMISSION  = 0.001   # 0.10% per trade (entry + exit)
 DEFAULT_SLIPPAGE    = 0.0005  # 0.05% slippage on fill price
-DEFAULT_RISK_PER_TRADE = 0.01 # 1% of balance risked per trade
+DEFAULT_RISK_PER_TRADE = 0.01 # 1% of balance risked per trade (backtest only)
+# Note: Live trading uses MT5 lot-based sizing from risk/position_sizer.py
+# Backtest keeps % risk for comparative analysis — actual P&L will differ from live
 
 
 @dataclass

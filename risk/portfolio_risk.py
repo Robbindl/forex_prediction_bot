@@ -5,6 +5,19 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
+
+def _lot_exposure(asset: str, category: str, units: float, entry: float) -> float:
+    """Convert position units to USD exposure using lot-based calculation."""
+    try:
+        from risk.position_sizer import MT5_SPECS, _DEFAULTS
+        spec     = MT5_SPECS.get(asset) or _DEFAULTS.get(category, {})
+        contract = spec.get("contract", 1)
+        pip_val  = spec.get("pip_val", 10.0)
+        lots     = units / contract if contract > 0 else units
+        return lots * pip_val * 100  # 100 pip range as notional proxy
+    except Exception:
+        return units * entry if entry else 0
+
 # ── Defaults (all overridable via constructor) ─────────────────────────────────
 _MAX_SINGLE_ASSET_PCT   = 20.0   # max % of portfolio in any one asset
 _MAX_CATEGORY_PCT       = 40.0   # max % in any one category (crypto, forex…)
@@ -65,7 +78,17 @@ class PortfolioRiskEngine:
             category = signal.get("category", "unknown")
             size     = float(signal.get("position_size", 0))
             entry    = float(signal.get("entry_price", 0))
-            exposure = size * entry if entry else 0
+            # Lot-based exposure: convert units back to lots for correct notional value
+            try:
+                from risk.position_sizer import MT5_SPECS, _DEFAULTS
+                spec     = MT5_SPECS.get(asset) or _DEFAULTS.get(category, {})
+                contract = spec.get("contract", 1)
+                lots     = size / contract if contract > 0 else size
+                pip_val  = spec.get("pip_val", 10.0)
+                # Notional exposure in USD = lots * pip_val * 100 (approx 100 pip range)
+                exposure = lots * pip_val * 100 if entry else 0
+            except Exception:
+                exposure = size * entry if entry else 0
 
             # ── 1. Drawdown halt ──────────────────────────────────────────
             if self._peak_balance > 0:
@@ -86,7 +109,8 @@ class PortfolioRiskEngine:
 
             # ── 2. Single-asset exposure ──────────────────────────────────
             asset_exposure = sum(
-                float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
+                _lot_exposure(p.get("asset",""), p.get("category","forex"),
+                              float(p.get("position_size", 0)), float(p.get("entry_price", 0)))
                 for p in open_positions
                 if p.get("asset") == asset
             )
@@ -100,7 +124,8 @@ class PortfolioRiskEngine:
 
             # ── 3. Category exposure ──────────────────────────────────────
             cat_exposure = sum(
-                float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
+                _lot_exposure(p.get("asset",""), p.get("category","forex"),
+                              float(p.get("position_size", 0)), float(p.get("entry_price", 0)))
                 for p in open_positions
                 if p.get("category") == category
             )
@@ -147,13 +172,15 @@ class PortfolioRiskEngine:
     ) -> dict:
         """Returns current exposure breakdown for the dashboard."""
         total_exposure = sum(
-            float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
+            _lot_exposure(p.get("asset",""), p.get("category","forex"),
+                          float(p.get("position_size", 0)), float(p.get("entry_price", 0)))
             for p in open_positions
         )
         by_category: Dict[str, float] = {}
         for p in open_positions:
             cat = p.get("category", "unknown")
-            exp = float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
+            exp = _lot_exposure(p.get("asset",""), cat,
+                                float(p.get("position_size", 0)), float(p.get("entry_price", 0)))
             by_category[cat] = by_category.get(cat, 0) + exp
 
         drawdown = 0.0

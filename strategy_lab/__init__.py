@@ -22,9 +22,17 @@ def run_backtest(
     Uses the existing DataFetcher so all caching and API fallbacks apply.
     """
     try:
-        from data.fetcher import DataFetcher
-        fetcher  = DataFetcher()
-        _TF = "15m"
+        # Reuse engine singleton fetcher — already warm with cached OHLCV data
+        try:
+            import core.engine as _eng_mod
+            fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
+        except Exception:
+            fetcher = None
+        if fetcher is None:
+            from data.fetcher import DataFetcher
+            fetcher = DataFetcher()
+        from config.config import TRADING_TIMEFRAME
+        _TF = TRADING_TIMEFRAME
         df = fetcher.get_ohlcv(asset, category, _TF, periods)
         if df is None or df.empty:
             raise ValueError(f"No OHLCV data available for {asset}")
@@ -50,9 +58,17 @@ def optimize_strategy(
     Returns results sorted by Sharpe ratio (best first).
     """
     try:
-        from data.fetcher import DataFetcher
-        fetcher  = DataFetcher()
-        _TF = "15m"
+        # Reuse engine singleton fetcher — already warm with cached OHLCV data
+        try:
+            import core.engine as _eng_mod
+            fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
+        except Exception:
+            fetcher = None
+        if fetcher is None:
+            from data.fetcher import DataFetcher
+            fetcher = DataFetcher()
+        from config.config import TRADING_TIMEFRAME
+        _TF = TRADING_TIMEFRAME
         df = fetcher.get_ohlcv(asset, category, _TF, periods)
         if df is None or df.empty:
             raise ValueError(f"No OHLCV data available for {asset}")

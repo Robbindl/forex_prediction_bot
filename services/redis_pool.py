@@ -117,21 +117,31 @@ def get_client():
         return None
 
 
-def get_pubsub():
+def get_pubsub(old_pubsub=None):
     """
     Return a dedicated pubsub object for subscriber loops.
     Each call creates ONE new connection outside the shared pool.
     Only call this once per subscriber thread — not on every loop iteration.
 
+    Pass old_pubsub to close the previous connection before creating a new one.
+    This prevents zombie connections from accumulating when subscribers reconnect.
+
     Returns None if Redis is unavailable.
     """
+    # Close old connection first — prevents zombie connections
+    if old_pubsub is not None:
+        try:
+            old_pubsub.close()
+            old_pubsub.connection.disconnect()
+        except Exception:
+            pass
+
     _ensure_pool()
     if not _available:
         return None
     try:
         import redis
         from config.config import REDIS_URL
-        # Dedicated connection for this subscriber — not from pool
         r = redis.from_url(
             REDIS_URL,
             socket_connect_timeout=3,

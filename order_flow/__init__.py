@@ -73,24 +73,27 @@ def _on_orderbook_update(event: dict) -> None:
 
 def _subscribe_loop() -> None:
     """Background thread — subscribes to Redis ORDER_BOOK_UPDATE channel."""
-    try:
-        import json, redis
-        from config.config import REDIS_URL
-        from services.redis_pool import get_pubsub as _get_pubsub
-        ps = _get_pubsub()
-        ps.subscribe("ORDER_BOOK_UPDATE")
-        logger.info("[OrderFlow] Subscribed to ORDER_BOOK_UPDATE")
+    import json
+    ps = None
+    while _running:
+        try:
+            from services.redis_pool import get_pubsub as _get_pubsub
+            ps = _get_pubsub(old_pubsub=ps)  # close old before new
+            ps.subscribe("ORDER_BOOK_UPDATE")
+            logger.info("[OrderFlow] Subscribed to ORDER_BOOK_UPDATE")
 
-        for msg in ps.listen():
-            if not _running:
-                break
-            if msg.get("type") == "message":
-                try:
-                    _on_orderbook_update(json.loads(msg["data"]))
-                except Exception as e:
-                    logger.debug(f"[OrderFlow] Handler error: {e}")
-    except Exception as e:
-        logger.error(f"[OrderFlow] Subscribe loop error: {e}")
+            for msg in ps.listen():
+                if not _running:
+                    break
+                if msg.get("type") == "message":
+                    try:
+                        _on_orderbook_update(json.loads(msg["data"]))
+                    except Exception as e:
+                        logger.debug(f"[OrderFlow] Handler error: {e}")
+        except Exception as e:
+            logger.error(f"[OrderFlow] Subscribe loop error: {e}")
+            if _running:
+                import time; time.sleep(10)
 
 
 def start_all() -> None:

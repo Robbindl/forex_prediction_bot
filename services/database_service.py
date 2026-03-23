@@ -106,7 +106,7 @@ class DatabaseService:
                 # Update exit fields on existing record
                 existing.exit_price  = _np(trade_data.get("exit_price"))
                 existing.exit_time   = (
-                    datetime.fromisoformat(trade_data["exit_time"])
+                    datetime.fromisoformat(trade_data["exit_time"].replace('Z','').replace('+00:00',''))
                     if trade_data.get("exit_time") else datetime.utcnow()
                 )
                 existing.exit_reason = str(_np(trade_data.get("exit_reason", "")))
@@ -128,9 +128,10 @@ class DatabaseService:
                 pnl             = _np(trade_data.get("pnl")),
                 pnl_percent     = _np(trade_data.get("pnl_percent")),
                 exit_time       = (
-                    datetime.fromisoformat(trade_data["exit_time"])
+                    datetime.fromisoformat(trade_data["exit_time"].replace('Z','').replace('+00:00',''))
                     if trade_data.get("exit_time") else None
                 ),
+                entry_time      = datetime.utcnow(),  # always UTC, not server local time
                 exit_reason     = str(_np(trade_data.get("exit_reason", ""))) if trade_data.get("exit_reason") else None,
                 strategy_id     = str(_np(trade_data.get("strategy_id", "UNKNOWN"))),
                 confidence      = _np(trade_data.get("confidence", 0)),
@@ -163,7 +164,8 @@ class DatabaseService:
     # ── Performance ───────────────────────────────────────────────────────────
 
     def get_performance_summary(self, days: int = 30) -> Dict:
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        # entry_time stored as EAT (UTC+3) via server_default — add 3h buffer to cutoff
+        cutoff = datetime.utcnow() - timedelta(days=days) - timedelta(hours=4)
         with self.get_session() as s:
             trades = (
                 s.query(Trade)
@@ -237,7 +239,7 @@ class DatabaseService:
             s.add(row)
 
     def get_recent_whale_alerts(self, hours: int = 24, symbol: str = "") -> List[Dict]:
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = datetime.utcnow() - timedelta(hours=hours) - timedelta(hours=4)  # EAT offset
         with self.get_session() as s:
             q = s.query(WhaleAlert).filter(WhaleAlert.alert_time >= cutoff)
             if symbol:

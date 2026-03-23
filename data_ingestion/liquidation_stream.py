@@ -76,23 +76,25 @@ class LiquidationStream:
         if not self._pub:
             logger.info("[LiqStream] No Redis — running in direct-ingest mode only")
             return
-        try:
-            import redis
-            from config.config import REDIS_URL
-            from services.redis_pool import get_pubsub as _get_pubsub
-            ps = _get_pubsub()
-            ps.subscribe("LIQUIDATION_EVENT")
-            logger.info("[LiqStream] Subscribed to LIQUIDATION_EVENT")
-            for msg in ps.listen():
-                if not self._running:
-                    break
-                if msg.get("type") == "message":
-                    try:
-                        self._process(json.loads(msg["data"]))
-                    except Exception as e:
-                        logger.debug(f"[LiqStream] Process error: {e}")
-        except Exception as e:
-            logger.error(f"[LiqStream] Subscribe error: {e}")
+        ps = None
+        while self._running:
+            try:
+                from services.redis_pool import get_pubsub as _get_pubsub
+                ps = _get_pubsub(old_pubsub=ps)  # close old before new
+                ps.subscribe("LIQUIDATION_EVENT")
+                logger.info("[LiqStream] Subscribed to LIQUIDATION_EVENT")
+                for msg in ps.listen():
+                    if not self._running:
+                        break
+                    if msg.get("type") == "message":
+                        try:
+                            self._process(json.loads(msg["data"]))
+                        except Exception as e:
+                            logger.debug(f"[LiqStream] Process error: {e}")
+            except Exception as e:
+                logger.error(f"[LiqStream] Subscribe error: {e}")
+                if self._running:
+                    import time; time.sleep(10)
 
     def _process(self, event: dict) -> None:
         asset    = event.get("asset", "UNKNOWN")

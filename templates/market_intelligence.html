@@ -54,10 +54,10 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .hm-price{font-size:10px;opacity:.7;margin-top:1px}
 
 /* CORRELATION */
-.corr-scroll{overflow:auto;padding:12px 16px}
-.corr-grid{display:grid;gap:2px}
-.corr-cell{width:44px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:10px;font-weight:600;cursor:default}
-.corr-label{font-size:10px;color:var(--tx3);display:flex;align-items:center;justify-content:flex-end;padding-right:4px;height:36px;white-space:nowrap}
+.corr-scroll{overflow:auto;padding:8px;width:100%;box-sizing:border-box}
+.corr-grid{display:grid;gap:2px;width:100%}
+.corr-cell{width:100%;min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:9px;font-weight:600;cursor:default}
+.corr-label{font-size:9px;color:var(--tx3);display:flex;align-items:center;justify-content:flex-end;padding-right:4px;height:32px;white-space:nowrap;min-width:40px}
 
 select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--tx);outline:none}
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.mu{color:var(--tx2)}
@@ -199,6 +199,7 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
 
 <script>
 let lwChart, cSeries, vSeries, sseSource;
+let _lastAsset = null, _lastTf = null, _userZoomed = false;
 let currentAsset = 'EUR/USD', currentTf = '15m';
 let candlesLoading = false;
 
@@ -234,6 +235,12 @@ function initChart() {
     priceScaleId: '',
     scaleMargins: {top:0.85, bottom:0},
   });
+  // Detect user zoom/scroll via mouse wheel and drag on chart
+  const lwEl = document.getElementById('lwChart');
+  lwEl.addEventListener('wheel',     () => { _userZoomed = true; }, {passive:true});
+  lwEl.addEventListener('mousedown', () => { _userZoomed = true; }, {passive:true});
+  lwEl.addEventListener('touchstart',() => { _userZoomed = true; }, {passive:true});
+
   // Auto-resize when container changes size
   new ResizeObserver(() => {
     const c = document.getElementById('lwChart');
@@ -257,7 +264,16 @@ async function loadCandles() {
   candlesLoading = false;
 
   if (d && d.candles && d.candles.length) {
-    // Clear old data first — prevents stale scale
+    const assetChanged = (_lastAsset !== currentAsset || _lastTf !== currentTf);
+    _lastAsset = currentAsset;
+    _lastTf    = currentTf;
+
+    // Save current visible range before updating data
+    let savedRange = null;
+    if (!assetChanged && _userZoomed) {
+      try { savedRange = lwChart.timeScale().getVisibleRange(); } catch(e) {}
+    }
+
     cSeries.setData([]);
     vSeries.setData([]);
 
@@ -268,9 +284,15 @@ async function loadCandles() {
       color: c.close >= c.open ? 'rgba(0,208,132,.25)' : 'rgba(255,69,96,.25)',
     })));
 
-    // Force price scale to auto-fit the new asset's price range
-    lwChart.timeScale().fitContent();
-    lwChart.priceScale('right').applyOptions({autoScale: true});
+    if (assetChanged || !_userZoomed) {
+      // New asset or first load — fit everything
+      lwChart.timeScale().fitContent();
+      lwChart.priceScale('right').applyOptions({autoScale: true});
+      _userZoomed = false;
+    } else if (savedRange) {
+      // User has zoomed — restore their exact view
+      try { lwChart.timeScale().setVisibleRange(savedRange); } catch(e) {}
+    }
 
     st.textContent = `${d.candles.length} bars`;
     st.style.background = 'rgba(0,208,132,.12)';
@@ -387,7 +409,7 @@ async function loadCorrelation(manual=false) {
     return;
   }
 
-  const cols = '56px ' + d.labels.map(() => '44px').join(' ');
+  const cols = '48px ' + d.labels.map(() => '1fr').join(' ');
   let html = `<div class="corr-grid" style="grid-template-columns:${cols}">`;
   // Header row
   html += '<div></div>';
@@ -493,14 +515,21 @@ function setTf(tf, el) {
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-initChart();
-loadAssets().then(() => { loadCandles(); startStream(); });
-setTimeout(() => loadHeatmap(), 300);
-setTimeout(() => loadCorrelation(), 1000);
+function _boot() {
+  if (typeof LightweightCharts === 'undefined') {
+    setTimeout(_boot, 100);  // wait for script to load
+    return;
+  }
+  initChart();
+  loadAssets().then(() => { loadCandles(); startStream(); });
+  setTimeout(() => loadHeatmap(), 300);
+  setTimeout(() => loadCorrelation(), 1000);
+}
+_boot();
 
 // Refresh chart every 60s, heatmap every 60s
-setInterval(() => { loadCandles(); }, 60000);
-setInterval(() => { loadHeatmap(); }, 60000);
+setInterval(() => { loadCandles(); }, 15000);  // 15s — responsive within-candle updates
+setInterval(() => { loadHeatmap(); }, 60000);  // 60s — heatmap doesn't need to be faster
 </script>
 
 <script>

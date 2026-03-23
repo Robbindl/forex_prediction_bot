@@ -29,6 +29,11 @@ _FOREX_SUFFIX = {
     "GBP/JPY": "GBPJPY=X", "AUD/JPY": "AUDJPY=X",
 }
 _COMMODITY_MAP = {
+    # OHLCV history: use futures symbols — yfinance has full 15m history for these
+    # Real-time SPOT price is handled separately in get_real_time_price() via iTick XAUUSD
+    "GC=F":    "GC=F",   # Gold futures — has 15m intraday on yfinance (XAUUSD=X does not)
+    "SI=F":    "SI=F",   # Silver futures — same
+    "CL=F":    "CL=F",   # Crude Oil WTI
     "XAU/USD": "GC=F", "XAG/USD": "SI=F",
     "WTI/USD": "CL=F", "NG/USD":  "NG=F", "XCU/USD": "HG=F",
 }
@@ -86,9 +91,8 @@ _TD_COMMODITY_MAP = {}   # Commodities need Grow plan — Alpha Vantage used ins
 # ── Alpha Vantage commodity symbol map ────────────────────────────────────────
 # Free plan: 25 requests/day, real-time commodity prices
 _AV_COMMODITY_MAP = {
-    "GC=F": "WTI",        # Gold → AV uses XAU but commodity endpoint uses different format
-    "SI=F": "NATURAL_GAS", # placeholder — AV commodity endpoint
-    "CL=F": "WTI",        # Crude Oil WTI
+    "CL=F": "WTI",        # Crude Oil WTI — only oil uses commodity endpoint
+    # Gold (GC=F) and Silver (SI=F) use _AV_FX_MAP via FX_INTRADAY endpoint instead
 }
 # AV physical commodity symbols via CURRENCY endpoint (more reliable on free plan)
 _AV_FOREX_COMMODITY = {

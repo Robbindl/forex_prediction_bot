@@ -281,14 +281,8 @@ def main() -> None:
 
     # DataFetcher check moved to after wait_until_ready — see below
 
-    # ── AutoTrainer ───────────────────────────────────────────────────────
-    try:
-        from ml.trainer import AutoTrainer
-        trainer = AutoTrainer(fetcher=engine.fetcher)
-        trainer.start()
-        logger.info("[bot] AutoTrainer started")
-    except Exception as e:
-        logger.warning(f"[bot] AutoTrainer failed to start: {e}")
+    # AutoTrainer moved to after wait_until_ready — see below
+    # (engine.fetcher is None at this point so trainer would get no data)
 
     # ── Phase 1 — Institutional data feeds ───────────────────────────────
     try:
@@ -498,6 +492,17 @@ def main() -> None:
             logger.info("[bot] DataFetcher created (engine singleton was None)")
         except Exception as e:
             logger.warning(f"[bot] DataFetcher init failed: {e}")
+
+    # ── AutoTrainer ───────────────────────────────────────────────────────
+    # Started AFTER wait_until_ready and DataFetcher confirmed — engine.fetcher
+    # is guaranteed non-None here so training data fetch will succeed.
+    try:
+        from ml.trainer import AutoTrainer
+        trainer = AutoTrainer(fetcher=engine.fetcher)
+        trainer.start()
+        logger.info("[bot] AutoTrainer started")
+    except Exception as e:
+        logger.warning(f"[bot] AutoTrainer failed to start: {e}")
 
     # ── Whale monitoring ──────────────────────────────────────────────────
     try:

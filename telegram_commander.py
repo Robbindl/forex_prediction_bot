@@ -62,6 +62,17 @@ _CATEGORY_ASSETS: Dict[str, List[str]] = {
 
 # ── Keyboard builders ─────────────────────────────────────────────────────────
 
+def _units_to_lots(asset: str, category: str, units: float) -> float:
+    """Convert raw position units back to lots for display."""
+    try:
+        from risk.position_sizer import MT5_SPECS, _DEFAULTS
+        spec = MT5_SPECS.get(asset) or _DEFAULTS.get(category, {})
+        contract = spec.get("contract", 1)
+        return units / contract if contract > 0 else units
+    except Exception:
+        return units
+
+
 def _kb(*rows) -> InlineKeyboardMarkup:
     """Helper — pass lists of (label, callback_data) tuples."""
     return InlineKeyboardMarkup([
@@ -249,6 +260,7 @@ class TelegramCommander:
         app.add_handler(CommandHandler("balance",    self._cmd_balance_direct))
         app.add_handler(CommandHandler("signal",     self._cmd_signal_direct))
         app.add_handler(CommandHandler("close",      self._cmd_close_direct))
+        app.add_handler(CommandHandler("history",    self._cmd_history))
         app.add_handler(CommandHandler("pause",      self._cmd_pause_direct))
         app.add_handler(CommandHandler("resume",     self._cmd_resume_direct))
 
@@ -415,22 +427,28 @@ class TelegramCommander:
 
     def alert_trade_opened(self, trade: Dict) -> None:
         try:
+            from datetime import datetime as _dt, timezone as _tz
             d     = trade.get("direction", trade.get("signal", "BUY"))
             emoji = "🟢" if d == "BUY" else "🔴"
             entry = float(trade.get("entry_price", 0))
             sl    = float(trade.get("stop_loss",   0))
             tp    = float(trade.get("take_profit", 0))
             rr    = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
-            _a = trade.get('asset', '?')
+            _a    = trade.get('asset', '?')
+            now   = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
             self.send_message(
-                f"{emoji} *Trade Opened*\n\n"
-                f"Asset:    {_a}\n"
+                f"{emoji} *TRADE OPENED*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📌 Asset:    *{_a}*\n"
+                f"📍 Direction: *{d}*\n"
+                f"🕐 Opened:   `{now}`\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
                 f"Entry:    `{self._fmt_price(entry, _a)}`\n"
                 f"Stop:     `{self._fmt_price(sl, _a)}`\n"
                 f"Target:   `{self._fmt_price(tp, _a)}`\n"
-                f"R:R:      {rr:.1f}:1\n"
-                f"Conf:     {float(trade.get('confidence', 0)):.0%}\n"
-                f"Strategy: {trade.get('strategy_id', '?')}\n"
+                f"R:R:      `{rr:.1f}:1`\n"
+                f"Conf:     `{float(trade.get('confidence', 0)):.0%}`\n"
+                f"Strategy: `{trade.get('strategy_id', '?')}`\n"
                 f"ID:       `{trade.get('trade_id', '?')}`"
             )
         except Exception as e:
@@ -438,19 +456,45 @@ class TelegramCommander:
 
     def alert_trade_closed(self, trade: Dict) -> None:
         try:
+            from datetime import datetime as _dt, timezone as _tz
             pnl   = float(trade.get("pnl", 0))
             icon  = "✅" if pnl >= 0 else "❌"
             sign  = "+" if pnl >= 0 else ""
-            _a2 = trade.get('asset', '?')
-            _en = float(trade.get('entry_price', 0))
-            _ex = float(trade.get('exit_price',  0))
+            _a2   = trade.get('asset', '?')
+            _en   = float(trade.get('entry_price', 0))
+            _ex   = float(trade.get('exit_price',  0))
+            reason = trade.get('exit_reason', '?')
+            # Reason emoji
+            r_emoji = {"Take Profit":"🎯","Stop Loss":"🛑","Trailing":"📈","Manual":"👆","Break":"⚖️"}
+            r_em = next((v for k, v in r_emoji.items() if k in reason), "📌")
+            # Times
+            now_str = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
+            open_str = "—"
+            dur_str  = "—"
+            try:
+                open_t = trade.get("open_time") or trade.get("entry_time")
+                if open_t:
+                    ot = _dt.fromisoformat(str(open_t).replace("Z","+00:00"))
+                    open_str = ot.strftime("%d %b %Y %H:%M:%S UTC")
+                    mins = int((_dt.now(_tz.utc) - ot.replace(tzinfo=_tz.utc) if ot.tzinfo is None else _dt.now(_tz.utc) - ot).total_seconds() / 60)
+                    if mins < 60:    dur_str = f"{mins}m"
+                    elif mins < 1440: dur_str = f"{mins//60}h {mins%60}m"
+                    else:             dur_str = f"{mins//1440}d {(mins%1440)//60}h"
+            except Exception:
+                pass
             self.send_message(
-                f"{icon} *Trade Closed*\n\n"
-                f"Asset:  {_a2}\n"
-                f"P&L:    `{sign}${pnl:.2f}`\n"
+                f"{icon} *TRADE CLOSED*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📌 Asset:    *{_a2}*\n"
+                f"{r_em} Reason:   *{reason}*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🕐 Opened:   `{open_str}`\n"
+                f"🕑 Closed:   `{now_str}`\n"
+                f"⏱ Duration: `{dur_str}`\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
                 f"Entry:  `{self._fmt_price(_en, _a2)}`\n"
                 f"Exit:   `{self._fmt_price(_ex, _a2)}`\n"
-                f"Reason: {trade.get('exit_reason', '?')}"
+                f"P&L:    `{sign}${pnl:.2f}`"
             )
         except Exception as e:
             logger.error(f"[Telegram] alert_trade_closed: {e}")
@@ -657,6 +701,22 @@ class TelegramCommander:
             await self._btn_pause(query)
         elif data == "resume":
             await self._btn_resume(query)
+        elif data == "close_menu":
+            await self._btn_close_menu(query)
+        elif data == "history":
+            await self._btn_history(query)
+        elif data.startswith("history_filter:"):
+            await self._btn_history(query, data[15:])
+        elif data.startswith("close_cat:"):
+            await self._btn_close_category(query, data[10:])
+        elif data == "close_losing":
+            await self._btn_close_filter(query, "losing")
+        elif data == "close_winning":
+            await self._btn_close_filter(query, "winning")
+        elif data == "close_all_confirm":
+            await self._btn_close_all_confirm(query)
+        elif data == "close_all_execute":
+            await self._btn_close_all_execute(query)
         else:
             await query.edit_message_text("⚠️ Unknown action.")
 
@@ -963,16 +1023,41 @@ class TelegramCommander:
                     cat = p.get("category", "forex")
                     price, _ = fetcher.get_real_time_price(asset, cat)
                     if price:
-                        pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
+                        try:
+                            from risk.position_sizer import PositionSizer as _PS
+                            pnl = _PS.pnl(asset, cat, entry, price, size, direction)
+                        except Exception:
+                            pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
                         pnl_str = f"  P&L: `${pnl:+.2f}`\n"
+            except Exception:
+                pass
+
+            # Format open time
+            open_time_str = ""
+            try:
+                from datetime import datetime as _dt
+                ot = p.get("open_time", "")
+                if ot:
+                    opened = _dt.fromisoformat(ot)
+                    elapsed = _dt.utcnow() - opened
+                    mins = int(elapsed.total_seconds() / 60)
+                    if mins < 60:
+                        duration = f"{mins}m ago"
+                    elif mins < 1440:
+                        duration = f"{mins//60}h {mins%60}m ago"
+                    else:
+                        duration = f"{mins//1440}d {(mins%1440)//60}h ago"
+                    open_time_str = f"  ⏱ Opened: `{opened.strftime('%b %d %H:%M')} UTC` ({duration})\n"
             except Exception:
                 pass
 
             lines.append(
                 f"{emoji} *{asset}* ({direction})\n"
-                f"  Entry: `{self._fmt_price(entry, asset)}` | Stop: `{self._fmt_price(sl, asset)}`\n"
-                f"  TP:    `{self._fmt_price(tp, asset)}` | Conf: {conf:.0%}\n"
+                f"  Entry: `{self._fmt_price(entry, asset)}` → Current: `{self._fmt_price(float(p.get('current_price', entry)), asset)}`\n"
+                f"  Stop:  `{self._fmt_price(sl, asset)}` | Target: `{self._fmt_price(tp, asset)}`\n"
+                f"  Conf: {conf:.0%} | Size: `{p.get('position_size', 0):.4f}`\n"
                 f"{pnl_str}"
+                f"{open_time_str}"
                 f"  ID: `{tid}`\n"
             )
             buttons.append([(f"❌ Close {asset}", f"close:{tid}")])
@@ -980,8 +1065,335 @@ class TelegramCommander:
         if len(positions) > 8:
             lines.append(f"_…and {len(positions) - 8} more_")
 
-        buttons.append([("🔄 Refresh", "positions"), ("🏠 Menu", "menu")])
+        buttons.append([
+            ("⚡ Manage Positions", "close_menu"),
+            ("📋 Trade History",    "history"),
+            ("🔄 Refresh", "positions"),
+        ])
+        buttons.append([("🏠 Menu", "menu")])
         return "\n".join(lines), _kb(*buttons)
+
+    # ── Bulk close menu ──────────────────────────────────────────────────────
+
+    async def _cmd_history(self, update, ctx) -> None:
+        """Show recent trade history via /history command."""
+        await self._show_history(update.message.reply_text)
+
+    async def _btn_history(self, query, filter_cat: str = "all") -> None:
+        """Show trade history with optional filter."""
+        await self._show_history(query.edit_message_text, filter_cat=filter_cat)
+
+    async def _show_history(self, send_fn, filter_cat: str = "all") -> None:
+        """Render last 10 closed trades with open/close times and P&L."""
+        try:
+            from models.trade_models import Trade
+            from config.database import SessionLocal
+            db = SessionLocal()
+            try:
+                trades = (db.query(Trade)
+                          .filter(Trade.exit_time.isnot(None))
+                          .order_by(Trade.exit_time.desc())
+                          .limit(30)
+                          .all())
+            finally:
+                db.close()
+
+            # Apply filter
+            if filter_cat and filter_cat != "all":
+                if filter_cat in ("forex", "crypto", "commodities", "indices"):
+                    trades = [t for t in trades if t.category == filter_cat]
+                elif filter_cat == "won":
+                    trades = [t for t in trades if (t.pnl or 0) > 0]
+                elif filter_cat == "lost":
+                    trades = [t for t in trades if (t.pnl or 0) < 0]
+
+            if not trades:
+                await send_fn(
+                    "📋 *TRADE HISTORY*\n\nNo closed trades found.",
+                    parse_mode="Markdown",
+                    reply_markup=_kb(
+                        [("📋 All", "history_filter:all"), ("💱 Forex", "history_filter:forex")],
+                        [("₿ Crypto", "history_filter:crypto"), ("🥇 Comms", "history_filter:commodities")],
+                        [("🟢 Winners", "history_filter:won"), ("🔴 Losers", "history_filter:lost")],
+                        [("🏠 Menu", "menu")],
+                    ),
+                )
+                return
+
+            cat_emojis = {"forex":"💱","crypto":"₿","commodities":"🥇","indices":"📈"}
+            reason_emojis = {
+                "Take Profit": "🎯", "Stop Loss": "🛑",
+                "Trailing": "📈", "Manual": "👆", "Break": "⚖️"
+            }
+
+            lines = [f"📋 *TRADE HISTORY* ({filter_cat.upper()})\n"]
+            total_pnl = sum(float(t.pnl or 0) for t in trades[:10])
+            won  = sum(1 for t in trades[:10] if (t.pnl or 0) > 0)
+            lost = sum(1 for t in trades[:10] if (t.pnl or 0) < 0)
+            lines.append(f"Last {min(10,len(trades))} trades | 🟢 {won} won | 🔴 {lost} lost | Net: ${total_pnl:+.2f}\n")
+
+            for t in trades[:10]:
+                pnl  = float(t.pnl or 0)
+                em   = cat_emojis.get(t.category or "", "📊")
+                pnl_em = "🟢" if pnl >= 0 else "🔴"
+                dir_  = (t.direction or "BUY").upper()
+
+                # Times and duration
+                open_t  = t.entry_time
+                close_t = t.exit_time
+                dur_str = ""
+                if open_t and close_t:
+                    mins = int((close_t - open_t).total_seconds() / 60)
+                    if mins < 60:    dur_str = f"{mins}m"
+                    elif mins < 1440: dur_str = f"{mins//60}h {mins%60}m"
+                    else:             dur_str = f"{mins//1440}d"
+
+                open_str  = open_t.strftime("%d %b %H:%M")  if open_t  else "—"
+                close_str = close_t.strftime("%d %b %H:%M") if close_t else "—"
+
+                # Exit reason emoji
+                reason = t.exit_reason or ""
+                r_em = next((v for k, v in reason_emojis.items() if k in reason), "📌")
+
+                lines.append(
+                    f"{em} *{t.asset}* {dir_}\n"
+                    f"  🕐 {open_str} → {close_str} ({dur_str})\n"
+                    f"  {r_em} {reason or '—'} | {pnl_em} ${pnl:+.2f}\n"
+                )
+
+            await send_fn(
+                "\n".join(lines),
+                parse_mode="Markdown",
+                reply_markup=_kb(
+                    [("📋 All", "history_filter:all"), ("💱 Forex", "history_filter:forex")],
+                    [("₿ Crypto", "history_filter:crypto"), ("🥇 Comms", "history_filter:commodities")],
+                    [("🟢 Winners", "history_filter:won"), ("🔴 Losers", "history_filter:lost")],
+                    [("🏠 Menu", "menu")],
+                ),
+            )
+        except Exception as e:
+            logger.error(f"[Telegram] history error: {e}", exc_info=True)
+            await send_fn(f"❌ Error loading history: {e}")
+
+    async def _btn_close_menu(self, query) -> None:
+        """Show the bulk position management menu."""
+        core = self.trading_system
+        if not core:
+            await query.edit_message_text("⏳ Engine not ready.")
+            return
+        positions = core.get_positions()
+        if not positions:
+            await query.edit_message_text("📭 No open positions to manage.")
+            return
+
+        # Count by category and P&L
+        cats = {}
+        losing = winning = 0
+        for p in positions:
+            cat = p.get("category", "other")
+            cats[cat] = cats.get(cat, 0) + 1
+            pnl = float(p.get("pnl", 0) or 0)
+            if pnl < 0: losing += 1
+            elif pnl > 0: winning += 1
+
+        lines = [
+            "⚡ *POSITION MANAGER*",
+            f"📊 {len(positions)} open position(s)\n",
+        ]
+        for cat, count in sorted(cats.items()):
+            emoji = {"forex":"💱","crypto":"₿","commodities":"🥇","indices":"📈"}.get(cat, "📊")
+            lines.append(f"  {emoji} {cat.title()}: {count} position(s)")
+
+        lines.append(f"\n🔴 Losing: {losing}  |  🟢 Winning: {winning}")
+
+        buttons = []
+        # Per category buttons
+        cat_row = []
+        for cat in sorted(cats.keys()):
+            emoji = {"forex":"💱","crypto":"₿","commodities":"🥇","indices":"📈"}.get(cat, "📊")
+            cat_row.append((f"{emoji} Close {cat.title()}", f"close_cat:{cat}"))
+            if len(cat_row) == 2:
+                buttons.append(cat_row)
+                cat_row = []
+        if cat_row:
+            buttons.append(cat_row)
+
+        # P&L filter buttons
+        buttons.append([
+            ("🔴 Close Losing", "close_losing"),
+            ("🟢 Close Winning", "close_winning"),
+        ])
+        buttons.append([("💣 Close ALL", "close_all_confirm")])
+        buttons.append([("◀️ Back", "positions"), ("🏠 Menu", "menu")])
+
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=_kb(*buttons),
+        )
+
+    async def _btn_close_category(self, query, category: str) -> None:
+        """Close all positions in a category."""
+        core = self.trading_system
+        if not core:
+            await query.edit_message_text("⏳ Engine not ready.")
+            return
+        positions = [p for p in core.get_positions() if p.get("category") == category]
+        if not positions:
+            await query.edit_message_text(f"📭 No open {category} positions.")
+            return
+
+        closed = errors = 0
+        results = []
+        for p in positions:
+            tid = p.get("trade_id", "")
+            asset = p.get("asset", "")
+            try:
+                if self._is_weekend_for_category(category):
+                    results.append(f"⏸ {asset} — market closed (weekend)")
+                    continue
+                result = core.close_position_manually(tid)
+                if result and result.get("success"):
+                    pnl = result.get("pnl", 0)
+                    results.append(f"✅ {asset} closed | P&L: ${pnl:+.2f}")
+                    closed += 1
+                else:
+                    results.append(f"❌ {asset} — {result.get('error','failed')}")
+                    errors += 1
+            except Exception as e:
+                results.append(f"❌ {asset} — {e}")
+                errors += 1
+
+        emoji = {"forex":"💱","crypto":"₿","commodities":"🥇","indices":"📈"}.get(category,"📊")
+        summary = [
+            f"{emoji} *{category.upper()} POSITIONS CLOSED*",
+            f"✅ Closed: {closed}  |  ❌ Errors: {errors}\n",
+        ] + results
+
+        await query.edit_message_text(
+            "\n".join(summary),
+            parse_mode="Markdown",
+            reply_markup=_kb([("◀️ Back", "close_menu"), ("🏠 Menu", "menu")]),
+        )
+
+    async def _btn_close_filter(self, query, mode: str) -> None:
+        """Close losing or winning positions."""
+        core = self.trading_system
+        if not core:
+            await query.edit_message_text("⏳ Engine not ready.")
+            return
+
+        all_pos = core.get_positions()
+        if mode == "losing":
+            positions = [p for p in all_pos if float(p.get("pnl", 0) or 0) < 0]
+            title = "🔴 LOSING POSITIONS CLOSED"
+        else:
+            positions = [p for p in all_pos if float(p.get("pnl", 0) or 0) > 0]
+            title = "🟢 WINNING POSITIONS CLOSED"
+
+        if not positions:
+            label = "losing" if mode == "losing" else "winning"
+            await query.edit_message_text(f"📭 No {label} positions found.")
+            return
+
+        closed = errors = 0
+        results = []
+        for p in positions:
+            tid = p.get("trade_id", "")
+            asset = p.get("asset", "")
+            pnl = float(p.get("pnl", 0) or 0)
+            cat = p.get("category", "forex")
+            try:
+                if self._is_weekend_for_category(cat):
+                    results.append(f"⏸ {asset} — market closed")
+                    continue
+                result = core.close_position_manually(tid)
+                if result and result.get("success"):
+                    actual_pnl = result.get("pnl", pnl)
+                    results.append(f"✅ {asset} | P&L: ${actual_pnl:+.2f}")
+                    closed += 1
+                else:
+                    results.append(f"❌ {asset} — {result.get('error','failed')}")
+                    errors += 1
+            except Exception as e:
+                results.append(f"❌ {asset} — {e}")
+                errors += 1
+
+        summary = [
+            f"*{title}*",
+            f"✅ Closed: {closed}  |  ❌ Errors: {errors}\n",
+        ] + results
+
+        await query.edit_message_text(
+            "\n".join(summary),
+            parse_mode="Markdown",
+            reply_markup=_kb([("◀️ Back", "close_menu"), ("🏠 Menu", "menu")]),
+        )
+
+    async def _btn_close_all_confirm(self, query) -> None:
+        """Confirm close all positions."""
+        core = self.trading_system
+        if not core:
+            await query.edit_message_text("⏳ Engine not ready.")
+            return
+        count = len(core.get_positions())
+        await query.edit_message_text(
+            f"⚠️ *CONFIRM CLOSE ALL*\n\n"
+            f"This will close all *{count} open position(s)*.\n"
+            f"This action cannot be undone.\n\n"
+            f"Are you sure?",
+            parse_mode="Markdown",
+            reply_markup=_kb(
+                [("💣 YES — Close All", "close_all_execute")],
+                [("❌ Cancel", "close_menu")],
+            ),
+        )
+
+    async def _btn_close_all_execute(self, query) -> None:
+        """Execute close all positions."""
+        core = self.trading_system
+        if not core:
+            await query.edit_message_text("⏳ Engine not ready.")
+            return
+
+        positions = core.get_positions()
+        closed = errors = total_pnl = 0
+        results = []
+
+        for p in positions:
+            tid = p.get("trade_id", "")
+            asset = p.get("asset", "")
+            cat = p.get("category", "forex")
+            try:
+                if self._is_weekend_for_category(cat):
+                    results.append(f"⏸ {asset} — market closed")
+                    continue
+                result = core.close_position_manually(tid)
+                if result and result.get("success"):
+                    pnl = float(result.get("pnl", 0))
+                    total_pnl += pnl
+                    emoji = "🟢" if pnl >= 0 else "🔴"
+                    results.append(f"{emoji} {asset} | ${pnl:+.2f}")
+                    closed += 1
+                else:
+                    results.append(f"❌ {asset} — {result.get('error','failed')}")
+                    errors += 1
+            except Exception as e:
+                results.append(f"❌ {asset} — {e}")
+                errors += 1
+
+        pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+        summary = [
+            "💣 *ALL POSITIONS CLOSED*",
+            f"✅ Closed: {closed}  |  ❌ Errors: {errors}",
+            f"{pnl_emoji} Total P&L: *${total_pnl:+.2f}*\n",
+        ] + results
+
+        await query.edit_message_text(
+            "\n".join(summary),
+            parse_mode="Markdown",
+            reply_markup=_kb([("📊 Positions", "positions"), ("🏠 Menu", "menu")]),
+        )
 
     async def _build_balance(self):
         core = self.trading_system

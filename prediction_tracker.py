@@ -17,8 +17,11 @@ except Exception:
     _broker = None
 
 try:
-    from data.fetcher import DataFetcher
-    _fetcher = DataFetcher()
+    import core.engine as _eng_mod
+    _fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
+    if _fetcher is None:
+        from data.fetcher import DataFetcher
+        _fetcher = DataFetcher()
 except Exception:
     _fetcher = None
 

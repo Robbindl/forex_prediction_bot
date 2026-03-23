@@ -108,13 +108,12 @@ class IntelligenceAlertService:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _subscribe_loop(self) -> None:
+    def _subscribe_loop(self, _old_ps=None) -> None:
         """Single background thread — subscribes to all channels."""
+        ps = None
         try:
-            import redis
-            from config.config import REDIS_URL
             from services.redis_pool import get_pubsub as _get_pubsub
-            ps = _get_pubsub()
+            ps = _get_pubsub(old_pubsub=_old_ps)  # close old connection first
             ps.subscribe(*SUBSCRIBED_CHANNELS)
             logger.info(f"[IntelAlerts] Subscribed to {len(SUBSCRIBED_CHANNELS)} channels")
 
@@ -137,11 +136,12 @@ class IntelligenceAlertService:
 
         except Exception as e:
             logger.error(f"[IntelAlerts] Subscribe loop error: {e}", exc_info=True)
-            # Attempt reconnect after 30 seconds
+            # Attempt reconnect after 30 seconds — pass old ps to close it
             if self._running:
                 time.sleep(30)
                 threading.Thread(
                     target=self._subscribe_loop,
+                    args=(ps,),
                     name="IntelAlerts-reconnect",
                     daemon=True,
                 ).start()

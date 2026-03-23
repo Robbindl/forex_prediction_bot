@@ -130,7 +130,7 @@ VOLATILITY_FILTER         = os.getenv("VOLATILITY_FILTER", "true").lower() == "t
 CRYPTO_HIGH_RISK          = os.getenv("CRYPTO_HIGH_RISK", "true").lower() == "true"
 CRYPTO_MIN_VOLUME         = int(os.getenv("CRYPTO_MIN_VOLUME", "1000000"))
 CRYPTO_VOLATILITY_MULT    = float(os.getenv("CRYPTO_VOLATILITY_MULTIPLIER", "1.5"))
-CRYPTO_MAX_POSITION_SIZE  = float(os.getenv("CRYPTO_MAX_POSITION_SIZE", "0.5"))
+# CRYPTO_MAX_POSITION_SIZE removed — position sizing now uses MT5 lot-based model
 ENABLE_ALERTS             = os.getenv("ENABLE_ALERTS", "true").lower() == "true"
 
 # ─────────────────────────────────────────────────────────────────────────────
