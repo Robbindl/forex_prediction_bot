@@ -127,8 +127,9 @@ class SystemHealthService:
             return True   # unknown source — don't block
         with self._source_lock:
             last = self._source_last_seen.get(source)
-        if last is None:
-            return False   # never seen
+        # FIX S22: last can be 0.0 (epoch start) — treat as "never seen".
+        if last is None or last == 0.0:
+            return False
         return (time.time() - last) <= threshold
 
     def get_source_age_seconds(self, source: str) -> Optional[float]:

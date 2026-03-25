@@ -96,6 +96,30 @@ def _is_market_open(category: str) -> bool:
     return True
 
 
+def _active_session() -> str:
+    """Return the current active trading session for FX/commodities."""
+    now = datetime.now(tz=timezone.utc)
+    hour = now.hour
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+
+    # 24/5 FX sessions, with weekend closure from Fri 22:00 to Sun 22:00 UTC
+    if weekday == 5 or weekday == 6:
+        if weekday == 6 and hour >= 22:
+            return "asia"  # forex opens sunday 22:00 UTC
+        return "off"
+    if weekday == 4 and hour >= 22:
+        return "off"
+
+    # Session blocks: Asia (Tokyo) 00:00-06:00, Europe 06:00-14:00, US 14:00-22:00
+    if 0 <= hour < 6:
+        return "asia"
+    if 6 <= hour < 14:
+        return "europe"
+    if 14 <= hour < 22:
+        return "us"
+
+    return "off"
+
 def _get_news_state(category: str) -> Dict:
     """Get current news event state for this category."""
     try:
