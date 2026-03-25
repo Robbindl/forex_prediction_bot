@@ -12,6 +12,24 @@ logger = get_logger()
 
 TRADING_DAYS_PER_YEAR = 252
 
+# FIX: annualisation factors per timeframe.
+# Previously sqrt(252) was used for ALL timeframes including 15m bars,
+# producing Sharpe values that were sqrt(252*96/252) = sqrt(96) ≈ 9.8× too
+# small.  A strategy with true annualised Sharpe 1.5 appeared as 0.15,
+# making PipelineReporter rank strategies on effectively meaningless numbers.
+_BARS_PER_DAY = {
+    "1d": 1, "4h": 6, "1h": 24, "30m": 48, "15m": 96, "5m": 288, "1m": 1440,
+}
+
+def _annualisation_factor() -> float:
+    """Return correct sqrt(bars_per_year) for the configured timeframe."""
+    try:
+        from config.config import TRADING_TIMEFRAME
+        bpd = _BARS_PER_DAY.get(TRADING_TIMEFRAME, 96)
+    except Exception:
+        bpd = 96  # safe default: 15m
+    return math.sqrt(TRADING_DAYS_PER_YEAR * bpd)
+
 
 class PerformanceAnalyzer:
     """
@@ -150,22 +168,24 @@ class PerformanceAnalyzer:
 
     @staticmethod
     def _sharpe(equity_curve: List[float]) -> float:
-        """Annualised Sharpe ratio assuming daily bars and risk-free rate = 0."""
+        """Annualised Sharpe ratio using timeframe-correct annualisation factor."""
         if len(equity_curve) < 3:
             return 0.0
         arr     = np.array(equity_curve, dtype=float)
-        # Replace zeros to avoid division errors
         arr[arr == 0] = 1e-10
         returns = np.diff(arr) / arr[:-1]
         if returns.std() == 0:
             return 0.0
-        return float(
-            returns.mean() / returns.std() * math.sqrt(TRADING_DAYS_PER_YEAR)
-        )
+        # FIX: use _annualisation_factor() instead of hardcoded sqrt(252)
+        return float(returns.mean() / returns.std() * _annualisation_factor())
 
     @staticmethod
     def _sortino(equity_curve: List[float]) -> float:
-        """Sortino ratio — like Sharpe but only penalises downside volatility."""
+        """Sortino ratio — like Sharpe but only penalises downside volatility.
+        FIX: Returns a large finite cap instead of float('inf') when there are
+        no losing periods.  Storing inf in a PostgreSQL REAL column raises a
+        constraint error or silently becomes NULL, corrupting optimisation rankings.
+        """
         if len(equity_curve) < 3:
             return 0.0
         arr     = np.array(equity_curve, dtype=float)
@@ -173,10 +193,9 @@ class PerformanceAnalyzer:
         returns = np.diff(arr) / arr[:-1]
         down    = returns[returns < 0]
         if len(down) == 0 or down.std() == 0:
-            return float("inf") if returns.mean() > 0 else 0.0
-        return float(
-            returns.mean() / down.std() * math.sqrt(TRADING_DAYS_PER_YEAR)
-        )
+            # FIX: cap at 10.0 instead of returning float("inf")
+            return 10.0 if returns.mean() > 0 else 0.0
+        return float(returns.mean() / down.std() * _annualisation_factor())
 
     @staticmethod
     def _max_consecutive(pnls: List[float], positive: bool) -> int:

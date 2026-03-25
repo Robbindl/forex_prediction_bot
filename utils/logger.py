@@ -32,6 +32,8 @@ _EMOJI_MAP = {
     "⚠️": "[WARN]",  "🔴": "[RED]",    "🟢": "[GREEN]","📊": "[CHART]",
     "💰": "[MONEY]", "🎯": "[TARGET]", "🤖": "[BOT]",  "🔥": "[FIRE]",
     "📈": "[UP]",    "📉": "[DOWN]",   "⚡": "[BOLT]", "📝": "[NOTE]",
+    "✓": "[OK]",     "✗": "[FAIL]",    "→": "->",      "←": "<-",
+    "—": "-",        "ù": "u",         "ø": "o",
 }
 
 
@@ -45,6 +47,16 @@ class _SafeFormatter(logging.Formatter):
                 msg = msg.replace(emoji, text)
             msg = msg.encode("ascii", errors="replace").decode("ascii")
             return f"{self.formatTime(record)} | {record.levelname:<8} | {msg}"
+
+
+class _SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """RotatingFileHandler that silently skips rotation errors on Windows."""
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except (PermissionError, OSError):
+            # On Windows, another process instance may hold the file lock
+            pass
 
 
 class _TradeFilter(logging.Filter):
@@ -97,7 +109,7 @@ class TradingLogger:
         self._logger.addHandler(ch)
 
         # Main rotating file
-        fh = logging.handlers.RotatingFileHandler(
+        fh = _SafeRotatingFileHandler(
             self._log_dir / "trading_bot.log",
             maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8"
         )
@@ -106,7 +118,7 @@ class TradingLogger:
         self._logger.addHandler(fh)
 
         # Errors only
-        eh = logging.handlers.RotatingFileHandler(
+        eh = _SafeRotatingFileHandler(
             self._log_dir / "errors.log",
             maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
         )
@@ -115,7 +127,7 @@ class TradingLogger:
         self._logger.addHandler(eh)
 
         # Trades only
-        th = logging.handlers.RotatingFileHandler(
+        th = _SafeRotatingFileHandler(
             self._log_dir / "trades.log",
             maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
         )

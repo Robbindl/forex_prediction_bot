@@ -14,12 +14,15 @@ _DAILY_LOSS_LIMIT_PCT = 5.0   # halt trading if daily loss > 5% of balance
 class DailyLossGuard:
     def __init__(self, balance: float, limit_pct: float = _DAILY_LOSS_LIMIT_PCT):
         self._initial  = balance
+        self._current  = balance   # FIX: track current balance separately
         self._limit    = limit_pct
         self._lock     = threading.Lock()
 
     def reset(self, balance: float) -> None:
+        """Called at UTC midnight rollover — resets both initial and current."""
         with self._lock:
             self._initial = balance
+            self._current = balance
 
     def check(self, daily_pnl: float) -> Tuple[bool, str]:
         """Returns (can_trade, message)."""
@@ -43,15 +46,22 @@ class RiskManager:
     def update_balance(self, new_balance: float) -> None:
         """
         Sync account balance after a trade closes.
-        Updates self.account_balance, PositionSizer, AND DailyLossGuard.
+        Updates self.account_balance and PositionSizer.
+
+        FIX: Previously this created a NEW DailyLossGuard on every trade close,
+        which reset the baseline (_initial) after each trade.  That meant the
+        5% daily loss protection degraded throughout the day — each consecutive
+        losing trade reset the guard to the new (lower) balance, effectively
+        allowing unlimited compounding losses.  Now we update the guard's
+        running balance without re-seeding the initial baseline.
         """
         with self._lock:
             self.account_balance        = new_balance
             self._sizer.account_balance = new_balance
-        self._daily_loss_guard = DailyLossGuard(
-            balance=new_balance,
-            limit_pct=_DAILY_LOSS_LIMIT_PCT,
-        )
+            # Update the guard's current balance for loss-pct calculation
+            # but do NOT reset the day-start baseline (_initial stays fixed
+            # until reset_daily() is called at UTC midnight rollover).
+            self._daily_loss_guard._current = new_balance
 
     def reset_daily(self, balance: float) -> None:
         self._daily_loss_guard.reset(balance)

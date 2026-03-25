@@ -125,12 +125,17 @@ class LiquidityWallDetector:
             }
             walls.append(event)
 
+            # FIX HIGH: Reconnect Redis if previous publish failed.
+            # Previously self._pub = None on error, never recovered.
+            if self._pub is None:
+                self._init_redis()
+
             if self._pub:
                 try:
                     self._pub.publish("LIQUIDITY_WALL_DETECTED", json.dumps(event))
                 except Exception as e:
                     logger.debug(f"[WallDetector] Redis publish: {e}")
-                    self._pub = None
+                    self._pub = None   # will reconnect on next wall detection
 
             logger.info(
                 f"[WallDetector] {self.asset} {side} wall @ {price:.6f} "

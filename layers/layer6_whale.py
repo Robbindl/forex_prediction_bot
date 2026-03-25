@@ -23,13 +23,32 @@ _ONCHAIN_LOCK  = threading.Lock()
 def _get_recent_whales(asset: str) -> List[Dict]:
     cutoff      = datetime.utcnow() - _CACHE_TTL
     asset_upper = asset.upper()
+    # Strip exchange suffixes for matching: "BTC-USD" → "BTC"
+    asset_base  = asset_upper.replace("-USD", "").replace("-USDT", "").replace("/", "")
     with _CACHE_LOCK:
         return [
             w for w in _WHALE_CACHE
             if w.get("ts", datetime.min) > cutoff
-            and str(w.get("asset", w.get("symbol", ""))).upper() in asset_upper
+            and _alert_matches_asset(w, asset_base, asset_upper)
             and str(w.get("asset", w.get("symbol", "")))
         ]
+
+
+def _alert_matches_asset(alert: Dict, asset_base: str, asset_upper: str) -> bool:
+    """
+    FIX HIGH: The original check was:
+        str(alert_asset).upper() IN asset_upper
+    which tests whether the alert's asset name is a substring of the target —
+    e.g. "BTC-USDT" in "BTC-USD" = False (Binance-format alerts silently missed).
+    The correct direction is the opposite: does the alert's asset contain our
+    base symbol?  "BTC" in "BTC-USDT" = True  ✅
+    We extract the base token from both sides and compare.
+    """
+    raw = str(alert.get("asset", alert.get("symbol", ""))).upper()
+    if not raw:
+        return False
+    alert_base = raw.replace("-USD", "").replace("-USDT", "").replace("/", "").replace("_", "")
+    return asset_base in alert_base or alert_base in asset_base
 
 
 def _get_onchain_data(asset: str) -> Dict:
@@ -138,17 +157,24 @@ class WhaleLayer:
 
         # ── Direction analysis — weighted by sentiment and transaction size ─
         # Source credibility weights: on-chain API > Telegram > Twitter > Reddit
+        # FIX: bot.py calls ingest_whale_alert(source="whale_alert") using an
+        # underscore.  The old dict only matched "whale-alert.io" (hyphen+domain),
+        # so every alert from the primary API got the default 0.60 weight instead
+        # of the top-credibility 1.0.  The lookup is now substring-insensitive and
+        # covers both formats.
         _SOURCE_WEIGHT = {
             "whale-alert.io":  1.0,
-            "Telegram":        0.85,
-            "Twitter":         0.70,
-            "Reddit":          0.50,
+            "whale_alert":     1.0,   # FIX: bot.py passes this format
+            "whalealert":      1.0,
+            "telegram":        0.85,
+            "twitter":         0.70,
+            "reddit":          0.50,
         }
 
         def _src_weight(alert: Dict) -> float:
-            src = str(alert.get("source", "")).split("/")[0]
+            src = str(alert.get("source", "")).lower()
             for key, w in _SOURCE_WEIGHT.items():
-                if key.lower() in src.lower():
+                if key in src:
                     return w
             return 0.60
 

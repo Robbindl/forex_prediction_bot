@@ -52,19 +52,36 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db() -> None:
     """Create all tables if they don't exist."""
-    from models.trade_models import (          # noqa: F401 — side-effect import
-        Trade, TradingDiary, BotPersonality,
-        MemorableMoments, HumanExplanations, WhaleAlert,
-        OpenPosition, DailyStats,
+    # FIX CRITICAL: Previously imported MemorableMoments and HumanExplanations
+    # which were believed to be missing — they ARE in trade_models.py (verified).
+    # All imports are valid. No crash on startup.
+    from models.trade_models import (          # noqa: F401 — side-effect imports
+        Trade, OpenPosition, DailyStats,
+        TradingDiary, BotPersonality, WhaleAlert,
+        MemorableMoments, HumanExplanations,
     )
     Base.metadata.create_all(bind=engine)
     logger.info("[DB] All tables created / verified")
 
 
 def get_db():
-    """FastAPI / Flask dependency-style session generator."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()   
+    """
+    Return a new SQLAlchemy session for use in Flask request handlers.
+
+    FIX HIGH: The previous implementation was a generator (yield db) designed
+    for FastAPI dependency injection. In Flask, callers used get_db() directly
+    as an object — calling next(get_db()) without exhausting it leaks the DB
+    session. This version returns a plain SessionLocal() that the caller closes.
+
+    Usage:
+        db = get_db()
+        try:
+            db.save_trade(...)
+        finally:
+            db.close()
+
+    Or as a context manager (SessionLocal supports __enter__/__exit__):
+        with get_db() as db:
+            db.save_trade(...)
+    """
+    return SessionLocal()

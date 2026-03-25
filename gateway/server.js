@@ -61,11 +61,14 @@ const redisOpts = {
   host:            REDIS_HOST,
   port:            REDIS_PORT,
   password:        REDIS_PASS || undefined,
+  // FIX: Use unlimited retries with exponential back-off capped at 30s.
+  // Previously retryStrategy returned null after 5 attempts, permanently
+  // breaking the gateway whenever Redis restarted — the only recovery was
+  // a manual gateway restart.
   retryStrategy:   (times) => {
-    if (times > 5) {
-      return null;
-    }
-    return Math.min(times * 500, 3000);
+    const delay = Math.min(times * 500, 30_000);
+    console.log(`[Redis] Reconnect attempt ${times} — waiting ${delay}ms`);
+    return delay;
   },
   maxRetriesPerRequest: null,
   enableReadyCheck: true,
@@ -271,10 +274,14 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      if (msg.action === 'publish' && msg.channel && msg.data) {
-        pub.publish(msg.channel, JSON.stringify(msg.data));
-        return;
-      }
+      // FIX CRITICAL: The "publish" action has been REMOVED.
+      // Previously any connected WebSocket client could send:
+      //   { action: "publish", channel: "signals", data: {...} }
+      // and inject arbitrary data into the bot's Redis pub/sub bus —
+      // including fake trading signals.  This was an unauthenticated
+      // write backdoor exploitable by any browser on the internet if
+      // port 8081 was exposed.  The gateway is read-only: it broadcasts
+      // Redis events to browsers; it does not accept publishes from them.
 
     } catch (err) {
       // Ignore malformed messages

@@ -50,8 +50,13 @@ FRESHNESS_THRESHOLDS: Dict[str, int] = {
     "technicals":   300,     # OHLCV cached for 180s (CACHE_TTL) — allow 300s before stale
     "whale":        300,     # whale alerts every 5 min
     "sentiment":    1800,    # sentiment score every 30 min
-    "funding_rate": 30,      # funding rate every 30s
-    "open_interest":30,
+    # FIX HIGH: FundingRateMonitor polls every POLL_INTERVAL=300 seconds.
+    # The previous threshold of 30s meant the source was flagged as stale
+    # for 270 out of every 300 seconds — perpetually stale, potentially
+    # blocking all crypto signals in check_signal_data_freshness().
+    # Set to 360s (300s poll + 20% buffer for processing/clock drift).
+    "funding_rate": 360,
+    "open_interest": 360,    # same poll interval as funding rate
     "macro":        3600,
 }
 
@@ -224,10 +229,19 @@ class SystemHealthService:
     # ── Start / Stop ──────────────────────────────────────────────────────────
 
     def start(self, telegram_bot=None) -> None:
+        # FIX HIGH S7: Previously, if self._running was already True (second
+        # call from bot.py after Telegram init), the method returned immediately
+        # and the telegram_bot argument was silently discarded — Phase 11 health
+        # alerts to Bot 2 were permanently lost.
+        # Now we always update _telegram regardless of running state, and only
+        # skip thread creation if threads are already alive.
+        if telegram_bot is not None:
+            self._telegram = telegram_bot
+            logger.info("[Monitor] Telegram bot reference updated")
+
         if self._running:
-            return
-        self._running  = True
-        self._telegram = telegram_bot
+            return   # threads already running — only needed the telegram update
+        self._running = True
 
         self._collect_thread = threading.Thread(
             target=self._collect_loop, name="Monitor-collect", daemon=True

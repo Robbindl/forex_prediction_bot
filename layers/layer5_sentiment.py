@@ -1,6 +1,6 @@
 from __future__ import annotations
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from core.signal import Signal
 from core.signal_journal import PASS, KILLED
 from core.asset_profiles import get_profile
@@ -71,24 +71,42 @@ def _fetch_put_call(asset: str) -> Optional[float]:
     return None
 
 
+# FIX S24: module-level Reddit singleton — constructed once on first use.
+# Previously a new RedditWatcher() was created on every pipeline signal call,
+# bypassing rate-limiting state and creating parallel connections.
+_reddit_watcher_instance = None
+_reddit_watcher_lock     = threading.Lock()
+
+
 def _fetch_reddit_sentiment(asset: str) -> Optional[float]:
     """
     Fetch Reddit sentiment for any asset.
-    First tries the new RedditWatcher.get_asset_sentiment() which supports
-    all 18 assets with proper subreddit mappings.
-    Falls back to _CryptoSignals.reddit() for crypto if RedditWatcher fails.
+    FIX S24: Uses a module-level RedditWatcher singleton (lazy-initialised
+    on first call) instead of constructing a new instance per pipeline signal.
+    First tries RedditWatcher.get_asset_sentiment() which supports all 18
+    assets with subreddit mappings.  Falls back to _CryptoSignals for crypto.
     """
-    # Primary — new RedditWatcher with per-asset subreddit mappings
-    try:
-        from reddit_watcher import RedditWatcher
-        rw = RedditWatcher()
-        result = rw.get_asset_sentiment(asset)
-        if result and result.get("total_mentions", 0) > 0:
-            score = result.get("score")
-            if score is not None:
-                return float(score)
-    except Exception:
-        pass
+    global _reddit_watcher_instance
+    # Lazy-init singleton under lock
+    if _reddit_watcher_instance is None:
+        with _reddit_watcher_lock:
+            if _reddit_watcher_instance is None:
+                try:
+                    from reddit_watcher import RedditWatcher as _RW
+                    _reddit_watcher_instance = _RW()
+                except Exception:
+                    pass
+
+    # Primary — reuse existing singleton
+    if _reddit_watcher_instance is not None:
+        try:
+            result = _reddit_watcher_instance.get_asset_sentiment(asset)
+            if result and result.get("total_mentions", 0) > 0:
+                score = result.get("score")
+                if score is not None:
+                    return float(score)
+        except Exception:
+            pass
 
     # Fallback — _CryptoSignals.reddit() via SentimentAnalyzer (crypto only)
     try:
@@ -136,6 +154,16 @@ class SentimentLayer:
         if score is None:
             score = _fetch_sentiment(signal.asset, signal.category)
         signal.metadata["sentiment_score"] = round(score, 3)
+
+        # FIX S8: Populate sentiment_sources so the data integrity gate in
+        # pipeline.py can count sentiment as a valid source.
+        # Previously this key was never set → pipeline._count_valid_sources()
+        # always found an empty list → sentiment layer never contributed to
+        # the valid-source count even when it had real data.
+        sources_used: List[str] = []
+        if abs(score) > 0.01:   # non-trivial sentiment found
+            sources_used.append("news_sentiment")
+        signal.metadata["sentiment_sources"] = sources_used
 
         # ── Phase 4: Narrative data ───────────────────────────────────────
         narrative_data = _get_narrative_data(signal.asset)

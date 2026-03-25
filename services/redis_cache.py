@@ -40,10 +40,22 @@ class RedisCache:
             pass
 
     def clear(self) -> None:
+        # FIX S14: flushdb() wipes the ENTIRE Redis database — this would
+        # destroy all pub/sub channels, live price ticks, open positions cache,
+        # ML predictions, and every other subsystem sharing the same Redis
+        # instance.  Replace with a targeted key scan so only cache entries
+        # (written by this class via set()) are removed.
         try:
-            self._r.flushdb()
-        except Exception:
-            pass
+            # Scan for all keys; delete in batches of 100 to avoid blocking
+            cursor = 0
+            while True:
+                cursor, keys = self._r.scan(cursor, count=100)
+                if keys:
+                    self._r.delete(*keys)
+                if cursor == 0:
+                    break
+        except Exception as e:
+            logger.debug(f"[Cache] clear error: {e}")
 
     def purge_expired(self) -> int:
         return 0  # Redis handles expiry natively

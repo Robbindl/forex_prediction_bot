@@ -95,7 +95,8 @@ class PipelineReporter:
         self._last_telegram_sent: Dict[str, float] = {}
         self._init_redis()
         self._init_db()
-        self._start_daily_optimiser()
+        # FIX Race1: DailyOptimiser is now started from wire_telegram() so it
+        # only runs after the engine + Telegram are fully wired.
         logger.info("[PipelineReporter] Initialised")
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -104,6 +105,8 @@ class PipelineReporter:
         """Call from bot.py after Telegram is started."""
         self._telegram = telegram_bot
         logger.info("[PipelineReporter] Telegram wired")
+        # FIX Race1: start DailyOptimiser here, after engine + Telegram ready
+        self._start_daily_optimiser()
 
     def report(self, signal: "Signal", context: Dict[str, Any]) -> "Signal":
         """
@@ -350,12 +353,21 @@ class PipelineReporter:
     # ── Daily optimiser (Option C) ────────────────────────────────────────────
 
     def _start_daily_optimiser(self) -> None:
+        # FIX Race1: The DailyOptimiser previously started at import time
+        # (T≈0.05s) — before init_db(), before the engine singleton, before
+        # Telegram was wired.  If the bot restarted near 3AM the first run
+        # would fire within minutes with no fetcher → silent skip.
+        # Now the thread only starts after wire_telegram() is called, which
+        # happens at T≈130s in bot.py — well after all dependencies are ready.
+        if self._daily_thread and self._daily_thread.is_alive():
+            return  # already running
         self._daily_thread = threading.Thread(
             target=self._daily_optimise_loop,
             name="DailyOptimiser",
             daemon=True,
         )
         self._daily_thread.start()
+        logger.info("[PipelineReporter] DailyOptimiser thread started")
 
     def _daily_optimise_loop(self) -> None:
         """Run once daily at DAILY_OPTIMISE_HOUR UTC."""

@@ -117,12 +117,15 @@ class PositionSizer:
         """
         Returns position size in base asset units (coins/oz/contracts).
 
-        Examples at base confidence (0.62):
-          EUR/USD → 400,000 units  (4.0 × 100,000)
-          Gold    → 20 oz          (0.2 × 100)
-          BTC     → 1.0 BTC        (1.0 × 1)
-          ETH     → 133.33 ETH     (13.333 × 10)
-          XRP     → 13,330 XRP     (1.333 × 10,000)
+        FIX CRITICAL: MT5_SPECS are calibrated for a $10,000+ account.
+        On a $30 account, raw specs produce absurd notional exposure:
+          EUR/USD: 400,000 units = $432,000 notional (14,400× leverage)
+          BTC:     1.0 BTC       = $80,000 notional  (2,666× leverage)
+
+        Fix: multiply base_lots by (account_balance / REFERENCE_BALANCE)
+        so a $30 account gets 0.003× the lot size of a $10,000 account.
+        This keeps the P&L-per-move proportional to actual account size.
+        A $100 Gold move on a $30 account now gives ~$0.60 P&L, not $2,000.
         """
         if not entry_price:
             return 0.0
@@ -133,7 +136,14 @@ class PositionSizer:
         pip_val   = spec["pip_val"]
         pip       = spec["pip"]
 
-        lots = _confidence_lots(base_lots, confidence)
+        # FIX: Scale lot size proportionally to actual account balance.
+        # REFERENCE_BALANCE = 10_000 is the account size the specs were
+        # calibrated for.  A $30 account gets factor = 30/10000 = 0.003.
+        REFERENCE_BALANCE = 10_000.0
+        balance_factor    = max(0.0001, self.account_balance / REFERENCE_BALANCE)
+        scaled_base_lots  = base_lots * balance_factor
+
+        lots = _confidence_lots(scaled_base_lots, confidence)
         size = lots * contract
 
         if entry_price and stop_loss:
@@ -142,8 +152,9 @@ class PositionSizer:
             tp_pips  = sl_pips * 1.5
             tp_usd   = tp_pips * pip_val * lots
             logger.debug(
-                f"[PositionSizer] {asset} conf={confidence:.3f} → "
-                f"{lots:.3f} lots ({size:.4f} units) | "
+                f"[PositionSizer] {asset} bal=${self.account_balance:.2f} "
+                f"factor={balance_factor:.4f} conf={confidence:.3f} → "
+                f"{lots:.4f} lots ({size:.4f} units) | "
                 f"SL={sl_pips:.0f} pips risk=${risk_usd:.2f} | TP≈${tp_usd:.2f}"
             )
 

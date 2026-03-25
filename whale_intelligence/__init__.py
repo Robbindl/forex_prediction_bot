@@ -36,6 +36,44 @@ tracker      = WalletTracker(db=_db, classifier=_classifier, cluster=_cluster)
 def start_all() -> None:
     """Start every Phase 2 component. Call once from bot.py main()."""
     _db.init()
+
+    # FIX S3: Wire wallet_tracker → layer6_whale.ingest_onchain_event so that
+    # on-chain movements actually reach the trading pipeline.
+    # Previously wallet_tracker published WHALE_ACCUMULATION/DISTRIBUTION to
+    # Redis but nobody subscribed and called ingest_onchain_event() — the
+    # _ONCHAIN_CACHE in layer6 was permanently empty, meaning Phase 2
+    # on-chain intelligence had zero effect on trading decisions.
+    try:
+        from layers.layer6_whale import ingest_onchain_event as _ingest
+        original_publish = tracker._publish_movement
+
+        def _patched_publish(wallet, delta, asset, new_balance):
+            # Call original Redis publish path first
+            original_publish(wallet, delta, asset, new_balance)
+            # Also feed layer6 directly so we don't depend on Redis round-trip
+            try:
+                is_buy     = delta > 0
+                wallet_type = wallet.get("type", "unknown")
+                if wallet_type == "exchange":
+                    event_type = "EXCHANGE_INFLOW_ALERT" if is_buy else "EXCHANGE_OUTFLOW_ALERT"
+                else:
+                    event_type = "WHALE_ACCUMULATION" if is_buy else "WHALE_DISTRIBUTION"
+                _ingest({
+                    "type":        event_type,
+                    "asset":       asset,
+                    "label":       wallet.get("label", "Unknown Whale"),
+                    "wallet_type": wallet_type,
+                    "delta":       round(delta, 4),
+                    "new_balance": round(new_balance, 4),
+                    "source":      "on-chain",
+                })
+            except Exception as _e:
+                pass  # layer6 feed is best-effort
+
+        tracker._publish_movement = _patched_publish  # type: ignore[method-assign]
+    except Exception as _wire_err:
+        pass  # layer6 not yet available — on-chain cache stays empty until first pipeline run
+
     tracker.start()
 
 

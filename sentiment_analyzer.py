@@ -430,6 +430,19 @@ class _NewsSentiment:
         std_scores   = [cls._score_headline(h, asset) for h in std_articles]
         std_scores   = [s for s in std_scores if s is not None]
 
+        # FIX S2: Feed article text into narrative_ai.ingest() so Phase 4
+        # TopicClusterEngine can build keyword velocity.
+        # Previously ingest() had NO callers — get_narrative_scores() always
+        # returned all-zero, narrative boost in Layer 5 never fired, and the
+        # crisis regime in Layer 8 was unreachable via the narrative path.
+        try:
+            from narrative_ai import ingest as _nar_ingest
+            for _headline in std_articles:
+                if _headline and len(_headline) > 10:
+                    _nar_ingest(_headline, source="news")
+        except Exception:
+            pass  # narrative_ai is optional enhancement
+
         # ── Reddit as live news feed ──────────────────────────────────────
         reddit_weighted = cls._fetch_reddit_scored(asset)
 

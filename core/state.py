@@ -74,7 +74,12 @@ class SystemState:
             })
 
             self._daily_pnl  += pnl
-            self._balance    += pnl
+            # FIX: Floor the balance at 0 — without this a single large
+            # offline gap-fill loss can drive _balance deeply negative and
+            # the bot continues trading on a negative account indefinitely.
+            # A zero floor halts new sizing (position_sizer returns 0 on
+            # zero balance) but keeps historical records accurate.
+            self._balance = max(0.0, self._balance + pnl)
 
             # Stats
             sid     = pos.get("strategy_id", "UNKNOWN")

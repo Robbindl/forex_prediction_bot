@@ -372,17 +372,28 @@ def main() -> None:
     # ── ML prediction service ─────────────────────────────────────────────
     if not args.no_gateway:
         try:
+            import pathlib as _pl
+            _logs_dir = _pl.Path("logs")
+            _logs_dir.mkdir(exist_ok=True)
+            # FIX: Route stderr to a log file instead of DEVNULL.
+            # Previously all prediction-service errors were silently discarded,
+            # making it impossible to diagnose why predictions failed.
+            _ml_log = open(_logs_dir / "ml_prediction_service.log", "a")
             ml_proc = subprocess.Popen(
                 [sys.executable, "-m", "ml.prediction_service"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=_ml_log,
+                stderr=_ml_log,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
             atexit.register(lambda: ml_proc.terminate())
             time.sleep(2)
             from ml.prediction_service import PredictionClient
-            if hasattr(engine, '_paper_trader') and engine._paper_trader and hasattr(engine, 'predictor'):
-                engine.predictor = PredictionClient()
+            # FIX S23: engine._predictor is the attribute TradingCore reads in
+            # _generate_signals(). Previously bot.py wrote to engine.predictor
+            # (no underscore) which TradingCore never reads — the subprocess
+            # started successfully but was never queried.
+            if hasattr(engine, '_predictor'):
+                engine._predictor = PredictionClient()
             logger.info("[bot] ML prediction service started")
         except Exception as e:
             logger.warning(f"[bot] ML service failed to start ({e}) — using in-process predictor")

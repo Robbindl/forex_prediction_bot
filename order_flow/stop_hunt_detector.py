@@ -91,55 +91,75 @@ class StopHuntDetector:
         """
         Scan recent price ticks for the wick-and-revert pattern near level.
 
-        Iterates over ALL ticks (not ticks[:-3]) so that a spike+revert
-        sequence that was just appended is always included in the scan.
-        The inner loop naturally stops when it runs out of subsequent ticks.
+        FIX HIGH: Original implementation was O(n²) — for each of up to 300
+        ticks, it scanned all subsequent ticks (inner loop).  Called per-wall
+        per-tick from Binance/Bybit WebSocket at ~100ms intervals this was
+        90,000 iterations per asset per heartbeat.
 
-        Returns a result dict if pattern found, else None.
+        Replacement uses numpy vectorised operations for O(n) detection:
+        1. Find all spike ticks (price pierces level by >= threshold) in one pass
+        2. For each spike find the first revert within REVERT_WINDOW_MS using
+           np.searchsorted — O(log n) per spike instead of O(n)
         """
-        threshold = level * (WICK_THRESHOLD_PCT / 100)
+        if len(ticks) < 3:
+            return None
 
-        for i, tick in enumerate(ticks):
-            spike_price = tick["price"]
-            spike_ts    = tick["ts"]
+        import numpy as np
+
+        threshold   = level * (WICK_THRESHOLD_PCT / 100)
+        prices      = np.array([t["price"] for t in ticks], dtype=float)
+        timestamps  = np.array([t["ts"]    for t in ticks], dtype=float)
+
+        if side == "BID":
+            spike_mask = prices < (level - threshold)
+        else:  # ASK
+            spike_mask = prices > (level + threshold)
+
+        spike_indices = np.where(spike_mask)[0]
+        if len(spike_indices) == 0:
+            return None
+
+        for idx in spike_indices:
+            spike_price = float(prices[idx])
+            spike_ts    = float(timestamps[idx])
+            window_end  = spike_ts + REVERT_WINDOW_MS
+
+            # Find ticks within revert window using searchsorted (O(log n))
+            future_start = idx + 1
+            if future_start >= len(ticks):
+                continue
+            future_ts = timestamps[future_start:]
+            end_pos   = int(np.searchsorted(future_ts, window_end, side="right"))
+            if end_pos == 0:
+                continue
+
+            future_prices = prices[future_start : future_start + end_pos]
 
             if side == "BID":
-                # Wick: price dips below bid wall by at least threshold
-                if spike_price >= level - threshold:
-                    continue
-                # Revert: look for price climbing back above the wall level
-                for j in range(i + 1, len(ticks)):
-                    revert_price = ticks[j]["price"]
-                    revert_ts    = ticks[j]["ts"]
-                    dt_ms        = revert_ts - spike_ts
-                    if dt_ms > REVERT_WINDOW_MS:
-                        break
-                    if revert_price > level:
-                        return {
-                            "spike":     spike_price,
-                            "revert":    revert_price,
-                            "wick_pct":  round((level - spike_price) / level * 100, 4),
-                            "revert_ms": dt_ms,
-                        }
+                revert_mask = future_prices > level
+            else:
+                revert_mask = future_prices < level
 
-            elif side == "ASK":
-                # Wick: price spikes above ask wall by at least threshold
-                if spike_price <= level + threshold:
-                    continue
-                # Revert: look for price falling back below the wall level
-                for j in range(i + 1, len(ticks)):
-                    revert_price = ticks[j]["price"]
-                    revert_ts    = ticks[j]["ts"]
-                    dt_ms        = revert_ts - spike_ts
-                    if dt_ms > REVERT_WINDOW_MS:
-                        break
-                    if revert_price < level:
-                        return {
-                            "spike":     spike_price,
-                            "revert":    revert_price,
-                            "wick_pct":  round((spike_price - level) / level * 100, 4),
-                            "revert_ms": dt_ms,
-                        }
+            revert_indices = np.where(revert_mask)[0]
+            if len(revert_indices) == 0:
+                continue
+
+            first_revert  = revert_indices[0]
+            revert_price  = float(future_prices[first_revert])
+            revert_ts     = float(future_ts[first_revert])
+            dt_ms         = revert_ts - spike_ts
+
+            wick_pct = (
+                (level - spike_price) / level * 100 if side == "BID"
+                else (spike_price - level) / level * 100
+            )
+            return {
+                "spike":     spike_price,
+                "revert":    revert_price,
+                "wick_pct":  round(wick_pct, 4),
+                "revert_ms": int(dt_ms),
+            }
+
         return None
 
     def _publish_hunt(self, wall: dict, hunt: dict) -> None:
@@ -167,12 +187,18 @@ class StopHuntDetector:
             "ts":            int(time.time() * 1000),
         }
 
+        # FIX HIGH: Reconnect Redis if previous publish failed.
+        # Previously self._pub = None on error and was never reset —
+        # all subsequent stop-hunt alerts were permanently dropped.
+        if self._pub is None:
+            self._init_redis()
+
         if self._pub:
             try:
                 self._pub.publish("STOP_HUNT_DETECTED", json.dumps(event))
             except Exception as e:
                 logger.debug(f"[StopHunt] Redis publish {self.asset}: {e}")
-                self._pub = None
+                self._pub = None   # will reconnect on next detection
 
         logger.warning(
             f"[StopHunt] {self.asset} {side} hunt @ {level:.6f} "

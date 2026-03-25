@@ -60,7 +60,18 @@ class BacktestResult:
         if len(self.equity_curve) < 2:
             return 0.0
         rets = pd.Series(self.equity_curve).pct_change().dropna()
-        return float(rets.mean() / rets.std() * np.sqrt(252)) if rets.std() > 0 else 0.0
+        if rets.std() == 0:
+            return 0.0
+        # FIX: use timeframe-correct annualisation factor instead of sqrt(252).
+        # On 15m bars, sqrt(252) produces a Sharpe 9.8× too small.
+        try:
+            from config.config import TRADING_TIMEFRAME
+            _bpd_map = {"1d": 1, "4h": 6, "1h": 24, "30m": 48, "15m": 96, "5m": 288}
+            bpd = _bpd_map.get(TRADING_TIMEFRAME, 96)
+        except Exception:
+            bpd = 96
+        import math as _math
+        return float(rets.mean() / rets.std() * _math.sqrt(252 * bpd))
 
     def to_dict(self) -> Dict:
         return {

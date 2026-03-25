@@ -29,10 +29,19 @@ class MarketConditionClassifier:
         oi_signal:       str   = "NEUTRAL",    # from Phase 1 OIMonitor
         macro_impact:    str   = "LOW",        # from Phase 1 MacroDataCollector
         narrative_str:   float = 0.0,          # from Phase 4 TopicClusterEngine
+        bars_per_day:    int   = 26,           # FIX: caller passes timeframe factor
     ) -> str:
         """
         Classify market regime. Returns one of:
         trending_bull | trending_bear | ranging | high_volatility | crisis
+
+        FIX: bars_per_day parameter replaces hardcoded sqrt(252).
+        - Daily bars   → bars_per_day=1  → annualisation factor = sqrt(252)
+        - 1h bars      → bars_per_day=24 → factor = sqrt(252*24)  = sqrt(6048)
+        - 15m bars     → bars_per_day=96 → factor = sqrt(252*96)  = sqrt(24192)
+        Previously sqrt(252) was used unconditionally, meaning on 15m bars the
+        annualised vol was 9.8× too small and high_volatility/crisis regimes
+        were essentially unreachable.
         """
         # ── Crisis check first (highest priority) ────────────────────────
         if macro_impact == "HIGH" and narrative_str > 0.3:
@@ -44,7 +53,9 @@ class MarketConditionClassifier:
         try:
             close  = df["close"].astype(float)
             ret    = close.pct_change().dropna()
-            vol    = float(ret.rolling(20).std().iloc[-1]) * np.sqrt(252)
+            # FIX: annualise with correct per-bar factor
+            annualisation_factor = float(252 * max(1, bars_per_day))
+            vol    = float(ret.rolling(20).std().iloc[-1]) * np.sqrt(annualisation_factor)
 
             if vol >= self.VOL_CRISIS_THRESHOLD:
                 return "crisis"
@@ -76,13 +87,25 @@ class MarketConditionClassifier:
         """
         Convenience method — pulls all inputs from the pipeline context dict.
         Called by EnsemblePredictor.
+
+        FIX: macro_impact and narrative_strength are now populated in
+        _build_context() (core/engine.py). bars_per_day is derived from
+        TRADING_TIMEFRAME so annualisation is timeframe-correct.
         """
+        try:
+            from config.config import TRADING_TIMEFRAME
+            _bars_map = {"1d": 1, "4h": 6, "1h": 24, "30m": 48, "15m": 96, "5m": 288}
+            bars_per_day = _bars_map.get(TRADING_TIMEFRAME, 96)
+        except Exception:
+            bars_per_day = 96  # safe default for 15m
+
         return self.classify(
             df           = context.get("price_data"),
-            funding_bias = context.get("funding_bias",   "NEUTRAL"),
-            oi_signal    = context.get("oi_signal",      "NEUTRAL"),
-            macro_impact = context.get("macro_impact",   "LOW"),
+            funding_bias = context.get("funding_bias",      "NEUTRAL"),
+            oi_signal    = context.get("oi_signal",         "NEUTRAL"),
+            macro_impact = context.get("macro_impact",      "LOW"),
             narrative_str= context.get("narrative_strength", 0.0),
+            bars_per_day = bars_per_day,
         )
 
     def get_regime_description(self, regime: str) -> str:

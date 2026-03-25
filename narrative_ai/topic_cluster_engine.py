@@ -125,11 +125,19 @@ class TopicClusterEngine:
             }
 
     def get_dominant_narrative(self) -> Optional[str]:
-        """Return the narrative with the highest current count."""
+        """Return the narrative with the highest current count.
+
+        FIX HIGH: max() on an empty defaultdict(int) raises ValueError.
+        The `if not self._counts` guard catches the empty-dict case
+        but defaultdict always appears non-empty once any key has been
+        accessed, even if all values are 0.  We now filter to keys with
+        count > 0 before calling max(), making the method safe at all times.
+        """
         with self._lock:
-            if not self._counts:
+            active = {k: v for k, v in self._counts.items() if v > 0}
+            if not active:
                 return None
-            return max(self._counts, key=self._counts.__getitem__)
+            return max(active, key=active.__getitem__)
 
     def get_counts(self) -> Dict[str, int]:
         with self._lock:

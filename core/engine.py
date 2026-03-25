@@ -566,6 +566,37 @@ class TradingCore:
         if cat_open >= CATEGORY_CAPS.get(cat, 99):
             return False
 
+        # FIX S6: Call validate_signal so the daily loss guard is actually
+        # enforced.  Previously this was never called → 5% daily loss halt
+        # had no effect → bot could blow the account in a single bad day.
+        if self._risk_manager:
+            allowed, reason = self._risk_manager.validate_signal(
+                confidence=signal.confidence,
+                daily_pnl=self.state.daily_pnl,
+                category=signal.category,
+            )
+            if not allowed:
+                logger.warning(f"[TradingCore] Risk gate blocked {signal.asset}: {reason}")
+                return False
+
+        # FIX S5: Call portfolio_risk.evaluate() so drawdown halt and
+        # position concentration limits are enforced.  Previously this was
+        # attached to the engine but never called in the execution path.
+        if hasattr(self, "_portfolio_risk") and self._portfolio_risk is not None:
+            try:
+                pr_allowed, pr_reason = self._portfolio_risk.evaluate(
+                    signal=signal.to_dict(),
+                    open_positions=self.state.get_open_positions(),
+                    balance=self.state.balance,
+                )
+                if not pr_allowed:
+                    logger.warning(
+                        f"[TradingCore] PortfolioRisk blocked {signal.asset}: {pr_reason}"
+                    )
+                    return False
+            except Exception as _pre:
+                logger.debug(f"[TradingCore] PortfolioRisk check error: {_pre}")
+
         try:
             trade = self._paper_trader.execute_signal(signal.to_dict())
             if trade:
@@ -623,6 +654,40 @@ class TradingCore:
                     pass
         return prices
 
+    # ── Context helpers — wired so classifier receives live macro/narrative data ──
+
+    @staticmethod
+    def _get_macro_impact_static() -> str:
+        """
+        FIX: Read macro impact level from MacroDataCollector so the
+        MarketConditionClassifier can detect crisis regimes.
+        Previously this was never populated → always "LOW" → crisis unreachable.
+        """
+        try:
+            from data_ingestion import macro_data_collector as _mdc
+            collector = getattr(_mdc, "collector", None)
+            if collector is not None:
+                return getattr(collector, "current_impact", "LOW")
+        except Exception:
+            pass
+        return "LOW"
+
+    @staticmethod
+    def _get_narrative_strength_static(asset: str) -> float:
+        """
+        FIX: Read narrative strength from Phase 4 TopicClusterEngine.
+        Previously this was never populated → always 0.0 → narrative boost
+        in Layer 5 never fired and crisis regime via narrative unreachable.
+        """
+        try:
+            from narrative_ai import get_narrative_scores
+            scores = get_narrative_scores()
+            if scores:
+                return round(max(scores.values()), 3)
+        except Exception:
+            pass
+        return 0.0
+
     def _build_context(self, asset: str = "", category: str = "") -> Dict[str, Any]:
         sentiment_score = 0.0
         try:
@@ -646,17 +711,26 @@ class TradingCore:
             pass
 
         return {
-            "asset":           asset,
-            "category":        category,
-            "balance":         self.state.balance,
-            "open_count":      self.state.open_position_count(),
-            "daily_pnl":       self.state.daily_pnl,
-            "engine":          self,
-            "fetcher":         self.fetcher,
-            "sentiment_score": sentiment_score,
-            "funding_bias":    funding_bias,    # Phase 1 → Layer 8 Meta AI
-            "oi_signal":       oi_signal,       # Phase 1 → Layer 8 Meta AI
-            "news_event":      _get_news_event(category),  # news event state
+            "asset":              asset,
+            "category":          category,
+            "balance":           self.state.balance,
+            "open_count":        self.state.open_position_count(),
+            "daily_pnl":         self.state.daily_pnl,
+            "engine":            self,
+            "fetcher":           self.fetcher,
+            "sentiment_score":   sentiment_score,
+            "funding_bias":      funding_bias,    # Phase 1 → Layer 8 Meta AI
+            "oi_signal":         oi_signal,       # Phase 1 → Layer 8 Meta AI
+            "news_event":        _get_news_event(category),  # news event state
+            # FIX: wire macro_impact from MacroDataCollector so crisis regime
+            # can trigger in MarketConditionClassifier.classify().
+            # Previously this key was never set → macro_impact always "LOW" →
+            # crisis regime unreachable via macro path.
+            "macro_impact":      self._get_macro_impact_static(),
+            # FIX: wire narrative_strength from Phase 4 TopicClusterEngine so
+            # the crisis regime check (macro_impact=HIGH AND narrative_str>0.3)
+            # has a chance of firing.  Previously always 0.0.
+            "narrative_strength": self._get_narrative_strength_static(asset),
         }
 
     def _notify_telegram_open(self, trade: Dict) -> None:

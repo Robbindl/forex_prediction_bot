@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from utils.logger import get_logger
-from ml.registry import ModelRegistry
 
 # Phase 11 — prediction latency tracking
 try:
@@ -18,7 +17,12 @@ except ImportError:
     _METRICS_OK = False
 
 logger   = get_logger()
-registry = ModelRegistry()
+# FIX: Import the shared module-level singleton from ml.registry instead of
+# creating a NEW ModelRegistry() instance here.  Previously predictor.py
+# instantiated its own registry (empty in-memory dict) while ml/trainer.py
+# saved models to the registry.py singleton — the two never shared data, so
+# MLPredictor.predict() fell through to momentum fallback on every call.
+from ml.registry import registry
 
 _FEATURE_COLS = ["open", "high", "low", "close", "volume"]
 

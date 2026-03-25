@@ -300,13 +300,26 @@ class ExchangeStreamManager:
     def _on_event(self, event: dict) -> None:
         """Called for every normalised event from any exchange."""
         # 1. Publish to Redis
-        if self._redis_ok and self._pub:
-            try:
-                channel = event.get("type", "MARKET_DATA_UPDATE")
-                self._pub.publish(channel, json.dumps(event, default=str))
-            except Exception as e:
-                logger.debug(f"[ExStream] Redis publish error: {e}")
-                self._redis_ok = False   # stop hammering a dead Redis
+        if self._pub:
+            if not self._redis_ok:
+                # FIX S15: Attempt reconnect when _redis_ok was cleared by a
+                # publish error.  Previously _redis_ok was set to False on the
+                # first publish failure and never recovered — the entire Redis
+                # publisher was permanently silenced until the process restarted.
+                try:
+                    self._pub.ping()
+                    self._redis_ok = True
+                    logger.info("[ExStream] Redis publisher reconnected")
+                except Exception:
+                    pass  # still down — skip publish this cycle
+
+            if self._redis_ok:
+                try:
+                    channel = event.get("type", "MARKET_DATA_UPDATE")
+                    self._pub.publish(channel, json.dumps(event, default=str))
+                except Exception as e:
+                    logger.debug(f"[ExStream] Redis publish error: {e}")
+                    self._redis_ok = False   # will retry on next event
 
         # 2. Call local handlers
         for fn in self._handlers:

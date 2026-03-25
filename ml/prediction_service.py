@@ -32,9 +32,17 @@ def _recv_msg(sock) -> Optional[dict]:
 
 
 def _recv_exact(sock, n: int) -> Optional[bytes]:
+    # FIX: The original loop had no timeout on individual recv() calls.
+    # If the server sent fewer bytes than expected (e.g. connection reset
+    # mid-message) the client would hang indefinitely, blocking the trading
+    # loop.  We rely on the socket's own timeout (set via settimeout() or
+    # create_connection(..., timeout=...)) to bound each recv() call.
     buf = b""
     while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
+        try:
+            chunk = sock.recv(n - len(buf))
+        except OSError:
+            return None
         if not chunk:
             return None
         buf += chunk

@@ -41,13 +41,40 @@ def _is_weekday() -> bool:
     return datetime.now(tz=timezone.utc).weekday() < 5
 
 
-def _active_session() -> str:
-    h = _utc_hour()
-    if 0  <= h < 9:  return "tokyo"
-    if 22 <= h:      return "sydney"
-    if 7  <= h < 16: return "london"
-    if 12 <= h < 21: return "new_york"
-    return "off"
+# FIX HIGH: Hardcoded NYSE/LSE public holidays (month, day) that fall on
+# weekdays.  Previously the market-open check only verified Mon–Fri and
+# UTC hour — signals for stocks and indices were generated on Thanksgiving,
+# Christmas, Good Friday, etc. when exchanges are closed.
+# This covers the most common US + UK market holidays.
+# Format: (month, day)  — year-agnostic; floating holidays (Thanksgiving,
+# Good Friday, Easter) are included as approximate fixed anchors.
+_NYSE_FIXED_HOLIDAYS = frozenset({
+    (1,  1),   # New Year's Day
+    (7,  4),   # Independence Day
+    (12, 25),  # Christmas Day
+    (12, 26),  # Boxing Day (LSE)
+    (5,  1),   # May Day (LSE)
+})
+
+# Floating holidays — approximate fixed weekday anchors
+# (Thanksgiving = 4th Thursday of November ≈ Nov 22–28; Good Friday ≈ Mar/Apr)
+# We use a narrow fixed window for Thanksgiving and skip Good Friday
+# as it moves too much year-to-year for a simple (month, day) set.
+_NYSE_THANKSGIVING_RANGE = frozenset({
+    (11, 22), (11, 23), (11, 24), (11, 25), (11, 26), (11, 27), (11, 28),
+})
+
+
+def _is_exchange_holiday() -> bool:
+    """Return True if today is a known NYSE/LSE public holiday."""
+    now = datetime.now(tz=timezone.utc)
+    md  = (now.month, now.day)
+    if md in _NYSE_FIXED_HOLIDAYS:
+        return True
+    # Thanksgiving: 4th Thursday of November
+    if now.month == 11 and now.weekday() == 3 and 22 <= now.day <= 28:
+        return True
+    return False
 
 
 def _is_market_open(category: str) -> bool:
@@ -57,6 +84,9 @@ def _is_market_open(category: str) -> bool:
         return category == "crypto"
     if category == "crypto":
         return True
+    # FIX: Block non-crypto markets on public exchange holidays
+    if category != "crypto" and _is_exchange_holiday():
+        return False
     if category == "forex":
         return _active_session() != "off"
     if category in ("stocks", "indices"):

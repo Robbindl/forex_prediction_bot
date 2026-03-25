@@ -65,12 +65,18 @@ class ImbalanceDetector:
             "ts":            int(time.time() * 1000),
         }
 
+        # FIX HIGH: Previously self._pub was set to None on first publish error
+        # and never recovered — all subsequent imbalance alerts were silently
+        # dropped.  Now we attempt a ping-based reconnect before each publish.
+        if self._pub is None:
+            self._init_redis()   # try to reconnect
+
         if self._pub:
             try:
                 self._pub.publish("BID_ASK_IMBALANCE_ALERT", json.dumps(event))
             except Exception as e:
                 logger.debug(f"[ImbalanceDet] Redis publish {self.asset}: {e}")
-                self._pub = None
+                self._pub = None   # will reconnect on next alert
 
         logger.info(
             f"[ImbalanceDet] {self.asset} imbalance={rolling:+.3f} [{bias}] "

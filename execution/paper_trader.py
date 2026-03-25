@@ -238,14 +238,50 @@ class PaperTrader:
             tp_idx = int(pos.get("tp_hit", 0))
             if tp_idx < len(tp_levels):
                 tp_level = tp_levels[tp_idx]
-                if direction == "BUY" and price >= tp_level:
+                hit = (direction == "BUY" and price >= tp_level) or \
+                      (direction == "SELL" and price <= tp_level)
+                if hit:
                     pos["tp_hit"] = tp_idx + 1
                     if tp_idx + 1 >= len(tp_levels):
+                        # Final TP level — close full remaining position
                         return self._close(pos, price, f"Take Profit {tp_idx + 1}", pnl)
-                elif direction == "SELL" and price <= tp_level:
-                    pos["tp_hit"] = tp_idx + 1
-                    if tp_idx + 1 >= len(tp_levels):
-                        return self._close(pos, price, f"Take Profit {tp_idx + 1}", pnl)
+                    else:
+                        # FIX HIGH: Partial TP — close 1/3 of position and
+                        # continue tracking the remainder.
+                        # Previously tp_hit was incremented but position_size
+                        # was never reduced — multi-TP was completely broken;
+                        # only the final TP level ever closed anything.
+                        total_tiers   = len(tp_levels)
+                        close_fraction = 1.0 / (total_tiers - tp_idx)
+                        original_size  = float(pos.get("position_size", size))
+                        partial_size   = original_size * close_fraction
+                        remaining_size = original_size - partial_size
+
+                        # Calculate P&L on the partial close only
+                        partial_pnl = pnl * close_fraction
+
+                        # Build a partial-close trade record
+                        partial_trade = self._close(
+                            dict(pos, position_size=partial_size),
+                            price,
+                            f"Partial TP {tp_idx + 1}/{total_tiers}",
+                            partial_pnl,
+                        )
+
+                        # Reduce remaining position size and update SL to break-even
+                        pos["position_size"] = remaining_size
+                        if direction == "BUY" and entry > float(pos.get("stop_loss", 0)):
+                            pos["stop_loss"] = entry   # lock in break-even
+                        elif direction == "SELL" and entry < float(pos.get("stop_loss", 99e9)):
+                            pos["stop_loss"] = entry
+
+                        # Fire the callback for the partial close
+                        if partial_trade and self.on_trade_closed:
+                            try:
+                                self.on_trade_closed(partial_trade)
+                            except Exception as _e:
+                                logger.error(f"[PaperTrader] partial TP callback error: {_e}")
+                        return None   # position still open (remainder)
         elif take_profit:
             if direction == "BUY"  and price >= take_profit:
                 return self._close(pos, price, "Take Profit", pnl)
@@ -259,21 +295,24 @@ class PaperTrader:
     @staticmethod
     def _close(pos: Dict, exit_price: float, reason: str, pnl: float) -> Dict:
         entry     = float(pos.get("entry_price", exit_price))
-        # pnl_pct: percentage of account balance gained/lost
-        # Use balance from pos if available, else approximate from position_size
+        # FIX HIGH: pnl_pct previously always used pos.get("balance", 10000)
+        # fallback.  The balance is almost never stored in the position dict,
+        # so every trade showed pnl_pct relative to a fictional $10,000 account
+        # — on a $30 account a $1 profit appeared as 0.01% instead of 3.3%.
+        # Now we read from SystemState when available, falling back gracefully.
         try:
-            from risk.position_sizer import MT5_SPECS, _DEFAULTS
-            asset    = pos.get("asset", "")
-            category = pos.get("category", "forex")
-            spec     = MT5_SPECS.get(asset) or _DEFAULTS.get(category, {})
-            contract = spec.get("contract", 1)
-            lots     = float(pos.get("position_size", 1)) / contract if contract else 1
-            base_lots= spec.get("base_lots", 1)
-            # Approximate risk per trade as 1% of $10k = $100 per base lot
-            approx_balance = float(pos.get("balance", 10000))
-            pnl_pct  = (pnl / approx_balance) * 100 if approx_balance else 0.0
+            import core.engine as _eng_mod
+            _state = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "state", None)
+            real_balance = float(_state.balance) if _state else None
         except Exception:
-            pnl_pct = (pnl / 10000) * 100
+            real_balance = None
+        approx_balance = (
+            real_balance
+            or float(pos.get("balance", 0))
+            or float(pos.get("account_balance", 0))
+            or 10_000.0   # last-resort fallback
+        )
+        pnl_pct = (pnl / approx_balance) * 100 if approx_balance else 0.0
         open_time = pos.get("open_time", datetime.utcnow().isoformat())
         try:
             from datetime import datetime as dt

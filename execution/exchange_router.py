@@ -63,7 +63,22 @@ class ExchangeRouter:
         )
 
         for attempt in range(1, _MAX_RETRIES + 1):
-            result = adapter.place_order(req)
+            # FIX HIGH: result is now initialised before the loop body.
+            # Previously, if adapter.place_order() raised an exception on
+            # every attempt (never reaching the assignment), `return result`
+            # after the loop referenced an undefined variable → UnboundLocalError.
+            result = None
+            try:
+                result = adapter.place_order(req)
+            except Exception as exc:
+                logger.warning(
+                    f"[Router] Attempt {attempt}/{_MAX_RETRIES} raised exception "
+                    f"for {req.symbol}: {exc}"
+                )
+                wait = _RETRY_BASE_SEC * (2 ** (attempt - 1))
+                time.sleep(wait)
+                continue
+
             if result.status == "FILLED":
                 logger.info(
                     f"[Router] {adapter.name} filled {req.side} {req.symbol} "
@@ -82,6 +97,7 @@ class ExchangeRouter:
             time.sleep(wait)
 
         logger.error(f"[Router] All {_MAX_RETRIES} attempts failed for {req.symbol}")
+        # result is guaranteed to be set (None if all attempts raised, else last OrderResult)
         return result
 
     def _get_adapter(self, category: str) -> Optional[ExchangeAdapter]:

@@ -98,7 +98,11 @@ class LiquidationStream:
 
     def _process(self, event: dict) -> None:
         asset    = event.get("asset", "UNKNOWN")
-        size     = float(event.get("size",  0) or 0)
+        # FIX S4: Bybit v5 API sends "qty" not "size" for liquidation quantity.
+        # Previously size=event.get("size",0) always returned 0 for Bybit events
+        # → size_usd = 0*price = 0 → cascade_usd never exceeded threshold →
+        # LIQUIDATION_CASCADE_ALERT never fired.  Now we check both field names.
+        size     = float(event.get("qty", event.get("size", 0)) or 0)
         price    = float(event.get("price", 0) or 0)
         size_usd = size * price
         ts       = event.get("ts", int(time.time() * 1000))
