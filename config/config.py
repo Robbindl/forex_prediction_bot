@@ -118,6 +118,17 @@ INDICES_RISK_PER_TRADE      = float(os.getenv("INDICES_RISK_PER_TRADE",      "1.
 MAX_RISK_PER_TRADE          = float(os.getenv("MAX_RISK_PER_TRADE",          "3.0"))
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TRADING — SPREAD THRESHOLDS (Asset-Specific)
+# ─────────────────────────────────────────────────────────────────────────────
+
+SPREAD_THRESHOLDS: dict = {
+    "forex":       float(os.getenv("SPREAD_THRESHOLD_FOREX",       "0.002")),
+    "crypto":      float(os.getenv("SPREAD_THRESHOLD_CRYPTO",      "0.005")),
+    "commodities": float(os.getenv("SPREAD_THRESHOLD_COMMODITIES", "0.01")),
+    "indices":     float(os.getenv("SPREAD_THRESHOLD_INDICES",     "0.01")),
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TRADING — RISK FILTERS
 # ─────────────────────────────────────────────────────────────────────────────
 

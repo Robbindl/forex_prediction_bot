@@ -435,7 +435,7 @@ class TradingCore:
             strategy  = self._strategy
             predictor = self._predictor
             if strategy is None or predictor is None:
-                logger.warning("[TradingCore] Strategy/predictor not ready — skipping cycle")
+                logger.warning(f"[TradingCore] Strategy/predictor not ready — strategy={strategy is not None}, predictor={predictor is not None} — skipping cycle")
                 return result
 
             candidates = [
@@ -443,9 +443,10 @@ class TradingCore:
                 if not self.state.is_cooling_down(canonical)
                 and not self.state.has_open_position_for(canonical)
             ]
-            logger.debug(
+            logger.info(
                 f"[TradingCore] Asset scan: total={len(asset_list)} candidates={len(candidates)} "
-                f"cooldowns={len(asset_list)-len(candidates)}"
+                f"cooling={len([a for a, _ in asset_list if self.state.is_cooling_down(a)])} "
+                f"open_pos={len([a for a, _ in asset_list if self.state.has_open_position_for(a)])}"
             )
 
             if not candidates or self._stop_event.is_set():
@@ -467,6 +468,7 @@ class TradingCore:
                     _now  = _dt.now(tz=_tz.utc)
                     _wd   = _now.weekday()   # 0=Mon … 5=Sat … 6=Sun
                     _hour = _now.hour
+                    _weekday_name = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][_wd]
 
                     if category == "crypto":
                         pass  # 24/7 — always open
@@ -477,6 +479,7 @@ class TradingCore:
                         if _wd == 6 and _hour >= 22 and category in ("forex", "commodities"):
                             pass  # Sunday evening session open
                         else:
+                            logger.debug(f"[TradingCore] {canonical} ({category}) BLOCKED: weekend {_weekday_name} {_hour:02d}:00 UTC")
                             return None
 
                     else:
@@ -484,16 +487,19 @@ class TradingCore:
                         if category == "forex":
                             # Closed Friday after 22:00 UTC
                             if _wd == 4 and _hour >= 22:
+                                logger.debug(f"[TradingCore] {canonical} ({category}) BLOCKED: Fri after 22:00")
                                 return None
 
                         elif category in ("stocks", "indices"):
                             # NYSE/Nasdaq: 13:00–21:00 UTC (09:30–16:00 ET approx)
                             if not (13 <= _hour < 21):
+                                logger.debug(f"[TradingCore] {canonical} ({category}) BLOCKED: market hours {_hour:02d}:00 UTC (need 13:00-21:00)")
                                 return None
 
                         elif category == "commodities":
                             # CME: closed daily 21:00–22:00 UTC (settlement break)
                             if _hour == 21:
+                                logger.debug(f"[TradingCore] {canonical} ({category}) BLOCKED: CME settlement 21:00 UTC")
                                 return None
 
                 except Exception as _mh_err:
@@ -504,11 +510,11 @@ class TradingCore:
                         f"{canonical} ({category}): {_mh_err} — skipping asset"
                     )
                     return None
-                # ─────────────────────────────────────────────────────────────
 
                 try:
                     price_data = self._fetch_price_data(canonical, category)
                     if price_data is None or price_data.empty:
+                        logger.debug(f"[TradingCore] {canonical}: no price data")
                         return None
 
                     price, spread = (0.0, 0.0)
@@ -533,9 +539,12 @@ class TradingCore:
                         ctx["spread"]        = spread
                         ctx["ml_prediction"] = ml_prob
                         ctx["ml_confidence"] = ml_conf
+                        logger.info(f"[TradingCore] SIGNAL: {canonical} {sig.direction} confidence={sig.confidence:.2%}")
                         return (sig, ctx)
+                    elif sig:
+                        logger.debug(f"[TradingCore] {canonical}: signal confidence too low ({sig.confidence:.2%})")
                 except Exception as e:
-                    logger.debug(f"[TradingCore] Signal gen {canonical}: {e}")
+                    logger.warning(f"[TradingCore] Signal gen {canonical}: {e}")
                 return None
 
             with ThreadPoolExecutor(max_workers=6) as pool:

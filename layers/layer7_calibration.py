@@ -3,12 +3,10 @@ from typing import Any, Dict, Optional
 from core.signal import Signal
 from core.signal_journal import PASS, KILLED
 from utils.logger import get_logger
-from config.config import MIN_FINAL_CONFIDENCE
+from config.config import MIN_FINAL_CONFIDENCE, SPREAD_THRESHOLDS
 
 logger = get_logger()
 LAYER = 7
-
-_MAX_SPREAD_PCT = 0.003
 
 
 class CalibrationLayer:
@@ -18,15 +16,19 @@ class CalibrationLayer:
         conf_before = signal.confidence
         price       = signal.entry_price
         spread      = context.get("spread")
+        category    = context.get("category", "forex")
         data        = {}
+
+        # Get category-specific spread threshold; default to forex (0.002) if category not in config
+        max_spread_pct = SPREAD_THRESHOLDS.get(category, 0.002)
 
         # ── Final spread gate ─────────────────────────────────────────────
         if spread and price and price > 0:
             try:
                 liquidity = spread / price
                 data["liquidity_proxy"] = round(liquidity, 6)
-                if liquidity > _MAX_SPREAD_PCT:
-                    reason = f"final spread {liquidity:.5f} > {_MAX_SPREAD_PCT}"
+                if liquidity > max_spread_pct:
+                    reason = f"final spread {liquidity:.5f} > {max_spread_pct} ({category})"
                     signal.kill(reason, LAYER)
                     signal.journal.record(
                         layer=LAYER, name=self.name, decision=KILLED,
@@ -35,7 +37,7 @@ class CalibrationLayer:
                         data=data,
                     )
                     return None
-                liq_penalty = liquidity / _MAX_SPREAD_PCT * 0.05
+                liq_penalty = liquidity / max_spread_pct * 0.05
                 signal.reduce(liq_penalty)
                 signal.metadata["liquidity_proxy"] = round(liquidity, 6)
                 data["liq_penalty"] = round(liq_penalty, 5)

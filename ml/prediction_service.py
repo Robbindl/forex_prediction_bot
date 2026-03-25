@@ -173,6 +173,29 @@ class PredictionClient:
         direction = "BUY" if prob > 0.5 else "SELL" if prob < 0.5 else "HOLD"
         return direction, float(prob)
 
+    def predict(self, asset: str, category: str, df) -> Tuple[float, float]:
+        """Wrapper for MLPredictor.predict() signature expected by TradingCore."""
+        try:
+            with socket.create_connection(
+                (self._host, self._port), timeout=_TIMEOUT_SEC
+            ) as conn:
+                _send_msg(conn, {
+                    "action":   "predict",
+                    "ohlcv":    df.to_dict(orient="list"),
+                    "category": category,
+                    "asset":    asset,
+                })
+                resp = _recv_msg(conn)
+                if resp and resp.get("ok"):
+                    prob = float(resp.get("probability", 0.5))
+                    conf = abs(prob - 0.5) * 2  # Convert to 0-1 confidence
+                    return prob, conf
+        except Exception as e:
+            logger.debug(f"[MLClient] Service unreachable ({e}) — using local fallback")
+        
+        # Fallback: call MLPredictor.predict() directly
+        return self._get_fallback().predict(asset, category, df)
+
 
 # ── Standalone entry point ─────────────────────────────────────────────────────
 

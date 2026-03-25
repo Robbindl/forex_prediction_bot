@@ -133,7 +133,12 @@ class _ExchangeConnection:
             on_error=on_error,
             on_close=on_close,
         )
-        ws.run_forever(ping_interval=45, ping_timeout=30)
+        
+        # FIX: More aggressive ping to prevent idle-drop. 20s interval, 10s timeout.
+        # Binance/Bybit close after 24h idle. Ping keeps connection alive.
+        # Socket creation happens inside run_forever(), TCP keepalive is enabled by default
+        # on most systems for long-lived connections.
+        ws.run_forever(ping_interval=20, ping_timeout=10)
 
 
 # ── Normalisation ──────────────────────────────────────────────────────────────
