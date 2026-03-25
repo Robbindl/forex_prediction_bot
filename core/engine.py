@@ -33,7 +33,7 @@ class TradingCore:
 
     def __init__(
         self,
-        balance: float = 30.0,
+        balance: float = 10000.0,  # FIX: Changed from $30 to realistic balance
         strategy_mode: str = "voting",
         no_telegram: bool = False,
     ) -> None:

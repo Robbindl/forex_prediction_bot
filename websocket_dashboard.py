@@ -5,9 +5,14 @@ Single source of truth imported by both web_app_live.py AND the WS manager threa
 
 from collections import deque
 from datetime import datetime
+import threading
 
 # ─── SINGLE shared store ───────────────────────────────────────────────────────
 recent_transactions: deque = deque(maxlen=500)
+
+# ─── LIVE PRICE STORE (used by fetcher.get_real_time_price for P&L calc) ─────
+live_prices: dict = {}  # {asset: (price, timestamp, source)}
+live_prices_lock = threading.Lock()
 
 # ─── Per-exchange connection status ───────────────────────────────────────────
 connection_status: dict = {
@@ -51,3 +56,22 @@ def get_feed(source_filter: str = None, limit: int = 200) -> list:
     if source_filter and source_filter.lower() != 'all':
         txs = [t for t in txs if t['source_key'] == source_filter.lower()]
     return txs[-limit:]
+
+
+# ─── LIVE PRICE HELPERS (for P&L real-time updates) ─────────────────────────
+def set_live_price(asset: str, price: float, source: str = "WebSocket") -> None:
+    """Store latest real-time price from WebSocket. Called by callback."""
+    with live_prices_lock:
+        live_prices[asset] = (price, datetime.now().timestamp(), source)
+
+
+def get_live_price(asset: str, max_age_seconds: float = 10.0) -> tuple:
+    """Get latest live price if fresh enough. Returns (price, source) or (None, None)."""
+    with live_prices_lock:
+        if asset not in live_prices:
+            return (None, None)
+        price, ts, source = live_prices[asset]
+        age = datetime.now().timestamp() - ts
+        if age <= max_age_seconds:
+            return (price, source)
+    return (None, None)

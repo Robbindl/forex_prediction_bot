@@ -26,8 +26,8 @@ class SystemState:
         # ── In-memory state ───────────────────────────────────────────────
         self._open_positions:   Dict[str, Dict] = {}
         self._closed_positions: List[Dict]      = []
-        self._balance:          float = 30.0
-        self._initial_balance:  float = 30.0
+        self._balance:          float = 10000.0  # FIX: Changed from $30 to realistic trading account
+        self._initial_balance:  float = 10000.0
         self._daily_trades:     int   = 0
         self._daily_pnl:        float = 0.0
         self._last_save_date:   str   = date.today().isoformat()

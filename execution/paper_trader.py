@@ -17,7 +17,7 @@ class PaperTrader:
 
     def __init__(
         self,
-        account_balance: float = 30.0,
+        account_balance: float = 10000.0,  # FIX: Changed from $30 to realistic balance
         risk_manager: Optional[RiskManager] = None,
     ):
         self.account_balance      = account_balance

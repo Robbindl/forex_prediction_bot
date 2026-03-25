@@ -280,3 +280,9 @@ class WebSocketManager:
         if self.loop:
             self.loop.call_soon_threadsafe(self.loop.stop)
         logger.info("📡 WebSocket manager stopped")
+    
+    def get_subscribed_assets(self) -> Dict[str, List[str]]:
+        """Get all currently subscribed assets by exchange."""
+        # This would require tracking subscriptions internally
+        # For now, return empty — can be enhanced to track actual subscriptions
+        return {"bybit": [], "twelvedata": [], "finnhub": []}

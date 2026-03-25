@@ -1924,18 +1924,101 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000) -> None:
     _start_p3_listener()
     _start_p7_listener()
 
-    # Optional WebSocket manager
+    # Optional WebSocket manager — dynamically subscribe to all open positions
+    _ws_global = None  # Reference to WebSocket manager for periodic updates
     try:
         from websocket_manager import WebSocketManager
+        from websocket_dashboard import set_live_price
         def _cb(source, symbol, price, volume, side, ts=None):
             add_transaction(source, symbol, price, volume, side)
+            # Store price for live P&L updates (real-time, no API calls)
+            set_live_price(symbol, price, source)
+        
         ws = WebSocketManager()
         ws.start()
-        ws.subscribe_bybit(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"], _cb)
-        ws.subscribe_twelvedata(["EUR/USD", "XAU/USD"], _cb)
-        logger.info("[dashboard] WebSocket streams started")
+        _ws_global = ws  # Save for periodic updates
+        
+        # Build dynamic asset list from open positions
+        _open_pos = _args.state.get_open_positions() if hasattr(_args, 'state') else []
+        _assets_by_category = {"crypto": set(), "forex": set(), "commodities": set(), "indices": set()}
+        for pos in _open_pos:
+            _cat = pos.get("category", "forex")
+            _asset = pos.get("asset", "")
+            if _asset and _cat in _assets_by_category:
+                _assets_by_category[_cat].add(_asset)
+        
+        # Convert to WebSocket symbols and subscribe
+        _crypto_symbols = []
+        for asset in _assets_by_category.get("crypto", set()):
+            # BTC-USD → BTCUSDT, ETH-USD → ETHUSDT, etc.
+            if "-USD" in asset:
+                ws_sym = asset.replace("-USD", "USDT")
+                _crypto_symbols.append(ws_sym)
+        
+        _forex_symbols = list(_assets_by_category.get("forex", set()).union(_assets_by_category.get("commodities", set())))
+        
+        # Add hardcoded defaults if no positions exist yet
+        if not _crypto_symbols:
+            _crypto_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+        if not _forex_symbols:
+            _forex_symbols = ["EUR/USD", "XAU/USD"]
+        
+        if _crypto_symbols:
+            ws.subscribe_bybit(_crypto_symbols, _cb)
+            logger.info(f"[dashboard] WebSocket Bybit: {_crypto_symbols}")
+        if _forex_symbols:
+            ws.subscribe_twelvedata(_forex_symbols, _cb)
+            logger.info(f"[dashboard] WebSocket TwelveData: {_forex_symbols}")
+        
+        logger.info("[dashboard] WebSocket streams started (dynamic)")
     except Exception as e:
         logger.warning(f"[dashboard] WebSocket streams failed (non-fatal): {e}")
+
+    # Background thread to periodically update WebSocket subscriptions for new positions
+    def _bg_update_ws_subscriptions():
+        """Periodically check for new positions and update WebSocket subscriptions."""
+        while True:
+            try:
+                if _ws_global is None or not hasattr(_args, 'state'):
+                    time.sleep(30)
+                    continue
+                
+                # Check open positions every 30 seconds
+                time.sleep(30)
+                _open = _args.state.get_open_positions() if hasattr(_args.state, 'get_open_positions') else []
+                
+                # Extract unique assets currently being subscribed
+                _crypto_set = set()
+                _forex_set = set()
+                for pos in _open:
+                    _cat = pos.get("category", "forex")
+                    _asset = pos.get("asset", "")
+                    if not _asset:
+                        continue
+                    
+                    if _cat == "crypto" and "-USD" in _asset:
+                        _crypto_set.add(_asset.replace("-USD", "USDT"))
+                    elif _cat in ("forex", "commodities", "indices"):
+                        _forex_set.add(_asset)
+                
+                # If assets found, update subscriptions (fallback still uses hardcodeds)
+                if _crypto_set and len(_crypto_set) > 0:
+                    try:
+                        _ws_global.subscribe_bybit(list(_crypto_set), _cb if '_cb' in locals() else lambda *a, **k: None)
+                        logger.debug(f"[dashboard] Updated Bybit subscriptions: {_crypto_set}")
+                    except Exception as _ue:
+                        logger.debug(f"[dashboard] Update Bybit subs failed: {_ue}")
+                
+                if _forex_set and len(_forex_set) > 0:
+                    try:
+                        _ws_global.subscribe_twelvedata(list(_forex_set), _cb if '_cb' in locals() else lambda *a, **k: None)
+                        logger.debug(f"[dashboard] Updated TwelveData subscriptions: {_forex_set}")
+                    except Exception as _ue:
+                        logger.debug(f"[dashboard] Update TwelveData subs failed: {_ue}")
+            except Exception as e:
+                logger.debug(f"[dashboard] bg_update_ws_subscriptions: {e}")
+    
+    threading.Thread(target=_bg_update_ws_subscriptions, name="WSSubsUpdate", daemon=True).start()
 
     logger.info(f"[dashboard] http://{host}:{port}/command-center")
     app.run(debug=False, host=host, port=port, threaded=True, use_reloader=False)

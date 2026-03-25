@@ -527,7 +527,19 @@ class DataFetcher:
     def get_real_time_price(
         self, asset: str, category: str
     ) -> Tuple[Optional[float], Optional[float]]:
-        """Returns (price, spread) or (None, None). Never fake data."""
+        """Returns (price, spread) or (None, None). Checks WebSocket first, then APIs."""
+        
+        # ⚡ TRY WEBSOCKET FIRST (real-time, no API calls, no delays)
+        try:
+            from websocket_dashboard import get_live_price
+            ws_price, ws_source = get_live_price(asset, max_age_seconds=10.0)
+            if ws_price is not None:
+                logger.debug(f"[DataFetcher] Using fresh WebSocket price for {asset}: {ws_price} ({ws_source})")
+                return (ws_price, 0.0)  # No spread for WebSocket (best estimate)
+        except Exception as e:
+            logger.debug(f"[DataFetcher] WebSocket price check failed for {asset}: {e}")
+        
+        # Fallback to API cache/calls (existing logic)
         cache_key = f"rt:{asset}"
         cached    = cache.get(cache_key)
         if cached:
