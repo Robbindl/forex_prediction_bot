@@ -443,13 +443,18 @@ class TradingCore:
                 if not self.state.is_cooling_down(canonical)
                 and not self.state.has_open_position_for(canonical)
             ]
+            logger.debug(f"[TradingCore] Starting signal generation for {len(candidates)} candidates")
             logger.info(
                 f"[TradingCore] Asset scan: total={len(asset_list)} candidates={len(candidates)} "
                 f"cooling={len([a for a, _ in asset_list if self.state.is_cooling_down(a)])} "
                 f"open_pos={len([a for a, _ in asset_list if self.state.has_open_position_for(a)])}"
             )
+            
+            if not candidates:
+                logger.warning("[TradingCore] No candidates available for signal generation")
+                return result
 
-            if not candidates or self._stop_event.is_set():
+            if self._stop_event.is_set():
                 return result
 
             def _process_asset(canonical_category):
@@ -549,13 +554,21 @@ class TradingCore:
 
             with ThreadPoolExecutor(max_workers=6) as pool:
                 futures = {pool.submit(_process_asset, ac): ac for ac in candidates}
+                logger.debug(f"[TradingCore] Submitted {len(futures)} asset tasks to thread pool")
                 for future in as_completed(futures):
                     if self._stop_event.is_set():
                         break
-                    res = future.result()
-                    if res is not None:
-                        result.append(res)
-            logger.debug(f"[TradingCore] Signal generation: candidates_processed={len(result)}")
+                    try:
+                        res = future.result()
+                        if res is not None:
+                            result.append(res)
+                            logger.debug(f"[TradingCore] Got signal from future: {res[0].asset}")
+                        else:
+                            logger.debug(f"[TradingCore] Future returned None for {futures.get(future, 'unknown')}")
+                    except Exception as e:
+                        asset_pair = futures.get(future, "unknown")
+                        logger.error(f"[TradingCore] Future failed for {asset_pair}: {e}")
+            logger.debug(f"[TradingCore] Signal generation complete: {len(result)} signals generated from {len(futures)} tasks")
 
         except Exception as e:
             logger.error(f"[TradingCore] Signal generation error: {e}")

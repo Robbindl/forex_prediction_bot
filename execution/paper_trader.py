@@ -314,9 +314,30 @@ class PaperTrader:
         )
         pnl_pct = (pnl / approx_balance) * 100 if approx_balance else 0.0
         open_time = pos.get("open_time", datetime.utcnow().isoformat())
+        exit_time = datetime.utcnow().isoformat()
+        
+        # Calculate duration from open_time to exit_time (in minutes)
         try:
-            from datetime import datetime as dt
-            duration = int((dt.utcnow() - dt.fromisoformat(open_time)).total_seconds() / 60)
+            from datetime import datetime as dt_class
+            open_time_str = pos.get("open_time", "")
+            exit_time = datetime.utcnow().isoformat()
+            if open_time_str:
+                try:
+                    open_dt = dt_class.fromisoformat(open_time_str)
+                except (ValueError, TypeError):
+                    # If that fails, try removing 'Z' suffix and retry
+                    if open_time_str.endswith('Z'):
+                        open_dt = dt_class.fromisoformat(open_time_str[:-1])
+                    else:
+                        raise
+                
+                exit_dt = dt_class.fromisoformat(exit_time)
+                duration_seconds = (exit_dt - open_dt).total_seconds()
+                duration = int(duration_seconds / 60)
+                if duration < 0:
+                    duration = 0
+            else:
+                duration = 0
         except Exception:
             duration = 0
 
@@ -326,7 +347,7 @@ class PaperTrader:
             "exit_reason":      reason,
             "pnl":              round(pnl, 6),
             "pnl_percent":      round(pnl_pct, 4),
-            "exit_time":        datetime.utcnow().isoformat(),
+            "exit_time":        exit_time,
             "duration_minutes": duration,
         }
 

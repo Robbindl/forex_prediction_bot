@@ -27,6 +27,7 @@ class CalibrationLayer:
             try:
                 liquidity = spread / price
                 data["liquidity_proxy"] = round(liquidity, 6)
+                logger.debug(f"[CalibrationLayer] {signal.asset} ({category}): spread={spread}, price={price}, liquidity={liquidity:.6f}, max_allowed={max_spread_pct}")
                 if liquidity > max_spread_pct:
                     reason = f"final spread {liquidity:.5f} > {max_spread_pct} ({category})"
                     signal.kill(reason, LAYER)

@@ -112,6 +112,7 @@ class DatabaseService:
                 existing.exit_reason = str(_np(trade_data.get("exit_reason", "")))
                 existing.pnl         = _np(trade_data.get("pnl"))
                 existing.pnl_percent = _np(trade_data.get("pnl_percent"))
+                existing.duration_minutes = int(_np(trade_data.get("duration_minutes", 0)))
                 return tid
 
             row = Trade(
@@ -131,10 +132,14 @@ class DatabaseService:
                     datetime.fromisoformat(trade_data["exit_time"].replace('Z','').replace('+00:00',''))
                     if trade_data.get("exit_time") else None
                 ),
-                entry_time      = datetime.utcnow(),  # always UTC, not server local time
+                entry_time      = (
+                    datetime.fromisoformat(trade_data["open_time"].replace('Z','').replace('+00:00',''))
+                    if trade_data.get("open_time") else datetime.utcnow()
+                ),
                 exit_reason     = str(_np(trade_data.get("exit_reason", ""))) if trade_data.get("exit_reason") else None,
                 strategy_id     = str(_np(trade_data.get("strategy_id", "UNKNOWN"))),
                 confidence      = _np(trade_data.get("confidence", 0)),
+                duration_minutes = int(_np(trade_data.get("duration_minutes", 0))),
                 trade_metadata  = trade_data.get("metadata", {}),
             )
             s.add(row)

@@ -30,6 +30,7 @@ class Trade(Base):
     take_profit   = Column(Numeric(20, 8))
     pnl           = Column(Numeric(20, 8))
     pnl_percent   = Column(Numeric(10, 4))
+    duration_minutes = Column(Integer, default=0)
     entry_time    = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     exit_time     = Column(DateTime(timezone=True))
     exit_reason   = Column(String(50))
@@ -54,6 +55,7 @@ class Trade(Base):
             "take_profit":    float(self.take_profit)   if self.take_profit   else None,
             "pnl":            float(self.pnl)           if self.pnl           else None,
             "pnl_percent":    float(self.pnl_percent)   if self.pnl_percent   else None,
+            "duration_minutes": int(self.duration_minutes) if self.duration_minutes else 0,
             "entry_time":     self.entry_time.isoformat() if self.entry_time  else None,
             "exit_time":      self.exit_time.isoformat()  if self.exit_time   else None,
             "exit_reason":    self.exit_reason,

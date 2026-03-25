@@ -66,11 +66,38 @@ class SystemState:
             if pos is None:
                 return None
 
+            # Calculate duration from open_time to exit_time (in minutes)
+            exit_time = datetime.utcnow().isoformat()
+            duration_minutes = 0
+            try:
+                from datetime import datetime as dt_class
+                open_time_str = pos.get("open_time", "")
+                if open_time_str:
+                    try:
+                        # Try parsing with fromisoformat
+                        open_dt = dt_class.fromisoformat(open_time_str)
+                    except (ValueError, TypeError):
+                        # If that fails, try removing 'Z' suffix and retry
+                        if open_time_str.endswith('Z'):
+                            open_dt = dt_class.fromisoformat(open_time_str[:-1])
+                        else:
+                            raise
+                    
+                    exit_dt = dt_class.fromisoformat(exit_time)
+                    duration_seconds = (exit_dt - open_dt).total_seconds()
+                    duration_minutes = int(duration_seconds / 60)
+                    if duration_minutes < 0:
+                        duration_minutes = 0
+            except Exception as e:
+                logger.debug(f"[State] Duration calc failed for {trade_id}: {e} — using 0")
+                duration_minutes = 0
+
             pos.update({
-                "exit_price":  exit_price,
-                "exit_reason": exit_reason,
-                "pnl":         pnl,
-                "exit_time":   datetime.utcnow().isoformat(),
+                "exit_price":       exit_price,
+                "exit_reason":      exit_reason,
+                "pnl":              pnl,
+                "exit_time":        exit_time,
+                "duration_minutes": duration_minutes,
             })
 
             self._daily_pnl  += pnl
