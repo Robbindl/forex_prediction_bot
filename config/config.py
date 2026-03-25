@@ -122,7 +122,7 @@ MAX_RISK_PER_TRADE          = float(os.getenv("MAX_RISK_PER_TRADE",          "3.
 # ─────────────────────────────────────────────────────────────────────────────
 
 MIN_CONFIDENCE_SCORE      = float(os.getenv("MIN_CONFIDENCE_SCORE", "0.70"))
-MIN_FINAL_CONFIDENCE      = float(os.getenv("MIN_FINAL_CONFIDENCE", "0.55"))
+MIN_FINAL_CONFIDENCE      = float(os.getenv("MIN_FINAL_CONFIDENCE", "0.62"))
 ALERT_THRESHOLD           = float(os.getenv("ALERT_THRESHOLD", "0.75"))
 CRYPTO_ALERT_THRESHOLD    = float(os.getenv("CRYPTO_ALERT_THRESHOLD", "0.80"))
 MAX_CORRELATION_THRESHOLD = float(os.getenv("MAX_CORRELATION_THRESHOLD", "0.7"))

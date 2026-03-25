@@ -143,6 +143,7 @@ class Pipeline:
                         conf_before=conf_before, conf_after=signal.confidence,
                         elapsed_ms=elapsed_ms,
                     )
+                    logger.warning(f"[Pipeline] {signal.asset} killed at L{i} ({layer.name}) reason={signal.kill_reason}")
                     logger.log_pipeline(signal.asset, i, "KILLED", f"layer={layer.name}")
                     break  # hard kill — remaining layers must not run on a dead signal
                 else:
@@ -197,6 +198,10 @@ class Pipeline:
                           "category": signal.category},
                 )
                 logger.warning(f"[Pipeline] DATA INTEGRITY KILL — {signal.asset}: {reason}")
+                logger.warning(
+                    f"[Pipeline] {signal.asset} valid_sources={valid_sources} "
+                    f"min_required={min_required} category={signal.category}"
+                )
 
         elapsed_ms = (time.monotonic() - context["pipeline_start"]) * 1000
 

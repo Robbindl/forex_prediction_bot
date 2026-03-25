@@ -8,12 +8,13 @@ import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
+from config.config import MIN_FINAL_CONFIDENCE
 from utils.logger import get_logger
 from core.signal import Signal
 from core.pipeline import Pipeline, pipeline as _global_pipeline
 
 TRADE_CLOSE_COOLDOWN_MINUTES = 60
-TRADE_MIN_CONFIDENCE = 0.62
+TRADE_MIN_CONFIDENCE = MIN_FINAL_CONFIDENCE  # follow config value from .env
 
 logger = get_logger()
 

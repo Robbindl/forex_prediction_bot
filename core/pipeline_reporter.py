@@ -39,6 +39,8 @@ import threading
 import time
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
+from config.config import MIN_FINAL_CONFIDENCE
+from config.config import MIN_FINAL_CONFIDENCE
 from sqlalchemy import text
 from utils.logger import get_logger
 from core.signal_journal import PASS, KILLED, INFO
@@ -56,7 +58,7 @@ WEAK_EDGE_THRESHOLD       = 0.50   # win rate < 50%  = reduce
 POOR_EDGE_THRESHOLD       = 0.40   # win rate < 40%  = bigger reduce + warn
 DAILY_OPTIMISE_HOUR       = 3      # run daily optimisation at 3 AM UTC
 TELEGRAM_ASSET_ALERT_COOLDOWN_SECS = 3600  # 1h dedupe window per asset
-TELEGRAM_SIGNAL_MIN_CONFIDENCE = 0.62  # matches TRADE_MIN_CONFIDENCE in engine.py
+TELEGRAM_SIGNAL_MIN_CONFIDENCE = MIN_FINAL_CONFIDENCE  # follow config value from .env
 # Only alert on signals that will actually be executed as trades.
 # Layer 7 floor is 0.55 — signals between 0.55-0.62 survive the pipeline
 # but are skipped by the trading loop, so no need to alert on them.
