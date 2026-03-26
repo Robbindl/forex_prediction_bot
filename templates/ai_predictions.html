@@ -170,6 +170,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="pred-grid" id="predGrid" style="flex:1;overflow-y:auto;min-height:150px"><div class="empty">Loading…</div></div>
       </div>
 
+      <!-- Confidence Distribution -->
+      <div class="panel panel-full" style="margin-bottom:12px">
+        <div class="panel-header"><span class="panel-title">📊 Confidence Distribution</span></div>
+        <div style="padding:12px 16px;height:200px"><canvas id="confChart"></canvas></div>
+      </div>
+
       <!-- Recent evaluated predictions -->
       <div class="panel panel-full">
         <div class="panel-header"><span class="panel-title">📋 Recent Evaluated Predictions</span></div>
@@ -282,8 +288,74 @@ async function loadPredictions(){
   }catch(e){}
 }
 
-loadAcc(30);loadPredictions();
+let confChartInst = null;
+
+async function loadConfDistribution(){
+  try{
+    const d = await fetch('/api/predictions/summary').then(r=>r.json());
+    const preds = d.predictions || [];
+    
+    // Bin confidence scores into buckets (45-50, 50-55, 55-60, 60-65, 65-70, 70-75, 75-80, 80-85, 85-90)
+    const bins = [0,0,0,0,0,0,0,0,0];
+    const labels = ['45-50%','50-55%','55-60%','60-65%','65-70%','70-75%','75-80%','80-85%','85-90%'];
+    
+    preds.forEach(p => {
+      const conf = p.confidence || 50;
+      if(conf >= 85) bins[8]++;
+      else if(conf >= 80) bins[7]++;
+      else if(conf >= 75) bins[6]++;
+      else if(conf >= 70) bins[5]++;
+      else if(conf >= 65) bins[4]++;
+      else if(conf >= 60) bins[3]++;
+      else if(conf >= 55) bins[2]++;
+      else if(conf >= 50) bins[1]++;
+      else bins[0]++;
+    });
+    
+    if(confChartInst) confChartInst.destroy();
+    
+    confChartInst = new Chart(document.getElementById('confChart'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Prediction Count',
+          data: bins,
+          backgroundColor: bins.map(b => b > 0 ? 'rgba(41, 121, 255, 0.6)' : 'rgba(74, 85, 104, 0.3)'),
+          borderColor: '#2979ff',
+          borderWidth: 1,
+          borderRadius: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {display: false},
+          tooltip: {
+            backgroundColor: 'rgba(13, 17, 23, 0.9)',
+            borderColor: '#1e2635'
+          }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {color: '#7a8899', font: {size: 10}},
+            grid: {color: 'rgba(30, 38, 53, 0.3)'}
+          },
+          x: {
+            ticks: {color: '#7a8899', font: {size: 10}},
+            grid: {display: false}
+          }
+        }
+      }
+    });
+  }catch(e){console.error('[ConfDist]', e);}
+}
+
+loadAcc(30);loadPredictions();loadConfDistribution();
 setInterval(loadPredictions,30000);
+setInterval(loadConfDistribution,30000);
 </script>
 
 <script>

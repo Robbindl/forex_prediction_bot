@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 import requests
 import re
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any, Tuple
 # TextBlob removed — replaced with financial keyword scorer (see _score_headline)
 from utils.logger import logger
@@ -568,6 +569,14 @@ class RedditWatcher:
                 is_relevant = any(term in combined for term in search_terms)
                 
                 if is_relevant:
+                    created_ts = post.get('created_utc', 0)
+                    created_dt = datetime.fromtimestamp(created_ts, timezone.utc)
+                    # Limit to recent posts (last 6-12h window) to avoid stale sentiment drift
+                    max_age_hours = int(os.getenv('SENTIMENT_MAX_AGE_HOURS', '12'))
+                    age_hours = (datetime.utcnow().replace(tzinfo=timezone.utc) - created_dt).total_seconds() / 3600
+                    if age_hours > max_age_hours:
+                        continue
+
                     try:
                         from narrative_ai import ingest as narrative_ingest
                         narrative_ingest(post.get('title', ''), source="reddit")
@@ -581,7 +590,7 @@ class RedditWatcher:
                         "score": post.get('score', 0),
                         "comments": post.get('num_comments', 0),
                         "url": f"https://reddit.com{post.get('permalink', '')}",
-                        "created": datetime.fromtimestamp(post.get('created_utc', 0)),
+                        "created": created_dt,
                     })
                     sentiments.append(sent)
         

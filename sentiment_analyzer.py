@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -16,6 +16,7 @@ try:
     from config.config import (
         NEWSAPI_KEY, GNEWS_KEY, RAPIDAPI_KEY,
         ALPHA_VANTAGE_API_KEY, FINNHUB_API_KEY,
+        SENTIMENT_MAX_AGE_HOURS,
     )
 except ImportError:
     NEWSAPI_KEY = GNEWS_KEY = RAPIDAPI_KEY = ALPHA_VANTAGE_API_KEY = FINNHUB_API_KEY = ""
@@ -297,6 +298,7 @@ class _NewsSentiment:
     _cache: Dict[str, Tuple[Any, float]] = {}
     _lock  = threading.Lock()
     _TTL   = 1800  # 30 min
+    _MAX_AGE_HOURS = max(1, min(12, SENTIMENT_MAX_AGE_HOURS))  # Use 6-12h as safe range in config
 
     # Words that score BEARISH in financial headlines
     _BEARISH_WORDS = {
@@ -526,16 +528,23 @@ class _NewsSentiment:
                 velocity_mult = 1.0
                 if created:
                     try:
-                        from datetime import datetime as _dt
                         if hasattr(created, "timestamp"):
                             age_hours = (now - created.timestamp()) / 3600
+                        elif isinstance(created, datetime):
+                            age_hours = (now - created.timestamp()) / 3600
                         else:
-                            age_hours = 1.0
-                        if age_hours < 2.0 and eng > 100:
-                            # Breaking news — posts less than 2h old with >100 engagement
-                            velocity = eng / max(0.1, age_hours)
-                            # Scale: 500 upvotes/hr = 1.5x multiplier
-                            velocity_mult = min(2.0, 1.0 + velocity / 1000)
+                            age_hours = None
+
+                        if age_hours is not None:
+                            # Enforce freshness window (recent 6-12h)
+                            if age_hours > cls._MAX_AGE_HOURS:
+                                continue
+
+                            if age_hours < 2.0 and eng > 100:
+                                # Breaking news — posts less than 2h old with >100 engagement
+                                velocity = eng / max(0.1, age_hours)
+                                # Scale: 500 upvotes/hr = 1.5x multiplier
+                                velocity_mult = min(2.0, 1.0 + velocity / 1000)
                     except Exception:
                         pass
 
@@ -584,6 +593,40 @@ class _NewsSentiment:
         return results
 
     @classmethod
+    def _is_recent_time(cls, dt: Optional[datetime]) -> bool:
+        if not dt:
+            return False
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        age_hours = (datetime.utcnow() - dt).total_seconds() / 3600.0
+        return 0 <= age_hours <= cls._MAX_AGE_HOURS
+
+    @classmethod
+    def _parse_datetime(cls, value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, timezone.utc)
+
+        try:
+            # ISO 8601 with Z or timezone offset
+            if isinstance(value, str):
+                normalized = value.strip()
+                if normalized.endswith("Z"):
+                    normalized = normalized[:-1] + "+00:00"
+                return datetime.fromisoformat(normalized)
+        except Exception:
+            pass
+
+        try:
+            # Fallback: epoch seconds string
+            return datetime.fromtimestamp(float(value), timezone.utc)
+        except Exception:
+            return None
+
+    @classmethod
     def _fetch_articles(cls, asset: str) -> List[str]:
         keywords = _ASSET_KEYWORDS.get(asset, [asset.lower()])
         query    = " OR ".join(f'"{kw}"' for kw in keywords[:3])
@@ -599,8 +642,11 @@ class _NewsSentiment:
                     timeout=10
                 )
                 if r.status_code == 200:
-                    articles += [a["title"] + " " + (a.get("description") or "")
-                                 for a in r.json().get("articles", [])]
+                    for a in r.json().get("articles", []):
+                        published = cls._parse_datetime(a.get("publishedAt"))
+                        if not cls._is_recent_time(published):
+                            continue
+                        articles.append(a.get("title", "") + " " + (a.get("description") or ""))
             except Exception as e:
                 if not _is_quota_error(e):
                     logger.debug(f"[Sentiment] NewsAPI {asset}: {e}")
@@ -615,8 +661,11 @@ class _NewsSentiment:
                     timeout=10
                 )
                 if r.status_code == 200:
-                    articles += [a["title"] + " " + (a.get("description") or "")
-                                 for a in r.json().get("articles", [])]
+                    for a in r.json().get("articles", []):
+                        published = cls._parse_datetime(a.get("publishedAt"))
+                        if not cls._is_recent_time(published):
+                            continue
+                        articles.append(a.get("title", "") + " " + (a.get("description") or ""))
             except Exception as e:
                 if not _is_quota_error(e):
                     logger.debug(f"[Sentiment] GNews {asset}: {e}")
@@ -636,8 +685,11 @@ class _NewsSentiment:
                     )
                     if r.status_code == 200:
                         feed = r.json().get("feed", [])
-                        articles += [a.get("title", "") + " " + a.get("summary", "")
-                                     for a in feed]
+                        for a in feed:
+                            published = cls._parse_datetime(a.get("time") or a.get("publishedAt"))
+                            if not cls._is_recent_time(published):
+                                continue
+                            articles.append(a.get("title", "") + " " + a.get("summary", ""))
             except Exception as e:
                 if not _is_quota_error(e):
                     logger.debug(f"[Sentiment] AlphaVantage news {asset}: {e}")
@@ -654,6 +706,9 @@ class _NewsSentiment:
                     news = fh.general_news("general", min_id=0)
                 kws = _ASSET_KEYWORDS.get(asset, [])
                 for n in news[:20]:
+                    published = cls._parse_datetime(n.get("datetime") or n.get("publishedAt") or n.get("datetimeUTC"))
+                    if not cls._is_recent_time(published):
+                        continue
                     text = (n.get("headline", "") + " " + n.get("summary", "")).lower()
                     if any(kw in text for kw in kws):
                         articles.append(n.get("headline", ""))

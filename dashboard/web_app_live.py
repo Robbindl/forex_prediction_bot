@@ -1065,30 +1065,25 @@ def api_market_heatmap():
         return jsonify(cached)
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from config.config import TRADING_TIMEFRAME
-        from data.cache import cache as _ohlcv_cache
+        
         def _fetch_one(ac):
             asset, cat = ac
             if _is_market_weekend(cat):
                 return None
             try:
-                # Try 15m cache first (warm from trading loop)
-                cache_key = f"ohlcv:{asset}:{TRADING_TIMEFRAME}"
-                df = _ohlcv_cache.get(cache_key)
-                if df is None:
-                    # Cache miss — fetch fresh
-                    df = _fetcher.get_ohlcv(asset, cat, interval=TRADING_TIMEFRAME, periods=100)
-                if df is None or df.empty or "close" not in df.columns:
+                # Fetch 1-day data to get TODAY's open vs current price (true 24h view)
+                df_daily = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=5)
+                if df_daily is None or df_daily.empty or "close" not in df_daily.columns:
                     return None
-                closes = df["close"].astype(float)
-                opens  = df["open"].astype(float)
+                
+                closes = df_daily["close"].astype(float)
+                opens  = df_daily["open"].astype(float)
                 current_price = float(closes.iloc[-1])
-                # Compare last 2 closes for % change if can't find today's open
-                if len(closes) >= 2:
-                    ref_price = float(opens.iloc[-1]) if float(opens.iloc[-1]) > 0 else float(closes.iloc[-2])
-                else:
-                    ref_price = float(opens.iloc[-1])
-                chg = (current_price - ref_price) / ref_price * 100 if ref_price > 0 else 0.0
+                today_open = float(opens.iloc[-1])  # Today's opening price
+                
+                # Calculate % change from today's open to current price
+                chg = (current_price - today_open) / today_open * 100 if today_open > 0 else 0.0
+                
                 return {"asset": asset, "category": cat,
                         "change_pct": round(float(chg), 3),
                         "price": round(current_price, 5)}
@@ -1996,14 +1991,20 @@ def api_trade_history():
                       .order_by(Trade.exit_time.desc())
                       .limit(limit)
                       .all())
-            from datetime import datetime as _dt
+            from datetime import datetime as _dt, timedelta as _td
             def _enrich(t):
                 d = t.to_dict()
-                # Calculate duration server-side — both times treated as UTC
+                # Convert UTC times to EAT (UTC+3) for display
+                eat_offset = _td(hours=3)
                 try:
                     if t.entry_time and t.exit_time:
                         et = t.entry_time.replace(tzinfo=None) if hasattr(t.entry_time,'replace') else t.entry_time
                         xt = t.exit_time.replace(tzinfo=None) if hasattr(t.exit_time,'replace') else t.exit_time
+                        # Add 3 hours to convert UTC → EAT
+                        et_eat = et + eat_offset
+                        xt_eat = xt + eat_offset
+                        d["entry_time"] = et_eat.isoformat()
+                        d["exit_time"] = xt_eat.isoformat()
                         secs = abs((xt - et).total_seconds())
                         mins = int(secs / 60)
                         if mins < 60:

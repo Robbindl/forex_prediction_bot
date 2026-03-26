@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Risk Dashboard — Robbie</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--bd2:#263045;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--r:8px;--r3:12px;--font:'Inter',system-ui,sans-serif}
@@ -27,8 +28,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--am)}
 .tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
 .tb-time{font-size:12px;color:var(--tx3);font-family:monospace}
-.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:flex;flex-direction:column;gap:12px}
-.panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden;min-height:80px}
+.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:flex;flex-direction:column;gap:12px;height:100%;min-height:0}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow-y:auto;overflow-x:hidden;min-height:auto;flex-shrink:0;max-height:480px;display:flex;flex-direction:column}
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
 .panel-badge{margin-left:auto;font-size:10px;padding:2px 8px;border-radius:20px;background:var(--s3);color:var(--tx3)}
@@ -56,6 +57,15 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .stat-label{font-size:12px;color:var(--tx2)}
 .stat-value{font-size:13px;font-weight:700}
 .empty{text-align:center;padding:24px;color:var(--tx3);font-size:13px}
+
+/* Scrollable panel bodies */
+.panel-body{overflow-y:auto;max-height:360px}
+
+/* Scrollbar styling */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:4px}
+::-webkit-scrollbar-thumb{background:rgba(255,165,0,.3);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,165,0,.6)}
 
 /* HAMBURGER */
 .hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;width:36px;height:36px;cursor:pointer;padding:6px;border-radius:6px;background:transparent;border:none;flex-shrink:0}
@@ -147,6 +157,17 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <div class="mc-label">Total P&L</div>
           <div class="mc-value" id="mcPnl">—</div>
           <div class="mc-sub">All time</div>
+        </div>
+      </div>
+
+      <!-- Drawdown Chart -->
+      <div class="panel panel-full" style="margin-top:12px;height:250px">
+        <div class="panel-header">
+          <span class="panel-title">📉 Drawdown Over Time</span>
+          <span id="ddStats" style="margin-left:auto;font-size:11px;color:var(--tx3)">Max: —</span>
+        </div>
+        <div class="panel-body" style="padding:8px 16px;flex:1;position:relative;min-height:0">
+          <canvas id="drawdownChart" style="max-height:180px"></canvas>
         </div>
       </div>
 
@@ -274,8 +295,85 @@ function load(){
   }).catch(function(){});
 }
 
-load();
-setInterval(load, 15000);
+let drawdownChartInst = null;
+
+async function loadDrawdownChart(){
+  try{
+    const d = await fetch('/api/trade-history?limit=200').then(r=>r.json());
+    if(!d.success || !d.trades) return;
+    
+    const trades = (d.trades || []).sort((a,b) => {
+      const ta = new Date(a.exit_time || a.entry_time || 0);
+      const tb = new Date(b.exit_time || b.entry_time || 0);
+      return ta - tb;
+    });
+    
+    let cumPnl = 0;
+    let peak = 0;
+    const drawdownData = [];
+    const labels = [];
+    let maxDD = 0;
+    
+    trades.forEach(t => {
+      const pnl = Number(t.pnl || 0);
+      cumPnl += pnl;
+      if(cumPnl > peak) peak = cumPnl;
+      const dd = cumPnl - peak;
+      drawdownData.push(dd);
+      maxDD = Math.min(maxDD, dd);
+      const d = new Date(t.exit_time || t.entry_time || 0);
+      labels.push(d.toLocaleDateString('en-US', {month:'short', day:'numeric'}));
+    });
+    
+    document.getElementById('ddStats').textContent = `Max: $${Math.abs(maxDD).toFixed(2)} | Current: $${Math.abs(drawdownData[drawdownData.length-1] || 0).toFixed(2)}`;
+    
+    const ctx = document.getElementById('drawdownChart');
+    if(!ctx)return;
+    if(drawdownChartInst)drawdownChartInst.destroy();
+    
+    drawdownChartInst = new Chart(ctx, {
+      type: 'area',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Drawdown $',
+          data: drawdownData,
+          borderColor: '#ff4560',
+          backgroundColor: 'rgba(255, 69, 96, 0.2)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 1,
+          pointBorderColor: 'transparent'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {display: false},
+          tooltip: {
+            backgroundColor: 'rgba(13, 17, 23, 0.9)',
+            borderColor: '#1e2635'
+          }
+        },
+        scales: {
+          y: {
+            grid: {color: 'rgba(30, 38, 53, 0.3)'},
+            ticks: {color: '#7a8899', font: {size: 10}},
+            title: {display: false}
+          },
+          x: {
+            grid: {color: 'transparent'},
+            ticks: {color: '#7a8899', font: {size: 10}, maxTicksLimit: 8}
+          }
+        }
+      }
+    });
+  }catch(e){console.error('[DrawdownChart]', e);}
+}
+
+load();loadDrawdownChart();
+setInterval(load, 15000);setInterval(loadDrawdownChart, 60000);
 
 async function riskClose(mode){
   const isCategory=['forex','crypto','commodities','indices'].includes(mode);

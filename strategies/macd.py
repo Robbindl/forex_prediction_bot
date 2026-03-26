@@ -12,7 +12,9 @@ logger = get_logger()
 class MACDStrategy(BaseStrategy):
     name = "MACD"
 
-    def __init__(self, fast: int = 12, slow: int = 26, signal: int = 9):
+    def __init__(self, fast: int = 12, slow: int = 26, signal: int = 6):
+        # 15m optimization: signal=6 (vs 9) for faster histogram crossovers
+        # Allows quicker reaction to momentum shifts on 15m candles
         self.fast   = fast
         self.slow   = slow
         self.signal = signal

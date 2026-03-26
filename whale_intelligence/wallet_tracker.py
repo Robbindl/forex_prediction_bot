@@ -23,7 +23,7 @@ MIN_ETH_DELTA  = 100.0      # minimum ETH change worth tracking
 POLL_INTERVAL  = 300        # seconds between balance checks (5 min)
 
 BLOCKCHAIR_BTC = "https://api.blockchair.com/bitcoin/dashboards/address/{addr}"
-ETHERSCAN_BAL  = "https://api.etherscan.io/api"
+ETHERSCAN_BAL  = "https://api.etherscan.io/v2/api"  # Updated to V2 API with chainid support
 
 # ── Seed wallet list ──────────────────────────────────────────────────────────
 # Add your own wallets here or use WalletTracker.add_wallet() at runtime.
@@ -199,6 +199,7 @@ class WalletTracker:
             resp = requests.get(
                 ETHERSCAN_BAL,
                 params={
+                    "chainid": "1",        # Ethereum mainnet
                     "module":  "account",
                     "action":  "balance",
                     "address": address,

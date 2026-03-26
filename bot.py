@@ -262,27 +262,41 @@ def main() -> None:
     try:
         import threading, datetime as _dt
         def _check_api_expiry():
-            expiry_alerts = [
-                ("QOS API trial key", _dt.date(2026, 3, 29)),
-            ]
+            # Load from config (not hardcoded)
+            expiry_alerts = []
+            try:
+                from config.config import API_KEY_EXPIRY_DATES
+                if API_KEY_EXPIRY_DATES:
+                    expiry_alerts = list(API_KEY_EXPIRY_DATES.items())
+            except (ImportError, AttributeError):
+                logger.debug("[bot] API_KEY_EXPIRY_DATES not configured")
+                pass
+            
             while True:
                 try:
                     from core.engine import _CORE_INSTANCE
                     tc = _CORE_INSTANCE
-                    if tc and hasattr(tc, "telegram") and tc.telegram:
+                    if tc and hasattr(tc, "telegram") and tc.telegram and expiry_alerts:
                         today = _dt.date.today()
                         for name, exp_date in expiry_alerts:
                             days_left = (exp_date - today).days
-                            if days_left in (7, 3, 1, 0):
-                                msg = (
-                                    f"⚠️ *API Key Expiry Alert*\n\n"
-                                    f"*{name}* expires in *{days_left} day{'s' if days_left != 1 else ''}* "
-                                    f"({exp_date.strftime('%B %d, %Y')}).\n\n"
-                                    f"{'🚨 Renew immediately!' if days_left == 0 else 'Please renew soon to avoid data gaps.'}"
-                                )
+                            if days_left in (7, 3, 1, 0, -1):
+                                if days_left < 0:
+                                    msg = (
+                                        f"🔴 *API KEY EXPIRED*\n\n"
+                                        f"*{name}* expired {abs(days_left)} day{'s' if abs(days_left) != 1 else ''} ago.\n"
+                                        f"Renew immediately to avoid data gaps."
+                                    )
+                                else:
+                                    msg = (
+                                        f"⚠️ *API Key Expiry Alert*\n\n"
+                                        f"*{name}* expires in *{days_left} day{'s' if days_left != 1 else ''}* "
+                                        f"({exp_date.strftime('%B %d, %Y')}).\n\n"
+                                        f"{'🚨 Renew immediately!' if days_left == 0 else 'Please renew soon.'}"
+                                    )
                                 tc.telegram.send_message(msg)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[APIExpiryChecker] error: {e}")
                 # Check once per day
                 import time
                 time.sleep(86400)

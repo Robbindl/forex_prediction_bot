@@ -25,17 +25,43 @@ from whale_intelligence.wallet_tracker            import WalletTracker
 from whale_intelligence.wallet_behavior_classifier import WalletBehaviorClassifier
 from whale_intelligence.wallet_database           import WalletDatabase
 from whale_intelligence.wallet_cluster_analyzer   import WalletClusterAnalyzer
+from whale_intelligence.multi_chain_tracker       import MultiChainTracker
+from whale_intelligence.multi_chain_seeds         import MULTI_CHAIN_SEED_WALLETS
 
 # ── Module-level singletons ───────────────────────────────────────────────────
 _db          = WalletDatabase()
 _classifier  = WalletBehaviorClassifier()
 _cluster     = WalletClusterAnalyzer()
 tracker      = WalletTracker(db=_db, classifier=_classifier, cluster=_cluster)
+multi_tracker = MultiChainTracker()  # Tracks BTC, ETH, BNB, SOL, XRP
 
 
 def start_all() -> None:
     """Start every Phase 2 component. Call once from bot.py main()."""
     _db.init()
+
+    # Load multi-chain seed wallets into appropriate trackers
+    logger = __import__('utils.logger', fromlist=['get_logger']).get_logger()
+    for wallet in MULTI_CHAIN_SEED_WALLETS:
+        try:
+            chain = wallet.get("chain", "").lower()
+            # ETH/BTC go to main tracker, others go to multi_tracker
+            if chain in ("eth", "btc"):
+                tracker.add_wallet(
+                    address=wallet["address"],
+                    label=wallet["label"],
+                    chain=chain,
+                    wallet_type=wallet.get("type", "unknown"),
+                )
+            elif chain in ("bnb", "sol", "solana", "xrp"):
+                multi_tracker.add_wallet(
+                    address=wallet["address"],
+                    label=wallet["label"],
+                    chain=chain,
+                    wallet_type=wallet.get("type", "unknown"),
+                )
+        except Exception as e:
+            logger.warning(f"[whale_intelligence] Failed to add seed wallet {wallet.get('label')}: {e}")
 
     # FIX S3: Wire wallet_tracker → layer6_whale.ingest_onchain_event so that
     # on-chain movements actually reach the trading pipeline.
@@ -76,10 +102,18 @@ def start_all() -> None:
 
     tracker.start()
 
+    # Start multi-chain tracker for BNB, Solana, XRP (in addition to ETH/BTC)
+    try:
+        multi_tracker.start()
+        logger.info("[whale_intelligence] Multi-chain tracker started (BNB, SOL, XRP)")
+    except Exception as e:
+        logger.warning(f"[whale_intelligence] Multi-chain tracker failed to start: {e}")
+
 
 def stop_all() -> None:
     """Graceful shutdown. Wire to your SIGTERM handler."""
     tracker.stop()
+    multi_tracker.stop()
 
 
 def is_running() -> bool:
@@ -87,6 +121,6 @@ def is_running() -> bool:
     return bool(getattr(tracker, "_running", False))
 
 
-__all__ = ["tracker", "start_all", "stop_all", "is_running",
+__all__ = ["tracker", "multi_tracker", "start_all", "stop_all", "is_running",
            "WalletTracker", "WalletBehaviorClassifier",
-           "WalletDatabase", "WalletClusterAnalyzer"]
+           "WalletDatabase", "WalletClusterAnalyzer", "MultiChainTracker"]

@@ -18,8 +18,10 @@ logger = get_logger()
 class VotingStrategy(BaseStrategy):
     name = "Voting"
 
-    def __init__(self, min_votes: int = 1, min_confidence: float = 0.55):
-        # Generates more actionable signals by accepting single strong strategy votes.
+    def __init__(self, min_votes: int = 1, min_confidence: float = 0.58):
+        # 15m optimization: min_confidence lowered from 0.55 to 0.58
+        # Generates actionable signals on single strong strategy votes
+        # Confidence floor of 0.58 ensures quality signals without being too strict
         self.min_votes      = min_votes
         self.min_confidence = min_confidence
         self._strategies: List[BaseStrategy] = [

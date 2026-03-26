@@ -246,8 +246,9 @@ class AutoTrainer:
             )
 
         with self._lock:
+            total_samples = sum(len(df) for df in all_dfs) if all_dfs else 0
             self._status[category] = {
                 "last_trained": datetime.utcnow().isoformat(),
                 "success":      success,
-                "samples":      len(combined),
+                "samples":      total_samples,
             }

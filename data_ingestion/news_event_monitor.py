@@ -42,9 +42,9 @@ logger = get_logger()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 POLL_INTERVAL_SECS  = 900    # poll Finnhub every 15 minutes
-PRE_EVENT_MINS      = 60     # block signals 60 min before
-ACTIVE_MINS         = 15     # block signals 15 min after release
-POST_EVENT_MINS     = 90     # boost window 15-90 min after release
+PRE_EVENT_MINS      = 10     # REDUCED: block signals 10 min before (vs 60) for 15m trading
+ACTIVE_MINS         = 10     # REDUCED: block signals 10 min after release (vs 15, markets stabilize faster)
+POST_EVENT_MINS     = 45     # REDUCED: boost window 45 min (vs 90) after for 15m timeframe
 
 # Which Finnhub event names are HIGH impact
 HIGH_IMPACT_KEYWORDS = {

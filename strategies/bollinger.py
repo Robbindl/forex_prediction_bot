@@ -37,7 +37,9 @@ class BollingerStrategy(BaseStrategy):
             cur_bw     = bw.iloc[-1]
 
             # Width filter — ignore squeeze
-            if cur_bw < 0.005:
+            # 15m optimization: threshold 0.005 (0.5%) → 0.0035 (0.35%)
+            # More sensitive to band bounces on intraday timeframes
+            if cur_bw < 0.0035:
                 return None
 
             direction  = None

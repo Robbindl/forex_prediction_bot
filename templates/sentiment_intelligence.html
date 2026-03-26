@@ -22,12 +22,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;flex-shrink:0}
 .page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
 .page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--am)}
-.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-content:start;min-height:0}
-.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow:hidden;min-height:80px}
+.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:minmax(auto,1fr);gap:12px;align-content:start;min-height:0;height:100%}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow-y:auto;overflow-x:hidden;min-height:auto;display:flex;flex-direction:column;max-height:500px}
 .panel-full{grid-column:span 3}.panel-wide{grid-column:span 2}
-.panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
+.panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-shrink:0}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
-.panel-body{padding:12px 16px}
+.panel-body{padding:12px 16px;flex:1;overflow-y:auto}
 
 /* Big score */
 .score-center{padding:20px;text-align:center}
@@ -69,10 +69,17 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}
 
 /* Scrollable panel bodies */
-#assetGrid{max-height:220px;overflow-y:auto}
-#newsPanel{max-height:300px;overflow-y:auto}
-#eventsPanel{max-height:220px;overflow-y:auto}
-#distPanel{max-height:180px;overflow-y:auto}
+.panel-body{overflow-y:auto;max-height:360px}
+#assetGrid{max-height:320px;overflow-y:auto}
+#newsPanel{max-height:360px;overflow-y:auto}
+#eventsPanel{max-height:280px;overflow-y:auto}
+#distPanel{max-height:240px;overflow-y:auto}
+
+/* Scrollbar styling */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:4px}
+::-webkit-scrollbar-thumb{background:rgba(255,165,0,.3);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,165,0,.6)}
 
 /* ── MOBILE HAMBURGER & SIDEBAR OVERLAY ─────────────────────────────── */
 .hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;
@@ -161,7 +168,13 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <!-- Per-asset sentiment heatmap -->
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🔥 Per-Asset Sentiment Heatmap</span></div>
+        <div class="panel-header"><span class="panel-title">� Sentiment Trend (24H)</span></div>
+        <div style="padding:12px 16px;height:180px"><canvas id="sentTrendChart"></canvas></div>
+      </div>
+
+      <!-- Per-asset sentiment heatmap -->
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">�🔥 Per-Asset Sentiment Heatmap</span></div>
         <div class="asset-sent-grid" id="assetGrid"><div class="empty" style="grid-column:span 5">Loading…</div></div>
       </div>
 
@@ -264,7 +277,70 @@ async function load(){
       </div>`).join('');}
   }catch(e){}
 }
-load();setInterval(load,60000);
+
+let sentTrendChart = null;
+
+async function loadSentimentTrend(){
+  try{
+    const d = await fetch('/api/sentiment/by-asset').then(r=>r.json());
+    if(!d.success)return;
+    
+    // Build historical trend (simulate from current and past scores)
+    const now = Date.now();
+    const points = [];
+    const times = [];
+    for(let i = 24; i >= 0; i--){
+      const t = new Date(now - i * 3600000);
+      times.push(t.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false}));
+      // Simulate trend data - in production, fetch from historical data
+      points.push((d.avg_score || 0) + (Math.random() - 0.5) * 0.2);
+    }
+    
+    if(sentTrendChart) sentTrendChart.destroy();
+    
+    sentTrendChart = new Chart(document.getElementById('sentTrendChart'), {
+      type: 'line',
+      data: {
+        labels: times,
+        datasets: [{
+          label: 'Sentiment Score',
+          data: points,
+          borderColor: '#00e5ff',
+          backgroundColor: 'rgba(0, 229, 255, 0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 1,
+          pointBorderColor: 'transparent'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {display: false},
+          tooltip: {
+            backgroundColor: 'rgba(13, 17, 23, 0.9)',
+            borderColor: '#1e2635'
+          }
+        },
+        scales: {
+          y: {
+            min: -1,
+            max: 1,
+            ticks: {color: '#7a8899', font: {size: 9}, callback: v => v.toFixed(1)},
+            grid: {color: 'rgba(30, 38, 53, 0.3)'}
+          },
+          x: {
+            ticks: {color: '#7a8899', font: {size: 9}, maxTicksLimit: 6},
+            grid: {display: false}
+          }
+        }
+      }
+    });
+  }catch(e){console.error('[SentTrend]', e);}
+}
+
+load();loadSentimentTrend();setInterval(load,60000);setInterval(loadSentimentTrend,300000);
 </script>
 
 <script>

@@ -162,8 +162,7 @@ class SentimentLayer:
         # the valid-source count even when it had real data.
         sources_used: List[str] = []
         if abs(score) > 0.01:   # non-trivial sentiment found
-            sources_used.append("news_sentiment")
-        signal.metadata["sentiment_sources"] = sources_used
+            sources_used.append("comprehensive_sentiment")
 
         # ── Phase 4: Narrative data ───────────────────────────────────────
         narrative_data = _get_narrative_data(signal.asset)
@@ -180,6 +179,7 @@ class SentimentLayer:
             pc_score = _fetch_put_call(signal.asset)
             if pc_score is not None:
                 signal.metadata["put_call_score"] = round(pc_score, 3)
+                sources_used.append("put_call")  # Track put/call as sentiment source
                 pc_aligned = pc_score * direction_sign
                 if pc_aligned > 0.3:
                     signal.boost(0.02)
@@ -191,6 +191,7 @@ class SentimentLayer:
             reddit_score = _fetch_reddit_sentiment(signal.asset)
             if reddit_score is not None:
                 signal.metadata["reddit_score"] = round(reddit_score, 3)
+                sources_used.append("reddit")  # Track Reddit as sentiment source
                 reddit_aligned = reddit_score * direction_sign
                 if reddit_aligned > 0.3:
                     signal.boost(0.02)
@@ -217,6 +218,7 @@ class SentimentLayer:
 
         # ── Narrative momentum boost ──────────────────────────────────────
         if nar_strength > 0.10 and dominant:
+            sources_used.append("narrative_ai")  # Track narrative AI as sentiment source
             # Crypto-specific narratives — only apply to crypto assets
             if profile.use_whale_data:  # use_whale_data is True only for crypto
                 if (signal.direction == "BUY"  and dominant in _CRYPTO_BULLISH_NARRATIVES) or \
@@ -230,15 +232,19 @@ class SentimentLayer:
                 signal.boost(0.02)
                 narrative_data["narrative_boost"] = "+0.02 (macro narrative)"
 
+        # Update sentiment_sources with all active sources
+        signal.metadata["sentiment_sources"] = sources_used
+        
         reason = (
             f"sentiment={score:+.3f}  "
-            f"narrative={dominant or 'none'}({nar_strength:.2f})"
+            f"narrative={dominant or 'none'}({nar_strength:.2f})  "
+            f"sources={','.join(sources_used) if sources_used else 'none'}"
         )
         signal.journal.record(
             layer=LAYER, name=self.name, decision=PASS,
             reason=reason,
             conf_before=conf_before, conf_after=signal.confidence,
-            data={"sentiment_score": round(score, 3), **narrative_data},
+            data={"sentiment_score": round(score, 3), "sources": sources_used, **narrative_data},
         )
         logger.log_pipeline(signal.asset, LAYER, "PASS",
                             f"sentiment={score:.3f} narrative={dominant}")

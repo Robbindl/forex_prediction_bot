@@ -217,26 +217,47 @@ class TelegramCommander:
             self.is_running = False
 
     def _run_bot(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_until_complete(self._polling())
-        except Exception as e:
-            logger.error(f"[Telegram] polling stopped: {e}")
-        finally:
-            self._loop.close()
+        while self.is_running:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            try:
+                self._loop.run_until_complete(self._polling())
+            except Exception as e:
+                logger.warning(
+                    f"[Telegram] polling crashed: {e} — retrying in 5s (network issues are recoverable)"
+                )
+                time.sleep(5)
+                continue
+            finally:
+                try:
+                    self._loop.close()
+                except Exception:
+                    pass
+        logger.info("[Telegram] polling thread exiting")
 
     async def _polling(self) -> None:
-        async with self.application:
-            await self.application.start()
-            await self.application.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-            )
-            while self.is_running:
-                await asyncio.sleep(1)
-            await self.application.updater.stop()
-            await self.application.stop()
+        while self.is_running:
+            try:
+                async with self.application:
+                    await self.application.start()
+                    await self.application.updater.start_polling(
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True,
+                    )
+                    while self.is_running:
+                        await asyncio.sleep(1)
+                    await self.application.updater.stop()
+                    await self.application.stop()
+            except (NetworkError, TimedOut, RetryAfter) as e:
+                logger.warning(f"[Telegram] Network issue: {e} — retrying in 5s")
+                await asyncio.sleep(5)
+                continue
+            except Exception as e:
+                logger.error(f"[Telegram] polling exception: {e}", exc_info=True)
+                await asyncio.sleep(5)
+                continue
+            else:
+                break
 
     def stop(self) -> None:
         self.is_running = False

@@ -13,7 +13,10 @@ logger = get_logger()
 class RSIStrategy(BaseStrategy):
     name = "RSI"
 
-    def __init__(self, period: int = 14, oversold: float = 30, overbought: float = 70):
+    def __init__(self, period: int = 8, oversold: float = 28, overbought: float = 72):
+        # 15m optimization: period=8 (vs 14) for faster signal response
+        # oversold=28 (vs 30) catches bounces earlier
+        # overbought=72 (vs 70) avoids whipsaws
         self.period     = period
         self.oversold   = oversold
         self.overbought = overbought

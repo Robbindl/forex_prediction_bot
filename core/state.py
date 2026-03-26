@@ -337,6 +337,7 @@ class SystemState:
                 "strategy_stats":  dict(self._strategy_stats),
                 "session_stats":   dict(self._session_stats),
                 "asset_stats":     dict(self._asset_stats),
+                "open_positions":  list(self._open_positions.values()),
             }
             fd, tmp = tempfile.mkstemp(prefix="state_", suffix=".tmp", dir=_STATE_FILE.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -372,6 +373,13 @@ class SystemState:
             for asset, s in raw.get("asset_stats", {}).items():
                 self._asset_stats[asset].update(s)
 
+            # Restore open positions from JSON fallback (useful when DB is unavailable)
+            open_positions = raw.get("open_positions", [])
+            for pos in open_positions:
+                tid = pos.get("trade_id")
+                if tid and tid not in self._open_positions:
+                    self._open_positions[tid] = pos
+
             # Day rollover
             if self._last_save_date != date.today().isoformat():
                 self._daily_trades   = 0
@@ -387,12 +395,36 @@ class SystemState:
         try:
             from services.db_pool import get_db
             positions = get_db().load_open_positions()
-            for pos in positions:
-                tid = pos.get("trade_id")
-                if tid:
-                    self._open_positions[tid] = pos
             if positions:
-                logger.info(f"[State] Restored {len(positions)} open position(s) from DB")
+                restored = 0
+                for pos in positions:
+                    tid = pos.get("trade_id")
+                    if tid:
+                        self._open_positions[tid] = pos
+                        restored += 1
+                logger.info(f"[State] Restored {restored} open position(s) from DB")
+
+                # Ensure any JSON cache positions are also reflected in DB (cross-merge)
+                for pos in list(self._open_positions.values()):
+                    try:
+                        get_db().save_open_position(pos)
+                    except Exception:
+                        pass
+
+            else:
+                logger.info("[State] No open positions found in DB; using cached JSON state fallback if available")
+
+                # Backfill any JSON cached open positions into DB so they survive next restart
+                if self._open_positions:
+                    logger.info(
+                        f"[State] Backfilling {len(self._open_positions)} cached open position(s) into DB"
+                    )
+                    for pos in list(self._open_positions.values()):
+                        try:
+                            get_db().save_open_position(pos)
+                        except Exception as e:
+                            logger.error(f"[State] failed backfilling open position {pos.get('trade_id')}: {e}")
+
         except Exception as e:
             logger.error(f"[State] DB position restore failed: {e}")
 

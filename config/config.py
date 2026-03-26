@@ -185,6 +185,9 @@ LOOKBACK_PERIOD    = int(os.getenv("LOOKBACK_PERIOD", "100"))
 PREDICTION_HORIZON = int(os.getenv("PREDICTION_HORIZON", "5"))
 CACHE_TTL          = int(os.getenv("CACHE_TTL", "300"))
 
+# News and sentiment freshness window (default 12 hours, adjustable 6-12h)
+SENTIMENT_MAX_AGE_HOURS = int(os.getenv("SENTIMENT_MAX_AGE_HOURS", "12"))
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRADING TIMEFRAME
 # TRADING_TIMEFRAME — the candle interval used for signal generation and ML.
@@ -267,3 +270,17 @@ FORBES_RSS: dict = {
 BINANCE_ANNOUNCEMENTS_URL = (
     "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API KEY EXPIRY DATES (optional: for alerts)
+# ─────────────────────────────────────────────────────────────────────────────
+# Configure API key expiration dates here for automated alerts
+# Format: {name: date}
+# Example: {"MyAPIKey": date(2026, 12, 31)}
+
+from datetime import date as _date
+
+API_KEY_EXPIRY_DATES: dict = {
+    # Add your API key expiry dates here
+    # "QOS API": _date(2026, 3, 29),  # Uncomment and update as needed
+}
