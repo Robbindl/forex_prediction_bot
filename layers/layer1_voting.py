@@ -41,7 +41,8 @@ class VotingLayer:
 
         if ml_pred is not None:
             # Mark that we have a real ML prediction for the data integrity gate
-            signal.metadata["ml_prediction_real"] = True
+            # Only if confidence is high enough (not momentum fallback)
+            signal.metadata["ml_prediction_real"] = ml_conf > 0.1
 
             ml_direction = "BUY" if ml_pred > 0.5 else "SELL"
             if ml_direction == signal.direction:
@@ -52,7 +53,7 @@ class VotingLayer:
                 signal.reduce(0.05)
                 ml_note = f"ML disagrees (pred={ml_pred:.3f}) -0.05"
         else:
-            # Momentum fallback — mark as not a real model prediction
+            # No prediction at all
             signal.metadata["ml_prediction_real"] = False
             logger.debug(f"[VotingLayer] No ML prediction for {signal.asset} — using fallback")
 

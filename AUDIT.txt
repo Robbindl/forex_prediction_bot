@@ -1,0 +1,1211 @@
+PHASE 5: RUNTIME SIMULATION
+
+I. STARTUP SIMULATION (T=0 → T=180s)
+T=0.000s — python bot.py --balance 30
+STDOUT:
+  ============================================================
+   FOREX PREDICTION BOT — STARTING
+  ============================================================
+  [bot] Validating API keys...
+Internal execution:
+
+config.config imported → load_dotenv() runs → MODEL_DIR.mkdir() creates models/ dir
+config.database imported at module level → create_db_engine() attempts PostgreSQL connection
+SILENT FAILURE RISK #1: If DATABASE_URL is wrong, create_db_engine() retries 5× with 3s delay = 15 seconds of silent blocking before raising. During this time, nothing appears on screen.
+
+ASSUMED ENVIRONMENT for this simulation:
+  - PostgreSQL: connected ✅
+  - Redis: running locally ✅
+  - NEWSAPI_KEY: set ✅
+  - GNEWS_KEY: set ✅
+  - FINNHUB_KEY: set ✅
+  - TWELVEDATA_KEY: set ✅
+  - ITICK_TOKEN: set ✅
+  - TELEGRAM_TOKEN: set ✅
+  - WHALE_ALERT_KEY: not set (common deployment scenario)
+  - WHALE_TELEGRAM_TOKEN: not set
+  - ETHERSCAN_API_KEY: not set
+
+T=0.050s — API Validation
+[bot] API validation passed
+[APIValidation] ✓ Validation complete — 3 warning(s), 0 errors
+WARNINGS LOGGED (not shown on terminal at INFO level):
+  ⚠ WHALE_ALERT_KEY not set
+  ⚠ FINNHUB_KEY not set (contradicts assumption — only if missing)
+  ⚠ TWELVEDATA_KEY not set (same)
+
+T=0.100s — Database Init
+[DB] Connected to PostgreSQL — localhost:5432/trading_bot
+[DB] All tables created / verified
+SILENT ISSUE: init_db() creates ORM-managed tables only. The following tables do NOT exist yet and will not exist until their respective modules call their own DDL:
+
+whale_wallets, whale_balances, whale_movements, whale_profiles
+signal_predictions
+strategy_performance, strategy_optimisation
+
+
+T=0.150s — TradingCore Init
+[TradingCore] Fresh start — balance=$30.00
+[TradingCore] Init — balance=30.0 strategy=voting
+SystemState construction triggers 2 DB queries immediately:
+SELECT * FROM open_positions       → [] (fresh start)
+SELECT strategy_id, asset, pnl FROM trades WHERE ... → [] (fresh start)
+SILENT ISSUE: state: SystemState = SystemState() is a module-level singleton in core/state.py. Any module that imports core.state before bot.py sets up the DB will have attempted these queries already. If config.database imported the engine at its own import, this chain started before init_db() even ran.
+
+T=0.200s — engine.start() — Trading Loop Thread Launched
+[TradingCore] Trading loop started
+Thread TradingCore-loop spawns.
+The thread immediately calls _init_subsystems(). This is NOT yet complete — _engine_ready is not set.
+
+T=0.250s → T=3.000s — Phase 1-11 Startup (main thread continues while trading thread inits)
+Main thread progresses while _init_subsystems() runs in background:
+T=0.3s  [ExStream] Started feeds: ['binance', 'bybit']
+        [ExStream] Redis publisher connected
+        [FundingMonitor] Started — tracking 7 symbols
+        [OIMonitor] Started — tracking 5 symbols
+        [MacroCollector] FRED_API_KEY not set — macro collection disabled
+                         ← SILENT: if FRED_API_KEY absent, Phase 1 macro is silently disabled
+        
+T=0.4s  [WalletTracker] Tracking 4 wallets
+        [WalletTracker] Redis publisher connected
+        [ClusterAnalyzer] Ready
+        [bot] Phase 2 whale intelligence started
+        
+T=0.5s  [OrderFlow] Started — monitoring 5 assets
+        [bot] Phase 3 order flow intelligence started
+        
+T=0.6s  [bot] Phase 4 narrative AI engine ready
+        ← SILENT FAILURE: ingest() has no callers. "ready" means the engine
+          exists but will never receive data.
+        
+T=0.7s  [bot] Phase 5 ready — no lab strategies configured yet
+        [bot] Phase 6 Meta AI engine ready
+        [bot] News event monitor started — Finnhub calendar active
+During _init_subsystems() (background thread T=0.2s → T=1.5s):
+[TradingCore] VotingStrategy + MLPredictor initialised (singletons)
+              ← MLPredictor creates its OWN ModelRegistry instance
+              ← This instance has NO loaded models yet
+              ← registry.py singleton is separate
+
+[Registry] Loaded crypto_classifier from crypto_classifier.joblib
+           ← If file exists from previous run — loaded into registry.py singleton
+           ← predictor.py LOCAL registry still has nothing
+RACE CONDITION #1: _init_subsystems() calls ModelRegistry().load_all() on the registry.py singleton. But _init_subsystems() also creates self._predictor = MLPredictor() which has its own local registry. Both run in the trading thread sequentially (no race between them), but the result is two registries in inconsistent state.
+
+T=1.000s → T=3.000s — Continuation
+T=1.0s  [Monitor] SystemHealthService initialised
+        [bot] Phase 11 system health monitoring ready
+        
+T=1.2s  [bot] PortfolioRiskEngine attached
+        [bot] ExchangeRouter ready — paper adapter registered
+        
+T=1.5s  [bot] ML prediction service started
+        ← subprocess.Popen([sys.executable, "-m", "ml.prediction_service"])
+        ← PredictionServer._init_predictor() runs in new process
+        ← time.sleep(2) in main thread
+        
+T=3.5s  engine.predictor = PredictionClient()
+        ← SILENT FAILURE: stored to engine.predictor (public attr)
+          TradingCore uses engine._predictor (private attr, set in _init_subsystems)
+          PredictionClient is stored to WRONG attribute
+          It will never be called by the trading loop
+        
+T=3.6s  Redis cache upgrade:
+        get_cache(default_ttl=30) → RedisCache(...)
+        _cache_mod.cache = upgraded_cache
+        ← PARTIAL: modules that already imported `cache` object directly
+          still use the old in-process Cache. Only future imports get Redis cache.
+
+T=3.7s — Node.js Gateway
+[Gateway] node_modules missing — running npm install...
+[Gateway] npm install complete
+[Gateway] Started — ws://localhost:8081  (PID 12345)
+or (if Node.js not installed):
+[Gateway] Node.js not found — WebSocket gateway disabled.
+← SILENT: dashboard WebSocket push completely disabled, no error shown to user
+
+T=3.8s — Telegram & Intelligence
+[IntelBot] Disabled — missing .env vars: ['WHALE_TELEGRAM_TOKEN', 'INTELLIGENCE_CHAT_ID']
+[bot] Intelligence Bot (Bot 2) not ready — check WHALE_TELEGRAM_TOKEN in .env
+← SILENT FAILURE: Phase 7 intelligence alerts wired to disabled bot
+  All 15 channels subscribed but alerts go nowhere
+
+[IntelAlerts] Started — monitoring 15 channels
+[IntelAlerts] Subscribed to 15 channels
+← Subscribed but 6 channels (WHALE_*) will never receive messages
+  4 channels (NARRATIVE_*, REDDIT_*, TWITTER_*) will never receive messages
+
+[Monitor] System health monitoring started (telegram_bot=None)
+← SECOND start_monitoring() call
+← self._running already True → start() exits immediately
+← telegram_bot argument DROPPED SILENTLY
+← Health alerts will never fire even if Bot 2 were working
+
+T=4.0s — Command Bot 1
+[Telegram] Bot started — polling
+[bot] Command Bot (Bot 1) started and wired to engine
+[PipelineReporter] Telegram wired
+
+T=4.0s → T=64.0s — engine.wait_until_ready(timeout=60)
+While waiting, _init_subsystems() completes (if it hasn't already):
+T=4.5s  [TradingCore] All subsystems ready
+        [TradingCore] Trading loop entering main loop
+        ← _engine_ready.set() ← wait_until_ready() returns True
+        
+T=64.0s (or earlier) [bot] Engine ready — balance=$30.00
+RACE CONDITION #2: Between engine.start() at T=0.2s and wait_until_ready() returning, the trading loop's first cycle begins. The first _trading_cycle() runs while bot.py is still wiring up Telegram, gateway, whale monitoring. The first cycle sends Telegram open alerts via engine.telegram which might not be set yet.
+Specifically: engine.telegram is set at T=4.0s (Bot 1 wired). _init_subsystems() completes at ~T=4.5s. First trading cycle runs at T=4.5s + 45s = T=49.5s. By then engine.telegram is set. ✅ No actual race in this sequence.
+BUT: _notify_telegram_open(trade) accesses self.telegram. If a position closes during the gap-fill check (offline SL/TP in _check_offline_sl_tp() which runs DURING _init_subsystems() at T~0.5s), Telegram alert fires before engine.telegram is set → if not self.telegram: return → alert silently dropped.
+
+T=64.0s → T=184.0s — AutoTrainer Warmup
+[AutoTrainer] Waiting 120s for OHLCV cache to warm up...
+← During this time, trading loop has been running for ~60s
+← First 2 scan cycles complete with NO trained models
+← All ML predictions are 5-day momentum fallback
+← This is expected and by design ✅
+
+T=184.0s [AutoTrainer] Starting initial model check
+         [AutoTrainer] crypto_classifier stale=True
+         [AutoTrainer] Training crypto_classifier...
+         [AutoTrainer] Got 500 bars for BTC-USD
+         [AutoTrainer] Got 500 bars for ETH-USD
+         [AutoTrainer] Got 500 bars for BNB-USD
+         [AutoTrainer] Got 500 bars for SOL-USD
+         [AutoTrainer] Got 500 bars for XRP-USD
+         SILENCE for ~30s (XGBoost training)
+         [AutoTrainer] ✅ Trained crypto_classifier — acc=0.523 samples=2500
+         ← acc=0.523 (barely above random)
+         ← SILENT FAILURE: 52.3% accuracy model is registered and deployed
+           No quality gate. Model with 50.1% accuracy would also deploy.
+         
+         registry.save("crypto_classifier", model)
+         → saves to registry.py SINGLETON
+         → predictor.py LOCAL registry STILL EMPTY
+         → SILENT FAILURE: model is trained and saved but NEVER used
+
+II. RUNTIME FLOW SIMULATION (Steady State, T=200s)
+Trading Cycle Simulation
+Setup: 2 open positions (BTC-USD BUY @ $80,000, EUR/USD BUY @ 1.0850)
+T=200.000s — TradingCore._trading_cycle() begins
+│
+├── state.check_day_rollover() → False (same day) ✅
+│
+├── paper_trader.update_positions(prices)
+│   │
+│   ├── For BTC-USD:
+│   │   fetcher.get_real_time_price("BTC-USD", "crypto")
+│   │   → cache hit (15s TTL) if recent, or:
+│   │   → iTick /crypto/quote → (price=81200.5, source="iTick")
+│   │   → cache.set("rt:BTC-USD", (81200.5, "iTick"), ttl=15)
+│   │   
+│   │   _check_exit(pos, 81200.5):
+│   │   → pnl = PositionSizer.pnl("BTC-USD", "crypto", 80000, 81200.5, 1.0, "BUY")
+│   │   → lots = 1.0/1 = 1.0, pips = (81200.5-80000)/0.01 = 120050
+│   │   → pnl = 1.0 × 120050 × 0.01 = $1,200.50 ← on a $30 account this is +4000%
+│   │   
+│   │   weekend guard: weekday → passes ✅
+│   │   trailing stop at 90% TP progress → check...
+│   │   SL/TP not hit → pos["pnl"] = 1200.50, return None
+│   │
+│   └── redis_broker.publish_price("BTC-USD", 81200.5, "crypto") ✅
+│
+├── _generate_signals() [ThreadPoolExecutor, 6 workers]
+│   │
+│   ├── AssetRegistry.all_assets() → 18 assets
+│   ├── Filter: BTC-USD has open position → skip
+│   │         EUR/USD has open position → skip
+│   │         All others: check cooldowns
+│   │
+│   ├── For GBP/USD (example candidate):
+│   │   _process_asset(("GBP/USD", "forex"))
+│   │   │
+│   │   ├── Market hours check: weekday 14:00 UTC → London session → passes ✅
+│   │   │
+│   │   ├── fetcher.get_ohlcv("GBP/USD", "forex", "15m", 500)
+│   │   │   → cache miss → iTick /forex/kline
+│   │   │   → 500 rows returned ✅
+│   │   │   → cache.set("ohlcv:GBP/USD:15m", df, ttl=300)
+│   │   │
+│   │   ├── fetcher.get_real_time_price("GBP/USD", "forex")
+│   │   │   → iTick /forex/quote → (1.2650, "iTick") ✅
+│   │   │
+│   │   ├── MLPredictor.predict("GBP/USD", "forex", df)
+│   │   │   → _build_features(df) → 10-feature array ✅
+│   │   │   → registry.get("forex_classifier")
+│   │   │   → 🔴 RETURNS None (local registry never loaded)
+│   │   │   → _momentum_fallback(df)
+│   │   │   → close.iloc[-6] = 1.2635, close.iloc[-1] = 1.2650
+│   │   │   → ret5 = (1.2650-1.2635)/1.2635 = +0.0012
+│   │   │   → prob_up = 0.5 + 0.0012*5 = 0.506
+│   │   │   → conf = 0.0012*10 = 0.012
+│   │   │   → returns (0.506, 0.012) ← near-zero confidence
+│   │   │
+│   │   └── VotingStrategy.generate("GBP/USD", "GBP/USD", "forex", df)
+│   │       ├── RSIStrategy: RSI=62 → not at threshold → None
+│   │       ├── MACDStrategy: histogram -0.0003→-0.0001 (not crossing zero) → None
+│   │       └── BollingerStrategy: price inside bands → None
+│   │       → all None → VotingStrategy returns None
+│   │       → SILENT: no signal for GBP/USD this cycle
+│   │
+│   ├── For SOL-USD (example, no existing position):
+│   │   _process_asset(("SOL-USD", "crypto"))
+│   │   ├── fetcher.get_ohlcv("SOL-USD", "crypto", "15m", 500)
+│   │   │   → cache hit ✅
+│   │   ├── MLPredictor: fallback → (0.52, 0.04)
+│   │   └── VotingStrategy:
+│   │       ├── RSI=28 (prev), RSI=31 (current) → BUY signal
+│   │       │   → confidence = 0.60 + (30-28)/30 = 0.667
+│   │       ├── MACD: histogram negative → no signal
+│   │       └── Bollinger: price at lower band → BUY
+│   │           → confidence = 0.60 + small = 0.62
+│   │   
+│   │   min_votes=1 satisfied (2 votes for BUY) ✅
+│   │   → Signal(SOL-USD, BUY, conf=0.644)
+│   │   → context built with sentiment, funding_bias, oi_signal
+│   │   → return (Signal, context)
+│   │
+│   └── Returns [(Signal(SOL-USD, BUY, 0.644), context), ...]
+│
+└── Pipeline.run(Signal(SOL-USD, BUY, 0.644), context)
+Signal Pipeline Simulation for SOL-USD BUY
+LAYER 1 — VotingLayer
+  conf_before = 0.644
+  MIN_CONFIDENCE_SCORE = 0.70 → signal below minimum
+  signal.reduce(0.08) → conf = 0.564
+  
+  ml_pred = context["ml_prediction"] = 0.52 (fallback)
+  ml_direction = "BUY" (0.52 > 0.5) → agrees with BUY
+  signal.boost(0.05) → conf = 0.614
+  signal.metadata["ml_prediction_real"] = True ← set even for fallback!
+  
+  ⚠️ SILENT ISSUE: ml_prediction_real = True even though this is
+     momentum fallback, not a trained model
+  
+  Journal: PASS, conf 0.644 → 0.614
+  return signal ✅
+
+LAYER 2 — QualityLayer
+  entry=157.50, sl=155.00, tp=161.25
+  risk = |157.50-155.00| = 2.50
+  reward = |161.25-157.50| = 3.75
+  rr = 3.75/2.50 = 1.50 ✅ (above 1.2)
+  
+  spread = 0.10 (from iTick)
+  spread_pct = 0.10/157.50 = 0.000635 (0.063%) → well below 0.5%
+  liq_penalty = 0.000635/0.003 * 0.05 = 0.0106
+  signal.reduce(0.0106) → conf = 0.603
+  
+  Journal: PASS, conf 0.614 → 0.603
+  return signal ✅
+
+LAYER 3 — RegimeLayer
+  _detect_regime(df):
+    close = df["close"], len=500
+    sma20.iloc[-1] = 156.8, sma50.iloc[-1] = 154.2
+    close.iloc[-1] = 157.5
+    157.5 > 156.8 > 154.2 → trending_up
+    vol = returns.std() * sqrt(24192) = ~0.85 (85% annualised)
+    → vol > 0.4 → "volatile" (crypto easily exceeds 40%)
+    
+  regime = "volatile"
+  signal.reduce(0.10) → conf = 0.503
+  
+  But wait: signal.direction="BUY", allowed={"trending_up","ranging","unknown"}
+  "volatile" NOT in allowed → reduce(0.08) → conf = 0.423
+  
+  imbalance = order_flow.get_imbalance("SOLUSDT") → 0.15 (mild BUY)
+  direction_sign = +1 (BUY)
+  0.15 * 1 = 0.15 < 0.30 → no additional boost
+  
+  signal.metadata["regime"] = "volatile"
+  signal.metadata["orderflow_applicable"] = True
+  signal.metadata["orderflow_imbalance"] = 0.15
+  
+  Journal: PASS, conf 0.603 → 0.423
+  ⚠️ DOUBLE PENALTY: both volatile AND non-allowed-regime penalties applied
+  return signal ✅
+
+LAYER 4 — SessionLayer
+  utc_hour = 14 → "london" session
+  _is_market_open("crypto") → True (24/7) ✅
+  
+  news_state = news_monitor.get_event_state("crypto") → "clear"
+  (No FOMC happening)
+  
+  session boost: _SESSION_BOOST["london"] = 0.04
+  signal.boost(0.04) → conf = 0.463
+  ← ⚠️ CRYPTO gets London session boost (24/7 market)
+  
+  signal.metadata["session"] = "london"
+  Journal: PASS, conf 0.423 → 0.463
+  return signal ✅
+
+LAYER 5 — SentimentLayer
+  score = context.get("sentiment_score") = 0.0
+  ← _build_context() set this via _fetch_sentiment("SOL-USD", "crypto")
+  ← _fetch_sentiment called SentimentAnalyzer.get_comprehensive_sentiment("SOL-USD")
+  ← This made HTTP calls to NewsAPI/GNews at context build time
+  ← Assumed score = 0.15 (slightly bullish)
+  
+  aligned_score = 0.15 * 1 (BUY) = 0.15
+  0.15 < 0.40 → no boost
+  0.15 > -0.30 → no reduce
+  
+  _get_narrative_data("SOL-USD"):
+  → narrative_ai.get_narrative_scores() → {} (ingest never called)
+  → dominant = None, nar_strength = 0.0
+  → SILENT: no narrative contribution
+  
+  reddit_score = _fetch_reddit_sentiment("SOL-USD")
+  → RedditWatcher() [creates new instance, not singleton]
+  ← ⚠️ SILENT ISSUE: non-singleton creation, bypasses _initialized guard
+  → rw.get_asset_sentiment("SOL-USD")
+  → fetch from r/solana, r/CryptoCurrency, r/CryptoMarkets
+  → rate_limited_request called → waits 8s if recent request
+  ← BLOCKS pipeline thread for up to 8 seconds
+  → score = 0.10 (slightly bullish)
+  
+  reddit_aligned = 0.10 * 1 = 0.10 < 0.30 → no boost
+  
+  signal.metadata["sentiment_score"] = 0.15
+  signal.metadata["reddit_score"] = 0.10
+  🔴 signal.metadata["sentiment_sources"] NOT SET
+  
+  Journal: PASS, conf 0.463 → 0.463 (no change)
+  return signal ✅
+
+LAYER 6 — WhaleLayer
+  profile.use_whale_data = True (crypto) ✅
+  
+  _get_recent_whales("SOL-USD"):
+  → scan _WHALE_CACHE for last 30 min
+  → WHALE_ALERT_KEY not set → WhaleAlertManager.api = None
+  → no API alerts → _WHALE_CACHE empty
+  
+  _get_onchain_data("SOL-USD"):
+  → _ONCHAIN_CACHE is always empty (ingest_onchain_event never called)
+  → returns {"phase2": "no_recent_activity"}
+  
+  total = 0 AND phase2 = "no_recent_activity"
+  → signal.metadata["whale_skipped"] = True
+  → PASS neutral
+  
+  Journal: PASS, conf 0.463 → 0.463
+  return signal ✅
+
+LAYER 7 — CalibrationLayer
+  spread/price = 0.000635 < 0.003 → no kill
+  liq_penalty = 0.000635/0.003 * 0.05 = 0.0106
+  signal.reduce(0.0106) → conf = 0.452
+  
+  conf = 0.452 <= MIN_FINAL_CONFIDENCE (0.55)
+  → signal.kill("final conf 0.452 below floor 0.55", 7)
+  → return None
+  
+  🔴 SIGNAL KILLED: Layer 7 confidence floor
+  
+  Journal: KILLED, conf 0.463 → 0.452 → KILLED
+Result: SOL-USD BUY signal KILLED at Layer 7 due to accumulated penalties:
+Start:    0.644
+L1 penalty (below min):  -0.080 → 0.564
+L1 ML boost:             +0.050 → 0.614
+L2 spread penalty:       -0.011 → 0.603
+L3 volatile penalty:     -0.100 → 0.503
+L3 regime conflict:      -0.080 → 0.423
+L4 London boost:         +0.040 → 0.463
+L5 no change:             0.000 → 0.463
+L6 no change:             0.000 → 0.463
+L7 spread penalty:       -0.011 → 0.452
+L7 floor check: 0.452 < 0.55 → KILLED
+Data Integrity Gate: Not reached (signal killed at L7)
+
+III. FAILURE SCENARIOS
+Scenario A: Redis Goes Down Mid-Session
+T=600s — Redis server crashes
+
+ExchangeStreamManager._on_event():
+  redis.publish() → ConnectionError
+  self._redis_ok = False  ← PERMANENT
+  ← ALL exchange event publishing silently stops
+  ← No reconnection attempt ever made
+
+order_flow._subscribe_loop():
+  ps.listen() → connection dropped
+  → exception caught → time.sleep(10) → reconnect
+  ← Order flow reconnects ✅
+
+LiquidationStream._subscribe():
+  Same reconnect pattern ✅
+
+IntelligenceAlertService._subscribe_loop():
+  Exception caught → time.sleep(30) → spawns NEW thread
+  ← Thread proliferation if Redis stays down
+
+TradingCore._trading_cycle():
+  redis_broker.publish_signal() → _ensure_connected() → False
+  → silent no-op, no error logged
+  ← Dashboard stops updating (no Redis push)
+  ← _bg_refresh_redis() drops → falls back to polling
+  ← _bg_refresh_fallback() starts → runs full pipeline per asset per TTL
+  ← API load multiplies
+
+dashboard._bg_refresh_fallback():
+  core.get_signal_for_asset("BTC-USD") called every 30s
+  → full pipeline → SentimentAnalyzer HTTP calls
+  → RedditWatcher 8s blocking
+  ← Dashboard becomes very slow
+
+SILENT FAILURE: No alert to operator that Redis is down
+SILENT FAILURE: ExchangeStreamManager permanently silenced
+                (never reconnects Redis publisher)
+
+Scenario B: First Trading Cycle With Open Positions on Restart
+Bot was offline for 6 hours. BTC-USD BUY was open.
+BTC dropped from $80,000 to $74,000 (SL was at $78,000 → should have hit)
+
+T=0s — bot.py starts
+T=0.5s — _init_subsystems() → restore_position(btc_position) ✅
+T=0.6s — _check_offline_sl_tp()
+  → yf.Ticker("BTC-USD").history(period="7d", interval="5m")
+  → iterates bars from open_time to now
+  → bar at T-5h: low=77800 < sl=78000 → BREACH FOUND
+  → pnl = (78000-80000) * 1.0 = -$2,000 ← on a $30 account = -6667%
+  → state.close_position(trade_id, 78000, "Stop Loss (offline)", -2000)
+  → state._balance = 30 + (-2000) = -$1,970 ← NEGATIVE BALANCE
+  
+  SILENT FAILURE: balance is now -$1,970
+  No alert fired. Bot continues.
+  
+  risk_manager.update_balance(-1970) ← negative balance
+  DailyLossGuard._initial = -1970
+  DailyLossGuard.check(daily_pnl=-2000):
+    loss_pct = 2000/1970 * 100 = 101.5% ≥ 5%
+    return (False, "Daily loss limit hit")
+  
+  BUT validate_signal() is NEVER called in _execute_signal()
+  → Trading continues despite hitting loss limit
+  
+  Telegram close alert fired → but engine.telegram not set yet at T=0.6s
+  → if not self.telegram: return → SILENT: no close alert sent
+
+Scenario C: Sentiment API Rate Limit During Peak Hours
+9:30 AM EST — NYSE opens, 18 assets all need sentiment refresh simultaneously
+
+6 concurrent signal generation threads each call:
+  _build_context() → _fetch_sentiment(asset, category)
+  → SentimentAnalyzer.get_comprehensive_sentiment(asset)
+  → _NewsSentiment.get(asset) → checks cache
+  → cache miss for 6 different assets simultaneously
+  → 6 × requests to NewsAPI
+
+NewsAPI free plan: 100 requests/day
+6 simultaneous requests → all succeed (if under daily limit)
+
+BUT: if daily limit reached:
+  → NewsAPI returns 426 Too Many Requests
+  → _NewsSentiment._fetch_articles() returns []
+  → score = 0.0 for all assets
+  → ALL signals get sentiment_score = 0.0
+  SILENT: no error logged, sentiment silently returns neutral
+
+Pipeline runs with score=0.0:
+  Layer 5: aligned_score = 0.0 → no adjustment
+  → signals proceed without any news sentiment contribution
+  → data integrity gate: sentiment_sources still not set → same as always
+
+SILENT FAILURE: Operator cannot distinguish "no news today" from "API limit hit"
+
+Scenario D: WhaleAlertManager Singleton Re-init
+SentimentAnalyzer.__init__() runs (first Layer 5 call):
+  from whale_alert_manager import WhaleAlertManager
+  self._whale_mgr = WhaleAlertManager()
+  
+WhaleAlertManager.__new__(cls):
+  if cls._instance is not None:
+    return cls._instance  ← Returns existing singleton
+  cls._instance = super().__new__(cls)
+  return cls._instance
+
+WhaleAlertManager.__init__(self):
+  ← No "_initialized" guard
+  ← RUNS AGAIN on the existing singleton
+  self.on_alert = None  ← OVERWRITES the bot.py callback!
+  self.api = WhaleAlertAPI(api_key)
+  self.twitter_watcher = TwitterWhaleWatcher()  ← new instance
+  self.telegram_watcher = TelegramWhaleWatcher()  ← new instance
+  
+RESULT:
+  bot.py had set: _whale_mgr.on_alert = _on_whale_alert
+  After SentimentAnalyzer construction: _whale_mgr.on_alert = None
+  → All future whale alerts from WhaleAlertAPI are SILENTLY DROPPED
+  → Layer 6 _WHALE_CACHE stops receiving alerts
+  → Whale intelligence becomes permanently silent
+
+TRIGGER: First pipeline run with crypto asset → Layer 5 → _get_analyzer()
+         → SentimentAnalyzer() → WhaleAlertManager() → reset
+
+SILENT FAILURE: No error, no log, whale tracking appears to work but callback=None
+
+Scenario E: Alpha Vantage 25 req/day Exhaustion
+System startup, first pass of all 18 assets, no cache:
+
+DataFetcher.get_ohlcv("GC=F", "commodities", "15m", 500):
+  → iTick tries GC=F... mapped to (XAUUSD, GB) ✅
+  → Returns 500 bars
+
+DataFetcher.get_ohlcv("SI=F", "commodities", "15m", 500):
+  → iTick tries SI=F... mapped to (XAGUSD, GB) ✅
+  → Returns 500 bars
+
+DataFetcher.get_ohlcv("CL=F", "commodities", "15m", 500):
+  → iTick: CL=F not in _ITICK_COMMODITY_MAP (only XAUUSD, XAGUSD)
+  → iTick returns None
+  → TwelveData: category "commodities" → _TD_COMMODITY_MAP = {} → None
+  → Alpha Vantage: asset="CL=F" → _AV_COMMODITY_MAP["CL=F"] = "WTI"
+    BUT av_interval = "15min" → CL=F intraday → returns None (AV doesn't have this)
+  → yfinance: _yf_symbol("CL=F", "commodities") = "CL=F" ✅
+    → history(period="60d", interval="15m") → 500 bars ✅
+
+THEN: 6 ThreadPoolExecutor workers run get_ohlcv for all 18 assets simultaneously
+  → Multiple Alpha Vantage calls hit concurrently
+  → AV free plan: 25 requests/day = ~1 per hour
+
+If AV exhausted (after 25 calls):
+  → "Thank you for using Alpha Vantage" response
+  → _fetch_av_commodity returns None
+  → Falls through to yfinance ✅ (usually works)
+  SILENT: AV exhaustion silently falls back, no operator alert
+
+Scenario F: Daily Optimiser vs Trading Loop Contention
+T = 03:00 UTC — DailyOptimiser fires
+  pipeline_reporter._run_daily_optimisation()
+  → For each of 12 assets (4 categories × 3 assets):
+    → optimize_strategy(base_config, param_grid={rsi_period:[10,14,21], stop_mult:[1.0,1.5,2.0]})
+    → 9 combinations × 12 assets = 108 BacktestEngineV2 runs
+    → Each run: 500 bars × strategy.generate() per bar = 500 evaluations
+    → time.sleep(2) between assets = 24 seconds minimum
+    → Total: ~10-30 minutes
+
+CONCURRENT:
+  Trading loop also runs every 45s:
+  → _generate_signals() → pipeline.run() → pipeline_reporter.report()
+  → pipeline_reporter._run_backtest() (per-signal backtest)
+  
+  Both call _get_backtest_result() which uses _backtest_cache:
+  _cache_lock = threading.Lock()
+  → Properly locked ✅
+
+  BUT: BacktestEngineV2.run() creates VotingStrategy() instances per run
+  → 108 new VotingStrategy instances → each loads LIVE_STRATEGY_CONFIGS
+  → 108 × _load_live_bridge_strategies() calls → all no-op (empty list)
+  
+  During optimisation, DataFetcher.get_ohlcv() called 12 times
+  → Cache TTL = 300s → cache hits for recently used assets ✅
+  → Fresh assets: 12 API calls during optimisation
+
+SILENT FAILURE: 30-minute daily optimisation runs during early morning
+  → All optimisation results use 1-percent risk sizing (not MT5 lots)
+  → Sharpe ratios 9.8× too low (wrong annualisation)
+  → "Best" strategy selected by pipeline is based on wrong metrics
+  → DailyOptimiser silently makes suboptimal decisions every day
+
+IV. RACE CONDITIONS AND ASYNC ISSUES
+Race 1: PipelineReporter module-level instantiation
+pipeline_reporter.py → reporter = PipelineReporter() runs at import time
+PipelineReporter.__init__():
+  → _init_redis() ← connects Redis
+  → _init_db() ← creates 2 tables, runs DDL
+  → _start_daily_optimiser() ← starts DailyOptimiser background thread
+
+This happens when core/pipeline.py imports pipeline_reporter.
+core/pipeline.py is imported by core/engine.py.
+core/engine.py is imported by bot.py at line ~30.
+
+TIMING: PipelineReporter initialises BEFORE:
+  - init_db() is called (tables might not exist for strategy_performance)
+  - _CORE_INSTANCE is set
+  - Telegram is wired
+
+DailyOptimiser thread starts at T~0.05s
+First optimisation scheduled for 3AM UTC
+If time is already past 3AM: first run in ~24h ✅
+If time is near 3AM (e.g., 2:55AM restart): might run in 5 minutes
+  with no engine singleton, no fetcher → "No fetcher available" logged
+  SILENT FAILURE: first daily optimisation silently skipped
+Race 2: _sig_store concurrent read/write
+Background thread _bg_refresh_redis():
+  Reads from Redis 'signals' channel
+  For each message: _store(asset, sig)
+  → with _sig_lock: _sig_store[asset] = sig
+
+Flask request thread api_signals_live():
+  with _sig_lock:
+    sigs = list(_sig_store.values()) ← correct, locked ✅
+
+Flask request thread api_command_center():
+  _sig_store accessed WITHOUT _sig_lock at several points
+  e.g.: sigs = list(_sig_store.values()) ← NO LOCK
+  
+RACE: _store() modifies _sig_store while api_command_center reads it
+  → Python dict operations are GIL-protected for single ops
+  → list(_sig_store.values()) is multiple ops under GIL
+  → In CPython this is likely safe in practice but not formally guaranteed
+Race 3: TelegramCommander event loop vs trading thread
+TelegramCommander runs in its own thread with its own asyncio event loop.
+bot.py starts it at T~4.0s.
+
+Trading thread calls _notify_telegram_open(trade) at T~50s (first trade):
+  target = getattr(self.telegram, "bot", self.telegram)
+  target.alert_trade_opened(trade)
+  
+TelegramCommander.alert_trade_opened(trade):
+  self.send_message(text, ...)
+  → asyncio.run_coroutine_threadsafe(_send(), self._loop)
+  
+If self._loop not yet running (startup race):
+  → run_coroutine_threadsafe raises RuntimeError "event loop is closed/not running"
+  → caught by outer try/except in _notify_telegram_open → logged at debug
+  SILENT FAILURE: first trade alert never sent
+  
+In steady state: loop is running ✅
+Race 4: SystemState._persist_json() on every cooldown check
+TradingCore._generate_signals() runs every 45s:
+  For each of 18 assets: state.is_cooling_down(canonical_asset)
+  
+SystemState.is_cooling_down():
+  expiry = self._cooldowns.get(canonical_asset)
+  if now >= expiry:
+    del self._cooldowns[canonical_asset]
+    self._persist_json()  ← FILE WRITE on EVERY expired cooldown check
+    return False
+
+18 assets × potential expired cooldowns = up to 18 JSON file writes per cycle
+Each write uses tempfile + os.replace (atomic) ✅ but:
+  → All writes happen inside _lock (RLock)
+  → 18 sequential file writes while lock held
+  → Any other operation needing _lock (add_position, close_position) blocks
+
+UNDER LOAD: If 5 positions close simultaneously (e.g., market crash)
+  + 18 cooldown checks happening
+  → state._lock contention between close_position() and is_cooling_down()
+  → close_position() may wait for up to 18 JSON write cycles
+  → on_trade_closed callback delayed
+  → balance update delayed
+  → Telegram alert delayed
+Race 5: WhaleAlertManager singleton re-init (repeated)
+The WhaleAlertManager singleton re-init from Scenario D is triggered:
+  Every time _get_analyzer() is called fresh (first call per Layer 5 init)
+  
+  _get_analyzer() in layer5_sentiment.py:
+    global _sa_instance
+    if _sa_instance is not None: return _sa_instance
+    with _sa_lock:
+      if _sa_instance is None:
+        _sa_instance = SentimentAnalyzer()  ← ONE TIME ONLY ✅
+  
+  So SentimentAnalyzer() is only created once.
+  WhaleAlertManager() called once during that creation.
+  on_alert callback overwritten ONCE, not repeatedly.
+  
+  TIMING: bot.py sets on_alert at T~130s (after wait_until_ready)
+  First Layer 5 run: T~130s + 45s = T~175s
+  
+  IF SentimentAnalyzer is created BEFORE bot.py sets on_alert:
+  → on_alert = _on_whale_alert (set by bot.py at T~130s)
+  → SentimentAnalyzer.__init__ runs at T~175s → WhaleAlertManager().__init__
+  → on_alert = None ← OVERWRITES bot.py's callback
+  
+  If SentimentAnalyzer is created AFTER bot.py sets on_alert:
+  → Same result (WhaleAlertManager.__init__ resets on_alert to None)
+  
+  Either way: after first Layer 5 execution, on_alert is always None.
+  SILENT FAILURE: whale callback permanently broken after first pipeline run.
+
+V. SILENT FAILURES CATALOGUE
+#What Appears to WorkWhat Actually HappensDetection DifficultyS1ML prediction active5-day momentum fallback always usedHard — logs show "ML" but fallbackS2Narrative AI "ready"ingest() never called → always empty scoresHard — no error, just 0 valuesS3On-chain whale tracking_ONCHAIN_CACHE always emptyHard — Layer 6 logs "phase2: no_recent_activity"S4Liquidation cascades monitoredsize_usd=0 always → cascade_usd=0 → never firesMedium — counter stays 0S5Portfolio risk protectionevaluate() never calledEasy — code inspection onlyS6Daily loss halt protectionvalidate_signal() never calledEasy — code inspection onlyS7Phase 11 health alerts to Bot 2Second start_monitoring() call no-opHard — startup logs show "started"S8Sentiment sources countedsentiment_sources never set → always 0Hard — data integrity gate blindS9OI classification signalsPrice direction never considered → wrong signalMedium — always "TREND" or "REVERSAL" with no basisS10Partial TP managementOnly final TP level ever closes positionHard — position appears to track TP levelsS11WhaleAlert callback activeRe-init from SentimentAnalyzer overwrites to NoneVery Hard — timing-dependentS12Backtest Sharpe meaningfulsqrt(252) on 15m bars → 9.8× too smallMedium — values look plausibleS13Strategy optimisation meaningfulWrong annualisation + 1% risk vs MT5 lotsHard — numbers look reasonableS14redis_cache.clear() safeflushdb() wipes entire RedisEasy — if ever calledS15ExchangeStream reconnects_redis_ok=False never recoversMedium — stream continues, Redis doesn'tS16Crisis regime detectionNever triggers (macro_impact key missing)Hard — regime always "ranging"S17Volatility regime detectionUnreachable on 15m with sqrt(252)Medium — always returns "ranging/trending"S18AV news fallback for news monitortime=now on AV headlines blocks all tradingHard — only triggers when Finnhub failsS19Offline gap-fill alerts via Telegramengine.telegram not set at gap-fill time → droppedHard — close appears loggedS20OilPrice OHLCV for CL=F1-row DataFrame → meaningless indicatorsMedium — CL=F signals always fail pipelineS21/api/signals/live workingNameError: _fetcher on every requestEasy — first request failsS22Personality/Robbie learningon_trade_closed calls personality.record_trade() → DB insert → ✅ actually worksN/A (this one works)S23PredictionClient subprocessStored to engine.predictor not engine._predictorHard — subprocess starts, client connects, but never queriedS24Reddit singleton_fetch_reddit_sentiment() in Layer 5 creates new instance bypassing _initialized guardHard — appears to work
+
+VI. STARTUP BEHAVIOR SUMMARY
+T=0s    → T=4s:   Database connected, engine init, Phase 1-11 services started
+                  ⚠️ 8+ services start silently broken (dead callbacks, wrong keys)
+T=4s    → T=64s:  Telegram wired, engine waiting to be ready
+                  ⚠️ First gap-fill alerts SILENTLY dropped (telegram not set)
+T=64s   → T=130s: Engine ready, trading loop running, first cycles begin
+                  ⚠️ All ML predictions are momentum fallback (model not loaded)
+T=130s  → T=175s: AutoTrainer waiting (120s warmup)
+                  ⚠️ First pipeline run: SentimentAnalyzer constructed
+                  ⚠️ WhaleAlertManager.__init__ re-runs → on_alert = None → whale callback dead
+T=175s  → T=300s: AutoTrainer fetching OHLCV, training
+                  ⚠️ Model saves to registry.py singleton
+                  ⚠️ predictor.py LOCAL registry still empty → fallback forever
+T=300s+:          Steady state — all systems "running"
+                  ⚠️ 24 silent failures catalogued above all permanently active
+                  ✅ Actual trading works (signals generated, positions opened/closed)
+                  ✅ Telegram trade alerts work (after T=64s)
+                  ✅ Dashboard works (except /api/signals/live → NameError)
+                  ✅ Basic risk limits work (Layer 7 conf floor, category caps, max positions)
+
+READY FOR PHASE 6phase 624 MarThinking about clarifying the context and scope of "phase 6"Thinking about clarifying the context and scope of "phase 6"PHASE 6: COMPLETE FORENSIC AUDIT REPORT
+
+EXECUTIVE SUMMARY
+Project: forex_prediction_bot-main
+Languages: Python 3.11 (115 files), Node.js (1 file), HTML/Jinja2 (10 templates)
+Total Lines Analyzed: ~50,000 across 99+ files
+Analysis Phases Completed: 5 full phases (Indexing → Architecture → File Analysis × 12 batches → Execution Trace → Runtime Simulation)
+Verdict
+The bot is architecturally ambitious but operationally broken in its current state. It will start, run, open and close paper trades — but the majority of its intelligence systems are silently disconnected. The ML system always uses a 5-day momentum fallback. The on-chain whale intelligence, narrative AI, and liquidation cascade detection never produce output. All risk protection layers (daily loss halt, portfolio drawdown halt) are wired but never invoked. The position sizing is calibrated for a $10,000+ account applied to a $30 balance, creating thousands-of-percent leverage. One critical NameError crashes the most-visited dashboard endpoint on every request.
+
+SECTION 1: CRITICAL DEFECTS (System-Breaking)
+These issues prevent core functionality or create immediate financial/security risk.
+
+C-01 — ML Prediction Never Uses Trained Models
+Files: ml/predictor.py:55, ml/trainer.py:40, ml/registry.py
+Severity: CRITICAL
+AutoTrainer saves trained models to the module-level registry singleton in ml/registry.py. MLPredictor uses its own separate ModelRegistry() instance created locally in ml/predictor.py. These two instances never share state. registry.get(model_key) in the predictor always returns None because the local registry never calls load_all() after training completes.
+Effect: Every single ML prediction in the live system is the 5-day momentum fallback (_momentum_fallback()). The XGBoost classifier trained by AutoTrainer is saved to disk and registered — but never used. The dashboard, logs, and Telegram messages all refer to "ML predictions" that are actually naive price momentum.
+Fix:
+python# ml/predictor.py — remove local registry, use the shared one
+from ml.registry import registry  # use the module singleton
+
+class MLPredictor:
+    def _predict_inner(self, asset, category, df):
+        features = _build_features(df)
+        if features is None:
+            return 0.5, 0.0
+        model = registry.get(f"{category}_classifier")
+        ...
+
+C-02 — Feature Count Mismatch: Trainer Trains on 6, Predictor Expects 10
+Files: ml/trainer.py:_build_training_data(), ml/predictor.py:_build_features()
+Severity: CRITICAL
+AutoTrainer._build_training_data() produces 6 features: ret1, ret5, vol5, sma5, sma20, hl_pct. MLPredictor._build_features() produces 10 features: ret1, ret5, ret10, vol5, vol20, sma5, sma20, sma50, hl_pct, oc_pct. Even if C-01 is fixed, calling model.predict_proba(features_10) on a model trained with features_6 raises ValueError: X has 10 features but XGBClassifier is expecting 6 features.
+Fix: Consolidate into one canonical feature-building function used by both:
+python# ml/features.py — single source of truth
+def build_features(df: pd.DataFrame) -> Optional[np.ndarray]:
+    """6-feature set used for both training and prediction."""
+    # ret1, ret5, vol5, sma5, sma20, hl_pct
+    ...
+
+C-03 — Dashboard NameError: _fetcher Undefined
+File: dashboard/web_app_live.py:api_signals_live():673
+Severity: CRITICAL
+api_signals_live() references _fetcher.get_real_time_price() but _fetcher is never defined at module scope. The module defines _fetcher_local and _get_fetcher() but the endpoint uses neither. Every request to /api/signals/live raises NameError: name '_fetcher' is not defined and returns HTTP 500. This is the primary data endpoint for the command center dashboard.
+Fix:
+python# Line 673 in api_signals_live()
+fetcher = _get_fetcher()   # use the existing helper
+_cp, _ = fetcher.get_real_time_price(...)
+
+C-04 — Unauthenticated WebSocket Redis Publish Backdoor
+File: gateway/server.js:~195
+Severity: CRITICAL (Security)
+Any browser or HTTP client connecting to ws://localhost:8081 can send:
+json{"action": "publish", "channel": "signals", "data": {"asset": "BTC-USD", "direction": "BUY", ...}}
+This publishes arbitrary data to the Redis signals channel, which the dashboard subscribes to and displays as live signals. If port 8081 is exposed to the network (common in cloud deployments), an attacker can inject false trading signals into the live dashboard. There is no authentication, origin check, or message type filter.
+Fix:
+javascript// Reject publish actions from WebSocket clients entirely, or require a secret
+if (msg.action === 'publish') {
+    // Only allow from localhost or authenticated clients
+    ws.close(1008, 'Publishing not allowed');
+    return;
+}
+
+C-05 — Alpha Vantage Fallback Blocks All Trading
+File: data_ingestion/news_event_monitor.py:_fetch_alphavantage():~185
+Severity: CRITICAL
+When Finnhub economic calendar fails, the fallback uses Alpha Vantage news headlines — but sets "time": now for every headline. NewsEventMonitor._fetch_and_update() then classifies all these headlines as currently active events (0 ≤ mins_ago < 15). Layer 4 kills every signal for affected categories with "HIGH impact event active." If Finnhub is unavailable and Alpha Vantage is configured, every non-crypto signal is silently killed indefinitely.
+Fix:
+python# Don't use AV news articles as pseudo-events with time=now
+# Either discard the AV fallback entirely or mark articles as "informational" 
+# only with no blocking state
+def _fetch_alphavantage(self) -> Optional[List[Dict]]:
+    return None  # Disable broken fallback until properly implemented
+
+C-06 — Position Sizing: 1000–14,000× Leverage on $30 Account
+Files: risk/position_sizer.py:MT5_SPECS, execution/paper_trader.py:execute_signal()
+Severity: CRITICAL
+MT5_SPECS is calibrated for a JustMarkets/TIOmarkets $10,000+ account. Applied to the default $30 balance:
+
+EUR/USD: 400,000 units = $432,000 notional (14,400× leverage)
+BTC-USD: 1.0 BTC = $80,000 notional (2,667× leverage)
+GC=F (Gold): 20 oz = $4,700 notional (157× leverage)
+
+A 1% adverse move on EUR/USD = -$4,320 loss on a $30 account = -14,400% return. The close_position path has no balance floor — balance goes deeply negative and the bot continues trading.
+Fix (option A — scale to account size):
+python# In PositionSizer.calculate()
+ACCOUNT_SCALE = max(1.0, account_balance / 10_000)
+lots = _confidence_lots(base_lots, confidence) * ACCOUNT_SCALE
+Fix (option B — use percentage risk):
+python# 1% risk per trade regardless of asset
+risk_usd = account_balance * 0.01
+sl_dist_in_price = abs(entry_price - stop_loss)
+lots = risk_usd / (sl_dist_in_price / pip * pip_val)
+
+C-07 — All Risk Guards Bypassed in Execution
+Files: core/engine.py:_execute_signal(), risk/manager.py:validate_signal(), risk/portfolio_risk.py:evaluate()
+Severity: CRITICAL
+Three critical risk checks are never invoked:
+python# core/engine.py:_execute_signal() — current state
+def _execute_signal(self, signal):
+    if self.state.open_position_count() >= MAX_POSITIONS: return False
+    if cat_open >= CATEGORY_CAPS.get(cat, 99): return False
+    trade = self._paper_trader.execute_signal(...)  # goes straight here
+    # MISSING: risk_manager.validate_signal() — daily loss halt
+    # MISSING: portfolio_risk.evaluate()       — drawdown halt
+    # MISSING: exchange_router.submit()        — routing layer
+Fix:
+pythondef _execute_signal(self, signal):
+    # Existing position count checks...
+    
+    # Daily loss guard
+    can_trade, reason = self._risk_manager.validate_signal(
+        signal.confidence, self.state.daily_pnl, signal.category
+    )
+    if not can_trade:
+        logger.warning(f"[Risk] Signal blocked: {reason}")
+        return False
+    
+    # Portfolio risk
+    if hasattr(self, 'portfolio_risk'):
+        approved, reason = self.portfolio_risk.evaluate(
+            signal.to_dict(), self.state.get_open_positions(),
+            self.state.balance, self.state.balance, self.state.daily_pnl
+        )
+        if not approved:
+            logger.warning(f"[PortfolioRisk] Blocked: {reason}")
+            return False
+    
+    trade = self._paper_trader.execute_signal(...)
+
+C-08 — Balance Has No Floor: Continues Trading While Negative
+File: core/state.py:close_position():75
+Severity: CRITICAL
+self._balance += pnl with no floor check. Given C-06 (extreme position sizing), a single losing trade on EUR/USD can move balance from +$30 to -$4,290. The bot silently continues scanning and opening new positions at negative balance. The DailyLossGuard would trigger at -$1.50 (5% of $30) but since validate_signal() is never called (C-07), it never fires.
+Fix:
+pythondef close_position(self, trade_id, exit_price, exit_reason, pnl):
+    ...
+    self._daily_pnl  += pnl
+    self._balance    += pnl
+    self._balance     = max(0.0, self._balance)  # floor at zero
+    
+    if self._balance <= 0:
+        logger.critical("[State] Account depleted — trading halted")
+        # Signal engine to stop
+
+SECTION 2: HIGH-SEVERITY DEFECTS (Major Functionality Loss)
+
+H-01 — Entire On-Chain Whale Intelligence Pipeline is a Dead End
+Files: whale_intelligence/wallet_tracker.py:_publish_movement(), layers/layer6_whale.py:ingest_onchain_event()
+Severity: HIGH
+WalletTracker publishes WHALE_ACCUMULATION/WHALE_DISTRIBUTION events to Redis. layer6_whale.ingest_onchain_event() is the function intended to receive them and populate _ONCHAIN_CACHE. No code anywhere subscribes to these Redis channels and calls ingest_onchain_event(). The entire Phase 2 on-chain intelligence pipeline — wallet tracking, behavior classification, cluster detection — produces zero effect on trading decisions.
+Fix: Add a subscriber in whale_intelligence/__init__.py:
+pythondef _redis_listener():
+    ps = get_pubsub()
+    ps.subscribe("WHALE_ACCUMULATION", "WHALE_DISTRIBUTION", "WHALE_CLUSTER_ALERT",
+                 "EXCHANGE_INFLOW_ALERT", "EXCHANGE_OUTFLOW_ALERT")
+    for msg in ps.listen():
+        if msg["type"] == "message":
+            from layers.layer6_whale import ingest_onchain_event
+            ingest_onchain_event(json.loads(msg["data"]))
+
+H-02 — Narrative AI Engine Never Receives Any Input
+Files: narrative_ai/topic_cluster_engine.py:ingest(), all social/news watchers
+Severity: HIGH
+TopicClusterEngine.ingest(text, source) has zero callers in the entire codebase. No news source, no Reddit watcher, no Twitter watcher, and no sentiment analyzer calls narrative_ai.ingest(). get_narrative_scores() always returns {}. get_dominant_narrative() would raise ValueError on an empty dict (caught by try/except → returns None). Layer 5 narrative boost never fires. Layer 8 narrative_strength context key is never populated.
+Fix: Wire ingestion from existing data sources:
+python# In _NewsSentiment._compute() after scoring headlines:
+for headline in headlines:
+    from narrative_ai import ingest
+    ingest(headline, source="news")
+
+# In RedditWatcher.get_asset_sentiment() after fetching posts:
+for post in posts:
+    from narrative_ai import ingest
+    ingest(post["title"] + " " + post.get("selftext",""), source="reddit")
+
+H-03 — Liquidation Cascade Detection Permanently Broken
+Files: data_ingestion/exchange_stream_manager.py:_normalise():130, data_ingestion/liquidation_stream.py:_process():70
+Severity: HIGH
+Bybit v5 liquidation topic sends "qty" but _normalise() reads "size". size = 0 always → size_usd = 0 * price = 0. cascade_usd accumulates zeros. LIQUIDATION_CASCADE_ALERT never fires regardless of actual liquidation volume.
+Fix:
+python# data_ingestion/exchange_stream_manager.py:_normalise()
+if topic.startswith("liquidation."):
+    return {
+        "type":  "LIQUIDATION_EVENT",
+        "asset": d.get("symbol", ""),
+        "side":  d.get("side", ""),
+        "size":  float(d.get("qty", d.get("size", 0)) or 0),  # try qty first
+        "price": float(d.get("price", 0) or 0),
+        "ts":    int(time.time() * 1000),
+    }
+
+H-04 — WhaleAlertManager Singleton __init__ Resets on_alert Callback
+Files: whale_alert_manager.py:__init__(), sentiment_analyzer.py:SentimentAnalyzer.__init__()
+Severity: HIGH
+WhaleAlertManager uses __new__ for singleton but lacks _initialized guard in __init__. When SentimentAnalyzer.__init__() calls WhaleAlertManager(), Python returns the existing singleton but still calls __init__ on it, resetting self.on_alert = None. The callback set by bot.py is erased. All subsequent whale alerts are silently dropped.
+Fix:
+python# whale_alert_manager.py
+def __init__(self):
+    if getattr(self, '_initialized', False):
+        return
+    self._initialized = True
+    self.on_alert = None
+    # ... rest of init
+
+H-05 — PredictionClient Wired to Wrong Engine Attribute
+Files: bot.py:~375, core/engine.py:_init_subsystems()
+Severity: HIGH
+python# bot.py sets:
+engine.predictor = PredictionClient()     # public attribute
+
+# TradingCore._generate_signals() uses:
+predictor = self._predictor              # private attribute (set in _init_subsystems)
+The PredictionClient subprocess is spawned, connects, and sits idle forever. The trading loop always uses the local MLPredictor (already broken per C-01/C-02).
+Fix:
+python# bot.py — use the private attribute
+if hasattr(engine, '_predictor'):
+    engine._predictor = PredictionClient()
+
+H-06 — Health Alerts Never Reach Telegram (Second start_monitoring() No-Op)
+File: bot.py:~450, monitoring/system_health_service.py:start()
+Severity: HIGH
+bot.py calls start_monitoring() twice. The first call at T≈0.7s passes telegram_bot=None. The second call at T≈4.2s passes telegram_bot=intel_bot. SystemHealthService.start() checks if not self._running: return — the second call exits immediately, dropping the intel_bot argument. Phase 11 health alerts (CPU spikes, stale data sources, pipeline errors) are never sent.
+Fix:
+python# monitoring/system_health_service.py
+def set_telegram(self, telegram_bot) -> None:
+    """Allow wiring Telegram after service is already running."""
+    self._telegram = telegram_bot
+    logger.info("[Monitor] Telegram wired")
+
+# bot.py — replace second start_monitoring() with:
+from monitoring import monitor
+monitor.set_telegram(_intel_bot)
+
+H-07 — Daily Loss Guard Reset on Every Trade Close
+File: risk/manager.py:update_balance():45
+Severity: HIGH
+update_balance() creates a new DailyLossGuard(balance=new_balance) after every trade close. If three trades each lose 1.8% of starting balance (total 5.4% > 5% limit), the guard would fire after trade 3. But with C-07 (guard never called) and this reset, even if C-07 were fixed: after trade 1 closes at -1.8%, the new guard initializes at the reduced balance. The 5% check on trade 2 is against an already-smaller number, making the limit progressively looser.
+Fix:
+pythondef update_balance(self, new_balance: float) -> None:
+    with self._lock:
+        self.account_balance = new_balance
+        self._sizer.account_balance = new_balance
+    # DO NOT reset DailyLossGuard — it resets daily via reset_daily()
+
+H-08 — OilPrice API Returns Fake 1-Row OHLCV for CL=F
+File: data/fetcher.py:_fetch_oilprice():~220
+Severity: HIGH
+_fetch_oilprice() builds a 1-row DataFrame with open=high=low=close=price. This is placed in the OHLCV waterfall for CL=F. Any strategy receiving this 1-row DataFrame returns None (minimum 50 rows required), but the entry exists in the cache. On cache expiry, a fresh 1-row result is re-fetched and cached again. The yfinance fallback is never reached for CL=F because the cache is populated with invalid data.
+Fix:
+python# _fetch_oilprice() should only be used for get_real_time_price()
+# Remove it from the get_ohlcv() waterfall entirely — yfinance handles CL=F well
+# The comment "4. OilPrice API — CL=F crude oil backup" already says it's not for OHLCV
+# but the implementation is still in the waterfall path with incorrect return
+def _fetch_oilprice(self, interval, periods):
+    return None  # Not suitable for OHLCV history
+
+H-09 — Partial Take-Profit Levels Don't Reduce Position Size
+File: execution/paper_trader.py:_check_exit():125
+Severity: HIGH
+Layer 7 creates 3-tier TP levels [0.5×, 1.0×, 1.5×]. When TP1 is hit, pos["tp_hit"] increments but the position size is unchanged. In real trading, partial TP means selling a fraction. Here the trade continues at full size until TP3 (1.5× the original TP), which is 50% farther than the strategy intended as its take-profit target. This systematically distorts realized P&L and win rates.
+Fix:
+python# When tp_idx + 1 < len(tp_levels), close 1/3 of the position
+partial_close_size = pos["position_size"] / len(tp_levels)
+pos["position_size"] -= partial_close_size
+pnl_partial = PositionSizer.pnl(..., size=partial_close_size, ...)
+# fire on_trade_closed with partial trade
+
+H-10 — sentiment_sources Metadata Never Set: Data Integrity Gate Blind to Sentiment
+File: layers/layer5_sentiment.py:process()
+Severity: HIGH
+pipeline.py:_count_valid_sources() checks signal.metadata.get("sentiment_sources", []). Layer 5 never sets this key despite running full sentiment analysis. The gate always sees 0 sentiment sources and doesn't count sentiment as a valid source — misleading the integrity gate and making sentiment quality invisible in monitoring.
+Fix:
+python# layers/layer5_sentiment.py — end of process()
+sources_applied = ["news"]  # base
+if reddit_score is not None:
+    sources_applied.append("reddit")
+if pc_score is not None:
+    sources_applied.append("put_call")
+signal.metadata["sentiment_sources"] = sources_applied
+```
+
+---
+
+## SECTION 3: MEDIUM-SEVERITY DEFECTS (Significant Functional Issues)
+
+| ID | File | Issue | Impact |
+|---|---|---|---|
+| **M-01** | `monitoring/system_health_service.py` | `funding_rate` freshness threshold 30s vs 300s actual poll — perpetually flagged stale | False health alerts every cycle |
+| **M-02** | `data_ingestion/open_interest_monitor.py` | `update_price()` never called → OI price always 0 in alerts | OI alerts have no price context |
+| **M-03** | `ml/meta_model/market_condition_classifier.py` | `sqrt(252)` on 15m bars → volatility/crisis regimes unreachable | Layer 8 regime always "ranging/trending" |
+| **M-04** | `data_ingestion/exchange_stream_manager.py` | `_redis_ok=False` permanent after first error — no recovery | Exchange events silently stop publishing to Redis |
+| **M-05** | `services/database_service.py` | `upsert_daily_stats()` read-modify-write race → trade count lost under concurrent closes | Inaccurate daily stats |
+| **M-06** | `services/database_service.py` | `save_open_position()` upsert doesn't update `stop_loss` → stale SL on restart | Wrong stop-loss after bot restart |
+| **M-07** | `services/database_service.py` | 4-hour EAT offset on UTC timestamps in `get_performance_summary()` | Inflated performance window by 4h |
+| **M-08** | `services/redis_cache.py` | `clear()` calls `flushdb()` — wipes entire Redis | If ever called, destroys all Redis data |
+| **M-09** | `services/redis_pool.py` | `_available` never updated after startup → stale availability state | Subscriber reconnects may fail silently |
+| **M-10** | `layers/layer3_regime.py` | Layer 3 uses SMA-based timeframe-aware regime; Layer 8 uses ADX-based with wrong annualisation | Two conflicting regime signals per trade |
+| **M-11** | `reddit_watcher.py` | `_request_lock` held during `time.sleep(8)` → all concurrent Reddit requests blocked | Pipeline thread can block 8s per signal |
+| **M-12** | `services/intelligence_alerts/intelligence_alert_service.py` | Reconnect spawns new thread — thread proliferation under sustained Redis outage | Thread leak |
+| **M-13** | `ml/trainer.py` | Multi-asset data concatenated without asset identifier — cross-asset contamination | Meaningless classifier per category |
+| **M-14** | `core/engine.py` | Day rollover uses `date.today()` (local time) not UTC | Rollover at wrong time on non-UTC servers |
+| **M-15** | `strategy_lab/performance_analyzer.py` | `_sortino()` returns `float("inf")` when no losses → PostgreSQL REAL column violation | DB error on first profitable strategy |
+| **M-16** | `strategy_lab/backtest_engine_v2.py` | Commission charged on entry only, not exit | Trading costs 50% understated |
+| **M-17** | `data/fetcher.py` | `"4h"` interval maps to `"1h"` in yfinance — silent downgrade | Wrong timeframe data for 4h trading |
+| **M-18** | `layers/layer4_session.py` | Session boosts applied to crypto (24/7) | Crypto confidence inflated during London/NY |
+| **M-19** | `layers/layer6_whale.py` | Asset substring filter inverted — `alert_asset IN asset` not `asset IN alert_asset` | Wrong whale alerts matched to assets |
+| **M-20** | `websocket_manager.py` | Dashboard starts second Bybit WS connection alongside Phase 1 `ExchangeStreamManager` | Duplicate connections, double bandwidth |
+
+---
+
+## SECTION 4: DEAD CODE AND DISCONNECTED INFRASTRUCTURE
+
+These components are fully built, tested-in-isolation, but never connected to the live system:
+
+| Component | File(s) | Lines | Status |
+|---|---|---|---|
+| `AdvancedPredictionEngine` | `advanced_predictor.py` | 750 | Never imported — `sys.stdout` replacement on import corrupts process |
+| `ExchangeRouter` | `execution/exchange_router.py` | 120 | Never called — `paper_trader` used directly |
+| `PaperAdapter` | `execution/paper_adapter.py` | 80 | Registered in router, router never called |
+| `PortfolioRiskEngine.evaluate()` | `risk/portfolio_risk.py` | 100 | Attached to engine, never invoked in execution |
+| `RiskManager.validate_signal()` | `risk/manager.py` | 30 | Never called in signal execution path |
+| `RiskManager.get_stop_loss()` / `get_take_profit()` | `risk/manager.py` | 20 | Never called anywhere |
+| `TechnicalIndicators` class | `indicators/technical.py` | 290 | Never imported (except dead `_fallback_signal()`) |
+| `WebSocketHandlers` class | `websocket_handlers.py` | 200 | Never instantiated — callback lambda used directly |
+| `EventBus` typed events (10/12) | `core/events.py` | 80 | Dataclasses defined, never emitted |
+| `MarketCalendar.should_reduce_risk()` | `market_calendar.py` | 15 | Returns risk multiplier never consumed |
+| `LIVE_STRATEGY_CONFIGS` | `strategy_lab/live_bridge.py` | — | Always empty `[]` |
+| `DailyOptimiser` best strategies | `core/pipeline_reporter.py` | — | Results stored in DB but never read back into trading |
+| Narrative AI velocity detection | `narrative_ai/topic_cluster_engine.py` | 50 | `_check_velocity()` only runs if `ingest()` called (never) |
+| `intelligence_bot` (Bot 2) | `intelligence_bot.py` | 80 | Initialised, health alerts never reach it (H-06) |
+| Phase 2 cluster alerts | `whale_intelligence/wallet_cluster_analyzer.py` | 150 | Published to Redis, nobody subscribes |
+
+---
+
+## SECTION 5: SECURITY VULNERABILITIES
+
+| ID | File | Issue | Risk |
+|---|---|---|---|
+| **SEC-01** | `gateway/server.js` | Any WS client can publish to Redis — unauthenticated signal injection | **CRITICAL** — False signals on dashboard, potential manipulation |
+| **SEC-02** | `gateway/server.js` | No origin validation — open to internet if port 8081 exposed | **HIGH** — Public exploitation of SEC-01 |
+| **SEC-03** | `telegram_whale_watcher.py` | Uses personal Telegram user account (MTProto) not bot API | **HIGH** — ToS violation, account ban risk |
+| **SEC-04** | `config/database.py` | DB credentials in `.env` with plaintext fallback `postgresql://user:password@...` | **MEDIUM** — Template credentials in default config |
+| **SEC-05** | `dashboard/web_app_live.py` | No auth on any API endpoint, backtest endpoint triggers expensive computation | **MEDIUM** — DoS via `/api/backtest/optimize` |
+| **SEC-06** | `telethon_whale_store.py` | Session file persists Telegram auth credentials | **LOW** — If session file is exposed, account access granted |
+
+---
+
+## SECTION 6: ARCHITECTURAL PROBLEMS
+
+### Problem 1: Three Separate Backtesting Systems
+`backtest/engine.py`, `strategy_lab/backtest_engine_v2.py`, and `core/pipeline_reporter.py._run_fresh_backtest()` each implement backtesting independently with different risk models, different context handling, different Sharpe annualisation, and no shared logic. Results are not comparable across systems.
+
+### Problem 2: Module-Level Side Effects
+Eleven modules execute heavyweight operations at import time (DB queries, thread spawning, Redis connections, file writes). This makes testing impossible without `conftest.py` mocking, makes import order significant, and makes startup timing unpredictable.
+
+### Problem 3: Two Telegram Bots With Overlapping Responsibilities
+Bot 1 (commander) and Bot 2 (intelligence) share some functionality but are siloed. Health alerts are routed to Bot 2 but Bot 2's Telegram token is optional. When Bot 2 is absent, health monitoring is completely silent. There is no fallback to Bot 1 for health alerts.
+
+### Problem 4: Redis as a Fragile Single Point of Failure
+The entire architecture depends on Redis for signal propagation, dashboard updates, order flow, Phase 7 alerts, and intelligence events. Multiple modules permanently disable their Redis publishers on first error (`self._pub = None`) with no recovery. A brief Redis outage causes permanent silence in 8+ subsystems until bot restart.
+
+### Problem 5: Wrong Account Size Hardcoded Everywhere
+The `.env.example`, `Procfile`, `docker-compose.yml`, and `bot.py` all reference `--balance 30`. But `risk/position_sizer.py` uses specs for $10,000+. `PerformanceAnalyzer` uses `$10,000` as denominator. The system was designed for a larger account and the balance was changed without updating the dependent systems.
+
+---
+
+## SECTION 7: PRIORITY FIX ROADMAP
+
+### 🔴 Tier 1 — Fix Before Any Real Use (Immediate)
+
+| Priority | Fix | Effort | Impact |
+|---|---|---|---|
+| 1 | **C-06**: Scale position sizing to actual account balance | 2h | Prevents catastrophic over-leverage |
+| 2 | **C-08**: Add balance floor at zero | 30m | Stops trading when bankrupt |
+| 3 | **C-07**: Wire `validate_signal()` and `portfolio_risk.evaluate()` | 2h | Enables actual risk protection |
+| 4 | **C-04**: Remove WebSocket Redis publish backdoor | 30m | Closes security hole |
+| 5 | **C-03**: Fix `_fetcher` NameError in dashboard | 5m | Fixes primary dashboard endpoint |
+| 6 | **C-05**: Disable broken AV fallback in news monitor | 10m | Stops blocking all non-crypto signals |
+| 7 | **H-07**: Fix `DailyLossGuard` reset on every trade | 30m | Restores loss protection |
+
+### 🟠 Tier 2 — Restore Intelligence Systems (This Week)
+
+| Priority | Fix | Effort | Impact |
+|---|---|---|---|
+| 8 | **C-01 + C-02**: Unify ML registry, fix feature count | 4h | Enables trained ML models |
+| 9 | **H-01**: Wire `ingest_onchain_event()` to Redis subscriber | 2h | Activates Phase 2 whale intelligence |
+| 10 | **H-02**: Wire `narrative_ai.ingest()` from news/social sources | 3h | Activates Phase 4 narrative AI |
+| 11 | **H-03**: Fix Bybit liquidation `qty` vs `size` field | 30m | Enables cascade detection |
+| 12 | **H-04**: Add `_initialized` guard to `WhaleAlertManager` | 15m | Stops callback erasure |
+| 13 | **H-10**: Set `sentiment_sources` in Layer 5 | 30m | Correct data integrity gate |
+| 14 | **H-06**: Add `monitor.set_telegram()` method | 30m | Activates Phase 11 health alerts |
+
+### 🟡 Tier 3 — Quality and Accuracy (This Month)
+
+| Priority | Fix | Effort | Impact |
+|---|---|---|---|
+| 15 | **M-03**: Fix Sharpe annualisation for 15m bars | 1h | Correct backtest/optimiser metrics |
+| 16 | **H-09**: Implement partial TP position reduction | 3h | Correct multi-level TP behaviour |
+| 17 | **H-08**: Remove OilPrice from OHLCV waterfall | 15m | Correct CL=F OHLCV |
+| 18 | **M-06**: Update stop_loss on upsert in DB | 30m | Correct SL after restart |
+| 19 | **H-05**: Wire PredictionClient to correct attribute | 10m | Activates out-of-process ML |
+| 20 | **M-04**: Add Redis reconnect to ExchangeStreamManager | 1h | Resilient exchange streaming |
+| 21 | **M-13**: Train per-asset models, not cross-asset concatenation | 4h | Meaningful ML classifiers |
+| 22 | **M-11**: Fix Reddit lock held during sleep | 30m | Unblocks concurrent sentiment |
+| 23 | **SEC-05**: Add auth/rate-limiting to dashboard API | 4h | Prevent DoS |
+| 24 | **M-15**: Guard `_sortino()` infinite result | 15m | Prevent DB errors |
+
+---
+
+## SECTION 8: WHAT ACTUALLY WORKS
+
+Despite the extensive issue list, the following components function correctly and can be relied upon:
+
+| Component | Status |
+|---|---|
+| Signal generation (RSI/MACD/Bollinger strategies) | ✅ Functional |
+| 8-layer pipeline gating (Layers 2, 4, 7 hard kills) | ✅ Functional |
+| Paper trade execution (open/close with SL/TP) | ✅ Functional (except partial TP) |
+| Offline gap-fill SL/TP breach detection on restart | ✅ Functional |
+| PostgreSQL trade persistence and restart recovery | ✅ Functional |
+| Telegram Bot 1 trade alerts (/menu, /close, /signal commands) | ✅ Functional |
+| Redis pub/sub message bus (when Redis is up) | ✅ Functional |
+| Dashboard page rendering (all 10 templates) | ✅ Functional |
+| Market hours filtering (Layer 4, per-category UTC rules) | ✅ Functional |
+| Cooldown management (60-min post-trade cooldown) | ✅ Functional |
+| Session boost logic (London/NY boosts) | ✅ Functional (overcorrection for crypto is minor) |
+| Order flow imbalance (Layer 3 reads correctly) | ✅ Functional (when Binance WS is up) |
+| DataFetcher waterfall (iTick → TwelveData → yfinance) | ✅ Functional |
+| Configuration system (all env vars, config.py) | ✅ Functional |
+| `bot.py` startup sequence (all 29 steps) | ✅ Functional (with known exceptions) |
+| Trailing stop and break-even logic | ✅ Functional |
+| Strategy Lab backtesting UI | ✅ Functional (metrics miscalibrated but usable) |
+| AutoTrainer background training | ✅ Trains successfully (model not used — see C-01) |
+
+---
+
+## FINAL ASSESSMENT
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  SYSTEM READINESS: NOT PRODUCTION-READY                        │
+│                                                                  │
+│  Critical defects:    8   (system-breaking)                     │
+│  High defects:       10   (major functionality loss)            │
+│  Medium defects:     20   (significant functional issues)       │
+│  Dead code modules:  15+  (fully built, never connected)        │
+│  Silent failures:    24   (appear to work, do nothing)          │
+│  Security issues:     6                                          │
+│                                                                  │
+│  Core trading loop:      ✅ WORKS (with dangerous leverage)     │
+│  ML intelligence:        ❌ BROKEN (always momentum fallback)   │
+│  Whale intelligence:     ❌ BROKEN (dead pipeline)              │
+│  Narrative AI:           ❌ BROKEN (no inputs ever)             │
+│  Risk protection:        ❌ BROKEN (bypassed entirely)          │
+│  Liquidation detection:  ❌ BROKEN (wrong field name)           │
+│  Dashboard signals API:  ❌ BROKEN (NameError)                  │
+│  Security:               ❌ VULNERABLE (WS backdoor)            │
+│                                                                  │
+│  Estimated fix time to production-ready:  2–3 weeks             │
+│  Tier 1 critical fixes only:              1–2 days              │
+└─────────────────────────────────────────────────────────────────┘
+The codebase shows sophisticated design intent — the 8-layer pipeline, multi-phase intelligence architecture, dual Telegram bot system, and strategy lab are all well-conceived. The primary failure mode is integration incompleteness: components are built in isolation and not connected to each other. The ML system is the most egregious example — two separate registry instances, mismatched feature vectors, and a wrong attribute name mean that despite hundreds of lines of ML infrastructure, every prediction is a 3-line momentum formula.
+Fixing the 7 Tier-1 items (1–2 days of work) would make the bot safe to run. Fixing the Tier-2 items (1 week) would activate the intelligence systems that are currently built but dark. The bot's architecture is sound enough that these fixes are straightforward — they are wiring problems, not design problems.
+

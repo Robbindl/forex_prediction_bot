@@ -65,7 +65,18 @@ class DatabaseService:
                 trade_id=position["trade_id"]
             ).first()
             if existing:
+                # FIX M-06: Update all columns, including stop_loss (for trailing stop updates)
                 existing.position_data = position
+                existing.asset           = str(position.get("asset", ""))
+                existing.canonical_asset = str(position.get("canonical_asset", ""))
+                existing.category        = str(position.get("category", "forex"))
+                existing.direction       = str(position.get("direction") or position.get("signal", "BUY"))
+                existing.entry_price     = _np(position.get("entry_price", 0))
+                existing.stop_loss       = _np(position.get("stop_loss", 0))  # Critical for trailing stops
+                existing.take_profit     = _np(position.get("take_profit", 0))
+                existing.position_size   = _np(position.get("position_size", 0))
+                existing.confidence      = _np(position.get("confidence", 0))
+                existing.strategy_id     = str(position.get("strategy_id", ""))
                 return
             row = OpenPosition(
                 trade_id        = str(position["trade_id"]),

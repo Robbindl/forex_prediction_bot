@@ -359,7 +359,7 @@ function colorClass(n){return n>=0?'gn':'rd'}
 async function loadMain(){
   let d;
   try{
-    d=await fetch('/api/command-center').then(r=>r.json());
+    d=await fetch('/api/command-center', {headers: apiHeaders()}).then(r=>r.json());
     if(!d||!d.success)return;
   }catch(e){console.error('[CC] fetch:',e);return;}
 
@@ -434,7 +434,7 @@ async function loadMain(){
 
 async function loadWhales(){
   try{
-    const d=await fetch('/api/whale/summary').then(r=>r.json());
+    const d=await fetch('/api/whale/summary', {headers: apiHeaders()}).then(r=>r.json());
     document.getElementById('whaleCount').textContent=d.alert_count_24h||0;
     const wEl=document.getElementById('whalePanel');
     const alerts=d.recent||[];
@@ -451,7 +451,43 @@ async function loadWhales(){
   }catch(e){}
 }
 
-loadMain();loadWhales();loadHistory();
+loadWhales();loadHistory();
+
+// ── API Authentication ────────────────────────────────────────────────────
+let _apiToken = null;
+
+async function initAuth(){
+  try{
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    }).then(r => r.json()).catch(e => {
+      console.warn('[AUTH] Login request failed', e);
+      return {success: false};
+    });
+    
+    if(r.success && r.token){
+      _apiToken = r.token;
+      sessionStorage.setItem('api_token', _apiToken);
+      console.log('[AUTH] Token acquired', r.mode);
+    } else {
+      console.warn('[AUTH] Login response error:', r.error);
+    }
+  }catch(e){
+    console.warn('[AUTH] Login error', e);
+  }
+}
+
+function apiHeaders(){
+  const h = {'Content-Type': 'application/json'};
+  if(_apiToken) h['Authorization'] = `Bearer ${_apiToken}`;
+  return h;
+}
+
+// Initialize auth BEFORE loading data
+initAuth().then(() => loadMain());
+
 setInterval(loadMain,15000);setInterval(loadWhales,30000);setInterval(loadHistory,60000);
 
 
@@ -459,7 +495,7 @@ setInterval(loadMain,15000);setInterval(loadWhales,30000);setInterval(loadHistor
 async function loadHistory(){
   try{
     const filter=document.getElementById('historyFilter')?.value||'all';
-    const d=await fetch('/api/trade-history?limit=50').then(r=>r.json());
+    const d=await fetch('/api/trade-history?limit=50', {headers: apiHeaders()}).then(r=>r.json());
     if(!d.success)return;
     let trades=d.trades||[];
 

@@ -23,35 +23,7 @@ logger   = get_logger()
 # saved models to the registry.py singleton — the two never shared data, so
 # MLPredictor.predict() fell through to momentum fallback on every call.
 from ml.registry import registry
-
-_FEATURE_COLS = ["open", "high", "low", "close", "volume"]
-
-
-def _build_features(df: pd.DataFrame) -> Optional[np.ndarray]:
-    """Build feature matrix from OHLCV dataframe."""
-    if df is None or len(df) < 30:
-        return None
-    try:
-        d = df[_FEATURE_COLS].astype(float).copy()
-        close = d["close"]
-
-        d["ret1"]   = close.pct_change(1)
-        d["ret5"]   = close.pct_change(5)
-        d["ret10"]  = close.pct_change(10)
-        d["vol5"]   = d["ret1"].rolling(5).std()
-        d["vol20"]  = d["ret1"].rolling(20).std()
-        d["sma5"]   = close.rolling(5).mean()  / close
-        d["sma20"]  = close.rolling(20).mean() / close
-        d["sma50"]  = close.rolling(50).mean() / close if len(d) >= 50 else 1.0
-        d["hl_pct"] = (d["high"] - d["low"]) / close
-        d["oc_pct"] = (d["close"] - d["open"]) / d["open"].replace(0, np.nan)
-
-        d = d.replace([np.inf, -np.inf], np.nan).fillna(0)
-        feature_cols = [c for c in d.columns if c not in _FEATURE_COLS]
-        return d[feature_cols].values[-1].reshape(1, -1)
-    except Exception as e:
-        logger.debug(f"[Predictor] Feature build error: {e}")
-        return None
+from ml.features import build_features
 
 
 class MLPredictor:
@@ -74,7 +46,7 @@ class MLPredictor:
         return self._predict_inner(asset, category, df)
 
     def _predict_inner(self, asset: str, category: str, df: pd.DataFrame) -> Tuple[float, float]:
-        features = _build_features(df)
+        features = build_features(df)
         if features is None:
             return 0.5, 0.0
 
@@ -87,7 +59,7 @@ class MLPredictor:
 
         try:
             with self._lock:
-                proba = model.predict_proba(features)
+                proba = model.predict_proba(features.reshape(1, -1))
             up_prob    = float(proba[0][1]) if proba.shape[1] > 1 else float(proba[0][0])
             confidence = abs(up_prob - 0.5) * 2   # 0 at 0.5, 1 at 0 or 1
             logger.log_ml(model_key, asset, up_prob, confidence)

@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from utils.logger import get_logger
 from ml.registry import ModelRegistry, registry
+from ml.features import build_features
 from config.config import (
     ASSET_CATEGORIES, LOOKBACK_PERIOD, TRAIN_TEST_SPLIT, MODEL_MAX_AGE_HOURS
 )
@@ -21,45 +22,36 @@ logger = get_logger()
 def _build_training_data(df: pd.DataFrame, horizon: int = 5):
     """Build X (features) and y (label: 1=up, 0=down) for classification.
     
-    FIX: Feature set now matches ml/predictor.py _build_features() exactly —
-    10 features: ret1, ret5, ret10, vol5, vol20, sma5, sma20, sma50, hl_pct, oc_pct
-    Previously 6 features were produced here but 10 were consumed in predictor,
-    causing every model.predict_proba() call to raise a feature-count mismatch error.
+    FIX: Now uses unified 6-feature set from ml.features.build_features()
+    to ensure consistency with predictor. Features are built for each historical
+    point to create training samples with future price direction labels.
     """
-    if df is None or len(df) < horizon + 50:  # raised from 30 to accommodate sma50
+    if df is None or len(df) < horizon + 20:  # Need enough data for features + horizon
         return None, None
+    
     try:
-        close  = df["close"].astype(float)
-        open_  = df["open"].astype(float)
-        high   = df["high"].astype(float)
-        low    = df["low"].astype(float)
-        future = close.shift(-horizon)
-        y      = (future > close).astype(int).values[:-horizon]
-
-        ret1   = close.pct_change(1)
-        ret5   = close.pct_change(5)
-        ret10  = close.pct_change(10)
-        vol5   = ret1.rolling(5).std()
-        vol20  = ret1.rolling(20).std()
-        sma5   = close.rolling(5).mean()  / close
-        sma20  = close.rolling(20).mean() / close
-        sma50  = close.rolling(50).mean() / close if len(close) >= 50 else pd.Series(1.0, index=close.index)
-        hl_pct = (high - low) / close
-        oc_pct = (close - open_) / open_.replace(0, np.nan)
-
-        X = pd.DataFrame({
-            "ret1":   ret1,
-            "ret5":   ret5,
-            "ret10":  ret10,
-            "vol5":   vol5,
-            "vol20":  vol20,
-            "sma5":   sma5,
-            "sma20":  sma20,
-            "sma50":  sma50,
-            "hl_pct": hl_pct,
-            "oc_pct": oc_pct,
-        }).replace([np.inf, -np.inf], np.nan).fillna(0).values[:-horizon]
-
+        # Build features for each point in the dataset (rolling window)
+        features_list = []
+        labels = []
+        
+        # Start from index 20 to have enough history for features
+        for i in range(20, len(df) - horizon):
+            window_df = df.iloc[:i+1]  # Data up to current point
+            features = build_features(window_df)
+            if features is not None:
+                features_list.append(features)
+                # Label: 1 if price goes up in next 'horizon' periods, 0 otherwise
+                future_price = df.iloc[i + horizon]['close']
+                current_price = df.iloc[i]['close']
+                label = 1 if future_price > current_price else 0
+                labels.append(label)
+        
+        if not features_list:
+            return None, None
+            
+        X = np.array(features_list)
+        y = np.array(labels)
+        
         return X, y
     except Exception as e:
         logger.debug(f"[Trainer] Feature build error: {e}")

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 core/pipeline_reporter.py — Post-pipeline reporter.
 
@@ -32,7 +34,33 @@ The pipeline still makes the final decision via Layer 7's confidence
 floor — the backtest adjustment just nudges the confidence. It never
 outright blocks a signal.
 """
-from __future__ import annotations
+
+# ── DDL for strategy tables ───────────────────────────────────────────────────
+
+_CREATE_STRATEGY_PERFORMANCE = """
+CREATE TABLE IF NOT EXISTS strategy_performance (
+    asset        TEXT NOT NULL,
+    category     TEXT NOT NULL,
+    strategy_id  TEXT NOT NULL,
+    win_rate     REAL NOT NULL DEFAULT 0,
+    sharpe_ratio REAL NOT NULL DEFAULT 0,
+    total_trades INT  NOT NULL DEFAULT 0,
+    recorded_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (asset, strategy_id)
+);
+"""
+
+_CREATE_STRATEGY_OPTIMISATION = """
+CREATE TABLE IF NOT EXISTS strategy_optimisation (
+    asset         TEXT NOT NULL,
+    category      TEXT NOT NULL,
+    best_params   TEXT NOT NULL DEFAULT '{}',
+    sharpe        REAL NOT NULL DEFAULT 0,
+    win_rate      REAL NOT NULL DEFAULT 0,
+    optimised_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (asset, category)
+);
+"""
 
 import json
 import threading

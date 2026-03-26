@@ -69,6 +69,9 @@ class PaperTrader:
         if not pos_size or pos_size <= 0:
             return None
 
+        # NOTE: Daily loss limit is checked in core/engine.py:_execute_signal()
+        # before this method is called — no need to check again here
+
         trade_id = str(uuid.uuid4())[:12]
         trade    = {
             "trade_id":           trade_id,

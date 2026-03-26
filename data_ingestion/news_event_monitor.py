@@ -282,50 +282,17 @@ class NewsEventMonitor:
             return None
 
     def _fetch_alphavantage(self) -> Optional[List[Dict]]:
-        """Fallback: Alpha Vantage news sentiment for macro events."""
-        try:
-            from config.config import ALPHA_VANTAGE_API_KEY
-            if not ALPHA_VANTAGE_API_KEY:
-                return None
-
-            import requests
-            resp = requests.get(
-                "https://www.alphavantage.co/query",
-                params={
-                    "function": "NEWS_SENTIMENT",
-                    "topics":   "economy_macro",
-                    "apikey":   ALPHA_VANTAGE_API_KEY,
-                    "limit":    20,
-                },
-                timeout=10,
-            )
-            if not resp.ok:
-                return None
-
-            # Parse AV news as pseudo-events
-            feed   = resp.json().get("feed", [])
-            result = []
-            now    = datetime.now(timezone.utc)
-            for item in feed[:10]:
-                title = item.get("title", "")
-                impact = self._classify_impact(title, "")
-                if impact == "LOW":
-                    continue
-                result.append({
-                    "name":               title[:60],
-                    "impact":             impact,
-                    "time":               now,
-                    "actual":             None,
-                    "estimate":           None,
-                    "surprise_direction": "",
-                    "affects":            EVENT_ASSET_MAP.get(impact, set()),
-                    "source":             "alphavantage",
-                })
-            return result or None
-
-        except Exception as e:
-            logger.debug(f"[NewsMonitor] AlphaVantage fetch: {e}")
-            return None
+        """Fallback: DISABLED.
+        
+        Alpha Vantage news headlines don't have reliable publish timestamps.
+        Previously this function returned headlines with time=now, causing them
+        to be classified as "active high-impact events" regardless of when they
+        were published. This blocked all trading signals for affected categories.
+        
+        Until a proper timestamp source is available, return None to disable
+        the broken fallback.
+        """
+        return None
 
     @staticmethod
     def _classify_impact(name: str, raw_impact: str) -> str:

@@ -27,6 +27,8 @@ def _rate_limited_request(url: str, headers: Dict, timeout: int = 10) -> request
     - No more than 3 concurrent requests
     - Minimum 5 seconds between requests
     - Global 429 backoff — if any request hits 429, ALL requests pause for 60s
+    
+    FIX M-11: Sleep happens OUTSIDE _request_lock to avoid blocking concurrent sentiment analysis
     """
     global _rate_limit_until
     # Check global 429 backoff
@@ -36,14 +38,19 @@ def _rate_limited_request(url: str, headers: Dict, timeout: int = 10) -> request
         time.sleep(wait)
 
     with _global_request_semaphore:
+        # Acquire lock only to check/update timestamp, not during sleep
+        sleep_time = 0
         with _request_lock:
             global _last_request_time
             elapsed = time.time() - _last_request_time
             if elapsed < 8.0:
                 sleep_time = 8.0 - elapsed
-                logger.debug(f"[RedditWatcher] Rate limit: sleeping {sleep_time:.2f}s")
-                time.sleep(sleep_time)
             _last_request_time = time.time()
+        
+        # Sleep OUTSIDE the lock to allow concurrent operations
+        if sleep_time > 0:
+            logger.debug(f"[RedditWatcher] Rate limit: sleeping {sleep_time:.2f}s")
+            time.sleep(sleep_time)
         
         return requests.get(url, headers=headers, timeout=timeout)
 
@@ -561,6 +568,11 @@ class RedditWatcher:
                 is_relevant = any(term in combined for term in search_terms)
                 
                 if is_relevant:
+                    try:
+                        from narrative_ai import ingest as narrative_ingest
+                        narrative_ingest(post.get('title', ''), source="reddit")
+                    except Exception:
+                        pass
                     sent = self.analyze_sentiment(post.get('title', ''))
                     all_posts.append({
                         "title": post.get('title', ''),

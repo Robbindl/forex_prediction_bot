@@ -49,6 +49,15 @@ except RuntimeError as e:
     logger.critical(f"[bot] API validation failed: {e}")
     sys.exit(1)
 
+# ── Check optional API keys ─────────────────────────────────────────────────
+from config.config import WHALE_ALERT_KEY, WHALE_TELEGRAM_TOKEN, FRED_API_KEY
+if not WHALE_ALERT_KEY:
+    logger.warning("[bot] WHALE_ALERT_KEY not set — whale alerts disabled")
+if not WHALE_TELEGRAM_TOKEN:
+    logger.warning("[bot] WHALE_TELEGRAM_TOKEN not set — intelligence alerts disabled")
+if not FRED_API_KEY:
+    logger.warning("[bot] FRED_API_KEY not set — macro data collection disabled")
+
 # ── Database (required) ───────────────────────────────────────────────────────
 logger.info("[bot] Connecting to database...")
 try:
@@ -57,6 +66,16 @@ try:
     logger.info("[bot] Database ready")
 except RuntimeError as e:
     logger.critical(str(e))
+    sys.exit(1)
+
+# ── System state (after DB ready) ─────────────────────────────────────────────
+logger.info("[bot] Loading system state...")
+try:
+    from core.state import state
+    state.init_db()
+    logger.info("[bot] System state loaded from DB")
+except Exception as e:
+    logger.critical(f"[bot] Failed to load system state: {e}")
     sys.exit(1)
 
 

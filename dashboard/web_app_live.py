@@ -6,17 +6,24 @@ import os
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, stream_with_context
 from flask_cors import CORS
+from functools import wraps
+import hashlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.assets  import registry
 from data.fetcher import DataFetcher
 from utils.logger import get_logger
+from utils.api_errors import (
+    APIError, BadRequest, Unauthorized, Forbidden, NotFound, InternalError,
+    log_api_call, handle_api_error, validate_request_json
+)
 
 logger = get_logger()
 
@@ -58,7 +65,148 @@ app = Flask(
     template_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"),
     static_folder  =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"),
 )
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": ["localhost:5000"]}})  # FIX SEC-05: CORS now restricted
+
+# ── Flask Error Handlers ──────────────────────────────────────────────────────
+
+@app.errorhandler(400)
+def handle_bad_request(e):
+    """Handle 400 Bad Request."""
+    return jsonify({"success": False, "error": "Bad Request", "message": str(e)}), 400
+
+@app.errorhandler(401)
+def handle_unauthorized(e):
+    """Handle 401 Unauthorized."""
+    return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+@app.errorhandler(403)
+def handle_forbidden(e):
+    """Handle 403 Forbidden."""
+    return jsonify({"success": False, "error": "Forbidden"}), 403
+
+@app.errorhandler(404)
+def handle_not_found(e):
+    """Handle 404 Not Found."""
+    return jsonify({"success": False, "error": "Not Found"}), 404
+
+@app.errorhandler(500)
+def handle_internal_error(e):
+    """Handle 500 Internal Server Error."""
+    error_id = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")[:14]
+    logger.error(f"[{error_id}] Internal server error: {str(e)}\n{traceback.format_exc()}")
+    return jsonify({
+        "success": False,
+        "error": "Internal Server Error",
+        "error_id": error_id
+    }), 500
+
+@app.errorhandler(APIError)
+def handle_api_error_exc(e):
+    """Handle custom API errors."""
+    response = {
+        "success": False,
+        "error": e.message,
+        "status": e.status_code,
+    }
+    if e.details:
+        response["details"] = e.details
+    return jsonify(response), e.status_code
+
+# ── FIX SEC-05: API Key Authentication & Rate Limiting ───────────────────────
+_DEVELOPMENT_MODE = False  # Will be set from env variable (bypass auth when true)
+_API_KEY_HASH = None  # Will be set from env variable
+_SESSION_TOKENS: Dict[str, float] = {}  # {token: expiry_timestamp}
+_SESSION_TOKEN_LOCK = threading.Lock()
+_RATE_LIMIT_STORE: Dict[str, List[float]] = {}  # {ip: [req_times...]}
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_REQUESTS_PER_MINUTE = 60  # Max 60 requests per minute per IP
+_SESSION_TOKEN_TTL = 3600  # 1 hour default
+
+def _init_api_key():
+    """Initialize API key and session TTL from environment."""
+    global _API_KEY_HASH, _SESSION_TOKEN_TTL, _DEVELOPMENT_MODE
+    try:
+        from config.config import DASHBOARD_API_KEY, SESSION_TOKEN_TTL, DEVELOPMENT_MODE
+        _DEVELOPMENT_MODE = DEVELOPMENT_MODE
+        if _DEVELOPMENT_MODE:
+            logger.warning("[dashboard] ⚠️ DEVELOPMENT MODE ENABLED — All API auth bypassed")
+        elif DASHBOARD_API_KEY:
+            _API_KEY_HASH = hashlib.sha256(DASHBOARD_API_KEY.encode()).hexdigest()
+            logger.info("[dashboard] API key authentication enabled")
+        else:
+            logger.warning("[dashboard] DASHBOARD_API_KEY not set — API in dev mode")
+        _SESSION_TOKEN_TTL = SESSION_TOKEN_TTL
+    except Exception as e:
+        logger.warning(f"[dashboard] Failed to load API config: {e}")
+
+def _generate_session_token() -> str:
+    """Generate a cryptographically secure session token."""
+    return hashlib.sha256(os.urandom(32)).hexdigest()
+
+def _check_api_auth(fn):
+    """Decorator to verify session token or API key.
+    If DEVELOPMENT_MODE is enabled or API key is not configured, allow all access."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        # Explicit development mode: bypass auth entirely
+        if _DEVELOPMENT_MODE:
+            return fn(*args, **kwargs)
+        
+        # No API key configured: fallback to dev mode
+        if not _API_KEY_HASH:
+            # Allow all requests without auth in dev mode
+            return fn(*args, **kwargs)
+        
+        # Production mode: enforce authentication
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"success": False, "error": "Missing Authorization header"}), 401
+        
+        token = auth_header[7:]  # Remove "Bearer " prefix
+        
+        # Check if valid session token (issued by /api/login)
+        with _SESSION_TOKEN_LOCK:
+            if token in _SESSION_TOKENS:
+                if _SESSION_TOKENS[token] > time.time():
+                    # Token valid and not expired
+                    return fn(*args, **kwargs)
+                else:
+                    # Token expired
+                    del _SESSION_TOKENS[token]
+                    return jsonify({"success": False, "error": "Session expired"}), 401
+        
+        # Token not in session store — reject
+        logger.warning(f"[dashboard] Invalid token attempt from {request.remote_addr}")
+        return jsonify({"success": False, "error": "Invalid or expired token"}), 403
+    return wrapper
+
+def _check_rate_limit(fn):
+    """Decorator to enforce rate limiting (60 req/min per IP)."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        ip = request.remote_addr
+        now = time.time()
+        
+        with _RATE_LIMIT_LOCK:
+            if ip not in _RATE_LIMIT_STORE:
+                _RATE_LIMIT_STORE[ip] = []
+            
+            # Remove requests older than 1 minute
+            _RATE_LIMIT_STORE[ip] = [ts for ts in _RATE_LIMIT_STORE[ip] if now - ts < 60]
+            
+            # Check if limit exceeded
+            if len(_RATE_LIMIT_STORE[ip]) >= _RATE_LIMIT_REQUESTS_PER_MINUTE:
+                logger.warning(f"[dashboard] Rate limit exceeded for {ip}")
+                return jsonify({
+                    "success": False,
+                    "error": f"Rate limit exceeded (max {_RATE_LIMIT_REQUESTS_PER_MINUTE}/min)"
+                }), 429
+            
+            # Record this request
+            _RATE_LIMIT_STORE[ip].append(now)
+        
+        return fn(*args, **kwargs)
+    return wrapper
 
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--balance", type=float, default=10000.0)
@@ -480,47 +628,145 @@ def _r_lab2():     return redirect("/strategy-lab")
 # API — STATUS (used by all templates for the live dot)
 # ══════════════════════════════════════════════════════════════════════════════
 
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    """Get a session token by providing the API key.
+    In dev mode (no API key configured), returns token without validation.
+    In prod mode (API key configured), requires api_key in request body."""
+    try:
+        # Development mode: no security needed, just issue a token
+        if not _API_KEY_HASH:
+            token = _generate_session_token()
+            with _SESSION_TOKEN_LOCK:
+                _SESSION_TOKENS[token] = time.time() + _SESSION_TOKEN_TTL
+            logger.info("[dashboard] Dev mode token issued")
+            return jsonify({
+                "success": True,
+                "token": token,
+                "expires_in": _SESSION_TOKEN_TTL,
+                "mode": "dev"
+            })
+        
+        # Production mode: validate API key from request body
+        body = validate_request_json(required_fields=["api_key"])
+        provided_key = body.get("api_key", "")
+        
+        if not provided_key:
+            raise BadRequest("api_key cannot be empty")
+        
+        # Validate key
+        provided_hash = hashlib.sha256(provided_key.encode()).hexdigest()
+        if provided_hash != _API_KEY_HASH:
+            logger.warning(f"[dashboard] Failed login from {request.remote_addr}")
+            raise Forbidden("Invalid API key")
+        
+        # Valid — issue session token
+        token = _generate_session_token()
+        expiry = time.time() + _SESSION_TOKEN_TTL
+        with _SESSION_TOKEN_LOCK:
+            _SESSION_TOKENS[token] = expiry
+        
+        logger.info(f"[dashboard] Session token issued to {request.remote_addr}")
+        return jsonify({
+            "success": True,
+            "token": token,
+            "expires_in": _SESSION_TOKEN_TTL,
+            "expires_at": int(expiry),
+            "mode": "prod"
+        })
+    
+    except APIError as e:
+        return handle_api_error(e, "/api/login", e.status_code)[0], e.status_code
+    except Exception as e:
+        return handle_api_error(e, "/api/login", 500)[0], 500
+
+@app.route("/api/logout", methods=["POST"])
+@_check_api_auth
+def api_logout():
+    """Revoke the current session token."""
+    try:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            with _SESSION_TOKEN_LOCK:
+                if token in _SESSION_TOKENS:
+                    del _SESSION_TOKENS[token]
+        
+        return jsonify({"success": True, "message": "Logged out"})
+    except Exception as e:
+        return handle_api_error(e, "/api/logout", 500)
+
 @app.route("/api/status")
+@_check_api_auth
+@_check_rate_limit
 def api_status():
-    core = _core()
-    return jsonify({
-        "bot_ready":      core.is_ready    if core else False,
-        "engine_running": core.is_running  if core else False,
-        "architecture":   "TradingCore"    if core else "standalone",
-        "balance":        core.get_balance() if core else _args.balance,
-        "assets_cached":  len(_sig_store),
-    })
+    """Get current bot and trading status."""
+    try:
+        core = _core()
+        if not core:
+            raise InternalError("Trading core not initialized")
+        
+        return jsonify({
+            "success": True,
+            "bot_ready": core.is_ready,
+            "engine_running": core.is_running,
+            "architecture": "TradingCore",
+            "balance": core.get_balance(),
+            "assets_cached": len(_sig_store),
+        })
+    except Exception as e:
+        return handle_api_error(e, "/api/status", 500)
 
 @app.route("/api/system-status")
+@_check_api_auth
+@_check_rate_limit
 def api_system_status():
-    core = _core()
-    if core:
-        perf  = core.get_performance()
-        daily = core.get_daily_stats()
+    """Get system and trading performance statistics."""
+    try:
+        core = _core()
+        if core:
+            try:
+                perf  = core.get_performance()
+                daily = core.get_daily_stats()
+                return jsonify({
+                    "success": True,
+                    "balance": round(core.get_balance(), 2),
+                    "pnl": round(daily.get("daily_pnl", 0), 2),
+                    "total_pnl": round(perf.get("total_pnl", 0), 2),
+                    "open_positions": perf.get("open_positions", 0),
+                    "closed_positions": perf.get("total_trades", 0),
+                    "daily_trades": daily.get("daily_trades", 0),
+                    "win_rate": _wr(perf.get("win_rate", 0)),
+                    "engine_ready": core.is_ready,
+                    "timestamp": datetime.now().isoformat(),
+                })
+            except Exception as e:
+                logger.error(f"[api_system_status] Failed to get core stats: {e}")
+                # Fallback response on error
+                return jsonify({
+                    "success": True, "balance": core.get_balance(), "pnl": 0,
+                    "total_pnl": 0, "open_positions": 0, "closed_positions": 0,
+                    "daily_trades": 0, "win_rate": 0, "engine_ready": core.is_ready,
+                    "timestamp": datetime.now().isoformat(),
+                })
+        
+        # No core initialized - return defaults
         return jsonify({
-            "success":          True,
-            "balance":          round(core.get_balance(), 2),
-            "pnl":              round(daily.get("daily_pnl", 0), 2),
-            "total_pnl":        round(perf.get("total_pnl", 0), 2),
-            "open_positions":   perf.get("open_positions", 0),
-            "closed_positions": perf.get("total_trades", 0),
-            "daily_trades":     daily.get("daily_trades", 0),
-            "win_rate":         _wr(perf.get("win_rate", 0)),
-            "engine_ready":     core.is_ready,
-            "timestamp":        datetime.now().isoformat(),
+            "success": True, "balance": _args.balance, "pnl": 0,
+            "total_pnl": 0, "open_positions": 0, "closed_positions": 0,
+            "daily_trades": 0, "win_rate": 0, "engine_ready": False,
+            "timestamp": datetime.now().isoformat(),
         })
-    return jsonify({
-        "success": True, "balance": _args.balance, "pnl": 0,
-        "total_pnl": 0, "open_positions": 0, "closed_positions": 0,
-        "daily_trades": 0, "win_rate": 0, "engine_ready": False,
-        "timestamp": datetime.now().isoformat(),
-    })
+    except Exception as e:
+        return handle_api_error(e, "/api/system-status", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — COMMAND CENTER
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/command-center")
+@_check_api_auth
+@_check_rate_limit
 def api_command_center():
     try:
         core = _core()
@@ -642,14 +888,18 @@ def api_command_center():
             "positions":        enriched_positions,
             "timestamp":        datetime.now().isoformat(),
         })
+    except APIError as e:
+        return handle_api_error(e, "/api/command-center", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/command-center", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — SIGNALS
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/signals/live")
+@_check_api_auth
+@_check_rate_limit
 def api_signals_live():
     try:
         core   = _core()
@@ -666,7 +916,7 @@ def api_signals_live():
                 # Fetch live price for current_price display
                 _cur_price = 0.0
                 try:
-                    _cp, _ = _fetcher.get_real_time_price(
+                    _cp, _ = _get_fetcher().get_real_time_price(
                         p.get("asset", ""), p.get("category", "forex")
                     )
                     if _cp:
@@ -708,19 +958,28 @@ def api_signals_live():
             "total_signals": len(signals), "buy_signals": buys,
             "sell_signals": sells, "avg_confidence": round(avg_conf * 100, 1),
         })
+    except APIError as e:
+        return handle_api_error(e, "/api/signals/live", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/signals/live", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — MARKET INTELLIGENCE (Chart + Heatmap + Correlation)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/chart/assets")
+@_check_api_auth
+@_check_rate_limit
 def api_chart_assets():
-    return jsonify({"success": True,
-                    "assets": [{"symbol": a, "category": c} for a, c in ALL_ASSETS]})
+    try:
+        return jsonify({"success": True,
+                        "assets": [{"symbol": a, "category": c} for a, c in ALL_ASSETS]})
+    except Exception as e:
+        return handle_api_error(e, "/api/chart/assets", 500)
 
 @app.route("/api/chart/candles")
+@_check_api_auth
+@_check_rate_limit
 def api_chart_candles():
     try:
         import pandas as pd
@@ -773,11 +1032,15 @@ def api_chart_candles():
             })
         candles.sort(key=lambda x: x["time"])
         return jsonify({"success": True, "candles": candles, "interval_used": used})
+    except APIError as e:
+        return handle_api_error(e, "/api/chart/candles", e.status_code)
     except Exception as e:
         logger.error(f"[candles] {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/chart/candles", 500)
 
 @app.route("/api/chart/stream")
+@_check_api_auth
+@_check_rate_limit
 def api_chart_stream():
     asset = request.args.get("asset", "EUR/USD")
     cat   = _cat(asset)
@@ -794,6 +1057,8 @@ def api_chart_stream():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 @app.route("/api/market/heatmap")
+@_check_api_auth
+@_check_rate_limit
 def api_market_heatmap():
     cached = _cache_get("heatmap")
     if cached is not None:
@@ -844,8 +1109,10 @@ def api_market_heatmap():
         payload = {"success": True, "items": results}
         _cache_set("heatmap", payload, ttl=60)   # refresh every 60s for live price changes
         return jsonify(payload)
+    except APIError as e:
+        return handle_api_error(e, "/api/market/heatmap", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/market/heatmap", 500)
 
 @app.route("/api/correlation-matrix")
 def api_correlation_matrix():
@@ -900,28 +1167,39 @@ def api_correlation_matrix():
         payload = {"success": True, "labels": list(corr.columns), "matrix": corr.values.tolist()}
         _cache_set("correlation", payload, ttl=600)
         return jsonify(payload)
+    except APIError as e:
+        return handle_api_error(e, "/api/correlation-matrix", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/correlation-matrix", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — AI PREDICTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/accuracy")
+@_check_api_auth
+@_check_rate_limit
 def api_accuracy():
-    days = min(int(request.args.get("days", 30)), 90)
-    if _pred_tracker:
-        return jsonify({"success": True, "data": _pred_tracker.get_accuracy_stats(days_back=days)})
-    return jsonify({"success": False, "data": {
-        "by_horizon": {
-            "1H":  {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
-            "4H":  {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
-            "24H": {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
-        },
-        "by_asset": {}, "recent": [], "days_back": days,
-    }})
+    try:
+        days = min(int(request.args.get("days", 30)), 90)
+        if _pred_tracker:
+            return jsonify({"success": True, "data": _pred_tracker.get_accuracy_stats(days_back=days)})
+        return jsonify({"success": False, "data": {
+            "by_horizon": {
+                "1H":  {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
+                "4H":  {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
+                "24H": {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
+            },
+            "by_asset": {}, "recent": [], "days_back": days,
+        }})
+    except APIError as e:
+        return handle_api_error(e, "/api/accuracy", e.status_code)
+    except Exception as e:
+        return handle_api_error(e, "/api/accuracy", 500)
 
 @app.route("/api/predictions/summary")
+@_check_api_auth
+@_check_rate_limit
 def api_predictions_summary():
     try:
         stats = _pred_tracker.get_accuracy_stats(days_back=30) if _pred_tracker else {}
@@ -965,14 +1243,18 @@ def api_predictions_summary():
                     "timestamp": s.get("timestamp", ""),
                 })
         return jsonify({"success": True, "predictions": preds, "accuracy": stats})
+    except APIError as e:
+        return handle_api_error(e, "/api/predictions/summary", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/predictions/summary", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — WHALE INTELLIGENCE
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/whale/summary")
+@_check_api_auth
+@_check_rate_limit
 def api_whale_summary():
     cached = _cache_get("whale_summary")
     if cached is not None:
@@ -1000,14 +1282,18 @@ def api_whale_summary():
         }
         _cache_set("whale_summary", payload, ttl=120)
         return jsonify(payload)
+    except APIError as e:
+        return handle_api_error(e, "/api/whale/summary", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/whale/summary", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — SENTIMENT INTELLIGENCE
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/sentiment/dashboard")
+@_check_api_auth
+@_check_rate_limit
 def api_sentiment_dashboard():
     cached = _cache_get("sentiment_dashboard")
     if cached is not None:
@@ -1079,10 +1365,14 @@ def api_sentiment_dashboard():
 
         _cache_set("sentiment_dashboard", result, ttl=300)
         return jsonify(result)
+    except APIError as e:
+        return handle_api_error(e, "/api/sentiment/dashboard", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/sentiment/dashboard", 500)
 
 @app.route("/api/sentiment/by-asset")
+@_check_api_auth
+@_check_rate_limit
 def api_sentiment_by_asset():
     cached = _cache_get("sentiment_by_asset")
     if cached is not None:
@@ -1157,10 +1447,14 @@ def api_sentiment_by_asset():
         # Cache 10 minutes — Reddit data doesn't change that fast
         _cache_set("sentiment_by_asset", payload, ttl=600)
         return jsonify(payload)
+    except APIError as e:
+        return handle_api_error(e, "/api/sentiment/by-asset", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/sentiment/by-asset", 500)
 
 @app.route("/api/market/events")
+@_check_api_auth
+@_check_rate_limit
 def api_market_events():
     try:
         events: List = []
@@ -1179,14 +1473,18 @@ def api_market_events():
         except Exception:
             pass
         return jsonify({"success": True, "events": events[:20]})
+    except APIError as e:
+        return handle_api_error(e, "/api/market/events", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/market/events", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — RISK DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/risk/portfolio")
+@_check_api_auth
+@_check_rate_limit
 def api_risk_portfolio():
     try:
         core = _core()
@@ -1235,14 +1533,18 @@ def api_risk_portfolio():
             "total_trades":   perf.get("total_trades", 0),
             "total_pnl":      perf.get("total_pnl", 0),
         })
+    except APIError as e:
+        return handle_api_error(e, "/api/risk/portfolio", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/risk/portfolio", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — STRATEGY LAB
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/strategy/performance")
+@_check_api_auth
+@_check_rate_limit
 def api_strategy_performance():
     try:
         core = _core()
@@ -1266,20 +1568,28 @@ def api_strategy_performance():
                      "exit_time": str(t.get("exit_time", ""))[:16],
                      "conf": float(t.get("confidence") or 0)} for t in trades[:50]]
         return jsonify({"success": True, "strategies": enriched, "timeline": timeline})
+    except APIError as e:
+        return handle_api_error(e, "/api/strategy/performance", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/strategy/performance", 500)
 
 @app.route("/api/backtest/strategies")
+@_check_api_auth
+@_check_rate_limit
 def api_backtest_strategies():
     try:
         from strategy_lab import StrategyBuilder
         presets  = list(StrategyBuilder.all_configs().keys())
         existing = ["voting", "rsi", "macd", "bollinger"]
         return jsonify({"success": True, "presets": presets, "existing": existing})
+    except APIError as e:
+        return handle_api_error(e, "/api/backtest/strategies", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/backtest/strategies", 500)
 
 @app.route("/api/backtest/run")
+@_check_api_auth
+@_check_rate_limit
 def api_backtest_run():
     try:
         asset    = request.args.get("asset", "BTC-USD")
@@ -1352,10 +1662,14 @@ def api_backtest_run():
             "metrics":  metrics,
             "trades":   r.trades,
         })
+    except APIError as e:
+        return handle_api_error(e, "/api/backtest/run", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/backtest/run", 500)
 
 @app.route("/api/backtest/compare")
+@_check_api_auth
+@_check_rate_limit
 def api_backtest_compare():
     try:
         asset    = request.args.get("asset", "BTC-USD")
@@ -1382,10 +1696,14 @@ def api_backtest_compare():
                 pass
         results.sort(key=lambda x: x["sharpe"], reverse=True)
         return jsonify({"success": True, "asset": asset, "results": results})
+    except APIError as e:
+        return handle_api_error(e, "/api/backtest/compare", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/backtest/compare", 500)
 
 @app.route("/api/backtest/optimize")
+@_check_api_auth
+@_check_rate_limit
 def api_backtest_optimize():
     try:
         asset    = request.args.get("asset", "BTC-USD")
@@ -1422,8 +1740,10 @@ def api_backtest_optimize():
             "total":    len(results),
             "top5":     top5,
         })
+    except APIError as e:
+        return handle_api_error(e, "/api/backtest/optimize", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/backtest/optimize", 500)
 
 @app.route("/api/backtest/multi-asset")
 def api_backtest_multi_asset():
@@ -1479,8 +1799,10 @@ def api_backtest_multi_asset():
         results.sort(key=lambda x: x.get("sharpe", -999), reverse=True)
         best = results[0]["asset"] if results else None
         return jsonify({"success": True, "strategy": strategy, "results": results, "best": best})
+    except APIError as e:
+        return handle_api_error(e, "/api/backtest/multi-asset", e.status_code)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return handle_api_error(e, "/api/backtest/multi-asset", 500)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — PHASE 1: DATA INGESTION
@@ -1707,6 +2029,8 @@ def api_trade_history():
 
 
 @app.route("/api/position/close", methods=["POST"])
+@_check_api_auth  # FIX SEC-05: Require API key authentication
+@_check_rate_limit  # FIX SEC-05: Rate limit critical endpoints
 def api_close_position():
     """Close a single position by trade_id."""
     try:
@@ -1725,6 +2049,8 @@ def api_close_position():
 
 
 @app.route("/api/position/close-bulk", methods=["POST"])
+@_check_api_auth  # FIX SEC-05: Require API key authentication
+@_check_rate_limit  # FIX SEC-05: Rate limit critical endpoints
 def api_close_bulk():
     """Close multiple positions by filter: all | category | losing | winning."""
     try:
@@ -1915,6 +2241,7 @@ def api_monitoring_errors():
 def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000) -> None:
     """Called by bot.py after engine.start(). Blocking — never returns."""
     inject_core(core)
+    _init_api_key()  # FIX SEC-05: Initialize API key authentication
 
     # Start background threads
     threading.Thread(target=_bg_refresh,       name="DashBgRefresh",     daemon=True).start()

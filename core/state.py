@@ -38,8 +38,12 @@ class SystemState:
 
         # ── Load ──────────────────────────────────────────────────────────
         self._load_json()                # load balance / cooldowns / counters
-        self._load_positions_from_db()   # restore open positions from DB
-        self._rebuild_stats_from_db()    # rebuild strategy/asset stats from trades table
+        # DB loads delayed until init_db() called after DB ready
+
+    def init_db(self) -> None:
+        """Load DB-dependent state after DB is initialized."""
+        self._load_positions_from_db()
+        self._rebuild_stats_from_db()
 
     # ── Positions ─────────────────────────────────────────────────────────────
 

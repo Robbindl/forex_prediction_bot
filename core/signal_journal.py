@@ -129,7 +129,8 @@ class SignalJournal:
                     .replace("_", "\\_")
                     .replace("*", "\\*")
                     .replace("`", "\\`")
-                    .replace("[", "\\["))
+                    .replace("[", "\\[")
+                    .replace("]", "\\]"))
 
     def to_telegram(self, signal=None) -> str:
         """

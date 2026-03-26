@@ -37,6 +37,7 @@ def create_db_engine(max_retries: int = 5, retry_delay: int = 3):
         except Exception as e:
             logger.warning(f"[DB] Connection attempt {attempt}/{max_retries} failed: {e}")
             if attempt < max_retries:
+                logger.info(f"[DB] Retrying in {retry_delay}s...")
                 time.sleep(retry_delay)
 
     raise RuntimeError(
@@ -62,6 +63,26 @@ def init_db() -> None:
     )
     Base.metadata.create_all(bind=engine)
     logger.info("[DB] All tables created / verified")
+
+    # Create whale tables (raw SQL DDL)
+    from whale_intelligence.wallet_database import (
+        _CREATE_WALLETS, _CREATE_BALANCES, _CREATE_MOVEMENTS, _CREATE_PROFILES
+    )
+    with engine.connect() as conn:
+        conn.execute(text(_CREATE_WALLETS))
+        conn.execute(text(_CREATE_BALANCES))
+        conn.execute(text(_CREATE_MOVEMENTS))
+        conn.execute(text(_CREATE_PROFILES))
+        conn.commit()
+    logger.info("[DB] Whale tables created / verified")
+
+    # Create strategy tables
+    from core.pipeline_reporter import _CREATE_STRATEGY_PERFORMANCE, _CREATE_STRATEGY_OPTIMISATION
+    with engine.connect() as conn:
+        conn.execute(text(_CREATE_STRATEGY_PERFORMANCE))
+        conn.execute(text(_CREATE_STRATEGY_OPTIMISATION))
+        conn.commit()
+    logger.info("[DB] Strategy tables created / verified")
 
 
 def get_db():

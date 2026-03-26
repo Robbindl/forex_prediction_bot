@@ -76,6 +76,14 @@ EMAIL_USERNAME = os.getenv("EMAIL_USERNAME", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DASHBOARD / WEB INTERFACE
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEVELOPMENT_MODE = os.getenv("DEVELOPMENT_MODE", "false").lower() == "true"
+DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
+SESSION_TOKEN_TTL = int(os.getenv("SESSION_TOKEN_TTL", "3600"))  # 1 hour default
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DATABASE
 # ─────────────────────────────────────────────────────────────────────────────
 

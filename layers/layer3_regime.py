@@ -81,18 +81,6 @@ class RegimeLayer:
 
         # ── Regime gate ───────────────────────────────────────────────────
         allowed = self._ALLOWED.get(signal.direction, {"unknown"})
-        if regime not in allowed:
-            reason  = f"regime '{regime}' conflicts with {signal.direction}"
-            penalty = 0.08
-            signal.reduce(penalty)
-            signal.journal.record(
-                layer=LAYER, name=self.name, decision=PASS,
-                reason=reason,
-                conf_before=conf_before, conf_after=signal.confidence,
-                data={"regime": regime, "imbalance": round(imbalance, 3), "penalty": penalty},
-            )
-            logger.log_pipeline(signal.asset, LAYER, "REGIME_PENALTY", reason)
-
         if regime == "volatile":
             signal.reduce(0.1)
             reason = "volatile regime — confidence penalty"
@@ -103,6 +91,17 @@ class RegimeLayer:
                 data={"regime": regime},
             )
             logger.log_pipeline(signal.asset, LAYER, "VOLATILE_PENALTY", reason)
+        elif regime not in allowed:
+            reason  = f"regime '{regime}' conflicts with {signal.direction}"
+            penalty = 0.08
+            signal.reduce(penalty)
+            signal.journal.record(
+                layer=LAYER, name=self.name, decision=PASS,
+                reason=reason,
+                conf_before=conf_before, conf_after=signal.confidence,
+                data={"regime": regime, "imbalance": round(imbalance, 3), "penalty": penalty},
+            )
+            logger.log_pipeline(signal.asset, LAYER, "REGIME_PENALTY", reason)
 
         # ── Confidence adjustments ────────────────────────────────────────
         if regime in ("trending_up", "trending_down"):
