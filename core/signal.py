@@ -64,8 +64,10 @@ class Signal:
             self.layer_reached = layer
 
     def boost(self, delta: float) -> None:
-        """Increase confidence, capped at 1.0."""
-        self.confidence = min(1.0, self.confidence + delta)
+        """Increase confidence, capped at 0.95 to prevent false certainty."""
+        # Confidence > 0.95 skews risk/reward and trades become overconfident even with
+        # perfect backtests. Keep a 5% uncertainty buffer for unknown unknowns.
+        self.confidence = min(0.95, self.confidence + delta)
 
     def reduce(self, delta: float) -> None:
         """Decrease confidence, floor at 0.0."""

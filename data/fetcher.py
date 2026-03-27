@@ -112,6 +112,21 @@ _NO_INTRADAY = {"commodities", "indices"}
 _FINNHUB_CATEGORIES = {"crypto"}
 
 
+def _extract_error_summary(error_obj: Exception) -> str:
+    """Extract error code/message from exception, ignore HTML payload."""
+    err_str = str(error_obj)
+    # If it's an HTML error (500, 502, etc), extract just the code
+    if "<html>" in err_str.lower() or "<!doctype" in err_str.lower():
+        import re
+        match = re.search(r"Error code (\d+)|(\d{3}) ", err_str)
+        if match:
+            code = match.group(1) or match.group(2)
+            return f"HTTP {code} (server error)"
+        return "HTTP error (server error)"
+    # Otherwise return first 100 chars of error
+    return err_str[:100]
+
+
 def _yf_symbol(asset: str, category: str) -> str:
     if category == "forex":
         return _FOREX_SUFFIX.get(asset, asset.replace("/", "") + "=X")
@@ -152,6 +167,7 @@ class DataFetcher:
     def __init__(self):
         self._td_client = None
         self._fh_client = None
+        self._td_ws_subscriptions = {}     # Placeholder for future WebSocket tracking
         self._init_clients()
 
     def _init_clients(self) -> None:
@@ -163,10 +179,10 @@ class DataFetcher:
                     break
                 except Exception as e:
                     if attempt == 0:
-                        logger.warning(f"[DataFetcher] TwelveData init failed, retrying in 5s: {e}")
+                        logger.debug(f"[DataFetcher] TwelveData init failed, retrying in 5s: {_extract_error_summary(e)}")
                         import time; time.sleep(5)
                     else:
-                        logger.warning(f"[DataFetcher] TwelveData unavailable — falling back to yfinance: {e}")
+                        logger.debug(f"[DataFetcher] TwelveData unavailable — falling back to yfinance: {_extract_error_summary(e)}")
         if FINNHUB_API_KEY:
             try:
                 import finnhub
@@ -221,7 +237,7 @@ class DataFetcher:
             if itick_info:
                 df = self._fetch_itick(itick_info[0], itick_info[1], interval, periods, category)
 
-        # 2. TwelveData — forex + crypto backup
+        # 2. TwelveData REST — forex + crypto (available if needed)
         if df is None and self._td_client and category in ("forex", "crypto"):
             td_sym = _td_symbol(asset, category)
             if td_sym:
@@ -236,7 +252,7 @@ class DataFetcher:
         # It is wired into get_real_time_price() only (for current CL=F price checks).
         # yfinance handles CL=F OHLCV history reliably.
 
-        # Universal fallback — 15-min delay but always works
+        # 5. Universal fallback — yfinance (always works, free, reliable)
         if df is None:
             yf_sym = _yf_symbol(asset, category)
             df = self._fetch_yf(yf_sym, interval, periods)
@@ -273,7 +289,8 @@ class DataFetcher:
             elif "invalid" in msg and "interval" in msg:
                 logger.warning(f"[DataFetcher] TwelveData invalid interval for {symbol}: {e}")
             else:
-                logger.error(f"[DataFetcher] TwelveData fetch failed for {symbol}: {e}")
+                # Downgrade to DEBUG — TwelveData backend errors (5xx) are transient and handled by fallback chain
+                logger.debug(f"[DataFetcher] TwelveData fetch failed for {symbol}: {_extract_error_summary(e)}")
             return None
 
     def _fetch_yf(self, symbol: str, interval: str, periods: int) -> Optional[pd.DataFrame]:

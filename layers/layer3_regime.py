@@ -81,9 +81,25 @@ class RegimeLayer:
 
         # ── Regime gate ───────────────────────────────────────────────────
         allowed = self._ALLOWED.get(signal.direction, {"unknown"})
+        
+        # Boost for strong trend alignment (best setup)
+        if regime in ("trending_up", "trending_down"):
+            if (signal.direction == "BUY" and regime == "trending_up") or \
+               (signal.direction == "SELL" and regime == "trending_down"):
+                signal.boost(0.06)
+                reason = f"trade direction perfectly aligned with {regime} regime (+0.06)"
+                signal.journal.record(
+                    layer=LAYER, name=self.name, decision=PASS,
+                    reason=reason,
+                    conf_before=conf_before, conf_after=signal.confidence,
+                    data={"regime": regime, "boost": "trend_aligned"},
+                )
+                logger.log_pipeline(signal.asset, LAYER, "TREND_BOOST", reason)
+        
+        # Volatile regime penalty (spreads widen, stops hunted more)
         if regime == "volatile":
-            signal.reduce(0.1)
-            reason = "volatile regime — confidence penalty"
+            signal.reduce(0.12)
+            reason = "volatile regime — higher execution risk and slippage"
             signal.journal.record(
                 layer=LAYER, name=self.name, decision=PASS,
                 reason=reason,
@@ -91,9 +107,11 @@ class RegimeLayer:
                 data={"regime": regime},
             )
             logger.log_pipeline(signal.asset, LAYER, "VOLATILE_PENALTY", reason)
+        
+        # Regime misalignment penalty (weak setup)
         elif regime not in allowed:
-            reason  = f"regime '{regime}' conflicts with {signal.direction}"
-            penalty = 0.08
+            reason  = f"regime '{regime}' conflicts with {signal.direction} direction"
+            penalty = 0.12  # stronger penalty than before
             signal.reduce(penalty)
             signal.journal.record(
                 layer=LAYER, name=self.name, decision=PASS,
@@ -102,10 +120,6 @@ class RegimeLayer:
                 data={"regime": regime, "imbalance": round(imbalance, 3), "penalty": penalty},
             )
             logger.log_pipeline(signal.asset, LAYER, "REGIME_PENALTY", reason)
-
-        # ── Confidence adjustments ────────────────────────────────────────
-        if regime in ("trending_up", "trending_down"):
-            signal.boost(0.03)
 
         # Order flow boost — only meaningful if we actually have order flow data
         if profile.use_order_flow:

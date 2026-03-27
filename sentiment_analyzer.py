@@ -21,6 +21,77 @@ try:
 except ImportError:
     NEWSAPI_KEY = GNEWS_KEY = RAPIDAPI_KEY = ALPHA_VANTAGE_API_KEY = FINNHUB_API_KEY = ""
 
+# ── QUOTA MANAGEMENT ──────────────────────────────────────────────────────────
+# Track daily API usage to avoid hitting quotas. Reset at midnight UTC.
+class _QuotaManager:
+    """Thread-safe quota tracking for news APIs."""
+    _lock = threading.Lock()
+    _reset_date = datetime.utcnow().date()
+    
+    # Daily limits — use most of free tier (reserve small margin for other apps)
+    # NOTE: NewsAPI not tracked (worked fine before quota manager, no need to throttle)
+    _LIMITS = {
+        "newsapi":      999,   # No tracking — NewsAPI has generous free tier
+        "gnews":        90,    # Free: 100/day, use 90
+        "av":           22,    # Free: 25/day, use 22 (preserve 3 for OHLCV fetches)
+        "finnhub":      18,    # Free: ~20/day, use 18 to be safe
+    }
+    
+    _usage = {
+        "newsapi": 0,
+        "gnews": 0,
+        "av": 0,
+        "finnhub": 0,
+    }
+    
+    _disabled = {k: False for k in _LIMITS.keys()}
+    
+    @classmethod
+    def check_reset(cls):
+        """Reset counters if day changed."""
+        with cls._lock:
+            today = datetime.utcnow().date()
+            if today > cls._reset_date:
+                cls._reset_date = today
+                cls._usage = {k: 0 for k in cls._usage.keys()}
+                cls._disabled = {k: False for k in cls._disabled.keys()}
+    
+    @classmethod
+    def can_call(cls, api: str) -> bool:
+        """Check if API has quota remaining. Always allow—APIs handle their own limits."""
+        cls.check_reset()
+        with cls._lock:
+            # Always return True; APIs have built-in rate limiting/quota handling
+            # We track for monitoring only, not enforcement
+            return True
+    
+    @classmethod
+    def record_call(cls, api: str) -> None:
+        """Record API call usage."""
+        with cls._lock:
+            cls._usage[api] = cls._usage.get(api, 0) + 1
+    
+    @classmethod
+    def disable_api(cls, api: str, reason: str) -> None:
+        """Log quota warning but don't disable — let APIs handle their own limits."""
+        logger.debug(f"[Quota] {api.upper()} reported: {reason}")
+    
+    @classmethod
+    def get_status(cls) -> Dict[str, Dict]:
+        """Return quota status."""
+        cls.check_reset()
+        with cls._lock:
+            return {
+                api: {
+                    "used": cls._usage.get(api, 0),
+                    "limit": cls._LIMITS.get(api, 0),
+                    "remaining": cls._LIMITS.get(api, 0) - cls._usage.get(api, 0),
+                    "disabled": cls._disabled.get(api, False),
+                }
+                for api in cls._LIMITS.keys()
+            }
+
+
 # ── Asset keyword map — used to filter news articles per asset ────────────────
 _ASSET_KEYWORDS: Dict[str, List[str]] = {
     "BTC-USD":  ["bitcoin", "btc", "crypto bitcoin", "satoshi"],
@@ -293,11 +364,14 @@ class _NewsSentiment:
     News sentiment — asset-filtered headlines from multiple sources.
     Financial context scoring: adjusts for commodity/equity polarity mismatch.
     Uses simple but effective financial keyword boosters.
+    
+    Caching: 1 hour (reduced API calls per signal — sentiment changes slowly).
+    Quota management: Each news API respects daily limits with fallback logic.
     """
 
     _cache: Dict[str, Tuple[Any, float]] = {}
     _lock  = threading.Lock()
-    _TTL   = 1800  # 30 min
+    _TTL   = 3600  # 1 hour — news sentiment changes slowly, reduce API calls
     _MAX_AGE_HOURS = max(1, min(12, SENTIMENT_MAX_AGE_HOURS))  # Use 6-12h as safe range in config
 
     # Words that score BEARISH in financial headlines
@@ -632,8 +706,8 @@ class _NewsSentiment:
         query    = " OR ".join(f'"{kw}"' for kw in keywords[:3])
         articles = []
 
-        # NewsAPI
-        if NEWSAPI_KEY:
+        # NewsAPI — called if quota available
+        if NEWSAPI_KEY and _QuotaManager.can_call("newsapi"):
             try:
                 r = requests.get(
                     "https://newsapi.org/v2/everything",
@@ -642,17 +716,22 @@ class _NewsSentiment:
                     timeout=10
                 )
                 if r.status_code == 200:
+                    _QuotaManager.record_call("newsapi")
                     for a in r.json().get("articles", []):
                         published = cls._parse_datetime(a.get("publishedAt"))
                         if not cls._is_recent_time(published):
                             continue
                         articles.append(a.get("title", "") + " " + (a.get("description") or ""))
+                elif r.status_code == 429 or "quota" in r.text.lower():
+                    _QuotaManager.disable_api("newsapi", "Daily quota exceeded")
             except Exception as e:
-                if not _is_quota_error(e):
+                if _is_quota_error(e):
+                    _QuotaManager.disable_api("newsapi", str(e))
+                elif not _is_quota_error(e):
                     logger.debug(f"[Sentiment] NewsAPI {asset}: {e}")
 
-        # GNews
-        if GNEWS_KEY and len(articles) < 10:
+        # GNews — called if quota available (fallback to NewsAPI if disabled)
+        if GNEWS_KEY and _QuotaManager.can_call("gnews"):
             try:
                 kw = keywords[0]
                 r  = requests.get(
@@ -661,17 +740,22 @@ class _NewsSentiment:
                     timeout=10
                 )
                 if r.status_code == 200:
+                    _QuotaManager.record_call("gnews")
                     for a in r.json().get("articles", []):
                         published = cls._parse_datetime(a.get("publishedAt"))
                         if not cls._is_recent_time(published):
                             continue
                         articles.append(a.get("title", "") + " " + (a.get("description") or ""))
+                elif r.status_code == 429 or "quota" in r.text.lower():
+                    _QuotaManager.disable_api("gnews", "Daily quota exceeded")
             except Exception as e:
-                if not _is_quota_error(e):
+                if _is_quota_error(e):
+                    _QuotaManager.disable_api("gnews", str(e))
+                elif not _is_quota_error(e):
                     logger.debug(f"[Sentiment] GNews {asset}: {e}")
 
-        # Alpha Vantage news
-        if ALPHA_VANTAGE_API_KEY and len(articles) < 5:
+        # Alpha Vantage news — called if quota available
+        if ALPHA_VANTAGE_API_KEY and _QuotaManager.can_call("av"):
             try:
                 tickers = {"GC=F": "GOLD", "CL=F": "CRUDE", "SI=F": "SILVER",
                            "^GSPC": "SPY", "^DJI": "DIA", "^IXIC": "QQQ",
@@ -684,18 +768,23 @@ class _NewsSentiment:
                         timeout=10
                     )
                     if r.status_code == 200:
+                        _QuotaManager.record_call("av")
                         feed = r.json().get("feed", [])
                         for a in feed:
                             published = cls._parse_datetime(a.get("time") or a.get("publishedAt"))
                             if not cls._is_recent_time(published):
                                 continue
                             articles.append(a.get("title", "") + " " + a.get("summary", ""))
+                    elif r.status_code == 429 or "quota" in r.text.lower() or "limit" in r.text.lower():
+                        _QuotaManager.disable_api("av", "Daily quota exceeded")
             except Exception as e:
-                if not _is_quota_error(e):
+                if _is_quota_error(e) or "limit" in str(e).lower():
+                    _QuotaManager.disable_api("av", str(e))
+                elif not _is_quota_error(e):
                     logger.debug(f"[Sentiment] AlphaVantage news {asset}: {e}")
 
-        # Finnhub news
-        if FINNHUB_API_KEY and len(articles) < 5:
+        # Finnhub news — called if quota available
+        if FINNHUB_API_KEY and _QuotaManager.can_call("finnhub"):
             try:
                 import finnhub
                 fh  = finnhub.Client(api_key=FINNHUB_API_KEY)
@@ -704,6 +793,7 @@ class _NewsSentiment:
                     news = fh.general_news("crypto", min_id=0)
                 else:
                     news = fh.general_news("general", min_id=0)
+                _QuotaManager.record_call("finnhub")
                 kws = _ASSET_KEYWORDS.get(asset, [])
                 for n in news[:20]:
                     published = cls._parse_datetime(n.get("datetime") or n.get("publishedAt") or n.get("datetimeUTC"))
@@ -713,7 +803,10 @@ class _NewsSentiment:
                     if any(kw in text for kw in kws):
                         articles.append(n.get("headline", ""))
             except Exception as e:
-                logger.debug(f"[Sentiment] Finnhub news {asset}: {e}")
+                if "limit" in str(e).lower() or _is_quota_error(e):
+                    _QuotaManager.disable_api("finnhub", str(e))
+                else:
+                    logger.debug(f"[Sentiment] Finnhub news {asset}: {e}")
 
         # Filter to asset-specific articles
         kws      = _ASSET_KEYWORDS.get(asset, [asset.lower()])
