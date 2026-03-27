@@ -130,9 +130,9 @@ def _get_news_state(category: str) -> Dict:
 
 
 _SESSION_BOOST: Dict[str, float] = {
-    "london":   0.04,
-    "new_york": 0.03,
-    "tokyo":    0.02,
+    "europe": 0.04,   # London session  — _active_session() returns "europe"
+    "us":     0.03,   # New York session — _active_session() returns "us"
+    "asia":   0.02,   # Tokyo session   — _active_session() returns "asia"
 }
 
 

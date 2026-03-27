@@ -157,10 +157,49 @@ class TradingCore:
             # ──────────────────────────────────────────────────────────────
 
             ctx = self._build_context(canonical, category)
-            sig = Signal(
-                asset=asset, canonical_asset=canonical,
-                direction="BUY", category=category, confidence=0.5,
-            )
+
+            # Use the strategy + predictor singletons to generate a real
+            # directional signal — same pattern as _process_asset() in the
+            # trading loop.  Previously this seeded direction="BUY" with
+            # confidence=0.5 and skipped the strategy entirely, meaning the
+            # dashboard fallback path always showed a BUY bias regardless of
+            # what RSI/MACD/Bollinger actually said.
+            sig = None
+            if self._strategy and self.fetcher:
+                try:
+                    price_data = self._fetch_price_data(canonical, category)
+                    if price_data is not None and not price_data.empty:
+                        sig = self._strategy.generate(
+                            canonical, canonical, category, price_data
+                        )
+                        if sig:
+                            price, spread = 0.0, 0.0
+                            try:
+                                price, spread = self.fetcher.get_real_time_price(
+                                    canonical, category
+                                )
+                                price  = price  or 0.0
+                                spread = spread or 0.0
+                            except Exception:
+                                pass
+                            ctx["price_data"] = price_data
+                            ctx["spread"]     = spread
+                            if self._predictor:
+                                ml_prob, ml_conf = self._predictor.predict(
+                                    canonical, category, price_data
+                                )
+                                ctx["ml_prediction"] = ml_prob
+                                ctx["ml_confidence"] = ml_conf
+                except Exception as _e:
+                    logger.debug(
+                        f"[TradingCore] get_signal_for_asset strategy gen "
+                        f"failed for {asset}: {_e}"
+                    )
+                    sig = None
+
+            if sig is None:
+                return None
+
             result = self.pipeline.run(sig, ctx)
             return result.to_dict() if result else None
         except Exception as e:
@@ -620,8 +659,30 @@ class TradingCore:
             except Exception as _pre:
                 logger.debug(f"[TradingCore] PortfolioRisk check error: {_pre}")
 
+        # Order Flow Intelligence: Check liquidation walls & stop hunts
+        # Only active for crypto assets (forex/indices don't have order book data)
+        signal_dict = signal.to_dict()
+        if signal.category == "crypto":
+            try:
+                from order_flow import get_validator
+                validator = get_validator()
+                
+                # Check if signal is safe to execute (rejects hunts, walls, etc)
+                allowed, reason = validator.validate_signal(signal_dict)
+                if not allowed:
+                    logger.warning(
+                        f"[TradingCore] Order flow blocked {signal.asset}: {reason}"
+                    )
+                    return False
+                
+                # Adjust signal parameters based on current order flow conditions
+                # (tighten stop loss near walls, reduce size if hunt activity high)
+                signal_dict = validator.adjust_signal(signal_dict)
+            except Exception as _ofe:
+                logger.debug(f"[TradingCore] Order flow check error: {_ofe}")
+
         try:
-            trade = self._paper_trader.execute_signal(signal.to_dict())
+            trade = self._paper_trader.execute_signal(signal_dict)
             if trade:
                 self.state.add_position(trade)
                 logger.log_trade(

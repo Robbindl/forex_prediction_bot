@@ -3,10 +3,11 @@ from __future__ import annotations
 import threading
 from typing import Dict, List
 
-from order_flow.orderbook_processor    import OrderbookProcessor
+from order_flow.orderbook_processor     import OrderbookProcessor
 from order_flow.liquidity_wall_detector import LiquidityWallDetector
-from order_flow.imbalance_detector     import ImbalanceDetector
-from order_flow.stop_hunt_detector     import StopHuntDetector
+from order_flow.imbalance_detector      import ImbalanceDetector
+from order_flow.stop_hunt_detector      import StopHuntDetector
+from order_flow.signal_validator        import OrderFlowSignalValidator, get_validator
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -107,6 +108,8 @@ def start_all() -> None:
         target=_subscribe_loop, name="OrderFlowSub", daemon=True
     )
     _sub_thread.start()
+    # Start signal validator (subscribes to Redis alerts, validates trades)
+    get_validator().start()
     logger.info(f"[OrderFlow] Started — monitoring {len(TRACKED_ASSETS)} assets")
 
 
@@ -114,6 +117,7 @@ def stop_all() -> None:
     """Graceful shutdown."""
     global _running
     _running = False
+    get_validator().stop()
 
 
 def get_snapshot(asset: str) -> dict:
@@ -132,4 +136,5 @@ __all__ = [
     "start_all", "stop_all", "get_snapshot", "get_imbalance",
     "OrderbookProcessor", "LiquidityWallDetector",
     "ImbalanceDetector", "StopHuntDetector",
+    "get_validator", "OrderFlowSignalValidator",
 ]
