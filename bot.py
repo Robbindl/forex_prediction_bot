@@ -1,18 +1,3 @@
-"""
-bot.py — Single entry point for the trading platform.
-
-Startup sequence:
-  1. Load config
-  2. Init logger
-  3. Validate API keys (raises if required keys missing)
-  4. Connect to database (required — exits if unavailable)
-  5. Init TradingCore
-  6. Start trading loop (daemon thread)
-  7. Start auto-trainer (daemon thread)
-  8. Start Node.js WebSocket gateway (optional)
-  9. Start Telegram commander 
- 10. Start Flask dashboard (blocking — main thread)
-"""
 from __future__ import annotations
 import argparse
 import sys

@@ -1,8 +1,3 @@
-"""
-fix_stale_positions.py — Clean stale open positions from DB.
-Uses raw SQL to avoid ORM column mismatch issues.
-Run ONCE while bot is stopped:  python fix_stale_positions.py
-"""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

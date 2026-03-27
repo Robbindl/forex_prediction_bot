@@ -1,33 +1,3 @@
-"""
-data_ingestion/news_event_monitor.py — Real-time economic news event monitor.
-
-Polls the Finnhub economic calendar every 15 minutes and tracks
-high-impact events (FOMC, CPI, NFP, GDP, etc).
-
-Behaviour per event
--------------------
-    PRE-EVENT  (-60 to 0 min):   Block signals for affected assets
-    ACTIVE     (0 to +15 min):   Block signals — spreads widen, slippage spikes
-    POST-EVENT (+15 to +90 min): Boost signals in surprise direction
-
-Published to Redis
-------------------
-    NEWS_EVENT_UPCOMING   — 60 min before a high-impact event
-    NEWS_EVENT_ACTIVE     — event is happening right now
-    NEWS_EVENT_RELEASED   — actual vs forecast known, direction determined
-
-Asset impact mapping
---------------------
-    FOMC / Fed Funds / CPI / NFP / GDP → forex, commodities, indices, crypto
-    Fed Funds Rate change               → all categories
-    Oil inventory                       → commodities only
-    Earnings                            → indices, stocks
-
-Integration
------------
-    Called from Layer 4 via get_event_state(asset)
-    Returns: {"state": "clear|pre|active|post", "direction": "BUY|SELL|", "impact": "HIGH|MEDIUM"}
-"""
 from __future__ import annotations
 
 import json

@@ -1,25 +1,3 @@
-"""
-layers/layer4_session.py — Trading session + news event filter.
-
-Two gates in one layer:
-    1. Market hours  — kills signals when market is genuinely closed
-    2. News events   — blocks signals before/during high-impact releases,
-                       boosts signals after a surprise
-
-Market hours (UTC, weekdays only):
-    Crypto       — 24/7
-    Forex        — 22:00 Sun – 22:00 Fri (any active session)
-    Stocks       — 13:00–21:00 (NYSE)
-    Indices      — 13:00–21:00 (NYSE)
-    Commodities  — 22:00 Sun – 21:00 Fri (CME/NYMEX, 23h/day)
-                   Closed daily 21:00–22:00 UTC
-
-News event behaviour:
-    PRE  (-60 to 0 min before):  KILL — unpredictable pre-event drift
-    ACTIVE (0 to +15 min):       KILL — spreads widen, stops get hunted
-    POST (+15 to +90 min):       BOOST if surprise direction matches signal
-                                 REDUCE if surprise direction opposes signal
-"""
 from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional

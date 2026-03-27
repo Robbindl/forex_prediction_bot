@@ -1,12 +1,3 @@
-"""
-monitoring/system_health_service.py — System health + data freshness monitor.
-
-Changes vs original:
-  - Added per-source data freshness tracking with configurable max-age thresholds.
-  - Added signal_blocked_reason tracking when freshness violations block signals.
-  - All exceptions properly logged (no silent pass).
-  - Source health is exposed via get_source_health() for dashboard API.
-"""
 from __future__ import annotations
 
 import os

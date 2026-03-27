@@ -1,11 +1,3 @@
-"""
-layers/layer1_voting.py — Strategy voting gate.
-
-Changes vs original:
-  - Marks signal.metadata["ml_prediction_real"] so the pipeline data
-    integrity gate can distinguish a genuine ML prediction from a fallback.
-  - All exceptions logged (no silent pass).
-"""
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from core.signal import Signal

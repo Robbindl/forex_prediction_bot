@@ -1,10 +1,3 @@
-"""
-layers/layer2_quality.py — Signal quality gate (R:R and spread check).
-
-Changes vs original:
-  - All exceptions explicitly logged (no silent pass).
-  - Zero division protected with logged warning.
-"""
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from core.signal import Signal

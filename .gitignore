@@ -265,3 +265,4 @@ services/redis_dump.rdb
 DEPLOYMENT_GUIDE.md
 CHANGELOG.md
 BOOST_RISK_ANALYSIS.md
+API_AUDIT.md

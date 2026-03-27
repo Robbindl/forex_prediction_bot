@@ -1,13 +1,3 @@
-"""
-core/pipeline.py — 8-layer signal pipeline with data integrity gating.
-
-Changes vs original:
-  - Data integrity gate: after all layers run, counts how many sources
-    provided REAL data.  If fewer than profile.min_valid_layers sources
-    contributed, the signal is killed with reason "Insufficient real data".
-  - All exception handlers log errors (no silent pass).
-  - DEBUG_FORCE_SURVIVE env var still works for testing.
-"""
 from __future__ import annotations
 
 import os

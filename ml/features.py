@@ -1,11 +1,3 @@
-"""
-ml/features.py — Single source of truth for ML feature engineering.
-
-Both trainer and predictor use this to ensure feature count consistency.
-Previously trainer produced 6 features, predictor expected 10, causing
-ValueError when calling model.predict_proba() on trained models.
-"""
-
 from __future__ import annotations
 import numpy as np
 import pandas as pd

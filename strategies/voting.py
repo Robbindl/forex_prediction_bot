@@ -1,7 +1,3 @@
-"""
-strategies/voting.py — Ensemble voting strategy.
-Merges strategies/voting_engine.py. All strategies vote; majority wins.
-"""
 from __future__ import annotations
 from typing import List, Optional
 import pandas as pd

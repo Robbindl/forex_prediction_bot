@@ -1,12 +1,3 @@
-"""
-Signal validator that integrates liquidation walls and stop hunts into trade execution.
-
-Subscribes to LIQUIDITY_WALL_DETECTED and STOP_HUNT_DETECTED Redis alerts
-and uses them to:
-  1. Reject trades at dangerous levels
-  2. Tighten stop losses near walls
-  3. Reduce position size if stops are being hunted frequently
-"""
 from __future__ import annotations
 
 import time

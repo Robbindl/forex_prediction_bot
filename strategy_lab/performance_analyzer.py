@@ -12,11 +12,6 @@ logger = get_logger()
 
 TRADING_DAYS_PER_YEAR = 252
 
-# FIX: annualisation factors per timeframe.
-# Previously sqrt(252) was used for ALL timeframes including 15m bars,
-# producing Sharpe values that were sqrt(252*96/252) = sqrt(96) ≈ 9.8× too
-# small.  A strategy with true annualised Sharpe 1.5 appeared as 0.15,
-# making PipelineReporter rank strategies on effectively meaningless numbers.
 _BARS_PER_DAY = {
     "1d": 1, "4h": 6, "1h": 24, "30m": 48, "15m": 96, "5m": 288, "1m": 1440,
 }

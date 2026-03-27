@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _header(title: str) -> None:

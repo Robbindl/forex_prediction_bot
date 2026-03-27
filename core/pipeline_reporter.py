@@ -1,40 +1,5 @@
 from __future__ import annotations
 
-"""
-core/pipeline_reporter.py — Post-pipeline reporter.
-
-After every signal completes the 7-layer pipeline (pass or fail),
-this module:
-
-  1. Runs an auto-backtest on the signal's asset using the active strategy
-     (Option A) — adjusts confidence up/down based on historical win rate,
-     adds backtest entry to the Signal Journal.
-
-  2. Stores performance data in the database (Option C) — every backtest
-     result is persisted so the dashboard can show live strategy stats.
-
-  3. Runs a daily background optimiser (Option C) — finds best parameters
-     per asset automatically, stores results in DB.
-
-  4. Sends the full Signal Journal to Telegram — every stage's decision
-     in one formatted message, including the backtest result.
-
-  5. Publishes SIGNAL_JOURNAL_UPDATE to Redis — for the dashboard live feed.
-
-Confidence adjustment rules
-----------------------------
-    win_rate >= 0.65  → boost  +0.04 (strong historical edge)
-    win_rate >= 0.55  → boost  +0.02 (positive edge)
-    win_rate >= 0.50  → no change
-    win_rate <  0.50  → reduce −0.03 (weak historical)
-    win_rate <  0.40  → reduce −0.06 (poor historical — warn on Telegram)
-    trades   <  10    → no adjustment (insufficient data)
-
-The pipeline still makes the final decision via Layer 7's confidence
-floor — the backtest adjustment just nudges the confidence. It never
-outright blocks a signal.
-"""
-
 # ── DDL for strategy tables ───────────────────────────────────────────────────
 
 _CREATE_STRATEGY_PERFORMANCE = """

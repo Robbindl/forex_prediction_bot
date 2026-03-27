@@ -1,12 +1,4 @@
 import os
-"""
-WebSocket Manager - Real-time market data
-Sources:
-  • Bybit       — Crypto (BTC, ETH, SOL, XRP, BNB …)
-  • Finnhub     — Stocks (AAPL, MSFT, GOOGL …)
-  • Twelve Data — Forex + Commodities (EUR/USD, XAU/USD, XAG/USD, WTI …)
-"""
-
 import websockets
 import asyncio
 import json

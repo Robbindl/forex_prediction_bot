@@ -1,17 +1,3 @@
-"""risk/position_sizer.py — JustMarkets/TIOmarkets-accurate position sizer.
-
-Contract specs sourced from TIOmarkets (same model as JustMarkets):
-  - BTC: 1 lot = 1 BTC, tick=$0.01
-  - ETH: 1 lot = 10 ETH, tick=$0.10
-  - SOL: 1 lot = 100 SOL, tick=$0.10
-  - XRP: 1 lot = 10,000 XRP, tick=$1.00
-  - BNB: 1 lot = 10 BNB, tick=$0.10
-
-Base lot sizes calculated so that a medium realistic move = ~$2,000 P&L
-(Gold standard: $100 move at 0.2 lots = $2,000)
-
-Confidence scaling: linear 1.0× → 2.0× from conf 0.62 → 0.90
-"""
 from __future__ import annotations
 from utils.logger import get_logger
 

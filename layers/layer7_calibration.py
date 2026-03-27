@@ -23,12 +23,6 @@ class CalibrationLayer:
         max_spread_pct = SPREAD_THRESHOLDS.get(category, 0.002)
 
         # ── Real-time entry quality boosts ────────────────────────────────
-        # These three factors measure concurrent conditions that increase
-        # trade probability beyond the layer-stacking logic. They do NOT
-        # double-count with historical backtest boosting (PipelineReporter).
-        # IMPORTANT: These thresholds (20%, 0.6x, 15%) are EMPIRICAL GUESSES.
-        # They MUST be validated via backtesting before live deployment.
-        # See VALIDATION_FRAMEWORK.md for backtest procedure.
         df = context.get("price_data")
         if df is not None and len(df) >= 20:
             try:

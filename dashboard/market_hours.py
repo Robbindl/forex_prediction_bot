@@ -1,11 +1,3 @@
-"""
-dashboard/market_hours.py — Real per-asset-type market hours logic.
-
-Replaces the hardcoded "market_open": True in web_app_live.py.
-
-Usage (in web_app_live.py):
-    from dashboard.market_hours import is_market_open_for_asset, market_status
-"""
 from __future__ import annotations
 
 from datetime import datetime, time, timezone, timedelta

@@ -1,13 +1,3 @@
-"""
-config/optimization_15m.py — 15-minute timeframe optimization parameters.
-
-This file contains tuned parameters specifically for profitable 15-minute trading
-across all asset classes (forex, crypto, commodities, indices).
-
-Key principle: On 15m candles, you have 4 signals per hour. Speed matters more
-than precision. Lagging indicators fail on 15m. We prioritize responsive, lower-lag signals.
-"""
-
 # ─────────────────────────────────────────────────────────────────────────────
 # RSI STRATEGY (15m optimized)
 # ─────────────────────────────────────────────────────────────────────────────
