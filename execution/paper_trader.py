@@ -25,6 +25,7 @@ class PaperTrader:
         self.open_positions:  Dict[str, Dict] = {}
         self._lock                = threading.RLock()
         self.on_trade_closed: Optional[Callable[[Dict], None]] = None
+        self.on_position_updated: Optional[Callable[[Dict], None]] = None
 
     # ── Restore persisted positions on restart ────────────────────────────────
 
@@ -145,12 +146,21 @@ class PaperTrader:
         return closed
 
     def _check_exit(self, pos: Dict, price: float) -> Optional[Dict]:
+        asset      = pos.get("asset", "")
+        category   = pos.get("category", "forex")
         direction  = pos.get("direction", pos.get("signal", "BUY"))
         entry      = float(pos.get("entry_price", 0))
         stop_loss  = float(pos.get("stop_loss", 0))
         take_profit= float(pos.get("take_profit", 0))
         tp_levels  = pos.get("take_profit_levels", [])
         size       = float(pos.get("position_size", 0))
+        tracked_before = {
+            "position_size": float(pos.get("position_size", 0)),
+            "stop_loss": float(pos.get("stop_loss", 0)),
+            "tp_hit": int(pos.get("tp_hit", 0)),
+            "highest_price": float(pos.get("highest_price", entry)),
+            "lowest_price": float(pos.get("lowest_price", entry)),
+        }
 
         # Track extremes for trailing stop logic
         if direction == "BUY":
@@ -173,8 +183,7 @@ class PaperTrader:
         # always exempt from this guard.
         try:
             from datetime import datetime as _dt, timezone as _tz
-            _category = pos.get("category", "forex")
-            if _category != "crypto":
+            if category != "crypto":
                 _now  = _dt.now(tz=_tz.utc)
                 _wd   = _now.weekday()   # 5=Sat 6=Sun
                 _hour = _now.hour
@@ -264,8 +273,15 @@ class PaperTrader:
                         partial_pnl = pnl * close_fraction
 
                         # Build a partial-close trade record
+                        parent_trade_id = str(pos.get("trade_id", ""))
                         partial_trade = self._close(
-                            dict(pos, position_size=partial_size),
+                            dict(
+                                pos,
+                                trade_id=f"{parent_trade_id}-PT{tp_idx + 1}",
+                                parent_trade_id=parent_trade_id,
+                                is_partial_close=True,
+                                position_size=partial_size,
+                            ),
                             price,
                             f"Partial TP {tp_idx + 1}/{total_tiers}",
                             partial_pnl,
@@ -277,6 +293,8 @@ class PaperTrader:
                             pos["stop_loss"] = entry   # lock in break-even
                         elif direction == "SELL" and entry < float(pos.get("stop_loss", 99e9)):
                             pos["stop_loss"] = entry
+
+                        self._notify_position_updated(pos)
 
                         # Fire the callback for the partial close
                         if partial_trade and self.on_trade_closed:
@@ -293,7 +311,24 @@ class PaperTrader:
 
         # Update live PnL
         pos["pnl"] = round(pnl, 6)
+        tracked_after = {
+            "position_size": float(pos.get("position_size", 0)),
+            "stop_loss": float(pos.get("stop_loss", 0)),
+            "tp_hit": int(pos.get("tp_hit", 0)),
+            "highest_price": float(pos.get("highest_price", entry)),
+            "lowest_price": float(pos.get("lowest_price", entry)),
+        }
+        if tracked_after != tracked_before:
+            self._notify_position_updated(pos)
         return None
+
+    def _notify_position_updated(self, pos: Dict) -> None:
+        if not self.on_position_updated:
+            return
+        try:
+            self.on_position_updated(dict(pos))
+        except Exception as e:
+            logger.error(f"[PaperTrader] on_position_updated error: {e}")
 
     @staticmethod
     def _close(pos: Dict, exit_price: float, reason: str, pnl: float) -> Dict:

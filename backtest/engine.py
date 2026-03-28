@@ -149,7 +149,11 @@ class BacktestEngine:
                 entry     = open_trade["entry_price"]
                 size      = open_trade["position_size"]
 
-                pnl     = (price - entry) * size if direction == "BUY" else (entry - price) * size
+                try:
+                    from risk.position_sizer import PositionSizer as _PS
+                    pnl = _PS.pnl(asset, category, entry, price, size, direction)
+                except Exception:
+                    pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
                 hit_sl  = (direction == "BUY" and price <= sl) or (direction == "SELL" and price >= sl)
                 hit_tp  = (direction == "BUY" and price >= tp) or (direction == "SELL" and price <= tp)
 
@@ -220,7 +224,11 @@ class BacktestEngine:
             entry      = open_trade["entry_price"]
             size       = open_trade["position_size"]
             direction  = open_trade["direction"]
-            pnl = (last_price - entry) * size if direction == "BUY" else (entry - last_price) * size
+            try:
+                from risk.position_sizer import PositionSizer as _PS
+                pnl = _PS.pnl(asset, category, entry, last_price, size, direction)
+            except Exception:
+                pnl = (last_price - entry) * size if direction == "BUY" else (entry - last_price) * size
             open_trade.update({"exit_price": last_price, "pnl": pnl, "exit_reason": "End of data"})
             trades.append(open_trade)
             balance += pnl

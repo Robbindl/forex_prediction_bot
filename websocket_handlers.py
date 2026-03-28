@@ -200,8 +200,7 @@ class WebSocketHandlers:
                 logger.debug(f"WebSocket signal {asset}: {_e}")
             return
 
-        # Legacy path — scan_asset_parallel no longer exists; log and skip
+        # No compatible signal interface available; skipping this asset
         logger.debug(
-            f"_trigger_signal: bot has no get_signal_for_asset or "
-            f"scan_asset_parallel — skipping {asset}"
+            f"_trigger_signal: bot has no get_signal_for_asset — skipping {asset}"
         )

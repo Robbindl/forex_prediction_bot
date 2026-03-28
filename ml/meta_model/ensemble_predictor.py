@@ -50,6 +50,7 @@ class EnsemblePredictor:
 
         signal.metadata["meta_ai_regime"]   = regime
         signal.metadata["meta_ai_ensemble"] = round(ensemble_score, 4)
+        signal.metadata["meta_ai_active_engines"] = active_engines
         signal.metadata["meta_ai_weights"]  = weights
         signal.metadata["meta_ai_scores"]   = {
             k: round(v, 3) for k, v in scores.items() if v is not None

@@ -266,3 +266,10 @@ DEPLOYMENT_GUIDE.md
 CHANGELOG.md
 BOOST_RISK_ANALYSIS.md
 API_AUDIT.md
+HTTP2_SETUP.md
+
+# HTTP2
+# ------------------------------------------------
+Caddyfile.sample
+key.pem
+nginx_http2.conf.sample

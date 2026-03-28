@@ -62,8 +62,8 @@ class PortfolioRiskEngine:
         signal: dict,
         open_positions: List[dict],
         balance: float,
-        initial_balance: float,
-        daily_pnl: float,
+        initial_balance: float = 0.0,
+        daily_pnl: float = 0.0,
     ) -> Tuple[bool, str]:
         """
         Returns (approved, reason).

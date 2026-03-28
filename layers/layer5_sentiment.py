@@ -43,18 +43,41 @@ def _get_analyzer():
 
 def _fetch_sentiment(asset: str, category: str) -> float:
     """Fetch comprehensive sentiment for asset. Returns 0.0 on failure."""
+    details = _fetch_sentiment_details(asset, category)
+    return float(details.get("composite_score", details.get("score", 0.0)))
+
+
+def _fetch_sentiment_details(asset: str, category: str) -> Dict[str, Any]:
+    """Fetch full sentiment result for the asset. Returns a safe empty bundle."""
     try:
         sa = _get_analyzer()
         if sa is None:
-            return 0.0
+            return {
+                "score": 0.0,
+                "composite_score": 0.0,
+                "components": {},
+                "weights": {},
+            }
         # get_comprehensive_sentiment takes one optional arg — asset only
         result = sa.get_comprehensive_sentiment(asset)
         if isinstance(result, dict):
-            return float(result.get("composite_score", result.get("score", 0.0)))
-        return float(result)
+            result.setdefault("components", {})
+            result.setdefault("weights", {})
+            return result
+        return {
+            "score": float(result),
+            "composite_score": float(result),
+            "components": {},
+            "weights": {},
+        }
     except Exception as e:
         logger.warning(f"[SentimentLayer] Fetch failed for {asset}: {e}")
-        return 0.0
+        return {
+            "score": 0.0,
+            "composite_score": 0.0,
+            "components": {},
+            "weights": {},
+        }
 
 
 def _fetch_put_call(asset: str) -> Optional[float]:
@@ -150,10 +173,30 @@ class SentimentLayer:
         profile     = get_profile(signal.asset)
 
         # ── Sentiment score ───────────────────────────────────────────────
-        score = context.get("sentiment_score")
+        sentiment_details = context.get("sentiment_details")
+        if not isinstance(sentiment_details, dict):
+            sentiment_details = _fetch_sentiment_details(signal.asset, signal.category)
+
+        score = sentiment_details.get("composite_score", sentiment_details.get("score", 0.0))
         if score is None:
             score = _fetch_sentiment(signal.asset, signal.category)
+
+        components = sentiment_details.get("components", {})
+        weights    = sentiment_details.get("weights", {})
+        if not isinstance(components, dict):
+            components = {}
+        if not isinstance(weights, dict):
+            weights = {}
+
         signal.metadata["sentiment_score"] = round(score, 3)
+        signal.metadata["sentiment_components"] = {
+            str(k): round(float(v), 3) for k, v in components.items()
+        }
+        signal.metadata["sentiment_weights"] = {
+            str(k): round(float(v), 3) for k, v in weights.items()
+        }
+        if "macro_event" in signal.metadata["sentiment_components"]:
+            signal.metadata["macro_sentiment_score"] = signal.metadata["sentiment_components"]["macro_event"]
 
         # FIX S8: Populate sentiment_sources so the data integrity gate in
         # pipeline.py can count sentiment as a valid source.
@@ -163,6 +206,8 @@ class SentimentLayer:
         sources_used: List[str] = []
         if abs(score) > 0.01:   # non-trivial sentiment found
             sources_used.append("comprehensive_sentiment")
+        if "macro_event" in signal.metadata["sentiment_components"]:
+            sources_used.append("macro_event")
 
         # ── Phase 4: Narrative data ───────────────────────────────────────
         narrative_data = _get_narrative_data(signal.asset)
@@ -237,6 +282,7 @@ class SentimentLayer:
         
         reason = (
             f"sentiment={score:+.3f}  "
+            f"macro={signal.metadata['sentiment_components'].get('macro_event', 0.0):+.3f}  "
             f"narrative={dominant or 'none'}({nar_strength:.2f})  "
             f"sources={','.join(sources_used) if sources_used else 'none'}"
         )
@@ -244,7 +290,13 @@ class SentimentLayer:
             layer=LAYER, name=self.name, decision=PASS,
             reason=reason,
             conf_before=conf_before, conf_after=signal.confidence,
-            data={"sentiment_score": round(score, 3), "sources": sources_used, **narrative_data},
+            data={
+                "sentiment_score": round(score, 3),
+                "components": signal.metadata["sentiment_components"],
+                "weights": signal.metadata["sentiment_weights"],
+                "sources": sources_used,
+                **narrative_data,
+            },
         )
         logger.log_pipeline(signal.asset, LAYER, "PASS",
                             f"sentiment={score:.3f} narrative={dominant}")

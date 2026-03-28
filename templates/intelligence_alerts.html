@@ -98,6 +98,11 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .jl-pass{background:rgba(0,208,132,.1);color:var(--gr)}
 .jl-kill{background:rgba(255,69,96,.1);color:var(--rd)}
 .jl-skip{background:rgba(122,136,153,.08);color:var(--tx3)}
+.j-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.j-chip{font-size:10px;padding:2px 7px;border-radius:999px;background:var(--s3);border:1px solid var(--bd2);color:var(--tx2)}
+.j-chip-good{color:var(--gr);border-color:rgba(0,208,132,.25)}
+.j-chip-bad{color:var(--rd);border-color:rgba(255,69,96,.25)}
+.j-note{font-size:11px;color:var(--tx3);margin-top:8px;line-height:1.35}
 
 /* ── MOBILE HAMBURGER & SIDEBAR OVERLAY ─────────────────────────────── */
 .hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;
@@ -228,8 +233,8 @@ setInterval(() => { document.getElementById('clock').textContent = new Date().to
 
 async function checkStatus() {
   try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
+    const page = await fetchIntelligenceOverview();
+    const d = page.status || {};
     document.getElementById('engineDot').className = 'pulse' + (d.engine_running ? '' : ' off');
     document.getElementById('engineStatus').textContent = d.engine_running ? 'Live' : 'Offline';
     document.getElementById('topBalance').textContent = d.balance ? '$' + Number(d.balance).toLocaleString('en',{minimumFractionDigits:2}) : '—';
@@ -267,6 +272,18 @@ function timeAgo(ts) {
   return Math.floor(m/60) + 'h ago';
 }
 
+let _intelOverviewCache = null;
+async function fetchIntelligenceOverview(){
+  const now = Date.now();
+  if(_intelOverviewCache && now - _intelOverviewCache.fetched < 10000){
+    return _intelOverviewCache.data;
+  }
+  const d = await fetch('/api/page-overview?page=intelligence_alerts').then(r=>r.json());
+  if(!d.success) return {alerts:[], journals: []};
+  _intelOverviewCache = {fetched: now, data: d};
+  return d;
+}
+
 function renderAlerts() {
   const filtered = activeFilter === 'all' ? allAlerts : allAlerts.filter(a => a.priority === activeFilter);
   if (!filtered.length) { document.getElementById('alertFeed').innerHTML = '<div class="empty">No ' + (activeFilter === 'all' ? '' : activeFilter + ' ') + 'alerts</div>'; return; }
@@ -293,41 +310,53 @@ function renderAlerts() {
 
 async function loadAlerts() {
   try {
-    const r = await fetch('/api/phase7/alerts');
-    const d = await r.json();
-    if (!d.success) return;
-    allAlerts = d.alerts || [];
-    const bp  = d.by_priority || {};
+    const overview = await fetchIntelligenceOverview();
+    allAlerts = overview.alerts || [];
+    const bp  = overview.by_priority || {};
     document.getElementById('mCritical').textContent = bp.CRITICAL || 0;
     document.getElementById('mHigh').textContent     = bp.HIGH     || 0;
     document.getElementById('mMedium').textContent   = bp.MEDIUM   || 0;
-    document.getElementById('mTotal').textContent    = d.count     || 0;
+    document.getElementById('mTotal').textContent    = overview.alert_count || overview.count || 0;
     renderAlerts();
   } catch(e) { document.getElementById('alertFeed').innerHTML = '<div class="empty">Unavailable</div>'; }
 }
 
 async function loadJournal() {
   try {
-    const r = await fetch('/api/phase7/signal-journal');
-    const d = await r.json();
-    const journals = d.journals || [];
+    const overview = await fetchIntelligenceOverview();
+    const journals = overview.journals || [];
     document.getElementById('journalBadge').textContent = journals.length + ' signals';
     if (!journals.length) { document.getElementById('journalFeed').innerHTML = '<div class="empty">No signal journal data</div>'; return; }
 
     const layerEmoji = dec => dec === 'PASS' ? 'jl-pass' : dec === 'KILLED' ? 'jl-kill' : 'jl-skip';
+    const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[ch]));
     const html = journals.slice(0,15).map(j => {
       const entries  = j.entries || [];
       const survived = j.decision === 'SURVIVED';
+      const sourcesValid = Number.isFinite(j.real_sources_valid) ? j.real_sources_valid : null;
+      const sourcesRequired = Number.isFinite(j.real_sources_required) ? j.real_sources_required : null;
+      const finalPolicy = j.final_policy_decision || '';
+      const finalScore = Number.isFinite(j.final_policy_score) ? Number(j.final_policy_score).toFixed(3) : '';
+      const killedBy = j.killed_by || '';
+      const reason = esc(j.final_policy_reason || j.kill_reason || '');
       const layers   = entries.filter(e => e.layer > 0).map(e =>
-        `<div class="j-layer ${layerEmoji(e.decision)}" title="${e.reason||''}">${e.name.toUpperCase().slice(0,4)}</div>`
+        `<div class="j-layer ${layerEmoji(e.decision)}" title="${esc(e.reason||'')}">${esc((e.name || '').toUpperCase().slice(0,4))}</div>`
       ).join('');
+      const chips = [
+        sourcesValid !== null && sourcesRequired !== null ? `<div class="j-chip">Sources ${sourcesValid}/${sourcesRequired}</div>` : '',
+        finalPolicy ? `<div class="j-chip ${finalPolicy === 'PASS' ? 'j-chip-good' : 'j-chip-bad'}">Final ${esc(finalPolicy)}</div>` : '',
+        finalScore ? `<div class="j-chip">Score ${finalScore}</div>` : '',
+        killedBy ? `<div class="j-chip">Killed by ${esc(String(killedBy).toUpperCase())}</div>` : ''
+      ].filter(Boolean).join('');
       return `<div class="journal-item">
         <div class="journal-header">
-          <div class="j-asset">${j.asset}</div>
-          <div class="j-dir ${j.direction === 'BUY' ? 'j-buy' : 'j-sell'}">${j.direction}</div>
+          <div class="j-asset">${esc(j.asset)}</div>
+          <div class="j-dir ${j.direction === 'BUY' ? 'j-buy' : 'j-sell'}">${esc(j.direction)}</div>
           <div class="j-result ${survived ? 'j-survived' : 'j-killed'}">${survived ? 'EXECUTED' : 'KILLED'}</div>
         </div>
         <div class="j-layers">${layers}</div>
+        ${chips ? `<div class="j-meta">${chips}</div>` : ''}
+        ${reason ? `<div class="j-note">${reason}</div>` : ''}
       </div>`;
     }).join('');
     document.getElementById('journalFeed').innerHTML = html;
@@ -351,4 +380,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
 });
 </script>
 </body>
-</html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

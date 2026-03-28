@@ -176,7 +176,13 @@ class DatabaseService:
                 .all()
             )
             return [r.to_dict() for r in rows]
-
+    def clear_trade_history(self, clear_daily_stats: bool = True) -> None:
+        """Delete all closed trade history and optionally daily stats."""
+        with self.get_session() as s:
+            s.query(TradingDiary).delete()
+            s.query(Trade).delete()
+            if clear_daily_stats:
+                s.query(DailyStats).delete()
     # ── Performance ───────────────────────────────────────────────────────────
 
     def get_performance_summary(self, days: int = 30) -> Dict:
@@ -206,18 +212,24 @@ class DatabaseService:
 
     # ── Daily stats ───────────────────────────────────────────────────────────
 
-    def upsert_daily_stats(self, date_str: str, pnl_delta: float, balance: float) -> None:
+    def upsert_daily_stats(
+        self,
+        date_str: str,
+        pnl_delta: float,
+        balance: float,
+        trade_count_delta: int = 1,
+    ) -> None:
         """Update today's daily stats row. Creates if missing."""
         with self.get_session() as s:
             row = s.query(DailyStats).filter_by(date=date_str).first()
             if row:
-                row.trade_count += 1
+                row.trade_count += trade_count_delta
                 row.pnl          = float(row.pnl or 0) + pnl_delta
                 row.balance_end  = balance
             else:
                 s.add(DailyStats(
                     date        = date_str,
-                    trade_count = 1,
+                    trade_count = trade_count_delta,
                     pnl         = pnl_delta,
                     balance_end = balance,
                 ))

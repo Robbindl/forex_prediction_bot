@@ -110,9 +110,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
-    <div class="sb-section" style="margin-top:8px">Legacy</div>
-    <a href="/" class="sb-link"><span class="sb-icon">📈</span>Signals</a>
-    <a href="/accuracy" class="sb-link"><span class="sb-icon">🎯</span>Accuracy</a>
     <div class="sb-bottom"></div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
@@ -224,83 +221,93 @@ setInterval(function(){
   document.getElementById('clock').textContent=new Date().toLocaleTimeString();
 },1000);
 
-// Engine status
-fetch('/api/status').then(r=>r.json()).then(d=>{
-  var dot=document.getElementById('engineDot'),st=document.getElementById('engineStatus');
-  if(d.bot_ready){dot.classList.remove('off');st.textContent='Engine Ready';}
-  else{dot.classList.add('off');st.textContent='Engine Off';}
-}).catch(()=>{});
-
 function fmt(n){return n===undefined||n===null?'—':(+n).toFixed(2);}
 function fmtPct(n){return n===undefined||n===null?'—':(+n*100).toFixed(1)+'%';}
 
-function load(){
-  fetch('/api/risk/portfolio').then(r=>r.json()).then(d=>{
-    if(!d.success)return;
-
-    document.getElementById('mcBalance').textContent  = '$'+fmt(d.balance);
-    document.getElementById('mcExposure').textContent = '$'+fmt(d.total_exposure);
-    document.getElementById('mcExposurePct').textContent = fmtPct(d.exposure_pct/100)+' of balance';
-    document.getElementById('mcDrawdown').textContent = (d.drawdown_pct||0).toFixed(1)+'%';
-    document.getElementById('mcWinRate').textContent  = (d.win_rate||0).toFixed(1)+'%';
-    document.getElementById('mcTrades').textContent   = (d.total_trades||0)+' trades';
-    document.getElementById('mcPF').textContent       = fmt(d.profit_factor);
-
-    var pnl=d.total_pnl||0;
-    var pnlEl=document.getElementById('mcPnl');
-    pnlEl.textContent=(pnl>=0?'+':'')+fmt(pnl);
-    pnlEl.className='mc-value '+(pnl>=0?'gn':'rd');
-
-    // Exposure bars
-    var ep=document.getElementById('exposurePanel');
-    var bycat=d.by_category||{};
-    var posCount=d.open_positions||0;
-    document.getElementById('posCount').textContent=posCount+' open';
-    if(posCount===0){ep.innerHTML='<div class="empty">No open positions</div>';}
-    else{
-      var bars='';
-      var maxExp=Math.max(...Object.values(bycat).map(c=>c.exposure||0),1);
-      Object.entries(bycat).forEach(function([cat,info]){
-        var pct=Math.round((info.exposure/maxExp)*100);
-        var col=cat==='crypto'?'var(--cy)':cat==='forex'?'var(--bl)':cat==='indices'?'var(--pu)':'var(--am)';
-        bars+='<div class="risk-bar-wrap"><div class="risk-bar-label"><span>'+cat+'</span><span>$'+fmt(info.exposure)+'</span></div><div class="risk-bar"><div class="risk-bar-fill" style="width:'+pct+'%;background:'+col+'"></div></div></div>';
-      });
-      ep.innerHTML=bars;
-    }
-
-    // Category table
-    var cp=document.getElementById('catPanel');
-    if(!Object.keys(bycat).length){cp.innerHTML='<div class="empty">No open positions</div>';}
-    else{
-      var rows='';
-      Object.entries(bycat).forEach(function([cat,info]){
-        var pnl=info.pnl||0;
-        rows+='<div class="cat-row"><span class="cat-name">'+cat+'</span><span class="cat-count">'+info.count+' pos</span><span class="cat-pnl '+(pnl>=0?'gn':'rd')+'">'+(pnl>=0?'+':'')+fmt(pnl)+'</span><span class="cat-exp">$'+fmt(info.exposure)+'</span></div>';
-      });
-      cp.innerHTML=rows;
-    }
-
-    // Stats
-    document.getElementById('statsPanel').innerHTML=[
-      ['Average Win',   '$'+fmt(d.avg_win)],
-      ['Average Loss',  '$'+fmt(d.avg_loss)],
-      ['Profit Factor', fmt(d.profit_factor)+'x'],
-      ['Win Rate',      (d.win_rate||0).toFixed(1)+'%'],
-      ['Total Trades',  d.total_trades||0],
-      ['Peak Balance',  '$'+fmt(d.peak_balance)],
-    ].map(function(r){
-      return '<div class="stat-row"><span class="stat-label">'+r[0]+'</span><span class="stat-value">'+r[1]+'</span></div>';
-    }).join('');
-
-  }).catch(function(){});
+let _riskDashboardCache = null;
+async function fetchRiskDashboardOverview() {
+  const now = Date.now();
+  if (_riskDashboardCache && now - _riskDashboardCache.fetched < 10000) {
+    return _riskDashboardCache.data;
+  }
+  const d = await fetch('/api/page-overview?page=risk_dashboard').then(r => r.json()).catch(() => ({success:false}));
+  if (d.success) {
+    _riskDashboardCache = {fetched: now, data: d};
+    return d;
+  }
+  return {success:false};
 }
 
-let drawdownChartInst = null;
+async function load(){
+  const overview = await fetchRiskDashboardOverview();
+  if (!overview.success) return;
 
-async function loadDrawdownChart(){
+  const status = overview.status || {};
+  const d = overview.risk || {};
+
+  var dot=document.getElementById('engineDot'),st=document.getElementById('engineStatus');
+  if(status.engine_running){dot.classList.remove('off');st.textContent='Engine Ready';}
+  else{dot.classList.add('off');st.textContent='Engine Off';}
+
+  document.getElementById('mcBalance').textContent  = '$'+fmt(d.balance);
+  document.getElementById('mcExposure').textContent = '$'+fmt(d.total_exposure);
+  document.getElementById('mcExposurePct').textContent = fmtPct(d.exposure_pct/100)+' of balance';
+  document.getElementById('mcDrawdown').textContent = (d.drawdown_pct||0).toFixed(1)+'%';
+  document.getElementById('mcWinRate').textContent  = (d.win_rate||0).toFixed(1)+'%';
+  document.getElementById('mcTrades').textContent   = (d.total_trades||0)+' trades';
+  document.getElementById('mcPF').textContent       = fmt(d.profit_factor);
+
+  var pnl=d.total_pnl||0;
+  var pnlEl=document.getElementById('mcPnl');
+  pnlEl.textContent=(pnl>=0?'+':'')+fmt(pnl);
+  pnlEl.className='mc-value '+(pnl>=0?'gn':'rd');
+
+  // Exposure bars
+  var ep=document.getElementById('exposurePanel');
+  var bycat=d.by_category||{};
+  var posCount=d.open_positions||0;
+  document.getElementById('posCount').textContent=posCount+' open';
+  if(posCount===0){ep.innerHTML='<div class="empty">No open positions</div>';} 
+  else{
+    var bars='';
+    var maxExp=Math.max(...Object.values(bycat).map(c=>c.exposure||0),1);
+    Object.entries(bycat).forEach(function([cat,info]){
+      var pct=Math.round((info.exposure/maxExp)*100);
+      var col=cat==='crypto'?'var(--cy)':cat==='forex'?'var(--bl)':cat==='indices'?'var(--pu)':'var(--am)';
+      bars+='<div class="risk-bar-wrap"><div class="risk-bar-label"><span>'+cat+'</span><span>$'+fmt(info.exposure)+'</span></div><div class="risk-bar"><div class="risk-bar-fill" style="width:'+pct+'%;background:'+col+'"></div></div></div>';
+    });
+    ep.innerHTML=bars;
+  }
+
+  // Category table
+  var cp=document.getElementById('catPanel');
+  if(!Object.keys(bycat).length){cp.innerHTML='<div class="empty">No open positions</div>';} 
+  else{
+    var rows='';
+    Object.entries(bycat).forEach(function([cat,info]){
+      var pnl=info.pnl||0;
+      rows+='<div class="cat-row"><span class="cat-name">'+cat+'</span><span class="cat-count">'+info.count+' pos</span><span class="cat-pnl '+(pnl>=0?'gn':'rd')+'">'+(pnl>=0?'+':'')+fmt(pnl)+'</span><span class="cat-exp">$'+fmt(info.exposure)+'</span></div>';
+    });
+    cp.innerHTML=rows;
+  }
+
+  // Stats
+  document.getElementById('statsPanel').innerHTML=[
+    ['Average Win',   '$'+fmt(d.avg_win)],
+    ['Average Loss',  '$'+fmt(d.avg_loss)],
+    ['Profit Factor', fmt(d.profit_factor)+'x'],
+    ['Win Rate',      (d.win_rate||0).toFixed(1)+'%'],
+    ['Total Trades',  d.total_trades||0],
+    ['Peak Balance',  '$'+fmt(d.peak_balance)],
+  ].map(function(r){
+    return '<div class="stat-row"><span class="stat-label">'+r[0]+'</span><span class="stat-value">'+r[1]+'</span></div>';
+  }).join('');
   try{
     const d = await fetch('/api/trade-history?limit=200').then(r=>r.json());
-    if(!d.success || !d.trades) return;
+    if(!d.success || !d.trades || !d.trades.length){
+      document.getElementById('ddStats').textContent = 'No closed trades yet';
+      return;
+    }
     
     const trades = (d.trades || []).sort((a,b) => {
       const ta = new Date(a.exit_time || a.entry_time || 0);
@@ -332,7 +339,7 @@ async function loadDrawdownChart(){
     if(drawdownChartInst)drawdownChartInst.destroy();
     
     drawdownChartInst = new Chart(ctx, {
-      type: 'area',
+      type: 'line',
       data: {
         labels: labels,
         datasets: [{
@@ -394,4 +401,4 @@ async function riskClose(mode){
 }
 </script>
 </body>
-</html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

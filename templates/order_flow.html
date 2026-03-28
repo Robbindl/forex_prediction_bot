@@ -268,11 +268,25 @@ setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleTimeString();
 }, 1000);
 
+let _orderFlowCache = null;
+async function fetchOrderFlowOverview(){
+  const now = Date.now();
+  if(_orderFlowCache && now - _orderFlowCache.fetched < 10000){
+    return _orderFlowCache.data;
+  }
+  const d = await fetch('/api/page-overview?page=order_flow').then(r=>r.json()).catch(()=>({success:false}));
+  if(d.success){
+    _orderFlowCache = {fetched: now, data: d};
+    return d;
+  }
+  return {success:false};
+}
+
 // Engine status
 async function checkStatus() {
   try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
+    const page = await fetchOrderFlowOverview();
+    const d = page.status || {};
     const ok = d.engine_running;
     document.getElementById('engineDot').className = 'pulse' + (ok ? '' : ' off');
     document.getElementById('engineStatus').textContent = ok ? 'Live' : 'Offline';
@@ -284,8 +298,8 @@ checkStatus(); setInterval(checkStatus, 15000);
 // Imbalance
 async function loadImbalance() {
   try {
-    const r = await fetch('/api/phase3/imbalance');
-    const d = await r.json();
+    const page = await fetchOrderFlowOverview();
+    const d = page.imbalance || {};
     if (!d.success) return;
     const imb = d.imbalances || {};
     const assets = Object.keys(imb);
@@ -318,8 +332,8 @@ async function loadImbalance() {
 // Walls
 async function loadWalls() {
   try {
-    const r = await fetch('/api/phase3/walls');
-    const d = await r.json();
+    const page = await fetchOrderFlowOverview();
+    const d = page.walls || {};
     const walls = d.walls || [];
     document.getElementById('mWallCount').textContent = walls.length;
     document.getElementById('wallBadge').textContent  = walls.length + ' detected';
@@ -342,8 +356,8 @@ async function loadWalls() {
 // Stop Hunts
 async function loadHunts() {
   try {
-    const r = await fetch('/api/phase3/stop-hunts');
-    const d = await r.json();
+    const page = await fetchOrderFlowOverview();
+    const d = page.hunts || {};
     const hunts = d.hunts || [];
     document.getElementById('mHuntCount').textContent = hunts.length;
     document.getElementById('huntBadge').textContent  = hunts.length + ' recent';
@@ -367,9 +381,8 @@ async function loadHunts() {
 // Depth visualiser
 async function renderDepth() {
   try {
-    const r = await fetch('/api/phase3/imbalance');
-    const d = await r.json();
-    const imb = (d.imbalances || {})[selectedAsset] || 0;
+    const page = await fetchOrderFlowOverview();
+    const imb = (page.imbalance?.imbalances || {})[selectedAsset] || 0;
 
     // Simulate depth bars from imbalance
     const bars = [];
@@ -417,4 +430,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
 });
 </script>
 </body>
-</html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

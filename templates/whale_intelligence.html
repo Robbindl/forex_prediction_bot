@@ -122,9 +122,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
-    <div class="sb-section" style="margin-top:8px">Legacy</div>
-    <a href="/" class="sb-link"><span class="sb-icon">📈</span>Signals</a>
-    <a href="/accuracy" class="sb-link"><span class="sb-icon">🎯</span>Accuracy</a>
     <div class="sb-bottom"></div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
@@ -185,9 +182,40 @@ function isMyCrypto(sym) {
 }
 
 let barChart=null;
+let _whaleOverviewCache = null;
+async function fetchWhaleOverview(){
+  const now = Date.now();
+  if(_whaleOverviewCache && now - _whaleOverviewCache.fetched < 10000){
+    return _whaleOverviewCache.data;
+  }
+  const d = await fetch('/api/page-overview?page=whale_intelligence').then(r=>r.json()).catch(()=>({success:false}));
+  if(d.success){
+    _whaleOverviewCache = {fetched: now, data: d};
+    return d;
+  }
+  return {success:false};
+}
+
+function getWhaleOverviewData(page){
+  if(page && page.whale && typeof page.whale === 'object'){
+    return page.whale;
+  }
+  return page || {};
+}
+
 async function load(){
   try{
-    const d=await fetch('/api/whale/summary').then(r=>r.json());
+    const page = await fetchWhaleOverview();
+    const d = getWhaleOverviewData(page);
+
+    if(!page.success){
+      document.getElementById('wTotal').textContent='—';
+      document.getElementById('wCount').textContent='—';
+      document.getElementById('wTop').textContent='—';
+      document.getElementById('whaleTimeline').innerHTML='<div class="empty">Whale overview unavailable</div>';
+      document.getElementById('alertBody').innerHTML='<tr><td colspan="5" class="empty">Whale overview unavailable</td></tr>';
+      return;
+    }
 
     // Filter everything to only our crypto assets
     const rawRecent = (d.recent||[]).filter(a => isMyCrypto(a.symbol||a.asset));
@@ -269,7 +297,9 @@ let sizeChart = null;
 
 async function loadWhaleSizeDistribution(){
   try{
-    const d = await fetch('/api/whale/summary').then(r=>r.json());
+    const page = await fetchWhaleOverview();
+    const d = getWhaleOverviewData(page);
+    if(!page.success) return;
     const alerts = (d.alerts||[]).filter(a => isMyCrypto(a.symbol||a.asset));
     
     // Bin by transaction size:
@@ -347,4 +377,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
   a.addEventListener('click',function(){if(document.querySelector('.sidebar').classList.contains('open'))toggleSidebar();});
 });
 </script>
-</body></html>
+</body><script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

@@ -54,8 +54,7 @@ class MLPredictor:
         model     = registry.get(model_key)
 
         if model is None:
-            # No trained model — use simple momentum signal
-            return self._momentum_fallback(df)
+            return 0.5, 0.0
 
         try:
             with self._lock:
@@ -66,7 +65,7 @@ class MLPredictor:
             return up_prob, confidence
         except Exception as e:
             logger.debug(f"[Predictor] Model predict error {asset}: {e}")
-            return self._momentum_fallback(df)
+            return 0.5, 0.0
 
     @staticmethod
     def _momentum_fallback(df: pd.DataFrame) -> Tuple[float, float]:

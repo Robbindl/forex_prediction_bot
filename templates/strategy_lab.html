@@ -338,14 +338,27 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
 
 <script>
 let eqChart = null;
+let _strategyLabCache = null;
+async function fetchStrategyLabOverview(){
+  const now = Date.now();
+  if(_strategyLabCache && now - _strategyLabCache.fetched < 10000){
+    return _strategyLabCache.data;
+  }
+  const d = await fetch('/api/page-overview?page=strategy_lab').then(r=>r.json()).catch(()=>({success:false}));
+  if(d.success){
+    _strategyLabCache = {fetched: now, data: d};
+    return d;
+  }
+  return {success:false};
+}
 let currentMode = 'backtest';
 
 setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }, 1000);
 
 async function checkStatus() {
   try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
+    const page = await fetchStrategyLabOverview();
+    const d = page.status || {};
     document.getElementById('engineDot').className = 'pulse' + (d.engine_running ? '' : '');
     document.getElementById('engineStatus').textContent = d.engine_running ? 'Live' : 'Offline';
     document.getElementById('topBalance').textContent = d.balance ? '$' + Number(d.balance).toLocaleString('en',{minimumFractionDigits:2}) : '—';
@@ -356,8 +369,8 @@ checkStatus(); setInterval(checkStatus, 30000);
 // Load available strategies
 async function loadStrategies() {
   try {
-    const r = await fetch('/api/backtest/strategies');
-    const d = await r.json();
+    const page = await fetchStrategyLabOverview();
+    const d = page.strategies || {};
     const presets = d.presets || [];
     const labOpt  = document.getElementById('labOptgroup');
     labOpt.innerHTML = presets.map(p => `<option value="${p}">${p.replace(/_/g,' ')}</option>`).join('');
@@ -643,8 +656,8 @@ function renderMultiAssetResult(d) {
 // ── Live stats ────────────────────────────────────────────────────────────────
 async function loadLiveStats() {
   try {
-    const r = await fetch('/api/strategy/performance');
-    const d = await r.json();
+    const page = await fetchStrategyLabOverview();
+    const d = page.performance || {};
     if (!d.success) return;
     const strats = d.strategies || {};
     const names  = Object.keys(strats);
@@ -687,4 +700,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
 });
 </script>
 </body>
-</html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

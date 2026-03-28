@@ -209,6 +209,7 @@ class WhaleAlertDB:
                     symbol     = alert_data["symbol"],
                     value_usd  = alert_data["value_usd"],
                     source     = alert_data["source"],
+                    direction  = alert_data.get("direction"),
                     alert_time = alert_data["alert_time"],
                 )
                 session.add(alert)
@@ -247,7 +248,9 @@ class WhaleAlertDB:
                 "title":          r.title,
                 "value_usd":      float(r.value_usd),
                 "symbol":         r.symbol,
+                "asset":          r.symbol,
                 "source":         r.source,
+                "direction":      r.direction,
                 "alert_time":     r.alert_time.isoformat(),
                 "value_millions": float(r.value_usd) / 1_000_000,
             } for r in rows]

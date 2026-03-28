@@ -131,124 +131,16 @@ class PipelineReporter:
 
     def _run_backtest(self, signal: "Signal") -> "Signal":
         """
-        Run (or retrieve cached) backtest for this asset.
-        Adjust confidence and add INFO entry to journal.
+        Policy-only operation: strategy lab backtest adjustment is disabled.
         """
-        asset    = signal.canonical_asset or signal.asset
-        category = signal.category
-
-        result = self._get_backtest_result(asset, category)
-        if result is None:
-            signal.journal.record(
-                layer=0, name="backtest", decision=INFO,
-                reason="no historical data available",
-                conf_before=signal.confidence,
-                conf_after=signal.confidence,
-                data={},
-            )
-            return signal
-
-        trades   = result.get("total_trades",  0)
-        win_rate = result.get("win_rate",       0.0)
-        sharpe   = result.get("sharpe_ratio",   0.0)
-        pnl_pct  = result.get("total_pnl_pct",  0.0)
-
-        conf_before = signal.confidence
-
-        if trades >= MIN_TRADES_FOR_ADJUSTMENT:
-            if win_rate >= STRONG_EDGE_THRESHOLD:
-                signal.boost(0.04)
-                adj = f"+0.04 boost (strong edge)"
-            elif win_rate >= POSITIVE_EDGE_THRESHOLD:
-                signal.boost(0.02)
-                adj = f"+0.02 boost (positive edge)"
-            elif win_rate < POOR_EDGE_THRESHOLD:
-                signal.reduce(0.06)
-                adj = f"-0.06 reduce (poor history ⚠️)"
-            elif win_rate < WEAK_EDGE_THRESHOLD:
-                signal.reduce(0.03)
-                adj = f"-0.03 reduce (weak history)"
-            else:
-                adj = "no adjustment"
-        else:
-            adj = f"insufficient data ({trades} trades)"
-
-        warn = " ⚠️ LOW WIN RATE" if win_rate < POOR_EDGE_THRESHOLD and trades >= MIN_TRADES_FOR_ADJUSTMENT else ""
-
         signal.journal.record(
-            layer=0,
-            name="backtest",
-            decision=INFO,
-            reason=f"winrate={win_rate:.0%}  Sharpe={sharpe:.2f}  trades={trades}  {adj}{warn}",
-            conf_before=conf_before,
+            layer=0, name="policy_backtest", decision=INFO,
+            reason="strategy lab backtest adjustment is disabled in policy-only mode",
+            conf_before=signal.confidence,
             conf_after=signal.confidence,
-            data={
-                "win_rate":     round(win_rate, 4),
-                "sharpe":       round(sharpe,   2),
-                "trades":       trades,
-                "pnl_pct":      round(pnl_pct,  4),
-            },
+            data={},
         )
         return signal
-
-    def _get_backtest_result(self, asset: str, category: str) -> Optional[Dict]:
-        """Return cached result or run a fresh backtest."""
-        cache_key = f"{asset}:{category}"
-        now       = time.time()
-
-        with _cache_lock:
-            cached = _backtest_cache.get(cache_key)
-            if cached and (now - cached["ts"]) < _cache_ttl_secs:
-                return cached["result"]
-
-        result = self._run_fresh_backtest(asset, category)
-        if result:
-            with _cache_lock:
-                _backtest_cache[cache_key] = {"result": result, "ts": now}
-        return result
-
-    @staticmethod
-    def _run_fresh_backtest(asset: str, category: str) -> Optional[Dict]:
-        """Run a quick backtest using the best known config for this asset."""
-        try:
-            from strategy_lab.strategy_adapter   import StrategyAdapter
-            from strategy_lab.backtest_engine_v2 import BacktestEngineV2
-            from config.config import TRADING_TIMEFRAME
-
-            # Reuse the engine's DataFetcher and VotingStrategy singletons —
-            # avoids a new TwelveData/Finnhub connection per backtest call
-            fetcher  = None
-            strategy = None
-            try:
-                from core.state import state as _state   # lightweight import
-                import core.engine as _eng_mod
-                _inst = getattr(_eng_mod, "_CORE_INSTANCE", None)
-                if _inst:
-                    fetcher  = getattr(_inst, "fetcher",   None)
-                    strategy = getattr(_inst, "_strategy", None)
-            except Exception:
-                pass
-
-            if fetcher is None:
-                from data.fetcher import DataFetcher
-                fetcher = DataFetcher()
-            if strategy is None:
-                from strategies.voting import VotingStrategy
-                strategy = VotingStrategy()
-
-            _periods = {"15m": 500, "1h": 300, "4h": 200, "1d": 300}.get(TRADING_TIMEFRAME, 300)
-            df = fetcher.get_ohlcv(asset, category, TRADING_TIMEFRAME, _periods)
-            if df is None or df.empty:
-                return None
-
-            adapter = StrategyAdapter(strategy, asset=asset, category=category)
-            engine  = BacktestEngineV2(strategy=adapter, initial_balance=10_000)
-            result  = engine.run(df)
-            return result.to_dict()
-
-        except Exception as e:
-            logger.debug(f"[PipelineReporter] Backtest {asset}: {e}")
-            return None
 
     # ── Performance storage (Option C) ───────────────────────────────────────
 
@@ -333,15 +225,18 @@ class PipelineReporter:
         if not self._pub:
             return
         try:
+            journal_payload = signal.journal.to_dict()
             event = {
                 "type":    "SIGNAL_JOURNAL_UPDATE",
                 "asset":   signal.asset,
                 "direction": signal.direction,
                 "alive":   signal.alive,
-                "journal": signal.journal.to_dict(),
+                "journal": journal_payload,
                 "ts":      int(time.time() * 1000),
             }
             self._pub.publish("SIGNAL_JOURNAL_UPDATE", json.dumps(event, default=str))
+            self._pub.lpush("SIGNAL_JOURNAL_LOG", json.dumps(journal_payload, default=str))
+            self._pub.ltrim("SIGNAL_JOURNAL_LOG", 0, 99)
         except Exception as e:
             logger.debug(f"[PipelineReporter] Redis publish: {e}")
 

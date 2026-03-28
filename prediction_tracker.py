@@ -4,8 +4,10 @@ import time
 import json
 import threading
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
+
+import pandas as pd
 
 from utils.logger import logger
 
@@ -33,9 +35,17 @@ except Exception:
     _db = None
     _DB_AVAILABLE = False
 
+try:
+    from data.cache import cache as _data_cache
+except Exception:
+    _data_cache = None
+
 
 HORIZONS = [60, 240, 1440]    # 1H, 4H, 24H in minutes
 HORIZON_LABELS = {60: '1H', 240: '4H', 1440: '24H'}
+_EVAL_LOOKBACK_DAYS = 45
+_INTERVAL_MINUTES = {"15m": 15, "1h": 60, "1d": 1440}
+_INTERVAL_TOLERANCE_MINUTES = {"15m": 45, "1h": 180, "1d": 2880}
 
 
 class PredictionTracker:
@@ -49,7 +59,11 @@ class PredictionTracker:
         self._running = False
         self._stats_cache: Dict = {}         # cached accuracy stats
         self._cache_ts: float = 0
+        self._live_outcomes_since_training: Dict[str, int] = defaultdict(int)
+        self._live_training_lock = threading.Lock()
+        self._live_training_running = False
         self._ensure_table()
+        self.start()
 
     # ── DB setup ───────────────────────────────────────────────────────────
 
@@ -61,26 +75,37 @@ class PredictionTracker:
                 from sqlalchemy import text
                 session.execute(text("""
                     CREATE TABLE IF NOT EXISTS prediction_outcomes (
-                        id              SERIAL PRIMARY KEY,
-                        asset           TEXT NOT NULL,
-                        category        TEXT,
-                        direction       TEXT NOT NULL,
-                        entry_price     FLOAT,
-                        target_price    FLOAT,
-                        confidence      FLOAT,
-                        signal_time     TIMESTAMP NOT NULL,
-                        horizon_minutes INT NOT NULL,
-                        eval_time       TIMESTAMP,
-                        actual_price    FLOAT,
+                        id               SERIAL PRIMARY KEY,
+                        asset            TEXT NOT NULL,
+                        category         TEXT,
+                        direction        TEXT NOT NULL,
+                        entry_price      FLOAT,
+                        target_price     FLOAT,
+                        confidence       FLOAT,
+                        signal_time      TIMESTAMP NOT NULL,
+                        horizon_minutes  INT NOT NULL,
+                        eval_time        TIMESTAMP,
+                        actual_price     FLOAT,
                         direction_correct BOOLEAN,
-                        target_hit      BOOLEAN,
-                        pct_move        FLOAT,
-                        evaluated       BOOLEAN DEFAULT FALSE,
-                        strategy        TEXT,
-                        session         TEXT,
-                        regime          TEXT
+                        target_hit       BOOLEAN,
+                        pct_move         FLOAT,
+                        evaluated        BOOLEAN DEFAULT FALSE,
+                        strategy         TEXT,
+                        session          TEXT,
+                        regime           TEXT,
+                        signal_features  TEXT,
+                        signal_metadata  TEXT
                     )
                 """))
+                session.commit()
+                for stmt in [
+                    "ALTER TABLE prediction_outcomes ADD COLUMN IF NOT EXISTS signal_features TEXT",
+                    "ALTER TABLE prediction_outcomes ADD COLUMN IF NOT EXISTS signal_metadata TEXT",
+                ]:
+                    try:
+                        session.execute(text(stmt))
+                    except Exception:
+                        pass
                 session.commit()
                 logger.info("[PredTracker] Table ready")
         except Exception as e:
@@ -108,6 +133,22 @@ class PredictionTracker:
         if direction == 'HOLD' or not asset or not entry:
             return
 
+        features = signal.get('features')
+        signal_features = None
+        if features is not None:
+            try:
+                if hasattr(features, 'tolist'):
+                    features = features.tolist()
+                signal_features = json.dumps(features, default=str)
+            except Exception:
+                signal_features = None
+
+        signal_metadata = signal.get('signal_metadata') or signal.get('metadata') or {}
+        try:
+            signal_metadata = json.dumps(signal_metadata, default=str)
+        except Exception:
+            signal_metadata = None
+
         records = []
         for horizon in HORIZONS:
             rec = {
@@ -123,6 +164,8 @@ class PredictionTracker:
                 'strategy':        strategy,
                 'session':         sess,
                 'regime':          regime,
+                'signal_features': signal_features,
+                'signal_metadata': signal_metadata,
                 'evaluated':       False,
             }
             records.append(rec)
@@ -140,23 +183,34 @@ class PredictionTracker:
         if not _fetcher:
             return
 
-        now   = datetime.utcnow()
+        now = datetime.utcnow()
         to_eval = []
 
         with self._lock:
             still_pending = []
             for rec in self._pending:
-                eval_time = datetime.fromisoformat(rec['eval_time'])
+                eval_time = self._to_utc_naive(rec.get('eval_time'))
                 if now >= eval_time:
                     to_eval.append(rec)
                 else:
                     still_pending.append(rec)
             self._pending = still_pending
 
+        history_cache: Dict[Tuple[str, str, str, int], Optional[pd.DataFrame]] = {}
+        retry_pending = []
+
         for rec in to_eval:
             try:
-                price = self._get_current_price(rec['asset'], rec.get('category', ''))
+                price = self._get_price_at_eval_time(
+                    rec['asset'],
+                    rec.get('category', ''),
+                    rec.get('eval_time'),
+                    int(rec.get('horizon_minutes') or 0),
+                    history_cache,
+                )
                 if price is None:
+                    rec['eval_attempts'] = int(rec.get('eval_attempts', 0)) + 1
+                    retry_pending.append(rec)
                     continue
 
                 entry     = rec['entry_price']
@@ -185,6 +239,7 @@ class PredictionTracker:
 
                 self._store_outcome(rec)
                 self._invalidate_cache()
+                self._record_live_outcome(rec.get('category', ''))
 
                 logger.debug(
                     f"[PredTracker] Evaluated {rec['asset']} {direction} "
@@ -192,12 +247,117 @@ class PredictionTracker:
                     f"{'✓' if direction_correct else '✗'} | move={pct_move:+.2f}%"
                 )
             except Exception as e:
+                rec['eval_attempts'] = int(rec.get('eval_attempts', 0)) + 1
+                retry_pending.append(rec)
                 logger.debug(f"[PredTracker] Eval error {rec.get('asset')}: {e}")
+
+        if retry_pending:
+            with self._lock:
+                self._pending.extend(retry_pending)
 
     def _get_current_price(self, asset: str, category: str) -> Optional[float]:
         try:
             price, _ = _fetcher.get_real_time_price(asset, category)
             return float(price) if price else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _to_utc_naive(value: Any) -> datetime:
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        return ts.tz_localize(None).to_pydatetime()
+
+    @staticmethod
+    def _pending_key(rec: Dict[str, Any]) -> Tuple[str, str, int]:
+        return (
+            str(rec.get('asset', '')),
+            str(rec.get('signal_time', '')),
+            int(rec.get('horizon_minutes') or 0),
+        )
+
+    @staticmethod
+    def _history_intervals(horizon_minutes: int) -> List[str]:
+        if horizon_minutes <= 240:
+            return ["15m", "1h", "1d"]
+        return ["1h", "1d"]
+
+    def _history_periods(self, target_time: datetime, interval: str) -> int:
+        interval_minutes = _INTERVAL_MINUTES.get(interval, 60)
+        age_minutes = max(
+            int((datetime.utcnow() - target_time).total_seconds() / 60),
+            interval_minutes,
+        )
+        buffer_minutes = max(interval_minutes * 24, 180)
+        periods = int((age_minutes + buffer_minutes) / interval_minutes) + 2
+        max_periods = 6000 if interval == "15m" else 3000
+        return max(100, min(periods, max_periods))
+
+    def _get_price_at_eval_time(
+        self,
+        asset: str,
+        category: str,
+        eval_time: Any,
+        horizon_minutes: int,
+        history_cache: Dict[Tuple[str, str, str, int], Optional[pd.DataFrame]],
+    ) -> Optional[float]:
+        target_time = self._to_utc_naive(eval_time)
+        for interval in self._history_intervals(horizon_minutes):
+            periods = self._history_periods(target_time, interval)
+            cache_key = (asset, category, interval, periods)
+            if cache_key not in history_cache:
+                if _data_cache is not None:
+                    try:
+                        _data_cache.delete(f"ohlcv:{asset}:{interval}")
+                    except Exception:
+                        pass
+                try:
+                    history_cache[cache_key] = _fetcher.get_ohlcv(asset, category, interval, periods)
+                except Exception as e:
+                    logger.debug(f"[PredTracker] History fetch failed for {asset} {interval}: {e}")
+                    history_cache[cache_key] = None
+
+            price = self._extract_price_from_history(history_cache.get(cache_key), target_time, interval)
+            if price is not None:
+                return price
+
+        if datetime.utcnow() - target_time <= timedelta(minutes=20):
+            return self._get_current_price(asset, category)
+        return None
+
+    @staticmethod
+    def _extract_price_from_history(
+        df: Optional[pd.DataFrame],
+        target_time: datetime,
+        interval: str,
+    ) -> Optional[float]:
+        if df is None or df.empty or 'close' not in df.columns:
+            return None
+
+        closes = df['close'].dropna()
+        if closes.empty:
+            return None
+
+        try:
+            ts_index = pd.to_datetime(closes.index, utc=True).tz_convert(None)
+            deltas = (ts_index - pd.Timestamp(target_time)).to_series().abs()
+            if deltas.empty:
+                return None
+
+            nearest_label = deltas.idxmin()
+            tolerance = pd.Timedelta(minutes=_INTERVAL_TOLERANCE_MINUTES.get(interval, 180))
+            if deltas.loc[nearest_label] > tolerance:
+                return None
+
+            nearest_pos = ts_index.get_loc(nearest_label)
+            if isinstance(nearest_pos, slice):
+                nearest_pos = nearest_pos.start
+            elif isinstance(nearest_pos, (list, tuple)):
+                nearest_pos = nearest_pos[0]
+            return float(closes.iloc[int(nearest_pos)])
         except Exception:
             return None
 
@@ -214,28 +374,64 @@ class PredictionTracker:
                         INSERT INTO prediction_outcomes
                             (asset, category, direction, entry_price, target_price,
                              confidence, signal_time, horizon_minutes, eval_time,
-                             strategy, session, regime, evaluated)
+                             strategy, session, regime, signal_features,
+                             signal_metadata, evaluated)
                         VALUES
                             (:asset, :category, :direction, :entry_price, :target_price,
                              :confidence, :signal_time, :horizon_minutes, :eval_time,
-                             :strategy, :session, :regime, false)
+                             :strategy, :session, :regime, :signal_features,
+                             :signal_metadata, false)
                     """), {
-                        'asset':          r['asset'],
-                        'category':       r.get('category', ''),
-                        'direction':      r['direction'],
-                        'entry_price':    r['entry_price'],
-                        'target_price':   r.get('target_price'),
-                        'confidence':     r['confidence'],
-                        'signal_time':    r['signal_time'],
-                        'horizon_minutes':r['horizon_minutes'],
-                        'eval_time':      r['eval_time'],
-                        'strategy':       r.get('strategy', ''),
-                        'session':        r.get('session', ''),
-                        'regime':         r.get('regime', ''),
+                        'asset':            r['asset'],
+                        'category':         r.get('category', ''),
+                        'direction':        r['direction'],
+                        'entry_price':      r['entry_price'],
+                        'target_price':     r.get('target_price'),
+                        'confidence':       r['confidence'],
+                        'signal_time':      r['signal_time'],
+                        'horizon_minutes':  r['horizon_minutes'],
+                        'eval_time':        r['eval_time'],
+                        'strategy':         r.get('strategy', ''),
+                        'session':          r.get('session', ''),
+                        'regime':           r.get('regime', ''),
+                        'signal_features':  r.get('signal_features'),
+                        'signal_metadata':  r.get('signal_metadata'),
                     })
                 session.commit()
         except Exception as e:
             logger.debug(f"[PredTracker] Store pending failed: {e}")
+
+    def _record_live_outcome(self, category: str) -> None:
+        if not category:
+            return
+        self._live_outcomes_since_training[category] += 1
+        if self._live_outcomes_since_training[category] >= 20:
+            self._live_outcomes_since_training[category] = 0
+            self._schedule_live_training(category)
+
+    def _schedule_live_training(self, category: str) -> None:
+        if not _DB_AVAILABLE:
+            return
+        with self._live_training_lock:
+            if self._live_training_running:
+                return
+            self._live_training_running = True
+        threading.Thread(
+            target=self._run_live_training,
+            args=(category,),
+            name=f"PredTrackerTrainer-{category}",
+            daemon=True,
+        ).start()
+
+    def _run_live_training(self, category: str) -> None:
+        try:
+            from ml import trainer as _trainer
+            _trainer.train_live_from_outcomes(category)
+        except Exception as e:
+            logger.debug(f"[PredTracker] Live training failed: {e}")
+        finally:
+            with self._live_training_lock:
+                self._live_training_running = False
 
     def _store_outcome(self, rec: Dict):
         if not _DB_AVAILABLE:
@@ -411,6 +607,10 @@ class PredictionTracker:
     def stop(self):
         self._running = False
 
+    def evaluate_pending_once(self) -> None:
+        self._reload_pending_from_db(merge=True)
+        self._evaluate_due()
+
     def _eval_loop(self):
         while self._running:
             try:
@@ -419,34 +619,47 @@ class PredictionTracker:
                 logger.debug(f"[PredTracker] eval loop error: {e}")
             time.sleep(60)   # Check every minute
 
-    def _reload_pending_from_db(self):
+    def _reload_pending_from_db(self, merge: bool = False):
         """On startup, reload any unevaluated predictions from DB."""
         if not _DB_AVAILABLE:
             return
         try:
             with _db.get_session() as session:
                 from sqlalchemy import text
-                rows = session.execute(text("""
+                rows = session.execute(text(f"""
                     SELECT asset, category, direction, entry_price, target_price,
                            confidence, signal_time, horizon_minutes, eval_time,
-                           strategy, session, regime
+                           strategy, session, regime, signal_features,
+                           signal_metadata
                     FROM prediction_outcomes
                     WHERE evaluated = false
-                      AND eval_time > NOW() - INTERVAL '2 days'
+                      AND signal_time >= NOW() - INTERVAL '{_EVAL_LOOKBACK_DAYS} days'
                 """)).fetchall()
 
                 cols = ['asset','category','direction','entry_price','target_price',
                         'confidence','signal_time','horizon_minutes','eval_time',
-                        'strategy','session','regime']
+                        'strategy','session','regime','signal_features',
+                        'signal_metadata']
+                added = 0
                 with self._lock:
+                    if merge:
+                        existing_keys = {self._pending_key(rec) for rec in self._pending}
+                    else:
+                        existing_keys = set()
+                        self._pending.clear()
                     for row in rows:
                         rec = dict(zip(cols, row))
                         rec['signal_time'] = str(rec['signal_time'])
                         rec['eval_time']   = str(rec['eval_time'])
                         rec['evaluated']   = False
+                        key = self._pending_key(rec)
+                        if key in existing_keys:
+                            continue
                         self._pending.append(rec)
+                        existing_keys.add(key)
+                        added += 1
 
-                logger.info(f"[PredTracker] Reloaded {len(rows)} pending predictions from DB")
+                logger.info(f"[PredTracker] Reloaded {added} pending predictions from DB")
         except Exception as e:
             logger.debug(f"[PredTracker] Reload failed: {e}")
 

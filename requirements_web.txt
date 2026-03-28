@@ -2,6 +2,8 @@
 Flask>=2.3.0
 Flask-CORS>=4.0.0
 gunicorn>=21.2.0
+hypercorn>=1.0.0
+h2>=4.1.0
 
 # Existing bot dependencies
 pandas>=2.0.0

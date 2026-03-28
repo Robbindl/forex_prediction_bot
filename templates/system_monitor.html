@@ -119,8 +119,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link active"><span class="sb-icon">🖥️</span>System</a>
-    <div class="sb-section" style="margin-top:8px">Legacy</div>
-    <a href="/status" class="sb-link"><span class="sb-icon">📊</span>Status</a>
     <div class="sb-bottom"></div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
@@ -272,6 +270,20 @@ function updateSpark(inst,hist,val){
 
 function barColor(pct){return pct>85?'var(--rd)':pct>70?'var(--am)':'var(--gr)'}
 
+let _systemMonitorCache = null;
+async function fetchSystemMonitorOverview(){
+  const now = Date.now();
+  if(_systemMonitorCache && now - _systemMonitorCache.fetched < 10000){
+    return _systemMonitorCache.data;
+  }
+  const d = await fetch('/api/page-overview?page=system_monitor').then(r=>r.json());
+  if(d.success){
+    _systemMonitorCache = {fetched: now, data: d};
+    return d;
+  }
+  return {success:false};
+}
+
 // Uptime counter
 setInterval(()=>{
   const s=Math.floor((Date.now()-startTime)/1000);
@@ -281,7 +293,8 @@ setInterval(()=>{
 
 async function load(){
   try{
-    const d=await fetch('/api/system/health').then(r=>r.json());
+    const overview = await fetchSystemMonitorOverview();
+    const d = overview.health || {};
 
     document.getElementById('updateTime').textContent='Updated: '+new Date(new Date(d.timestamp||Date.now()).getTime()+3*3600000).toISOString().substring(11,19)+' EAT';
     document.getElementById('sysDot').style.background=d.processes?.['TradingCore']?'var(--gr)':'var(--rd)';
@@ -374,8 +387,8 @@ async function load(){
 // Phase 11 — Latency metrics
 async function loadLatency(){
   try{
-    const r=await fetch('/api/monitoring/metrics');
-    const d=await r.json();
+    const overview = await fetchSystemMonitorOverview();
+    const d = overview || {};
     if(!d.success)return;
     const m=d.metrics||{};
     const order=['pipeline','prediction','backtest','sentiment_fetch','telegram_send'];
@@ -401,10 +414,10 @@ async function loadLatency(){
 // Phase 11 — Error tracker
 async function loadErrors(){
   try{
-    const r=await fetch('/api/monitoring/errors');
-    const d=await r.json();
+    const overview = await fetchSystemMonitorOverview();
+    const d = overview || {};
     if(!d.success)return;
-    const errs=d.errors||{};
+    const errs=(d.errors || {});
     const rate=errs.rate_per_min||0;
     const last10=errs.last_10||[];
     document.getElementById('errBadge').textContent=rate+'/min';
@@ -422,10 +435,10 @@ async function loadErrors(){
 // Phase 11 — Signal performance (kills per layer)
 async function loadSignalPerf(){
   try{
-    const r=await fetch('/api/monitoring/snapshot');
-    const d=await r.json();
+    const overview = await fetchSystemMonitorOverview();
+    const d = overview || {};
     if(!d.success)return;
-    const sigs=d.signals||{};
+    const sigs=(d.health || {}).signals || {};
     const kills=sigs.kills||{};
     const total=sigs.total||0;
     const wr=((sigs.win_rate||0)*100).toFixed(1);
@@ -464,4 +477,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
   a.addEventListener('click',function(){if(document.querySelector('.sidebar').classList.contains('open'))toggleSidebar();});
 });
 </script>
-</body></html>
+</body><script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

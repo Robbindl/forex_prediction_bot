@@ -20,6 +20,9 @@ from utils.logger import TradingLogger, get_logger
 _trading_logger = TradingLogger(log_dir=str(LOG_DIR), level=LOG_LEVEL)
 logger = get_logger()
 
+_DEFAULT_HTTP2_CERT = Path("cert.pem")
+_DEFAULT_HTTP2_KEY = Path("key.pem")
+
 logger.info("=" * 60)
 logger.info(" FOREX PREDICTION BOT — STARTING")
 logger.info("=" * 60)
@@ -172,7 +175,24 @@ def stop_gateway() -> None:
         logger.info("[Gateway] Stopped")
 
 
+def stop_telegram() -> None:
+    try:
+        from telegram_manager import telegram_manager
+
+        bot = getattr(telegram_manager, "bot", None)
+        if bot is not None:
+            try:
+                bot.stop()
+            except Exception as e:
+                logger.debug(f"[bot] TelegramCommander stop failed: {e}")
+
+        telegram_manager.cleanup()
+    except Exception as e:
+        logger.debug(f"[bot] Telegram shutdown skipped: {e}")
+
+
 atexit.register(stop_gateway)
+atexit.register(stop_telegram)
 
 
 def gateway_is_running() -> bool:
@@ -181,16 +201,50 @@ def gateway_is_running() -> bool:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+def _resolve_tls_certificates(cert: str | None, key: str | None) -> tuple[str | None, str | None]:
+    if cert is None and key is None:
+        default_cert = _DEFAULT_HTTP2_CERT
+        default_key = _DEFAULT_HTTP2_KEY
+        if default_cert.exists() and default_key.exists():
+            return str(default_cert), str(default_key)
+
+        if default_cert.exists() != default_key.exists():
+            try:
+                default_cert.unlink(missing_ok=True)
+                default_key.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        try:
+            from generate_local_cert import generate_certificate
+            generate_certificate(default_cert, default_key, common_name="localhost", san=["localhost", "127.0.0.1"], days=365)
+            return str(default_cert), str(default_key)
+        except Exception as exc:
+            logger.warning(f"[bot] TLS certificate generation failed: {exc}")
+            return None, None
+
+    if cert is None or key is None:
+        raise RuntimeError("Both --ssl-cert and --ssl-key must be provided together, or neither.")
+
+    cert_path = Path(cert)
+    key_path = Path(key)
+    if not cert_path.exists() or not key_path.exists():
+        raise FileNotFoundError(f"TLS files not found: cert={cert_path}, key={key_path}")
+    return str(cert_path), str(key_path)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Forex/Crypto Prediction Trading Bot")
     p.add_argument("--balance",      type=float, default=DEFAULT_BALANCE)
-    p.add_argument("--strategy",     type=str,   default="voting",
-                   choices=["voting", "rsi", "macd", "bollinger"])
     p.add_argument("--no-telegram",  action="store_true")
     p.add_argument("--no-dashboard", action="store_true")
     p.add_argument("--no-gateway",   action="store_true")
+    p.add_argument("--no-ml-service", action="store_true")
     p.add_argument("--port",         type=int,   default=5000)
     p.add_argument("--host",         type=str,   default="0.0.0.0")
+    p.add_argument("--http2", action="store_true", help="Enable HTTP/2 server if available")
+    p.add_argument("--ssl-cert", type=str,   default=None, help="Path to TLS certificate for HTTPS / HTTP/2 (default: generated cert.pem)")
+    p.add_argument("--ssl-key",  type=str,   default=None, help="Path to TLS private key for HTTPS / HTTP/2 (default: generated key.pem)")
     p.add_argument("--backtest",     type=str,   default=None)
     p.add_argument("--backtest-cat", type=str,   default="crypto")
     return p.parse_args()
@@ -226,14 +280,21 @@ def main() -> None:
     # ── TradingCore ───────────────────────────────────────────────────────
     from core.engine import TradingCore
     engine = TradingCore(
-        balance       = args.balance,
-        strategy_mode = args.strategy,
-        no_telegram   = args.no_telegram,
+        balance      = args.balance,
+        no_telegram  = args.no_telegram,
     )
+
+    # Register engine singleton for cross-module access as early as possible.
+    try:
+        import core.engine as _eng_mod
+        _eng_mod._CORE_INSTANCE = engine
+    except Exception:
+        pass
 
     # ── Graceful shutdown ─────────────────────────────────────────────────
     def _shutdown(signum, frame):
         logger.info("[bot] Shutdown signal received")
+        stop_telegram()
         stop_gateway()
         engine.stop("signal")
         sys.exit(0)
@@ -259,9 +320,9 @@ def main() -> None:
             
             while True:
                 try:
-                    from core.engine import _CORE_INSTANCE
-                    tc = _CORE_INSTANCE
-                    if tc and hasattr(tc, "telegram") and tc.telegram and expiry_alerts:
+                    tc = engine
+                    today = _dt.date.today()
+                    if tc and hasattr(tc, "telegram") and tc.telegram and expiry_alerts and _check_api_expiry.last_checked != today:
                         today = _dt.date.today()
                         for name, exp_date in expiry_alerts:
                             days_left = (exp_date - today).days
@@ -280,22 +341,18 @@ def main() -> None:
                                         f"{'🚨 Renew immediately!' if days_left == 0 else 'Please renew soon.'}"
                                     )
                                 tc.telegram.send_message(msg)
+                        _check_api_expiry.last_checked = today
                 except Exception as e:
                     logger.debug(f"[APIExpiryChecker] error: {e}")
-                # Check once per day
+                # Retry until the first successful daily check, then back off.
                 import time
-                time.sleep(86400)
+                sleep_seconds = 86400 if _check_api_expiry.last_checked == _dt.date.today() else 300
+                time.sleep(sleep_seconds)
+        _check_api_expiry.last_checked = None
         threading.Thread(target=_check_api_expiry, name="APIExpiryChecker", daemon=True).start()
         logger.info("[bot] API expiry checker started")
     except Exception as e:
         logger.warning(f"[bot] API expiry checker failed: {e}")
-
-    # ── Register engine singleton for cross-module access ─────────────────
-    try:
-        import core.engine as _eng_mod
-        _eng_mod._CORE_INSTANCE = engine
-    except Exception:
-        pass
 
     # DataFetcher check moved to after wait_until_ready — see below
 
@@ -370,6 +427,7 @@ def main() -> None:
     try:
         from risk.portfolio_risk import PortfolioRiskEngine
         portfolio_risk = PortfolioRiskEngine()
+        engine._portfolio_risk = portfolio_risk
         engine.portfolio_risk = portfolio_risk
         logger.info("[bot] PortfolioRiskEngine attached")
     except Exception as e:
@@ -388,7 +446,7 @@ def main() -> None:
         logger.warning(f"[bot] ExchangeRouter failed: {e}")
 
     # ── ML prediction service ─────────────────────────────────────────────
-    if not args.no_gateway:
+    if not args.no_ml_service:
         try:
             import pathlib as _pl
             _logs_dir = _pl.Path("logs")
@@ -415,6 +473,8 @@ def main() -> None:
             logger.info("[bot] ML prediction service started")
         except Exception as e:
             logger.warning(f"[bot] ML service failed to start ({e}) — using in-process predictor")
+    else:
+        logger.info("[bot] ML prediction service disabled via --no-ml-service")
 
     # ── Redis cache upgrade ───────────────────────────────────────────────
     try:
@@ -581,11 +641,30 @@ def main() -> None:
         logger.warning(f"[bot] WhaleAlertManager failed to start: {e}")
 
     # ── Dashboard ─────────────────────────────────────────────────────────
+    dashboard_cert = None
+    dashboard_key = None
+    if args.http2:
+        try:
+            dashboard_cert, dashboard_key = _resolve_tls_certificates(args.ssl_cert, args.ssl_key)
+        except Exception as e:
+            logger.warning(f"[bot] HTTP/2 TLS setup failed: {e}; running without HTTPS.")
+            dashboard_cert = None
+            dashboard_key = None
+
     if not args.no_dashboard:
         try:
             from dashboard.web_app_live import start_dashboard
-            logger.info(f"[bot] Dashboard → http://{args.host}:{args.port}")
-            start_dashboard(engine, host=args.host, port=args.port)  # blocking
+            display_host = "localhost" if args.host in ("0.0.0.0", "127.0.0.1") else args.host
+            scheme = "https" if args.http2 and dashboard_cert and dashboard_key else "http"
+            logger.info(f"[bot] Dashboard → {scheme}://{display_host}:{args.port}")
+            start_dashboard(
+                engine,
+                host=args.host,
+                port=args.port,
+                http2=args.http2,
+                ssl_cert=dashboard_cert,
+                ssl_key=dashboard_key,
+            )  # blocking
         except Exception as e:
             logger.error(f"[bot] Dashboard failed: {e}", exc_info=True)
     else:

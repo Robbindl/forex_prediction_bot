@@ -117,6 +117,64 @@ class SignalJournal:
                 return e
         return None
 
+    def _latest_entry(self, name: str) -> Optional[JournalEntry]:
+        for e in reversed(self.entries):
+            if e.name == name:
+                return e
+        return None
+
+    def _latest_layer_entry(self) -> Optional[JournalEntry]:
+        for e in reversed(self.entries):
+            if e.layer > 0:
+                return e
+        return None
+
+    def summary(self) -> Dict[str, Any]:
+        kill = self.kill_entry()
+        integrity = self._latest_entry("data_integrity")
+        agent = self._latest_entry("agent")
+        latest = self._latest_layer_entry()
+
+        final_conf = None
+        if agent and agent.data.get("final_confidence") is not None:
+            try:
+                final_conf = round(float(agent.data.get("final_confidence")), 4)
+            except Exception:
+                final_conf = None
+        elif latest is not None:
+            final_conf = round(float(latest.conf_after), 4)
+
+        final_score = None
+        if agent and agent.data.get("agent_score") is not None:
+            try:
+                final_score = round(float(agent.data.get("agent_score")), 4)
+            except Exception:
+                final_score = None
+
+        valid_sources = None
+        min_required = None
+        if integrity:
+            try:
+                if integrity.data.get("valid_sources") is not None:
+                    valid_sources = int(integrity.data.get("valid_sources"))
+                if integrity.data.get("min_required") is not None:
+                    min_required = int(integrity.data.get("min_required"))
+            except Exception:
+                valid_sources = valid_sources if isinstance(valid_sources, int) else None
+                min_required = min_required if isinstance(min_required, int) else None
+
+        return {
+            "final_policy_decision": agent.decision if agent else "",
+            "final_policy_reason": agent.reason if agent else "",
+            "final_policy_score": final_score,
+            "final_confidence": final_conf,
+            "real_sources_valid": valid_sources,
+            "real_sources_required": min_required,
+            "killed_by": kill.name if kill else "",
+            "kill_reason": kill.reason if kill else "",
+            "last_layer": latest.name if latest else "",
+        }
+
     def to_list(self) -> List[Dict]:
         return [e.to_dict() for e in self.entries]
 
@@ -151,7 +209,26 @@ class SignalJournal:
                 f"_Reason: {reason}_"
             )
 
+        summary = self.summary()
         lines = [header, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+
+        if summary.get("real_sources_valid") is not None and summary.get("real_sources_required") is not None:
+            lines.append(
+                f"🧱 *Real Sources:* `{summary['real_sources_valid']}/{summary['real_sources_required']}`"
+            )
+
+        if summary.get("final_policy_decision"):
+            score_txt = ""
+            if summary.get("final_policy_score") is not None:
+                score_txt = f"  score `{summary['final_policy_score']:.3f}`"
+            lines.append(
+                f"🧠 *Final Gate:* `{self._escape_markdown(summary['final_policy_decision'])}`{score_txt}"
+            )
+
+        if not survived and summary.get("killed_by"):
+            lines.append(
+                f"🛑 *Killed By:* `{self._escape_markdown(str(summary['killed_by']).upper())}`"
+            )
 
         for entry in self.entries:
             emoji = entry.emoji()
@@ -204,10 +281,12 @@ class SignalJournal:
         return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
+        summary = self.summary()
         return {
             "asset":     self.asset,
             "direction": self.direction,
             "decision":  self.final_decision(),
             "entries":   self.to_list(),
             "elapsed_ms": self.total_elapsed_ms(),
+            **summary,
         }

@@ -121,10 +121,19 @@ class TelegramManager:
     def cleanup(self):
         """Remove PID file on clean shutdown"""
         try:
+            if self.bot is not None:
+                self.bot.stop()
+        except Exception as e:
+            logger.debug(f"Telegram bot stop during cleanup failed: {e}")
+
+        try:
             if self._pid_file.exists():
-                self._pid_file.unlink()
+                owner_pid = self._pid_file.read_text().strip()
+                if owner_pid == str(os.getpid()):
+                    self._pid_file.unlink()
         except OSError:
             pass
+        self.bot = None
         self.is_running = False
 
 

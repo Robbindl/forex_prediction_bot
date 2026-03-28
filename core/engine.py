@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from config.config import MIN_FINAL_CONFIDENCE
@@ -33,22 +34,27 @@ class TradingCore:
 
     def __init__(
         self,
-        balance: float = 10000.0,  # FIX: Changed from $30 to realistic balance
-        strategy_mode: str = "voting",
+        balance: float = 10000.0,
+        strategy_mode: str = "policy",
         no_telegram: bool = False,
     ) -> None:
         self.balance       = balance
         self.strategy_mode = strategy_mode
         self.no_telegram   = no_telegram
 
-        from core.state  import SystemState
+        from core.state  import state as shared_state
         from core.events import EventBus
         from core.assets import AssetRegistry
 
-        self.state    = SystemState()
+        self.state    = shared_state
         self.events   = EventBus()
         self.registry = AssetRegistry()
         self.pipeline: Pipeline = _global_pipeline
+
+        try:
+            self.state.init_db()
+        except Exception as e:
+            logger.debug(f"[TradingCore] Shared state DB sync skipped: {e}")
 
         from pathlib import Path as _Path
         _state_file_exists = _Path("data/system_state.json").exists()
@@ -66,8 +72,9 @@ class TradingCore:
 
         self.telegram:    Optional[Any] = None
         self.fetcher:     Optional[Any] = None
-        self._strategy:   Optional[Any] = None   # VotingStrategy singleton
-        self._predictor:  Optional[Any] = None   # MLPredictor singleton
+        self._strategy:   Optional[Any] = None   # reserved for compatibility wiring
+        self._predictor:  Optional[Any] = None   # reserved for external prediction client
+        self._agent:      Optional[Any] = None   # TradingAgent singleton
 
         self._engine_ready = threading.Event()
         self._stop_event   = threading.Event()
@@ -75,6 +82,7 @@ class TradingCore:
         self._loop_thread: Optional[threading.Thread] = None
         self._paper_trader: Optional[Any] = None
         self._risk_manager: Optional[Any] = None
+        self._portfolio_risk: Optional[Any] = None
 
         logger.info(f"[TradingCore] Init — balance=${balance} strategy={strategy_mode}")
 
@@ -138,63 +146,40 @@ class TradingCore:
             canonical = self.registry.canonical(asset)
             category  = self.registry.category(canonical)
 
-            # ── Weekend market-hours guard ─────────────────────────────────
-            # The dashboard calls this for every asset on a refresh loop.
-            # Without this guard it sends forex/commodities/indices through
-            # the full pipeline on weekends, producing misleading MetaAI logs.
-            if category != "crypto":
-                from datetime import datetime as _dt, timezone as _tz
-                _now  = _dt.now(tz=_tz.utc)
-                _wd   = _now.weekday()
-                _hour = _now.hour
-                _closed = (
-                    _wd == 5
-                    or (_wd == 6 and _hour < 22)
-                    or (_wd == 4 and _hour >= 22)
-                )
-                if _closed:
-                    return None
-            # ──────────────────────────────────────────────────────────────
+            market_open, _reason = self._market_hours_status(canonical, category)
+            if not market_open:
+                return None
 
             ctx = self._build_context(canonical, category)
-
-            # Use the strategy + predictor singletons to generate a real
-            # directional signal — same pattern as _process_asset() in the
-            # trading loop.  Previously this seeded direction="BUY" with
-            # confidence=0.5 and skipped the strategy entirely, meaning the
-            # dashboard fallback path always showed a BUY bias regardless of
-            # what RSI/MACD/Bollinger actually said.
             sig = None
-            if self._strategy and self.fetcher:
+            if self.fetcher:
                 try:
                     price_data = self._fetch_price_data(canonical, category)
                     if price_data is not None and not price_data.empty:
-                        sig = self._strategy.generate(
-                            canonical, canonical, category, price_data
+                        price, spread = 0.0, 0.0
+                        try:
+                            price, spread = self.fetcher.get_real_time_price(
+                                canonical, category
+                            )
+                            price  = price  or 0.0
+                            spread = spread or 0.0
+                        except Exception:
+                            pass
+                        ctx["price_data"] = price_data
+                        ctx["spread"]     = spread
+                        ctx["risk_manager"] = self._risk_manager
+                        try:
+                            from ml.features import build_features
+                            features = build_features(price_data)
+                            if features is not None:
+                                ctx["features"] = features
+                        except Exception:
+                            pass
+                        sig = self._generate_seed_signal(
+                            canonical, canonical, category, price_data, ctx
                         )
-                        if sig:
-                            price, spread = 0.0, 0.0
-                            try:
-                                price, spread = self.fetcher.get_real_time_price(
-                                    canonical, category
-                                )
-                                price  = price  or 0.0
-                                spread = spread or 0.0
-                            except Exception:
-                                pass
-                            ctx["price_data"] = price_data
-                            ctx["spread"]     = spread
-                            if self._predictor:
-                                ml_prob, ml_conf = self._predictor.predict(
-                                    canonical, category, price_data
-                                )
-                                ctx["ml_prediction"] = ml_prob
-                                ctx["ml_confidence"] = ml_conf
                 except Exception as _e:
-                    logger.debug(
-                        f"[TradingCore] get_signal_for_asset strategy gen "
-                        f"failed for {asset}: {_e}"
-                    )
+                    logger.debug(f"[TradingCore] get_signal_for_asset seed generate failed for {asset}: {_e}")
                     sig = None
 
             if sig is None:
@@ -239,6 +224,31 @@ class TradingCore:
             "status":           "healthy" if not issues else "degraded",
         }
 
+    @staticmethod
+    def _market_hours_status(asset: str, category: str) -> Tuple[bool, str]:
+        now_utc = datetime.now(tz=timezone.utc)
+        wd = now_utc.weekday()
+        hour = now_utc.hour
+
+        if category == "crypto":
+            return True, "crypto_24x7"
+
+        if wd >= 5:
+            if wd == 6 and hour >= 22 and category in ("forex", "commodities"):
+                return True, "sunday_reopen"
+            return False, "weekend_closed"
+
+        if category == "forex" and wd == 4 and hour >= 22:
+            return False, "forex_friday_close"
+
+        if category in ("stocks", "indices") and not (13 <= hour < 21):
+            return False, "indices_out_of_session"
+
+        if category == "commodities" and hour == 21:
+            return False, "commodities_settlement"
+
+        return True, "open"
+
     # ── Internal — init ───────────────────────────────────────────────────────
 
     def _init_subsystems(self) -> bool:
@@ -246,17 +256,17 @@ class TradingCore:
             from data.fetcher           import DataFetcher
             from risk.manager           import RiskManager
             from execution.paper_trader import PaperTrader
-            from ml.registry            import ModelRegistry
+            from ml.registry            import registry as model_registry
 
             self.fetcher       = DataFetcher()
             self._risk_manager = RiskManager(account_balance=self.state.balance)
 
             # ── Singleton strategy + predictor — created once, reused every cycle ──
-            from strategies.voting import VotingStrategy
-            from ml.predictor      import MLPredictor
-            self._strategy  = VotingStrategy()
-            self._predictor = MLPredictor()
-            logger.info("[TradingCore] VotingStrategy + MLPredictor initialised (singletons)")
+            from ml.agent import agent as TradingAgent
+            self._strategy  = None
+            self._predictor = None
+            self._agent     = TradingAgent
+            logger.info("[TradingCore] PolicyAgent initialised (singletons)")
             self._paper_trader = PaperTrader(
                 account_balance=self.state.balance,
                 risk_manager=self._risk_manager,
@@ -269,7 +279,50 @@ class TradingCore:
                     exit_reason = trade.get("exit_reason", "Unknown")
                     pnl         = float(trade.get("pnl", 0))
 
-                    self.state.close_position(trade_id, exit_price, exit_reason, pnl)
+                    if trade.get("is_partial_close"):
+                        parent_trade_id = str(trade.get("parent_trade_id", ""))
+                        recorded = self.state.record_partial_close(parent_trade_id, trade)
+                        if recorded is None:
+                            return
+
+                        self._risk_manager.update_balance(self.state.balance)
+
+                        if self.telegram:
+                            try:
+                                target = getattr(self.telegram, "bot", self.telegram)
+                                if hasattr(target, "alert_trade_closed"):
+                                    target.alert_trade_closed(recorded)
+                            except Exception:
+                                pass
+
+                        try:
+                            from services.personality_service import personality as _personality
+                            _personality.record_trade(recorded)
+                        except Exception:
+                            pass
+
+                        try:
+                            from monitoring.system_health_service import monitor as _mon
+                            _mon.record_trade_result(pnl)
+                        except Exception:
+                            pass
+
+                        logger.log_trade(
+                            "PARTIAL_CLOSE",
+                            trade_id=trade_id,
+                            parent_trade_id=parent_trade_id,
+                            asset=recorded.get("asset", ""),
+                            pnl=round(pnl, 4),
+                            reason=exit_reason,
+                        )
+                        return
+
+                    closed = self.state.close_position(trade_id, exit_price, exit_reason, pnl)
+                    if closed is None:
+                        logger.debug(
+                            f"[TradingCore] Ignoring duplicate close callback for {trade_id}"
+                        )
+                        return
                     self._risk_manager.update_balance(self.state.balance)
 
                     # ── Telegram close alert ──────────────────────────────────────────
@@ -277,14 +330,14 @@ class TradingCore:
                         try:
                             target = getattr(self.telegram, "bot", self.telegram)
                             if hasattr(target, "alert_trade_closed"):
-                                target.alert_trade_closed(trade)
+                                target.alert_trade_closed(closed)
                         except Exception:
                             pass
 
                     # ── Robbie learns from it ─────────────────────────────────────────
                     try:
                         from services.personality_service import personality as _personality
-                        _personality.record_trade(trade)
+                        _personality.record_trade(closed)
                     except Exception:
                         pass
 
@@ -296,10 +349,10 @@ class TradingCore:
                         pass
 
                     logger.log_trade("CLOSE", trade_id=trade_id,
-                                    asset=trade.get("asset", ""),
+                                    asset=closed.get("asset", ""),
                                     pnl=round(pnl, 4), reason=exit_reason)
                     try:
-                        canonical = self.registry.canonical(trade.get("asset", ""))
+                        canonical = self.registry.canonical(closed.get("asset", ""))
                         self.state.set_cooldown(canonical, TRADE_CLOSE_COOLDOWN_MINUTES)
                         logger.info(
                             f"[TradingCore] Set cooldown {TRADE_CLOSE_COOLDOWN_MINUTES}m "
@@ -310,7 +363,14 @@ class TradingCore:
                 except Exception as e:
                     logger.error(f"[TradingCore] on_trade_closed error: {e}")
 
+            def _on_position_updated(position: dict) -> None:
+                try:
+                    self.state.sync_open_position(position)
+                except Exception as e:
+                    logger.error(f"[TradingCore] on_position_updated error: {e}")
+
             self._paper_trader.on_trade_closed = _on_trade_closed
+            self._paper_trader.on_position_updated = _on_position_updated
             # ──────────────────────────────────────────────────────────────────
 
             for pos in self.state.get_open_positions():
@@ -323,8 +383,7 @@ class TradingCore:
             self._check_offline_sl_tp()
 
             try:
-                registry = ModelRegistry()
-                registry.load_all()
+                model_registry.load_all()
             except Exception as me:
                 logger.warning(f"[TradingCore] ML registry load warning: {me}")
 
@@ -429,7 +488,7 @@ class TradingCore:
             result = self.pipeline.run(sig, ctx)
             if result is not None:
                 survivors.append(result)
-                # Publish every survivor to Redis immediately so the dashboard
+                    # Publish every survivor to Redis immediately so the dashboard
                 # _sig_store is updated in real time without running the pipeline
                 # a second time. Previously only executed trades were published,
                 # forcing the dashboard to independently re-run the pipeline.
@@ -438,6 +497,8 @@ class TradingCore:
                     _redis_broker.publish_signal(result.to_dict())
                 except Exception:
                     pass
+            else:
+                self._log_pipeline_decision(sig, ctx)
 
         logger.info(
             f"[TradingCore] {len(signal_ctx_pairs)} signals → "
@@ -469,28 +530,41 @@ class TradingCore:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             asset_list: List[Tuple[str, str]] = self.registry.all_assets()
-            # Reuse the singletons initialised in _init_subsystems —
-            # no new object creation every 45 seconds
-            strategy  = self._strategy
-            predictor = self._predictor
-            if strategy is None or predictor is None:
-                logger.warning(f"[TradingCore] Strategy/predictor not ready — strategy={strategy is not None}, predictor={predictor is not None} — skipping cycle")
-                return result
 
-            candidates = [
+            base_candidates = [
                 (canonical, category) for canonical, category in asset_list
                 if not self.state.is_cooling_down(canonical)
                 and not self.state.has_open_position_for(canonical)
             ]
-            logger.debug(f"[TradingCore] Starting signal generation for {len(candidates)} candidates")
+            market_block_counts: Counter[str] = Counter()
+            candidates: List[Tuple[str, str]] = []
+            for canonical, category in base_candidates:
+                market_open, block_reason = self._market_hours_status(canonical, category)
+                if market_open:
+                    candidates.append((canonical, category))
+                else:
+                    market_block_counts[block_reason] += 1
+
+            logger.debug(f"[TradingCore] Starting signal generation for {len(candidates)} tradable candidates")
             logger.info(
-                f"[TradingCore] Asset scan: total={len(asset_list)} candidates={len(candidates)} "
+                f"[TradingCore] Asset scan: total={len(asset_list)} candidates={len(base_candidates)} "
+                f"tradable_now={len(candidates)} "
                 f"cooling={len([a for a, _ in asset_list if self.state.is_cooling_down(a)])} "
-                f"open_pos={len([a for a, _ in asset_list if self.state.has_open_position_for(a)])}"
+                f"open_pos={len([a for a, _ in asset_list if self.state.has_open_position_for(a)])} "
+                f"market_closed={sum(market_block_counts.values())}"
             )
-            
+
             if not candidates:
-                logger.warning("[TradingCore] No candidates available for signal generation")
+                if market_block_counts:
+                    blocked = ", ".join(
+                        f"{reason}={count}" for reason, count in sorted(market_block_counts.items())
+                    )
+                    logger.info(
+                        f"[TradingCore] Signal scan summary: generated=0 "
+                        f"(all candidates blocked by market hours: {blocked})"
+                    )
+                else:
+                    logger.info("[TradingCore] Signal scan summary: generated=0 (no candidates available)")
                 return result
 
             if self._stop_event.is_set():
@@ -499,67 +573,13 @@ class TradingCore:
             def _process_asset(canonical_category):
                 canonical, category = canonical_category
                 if self._stop_event.is_set():
-                    return None
-
-                # ── Market hours pre-filter ───────────────────────────────────
-                # Skip non-crypto assets when their market is closed.
-                # Implemented inline so a failed import never silently lets
-                # closed-market signals through to the pipeline.
-                # Previously used `except Exception: pass` which caused forex,
-                # commodities and indices to leak through on Saturdays.
-                try:
-                    from datetime import datetime as _dt, timezone as _tz
-                    _now  = _dt.now(tz=_tz.utc)
-                    _wd   = _now.weekday()   # 0=Mon … 5=Sat … 6=Sun
-                    _hour = _now.hour
-                    _weekday_name = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][_wd]
-
-                    if category == "crypto":
-                        pass  # 24/7 — always open
-
-                    elif _wd >= 5:
-                        # Saturday (5) or Sunday (6) — all non-crypto closed
-                        # Exception: forex and commodities open Sunday ≥ 22:00
-                        if _wd == 6 and _hour >= 22 and category in ("forex", "commodities"):
-                            pass  # Sunday evening session open
-                        else:
-                            logger.debug(f"[TradingCore] {canonical} ({category}) BLOCKED: weekend {_weekday_name} {_hour:02d}:00 UTC")
-                            return None
-
-                    else:
-                        # Weekday — apply per-category hours
-                        if category == "forex":
-                            # Closed Friday after 22:00 UTC
-                            if _wd == 4 and _hour >= 22:
-                                logger.debug(f"[TradingCore] {canonical} ({category}) BLOCKED: Fri after 22:00")
-                                return None
-
-                        elif category in ("stocks", "indices"):
-                            # NYSE/Nasdaq: 13:00–21:00 UTC (09:30–16:00 ET approx)
-                            if not (13 <= _hour < 21):
-                                logger.debug(f"[TradingCore] {canonical} ({category}) BLOCKED: market hours {_hour:02d}:00 UTC (need 13:00-21:00)")
-                                return None
-
-                        elif category == "commodities":
-                            # CME: closed daily 21:00–22:00 UTC (settlement break)
-                            if _hour == 21:
-                                logger.debug(f"[TradingCore] {canonical} ({category}) BLOCKED: CME settlement 21:00 UTC")
-                                return None
-
-                except Exception as _mh_err:
-                    # Log the error rather than silently passing — if this fails
-                    # we want to know why, not accidentally trade closed markets.
-                    logger.warning(
-                        f"[TradingCore] Market-hours pre-filter error for "
-                        f"{canonical} ({category}): {_mh_err} — skipping asset"
-                    )
-                    return None
+                    return ("stopped", None)
 
                 try:
                     price_data = self._fetch_price_data(canonical, category)
                     if price_data is None or price_data.empty:
                         logger.debug(f"[TradingCore] {canonical}: no price data")
-                        return None
+                        return ("no_price_data", canonical)
 
                     price, spread = (0.0, 0.0)
                     if self.fetcher:
@@ -572,42 +592,72 @@ class TradingCore:
                         except Exception:
                             pass
 
-                    ml_prob, ml_conf = predictor.predict(
-                        canonical, category, price_data
-                    )
+                    ctx = self._build_context(canonical, category)
+                    ctx["price_data"] = price_data
+                    ctx["spread"]     = spread
+                    ctx["risk_manager"] = self._risk_manager
+                    try:
+                        from ml.features import build_features
+                        features = build_features(price_data)
+                        if features is not None:
+                            ctx["features"] = features
+                    except Exception:
+                        pass
 
-                    sig = strategy.generate(canonical, canonical, category, price_data)
-                    if sig and sig.confidence >= 0.5:
-                        ctx = self._build_context(canonical, category)
-                        ctx["price_data"]    = price_data
-                        ctx["spread"]        = spread
-                        ctx["ml_prediction"] = ml_prob
-                        ctx["ml_confidence"] = ml_conf
-                        logger.info(f"[TradingCore] SIGNAL: {canonical} {sig.direction} confidence={sig.confidence:.2%}")
-                        return (sig, ctx)
-                    elif sig:
-                        logger.debug(f"[TradingCore] {canonical}: signal confidence too low ({sig.confidence:.2%})")
+                    sig = self._generate_seed_signal(
+                        canonical, canonical, category, price_data, ctx
+                    )
+                    if sig:
+                        logger.info(
+                            f"[TradingCore] SIGNAL: {canonical} {sig.direction} confidence={sig.confidence:.2%}"
+                        )
+                        return ("signal", (sig, ctx))
+                    logger.debug(f"[TradingCore] {canonical}: no seed signal generated")
+                    return ("no_seed_signal", canonical)
                 except Exception as e:
                     logger.warning(f"[TradingCore] Signal gen {canonical}: {e}")
-                return None
+                    return ("error", canonical)
 
             with ThreadPoolExecutor(max_workers=6) as pool:
                 futures = {pool.submit(_process_asset, ac): ac for ac in candidates}
                 logger.debug(f"[TradingCore] Submitted {len(futures)} asset tasks to thread pool")
+                status_counts: Counter[str] = Counter()
                 for future in as_completed(futures):
                     if self._stop_event.is_set():
                         break
                     try:
-                        res = future.result()
-                        if res is not None:
-                            result.append(res)
-                            logger.debug(f"[TradingCore] Got signal from future: {res[0].asset}")
+                        status, payload = future.result()
+                        if status == "signal" and payload is not None:
+                            result.append(payload)
+                            logger.debug(f"[TradingCore] Got signal from future: {payload[0].asset}")
                         else:
-                            logger.debug(f"[TradingCore] Future returned None for {futures.get(future, 'unknown')}")
+                            status_counts[status] += 1
+                            logger.debug(
+                                f"[TradingCore] Future status {status} for {futures.get(future, 'unknown')}"
+                            )
                     except Exception as e:
                         asset_pair = futures.get(future, "unknown")
+                        status_counts["future_error"] += 1
                         logger.error(f"[TradingCore] Future failed for {asset_pair}: {e}")
-            logger.debug(f"[TradingCore] Signal generation complete: {len(result)} signals generated from {len(futures)} tasks")
+            status_counts["market_closed"] += sum(market_block_counts.values())
+            summary_parts = [
+                f"tradable={len(candidates)}",
+                f"generated={len(result)}",
+                f"no_edge={status_counts.get('no_seed_signal', 0)}",
+                f"no_price={status_counts.get('no_price_data', 0)}",
+                f"market_closed={status_counts.get('market_closed', 0)}",
+                f"errors={status_counts.get('error', 0) + status_counts.get('future_error', 0)}",
+            ]
+            if market_block_counts and not result:
+                block_detail = ", ".join(
+                    f"{reason}={count}" for reason, count in sorted(market_block_counts.items())
+                )
+                summary_parts.append(f"blocked_by={block_detail}")
+            logger.info(f"[TradingCore] Signal scan summary: {' '.join(summary_parts)}")
+            logger.debug(
+                f"[TradingCore] Signal generation complete: {len(result)} signals generated "
+                f"from {len(futures)} tasks"
+            )
 
         except Exception as e:
             logger.error(f"[TradingCore] Signal generation error: {e}")
@@ -641,27 +691,21 @@ class TradingCore:
                 logger.warning(f"[TradingCore] Risk gate blocked {signal.asset}: {reason}")
                 return False
 
-        # FIX S5: Call portfolio_risk.evaluate() so drawdown halt and
-        # position concentration limits are enforced.  Previously this was
-        # attached to the engine but never called in the execution path.
-        if hasattr(self, "_portfolio_risk") and self._portfolio_risk is not None:
+        signal_dict = signal.to_dict()
+        if self._risk_manager and float(signal_dict.get("position_size", 0) or 0) <= 0:
             try:
-                pr_allowed, pr_reason = self._portfolio_risk.evaluate(
-                    signal=signal.to_dict(),
-                    open_positions=self.state.get_open_positions(),
-                    balance=self.state.balance,
+                signal_dict["position_size"] = self._risk_manager.calculate_position_size(
+                    entry_price=float(signal_dict.get("entry_price", 0) or 0),
+                    stop_loss=float(signal_dict.get("stop_loss", 0) or 0),
+                    category=signal.category,
+                    confidence=signal.confidence,
+                    asset=signal.asset,
                 )
-                if not pr_allowed:
-                    logger.warning(
-                        f"[TradingCore] PortfolioRisk blocked {signal.asset}: {pr_reason}"
-                    )
-                    return False
-            except Exception as _pre:
-                logger.debug(f"[TradingCore] PortfolioRisk check error: {_pre}")
+            except Exception as _size_err:
+                logger.debug(f"[TradingCore] Position sizing error for {signal.asset}: {_size_err}")
 
         # Order Flow Intelligence: Check liquidation walls & stop hunts
         # Only active for crypto assets (forex/indices don't have order book data)
-        signal_dict = signal.to_dict()
         if signal.category == "crypto":
             try:
                 from order_flow import get_validator
@@ -680,6 +724,42 @@ class TradingCore:
                 signal_dict = validator.adjust_signal(signal_dict)
             except Exception as _ofe:
                 logger.debug(f"[TradingCore] Order flow check error: {_ofe}")
+
+        # Portfolio risk must run on the final executable payload, after sizing
+        # and order-flow adjustments, otherwise exposure checks see size=0.
+        if self._portfolio_risk is not None:
+            try:
+                pr_allowed, pr_reason = self._portfolio_risk.evaluate(
+                    signal=signal_dict,
+                    open_positions=self.state.get_open_positions(),
+                    balance=self.state.balance,
+                    initial_balance=self.state.initial_balance,
+                    daily_pnl=self.state.daily_pnl,
+                )
+                if not pr_allowed:
+                    logger.warning(
+                        f"[TradingCore] PortfolioRisk blocked {signal.asset}: {pr_reason}"
+                    )
+                    return False
+            except Exception as _pre:
+                logger.debug(f"[TradingCore] PortfolioRisk check error: {_pre}")
+
+        try:
+            signal.position_size = float(signal_dict.get("position_size", signal.position_size) or 0.0)
+            signal.stop_loss = float(signal_dict.get("stop_loss", signal.stop_loss) or signal.stop_loss)
+            signal.take_profit = float(signal_dict.get("take_profit", signal.take_profit) or signal.take_profit)
+        except Exception:
+            pass
+
+        if float(signal_dict.get("position_size", 0) or 0) <= 0:
+            logger.warning(f"[TradingCore] Position size rejected for {signal.asset}")
+            return False
+
+        if signal.metadata.get("features") is not None:
+            try:
+                signal.metadata["signal_features"] = list(signal.metadata["features"])
+            except Exception:
+                pass
 
         try:
             trade = self._paper_trader.execute_signal(signal_dict)
@@ -723,6 +803,157 @@ class TradingCore:
             except Exception:
                 pass
         return None
+
+    @staticmethod
+    def _fmt_metric(value: Any, digits: int = 3) -> str:
+        try:
+            if value is None:
+                return "n/a"
+            return f"{float(value):.{digits}f}"
+        except Exception:
+            return "n/a"
+
+    def _log_seed_decision(self, asset: str, context: Dict[str, Any], reason: str) -> None:
+        logger.info(
+            f"[TradingCore] Decision {asset} no_seed "
+            f"reason={reason} "
+            f"ml={self._fmt_metric(context.get('ml_prediction'))}/"
+            f"{self._fmt_metric(context.get('ml_confidence'))} "
+            f"sent={self._fmt_metric(context.get('sentiment_score'))} "
+            f"funding={context.get('funding_bias', 'NEUTRAL')} "
+            f"oi={context.get('oi_signal', 'NEUTRAL')}"
+        )
+
+    def _log_pipeline_decision(self, signal: Signal, context: Dict[str, Any]) -> None:
+        reason = signal.kill_reason or signal.metadata.get("agent_rejection_reason", "killed")
+        logger.info(
+            f"[TradingCore] Decision {signal.asset} killed "
+            f"layer={signal.layer_reached} dir={signal.direction} "
+            f"ml={self._fmt_metric(signal.metadata.get('ml_prediction', context.get('ml_prediction')))}/"
+            f"{self._fmt_metric(signal.metadata.get('ml_confidence', context.get('ml_confidence')))} "
+            f"sent={self._fmt_metric(signal.metadata.get('sentiment_score', context.get('sentiment_score')))} "
+            f"whale={signal.metadata.get('whale_dominant', 'n/a')} "
+            f"oflow={self._fmt_metric(signal.metadata.get('orderflow_imbalance'))} "
+            f"agent={self._fmt_metric(signal.metadata.get('agent_score'))} "
+            f"final_conf={self._fmt_metric(signal.confidence)} "
+            f"reason={reason}"
+        )
+
+    def _generate_seed_signal(
+        self,
+        asset: str,
+        canonical: str,
+        category: str,
+        price_data,
+        context: Dict[str, Any],
+    ) -> Optional[Signal]:
+        predictor = self._predictor
+        if predictor is None:
+            try:
+                from ml.registry import registry as shared_registry
+                if shared_registry.get(f"{category}_classifier") is None:
+                    shared_registry.load_all()
+                from ml.predictor import predictor as local_predictor
+                predictor = local_predictor
+            except Exception as e:
+                context["seed_decision"] = {"status": "unavailable", "reason": "predictor_unavailable"}
+                logger.debug(f"[TradingCore] Seed predictor unavailable for {asset}: {e}")
+                self._log_seed_decision(asset, context, "predictor_unavailable")
+                predictor = None
+
+        if predictor is None:
+            return None
+
+        try:
+            up_prob, ml_conf = predictor.predict(canonical, category, price_data)
+        except Exception as e:
+            context["seed_decision"] = {"status": "error", "reason": "predictor_error"}
+            logger.debug(f"[TradingCore] Seed predictor failed for {asset}: {e}")
+            self._log_seed_decision(asset, context, "predictor_error")
+            return None
+
+        context["ml_prediction"] = up_prob
+        context["ml_confidence"] = ml_conf
+        context["seed_decision"] = {
+            "status": "evaluated",
+            "model": f"{category}_classifier",
+            "probability": up_prob,
+            "confidence": ml_conf,
+        }
+        existing_meta = dict(context.get("signal_metadata") or {})
+        context["signal_metadata"] = {
+            **existing_meta,
+            "ml_prediction": up_prob,
+            "ml_confidence": ml_conf,
+            "ml_prediction_real": ml_conf > 0.0,
+            "sentiment_score": context.get("sentiment_score", 0.0),
+            "regime": context.get("regime", "unknown"),
+            "confidence": ml_conf,
+        }
+
+        if ml_conf < 0.10:
+            context["seed_decision"]["status"] = "rejected"
+            context["seed_decision"]["reason"] = "classifier_neutral"
+            self._log_seed_decision(asset, context, "classifier_neutral")
+            return None
+
+        if up_prob > 0.5:
+            direction = "BUY"
+        elif up_prob < 0.5:
+            direction = "SELL"
+        else:
+            context["seed_decision"]["status"] = "rejected"
+            context["seed_decision"]["reason"] = "classifier_exactly_neutral"
+            self._log_seed_decision(asset, context, "classifier_exactly_neutral")
+            return None
+
+        try:
+            entry_price = float(price_data["close"].iloc[-1])
+        except Exception:
+            context["seed_decision"]["status"] = "rejected"
+            context["seed_decision"]["reason"] = "invalid_entry_price"
+            self._log_seed_decision(asset, context, "invalid_entry_price")
+            return None
+
+        if entry_price <= 0.0:
+            context["seed_decision"]["status"] = "rejected"
+            context["seed_decision"]["reason"] = "non_positive_entry_price"
+            self._log_seed_decision(asset, context, "non_positive_entry_price")
+            return None
+
+        if self._risk_manager is not None:
+            stop_loss = self._risk_manager.get_stop_loss(entry_price, direction, category)
+            take_profit = self._risk_manager.get_take_profit(
+                entry_price, stop_loss, direction, rr=2.0
+            )
+        else:
+            dist = entry_price * 0.015
+            stop_loss = entry_price - dist if direction == "BUY" else entry_price + dist
+            take_profit = entry_price + dist * 2 if direction == "BUY" else entry_price - dist * 2
+
+        signal = Signal(
+            asset=asset,
+            canonical_asset=canonical,
+            category=category,
+            direction=direction,
+            confidence=round(min(1.0, max(0.0, ml_conf)), 4),
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            risk_reward=0.0,
+            strategy_id="policy_agent",
+            indicators={"seed_source": "classifier", "seed_model": f"{category}_classifier"},
+        )
+        signal.metadata.update({
+            "ml_prediction": round(up_prob, 4),
+            "ml_confidence": round(ml_conf, 4),
+            "ml_prediction_real": ml_conf > 0.0,
+            "seed_source": "classifier",
+            "seed_model": f"{category}_classifier",
+        })
+        context["seed_decision"]["status"] = "signal"
+        context["seed_decision"]["direction"] = direction
+        return signal
 
     def _get_prices(self) -> Dict[str, float]:
         prices = {}
@@ -774,9 +1005,13 @@ class TradingCore:
 
     def _build_context(self, asset: str = "", category: str = "") -> Dict[str, Any]:
         sentiment_score = 0.0
+        sentiment_details: Dict[str, Any] = {}
         try:
-            from layers.layer5_sentiment import _fetch_sentiment
-            sentiment_score = _fetch_sentiment(asset, category)
+            from layers.layer5_sentiment import _fetch_sentiment_details
+            sentiment_details = _fetch_sentiment_details(asset, category)
+            sentiment_score = float(
+                sentiment_details.get("composite_score", sentiment_details.get("score", 0.0))
+            )
         except Exception:
             pass
 
@@ -803,6 +1038,7 @@ class TradingCore:
             "engine":            self,
             "fetcher":           self.fetcher,
             "sentiment_score":   sentiment_score,
+            "sentiment_details": sentiment_details,
             "funding_bias":      funding_bias,    # Phase 1 → Layer 8 Meta AI
             "oi_signal":         oi_signal,       # Phase 1 → Layer 8 Meta AI
             "news_event":        _get_news_event(category),  # news event state
@@ -948,7 +1184,11 @@ class TradingCore:
                     continue
 
                 # Calculate P&L at breach price
-                pnl = (breach_price - entry) * size if direction == "BUY" else (entry - breach_price) * size
+                try:
+                    from risk.position_sizer import PositionSizer as _PS
+                    pnl = _PS.pnl(asset, category, entry, breach_price, size, direction)
+                except Exception:
+                    pnl = (breach_price - entry) * size if direction == "BUY" else (entry - breach_price) * size
 
                 # Close in state + DB
                 closed = self.state.close_position(trade_id, breach_price, breach_reason, pnl)
@@ -1008,7 +1248,15 @@ class TradingCore:
                 )
                 if price:
                     exit_price = price
-                    pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
+                    try:
+                        from risk.position_sizer import PositionSizer as _PS
+                        pnl = _PS.pnl(
+                            pos.get("asset", ""),
+                            pos.get("category", "forex"),
+                            entry, price, size, direction
+                        )
+                    except Exception:
+                        pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
             except Exception:
                 pass
 
@@ -1061,7 +1309,7 @@ class TradingCore:
 
     def __repr__(self) -> str:
         return (
-            f"TradingCore(strategy={self.strategy_mode}, "
+            f"TradingCore(mode={self.strategy_mode}, "
             f"balance={self.state.balance:.2f}, "
             f"running={self._is_running}, "
             f"positions={self.state.open_position_count()})"

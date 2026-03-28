@@ -159,15 +159,34 @@ class SystemState:
     def get_closed_positions(self, limit: int = 100) -> List[Dict]:
         """Return from memory cache; fall back to DB for older records."""
         with self._lock:
-            cached = list(self._closed_positions[-limit:])
+            cached = list(reversed(self._closed_positions[-limit:]))
         if len(cached) >= limit:
-            return cached
-        # Supplement from DB
+            return cached[:limit]
+
         try:
             from services.db_pool import get_db
-            return get_db().get_recent_trades(limit)
+            db_recent = get_db().get_recent_trades(limit)
         except Exception:
-            return cached
+            return cached[:limit]
+
+        seen_trade_ids = {
+            str(trade.get("trade_id", "") or "")
+            for trade in cached
+            if trade.get("trade_id")
+        }
+        merged = list(cached)
+
+        for trade in db_recent:
+            trade_id = str(trade.get("trade_id", "") or "")
+            if trade_id and trade_id in seen_trade_ids:
+                continue
+            merged.append(trade)
+            if trade_id:
+                seen_trade_ids.add(trade_id)
+            if len(merged) >= limit:
+                break
+
+        return merged[:limit]
 
     def open_position_count(self) -> int:
         with self._lock:
@@ -181,9 +200,38 @@ class SystemState:
             )
 
     def update_position_field(self, trade_id: str, **kwargs) -> None:
+        snapshot = None
         with self._lock:
             if trade_id in self._open_positions:
                 self._open_positions[trade_id].update(kwargs)
+                snapshot = dict(self._open_positions[trade_id])
+                self._persist_json()
+
+        if snapshot is None:
+            return
+
+        try:
+            from services.db_pool import get_db
+            get_db().save_open_position(snapshot)
+        except Exception as e:
+            logger.error(f"[State] DB update_position_field failed: {e}")
+
+    def sync_open_position(self, position: Dict) -> None:
+        """Persist the latest snapshot of an already-open position."""
+        trade_id = str(position.get("trade_id", "") or "")
+        if not trade_id:
+            return
+
+        snapshot = dict(position)
+        with self._lock:
+            self._open_positions[trade_id] = snapshot
+            self._persist_json()
+
+        try:
+            from services.db_pool import get_db
+            get_db().save_open_position(snapshot)
+        except Exception as e:
+            logger.error(f"[State] DB sync_open_position failed: {e}")
 
     # ── Balance ───────────────────────────────────────────────────────────────
 
@@ -191,6 +239,11 @@ class SystemState:
     def balance(self) -> float:
         with self._lock:
             return self._balance
+
+    @property
+    def initial_balance(self) -> float:
+        with self._lock:
+            return self._initial_balance
 
     def set_balance(self, balance: float, reason: str = "init") -> None:
         with self._lock:
@@ -319,6 +372,69 @@ class SystemState:
                 "daily_trades":    self._daily_trades,
                 "daily_pnl":       round(self._daily_pnl, 4),
             }
+
+    def record_partial_close(self, parent_trade_id: str, partial_trade: Dict) -> Optional[Dict]:
+        """
+        Record realised PnL for a partial close while keeping the parent position open.
+        """
+        partial_snapshot = None
+        remaining_snapshot = None
+        balance_now = 0.0
+        today = date.today().isoformat()
+
+        with self._lock:
+            parent = self._open_positions.get(parent_trade_id)
+            if parent is None:
+                return None
+
+            partial_snapshot = dict(partial_trade)
+            pnl = float(partial_snapshot.get("pnl", 0.0))
+
+            self._daily_pnl += pnl
+            self._balance = max(0.0, self._balance + pnl)
+            balance_now = self._balance
+
+            sid = partial_snapshot.get("strategy_id", parent.get("strategy_id", "UNKNOWN"))
+            session = partial_snapshot.get("session", parent.get("session", "unknown"))
+            asset = partial_snapshot.get(
+                "canonical_asset",
+                parent.get("canonical_asset", parent.get("asset", "UNKNOWN")),
+            )
+
+            for stats_dict, key in [
+                (self._strategy_stats, sid),
+                (self._session_stats, session),
+                (self._asset_stats, asset),
+            ]:
+                s = stats_dict[key]
+                s["pnl"] += pnl
+                if pnl > 0:
+                    s["wins"] += 1
+                else:
+                    s["losses"] += 1
+
+            self._closed_positions.append(partial_snapshot)
+            if len(self._closed_positions) > 500:
+                self._closed_positions = self._closed_positions[-500:]
+
+            remaining_snapshot = dict(parent)
+            self._persist_json()
+
+        try:
+            from services.db_pool import get_db
+            db = get_db()
+            db.save_trade(partial_snapshot)
+            db.save_open_position(remaining_snapshot)
+            db.upsert_daily_stats(
+                today,
+                float(partial_snapshot.get("pnl", 0.0)),
+                balance_now,
+                trade_count_delta=0,
+            )
+        except Exception as e:
+            logger.error(f"[State] DB record_partial_close failed: {e}")
+
+        return partial_snapshot
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -519,6 +635,17 @@ class SystemState:
                 "open_positions":  list(self._open_positions.values()),
                 "cooldowns":       self.get_all_cooldowns(),
             }
+
+    def clear_trade_history(self) -> None:
+        """Clear in-memory closed trade history and reset performance stats."""
+        with self._lock:
+            self._closed_positions = []
+            self._strategy_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
+            self._session_stats  = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
+            self._asset_stats    = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
+            self._daily_trades = 0
+            self._daily_pnl = 0.0
+            self._persist_json()
 
 
 state: SystemState = SystemState()

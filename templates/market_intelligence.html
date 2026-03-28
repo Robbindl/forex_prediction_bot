@@ -273,6 +273,8 @@ async function loadCandles() {
     const assetChanged = (_lastAsset !== currentAsset || _lastTf !== currentTf);
     _lastAsset = currentAsset;
     _lastTf    = currentTf;
+    const usedTf = d.interval_used || currentTf;
+    const isFallback = usedTf !== currentTf;
 
     // Save current visible range before updating data
     let savedRange = null;
@@ -300,19 +302,36 @@ async function loadCandles() {
       try { lwChart.timeScale().setVisibleRange(savedRange); } catch(e) {}
     }
 
-    st.textContent = `${d.candles.length} bars`;
-    st.style.background = 'rgba(0,208,132,.12)';
-    st.style.color = 'var(--gr)';
+    st.textContent = isFallback
+      ? `${d.candles.length} bars · requested ${currentTf}, showing ${usedTf}`
+      : `${d.candles.length} bars · ${usedTf}`;
+    st.style.background = isFallback ? 'rgba(255,165,0,.15)' : 'rgba(0,208,132,.12)';
+    st.style.color = isFallback ? 'var(--am)' : 'var(--gr)';
   } else {
-    st.textContent = 'No data';
+    st.textContent = `No ${currentTf} data`;
     st.style.background = 'rgba(255,69,96,.12)';
     st.style.color = 'var(--rd)';
   }
 }
 
 // ── Asset list ────────────────────────────────────────────────────────────────
+let _marketIntelligenceCache = null;
+async function fetchMarketIntelligenceOverview(){
+  const now = Date.now();
+  if(_marketIntelligenceCache && now - _marketIntelligenceCache.fetched < 10000){
+    return _marketIntelligenceCache.data;
+  }
+  const d = await fetch('/api/page-overview?page=market_intelligence').then(r=>r.json()).catch(()=>({success:false}));
+  if(d.success){
+    _marketIntelligenceCache = {fetched: now, data: d};
+    return d;
+  }
+  return {success:false};
+}
+
 async function loadAssets() {
-  const d   = await fetchWithTimeout('/api/chart/assets', 8000) || {assets:[]};
+  const page = await fetchMarketIntelligenceOverview();
+  const d   = page.success ? (page.assets || {assets:[]}) : await fetchWithTimeout('/api/chart/assets', 8000) || {assets:[]};
   const sel = document.getElementById('chartAsset');
   const grouped = {};
   (d.assets || []).forEach(a => {
@@ -351,7 +370,8 @@ async function loadHeatmap(manual=false) {
     st.style.background = 'rgba(41,121,255,.15)';
     st.style.color = 'var(--bl)';
   }
-  const d = await fetchWithTimeout('/api/market/heatmap', 30000);
+  const page = await fetchMarketIntelligenceOverview();
+  const d = page.success ? (page.heatmap || {}) : await fetchWithTimeout('/api/market/heatmap', 30000);
   if (!d || !d.items || !d.items.length) {
     grid.innerHTML = '<div class="empty" style="grid-column:span 5">Price data loading — check back in 30s</div>';
     st.textContent = 'Unavailable';
@@ -550,4 +570,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
 });
 </script>
 </body>
-</html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

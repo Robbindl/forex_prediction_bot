@@ -131,9 +131,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
-    <div class="sb-section" style="margin-top:8px">Legacy</div>
-    <a href="/" class="sb-link"><span class="sb-icon">📈</span>Signals</a>
-    <a href="/accuracy" class="sb-link"><span class="sb-icon">🎯</span>Accuracy</a>
     <div class="sb-bottom"></div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
@@ -198,11 +195,30 @@ function ring(pct,color){
 }
 function hzColor(p){return p>=60?'var(--gr)':p>=45?'var(--am)':'var(--rd)'}
 
+let _aiPredictionsCache = null;
+async function fetchAiPredictionsOverview(days){
+  const now = Date.now();
+  if(_aiPredictionsCache && _aiPredictionsCache.days === days && now - _aiPredictionsCache.fetched < 10000){
+    return _aiPredictionsCache.data;
+  }
+  const d = await fetch(`/api/page-overview?page=ai_predictions&days=${days}`).then(r=>r.json());
+  if(!d.success) throw new Error('AI overview unavailable');
+  _aiPredictionsCache = {days, fetched: now, data: d};
+  return d;
+}
+
 async function loadAcc(days,el){
   document.querySelectorAll('.dpill').forEach(p=>p.classList.remove('on'));
   if(el)el.classList.add('on');
   try{
-    const d=await fetch(`/api/accuracy?days=${days}`).then(r=>r.json());
+    const overview = await fetchAiPredictionsOverview(days);
+    const d = overview.accuracy || overview.data || {};
+    if(!d.success){
+      document.getElementById('ringGrid').innerHTML='<div class="empty">Accuracy unavailable</div>';
+      document.getElementById('recentBody').innerHTML='<tr><td colspan="8" class="empty">Accuracy data unavailable</td></tr>';
+      if(accChartInst) accChartInst.destroy();
+      return;
+    }
     const bh=d.data?.by_horizon||{};
     const recent=d.data?.recent||[];
 
@@ -258,14 +274,21 @@ async function loadAcc(days,el){
 
 async function loadPredictions(){
   try{
-    const d=await fetch('/api/predictions/summary').then(r=>r.json());
-    const preds=d.predictions||[];
+    const overview = await fetchAiPredictionsOverview(30);
+    const d = overview || {};
+    if(!d.success){
+      document.getElementById('predGrid').innerHTML='<div class="empty">No active pipeline predictions</div>';
+      document.getElementById('predCount').textContent='0 signals';
+      return;
+    }
+    const preds=d.signals||[];
     document.getElementById('predCount').textContent=preds.length+' signals';
     const grid=document.getElementById('predGrid');
     if(!preds.length){grid.innerHTML='<div class="empty">No active pipeline predictions</div>';return;}
     grid.innerHTML=preds.slice(0,12).map(p=>{
+      const conf = p.confidence <= 1 ? p.confidence * 100 : p.confidence;
       const isBuy=p.direction==='BUY';
-      const barCol=p.confidence>=75?'var(--gr)':p.confidence>=62?'var(--am)':'var(--rd)';
+      const barCol=conf>=75?'var(--gr)':conf>=62?'var(--am)':'var(--rd)';
       const fmt=n=>n?(n<10?n.toFixed(5):n.toFixed(2)):'—';
       return`<div class="pred-card pc-${isBuy?'buy':'sell'}">
         <div class="pc-header">
@@ -274,8 +297,8 @@ async function loadPredictions(){
           <span class="pc-cat">${p.category}</span>
         </div>
         <div class="pc-conf">
-          <div class="pc-conf-row"><span>Confidence</span><span style="color:${barCol}">${p.confidence}%</span></div>
-          <div class="pc-bar"><div class="pc-bar-fill" style="width:${p.confidence}%;background:${barCol}"></div></div>
+          <div class="pc-conf-row"><span>Confidence</span><span style="color:${barCol}">${conf.toFixed(1)}%</span></div>
+          <div class="pc-bar"><div class="pc-bar-fill" style="width:${Math.min(100,conf)}%;background:${barCol}"></div></div>
         </div>
         <div class="pc-levels">
           <div class="pc-level"><div class="pc-level-l">Entry</div><div class="pc-level-v">${fmt(p.entry)}</div></div>
@@ -292,15 +315,24 @@ let confChartInst = null;
 
 async function loadConfDistribution(){
   try{
-    const d = await fetch('/api/predictions/summary').then(r=>r.json());
-    const preds = d.predictions || [];
+    const overview = await fetchAiPredictionsOverview(30);
+    const d = overview || {};
+    const chartCanvas = document.getElementById('confChart');
+    if(!d.success){
+      if(confChartInst) confChartInst.destroy();
+      if(chartCanvas) chartCanvas.style.display = 'none';
+      return;
+    }
+    if(chartCanvas) chartCanvas.style.display = 'block';
+    const preds = d.signals || [];
     
     // Bin confidence scores into buckets (45-50, 50-55, 55-60, 60-65, 65-70, 70-75, 75-80, 80-85, 85-90)
     const bins = [0,0,0,0,0,0,0,0,0];
     const labels = ['45-50%','50-55%','55-60%','60-65%','65-70%','70-75%','75-80%','80-85%','85-90%'];
     
     preds.forEach(p => {
-      const conf = p.confidence || 50;
+      const rawConf = p.confidence || 50;
+      const conf = rawConf <= 1 ? rawConf * 100 : rawConf;
       if(conf >= 85) bins[8]++;
       else if(conf >= 80) bins[7]++;
       else if(conf >= 75) bins[6]++;
@@ -370,4 +402,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
   a.addEventListener('click',function(){if(document.querySelector('.sidebar').classList.contains('open'))toggleSidebar();});
 });
 </script>
-</body></html>
+</body><script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

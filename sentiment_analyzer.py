@@ -493,13 +493,24 @@ class _NewsSentiment:
         return score
 
     @classmethod
+    def macro_impact(cls, asset: str) -> Optional[float]:
+        """Return the current macro-event impact for this asset category."""
+        cat = _cat(asset)
+        with cls._macro_lock:
+            entry = cls._macro_event_cache.get(cat)
+            if entry and time.time() < entry[1]:
+                return round(float(entry[0]), 3)
+        return None
+
+    @classmethod
     def _compute(cls, asset: str) -> Optional[float]:
         """
         Compute sentiment score for an asset.
         Combines traditional news sources with Reddit as a live news feed.
         Reddit posts are scored by the same financial keyword system — not TextBlob.
         High-engagement posts get more weight (engagement-weighted average).
-        Macro events detected from Reddit are stored cross-asset.
+        Macro events detected from Reddit are stored cross-asset and exposed
+        separately at the category sentiment layer.
         """
         # ── Standard news sources ─────────────────────────────────────────
         std_articles = cls._fetch_articles(asset)
@@ -522,14 +533,6 @@ class _NewsSentiment:
         # ── Reddit as live news feed ──────────────────────────────────────
         reddit_weighted = cls._fetch_reddit_scored(asset)
 
-        # ── Check macro event cache for cross-asset signals ───────────────
-        cat = _cat(asset)
-        macro_boost = 0.0
-        with cls._macro_lock:
-            entry = cls._macro_event_cache.get(cat)
-            if entry and time.time() < entry[1]:
-                macro_boost = entry[0]
-
         # ── Combine ───────────────────────────────────────────────────────
         all_scores: List[float] = []
         all_weights: List[float] = []
@@ -544,18 +547,12 @@ class _NewsSentiment:
             all_scores.append(score)
             all_weights.append(weight)
 
-        if not all_scores and macro_boost == 0.0:
+        if not all_scores:
             return None
 
-        if all_scores:
-            total_w  = sum(all_weights)
-            base     = sum(s * w for s, w in zip(all_scores, all_weights)) / total_w
-        else:
-            base = 0.0
-
-        # Macro event boosts the final score
-        combined = _clamp(base + macro_boost * 0.4)
-        return round(combined, 3)
+        total_w  = sum(all_weights)
+        base     = sum(s * w for s, w in zip(all_scores, all_weights)) / total_w
+        return round(_clamp(base), 3)
 
     @classmethod
     def _fetch_reddit_scored(cls, asset: str) -> List[Tuple[float, float]]:
@@ -812,7 +809,7 @@ class _NewsSentiment:
         kws      = _ASSET_KEYWORDS.get(asset, [asset.lower()])
         filtered = [a for a in articles
                     if any(kw in a.lower() for kw in kws)]
-        return filtered if filtered else articles[:5]  # fallback to any articles
+        return filtered
 
     # ── Bearish phrases — score -2 each (stronger signal than single words) ──
     _BEARISH_PHRASES = [
@@ -1253,6 +1250,11 @@ class SentimentAnalyzer:
             components["reddit"] = rd
             weights["reddit"]    = 0.20
 
+        macro = _NewsSentiment.macro_impact(asset)
+        if macro is not None:
+            components["macro_event"] = macro
+            weights["macro_event"]    = 0.10
+
         return self._build_result(components, weights)
 
     def _commodity_sentiment(self, asset: str) -> Dict:
@@ -1276,6 +1278,11 @@ class SentimentAnalyzer:
         if rd is not None:
             components["reddit"] = rd
             weights["reddit"]    = 0.15
+
+        macro = _NewsSentiment.macro_impact(asset)
+        if macro is not None:
+            components["macro_event"] = macro
+            weights["macro_event"]    = 0.10
 
         # 4. VIX (risk-off = gold up, oil complex)
         vix = _MarketInstruments.vix()
@@ -1312,6 +1319,11 @@ class SentimentAnalyzer:
         if rd is not None:
             components["reddit"] = rd
             weights["reddit"]    = 0.15
+
+        macro = _NewsSentiment.macro_impact(asset)
+        if macro is not None:
+            components["macro_event"] = macro
+            weights["macro_event"]    = 0.10
 
         # 4. VIX — high VIX = risk-off = USD strength = bearish non-USD pairs
         vix = _MarketInstruments.vix()
@@ -1350,6 +1362,11 @@ class SentimentAnalyzer:
             components["fear_greed"] = fg["score"]
             weights["fear_greed"]    = 0.20
 
+        macro = _NewsSentiment.macro_impact(asset)
+        if macro is not None:
+            components["macro_event"] = macro
+            weights["macro_event"]    = 0.10
+
         # 4. AAII (weekly survey)
         aaii = _MarketInstruments.aaii()
         if aaii:
@@ -1377,6 +1394,7 @@ class SentimentAnalyzer:
             "composite_score": round(score, 3),
             "interpretation":  SentimentAnalyzer._interpret(score),
             "components":      {k: round(v, 3) for k, v in components.items()},
+            "weights":         {k: round(weights.get(k, 0.0), 3) for k in components},
             "timestamp":       datetime.now().isoformat(),
         }
 

@@ -31,10 +31,8 @@ class VotingLayer:
         ml_conf = context.get("ml_confidence", 0.0)
         ml_note = ""
 
-        if ml_pred is not None:
-            # Mark that we have a real ML prediction for the data integrity gate
-            # Only if confidence is high enough (not momentum fallback)
-            signal.metadata["ml_prediction_real"] = ml_conf > 0.1
+        if ml_pred is not None and ml_conf > 0.1:
+            signal.metadata["ml_prediction_real"] = True
 
             ml_direction = "BUY" if ml_pred > 0.5 else "SELL"
             if ml_direction == signal.direction:
@@ -45,9 +43,8 @@ class VotingLayer:
                 signal.reduce(0.05)
                 ml_note = f"ML disagrees (pred={ml_pred:.3f}) -0.05"
         else:
-            # No prediction at all
             signal.metadata["ml_prediction_real"] = False
-            logger.debug(f"[VotingLayer] No ML prediction for {signal.asset} — using fallback")
+            logger.debug(f"[VotingLayer] No real ML prediction for {signal.asset} — skipping ML vote")
 
         reason = f"conf {conf_before:.3f} → {signal.confidence:.3f}"
         if ml_note:

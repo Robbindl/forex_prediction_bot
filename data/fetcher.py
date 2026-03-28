@@ -17,7 +17,15 @@ from config.config import (
 logger = get_logger()
 
 # ── Interval maps ──────────────────────────────────────────────────────────────
-_YF_INTERVAL_MAP = {"1d": "1d", "1h": "1h", "15m": "15m", "4h": "60m"}
+_YF_INTERVAL_MAP = {
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1h",
+    "4h": "60m",
+    "1d": "1d",
+}
 _TD_INTERVAL_MAP = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min", "45m": "45min", "1h": "1h", "2h": "2h", "4h": "4h", "8h": "8h", "1d": "1day", "1w": "1week"}
 
 # ── yfinance symbol maps ───────────────────────────────────────────────────────
@@ -152,6 +160,32 @@ def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _to_utc_timestamp(raw_value) -> Optional[pd.Timestamp]:
+    """Convert provider timestamps/strings to a UTC pandas Timestamp."""
+    try:
+        if raw_value is None or raw_value == "":
+            return None
+        if isinstance(raw_value, pd.Timestamp):
+            return raw_value.tz_localize("UTC") if raw_value.tzinfo is None else raw_value.tz_convert("UTC")
+        if isinstance(raw_value, str):
+            ts = pd.Timestamp(raw_value)
+            return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+        value = int(float(raw_value))
+        abs_value = abs(value)
+        if abs_value >= 1_000_000_000_000_000_000:
+            unit = "ns"
+        elif abs_value >= 1_000_000_000_000_000:
+            unit = "us"
+        elif abs_value >= 1_000_000_000_000:
+            unit = "ms"
+        else:
+            unit = "s"
+        return pd.to_datetime(value, unit=unit, utc=True)
+    except Exception:
+        return None
+
+
 class DataFetcher:
     """
     Fetches OHLCV and real-time price data.
@@ -270,13 +304,21 @@ class DataFetcher:
                 symbol=symbol, interval=td_interval, outputsize=periods, timezone="UTC"
             )
             df = ts.as_pandas()
+            if df is None or df.empty:
+                return None
+
+            try:
+                df.index = pd.to_datetime(df.index, utc=True)
+            except Exception:
+                pass
+
             df = df.rename(columns=str.lower)
             # Forex pairs have no volume — add a zero column so downstream code is safe
             cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
             df = df[cols].astype(float)
             if "volume" not in df.columns:
                 df["volume"] = 0.0
-            return df.iloc[::-1].reset_index(drop=True)
+            return df.iloc[::-1].copy()
         except Exception as e:
             msg = str(e).lower()
             if "invalid api key" in msg or ("api key" in msg and "quota" not in msg):
@@ -386,20 +428,28 @@ class DataFetcher:
             rows = []
             for c in candles:
                 # Confirmed fields: o=open, h=high, l=low, c=close, v=volume, t=timestamp
+                ts = _to_utc_timestamp(c.get("t") or c.get("tu"))
                 o = float(c.get("o") or 0)
                 h = float(c.get("h") or 0)
                 l = float(c.get("l") or 0)
                 cl = float(c.get("c") or 0)
                 v = float(c.get("v") or 0)
-                if cl == 0:  # skip bad bars
+                if cl == 0 or ts is None:  # skip bad bars
                     continue
-                rows.append({"open": o, "high": h, "low": l, "close": cl, "volume": v})
+                rows.append({
+                    "timestamp": ts,
+                    "open": o,
+                    "high": h,
+                    "low": l,
+                    "close": cl,
+                    "volume": v,
+                })
 
             if not rows:
                 return None
 
             # iTick returns newest first — reverse to oldest-first for strategy compatibility
-            df = pd.DataFrame(rows[::-1]).reset_index(drop=True)
+            df = pd.DataFrame(rows[::-1]).set_index("timestamp")
             logger.debug(f"[DataFetcher] iTick: {code} {len(df)} bars ({interval})")
             return df
 
@@ -497,7 +547,11 @@ class DataFetcher:
 
                 rows = []
                 for ts, vals in sorted(data.items(), reverse=True)[:periods]:
+                    parsed_ts = _to_utc_timestamp(ts)
+                    if parsed_ts is None:
+                        continue
                     rows.append({
+                        "timestamp": parsed_ts,
                         "open":   float(vals["1. open"]),
                         "high":   float(vals["2. high"]),
                         "low":    float(vals["3. low"]),
@@ -506,7 +560,7 @@ class DataFetcher:
                     })
                 if not rows:
                     return None
-                df = pd.DataFrame(rows[::-1]).reset_index(drop=True)
+                df = pd.DataFrame(rows[::-1]).set_index("timestamp")
                 logger.info(f"[DataFetcher] Alpha Vantage real-time: {asset} ({len(df)} bars)")
                 return df
 

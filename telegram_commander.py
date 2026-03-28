@@ -196,6 +196,9 @@ class TelegramCommander:
                 .build()
             )
             self._register_handlers()
+            # Mark running before the worker thread starts so the polling
+            # loop does not exit immediately on startup.
+            self.is_running = True
             self._thread = threading.Thread(
                 target=self._run_bot, daemon=True, name="telegram-bot"
             )
@@ -207,7 +210,6 @@ class TelegramCommander:
                     break
                 time.sleep(0.1)
 
-            self.is_running = True
             logger.info("✅ TelegramCommander started")
             self.send_message(
                 "🤖 *Robbie is online*\n\nUse /menu to open the control panel.",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from typing import Optional
 
@@ -24,9 +25,10 @@ def _build_pool():
         # Each publish/get/set borrows a connection from the pool
         # and releases it immediately after — so 10 connections
         # handles hundreds of concurrent publish calls efficiently.
+        max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", "50"))
         pool = redis.ConnectionPool.from_url(
             REDIS_URL,
-            max_connections=10,
+            max_connections=max_connections,
             socket_connect_timeout=3,
             socket_timeout=3,
             retry_on_timeout=True,
@@ -38,7 +40,7 @@ def _build_pool():
         _pool      = pool
         _available = True
         logger.info(
-            f"[RedisPool] Connected — max_connections=10  "
+            f"[RedisPool] Connected — max_connections={max_connections}  "
             f"url={REDIS_URL[:40]}…"
         )
     except Exception as e:

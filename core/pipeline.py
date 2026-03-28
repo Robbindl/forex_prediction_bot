@@ -47,31 +47,136 @@ def _count_valid_sources(signal: Signal) -> int:
     if sources_applied:
         count += 1   # at least one sentiment source contributed
 
-    # Layer 6: whale data (crypto only — skipped = not penalised)
+    # Layer 6: whale data (crypto only)
     whale_data = signal.metadata.get("whale_data")
     if whale_data == "real":
         count += 1
-    elif signal.metadata.get("whale_skipped"):
-        count += 1   # intentionally skipped — not a missing source
 
     # Layer 8: meta AI
-    if signal.metadata.get("meta_ai_ensemble") is not None:
+    if signal.metadata.get("meta_ai_active_engines", 0) > 0:
         count += 1
 
     # Order flow (crypto only)
     if signal.metadata.get("orderflow_applicable") is True:
         if signal.metadata.get("orderflow_imbalance", 0.0) != 0.0:
             count += 1
-    elif signal.metadata.get("orderflow_applicable") is False:
-        count += 1   # not applicable — not penalised
 
     return count
 
 
+DATA_INTEGRITY_LAYER = 9
+AGENT_LAYER = 10
+
+
+class AgentLayer:
+    name = "agent"
+
+    def process(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
+        conf_before = signal.confidence
+        try:
+            from ml.agent import agent as _agent
+            ctx = dict(context or {})
+            ctx["signal_metadata"] = {
+                **signal.metadata,
+                "confidence": signal.confidence,
+                "direction": signal.direction,
+            }
+            result = _agent.decide(signal, ctx)
+            if result is None:
+                reason = signal.metadata.get("agent_rejection_reason", "Agent rejected signal")
+                signal.kill(reason, AGENT_LAYER)
+                signal.journal.record(
+                    layer=AGENT_LAYER,
+                    name=self.name,
+                    decision=KILLED,
+                    reason=reason,
+                    conf_before=conf_before,
+                    conf_after=signal.confidence,
+                    data={
+                        "agent_score": round(float(signal.metadata.get("agent_score", 0.0)), 4),
+                        "agent_confidence": round(float(signal.metadata.get("agent_confidence", 0.0)), 4),
+                        "agent_directional_edge": round(float(signal.metadata.get("agent_directional_edge", 0.0)), 4),
+                    },
+                )
+                return None
+            signal.metadata["agent_layer_passed"] = True
+            signal.journal.record(
+                layer=AGENT_LAYER,
+                name=self.name,
+                decision=PASS,
+                reason=(
+                    f"final policy accepted {signal.direction} "
+                    f"(score={float(signal.metadata.get('agent_score', 0.0)):.3f})"
+                ),
+                conf_before=conf_before,
+                conf_after=signal.confidence,
+                data={
+                    "agent_score": round(float(signal.metadata.get("agent_score", 0.0)), 4),
+                    "agent_confidence": round(float(signal.metadata.get("agent_confidence", 0.0)), 4),
+                    "agent_directional_edge": round(float(signal.metadata.get("agent_directional_edge", 0.0)), 4),
+                    "final_confidence": round(signal.confidence, 4),
+                },
+            )
+            return result
+        except Exception as e:
+            logger.error(f"[Pipeline] AgentLayer error: {e}")
+            return signal
+
+
+class DataIntegrityLayer:
+    name = "data_integrity"
+
+    def process(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
+        conf_before = signal.confidence
+        profile = get_profile(signal.asset)
+        valid_sources = _count_valid_sources(signal)
+        min_required = profile.min_valid_layers
+
+        signal.metadata["valid_sources_count"] = valid_sources
+        signal.metadata["min_sources_required"] = min_required
+
+        data = {
+            "valid_sources": valid_sources,
+            "min_required": min_required,
+            "category": signal.category,
+        }
+
+        if valid_sources < min_required:
+            reason = (
+                f"Insufficient real data: {valid_sources}/{min_required} "
+                f"sources for {signal.asset} ({signal.category})"
+            )
+            signal.kill(reason, DATA_INTEGRITY_LAYER)
+            signal.journal.record(
+                layer=DATA_INTEGRITY_LAYER,
+                name=self.name,
+                decision=KILLED,
+                reason=reason,
+                conf_before=conf_before,
+                conf_after=signal.confidence,
+                data=data,
+            )
+            logger.warning(f"[Pipeline] DATA INTEGRITY KILL — {signal.asset}: {reason}")
+            return None
+
+        reason = f"real_sources={valid_sources}/{min_required}"
+        signal.journal.record(
+            layer=DATA_INTEGRITY_LAYER,
+            name=self.name,
+            decision=PASS,
+            reason=reason,
+            conf_before=conf_before,
+            conf_after=signal.confidence,
+            data=data,
+        )
+        return signal
+
+
 class Pipeline:
     """
-    Ordered chain of 8 layers.  After all layers run, a data integrity check
-    ensures the signal was backed by sufficient real intelligence sources.
+    Ordered chain ending with the final policy agent decision.
+    The data-integrity gate runs immediately before the final agent layer so
+    the last layer remains the final decision-maker.
     """
 
     def __init__(self) -> None:
@@ -100,6 +205,8 @@ class Pipeline:
                 WhaleLayer(),
                 CalibrationLayer(),
                 MetaAILayer(),
+                DataIntegrityLayer(),
+                AgentLayer(),
             ]
             self._loaded = True
             logger.info(f"[Pipeline] Loaded {len(self._layers)} layers")
@@ -119,6 +226,7 @@ class Pipeline:
         for i, layer in enumerate(self._layers, start=1):
             conf_before = signal.confidence
             t0 = time.monotonic()
+            entries_before = len(signal.journal.entries)
 
             try:
                 result     = layer.process(signal, context)
@@ -127,25 +235,27 @@ class Pipeline:
                 if result is None:
                     if signal.alive:
                         signal.kill(f"Layer {i} ({layer.name}) returned None", i)
-                    signal.journal.record(
-                        layer=i, name=layer.name, decision=KILLED,
-                        reason=signal.kill_reason or f"Layer {i} returned None",
-                        conf_before=conf_before, conf_after=signal.confidence,
-                        elapsed_ms=elapsed_ms,
-                    )
+                    if len(signal.journal.entries) == entries_before:
+                        signal.journal.record(
+                            layer=i, name=layer.name, decision=KILLED,
+                            reason=signal.kill_reason or f"Layer {i} returned None",
+                            conf_before=conf_before, conf_after=signal.confidence,
+                            elapsed_ms=elapsed_ms,
+                        )
                     logger.warning(f"[Pipeline] {signal.asset} killed at L{i} ({layer.name}) reason={signal.kill_reason}")
                     logger.log_pipeline(signal.asset, i, "KILLED", f"layer={layer.name}")
                     break  # hard kill — remaining layers must not run on a dead signal
                 else:
                     signal = result
                     signal.layer_reached = i
-                    signal.journal.record(
-                        layer=i, name=layer.name, decision=PASS,
-                        reason=signal.metadata.get(f"l{i}_reason", ""),
-                        conf_before=conf_before, conf_after=signal.confidence,
-                        data=signal.metadata.get(f"l{i}_data", {}),
-                        elapsed_ms=elapsed_ms,
-                    )
+                    if len(signal.journal.entries) == entries_before:
+                        signal.journal.record(
+                            layer=i, name=layer.name, decision=PASS,
+                            reason=signal.metadata.get(f"l{i}_reason", ""),
+                            conf_before=conf_before, conf_after=signal.confidence,
+                            data=signal.metadata.get(f"l{i}_data", {}),
+                            elapsed_ms=elapsed_ms,
+                        )
                     logger.log_pipeline(
                         signal.asset, i, "PASS",
                         f"conf={signal.confidence:.3f} layer={layer.name}"
@@ -162,36 +272,6 @@ class Pipeline:
                     elapsed_ms=elapsed_ms,
                 )
                 break  # exception kill — stop the loop
-
-        # ── Data integrity gate ───────────────────────────────────────────────
-        if signal.alive:
-            profile       = get_profile(signal.asset)
-            valid_sources = _count_valid_sources(signal)
-            min_required  = profile.min_valid_layers
-
-            signal.metadata["valid_sources_count"] = valid_sources
-            signal.metadata["min_sources_required"] = min_required
-
-            if valid_sources < min_required:
-                reason = (
-                    f"Insufficient real data: {valid_sources}/{min_required} "
-                    f"sources for {signal.asset} ({signal.category})"
-                )
-                signal.kill(reason, len(self._layers))
-                signal.journal.record(
-                    layer=len(self._layers), name="data_integrity_gate",
-                    decision=KILLED,
-                    reason=reason,
-                    conf_before=signal.confidence, conf_after=signal.confidence,
-                    data={"valid_sources": valid_sources,
-                          "min_required": min_required,
-                          "category": signal.category},
-                )
-                logger.warning(f"[Pipeline] DATA INTEGRITY KILL — {signal.asset}: {reason}")
-                logger.warning(
-                    f"[Pipeline] {signal.asset} valid_sources={valid_sources} "
-                    f"min_required={min_required} category={signal.category}"
-                )
 
         elapsed_ms = (time.monotonic() - context["pipeline_start"]) * 1000
 
@@ -231,17 +311,23 @@ class Pipeline:
             try:
                 from prediction_tracker import prediction_tracker as _pt
                 _pt.record_signal({
-                    "asset":       signal.asset,
-                    "direction":   signal.direction,
-                    "signal":      signal.direction,
-                    "entry_price": signal.entry_price,
-                    "take_profit": signal.take_profit,
-                    "stop_loss":   signal.stop_loss,
-                    "confidence":  signal.confidence,
-                    "category":    signal.category,
-                    "strategy":    signal.strategy_id,
-                    "session":     signal.metadata.get("session", ""),
-                    "regime":      signal.metadata.get("regime", ""),
+                    "asset":           signal.asset,
+                    "direction":       signal.direction,
+                    "signal":          signal.direction,
+                    "entry_price":     signal.entry_price,
+                    "take_profit":     signal.take_profit,
+                    "stop_loss":       signal.stop_loss,
+                    "confidence":      signal.confidence,
+                    "category":        signal.category,
+                    "strategy":        signal.strategy_id,
+                    "session":         signal.metadata.get("session", ""),
+                    "regime":          signal.metadata.get("regime", ""),
+                    "features":        context.get("features"),
+                    "signal_metadata": {
+                        "ml_prediction":  context.get("ml_prediction"),
+                        "ml_confidence":  context.get("ml_confidence"),
+                        **signal.metadata,
+                    },
                 })
             except Exception as _pe:
                 logger.debug(f"[Pipeline] PredTracker record failed: {_pe}")

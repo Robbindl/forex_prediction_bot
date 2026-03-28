@@ -129,9 +129,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
-    <div class="sb-section" style="margin-top:8px">Legacy</div>
-    <a href="/" class="sb-link"><span class="sb-icon">📈</span>Signals</a>
-    <a href="/accuracy" class="sb-link"><span class="sb-icon">🎯</span>Accuracy</a>
     <div class="sb-bottom"></div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
@@ -195,10 +192,26 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 <script>
 function sColor(s){return s>0.2?'var(--gr)':s<-0.2?'var(--rd)':'var(--am)'}
 function sClass(s){return s>0.1?'ns-pos':s<-0.1?'ns-neg':'ns-neu'}
+let _sentimentOverviewCache = null;
+async function fetchSentimentOverview(){
+  const now = Date.now();
+  if(_sentimentOverviewCache && now - _sentimentOverviewCache.fetched < 10000){
+    return _sentimentOverviewCache.data;
+  }
+  const d = await fetch('/api/page-overview?page=sentiment_intelligence').then(r=>r.json()).catch(()=>({success:false}));
+  if(d.success){
+    _sentimentOverviewCache = {fetched: now, data: d};
+    return d;
+  }
+  return {success:false};
+}
 async function load(){
   try{
-    const d=await fetch('/api/sentiment/dashboard').then(r=>r.json());
-    if(!d.success)return;
+    const page = await fetchSentimentOverview();
+    if(!page.success) return;
+    const d = page.sentiment || {};
+    const da = page.by_asset || {assets:[]};
+    const ev = page.events || {};
 
     // Composite
     const score=d.score||0;
@@ -248,7 +261,8 @@ async function load(){
 
   // Per-asset
   try{
-    const da=await fetch('/api/sentiment/by-asset').then(r=>r.json());
+    const page = await fetchSentimentOverview();
+    const da = page.by_asset || {assets:[]};
     const grid=document.getElementById('assetGrid');
     if(!da.assets?.length){grid.innerHTML='<div class="empty" style="grid-column:span 5">Unavailable</div>';return;}
     const max=Math.max(...da.assets.map(a=>Math.abs(a.score)),0.1);
@@ -266,8 +280,9 @@ async function load(){
 
   // Events
   try{
-    const ev=await fetch('/api/market/events').then(r=>r.json());
-    const evs=ev.events||[];
+    const page = await fetchSentimentOverview();
+    const ev = page.events || {};
+    const evs = ev.events || [];
     const eEl=document.getElementById('eventsPanel');
     if(!evs.length){eEl.innerHTML='<div class="empty">No events</div>';}
     else{eEl.innerHTML=evs.slice(0,8).map(e=>`
@@ -282,8 +297,9 @@ let sentTrendChart = null;
 
 async function loadSentimentTrend(){
   try{
-    const d = await fetch('/api/sentiment/by-asset').then(r=>r.json());
-    if(!d.success)return;
+    const page = await fetchSentimentOverview();
+    const d = page.by_asset || {assets:[]};
+    if(!d.assets?.length) return;
     
     // Build historical trend (simulate from current and past scores)
     const now = Date.now();
@@ -354,4 +370,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
   a.addEventListener('click',function(){if(document.querySelector('.sidebar').classList.contains('open'))toggleSidebar();});
 });
 </script>
-</body></html>
+</body><script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>

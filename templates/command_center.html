@@ -171,9 +171,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
-    <div class="sb-section" style="margin-top:8px">Legacy</div>
-    <a href="/" class="sb-link"><span class="sb-icon">📈</span>Signals</a>
-    <a href="/accuracy" class="sb-link"><span class="sb-icon">🎯</span>Accuracy</a>
     <div class="sb-bottom"></div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
@@ -317,6 +314,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
               <option value="won">Winners</option>
               <option value="lost">Losers</option>
             </select>
+            <button id="clearHistoryBtn" onclick="clearTradeHistory()" style="background:var(--rd);border:none;color:#fff;padding:6px 10px;border-radius:8px;font-size:11px;cursor:pointer">Clear History</button>
             <span id="historyCount" style="background:var(--s2);padding:2px 8px;border-radius:10px;font-size:11px;color:var(--tx3)">0</span>
           </div>
         </div>
@@ -368,11 +366,30 @@ function fmtNum(n,dec=2){return n==null?'—':(n>=0?'+':'')+Number(n).toFixed(de
 function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
 function colorClass(n){return n>=0?'gn':'rd'}
 
+let _commandCenterCache = null;
+async function fetchCommandCenterOverview(){
+  const now = Date.now();
+  if(_commandCenterCache && now - _commandCenterCache.fetched < 10000){
+    return _commandCenterCache.data;
+  }
+  const page = await fetch('/api/page-overview?page=command_center').then(r=>r.json()).catch(()=>({success:false}));
+  if(page.success){
+    _commandCenterCache = {fetched: now, data: page};
+    return page;
+  }
+  return {success:false};
+}
+
 async function loadMain(){
   let d;
   try{
-    d=await fetch('/api/command-center', {headers: apiHeaders()}).then(r=>r.json());
-    if(!d||!d.success)return;
+    const page = await fetchCommandCenterOverview();
+    if(page.success){
+      d = page.command_center || {};
+    } else {
+      return;
+    }
+    if(!d||!d.success) return;
   }catch(e){console.error('[CC] fetch:',e);return;}
 
   // ── Metrics + engine status ──────────────────────────────────────────────
@@ -446,7 +463,10 @@ async function loadMain(){
 
 async function loadWhales(){
   try{
-    const d=await fetch('/api/whale/summary', {headers: apiHeaders()}).then(r=>r.json());
+    const page = await fetchCommandCenterOverview();
+    if(!page.success) return;
+    const d = page.whale || {};
+    if(!d||!d.success) return;
     document.getElementById('whaleCount').textContent=d.alert_count_24h||0;
     const wEl=document.getElementById('whalePanel');
     const alerts=d.recent||[];
@@ -581,6 +601,27 @@ async function loadHistory(){
       </tr>`;
     }).join('');
   }catch(e){console.error('[History]',e);}
+}
+
+async function clearTradeHistory(){
+  if(!confirm('Clear all closed trade history? This cannot be undone.')) return;
+  try{
+    const res = await fetch('/api/trade-history/clear', {
+      method: 'POST',
+      headers: apiHeaders(),
+    });
+    const json = await res.json();
+    if(!json.success){
+      alert('Failed to clear trade history: '+(json.error||'unknown'));
+      return;
+    }
+    loadHistory();
+    loadMain();
+    alert('Trade history cleared');
+  }catch(e){
+    console.error('[History] clear error', e);
+    alert('Failed to clear trade history');
+  }
 }
 
 // ── Cumulative P&L Chart ────────────────────────────────────────────────────
@@ -800,4 +841,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
   a.addEventListener('click',function(){if(document.querySelector('.sidebar').classList.contains('open'))toggleSidebar();});
 });
 </script>
-</body></html>
+</body><script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>
