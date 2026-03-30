@@ -4,7 +4,7 @@ whale_intelligence/__init__.py — Whale Wallet Intelligence Engine.
 Upgrades existing whale tracking to full wallet behaviour analysis.
 Tracks large wallets on-chain, classifies behaviour patterns,
 detects coordinated cluster movements, and publishes intelligence
-events to Redis for the 7-layer signal pipeline.
+events to Redis for the signal decision engine.
 
 Redis events published
 ----------------------
@@ -63,20 +63,20 @@ def start_all() -> None:
         except Exception as e:
             logger.warning(f"[whale_intelligence] Failed to add seed wallet {wallet.get('label')}: {e}")
 
-    # FIX S3: Wire wallet_tracker → layer6_whale.ingest_onchain_event so that
-    # on-chain movements actually reach the trading pipeline.
+    # FIX S3: Wire wallet_tracker → normalized intelligence service so that
+    # on-chain movements actually reach the trading decision engine.
     # Previously wallet_tracker published WHALE_ACCUMULATION/DISTRIBUTION to
-    # Redis but nobody subscribed and called ingest_onchain_event() — the
-    # _ONCHAIN_CACHE in layer6 was permanently empty, meaning Phase 2
+    # Redis but nobody subscribed and called the in-process ingestor — the
+    # normalized in-process intelligence snapshot stayed empty, meaning
     # on-chain intelligence had zero effect on trading decisions.
     try:
-        from layers.layer6_whale import ingest_onchain_event as _ingest
+        from services.intelligence_event_utils import record_onchain_intelligence_event as _ingest
         original_publish = tracker._publish_movement
 
         def _patched_publish(wallet, delta, asset, new_balance):
             # Call original Redis publish path first
             original_publish(wallet, delta, asset, new_balance)
-            # Also feed layer6 directly so we don't depend on Redis round-trip
+            # Also feed the in-process decision path directly so we don't depend on Redis round-trip
             try:
                 is_buy     = delta > 0
                 wallet_type = wallet.get("type", "unknown")
@@ -92,13 +92,13 @@ def start_all() -> None:
                     "delta":       round(delta, 4),
                     "new_balance": round(new_balance, 4),
                     "source":      "on-chain",
-                })
+                }, external_id=f"onchain:{wallet.get('label', 'unknown')}:{asset}:{event_type}:{int(abs(delta) * 10000)}")
             except Exception as _e:
-                pass  # layer6 feed is best-effort
+                pass  # in-process feed is best-effort
 
         tracker._publish_movement = _patched_publish  # type: ignore[method-assign]
     except Exception as _wire_err:
-        pass  # layer6 not yet available — on-chain cache stays empty until first pipeline run
+        pass  # helper not yet available — on-chain cache stays empty until first decision cycle
 
     tracker.start()
 

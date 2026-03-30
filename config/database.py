@@ -3,36 +3,72 @@ config/database.py — PostgreSQL connection. Required — bot will not start wi
 """
 from __future__ import annotations
 import time
+from sqlalchemy.engine import make_url
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 from utils.logger import get_logger
-from config.config import DATABASE_URL
+from config.config import (
+    DATABASE_URL,
+    DB_CONNECT_RETRIES,
+    DB_MAX_OVERFLOW,
+    DB_POOL_RECYCLE_SECONDS,
+    DB_POOL_SIZE,
+    DB_RETRY_DELAY_SECONDS,
+)
 
 logger = get_logger()
 
 Base = declarative_base()
 
 
-def create_db_engine(max_retries: int = 5, retry_delay: int = 3):
+def _redacted_database_url(url: str) -> str:
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:
+        return "<invalid DATABASE_URL>"
+
+
+def _database_target(url: str) -> str:
+    try:
+        parsed = make_url(url)
+        host = parsed.host or "localhost"
+        port = parsed.port or 5432
+        database = parsed.database or "unknown"
+        return f"{host}:{port}/{database}"
+    except Exception:
+        return "<invalid target>"
+
+
+def create_db_engine(
+    max_retries: int = DB_CONNECT_RETRIES,
+    retry_delay: int = DB_RETRY_DELAY_SECONDS,
+):
     """
     Connect to PostgreSQL. Retries max_retries times.
     Raises RuntimeError if all attempts fail — this is intentional.
     The bot requires a database to run.
     """
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "[DB] DATABASE_URL is missing in .env.\n"
+            "Bot cannot start without a database connection."
+        )
+
+    db_target = _database_target(DATABASE_URL)
     for attempt in range(1, max_retries + 1):
         try:
             engine = create_engine(
                 DATABASE_URL,
-                pool_size=10,
-                max_overflow=20,
+                pool_size=DB_POOL_SIZE,
+                max_overflow=DB_MAX_OVERFLOW,
                 pool_pre_ping=True,
-                pool_recycle=3600,
+                pool_recycle=DB_POOL_RECYCLE_SECONDS,
                 echo=False,
             )
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            logger.info(f"[DB] Connected to PostgreSQL — {DATABASE_URL.split('@')[-1]}")
+            logger.info(f"[DB] Connected to PostgreSQL — {db_target}")
             return engine
         except Exception as e:
             logger.warning(f"[DB] Connection attempt {attempt}/{max_retries} failed: {e}")
@@ -42,7 +78,8 @@ def create_db_engine(max_retries: int = 5, retry_delay: int = 3):
 
     raise RuntimeError(
         f"[DB] Could not connect to PostgreSQL after {max_retries} attempts.\n"
-        f"Check DATABASE_URL in your .env file: {DATABASE_URL}\n"
+        f"Check DATABASE_URL in your .env file (current target: {db_target}).\n"
+        f"Redacted URL: {_redacted_database_url(DATABASE_URL)}\n"
         "Bot cannot start without a database connection."
     )
 
@@ -76,12 +113,9 @@ def init_db() -> None:
         conn.commit()
     logger.info("[DB] Whale tables created / verified")
 
-    # Create strategy tables
-    from core.pipeline_reporter import _CREATE_STRATEGY_PERFORMANCE, _CREATE_STRATEGY_OPTIMISATION
-    with engine.connect() as conn:
-        conn.execute(text(_CREATE_STRATEGY_PERFORMANCE))
-        conn.execute(text(_CREATE_STRATEGY_OPTIMISATION))
-        conn.commit()
+    # Create strategy tables through the shared DB service so DDL stays in one place.
+    from services.db_pool import get_db as get_database_service
+    get_database_service().ensure_strategy_reporting_tables()
     logger.info("[DB] Strategy tables created / verified")
 
 

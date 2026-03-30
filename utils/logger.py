@@ -37,15 +37,19 @@ _EMOJI_MAP = {
 }
 
 
+def _sanitize_console_text(text: str) -> str:
+    value = str(text or "")
+    for raw, replacement in _EMOJI_MAP.items():
+        value = value.replace(raw, replacement)
+    return value.encode("ascii", errors="replace").decode("ascii")
+
+
 class _SafeFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         try:
             return super().format(record)
         except UnicodeEncodeError:
-            msg = record.getMessage()
-            for emoji, text in _EMOJI_MAP.items():
-                msg = msg.replace(emoji, text)
-            msg = msg.encode("ascii", errors="replace").decode("ascii")
+            msg = _sanitize_console_text(record.getMessage())
             return f"{self.formatTime(record)} | {record.levelname:<8} | {msg}"
 
 
@@ -57,6 +61,22 @@ class _SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
         except (PermissionError, OSError):
             # On Windows, another process instance may hold the file lock
             pass
+
+
+class _SafeStreamHandler(logging.StreamHandler):
+    """Console handler that degrades to sanitized ASCII on narrow Windows consoles."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except UnicodeEncodeError:
+            try:
+                msg = _sanitize_console_text(self.format(record))
+                stream = self.stream
+                stream.write(msg + self.terminator)
+                self.flush()
+            except Exception:
+                self.handleError(record)
 
 
 class _TradeFilter(logging.Filter):
@@ -102,8 +122,8 @@ class TradingLogger:
             "%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         )
 
-        # Console — use the original sys.stdout, not any wrapped version
-        ch = logging.StreamHandler(sys.__stdout__ or sys.stdout)
+        # Console — prefer the wrapped stdout so Windows terminals use UTF-8 when available.
+        ch = _SafeStreamHandler(sys.stdout)
         ch.setLevel(getattr(logging, level.upper(), logging.INFO))
         ch.setFormatter(fmt_short)
         self._logger.addHandler(ch)
@@ -156,8 +176,8 @@ class TradingLogger:
         parts = " | ".join(f"{k}={v}" for k, v in fields.items())
         self._logger.info(f"TRADE:{action} | {parts}", extra={"trade": True})
 
-    def log_pipeline(self, asset: str, layer: int, decision: str, reason: str = "") -> None:
-        self._logger.debug(f"PIPELINE | {asset} | L{layer} | {decision} | {reason}")
+    def log_decision(self, asset: str, step: int, decision: str, reason: str = "") -> None:
+        self._logger.debug(f"DECISION | {asset} | S{step} | {decision} | {reason}")
 
     def log_ml(self, model: str, asset: str, prediction: float, confidence: float) -> None:
         self._logger.info(

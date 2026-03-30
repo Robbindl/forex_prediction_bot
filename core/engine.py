@@ -9,10 +9,12 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
-from config.config import MIN_FINAL_CONFIDENCE
+import pandas as pd
+
+from config.config import MIN_FINAL_CONFIDENCE, get_timeframe_periods, get_trading_timeframe
 from utils.logger import get_logger
 from core.signal import Signal
-from core.pipeline import Pipeline, pipeline as _global_pipeline
+from core.decision_engine import SignalDecisionEngine, decision_engine as _global_decision_engine
 
 TRADE_CLOSE_COOLDOWN_MINUTES = 60
 TRADE_MIN_CONFIDENCE = MIN_FINAL_CONFIDENCE  # follow config value from .env
@@ -49,7 +51,7 @@ class TradingCore:
         self.state    = shared_state
         self.events   = EventBus()
         self.registry = AssetRegistry()
-        self.pipeline: Pipeline = _global_pipeline
+        self.decision_engine: SignalDecisionEngine = _global_decision_engine
 
         try:
             self.state.init_db()
@@ -139,6 +141,86 @@ class TradingCore:
     def get_daily_stats(self) -> Dict:
         return {"daily_trades": self.state.daily_trades, "daily_pnl": self.state.daily_pnl}
 
+    def reprice_open_positions(self, tighten_only: bool = True) -> List[Dict[str, Any]]:
+        """Recalculate SL/TP for open positions using the current ATR-based framework."""
+        if self.fetcher is None or self._risk_manager is None:
+            self._init_subsystems()
+
+        updates: List[Dict[str, Any]] = []
+        for pos in self.state.get_open_positions():
+            trade_id = str(pos.get("trade_id", "") or "")
+            asset = str(pos.get("asset", "") or "")
+            category = str(pos.get("category", "") or "")
+            direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+            entry = float(pos.get("entry_price", 0) or 0)
+            current_sl = float(pos.get("stop_loss", 0) or 0)
+            current_tp = float(pos.get("take_profit", 0) or 0)
+            current_original_sl = float(pos.get("original_sl", current_sl) or current_sl)
+
+            if not trade_id or not asset or entry <= 0 or direction not in {"BUY", "SELL"}:
+                continue
+
+            price_data = self._fetch_price_data(asset, category)
+            atr = self._estimate_atr(price_data)
+            proposed_sl = self._risk_manager.get_stop_loss(entry, direction, category, atr=atr)
+
+            if tighten_only and current_sl > 0:
+                if direction == "BUY":
+                    effective_sl = max(current_sl, proposed_sl)
+                else:
+                    effective_sl = min(current_sl, proposed_sl)
+            else:
+                effective_sl = proposed_sl
+
+            effective_tp = self._risk_manager.get_take_profit(
+                entry,
+                effective_sl,
+                direction,
+                category=category,
+            )
+            tp_levels = self._build_take_profit_levels(entry, effective_tp, direction)
+
+            snapshot = dict(pos)
+            snapshot["stop_loss"] = float(round(effective_sl, 6))
+            snapshot["take_profit"] = float(round(effective_tp, 6))
+            snapshot["take_profit_levels"] = tp_levels
+            if not current_original_sl or abs(current_original_sl - current_sl) < 1e-9:
+                snapshot["original_sl"] = float(round(effective_sl, 6))
+            snapshot["metadata"] = {
+                **dict(snapshot.get("metadata") or {}),
+                "atr": round(atr, 6) if atr > 0 else 0.0,
+                "exit_model": "atr" if atr > 0 else "category_fallback",
+                "repriced_at_utc": datetime.utcnow().isoformat(),
+            }
+
+            sl_changed = abs(snapshot["stop_loss"] - current_sl) > 1e-9
+            tp_changed = abs(snapshot["take_profit"] - current_tp) > 1e-9
+            if not (sl_changed or tp_changed):
+                continue
+
+            self.state.sync_open_position(snapshot)
+            if self._paper_trader is not None:
+                with self._paper_trader._lock:
+                    if trade_id in self._paper_trader.open_positions:
+                        self._paper_trader.open_positions[trade_id].update(snapshot)
+
+            updates.append(
+                {
+                    "trade_id": trade_id,
+                    "asset": asset,
+                    "category": category,
+                    "direction": direction,
+                    "entry_price": entry,
+                    "old_stop_loss": current_sl,
+                    "new_stop_loss": snapshot["stop_loss"],
+                    "old_take_profit": current_tp,
+                    "new_take_profit": snapshot["take_profit"],
+                    "atr": round(atr, 6) if atr > 0 else 0.0,
+                }
+            )
+
+        return updates
+
     def get_signal_for_asset(self, asset: str) -> Optional[Dict]:
         if not self.is_ready:
             return None
@@ -165,9 +247,25 @@ class TradingCore:
                             spread = spread or 0.0
                         except Exception:
                             pass
+                        price_meta = {}
+                        ohlcv_meta = {}
+                        try:
+                            timeframe = get_trading_timeframe(category)
+                            price_meta = self.fetcher.get_last_price_metadata(canonical)
+                            ohlcv_meta = self.fetcher.get_last_ohlcv_metadata(canonical, timeframe)
+                            ctx["timeframe"] = timeframe
+                        except Exception:
+                            pass
                         ctx["price_data"] = price_data
                         ctx["spread"]     = spread
+                        ctx["market_data"] = {"price": price_meta, "ohlcv": ohlcv_meta}
                         ctx["risk_manager"] = self._risk_manager
+                        try:
+                            ctx["market_microstructure"] = self.fetcher.get_market_microstructure(
+                                canonical, category
+                            )
+                        except Exception:
+                            ctx["market_microstructure"] = {}
                         try:
                             from ml.features import build_features
                             features = build_features(price_data)
@@ -185,7 +283,7 @@ class TradingCore:
             if sig is None:
                 return None
 
-            result = self.pipeline.run(sig, ctx)
+            result = self.decision_engine.evaluate(sig, ctx)
             return result.to_dict() if result else None
         except Exception as e:
             logger.error(f"[TradingCore] get_signal_for_asset({asset}): {e}")
@@ -226,6 +324,15 @@ class TradingCore:
 
     @staticmethod
     def _market_hours_status(asset: str, category: str) -> Tuple[bool, str]:
+        try:
+            from services.deriv_bridge import deriv_bridge
+
+            status = deriv_bridge.get_market_status(asset, category=category)
+            if status and "market_open" in status:
+                return bool(status["market_open"]), str(status.get("reason", "Deriv market status"))
+        except Exception:
+            pass
+
         now_utc = datetime.now(tz=timezone.utc)
         wd = now_utc.weekday()
         hour = now_utc.hour
@@ -482,27 +589,25 @@ class TradingCore:
         if not signal_ctx_pairs:
             return
 
-        # Run each signal through the pipeline with its own context
+        # Run each signal through the decision engine with its own context
         survivors = []
         for sig, ctx in signal_ctx_pairs:
-            result = self.pipeline.run(sig, ctx)
+            result = self.decision_engine.evaluate(sig, ctx)
             if result is not None:
                 survivors.append(result)
-                    # Publish every survivor to Redis immediately so the dashboard
-                # _sig_store is updated in real time without running the pipeline
-                # a second time. Previously only executed trades were published,
-                # forcing the dashboard to independently re-run the pipeline.
+                # Publish every accepted signal to Redis immediately so the dashboard
+                # does not need to recompute the decision path on its own.
                 try:
                     from redis_broker import broker as _redis_broker
                     _redis_broker.publish_signal(result.to_dict())
                 except Exception:
                     pass
             else:
-                self._log_pipeline_decision(sig, ctx)
+                self._log_decision_rejection(sig, ctx)
 
         logger.info(
             f"[TradingCore] {len(signal_ctx_pairs)} signals → "
-            f"{len(survivors)} survived pipeline"
+            f"{len(survivors)} accepted"
         )
 
         processed = 0
@@ -591,11 +696,28 @@ class TradingCore:
                             spread = spread or 0.0
                         except Exception:
                             pass
+                    price_meta = {}
+                    ohlcv_meta = {}
+                    try:
+                        timeframe = get_trading_timeframe(category)
+                        price_meta = self.fetcher.get_last_price_metadata(canonical)
+                        ohlcv_meta = self.fetcher.get_last_ohlcv_metadata(canonical, timeframe)
+                    except Exception:
+                        timeframe = get_trading_timeframe(category)
+                        pass
 
                     ctx = self._build_context(canonical, category)
                     ctx["price_data"] = price_data
                     ctx["spread"]     = spread
+                    ctx["market_data"] = {"price": price_meta, "ohlcv": ohlcv_meta}
+                    ctx["timeframe"] = timeframe
                     ctx["risk_manager"] = self._risk_manager
+                    try:
+                        ctx["market_microstructure"] = self.fetcher.get_market_microstructure(
+                            canonical, category
+                        )
+                    except Exception:
+                        ctx["market_microstructure"] = {}
                     try:
                         from ml.features import build_features
                         features = build_features(price_data)
@@ -792,17 +914,31 @@ class TradingCore:
     def _fetch_price_data(self, asset: str, category: str):
         if self.fetcher:
             try:
-                from config.config import TRADING_TIMEFRAME
-                _auto_periods = {"15m": 500, "1h": 300, "4h": 200, "1d": 100}
-                _periods = _auto_periods.get(TRADING_TIMEFRAME, 100)
+                timeframe = get_trading_timeframe(category)
+                _periods = get_timeframe_periods(timeframe)
                 return self.fetcher.get_ohlcv(
                     asset, category,
-                    interval=TRADING_TIMEFRAME,
+                    interval=timeframe,
                     periods=_periods,
                 )
             except Exception:
                 pass
         return None
+
+    @staticmethod
+    def _build_take_profit_levels(entry: float, take_profit: float, direction: str) -> List[float]:
+        levels: List[float] = []
+        try:
+            dist = abs(float(take_profit) - float(entry))
+            if dist <= 0:
+                return levels
+            if str(direction).upper() == "BUY":
+                levels = [round(entry + dist * 0.5, 6), round(entry + dist, 6), round(entry + dist * 1.5, 6)]
+            else:
+                levels = [round(entry - dist * 0.5, 6), round(entry - dist, 6), round(entry - dist * 1.5, 6)]
+        except Exception:
+            return []
+        return levels
 
     @staticmethod
     def _fmt_metric(value: Any, digits: int = 3) -> str:
@@ -824,11 +960,11 @@ class TradingCore:
             f"oi={context.get('oi_signal', 'NEUTRAL')}"
         )
 
-    def _log_pipeline_decision(self, signal: Signal, context: Dict[str, Any]) -> None:
+    def _log_decision_rejection(self, signal: Signal, context: Dict[str, Any]) -> None:
         reason = signal.kill_reason or signal.metadata.get("agent_rejection_reason", "killed")
         logger.info(
             f"[TradingCore] Decision {signal.asset} killed "
-            f"layer={signal.layer_reached} dir={signal.direction} "
+            f"step={signal.step_reached} dir={signal.direction} "
             f"ml={self._fmt_metric(signal.metadata.get('ml_prediction', context.get('ml_prediction')))}/"
             f"{self._fmt_metric(signal.metadata.get('ml_confidence', context.get('ml_confidence')))} "
             f"sent={self._fmt_metric(signal.metadata.get('sentiment_score', context.get('sentiment_score')))} "
@@ -921,15 +1057,16 @@ class TradingCore:
             self._log_seed_decision(asset, context, "non_positive_entry_price")
             return None
 
+        atr = self._estimate_atr(price_data)
         if self._risk_manager is not None:
-            stop_loss = self._risk_manager.get_stop_loss(entry_price, direction, category)
+            stop_loss = self._risk_manager.get_stop_loss(entry_price, direction, category, atr=atr)
             take_profit = self._risk_manager.get_take_profit(
-                entry_price, stop_loss, direction, rr=2.0
+                entry_price, stop_loss, direction, category=category
             )
         else:
-            dist = entry_price * 0.015
+            dist = atr * 1.5 if atr > 0 else entry_price * 0.006
             stop_loss = entry_price - dist if direction == "BUY" else entry_price + dist
-            take_profit = entry_price + dist * 2 if direction == "BUY" else entry_price - dist * 2
+            take_profit = entry_price + dist * 1.5 if direction == "BUY" else entry_price - dist * 1.5
 
         signal = Signal(
             asset=asset,
@@ -950,10 +1087,40 @@ class TradingCore:
             "ml_prediction_real": ml_conf > 0.0,
             "seed_source": "classifier",
             "seed_model": f"{category}_classifier",
+            "market_data": context.get("market_data", {}),
+            "atr": round(atr, 6) if atr > 0 else 0.0,
+            "exit_model": "atr" if atr > 0 else "category_fallback",
         })
         context["seed_decision"]["status"] = "signal"
         context["seed_decision"]["direction"] = direction
         return signal
+
+    @staticmethod
+    def _estimate_atr(price_data, period: int = 14) -> float:
+        try:
+            if price_data is None or len(price_data) < period + 1:
+                return 0.0
+            required = {"high", "low", "close"}
+            if not required.issubset(set(price_data.columns)):
+                return 0.0
+            high = price_data["high"].astype(float)
+            low = price_data["low"].astype(float)
+            close = price_data["close"].astype(float)
+            prev_close = close.shift(1)
+            tr = pd.concat(
+                [
+                    high - low,
+                    (high - prev_close).abs(),
+                    (low - prev_close).abs(),
+                ],
+                axis=1,
+            ).max(axis=1)
+            atr = float(tr.tail(period).mean())
+            if atr > 0.0:
+                return atr
+        except Exception as exc:
+            logger.debug(f"[TradingCore] ATR estimation failed: {exc}")
+        return 0.0
 
     def _get_prices(self) -> Dict[str, float]:
         prices = {}
@@ -1004,44 +1171,49 @@ class TradingCore:
         return 0.0
 
     def _build_context(self, asset: str = "", category: str = "") -> Dict[str, Any]:
-        sentiment_score = 0.0
-        sentiment_details: Dict[str, Any] = {}
+        intelligence_snapshot: Dict[str, Any] = {}
         try:
-            from layers.layer5_sentiment import _fetch_sentiment_details
-            sentiment_details = _fetch_sentiment_details(asset, category)
-            sentiment_score = float(
-                sentiment_details.get("composite_score", sentiment_details.get("score", 0.0))
-            )
-        except Exception:
-            pass
+            from services.market_intelligence_service import get_service as get_market_intelligence_service
 
-        # ── Phase 1: funding rates + OI for Meta AI Layer 8 ──────────────
-        funding_bias = "NEUTRAL"
-        oi_signal    = "NEUTRAL"
-        try:
-            from data_ingestion import funding_monitor, oi_monitor
-            # Normalise asset to exchange symbol format
-            symbol = (asset.replace("-USD", "USDT")
-                           .replace("/", "")
-                           .replace("-", ""))
-            funding_bias = funding_monitor.get_bias(symbol)
-            oi_signal    = oi_monitor.get_signal(symbol)
+            intelligence_snapshot = get_market_intelligence_service().get_asset_snapshot(asset, category)
         except Exception:
-            pass
+            intelligence_snapshot = {}
+
+        sentiment_details = intelligence_snapshot.get("sentiment_details") or {}
+        sentiment_score = float(
+            intelligence_snapshot.get(
+                "sentiment_score",
+                sentiment_details.get("composite_score", sentiment_details.get("score", 0.0)),
+            ) or 0.0
+        )
+        free_market_intelligence = intelligence_snapshot.get("free_market_intelligence") or {}
+        funding_bias = intelligence_snapshot.get("funding_bias", "NEUTRAL")
+        oi_signal = intelligence_snapshot.get("oi_signal", "NEUTRAL")
+        market_open, market_reason = self._market_hours_status(asset, category)
 
         return {
             "asset":              asset,
             "category":          category,
+            "timeframe":         get_trading_timeframe(category),
             "balance":           self.state.balance,
             "open_count":        self.state.open_position_count(),
             "daily_pnl":         self.state.daily_pnl,
             "engine":            self,
             "fetcher":           self.fetcher,
+            "market_intelligence": intelligence_snapshot,
+            "market_status":     {
+                "asset": asset,
+                "market_open": market_open,
+                "reason": market_reason,
+            },
             "sentiment_score":   sentiment_score,
             "sentiment_details": sentiment_details,
+            "free_market_intelligence": free_market_intelligence,
             "funding_bias":      funding_bias,    # Phase 1 → Layer 8 Meta AI
             "oi_signal":         oi_signal,       # Phase 1 → Layer 8 Meta AI
             "news_event":        _get_news_event(category),  # news event state
+            "market_data":       {},
+            "market_microstructure": {},
             # FIX: wire macro_impact from MacroDataCollector so crisis regime
             # can trigger in MarketConditionClassifier.classify().
             # Previously this key was never set → macro_impact always "LOW" →
@@ -1050,7 +1222,8 @@ class TradingCore:
             # FIX: wire narrative_strength from Phase 4 TopicClusterEngine so
             # the crisis regime check (macro_impact=HIGH AND narrative_str>0.3)
             # has a chance of firing.  Previously always 0.0.
-            "narrative_strength": self._get_narrative_strength_static(asset),
+            "narrative_strength": float(intelligence_snapshot.get("narrative_strength", self._get_narrative_strength_static(asset)) or 0.0),
+            "dominant_narrative": intelligence_snapshot.get("dominant_narrative", ""),
         }
 
     def _notify_telegram_open(self, trade: Dict) -> None:
@@ -1089,9 +1262,8 @@ class TradingCore:
         If breached, closes the position at the breach price so P&L and
         trade history are accurate.
         """
-        import yfinance as yf
         from datetime import datetime, timezone
-        from data.fetcher import _yf_symbol
+        from data.fetcher import DataFetcher
 
         positions = self.state.get_open_positions()
         if not positions:
@@ -1130,18 +1302,16 @@ class TradingCore:
                 if minutes_offline < 5:
                     continue
 
-                # Fetch 5m bars covering the offline period
-                # yfinance supports 5m for up to 60 days
-                sym = _yf_symbol(asset, category)
-                ticker = yf.Ticker(sym)
-                df = ticker.history(period="7d", interval="5m", auto_adjust=True)
+                # Fetch 5m bars covering the offline period via Deriv.
+                fetcher = getattr(self, "fetcher", None) or DataFetcher()
+                periods = max(24, int(minutes_offline // 5) + 12)
+                df = fetcher.get_ohlcv(asset, category, interval="5m", periods=periods)
 
                 if df is None or df.empty:
                     logger.debug(f"[GapFill] No 5m data for {asset} — skipping")
                     continue
 
                 # Filter to bars after open_time
-                df.index = df.index.tz_convert("UTC") if df.index.tzinfo else df.index.tz_localize("UTC")
                 df = df[df.index > dt_open].copy()
 
                 if df.empty:
@@ -1153,8 +1323,8 @@ class TradingCore:
                 breach_time   = None
 
                 for bar_time, bar in df.iterrows():
-                    bar_low  = float(bar["Low"])
-                    bar_high = float(bar["High"])
+                    bar_low  = float(bar["low"])
+                    bar_high = float(bar["high"])
 
                     if direction == "BUY":
                         if bar_low <= stop_loss:
@@ -1317,6 +1487,6 @@ class TradingCore:
 
 
 # ── Module-level singleton reference ──────────────────────────────────────────
-# Set by bot.py after engine.start() so pipeline_reporter and other modules
+# Set by bot.py after engine.start() so the signal reporter and other modules
 # can access the live engine instance without circular imports.
 _CORE_INSTANCE: Optional["TradingCore"] = None

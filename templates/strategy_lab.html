@@ -19,6 +19,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .sb-icon{font-size:16px;width:20px;text-align:center}.sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid var(--bd)}
 .status-row{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;color:var(--tx2)}
 .pulse{width:8px;height:8px;border-radius:50%;background:var(--gr);animation:pulse 2s ease-in-out infinite}
+.pulse.off{background:var(--rd);animation:none}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(0,208,132,.4)}50%{box-shadow:0 0 0 5px rgba(0,208,132,0)}}
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
 .topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
@@ -31,12 +32,29 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
 /* CONTENT AREA — scrollable layout */
 .content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:flex;flex-direction:column;gap:12px;max-width:100%;width:100%;min-height:0}
-.panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden;min-height:80px}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden;min-height:80px;display:flex;flex-direction:column;flex-shrink:0}
 .panel-full{width:100%;grid-column:unset}
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
 .panel-badge{margin-left:auto;font-size:10px;padding:2px 8px;border-radius:20px;background:var(--s3);color:var(--tx3)}
-.panel-body{padding:12px 16px}
+.panel-body{padding:12px 16px;min-height:0}
+.snapshot-panel{min-height:176px}
+.control-panel{min-height:420px}
+.timeline-panel{min-height:240px}
+.timeline-body{max-height:280px;overflow-y:auto}
+.results-panel{min-height:520px}
+.results-body{min-height:380px;max-height:none;overflow-y:auto;flex:1;display:flex;flex-direction:column}
+.live-stats-body{max-height:260px;overflow-y:auto}
+.snapshot-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.snapshot-card{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:12px 14px}
+.snapshot-kicker{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.snapshot-value{font-size:20px;font-weight:700;line-height:1.1}
+.snapshot-note{font-size:11px;color:var(--tx2);margin-top:6px}
+.timeline-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.5)}
+.timeline-row:last-child{border:none}
+.timeline-asset{font-size:12px;font-weight:700;min-width:70px}
+.timeline-meta{flex:1;font-size:11px;color:var(--tx2)}
+.timeline-pnl{font-size:12px;font-weight:700;min-width:70px;text-align:right}
 
 /* MODE TABS */
 .mode-tabs{display:flex;border-bottom:1px solid var(--bd);background:var(--s2)}
@@ -115,6 +133,7 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
   .sidebar.open{left:0}
   .sb-overlay.open{display:block}
   .topbar{padding:0 12px}
+  .snapshot-grid{grid-template-columns:repeat(2,1fr)}
 }
 
 /* ── MOBILE SCROLL FIX ───────────────────────────────────────────────── */
@@ -124,6 +143,7 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
   .main{overflow:visible!important;height:auto}
   .content{overflow:visible!important;height:auto;display:block}
   .content>*{margin-bottom:10px}
+  .snapshot-grid{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -158,18 +178,50 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
       <div class="tb-right">
         <span class="tb-time" id="clock">—</span>
         <span class="tb-balance" id="topBalance">—</span>
-        <span class="tb-badge">Phase 5</span>
+        <span class="tb-badge">Live Lab</span>
       </div>
     </div>
 
     <div class="content">
+      <div class="panel snapshot-panel" style="animation-delay:.03s;width:100%">
+        <div class="panel-header">
+          <span>🧭</span>
+          <span class="panel-title">Lab Snapshot</span>
+          <span class="panel-badge" id="labBadge">Loading…</span>
+        </div>
+        <div class="panel-body">
+          <div class="snapshot-grid">
+            <div class="snapshot-card">
+              <div class="snapshot-kicker">Lab Presets</div>
+              <div class="snapshot-value pu" id="snapPresets">—</div>
+              <div class="snapshot-note">Available test configs</div>
+            </div>
+            <div class="snapshot-card">
+              <div class="snapshot-kicker">Live Strategies</div>
+              <div class="snapshot-value cy" id="snapLiveStrategies">—</div>
+              <div class="snapshot-note">Tracked in runtime stats</div>
+            </div>
+            <div class="snapshot-card">
+              <div class="snapshot-kicker">Live Trades</div>
+              <div class="snapshot-value bl" id="snapLiveTrades">—</div>
+              <div class="snapshot-note">Closed trades in performance log</div>
+            </div>
+            <div class="snapshot-card">
+              <div class="snapshot-kicker">Best Live Edge</div>
+              <div class="snapshot-value" id="snapBestStrategy">—</div>
+              <div class="snapshot-note" id="snapBestNote">Waiting for performance data</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Control Panel -->
-      <div class="panel" style="animation-delay:.05s;width:100%">
+      <div class="panel control-panel" style="animation-delay:.05s;width:100%">
         <div class="mode-tabs">
-            <div class="mode-tab active" onclick="switchMode('backtest')">Backtest</div>
-            <div class="mode-tab" onclick="switchMode('compare')">Compare</div>
-            <div class="mode-tab" onclick="switchMode('optimize')">Optimise</div>
-            <div class="mode-tab" onclick="switchMode('multiasset')">Multi-Asset</div>
+            <div class="mode-tab active" onclick="switchMode('backtest', this)">Backtest</div>
+            <div class="mode-tab" onclick="switchMode('compare', this)">Compare</div>
+            <div class="mode-tab" onclick="switchMode('optimize', this)">Optimise</div>
+            <div class="mode-tab" onclick="switchMode('multiasset', this)">Multi-Asset</div>
           </div>
 
           <!-- MODE: Backtest -->
@@ -186,21 +238,21 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
                 </optgroup>
                 <optgroup label="Forex">
                   <option value="EUR/USD">EUR/USD</option>
+                  <option value="EUR/JPY">EUR/JPY</option>
                   <option value="GBP/USD">GBP/USD</option>
                   <option value="GBP/JPY">GBP/JPY</option>
                   <option value="USD/JPY">USD/JPY</option>
                   <option value="AUD/USD">AUD/USD</option>
                 </optgroup>
                 <optgroup label="Commodities">
-                  <option value="GC=F">Gold (GC=F)</option>
-                  <option value="SI=F">Silver (SI=F)</option>
-                  <option value="CL=F">Oil (CL=F)</option>
+                  <option value="XAU/USD">Gold (XAU/USD)</option>
+                  <option value="XAG/USD">Silver (XAG/USD)</option>
                 </optgroup>
                 <optgroup label="Indices">
-                  <option value="^DJI">Dow Jones</option>
-                  <option value="^IXIC">NASDAQ</option>
-                  <option value="^GSPC">S&P 500</option>
-                  <option value="^FTSE">FTSE 100</option>
+                  <option value="US30">Dow Jones</option>
+                  <option value="US100">NASDAQ</option>
+                  <option value="US500">S&P 500</option>
+                  <option value="UK100">FTSE 100</option>
                 </optgroup>
               </select>
             </div>
@@ -241,7 +293,7 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
                 <option value="ETH-USD">ETH-USD</option>
                 <option value="EUR/USD">EUR/USD</option>
                 <option value="GBP/USD">GBP/USD</option>
-                <option value="GC=F">Gold</option>
+                <option value="XAU/USD">Gold</option>
               </select>
             </div>
             <div class="form-group">
@@ -252,7 +304,7 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
                 <option value="500">500 bars</option>
               </select>
             </div>
-            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs all 15 presets + 4 live strategies. May take ~30 seconds.</p>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs every registered lab preset plus the live strategy set for the selected asset. Runtime depends on the active preset count.</p>
             <button class="btn btn-primary btn-full" id="cmpBtn" onclick="runCompare()">
               <span>⚖</span> Compare All Strategies
             </button>
@@ -299,7 +351,7 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
                 <option value="300" selected>300 bars</option>
               </select>
             </div>
-            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Tests on BTC, ETH, SOL, EUR/USD, GBP/USD, USD/JPY, Gold, DJI simultaneously.</p>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs the chosen strategy across the current active cross-asset universe used by the lab backend.</p>
             <button class="btn btn-primary btn-full" id="maBtn" onclick="runMultiAsset()">
               <span>🌐</span> Test Across All Assets
             </button>
@@ -312,18 +364,26 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
             <span>📊</span>
             <span class="panel-title">Live Strategy Stats</span>
           </div>
-          <div class="panel-body" id="liveStats" style="overflow-y:auto"><div class="empty">Loading…</div></div>
+        <div class="panel-body live-stats-body" id="liveStats"><div class="empty">Loading…</div></div>
         </div>
+
+      <div class="panel timeline-panel" style="animation-delay:.12s;width:100%">
+        <div class="panel-header">
+          <span>🕒</span>
+          <span class="panel-title">Recent Live Outcomes</span>
+          <span class="panel-badge" id="timelineBadge">—</span>
+        </div>
+        <div class="panel-body timeline-body" id="recentTimeline"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Results Panel -->
-      <div class="panel" style="animation-delay:.15s;width:100%;min-height:400px;flex:1;overflow:hidden">
+      <div class="panel results-panel" style="animation-delay:.15s;width:100%">
           <div class="panel-header">
             <span>📈</span>
             <span class="panel-title" id="resultsTitle">Results</span>
             <span class="panel-badge" id="resultsBadge">—</span>
           </div>
-          <div id="resultsBody" style="min-height:300px;overflow-y:auto;flex:1">
+          <div id="resultsBody" class="results-body">
             <div style="text-align:center;padding:60px 20px">
               <div style="font-size:40px;margin-bottom:12px">🧪</div>
               <div style="font-size:14px;color:var(--tx2);margin-bottom:6px">Select a mode and run a backtest</div>
@@ -334,7 +394,6 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
       </div>
     </div>
   </div>
-</div>
 
 <script>
 let eqChart = null;
@@ -359,19 +418,29 @@ async function checkStatus() {
   try {
     const page = await fetchStrategyLabOverview();
     const d = page.status || {};
-    document.getElementById('engineDot').className = 'pulse' + (d.engine_running ? '' : '');
+    document.getElementById('engineDot').className = 'pulse' + (d.engine_running ? '' : ' off');
     document.getElementById('engineStatus').textContent = d.engine_running ? 'Live' : 'Offline';
     document.getElementById('topBalance').textContent = d.balance ? '$' + Number(d.balance).toLocaleString('en',{minimumFractionDigits:2}) : '—';
   } catch(e) {}
 }
 checkStatus(); setInterval(checkStatus, 30000);
 
+function formatCompactUsd(value){
+  const n = Number(value || 0);
+  if(Math.abs(n) >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+  if(Math.abs(n) >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+  return '$' + n.toFixed(0);
+}
+
 // Load available strategies
 async function loadStrategies() {
   try {
     const page = await fetchStrategyLabOverview();
-    const d = page.strategies || {};
-    const presets = d.presets || [];
+    const strategyList = page.strategies || {};
+    const performance = page.performance || {};
+    const presets = strategyList.presets || [];
+    const liveStrategies = performance.strategies || {};
+    const liveNames = Object.keys(liveStrategies);
     const labOpt  = document.getElementById('labOptgroup');
     labOpt.innerHTML = presets.map(p => `<option value="${p}">${p.replace(/_/g,' ')}</option>`).join('');
     // Populate optimize and multi-asset selects
@@ -380,14 +449,46 @@ async function loadStrategies() {
         `<option value="${p}">${p.replace(/_/g,' ')}</option>`
       ).join('');
     });
+
+    document.getElementById('snapPresets').textContent = presets.length || 0;
+    document.getElementById('snapLiveStrategies').textContent = liveNames.length || 0;
+    document.getElementById('labBadge').textContent = presets.length ? (presets.length + ' presets loaded') : 'No presets';
+
+    const liveTradeCount = liveNames.reduce((sum, name) => sum + Number(liveStrategies[name]?.total || 0), 0);
+    document.getElementById('snapLiveTrades').textContent = liveTradeCount || 0;
+
+    let bestName = '';
+    let bestScore = -Infinity;
+    liveNames.forEach((name) => {
+      const s = liveStrategies[name] || {};
+      const total = Number(s.total || 0);
+      const pnl = Number(s.pnl || 0);
+      const score = total > 0 ? pnl / Math.max(total, 1) : pnl;
+      if(score > bestScore){
+        bestScore = score;
+        bestName = name;
+      }
+    });
+    document.getElementById('snapBestStrategy').textContent = bestName || '—';
+    document.getElementById('snapBestStrategy').className = 'snapshot-value ' + (bestName ? (bestScore >= 0 ? 'gn' : 'rd') : '');
+    document.getElementById('snapBestNote').textContent = bestName ? ('Avg trade ' + formatCompactUsd(bestScore)) : 'Waiting for performance data';
+    updateStrategyOptions();
   } catch(e) {}
 }
 loadStrategies();
 
-function switchMode(mode) {
+function updateStrategyOptions() {
+  const strategySelect = document.getElementById('btStrategy');
+  if(!strategySelect) return;
+  if(!strategySelect.value && strategySelect.options.length){
+    strategySelect.value = strategySelect.options[0].value;
+  }
+}
+
+function switchMode(mode, tabEl) {
   currentMode = mode;
   document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
-  event.target.classList.add('active');
+  if(tabEl) tabEl.classList.add('active');
   ['backtest','compare','optimize','multiasset'].forEach(m => {
     document.getElementById('mode-' + m).style.display = m === mode ? 'block' : 'none';
   });
@@ -674,6 +775,21 @@ async function loadLiveStats() {
       </div>`;
     }).join('');
     document.getElementById('liveStats').innerHTML = html;
+
+    const timeline = d.timeline || [];
+    document.getElementById('timelineBadge').textContent = timeline.length ? (timeline.length + ' recent') : 'No recent trades';
+    if(!timeline.length){
+      document.getElementById('recentTimeline').innerHTML = '<div class="empty">No recent live strategy outcomes</div>';
+      return;
+    }
+    document.getElementById('recentTimeline').innerHTML = timeline.slice(0, 8).map((t) => {
+      const pnl = Number(t.pnl || 0);
+      return `<div class="timeline-row">
+        <div class="timeline-asset">${t.asset || '—'}</div>
+        <div class="timeline-meta">${t.strategy || 'unknown'} · ${t.direction || '—'} · conf ${(Number(t.conf || 0) * 100).toFixed(0)}%</div>
+        <div class="timeline-pnl ${pnl >= 0 ? 'gn' : 'rd'}">${formatCompactUsd(pnl)}</div>
+      </div>`;
+    }).join('');
   } catch(e) {}
 }
 loadLiveStats(); setInterval(loadLiveStats, 60000);

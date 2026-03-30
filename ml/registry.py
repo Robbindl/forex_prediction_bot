@@ -38,10 +38,12 @@ class ModelRegistry:
 
     def register(self, name: str, model: Any, metadata: Optional[Dict] = None) -> None:
         with self._lock:
+            existing = self._manifest.get(name, {})
+            existing_meta = existing.get("metadata", {}) if isinstance(existing, dict) else {}
             self._models[name] = model
             self._manifest[name] = {
                 "trained_at": datetime.utcnow().isoformat(),
-                "metadata":   metadata or {},
+                "metadata":   {**existing_meta, **(metadata or {})},
             }
             self._save_manifest()
         logger.info(f"[Registry] Registered model: {name}")
@@ -49,6 +51,12 @@ class ModelRegistry:
     def get(self, name: str) -> Optional[Any]:
         with self._lock:
             return self._models.get(name)
+
+    def get_metadata(self, name: str) -> Dict[str, Any]:
+        with self._lock:
+            info = self._manifest.get(name, {})
+            metadata = info.get("metadata", {}) if isinstance(info, dict) else {}
+            return dict(metadata or {})
 
     def is_stale(self, name: str) -> bool:
         info = self._manifest.get(name, {})
@@ -78,12 +86,12 @@ class ModelRegistry:
             except Exception as e:
                 logger.warning(f"[Registry] Failed to load {path.name}: {e}")
 
-    def save(self, name: str, model: Any) -> None:
+    def save(self, name: str, model: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
         try:
             import joblib
             path = MODEL_DIR / f"{name}.joblib"
             joblib.dump(model, path)
-            self.register(name, model)
+            self.register(name, model, metadata=metadata)
             logger.info(f"[Registry] Saved {name} → {path}")
         except Exception as e:
             logger.error(f"[Registry] Save failed {name}: {e}")

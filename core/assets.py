@@ -8,12 +8,12 @@ class AssetRegistry:
     # ── Canonical → category ──────────────────────────────────────────────────
     _ASSETS: Dict[str, str] = {
         # ── Commodities ──────────────────────────────────────────
-        "GC=F":   "commodities",   # Gold
-        "SI=F":   "commodities",   # Silver
-        "CL=F":   "commodities",   # Crude Oil
+        "XAU/USD": "commodities",  # Gold
+        "XAG/USD": "commodities",  # Silver
 
         # ── Forex ─────────────────────────────────────────────────
         "EUR/USD": "forex",
+        "EUR/JPY": "forex",
         "GBP/JPY": "forex",
         "GBP/USD": "forex",
         "AUD/USD": "forex",
@@ -21,10 +21,10 @@ class AssetRegistry:
         "USD/CAD": "forex",
 
         # ── Indices ───────────────────────────────────────────────
-        "^DJI":   "indices",       # US30  — Dow Jones
-        "^IXIC":  "indices",       # US100 — Nasdaq
-        "^GSPC":  "indices",       # US500 — S&P 500
-        "^FTSE":  "indices",       # FTSE 100
+        "US30":   "indices",       # US30  — Dow Jones
+        "US100":  "indices",       # US100 — Nasdaq
+        "US500":  "indices",       # US500 — S&P 500
+        "UK100":  "indices",       # FTSE 100
 
         # ── Crypto ────────────────────────────────────────────────
         "BTC-USD": "crypto",
@@ -37,20 +37,24 @@ class AssetRegistry:
     # ── Alias → canonical ─────────────────────────────────────────────────────
     _ALIASES: Dict[str, str] = {
         # Gold
-        "GC=F": "GC=F", "GOLD": "GC=F", "XAU": "GC=F",
-        "XAU/USD": "GC=F", "XAUUSD": "GC=F",
+        "XAU/USD": "XAU/USD", "GC=F": "XAU/USD", "GOLD": "XAU/USD", "XAU": "XAU/USD",
+        "XAUUSD": "XAU/USD",
 
         # Silver
-        "SI=F": "SI=F", "SILVER": "SI=F", "XAG": "SI=F",
-        "XAG/USD": "SI=F", "XAGUSD": "SI=F",
+        "XAG/USD": "XAG/USD", "SI=F": "XAG/USD", "SILVER": "XAG/USD", "XAG": "XAG/USD",
+        "XAGUSD": "XAG/USD",
 
         # Oil
-        "CL=F": "CL=F", "OIL": "CL=F", "CRUDE": "CL=F",
-        "WTI": "CL=F", "WTI/USD": "CL=F", "BRENT": "CL=F",
+        "WTI": "WTI", "WTI/USD": "WTI", "CL=F": "WTI", "OIL": "WTI", "CRUDE": "WTI",
+        "BRENT": "WTI",
 
         # EUR/USD
         "EUR/USD": "EUR/USD", "EURUSD": "EUR/USD",
         "EURO": "EUR/USD", "EUR": "EUR/USD",
+
+        # EUR/JPY
+        "EUR/JPY": "EUR/JPY", "EURJPY": "EUR/JPY",
+        "EUROYEN": "EUR/JPY",
 
         # GBP/JPY
         "GBP/JPY": "GBP/JPY", "GBPJPY": "GBP/JPY",
@@ -72,20 +76,20 @@ class AssetRegistry:
         "CAD": "USD/CAD", "LOONIE": "USD/CAD",
 
         # US30 — Dow Jones
-        "^DJI": "^DJI", "US30": "^DJI", "DOW": "^DJI",
-        "DJI": "^DJI", "DOWJONES": "^DJI",
+        "US30": "US30", "^DJI": "US30", "DOW": "US30",
+        "DJI": "US30", "DOWJONES": "US30",
 
         # US100 — Nasdaq
-        "^IXIC": "^IXIC", "US100": "^IXIC", "NASDAQ": "^IXIC",
-        "NAS100": "^IXIC", "NDX": "^IXIC", "IXIC": "^IXIC",
+        "US100": "US100", "^IXIC": "US100", "NASDAQ": "US100",
+        "NAS100": "US100", "NDX": "US100", "IXIC": "US100",
 
         # US500 — S&P 500
-        "^GSPC": "^GSPC", "US500": "^GSPC", "SP500": "^GSPC",
-        "S&P": "^GSPC", "SPX": "^GSPC", "GSPC": "^GSPC",
+        "US500": "US500", "^GSPC": "US500", "SP500": "US500",
+        "S&P": "US500", "SPX": "US500", "GSPC": "US500",
 
         # FTSE
-        "^FTSE": "^FTSE", "FTSE": "^FTSE", "UK100": "^FTSE",
-        "FTSE100": "^FTSE",
+        "UK100": "UK100", "^FTSE": "UK100", "FTSE": "UK100",
+        "FTSE100": "UK100",
 
         # BTC
         "BTC-USD": "BTC-USD", "BTC": "BTC-USD", "BITCOIN": "BTC-USD",
@@ -116,33 +120,22 @@ class AssetRegistry:
         "indices":     2,
     }
 
-    # ── Yahoo Finance fetch ticker overrides ──────────────────────────────────
-    _YAHOO_FETCH_MAP: Dict[str, str] = {
-        "EUR/USD": "EURUSD=X",
-        "GBP/JPY": "GBPJPY=X",
-        "GBP/USD": "GBPUSD=X",
-        "AUD/USD": "AUDUSD=X",
-        "USD/JPY": "USDJPY=X",
-        "USD/CAD": "USDCAD=X",
-    }
-
     def canonical(self, asset: str) -> str:
         key = asset.upper().strip()
         return self._ALIASES.get(key, asset)
 
     def category(self, asset: str) -> str:
         can = self.canonical(asset)
+        if can == "WTI":
+            return "commodities"
         return self._ASSETS.get(can, "unknown")
-
-    def yahoo_ticker(self, asset: str) -> str:
-        can = self.canonical(asset)
-        return self._YAHOO_FETCH_MAP.get(can, can)
 
     def is_same(self, a: str, b: str) -> bool:
         return self.canonical(a) == self.canonical(b)
 
     def is_known(self, asset: str) -> bool:
-        return self.canonical(asset) in self._ASSETS
+        can = self.canonical(asset)
+        return can in self._ASSETS or can == "WTI"
 
     def category_cap(self, category: str) -> int:
         return self._CATEGORY_CAPS.get(category, 2)

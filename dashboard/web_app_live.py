@@ -21,7 +21,7 @@ import hashlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.assets  import registry
-from data.fetcher import DataFetcher
+from data.fetcher import DataFetcher, get_shared_fetcher
 from utils.logger import get_logger
 from utils.api_errors import (
     APIError, BadRequest, Unauthorized, Forbidden, NotFound, InternalError,
@@ -235,7 +235,7 @@ def _cat(asset: str) -> str:
 
 # ── DataFetcher — use engine singleton when available ────────────────────────
 # The engine already holds a DataFetcher (self.fetcher). We reuse it so the
-# dashboard doesn't maintain its own TwelveData/Finnhub connections.
+# dashboard live prices are now streamed from Deriv.
 # Falls back to a local instance only if the engine isn't ready yet.
 _fetcher_local: Optional[Any] = None
 
@@ -246,7 +246,7 @@ def _get_fetcher():
         return core.fetcher
     global _fetcher_local
     if _fetcher_local is None:
-        _fetcher_local = DataFetcher()
+        _fetcher_local = get_shared_fetcher()
     return _fetcher_local
 
 # Module-level alias so existing code using _fetcher still works
@@ -275,28 +275,28 @@ def _get_sent():
     with _sent_lock:
         if _sent_svc is None:
             try:
-                from sentiment_analyzer import SentimentAnalyzer
-                _sent_svc = SentimentAnalyzer()
+                from services.sentiment_dashboard_service import get_dashboard_service
+                _sent_svc = get_dashboard_service()
             except Exception as e:
-                logger.warning(f"[dashboard] SentimentAnalyzer: {e}")
+                logger.warning(f"[dashboard] SentimentDashboardService: {e}")
     return _sent_svc
 
-# ── Lazy whale singleton ──────────────────────────────────────────────────────
-_whale_svc  = None
-_whale_lock = threading.Lock()
+# ── Lazy market-intelligence singleton ───────────────────────────────────────
+_market_intel_svc  = None
+_market_intel_lock = threading.Lock()
 
-def _get_whale():
-    global _whale_svc
-    if _whale_svc is not None:
-        return _whale_svc
-    with _whale_lock:
-        if _whale_svc is None:
+def _get_market_intelligence():
+    global _market_intel_svc
+    if _market_intel_svc is not None:
+        return _market_intel_svc
+    with _market_intel_lock:
+        if _market_intel_svc is None:
             try:
-                from whale_alert_manager import WhaleAlertManager
-                _whale_svc = WhaleAlertManager()
+                from services.market_intelligence_service import get_service as get_market_intelligence_service
+                _market_intel_svc = get_market_intelligence_service()
             except Exception as e:
-                logger.warning(f"[dashboard] WhaleAlertManager: {e}")
-    return _whale_svc
+                logger.warning(f"[dashboard] MarketIntelligenceService: {e}")
+    return _market_intel_svc
 
 # ── Response cache (in-process TTL cache + Redis fallback) ─────────────────────────────────────
 _cache_store: Dict[str, Tuple[Any, float]] = {}
@@ -372,13 +372,21 @@ def _call_view(fn, *args, **kwargs):
 def _response_to_dict(resp: Any) -> Any:
     if resp is None:
         return {}
+    if isinstance(resp, tuple):
+        if not resp:
+            return {}
+        return _response_to_dict(resp[0])
     if isinstance(resp, (dict, list)):
-        return resp
+        if isinstance(resp, dict):
+            return {key: _response_to_dict(value) for key, value in resp.items()}
+        return [_response_to_dict(item) for item in resp]
     try:
         if hasattr(resp, "get_json"):
-            return resp.get_json()
+            payload = resp.get_json()
+            if payload is not None:
+                return _response_to_dict(payload)
         if hasattr(resp, "get_data"):
-            return json.loads(resp.get_data(as_text=True))
+            return _response_to_dict(json.loads(resp.get_data(as_text=True)))
     except Exception:
         pass
     return resp
@@ -420,6 +428,8 @@ def _serve_cached_api_response() -> Optional[Response]:
 
 def _compress_response(response: Response) -> Response:
     try:
+        if response.is_streamed:
+            return response
         if response.direct_passthrough:
             return response
         if response.status_code != 200:
@@ -430,6 +440,8 @@ def _compress_response(response: Response) -> Response:
         if "gzip" not in accept_encoding.lower():
             return response
         content_type = response.headers.get("Content-Type", "")
+        if content_type.startswith("text/event-stream"):
+            return response
         if not any(content_type.startswith(prefix) for prefix in ("text/", "application/json", "application/javascript")):
             return response
         data = response.get_data()
@@ -530,7 +542,7 @@ def _start_p3_listener():
             logger.warning(f"[Phase3Listener] {e}")
     threading.Thread(target=_listen, name="p3-listener", daemon=True).start()
 
-# ── Phase 7 intel alerts pub/sub buffer ──────────────────────────────────────
+# ── Intelligence alerts pub/sub buffer ───────────────────────────────────────
 _p7_alerts: list = []
 _p7_lock    = threading.Lock()
 _p7_started = False
@@ -562,10 +574,10 @@ def _start_p7_listener():
     threading.Thread(target=_listen, name="p7-listener", daemon=True).start()
 
 # ── Background signal listener — Redis subscriber ────────────────────────────
-# The trading loop publishes every pipeline survivor to the Redis 'signals'
-# channel immediately after it passes all 8 layers. The dashboard subscribes
-# here and updates _sig_store directly — no pipeline re-runs, no duplicate
-# SURVIVED log lines, no wasted CPU. One pipeline run per signal, period.
+# The trading loop publishes every accepted signal to the Redis 'signals'
+# channel immediately after the decision engine approves it. The dashboard
+# subscribes here and updates _sig_store directly — no duplicate decision runs,
+# no wasted CPU. One decision pass per signal, period.
 #
 # Fallback: if Redis is unavailable, _bg_refresh_fallback() polls the engine
 # using get_signal_for_asset() — this is the old behaviour but only activates
@@ -575,11 +587,11 @@ def _start_p7_listener():
 def _bg_refresh() -> None:
     """Entry point — prefer Redis subscriber, fall back to polling."""
     _get_sent()
-    _get_whale()
+    _get_market_intelligence()
     try:
         from services.redis_pool import is_available as _redis_available
         if _redis_available():
-            logger.info("[dashboard] Signal source: Redis subscriber (zero pipeline re-runs)")
+            logger.info("[dashboard] Signal source: Redis subscriber (zero decision re-runs)")
             _bg_refresh_redis()
             return   # _bg_refresh_redis() blocks forever while Redis is up
     except Exception:
@@ -618,7 +630,7 @@ def _bg_refresh_redis() -> None:
 
 
 def _bg_refresh_fallback() -> None:
-    """Fallback: poll engine when Redis is unavailable. Runs the pipeline once
+    """Fallback: poll engine when Redis is unavailable. Runs the decision engine once
     per asset per TTL — only used when Redis is genuinely down."""
     from concurrent.futures import ThreadPoolExecutor
     while True:
@@ -861,17 +873,26 @@ def api_status():
         return jsonify(cached)
     try:
         core = _core()
-        if not core:
-            raise InternalError("Trading core not initialized")
-        
-        payload = jsonify({
-            "success": True,
-            "bot_ready": core.is_ready,
-            "engine_running": core.is_running,
-            "architecture": "TradingCore",
-            "balance": core.get_balance(),
-            "assets_cached": len(_sig_store),
-        })
+        if core:
+            payload = {
+                "success": True,
+                "bot_ready": core.is_ready,
+                "engine_running": core.is_running,
+                "architecture": "TradingCore",
+                "balance": core.get_balance(),
+                "assets_cached": len(_sig_store),
+            }
+        else:
+            payload = {
+                "success": True,
+                "bot_ready": False,
+                "engine_running": False,
+                "architecture": "TradingCore",
+                "balance": _args.balance,
+                "assets_cached": len(_sig_store),
+            }
+        _cache_set("status", payload, ttl=5)
+        return jsonify(payload)
     except Exception as e:
         return handle_api_error(e, "/api/status", 500)
 
@@ -948,10 +969,16 @@ def api_command_center():
             except Exception:
                 pass
             try:
-                wm = _get_whale()
-                if wm:
-                    whale_recent = wm.get_top_alerts(limit=5, days=1)
-                    whale_count  = len(whale_recent)
+                mi = _get_market_intelligence()
+                if mi:
+                    whale_summary = mi.get_whale_dashboard_summary(
+                        min_value_usd=500_000,
+                        hours=24,
+                        recent_limit=5,
+                        alert_limit=5,
+                    )
+                    whale_recent = whale_summary.get("recent", [])
+                    whale_count  = int(whale_summary.get("alert_count_24h", 0) or 0)
             except Exception:
                 pass
             _cc_slow = {
@@ -973,12 +1000,13 @@ def api_command_center():
                 assets.append((_asset, _cat))
 
         if assets:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import ThreadPoolExecutor, wait
             max_workers = min(4, len(assets))
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {pool.submit(_fetcher.get_real_time_price, asset, cat): asset
                            for asset, cat in assets}
-                for future in as_completed(futures, timeout=8):
+                done, not_done = wait(tuple(futures.keys()), timeout=8)
+                for future in done:
                     asset = futures[future]
                     try:
                         _r2, _ = future.result()
@@ -986,6 +1014,10 @@ def api_command_center():
                             _live_prices[asset] = float(_r2)
                     except Exception:
                         pass
+                if not_done:
+                    for future in not_done:
+                        future.cancel()
+                    logger.debug(f"[dashboard] command-center live price fetch timed out for {len(not_done)} asset(s)")
 
         # Build signals list (Active Signals panel)
         signals = []
@@ -1110,7 +1142,7 @@ def api_signals_live():
                     "market_open":   is_market_open_for_asset(p.get("asset", ""))[0],
                     "generated_at":  str(p.get("open_time", ""))[:16],
                     "metadata":      p.get("metadata", {}),
-                    "layer_reached": p.get("layer_reached", 0),
+                    "step_reached": p.get("step_reached", 0),
                 })
         else:
             with _sig_lock:
@@ -1154,28 +1186,35 @@ def api_chart_assets():
 def api_chart_candles():
     try:
         import pandas as pd
+        from config.config import get_chart_timeframe_periods
         asset    = request.args.get("asset", "EUR/USD")
         interval = request.args.get("interval", "15m")
-        periods  = {"1m": 60, "5m": 200, "15m": 200, "1h": 168, "4h": 200, "1d": 365}.get(interval, 100)
+        periods  = int(get_chart_timeframe_periods(interval))
         cat      = _cat(asset)
 
         # Try requested interval then fall back for forex/indices intraday gaps
-        fallbacks = {"1m": ["5m","15m","1h","1d"], "5m": ["15m","1h","1d"],
-                     "15m": ["1h","1d"], "1h": ["4h","1d"], "4h": ["1d"]}
+        fallbacks = {
+            "1m": ["5m", "15m", "30m", "1h", "4h", "1d"],
+            "5m": ["15m", "30m", "1h", "4h", "1d"],
+            "15m": ["30m", "1h", "4h", "1d"],
+            "30m": ["1h", "4h", "1d"],
+            "1h": ["4h", "1d"],
+            "4h": ["1d"],
+        }
         df = _fetcher.get_ohlcv(asset, cat, interval=interval, periods=periods)
         used = interval
         allow_fallback = cat in ("forex", "indices")
         if (df is None or df.empty) and allow_fallback and interval in fallbacks:
             for fb in fallbacks[interval]:
                 df = _fetcher.get_ohlcv(asset, cat, interval=fb,
-                                        periods={"1h": 168, "4h": 200, "1d": 365}.get(fb, 100))
+                                        periods=int(get_chart_timeframe_periods(fb)))
                 if df is not None and not df.empty:
                     used = fb
                     break
 
         if df is None or df.empty:
             return jsonify({"success": True, "candles": [],
-                            "message": f"No data for {asset}", "interval_used": interval})
+                            "message": f"No data for {asset}", "interval_used": interval, "bars_requested": periods})
 
         df.columns = [c.lower() for c in df.columns]
         timestamps = []
@@ -1203,7 +1242,12 @@ def api_chart_candles():
                 "volume": float(row.get("volume", 0)),
             })
         candles.sort(key=lambda x: x["time"])
-        return jsonify({"success": True, "candles": candles, "interval_used": used})
+        return jsonify({
+            "success": True,
+            "candles": candles,
+            "interval_used": used,
+            "bars_requested": periods,
+        })
     except APIError as e:
         return handle_api_error(e, "/api/chart/candles", e.status_code)
     except Exception as e:
@@ -1217,13 +1261,18 @@ def api_chart_stream():
     asset = request.args.get("asset", "EUR/USD")
     cat   = _cat(asset)
     def _gen():
+        # Emit an immediate event so the SSE connection establishes cleanly even
+        # if the next live quote takes a few seconds or the market is closed.
+        yield f"data: {json.dumps({'type': 'connected', 'asset': asset, 'ts': int(time.time())})}\n\n"
         while True:
             try:
                 price, _ = _fetcher.get_real_time_price(asset, cat)
                 if price:
-                    yield f"data: {json.dumps({'price': price, 'asset': asset, 'ts': int(time.time())})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tick', 'price': price, 'asset': asset, 'ts': int(time.time())})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'asset': asset, 'ts': int(time.time())})}\n\n"
             except Exception:
-                pass
+                yield f"data: {json.dumps({'type': 'heartbeat', 'asset': asset, 'ts': int(time.time())})}\n\n"
             time.sleep(3)
     return Response(stream_with_context(_gen()), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -1232,7 +1281,8 @@ def api_chart_stream():
 @_check_api_auth
 @_check_rate_limit
 def api_market_heatmap():
-    cached = _cache_get("heatmap")
+    cache_key = "heatmap:v2"
+    cached = _cache_get(cache_key)
     if cached is not None:
         return jsonify(cached)
     try:
@@ -1264,10 +1314,11 @@ def api_market_heatmap():
                 return None
 
         results = []
-        max_workers = min(18, len(ALL_ASSETS))
+        expected_assets = sum(1 for _, cat in ALL_ASSETS if not _is_market_weekend(cat))
+        max_workers = min(8, len(ALL_ASSETS))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {pool.submit(_fetch_one, ac): ac for ac in ALL_ASSETS}
-            done, not_done = wait(futures, timeout=10)
+            done, not_done = wait(futures, timeout=25)
             for r in done:
                 try:
                     v = r.result()
@@ -1280,8 +1331,13 @@ def api_market_heatmap():
                     fut.cancel()
 
         results.sort(key=lambda x: x["change_pct"], reverse=True)
-        payload = {"success": True, "items": results}
-        _cache_set("heatmap", payload, ttl=120)   # refresh every 120s for live price changes
+        payload = {
+            "success": True,
+            "items": results,
+            "expected_assets": expected_assets,
+            "partial": len(results) < expected_assets,
+        }
+        _cache_set(cache_key, payload, ttl=120)   # refresh every 120s for live price changes
         return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/market/heatmap", e.status_code)
@@ -1292,24 +1348,30 @@ def api_market_heatmap():
 def api_correlation_matrix():
     cached = _cache_get("correlation")
     if cached is not None:
-        return jsonify(cached)
+        try:
+            labels = cached.get("labels") or []
+            matrix = cached.get("matrix") or []
+            invalid = any(
+                value is None or (isinstance(value, (int, float)) and not np.isfinite(value))
+                for row in matrix for value in row
+            )
+            if labels and matrix and not invalid:
+                return jsonify(cached)
+        except Exception:
+            pass
     try:
         import pandas as pd
         import numpy as np
         from concurrent.futures import ThreadPoolExecutor, wait
-        from config.config import TRADING_TIMEFRAME
+        from config.config import get_trading_timeframe
         assets = [a for a, _ in ALL_ASSETS]  # all 18 tradeable assets
 
         def _fetch_close(a):
             cat = _cat(a)
+            interval = get_trading_timeframe(cat)
             try:
-                from data.cache import cache as _ohlcv_cache
-                cache_key = f"ohlcv:{a}:{TRADING_TIMEFRAME}"
-                df = _ohlcv_cache.get(cache_key)
-                if df is None:
-                    # Cache miss — fetch fresh regardless of weekend
-                    # Correlation uses historical closes so weekend data is fine
-                    df = _fetcher.get_ohlcv(a, cat, interval=TRADING_TIMEFRAME, periods=50)
+                # Correlation uses historical closes only; fetcher handles local OHLCV caching.
+                df = _fetcher.get_ohlcv(a, cat, interval=interval, periods=50)
                 if df is not None and not df.empty and "close" in df.columns:
                     return a, df["close"].astype(float)
             except Exception:
@@ -1335,14 +1397,23 @@ def api_correlation_matrix():
         if len(closes) < 2:
             return jsonify({"success": False, "error": "Not enough price data — try again in 30s"})
 
-        # Align all series to same length before correlation
+        # Keep pairwise overlap instead of dropping every row that has any NaN.
+        # Different asset classes often have slightly different candle timestamps.
         frame = pd.DataFrame(closes)
-        # Drop columns with too many NaN (less than 10 data points)
-        frame = frame.dropna(axis=1, thresh=10)
-        frame = frame.pct_change().dropna()
-        if frame.shape[1] < 2:
+        returns = frame.pct_change(fill_method=None)
+        returns = returns.dropna(axis=1, thresh=10)
+        if returns.shape[1] < 2:
             return jsonify({"success": False, "error": "Not enough aligned data"})
-        corr  = frame.corr().round(3)
+
+        corr = returns.corr(min_periods=10)
+        corr = corr.dropna(axis=0, how="all").dropna(axis=1, how="all")
+        if corr.shape[1] < 2:
+            return jsonify({"success": False, "error": "Not enough correlated data"})
+
+        for label in corr.columns:
+            corr.loc[label, label] = 1.0
+        corr = corr.fillna(0.0).round(3)
+
         payload = {"success": True, "labels": list(corr.columns), "matrix": corr.values.tolist()}
         _cache_set("correlation", payload, ttl=600)
         return jsonify(payload)
@@ -1385,7 +1456,7 @@ def api_predictions_summary():
         core  = _core()
         preds = []
 
-        # Use real positions as predictions — they are active pipeline signals
+        # Use real positions as predictions — they are active decision-engine signals
         if core:
             for p in core.get_positions():
                 d  = (p.get("direction") or p.get("signal", "BUY")).upper()
@@ -1474,26 +1545,16 @@ def api_whale_summary():
     if cached is not None:
         return jsonify(cached)
     try:
-        wm = _get_whale()
-        if not wm:
+        mi = _get_market_intelligence()
+        if not mi:
             return jsonify({"success": True, "alerts": [], "total_volume_usd": 0,
                             "top_assets": [], "recent": [], "alert_count_24h": 0})
-        alerts    = wm.get_alerts(min_value_usd=500_000, hours=24)
-        top       = wm.get_top_alerts(limit=10, days=7)
-        total_vol = sum(float(a.get("value_usd", 0)) for a in alerts)
-        by_asset: Dict[str, float] = {}
-        for a in alerts:
-            sym = a.get("symbol", a.get("asset", ""))
-            by_asset[sym] = by_asset.get(sym, 0.0) + float(a.get("value_usd", 0))
-        top_assets = sorted(by_asset.items(), key=lambda x: x[1], reverse=True)[:8]
-        payload = {
-            "success":          True,
-            "alerts":           alerts[:20],
-            "total_volume_usd": round(total_vol, 0),
-            "alert_count_24h":  len(alerts),
-            "top_assets":       [{"asset": k, "volume": round(v)} for k, v in top_assets],
-            "recent":           top[:10],
-        }
+        payload = mi.get_whale_dashboard_summary(
+            min_value_usd=500_000,
+            hours=24,
+            recent_limit=10,
+            alert_limit=20,
+        )
         _cache_set("whale_summary", payload, ttl=300)
         return jsonify(payload)
     except APIError as e:
@@ -1515,7 +1576,7 @@ def api_sentiment_dashboard():
     try:
         sa = _get_sent()
         if sa is None:
-            return jsonify({"success": False, "error": "SentimentAnalyzer unavailable"}), 503
+            return jsonify({"success": False, "error": "Sentiment service unavailable"}), 503
 
         result: Dict = {
             "success": True, "overall_sentiment": "Neutral", "score": 0.0,
@@ -1592,9 +1653,9 @@ def api_sentiment_by_asset():
     if cached is not None:
         return jsonify(cached)
     try:
-        sa = _get_sent()
-        if not sa:
-            return jsonify({"success": False, "error": "SentimentAnalyzer unavailable"})
+        mi = _get_market_intelligence()
+        if not mi:
+            return jsonify({"success": False, "error": "Market intelligence unavailable"})
 
         watch = [a for a, _ in ALL_ASSETS]
         from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
@@ -1609,8 +1670,8 @@ def api_sentiment_by_asset():
                     "label":    "Market Closed",
                 }
             try:
-                r     = sa.get_comprehensive_sentiment(asset)
-                score = float(r.get("composite_score", r.get("score", 0))) if r else 0.0
+                snapshot = mi.get_asset_snapshot(asset, cat)
+                score = float(snapshot.get("sentiment_score", 0.0) or 0.0)
             except Exception:
                 score = 0.0
             return {
@@ -1672,22 +1733,24 @@ def api_sentiment_by_asset():
 @_check_rate_limit
 def api_market_events():
     try:
-        events: List = []
-        sa = _get_sent()
-        if sa:
-            raw = sa.get_market_events()
+        mi = _get_market_intelligence()
+        payload: Dict[str, Any] = {
+            "success": True,
+            "events": [],
+            "earnings": [],
+            "halving": {},
+            "risk_outlook": {},
+        }
+        if mi:
+            raw = mi.get_market_events(days=7, limit=20)
             if isinstance(raw, dict):
-                events = raw.get("events", raw.get("calendar", []))
+                payload["events"] = raw.get("events", raw.get("calendar", []))[:20]
+                payload["earnings"] = raw.get("earnings", [])
+                payload["halving"] = raw.get("halving", {}) or {}
+                payload["risk_outlook"] = raw.get("risk_outlook", {}) or {}
             elif isinstance(raw, list):
-                events = raw
-        try:
-            from market_calendar import get_high_impact_events
-            cal = get_high_impact_events()
-            if cal:
-                events = (events + list(cal))[:20]
-        except Exception:
-            pass
-        return jsonify({"success": True, "events": events[:20]})
+                payload["events"] = raw[:20]
+        return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/market/events", e.status_code)
     except Exception as e:
@@ -1972,8 +2035,8 @@ def api_backtest_multi_asset():
             ("EUR/USD",  "forex"),
             ("GBP/USD",  "forex"),
             ("USD/JPY",  "forex"),
-            ("GC=F",     "commodities"),
-            ("^DJI",     "indices"),
+            ("XAU/USD",  "commodities"),
+            ("US30",     "indices"),
         ]
 
         results = []
@@ -2217,49 +2280,47 @@ def api_trade_history():
     """Return last N closed trades with full details for the history panel."""
     try:
         limit = int(request.args.get("limit", 50))
-        from models.trade_models import Trade
-        from config.database import SessionLocal
-        db = SessionLocal()
-        try:
-            trades = (db.query(Trade)
-                      .filter(Trade.exit_time.isnot(None))
-                      .order_by(Trade.exit_time.desc())
-                      .limit(limit)
-                      .all())
-            from datetime import datetime as _dt, timedelta as _td
-            def _enrich(t):
-                d = t.to_dict()
-                # Convert UTC times to EAT (UTC+3) for display
-                eat_offset = _td(hours=3)
-                try:
-                    if t.entry_time and t.exit_time:
-                        et = t.entry_time.replace(tzinfo=None) if hasattr(t.entry_time,'replace') else t.entry_time
-                        xt = t.exit_time.replace(tzinfo=None) if hasattr(t.exit_time,'replace') else t.exit_time
-                        # Add 3 hours to convert UTC → EAT
-                        et_eat = et + eat_offset
-                        xt_eat = xt + eat_offset
-                        d["entry_time"] = et_eat.isoformat()
-                        d["exit_time"] = xt_eat.isoformat()
-                        secs = abs((xt - et).total_seconds())
-                        mins = int(secs / 60)
-                        if mins < 60:
-                            d["duration_str"] = f"{mins}m"
-                        elif mins < 1440:
-                            d["duration_str"] = f"{mins//60}h {mins%60}m"
-                        else:
-                            d["duration_str"] = f"{mins//1440}d {(mins%1440)//60}h"
+        from services.db_pool import get_db
+        trades = get_db().get_recent_trades(limit=limit)
+        from datetime import timedelta as _td
+        from config.config import TZ_NAME, TZ_OFFSET_HOURS
+        def _enrich(trade):
+            d = dict(trade)
+            # Convert stored UTC timestamps into the configured dashboard timezone.
+            display_offset = _td(hours=TZ_OFFSET_HOURS)
+            try:
+                entry_raw = d.get("entry_time")
+                exit_raw = d.get("exit_time")
+                if entry_raw and exit_raw:
+                    et = datetime.fromisoformat(str(entry_raw).replace("Z", "+00:00")).replace(tzinfo=None)
+                    xt = datetime.fromisoformat(str(exit_raw).replace("Z", "+00:00")).replace(tzinfo=None)
+                    et_local = et + display_offset
+                    xt_local = xt + display_offset
+                    d["entry_time"] = et_local.isoformat()
+                    d["exit_time"] = xt_local.isoformat()
+                    d["display_timezone"] = TZ_NAME
+                    secs = abs((xt - et).total_seconds())
+                    mins = int(secs / 60)
+                    if mins < 60:
+                        d["duration_str"] = f"{mins}m"
+                    elif mins < 1440:
+                        d["duration_str"] = f"{mins//60}h {mins%60}m"
                     else:
-                        d["duration_str"] = "—"
-                except Exception:
+                        d["duration_str"] = f"{mins//1440}d {(mins%1440)//60}h"
+                else:
                     d["duration_str"] = "—"
-                return d
-            return jsonify({
-                "success": True,
-                "trades": [_enrich(t) for t in trades],
-                "count": len(trades),
-            })
-        finally:
-            db.close()
+            except Exception:
+                d["duration_str"] = "—"
+            return d
+        response = jsonify({
+            "success": True,
+            "trades": [_enrich(t) for t in trades],
+            "count": len(trades),
+        })
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -2464,7 +2525,7 @@ def api_monitoring_snapshot():
     if cached: return jsonify(cached)
     try:
         from monitoring.system_health_service import monitor
-        snap    = monitor.snapshot()
+        snap    = monitor.get_snapshot()
         payload = {"success": True, **snap}
         _cache_set("monitoring_snapshot", payload, ttl=60)
         return jsonify(payload)
@@ -2498,7 +2559,7 @@ def api_monitoring_errors():
         return jsonify(cached)
     try:
         from monitoring.system_health_service import monitor
-        snap = monitor.snapshot()
+        snap = monitor.get_snapshot()
         payload = {"success": True, "errors": snap.get("errors", {}),
                         "timestamp": datetime.now().isoformat()}
         _cache_set("monitoring_errors", payload, ttl=10)
@@ -2528,7 +2589,10 @@ def api_system_monitor_overview():
         "health": health_data,
         "metrics": metrics_data.get("metrics", {}),
         "errors": errors_data.get("errors", {}),
-        "snapshot": snapshot_data.get("signals", {}),
+        "snapshot": {
+            key: value for key, value in (snapshot_data or {}).items()
+            if key != "success"
+        },
         "timestamp": datetime.utcnow().isoformat(),
     }
     _cache_set(cache_key, payload, ttl=10)
@@ -2547,7 +2611,7 @@ def api_page_overview():
     cache_key = f"page_overview:{page}:{days}"
     cached = _cache_get(cache_key)
     if cached:
-        return jsonify(cached)
+        return jsonify(_response_to_dict(cached))
 
     if page == "risk_dashboard":
         status = _response_to_dict(_call_view(api_status))
@@ -2603,12 +2667,12 @@ def api_page_overview():
         payload = {
             "success": True,
             "assets": _response_to_dict(_call_view(api_chart_assets)),
-            "heatmap": _response_to_dict(_call_view(api_market_heatmap)),
         }
         ttl = 30
     else:
         return handle_api_error(BadRequest(f"Unknown overview page '{page}'"), "/api/page-overview", 400)
 
+    payload = _response_to_dict(payload)
     _cache_set(cache_key, payload, ttl=ttl)
     return jsonify(payload)
 
@@ -2630,11 +2694,14 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
     _start_p3_listener()
     _start_p7_listener()
 
-    # Optional WebSocket manager — dynamically subscribe to all open positions
+    # Optional WebSocket manager — Deriv-first live prices with Binance support
     _ws_global = None  # Reference to WebSocket manager for periodic updates
     try:
         from websocket_manager import WebSocketManager
         from websocket_dashboard import set_live_price
+        from core.asset_profiles import ALL_ASSETS
+        from core.assets import registry as _asset_registry
+
         def _cb(source, symbol, price, volume, side, ts=None):
             add_transaction(source, symbol, price, volume, side)
             # Store price for live P&L updates (real-time, no API calls)
@@ -2646,37 +2713,26 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
         
         # Build dynamic asset list from open positions
         _open_pos = _args.state.get_open_positions() if hasattr(_args, 'state') else []
-        _assets_by_category = {"crypto": set(), "forex": set(), "commodities": set(), "indices": set()}
+        _assets_by_category = {}
         for pos in _open_pos:
             _cat = pos.get("category", "forex")
             _asset = pos.get("asset", "")
-            if _asset and _cat in _assets_by_category:
-                _assets_by_category[_cat].add(_asset)
+            if _asset:
+                _assets_by_category[_asset] = _cat
+
+        # If no positions exist yet, stream the configured asset universe so the
+        # dashboards still show live market movement.
+        if not _assets_by_category:
+            _assets_by_category = {
+                asset: _asset_registry.category(asset)
+                for asset in sorted(ALL_ASSETS)
+            }
+
+        if _assets_by_category:
+            ws.subscribe_deriv(_assets_by_category, _cb)
+            logger.info(f"[dashboard] Live stream assets: {sorted(_assets_by_category.keys())}")
         
-        # Convert to WebSocket symbols and subscribe
-        _crypto_symbols = []
-        for asset in _assets_by_category.get("crypto", set()):
-            # BTC-USD → BTCUSDT, ETH-USD → ETHUSDT, etc.
-            if "-USD" in asset:
-                ws_sym = asset.replace("-USD", "USDT")
-                _crypto_symbols.append(ws_sym)
-        
-        _forex_symbols = list(_assets_by_category.get("forex", set()).union(_assets_by_category.get("commodities", set())))
-        
-        # Add hardcoded defaults if no positions exist yet
-        if not _crypto_symbols:
-            _crypto_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
-        if not _forex_symbols:
-            _forex_symbols = ["EUR/USD", "XAU/USD"]
-        
-        if _crypto_symbols:
-            ws.subscribe_bybit(_crypto_symbols, _cb)
-            logger.info(f"[dashboard] WebSocket Bybit: {_crypto_symbols}")
-        if _forex_symbols:
-            ws.subscribe_twelvedata(_forex_symbols, _cb)
-            logger.info(f"[dashboard] WebSocket TwelveData: {_forex_symbols}")
-        
-        logger.info("[dashboard] WebSocket streams started (dynamic)")
+        logger.info("[dashboard] Live streams started")
     except Exception as e:
         logger.warning(f"[dashboard] WebSocket streams failed (non-fatal): {e}")
 
@@ -2694,33 +2750,20 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
                 _open = _args.state.get_open_positions() if hasattr(_args.state, 'get_open_positions') else []
                 
                 # Extract unique assets currently being subscribed
-                _crypto_set = set()
-                _forex_set = set()
+                _asset_map = {}
                 for pos in _open:
                     _cat = pos.get("category", "forex")
                     _asset = pos.get("asset", "")
                     if not _asset:
                         continue
-                    
-                    if _cat == "crypto" and "-USD" in _asset:
-                        _crypto_set.add(_asset.replace("-USD", "USDT"))
-                    elif _cat in ("forex", "commodities", "indices"):
-                        _forex_set.add(_asset)
-                
-                # If assets found, update subscriptions (fallback still uses hardcodeds)
-                if _crypto_set and len(_crypto_set) > 0:
+                    _asset_map[_asset] = _cat
+
+                if _asset_map:
                     try:
-                        _ws_global.subscribe_bybit(list(_crypto_set), _cb if '_cb' in locals() else lambda *a, **k: None)
-                        logger.debug(f"[dashboard] Updated Bybit subscriptions: {_crypto_set}")
+                        _ws_global.subscribe_deriv(_asset_map, _cb if '_cb' in locals() else lambda *a, **k: None)
+                        logger.debug(f"[dashboard] Updated live subscriptions: {_asset_map}")
                     except Exception as _ue:
-                        logger.debug(f"[dashboard] Update Bybit subs failed: {_ue}")
-                
-                if _forex_set and len(_forex_set) > 0:
-                    try:
-                        _ws_global.subscribe_twelvedata(list(_forex_set), _cb if '_cb' in locals() else lambda *a, **k: None)
-                        logger.debug(f"[dashboard] Updated TwelveData subscriptions: {_forex_set}")
-                    except Exception as _ue:
-                        logger.debug(f"[dashboard] Update TwelveData subs failed: {_ue}")
+                        logger.debug(f"[dashboard] Update live subs failed: {_ue}")
             except Exception as e:
                 logger.debug(f"[dashboard] bg_update_ws_subscriptions: {e}")
     

@@ -1,7 +1,7 @@
 """
 narrative_ai/__init__.py — Market Narrative AI Engine.
 Provides velocity-based narrative detection via TopicClusterEngine.
-Feeds from existing sentiment_analyzer, reddit_watcher, twitter_whale_watcher.
+Feeds from the sentiment service, Reddit watcher, and Twitter whale watcher.
 """
 from narrative_ai.topic_cluster_engine import TopicClusterEngine
 

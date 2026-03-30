@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Sentiment collectors and scoring helpers used by the sentiment service."""
+
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -99,14 +101,16 @@ _ASSET_KEYWORDS: Dict[str, List[str]] = {
     "BNB-USD":  ["bnb", "binance coin", "binance smart chain"],
     "SOL-USD":  ["solana", "sol crypto"],
     "XRP-USD":  ["xrp", "ripple", "ripplenet"],
-    "GC=F":     ["gold", "xau", "bullion", "gold price", "precious metal",
+    "XAU/USD":  ["gold", "xau", "bullion", "gold price", "precious metal",
                  "gold futures", "gold rally", "gold drop", "gold tumble",
                  "gold slump", "gold sell", "gold surge", "gold crash"],
-    "SI=F":     ["silver", "xag", "silver price", "precious metal", "silver bullion"],
-    "CL=F":     ["crude oil", "wti", "brent", "oil price", "opec",
+    "XAG/USD":  ["silver", "xag", "silver price", "precious metal", "silver bullion"],
+    "WTI":      ["crude oil", "wti", "brent", "oil price", "opec",
                  "petroleum", "energy market", "oil barrel"],
     "EUR/USD":  ["euro", "eur/usd", "eurusd", "eurozone", "ecb",
                  "european central bank", "europe economy"],
+    "EUR/JPY":  ["eur/jpy", "eurjpy", "euro yen", "euro against yen",
+                 "ecb", "boj", "bank of japan", "japanese yen"],
     "GBP/USD":  ["pound", "sterling", "gbp/usd", "gbpusd", "cable",
                  "bank of england", "boe", "uk economy"],
     "GBP/JPY":  ["gbpjpy", "pound yen", "gbp/jpy"],
@@ -116,22 +120,37 @@ _ASSET_KEYWORDS: Dict[str, List[str]] = {
                  "japanese yen", "japan economy"],
     "USD/CAD":  ["canadian dollar", "cad", "loonie", "usdcad",
                  "bank of canada", "boc"],
-    "^DJI":     ["dow jones", "djia", "dow", "us30", "wall street"],
-    "^IXIC":    ["nasdaq", "us100", "ndx", "tech stocks", "technology sector"],
-    "^GSPC":    ["s&p 500", "sp500", "spx", "s&p", "us stocks",
+    "US30":     ["dow jones", "djia", "dow", "us30", "wall street"],
+    "US100":    ["nasdaq", "us100", "ndx", "tech stocks", "technology sector"],
+    "US500":    ["s&p 500", "sp500", "spx", "s&p", "us stocks",
                  "us equity", "wall street", "american stocks"],
-    "^FTSE":    ["ftse", "ftse 100", "uk100", "london stock",
+    "UK100":    ["ftse", "ftse 100", "uk100", "london stock",
                  "uk equity", "british stocks"],
 }
 
 _CATEGORY_MAP = {
     "BTC-USD": "crypto", "ETH-USD": "crypto", "BNB-USD": "crypto",
     "SOL-USD": "crypto", "XRP-USD": "crypto",
-    "GC=F": "commodities", "SI=F": "commodities", "CL=F": "commodities",
-    "EUR/USD": "forex", "GBP/USD": "forex", "GBP/JPY": "forex",
+    "XAU/USD": "commodities", "XAG/USD": "commodities", "WTI": "commodities",
+    "EUR/USD": "forex", "EUR/JPY": "forex", "GBP/USD": "forex", "GBP/JPY": "forex",
     "AUD/USD": "forex", "USD/JPY": "forex", "USD/CAD": "forex",
-    "^DJI": "indices", "^IXIC": "indices", "^GSPC": "indices", "^FTSE": "indices",
+    "US30": "indices", "US100": "indices", "US500": "indices", "UK100": "indices",
 }
+
+_LEGACY_ASSET_ALIASES = {
+    "GC=F": "XAU/USD",
+    "SI=F": "XAG/USD",
+    "CL=F": "WTI",
+    "WTI/USD": "WTI",
+    "^DJI": "US30",
+    "^IXIC": "US100",
+    "^GSPC": "US500",
+    "^FTSE": "UK100",
+}
+
+
+def _canon_asset(asset: str) -> str:
+    return _LEGACY_ASSET_ALIASES.get(asset, asset)
 
 
 def _is_quota_error(e) -> bool:
@@ -144,7 +163,7 @@ def _is_quota_error(e) -> bool:
 
 
 def _cat(asset: str) -> str:
-    return _CATEGORY_MAP.get(asset, "forex")
+    return _CATEGORY_MAP.get(_canon_asset(asset), "forex")
 
 
 def _clamp(v: float) -> float:
@@ -215,26 +234,7 @@ class _MarketInstruments:
     @classmethod
     def vix(cls) -> Optional[Dict]:
         def _fetch():
-            try:
-                import yfinance as yf
-                df = yf.Ticker("^VIX").history(period="5d", interval="1d")
-                if df.empty:
-                    return None
-                val = float(df["Close"].iloc[-1])
-                # VIX > 30: extreme fear = very bearish. VIX < 15: complacency.
-                # Mapping: VIX 10=+0.2 (calm), 20=0 (normal), 30=-0.3, 40=-0.6, 50=-0.9
-                if val <= 15:    score =  0.2
-                elif val <= 20:  score =  0.1 - (val - 15) / 5 * 0.1
-                elif val <= 25:  score = -0.0 - (val - 20) / 5 * 0.2
-                elif val <= 35:  score = -0.2 - (val - 25) / 10 * 0.4
-                else:            score = -0.6 - min(0.4, (val - 35) / 15 * 0.4)
-                return {
-                    "value": round(val, 2),
-                    "classification": "High Fear" if val > 25 else "Elevated" if val > 20 else "Normal",
-                    "score": round(_clamp(score), 3),
-                }
-            except Exception as e:
-                logger.debug(f"[Sentiment] VIX fetch: {e}")
+            # Deriv-only market data mode does not use external VIX snapshots.
             return None
         return cls._cached("vix", _fetch)
 
@@ -276,39 +276,7 @@ class _MarketInstruments:
     @classmethod
     def put_call(cls) -> Optional[Dict]:
         def _fetch():
-            try:
-                from config.config import ALPHA_VANTAGE_API_KEY as _AV
-                if not _AV:
-                    return None
-                r = requests.get(
-                    "https://www.alphavantage.co/query",
-                    params={"function": "MARKET_STATUS", "apikey": _AV},
-                    timeout=8
-                )
-                # Alpha Vantage doesn't have put/call — use Yahoo Finance scrape
-                raise NotImplementedError
-            except Exception:
-                pass
-            try:
-                # Alternative: calculate from SPY options via yfinance
-                import yfinance as yf
-                spy = yf.Ticker("SPY")
-                chain = spy.option_chain(spy.options[0]) if spy.options else None
-                if chain:
-                    put_vol  = chain.puts["volume"].sum()
-                    call_vol = chain.calls["volume"].sum()
-                    if call_vol > 0:
-                        ratio = put_vol / call_vol
-                        # Ratio > 1.2: very bearish, < 0.7: very bullish
-                        if ratio > 1.5:   score = -0.6
-                        elif ratio > 1.2: score = -0.3
-                        elif ratio > 1.0: score = -0.1
-                        elif ratio > 0.8: score =  0.1
-                        elif ratio > 0.7: score =  0.3
-                        else:             score =  0.5
-                        return {"ratio": round(ratio, 3), "score": round(score, 3)}
-            except Exception as e:
-                logger.debug(f"[Sentiment] Put/Call fetch: {e}")
+            # Deriv-only market data mode does not use external options chains.
             return None
         return cls._cached("pc", _fetch)
 
@@ -317,7 +285,7 @@ class _PriceMomentum:
     """
     Price momentum as sentiment proxy.
     Price movement IS market sentiment — no NLP ambiguity.
-    GC=F down 5% = bearish for gold. Period.
+    XAU/USD down 5% = bearish for gold. Period.
     """
 
     _cache: Dict[str, Tuple[Any, float]] = {}
@@ -340,14 +308,13 @@ class _PriceMomentum:
     @classmethod
     def _compute(cls, asset: str) -> Optional[float]:
         try:
-            import yfinance as yf
             import numpy as np
-            from data.fetcher import _yf_symbol
-            sym = _yf_symbol(asset, _cat(asset))
-            df  = yf.Ticker(sym).history(period="5d", interval="1d", auto_adjust=True)
+            from data.fetcher import get_shared_fetcher
+
+            df = get_shared_fetcher().get_ohlcv(asset, _cat(asset), interval="1d", periods=5)
             if df is None or df.empty or len(df) < 2:
                 return None
-            close = df["Close"].astype(float)
+            close = df["close"].astype(float)
             # Weighted multi-horizon momentum
             r1  = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]   # 1-day
             r5  = (close.iloc[-1] - close.iloc[0])  / close.iloc[0]    # 5-day
@@ -517,11 +484,8 @@ class _NewsSentiment:
         std_scores   = [cls._score_headline(h, asset) for h in std_articles]
         std_scores   = [s for s in std_scores if s is not None]
 
-        # FIX S2: Feed article text into narrative_ai.ingest() so Phase 4
-        # TopicClusterEngine can build keyword velocity.
-        # Previously ingest() had NO callers — get_narrative_scores() always
-        # returned all-zero, narrative boost in Layer 5 never fired, and the
-        # crisis regime in Layer 8 was unreachable via the narrative path.
+        # Feed article text into narrative_ai.ingest() so TopicClusterEngine
+        # can build keyword velocity for the narrative subsystem.
         try:
             from narrative_ai import ingest as _nar_ingest
             for _headline in std_articles:
@@ -699,7 +663,8 @@ class _NewsSentiment:
 
     @classmethod
     def _fetch_articles(cls, asset: str) -> List[str]:
-        keywords = _ASSET_KEYWORDS.get(asset, [asset.lower()])
+        canonical_asset = _canon_asset(asset)
+        keywords = _ASSET_KEYWORDS.get(canonical_asset, [canonical_asset.lower()])
         query    = " OR ".join(f'"{kw}"' for kw in keywords[:3])
         articles = []
 
@@ -754,9 +719,9 @@ class _NewsSentiment:
         # Alpha Vantage news — called if quota available
         if ALPHA_VANTAGE_API_KEY and _QuotaManager.can_call("av"):
             try:
-                tickers = {"GC=F": "GOLD", "CL=F": "CRUDE", "SI=F": "SILVER",
-                           "^GSPC": "SPY", "^DJI": "DIA", "^IXIC": "QQQ",
-                           "^FTSE": "EWU", "BTC-USD": "COIN", "ETH-USD": "COIN"}.get(asset, "")
+                tickers = {"XAU/USD": "GOLD", "WTI": "CRUDE", "XAG/USD": "SILVER",
+                           "US500": "SPY", "US30": "DIA", "US100": "QQQ",
+                           "UK100": "EWU", "BTC-USD": "COIN", "ETH-USD": "COIN"}.get(canonical_asset, "")
                 if tickers:
                     r = requests.get(
                         "https://www.alphavantage.co/query",
@@ -791,7 +756,7 @@ class _NewsSentiment:
                 else:
                     news = fh.general_news("general", min_id=0)
                 _QuotaManager.record_call("finnhub")
-                kws = _ASSET_KEYWORDS.get(asset, [])
+                kws = _ASSET_KEYWORDS.get(_canon_asset(asset), [])
                 for n in news[:20]:
                     published = cls._parse_datetime(n.get("datetime") or n.get("publishedAt") or n.get("datetimeUTC"))
                     if not cls._is_recent_time(published):
@@ -806,7 +771,8 @@ class _NewsSentiment:
                     logger.debug(f"[Sentiment] Finnhub news {asset}: {e}")
 
         # Filter to asset-specific articles
-        kws      = _ASSET_KEYWORDS.get(asset, [asset.lower()])
+        canonical_asset = _canon_asset(asset)
+        kws      = _ASSET_KEYWORDS.get(canonical_asset, [canonical_asset.lower()])
         filtered = [a for a in articles
                     if any(kw in a.lower() for kw in kws)]
         return filtered
@@ -864,7 +830,7 @@ class _NewsSentiment:
                 score   += 2
                 matches += 2
 
-        # ── Phase 2: single word matching ─────────────────────────────────
+        # ── Pass 2: single word matching ──────────────────────────────────
         for word in words:
             w = word.strip(".,!?;:")
             if w in cls._BEARISH_WORDS:
@@ -920,7 +886,7 @@ class _NewsSentiment:
                         if not title or "[Removed]" in title:
                             continue
                         text  = title + " " + (a.get("description") or "")
-                        score = cls._score_headline(text, "^GSPC") or 0.0
+                        score = cls._score_headline(text, "US500") or 0.0
                         articles_out.append({
                             "title":     title,
                             "source":    a.get("source", {}).get("name", ""),
@@ -949,7 +915,7 @@ class _NewsSentiment:
                         if not title:
                             continue
                         text  = title + " " + (a.get("description") or "")
-                        score = cls._score_headline(text, "^GSPC") or 0.0
+                        score = cls._score_headline(text, "US500") or 0.0
                         articles_out.append({
                             "title":     title,
                             "source":    a.get("source", {}).get("name", ""),
@@ -996,7 +962,7 @@ class _NewsSentiment:
                         except Exception:
                             date_str = pub[:10] if pub else ""
                         text  = title + " " + (entry.get("summary") or "")
-                        score = cls._score_headline(text, "^GSPC") or 0.0
+                        score = cls._score_headline(text, "US500") or 0.0
                         articles_out.append({
                             "title":     title,
                             "source":    source_name,
@@ -1029,7 +995,7 @@ class _NewsSentiment:
                     title = (d.get("title") or "").strip()
                     if not title:
                         continue
-                    score = cls._score_headline(title, "^GSPC") or 0.0
+                    score = cls._score_headline(title, "US500") or 0.0
                     import datetime
                     ts = d.get("created_utc", 0)
                     date_str = datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
@@ -1090,7 +1056,8 @@ class _CryptoSignals:
     def reddit(cls, asset: str) -> Optional[float]:
         """Reddit sentiment from public pushshift/reddit search."""
         try:
-            kws = _ASSET_KEYWORDS.get(asset, [asset.lower().replace("-usd", "")])
+            canonical_asset = _canon_asset(asset)
+            kws = _ASSET_KEYWORDS.get(canonical_asset, [canonical_asset.lower().replace("-usd", "")])
             r   = requests.get(
                 "https://www.reddit.com/r/investing+CryptoCurrency+stocks/search.json",
                 params={"q": kws[0], "sort": "new", "limit": 25, "t": "day"},
@@ -1138,400 +1105,12 @@ def _reddit_score(asset: str) -> Optional[float]:
     return None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Main SentimentAnalyzer
-# ══════════════════════════════════════════════════════════════════════════════
-
-class SentimentAnalyzer:
-    """
-    Public API — same method signatures as before.
-    Internally rebuilt with the new signal architecture.
-    """
-
-    def __init__(self):
-        # News integrator shim for dashboard compatibility
-        self.news_integrator = _NewsIntegratorShim()
-
-        # Reddit client — optional
-        self.reddit = type("Reddit", (), {"enabled": False})()
-
-        # Market calendar — lazy init
-        self.market_calendar   = None
-        self._calendar_loaded  = False
-        try:
-            from market_calendar import MarketCalendar
-            self.market_calendar = MarketCalendar()
-        except Exception as e:
-            logger.debug(f"[SentimentAnalyzer] MarketCalendar unavailable: {e}")
-
-        # Whale alert manager — lazy
-        self._whale_mgr = None
-        try:
-            from whale_alert_manager import WhaleAlertManager
-            self._whale_mgr = WhaleAlertManager()
-        except Exception:
-            pass
-
-        # Reddit watcher — optional
-        try:
-            from reddit_watcher import RedditWatcher
-            self.reddit = RedditWatcher()
-        except Exception:
-            pass
-
-        logger.info("[SentimentAnalyzer] v2 initialised — price-first architecture")
-
-    # ── Core method — called by Layer 5 and dashboard ────────────────────────
-
-    def get_comprehensive_sentiment(self, asset: str = None) -> Dict:
-        """
-        Return sentiment for a specific asset, or global market sentiment.
-        Score: -1.0 (max bearish) … +1.0 (max bullish).
-        """
-        if asset is None:
-            return self._global_sentiment()
-
-        cat = _cat(asset)
-        if cat == "crypto":
-            return self._crypto_sentiment(asset)
-        elif cat == "commodities":
-            return self._commodity_sentiment(asset)
-        elif cat == "forex":
-            return self._forex_sentiment(asset)
-        else:
-            return self._index_sentiment(asset)
-
-    def _global_sentiment(self) -> Dict:
-        """Global market composite — used by command center."""
-        components: Dict[str, float] = {}
-
-        fg = _MarketInstruments.fear_greed()
-        if fg:
-            components["fear_greed"] = fg["score"]
-
-        vix = _MarketInstruments.vix()
-        if vix:
-            components["vix"] = vix["score"]
-
-        score = (sum(components.values()) / len(components)) if components else 0.0
-        return {
-            "score":           round(_clamp(score), 3),
-            "composite_score": round(_clamp(score), 3),
-            "interpretation":  self._interpret(score),
-            "components":      components,
-            "timestamp":       datetime.now().isoformat(),
-        }
-
-    def _crypto_sentiment(self, asset: str) -> Dict:
-        components: Dict[str, float] = {}
-        weights   : Dict[str, float] = {}
-
-        # 1. Crypto Fear & Greed (most reliable for crypto)
-        fg = _MarketInstruments.fear_greed()
-        if fg:
-            components["fear_greed"] = fg["score"]
-            weights["fear_greed"]    = 0.30
-
-        # 2. Price momentum
-        pm = _PriceMomentum.get(asset)
-        if pm is not None:
-            components["price_momentum"] = pm
-            weights["price_momentum"]    = 0.30
-
-        # 3. News sentiment (asset-filtered)
-        ns = _NewsSentiment.get(asset)
-        if ns is not None:
-            components["news"] = ns
-            weights["news"]    = 0.20
-
-        # 4. Reddit — uses new public-JSON watcher (all subreddits per asset)
-        rd = _reddit_score(asset)
-        if rd is not None:
-            components["reddit"] = rd
-            weights["reddit"]    = 0.20
-
-        macro = _NewsSentiment.macro_impact(asset)
-        if macro is not None:
-            components["macro_event"] = macro
-            weights["macro_event"]    = 0.10
-
-        return self._build_result(components, weights)
-
-    def _commodity_sentiment(self, asset: str) -> Dict:
-        components: Dict[str, float] = {}
-        weights   : Dict[str, float] = {}
-
-        # 1. Price momentum — most reliable for commodities
-        pm = _PriceMomentum.get(asset)
-        if pm is not None:
-            components["price_momentum"] = pm
-            weights["price_momentum"]    = 0.35
-
-        # 2. News (asset-specific — gold/oil articles)
-        ns = _NewsSentiment.get(asset)
-        if ns is not None:
-            components["news"] = ns
-            weights["news"]    = 0.30
-
-        # 3. Reddit — r/Gold, r/Silverbugs, r/oil via public JSON
-        rd = _reddit_score(asset)
-        if rd is not None:
-            components["reddit"] = rd
-            weights["reddit"]    = 0.15
-
-        macro = _NewsSentiment.macro_impact(asset)
-        if macro is not None:
-            components["macro_event"] = macro
-            weights["macro_event"]    = 0.10
-
-        # 4. VIX (risk-off = gold up, oil complex)
-        vix = _MarketInstruments.vix()
-        if vix:
-            # For gold: high VIX = bullish (safe haven). For oil: high VIX = bearish.
-            v_score = vix["score"]
-            if asset == "GC=F":
-                v_score = -v_score  # invert — gold benefits from fear
-            elif asset == "SI=F":
-                v_score = -v_score * 0.7
-            components["vix"] = v_score
-            weights["vix"]    = 0.15
-
-        return self._build_result(components, weights)
-
-    def _forex_sentiment(self, asset: str) -> Dict:
-        components: Dict[str, float] = {}
-        weights   : Dict[str, float] = {}
-
-        # 1. Price momentum
-        pm = _PriceMomentum.get(asset)
-        if pm is not None:
-            components["price_momentum"] = pm
-            weights["price_momentum"]    = 0.40
-
-        # 2. News (asset-filtered)
-        ns = _NewsSentiment.get(asset)
-        if ns is not None:
-            components["news"] = ns
-            weights["news"]    = 0.30
-
-        # 3. Reddit — r/Forex, r/Forexstrategy, r/trading via public JSON
-        rd = _reddit_score(asset)
-        if rd is not None:
-            components["reddit"] = rd
-            weights["reddit"]    = 0.15
-
-        macro = _NewsSentiment.macro_impact(asset)
-        if macro is not None:
-            components["macro_event"] = macro
-            weights["macro_event"]    = 0.10
-
-        # 4. VIX — high VIX = risk-off = USD strength = bearish non-USD pairs
-        vix = _MarketInstruments.vix()
-        if vix:
-            components["vix"] = vix["score"]
-            weights["vix"]    = 0.20
-
-        return self._build_result(components, weights)
-
-    def _index_sentiment(self, asset: str) -> Dict:
-        """US/UK equity indices — VIX and Fear & Greed are most reliable."""
-        components: Dict[str, float] = {}
-        weights   : Dict[str, float] = {}
-
-        # 1. Price momentum
-        pm = _PriceMomentum.get(asset)
-        if pm is not None:
-            components["price_momentum"] = pm
-            weights["price_momentum"]    = 0.20
-
-        # 2. Reddit — r/stocks, r/investing, r/wallstreetbets via public JSON
-        rd = _reddit_score(asset)
-        if rd is not None:
-            components["reddit"] = rd
-            weights["reddit"]    = 0.10
-
-        # 3. VIX (primary fear gauge for equities)
-        vix = _MarketInstruments.vix()
-        if vix:
-            components["vix"] = vix["score"]
-            weights["vix"]    = 0.30
-
-        # 3. Fear & Greed
-        fg = _MarketInstruments.fear_greed()
-        if fg:
-            components["fear_greed"] = fg["score"]
-            weights["fear_greed"]    = 0.20
-
-        macro = _NewsSentiment.macro_impact(asset)
-        if macro is not None:
-            components["macro_event"] = macro
-            weights["macro_event"]    = 0.10
-
-        # 4. AAII (weekly survey)
-        aaii = _MarketInstruments.aaii()
-        if aaii:
-            components["aaii"] = aaii["score"]
-            weights["aaii"]    = 0.10
-
-        # 5. Put/Call ratio
-        pc = _MarketInstruments.put_call()
-        if pc:
-            components["put_call"] = pc["score"]
-            weights["put_call"]    = 0.10
-
-        return self._build_result(components, weights)
-
-    @staticmethod
-    def _build_result(components: Dict[str, float], weights: Dict[str, float]) -> Dict:
-        if not components:
-            score = 0.0
-        else:
-            total_w = sum(weights.get(k, 0.2) for k in components)
-            score   = sum(v * weights.get(k, 0.2) for k, v in components.items()) / max(total_w, 0.01)
-            score   = _clamp(score)
-        return {
-            "score":           round(score, 3),
-            "composite_score": round(score, 3),
-            "interpretation":  SentimentAnalyzer._interpret(score),
-            "components":      {k: round(v, 3) for k, v in components.items()},
-            "weights":         {k: round(weights.get(k, 0.0), 3) for k in components},
-            "timestamp":       datetime.now().isoformat(),
-        }
-
-    @staticmethod
-    def _interpret(score: float) -> str:
-        if score >  0.4: return "Strongly Bullish"
-        if score >  0.1: return "Bullish"
-        if score > -0.1: return "Neutral"
-        if score > -0.4: return "Bearish"
-        return "Strongly Bearish"
-
-    # ── Dashboard-compatible methods ──────────────────────────────────────────
-
-    def fetch_fear_greed_index(self) -> Dict:
-        fg = _MarketInstruments.fear_greed()
-        if fg:
-            return fg
-        return {"value": 50, "classification": "Neutral", "score": 0.0}
-
-    def fetch_vix(self) -> Dict:
-        vix = _MarketInstruments.vix()
-        if vix:
-            return vix
-        return {"value": 20.0, "classification": "Normal", "score": 0.0}
-
-    def fetch_aaii_sentiment(self) -> Dict:
-        aaii = _MarketInstruments.aaii()
-        if aaii:
-            return aaii
-        return {"bullish": 38.0, "bearish": 30.0, "spread": 8.0, "score": 0.1}
-
-    def fetch_put_call_ratio(self) -> Optional[Dict]:
-        return _MarketInstruments.put_call()
-
-    def fetch_cnn_fear_greed(self) -> Dict:
-        return self.fetch_fear_greed_index()
-
-    def fetch_whale_alerts(self, min_value_usd: float = 1_000_000) -> List[Dict]:
-        try:
-            if self._whale_mgr:
-                return self._whale_mgr.get_alerts(min_value_usd=min_value_usd, hours=24) or []
-        except Exception:
-            pass
-        return []
-
-    def get_reddit_sentiment_for_asset(self, asset: str) -> Optional[Dict]:
-        score = _CryptoSignals.reddit(asset)
-        if score is None:
-            return None
-        return {"score": score, "total_posts": 0, "asset": asset}
-
-    def get_reddit_sentiment(self) -> Dict:
-        return {"score": 0.0, "total_posts": 0}
-
-    def get_best_sentiment(self, asset: str, days: int = 1) -> Optional[Dict]:
-        return self.get_comprehensive_sentiment(asset)
-
-    def get_market_events(self) -> Dict:
-        if not self.market_calendar:
-            return {"events": [], "earnings": [], "halving": {}, "risk_outlook": {}}
-        try:
-            if not self._calendar_loaded:
-                self.market_calendar.fetch_economic_calendar()
-                self.market_calendar.fetch_earnings_calendar()
-                self._calendar_loaded = True
-
-            events = self.market_calendar.get_high_impact_events(days=7)
-            formatted = []
-            for ev in events[:5]:
-                formatted.append({
-                    "name":     ev.get("event", ""),
-                    "date":     ev.get("date", datetime.now()).strftime("%Y-%m-%d")
-                              if hasattr(ev.get("date", ""), "strftime") else str(ev.get("date", "")),
-                    "impact":   ev.get("impact", ""),
-                    "forecast": ev.get("forecast", ""),
-                    "previous": ev.get("previous", ""),
-                })
-            return {"events": formatted, "earnings": [], "halving": {}, "risk_outlook": {}}
-        except Exception as e:
-            logger.debug(f"[SentimentAnalyzer] Market events: {e}")
-            return {"events": [], "earnings": [], "halving": {}, "risk_outlook": {}}
-
-    def fetch_general_news_sentiment(self) -> Dict:
-        articles = _NewsSentiment.get_articles_for_dashboard(limit=20)
-        if not articles:
-            return {"score": 0.0, "interpretation": "Neutral", "article_count": 0}
-        scores = [a["sentiment"] for a in articles if a.get("sentiment") is not None]
-        avg    = sum(scores) / len(scores) if scores else 0.0
-        return {
-            "score":         round(avg, 3),
-            "interpretation": self._interpret(avg),
-            "article_count": len(articles),
-        }
-
-    def fetch_onchain_metrics(self) -> Dict:
-        score = _CryptoSignals.onchain() or 0.0
-        return {
-            "combined_score": score,
-            "interpretation": self._interpret(score),
-        }
-
-    def fetch_crypto_news_sentiment(self, asset: str = "general") -> Dict:
-        score = _NewsSentiment.get("BTC-USD") or 0.0
-        return {"score": score, "interpretation": self._interpret(score)}
-
-
-# ── News integrator shim — for dashboard compatibility ────────────────────────
-
-class _NewsIntegratorShim:
-    """Provides news_integrator.fetch_all_sources() for dashboard."""
-
-    def fetch_all_sources(self) -> List[Dict]:
-        return _NewsSentiment.get_articles_for_dashboard(limit=20)
-
-    def get_sentiment_summary(self, asset: str = None) -> Dict:
-        sa = SentimentAnalyzer.__new__(SentimentAnalyzer)
-        sa.market_calendar  = None
-        sa._calendar_loaded = False
-        sa._whale_mgr       = None
-        sa.reddit           = type("Reddit", (), {"enabled": False})()
-        sa.news_integrator  = self
-        if asset:
-            return sa.get_comprehensive_sentiment(asset)
-        return sa._global_sentiment()
-
-
-# ── Module-level singleton ────────────────────────────────────────────────────
-
-_instance:   Optional[SentimentAnalyzer] = None
-_inst_lock   = threading.Lock()
-
-
-def get_analyzer() -> SentimentAnalyzer:
-    global _instance
-    if _instance is not None:
-        return _instance
-    with _inst_lock:
-        if _instance is None:
-            _instance = SentimentAnalyzer()
-    return _instance
+__all__ = [
+    "_CryptoSignals",
+    "_MarketInstruments",
+    "_NewsSentiment",
+    "_PriceMomentum",
+    "_cat",
+    "_clamp",
+    "_reddit_score",
+]

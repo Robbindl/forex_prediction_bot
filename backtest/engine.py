@@ -1,5 +1,5 @@
 """
-backtest/engine.py — Full pipeline backtester.
+backtest/engine.py — Full decision-engine backtester.
 Merges: engines/backtest_engine.py + backtest logic from trading_system.py
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import numpy as np
 from core.signal import Signal
-from core.pipeline import Pipeline
+from core.decision_engine import SignalDecisionEngine
 from strategies.voting import VotingStrategy
 from risk.manager import RiskManager
 from utils.logger import get_logger
@@ -99,18 +99,18 @@ class BacktestResult:
 
 class BacktestEngine:
     """
-    Runs a full walk-forward backtest using the 7-layer pipeline.
-    Every bar generates a signal attempt; pipeline decides entry.
+    Runs a full walk-forward backtest using the signal decision engine.
+    Every bar generates a signal attempt; the decision engine decides entry.
     """
 
     def __init__(
         self,
         initial_balance: float = 10000.0,
-        use_pipeline: bool = True,
+        use_decision_engine: bool = True,
         strategy=None,
     ):
         self.initial_balance = initial_balance
-        self._pipeline       = Pipeline() if use_pipeline else None
+        self._decision_engine = SignalDecisionEngine() if use_decision_engine else None
         self._strategy       = strategy or VotingStrategy()
         self._risk_manager   = RiskManager(initial_balance)
 
@@ -123,7 +123,7 @@ class BacktestEngine:
     ) -> BacktestResult:
         """
         Walk-forward backtest on df.
-        For each bar i > warmup: generate signal, run pipeline, track trade outcome.
+        For each bar i > warmup: generate signal, run decision engine, track trade outcome.
         """
         if df is None or len(df) < warmup + 10:
             logger.warning(f"[Backtest] Insufficient data for {asset}")
@@ -178,10 +178,10 @@ class BacktestEngine:
                 equity.append(balance)
                 continue
 
-            # ── Run through pipeline ───────────────────────────────────────
-            if self._pipeline:
+            # ── Run through decision engine ────────────────────────────────
+            if self._decision_engine:
                 ctx["price_data"] = df.iloc[:i]
-                sig = self._pipeline.run(sig, ctx)
+                sig = self._decision_engine.evaluate(sig, ctx)
 
             if sig is None:
                 equity.append(balance)

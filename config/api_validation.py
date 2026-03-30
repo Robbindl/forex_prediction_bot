@@ -40,7 +40,7 @@ def validate_apis() -> None:
     db_url = os.getenv("DATABASE_URL", "")
     if "user:password" in db_url or _is_placeholder(db_url):
         errors.append(
-            "DATABASE_URL is still the template value.  "
+            "DATABASE_URL is missing or still the template value.  "
             "Set a real PostgreSQL connection string in .env."
         )
 
@@ -70,18 +70,28 @@ def validate_apis() -> None:
         )
 
     # ── Optional: Telegram ───────────────────────────────────────────────
-    tg_token = os.getenv("TELEGRAM_TOKEN", "") or os.getenv("COMMAND_BOT_TOKEN", "")
+    tg_token = os.getenv("COMMAND_BOT_TOKEN", "")
     if _is_placeholder(tg_token):
         warnings.append(
-            "TELEGRAM_TOKEN not set.  Telegram alerts and commands disabled."
+            "COMMAND_BOT_TOKEN not set.  Telegram alerts and commands disabled."
         )
 
-    # ── Optional: Finnhub / TwelveData ────────────────────────────────────
-    if _is_placeholder(os.getenv("FINNHUB_KEY", "")):
-        warnings.append("FINNHUB_KEY not set.  Real-time quotes will use yfinance only.")
-
-    if _is_placeholder(os.getenv("TWELVEDATA_KEY", "")):
-        warnings.append("TWELVEDATA_KEY not set.  OHLCV will use yfinance only.")
+    # ── Primary market-data source: Deriv ─────────────────────────────────
+    deriv_enabled = os.getenv("DERIV_ENABLED", "true").strip().lower() == "true"
+    deriv_app_id = os.getenv("DERIV_APP_ID", "").strip()
+    if not deriv_enabled:
+        warnings.append(
+            "DERIV_ENABLED is false.  Primary Deriv market data is disabled."
+        )
+    if _is_placeholder(deriv_app_id):
+        warnings.append(
+            "DERIV_APP_ID not set.  Primary Deriv market data is unavailable until configured."
+        )
+    binance_enabled = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").strip().lower() == "true"
+    if not binance_enabled:
+        warnings.append(
+            "BINANCE_PUBLIC_DATA_ENABLED is false.  BNB/SOL/XRP market data will be unavailable when Deriv has no symbol."
+        )
 
     # ── Report ────────────────────────────────────────────────────────────
     for w in warnings:

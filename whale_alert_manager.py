@@ -29,12 +29,11 @@ except Exception:
     RedditWatcher = None  # type: ignore
 
 try:
-    from models.trade_models import WhaleAlert
-    from config.database import SessionLocal
+    from services.db_pool import get_db
     _DB_AVAILABLE = True
 except Exception:
     _DB_AVAILABLE = False
-    SessionLocal = None  # type: ignore
+    get_db = None  # type: ignore
 
 try:
     from telethon_whale_store import whale_store as _whale_store
@@ -172,57 +171,31 @@ class WhaleAlertAPI:
 
 class WhaleAlertDB:
     """
-    Database handler. Uses a NEW session per call to avoid SQLAlchemy
-    'concurrent operations are not permitted' errors across threads.
+    Database adapter over the shared DatabaseService.
     """
 
     def __init__(self):
-        self.enabled = _DB_AVAILABLE and SessionLocal is not None
+        self.enabled = _DB_AVAILABLE and get_db is not None
         if self.enabled:
-            # Test connectivity once
             try:
-                s = SessionLocal()
-                s.close()
+                self._db = get_db()
+                self.enabled = bool(self._db and self._db.ping())
                 logger.info("[WhaleDB] Connected")
             except Exception as e:
                 logger.warning(f"[WhaleDB] Connection test failed: {e}")
                 self.enabled = False
+                self._db = None
         else:
             logger.warning("[WhaleDB] Not connected — DB persistence disabled")
-
-    def _get_session(self):
-        """Always return a fresh session — never reuse across threads."""
-        return SessionLocal()
+            self._db = None
 
     def save_alert(self, alert_data: Dict) -> bool:
         if not self.enabled:
             return False
-        session = self._get_session()
         try:
-            exists = session.query(WhaleAlert).filter(
-                WhaleAlert.title      == alert_data["title"],
-                WhaleAlert.alert_time == alert_data["alert_time"],
-            ).first()
-            if not exists:
-                alert = WhaleAlert(
-                    title      = alert_data["title"],
-                    symbol     = alert_data["symbol"],
-                    value_usd  = alert_data["value_usd"],
-                    source     = alert_data["source"],
-                    direction  = alert_data.get("direction"),
-                    alert_time = alert_data["alert_time"],
-                )
-                session.add(alert)
-                session.commit()
-                return True
+            return bool(self._db and self._db.save_whale_alert(alert_data))
         except Exception as e:
             logger.warning(f"[WhaleDB] Save failed: {e}")
-            try:
-                session.rollback()
-            except Exception:
-                pass
-        finally:
-            session.close()
         return False
 
     def save_alerts(self, alerts: List[Dict]) -> int:
@@ -231,34 +204,14 @@ class WhaleAlertDB:
     def get_alerts(self, hours: int = 24, min_value: int = 1_000_000) -> List[Dict]:
         if not self.enabled:
             return []
-        session = self._get_session()
         try:
-            cutoff = datetime.now() - timedelta(hours=hours)
-            rows   = (
-                session.query(WhaleAlert)
-                .filter(
-                    WhaleAlert.alert_time >= cutoff,
-                    WhaleAlert.value_usd  >= min_value,
-                )
-                .order_by(WhaleAlert.value_usd.desc())
-                .limit(100)
-                .all()
-            )
-            return [{
-                "title":          r.title,
-                "value_usd":      float(r.value_usd),
-                "symbol":         r.symbol,
-                "asset":          r.symbol,
-                "source":         r.source,
-                "direction":      r.direction,
-                "alert_time":     r.alert_time.isoformat(),
-                "value_millions": float(r.value_usd) / 1_000_000,
-            } for r in rows]
+            alerts = list(self._db.get_recent_whale_alerts(hours=hours)) if self._db else []
+            filtered = [a for a in alerts if float(a.get("value_usd", 0) or 0) >= float(min_value)]
+            filtered.sort(key=lambda x: float(x.get("value_usd", 0) or 0), reverse=True)
+            return filtered[:100]
         except Exception as e:
             logger.warning(f"[WhaleDB] Get alerts failed: {e}")
             return []
-        finally:
-            session.close()
 
     def close(self):
         pass  # no persistent session to close
@@ -339,11 +292,11 @@ class WhaleAlertManager:
 
         logger.info(
             f"[WhaleManager] "
-            f"API={'✓' if self.whale_api else '✗'}  "
-            f"Twitter={'✓' if self.twitter_watcher else '✗'}  "
-            f"Telegram={'✓' if self.telegram_watcher and getattr(self.telegram_watcher, 'bot_token', None) else '✗'}  "
-            f"Reddit={'✓' if self.reddit else '✗'}  "
-            f"DB={'✓' if self.db.enabled else '✗'}"
+            f"API={'on' if self.whale_api else 'off'}  "
+            f"Twitter={'on' if self.twitter_watcher else 'off'}  "
+            f"Telegram={'on' if self.telegram_watcher and getattr(self.telegram_watcher, 'bot_token', None) else 'off'}  "
+            f"Reddit={'on' if self.reddit else 'off'}  "
+            f"DB={'on' if self.db.enabled else 'off'}"
         )
 
     # ── Monitoring ────────────────────────────────────────────────────────
@@ -413,6 +366,8 @@ class WhaleAlertManager:
                             "alert_time": a.get("created_at", datetime.utcnow()),
                             "source":     f"Twitter @{a['account']}",
                             "sentiment":  sentiment,
+                            "raw_text":   raw_text,
+                            "external_id": a.get("external_id", ""),
                         })
             except Exception as e:
                 logger.warning(f"[WhaleManager] Twitter collect error: {e}")
@@ -445,6 +400,8 @@ class WhaleAlertManager:
                         "alert_time": alert_time,
                         "source":     a["source"],
                         "sentiment":  sentiment,
+                        "raw_text":   a.get("raw_text", a.get("title", "")),
+                        "external_id": a.get("external_id", ""),
                     })
             except Exception as e:
                 logger.warning(f"[WhaleManager] Telegram collect error: {e}")
@@ -468,6 +425,8 @@ class WhaleAlertManager:
                         "alert_time": alert_time,
                         "source":     a["source"],
                         "sentiment":  sentiment,
+                        "raw_text":   a.get("raw_text", a.get("title", "")),
+                        "external_id": a.get("external_id", a.get("url", "")),
                     })
             except Exception as e:
                 logger.warning(f"[WhaleManager] Reddit collect error: {e}")

@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sentiment Intelligence — Robbie</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--font:'Inter',system-ui,sans-serif}
@@ -22,15 +21,21 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;flex-shrink:0}
 .page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
 .page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--am)}
-.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:minmax(auto,1fr);gap:12px;align-content:start;min-height:0;height:100%}
-.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow-y:auto;overflow-x:hidden;min-height:auto;display:flex;flex-direction:column;max-height:500px}
-.panel-full{grid-column:span 3}.panel-wide{grid-column:span 2}
+.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:grid;grid-template-columns:repeat(3,minmax(320px,1fr));grid-auto-rows:auto;gap:14px;align-content:start;align-items:start;min-height:0}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow:hidden;min-height:0;display:flex;flex-direction:column;flex-shrink:0;align-self:start}
+.panel-full{grid-column:1 / -1}.panel-wide{grid-column:span 2}
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-shrink:0}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
-.panel-body{padding:12px 16px;flex:1;overflow-y:auto}
+.panel-body{padding:14px 16px;flex:1;overflow-y:auto;min-height:0}
+.metric-panel{min-height:236px}
+.regime-panel{min-height:252px}
+.leader-panel{min-height:252px}
+.heatmap-panel{min-height:460px}
+.news-panel{min-height:380px}
+.events-panel{min-height:340px}
 
 /* Big score */
-.score-center{padding:20px;text-align:center}
+.score-center{padding:22px 20px 20px;text-align:center;min-height:172px;display:flex;flex-direction:column;justify-content:center;flex:1}
 .score-num{font-size:56px;font-weight:700;line-height:1;margin-bottom:6px}
 .score-lbl{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--tx2)}
 .score-bar{height:8px;background:rgba(255,255,255,.07);border-radius:4px;overflow:hidden;margin:14px 0 6px}
@@ -38,14 +43,15 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .score-range{display:flex;justify-content:space-between;font-size:10px;color:var(--tx3)}
 
 /* Fear/Greed meter */
-.fg-wrap{padding:16px;display:flex;flex-direction:column;align-items:center;gap:6px}
+.fg-wrap{padding:22px 16px 20px;display:flex;flex-direction:column;align-items:center;gap:6px;min-height:172px;justify-content:center;flex:1}
 .fg-num{font-size:42px;font-weight:700}
 .fg-lbl{font-size:12px;color:var(--tx2);text-transform:uppercase;letter-spacing:.5px}
 .fg-bar{width:100%;height:10px;border-radius:5px;overflow:hidden;background:linear-gradient(to right,var(--rd),var(--am),var(--gr));position:relative;margin:8px 0}
 .fg-pointer{position:absolute;top:-3px;width:2px;height:16px;background:#fff;transform:translateX(-50%);border-radius:1px;transition:left .5s}
 
 /* Asset heatmap */
-.asset-sent-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding:12px 16px}
+.heatmap-body{padding:14px 16px 16px;min-height:auto;max-height:none;overflow:visible}
+.asset-sent-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;padding:0;min-height:0;align-content:start;grid-auto-rows:minmax(84px,auto)}
 .as-cell{border-radius:7px;padding:10px 6px;text-align:center}
 .as-asset{font-size:11px;font-weight:600;margin-bottom:3px}
 .as-score{font-size:13px;font-weight:700}
@@ -64,16 +70,38 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .dist-label{width:60px;color:var(--tx2)}.dist-bar{flex:1;height:6px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden}
 .dist-fill{height:100%;border-radius:3px}
 .dist-pct{width:36px;text-align:right;font-weight:600}
+.regime-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.regime-card{background:var(--s2);border-radius:8px;padding:12px}
+.regime-val{font-size:20px;font-weight:700;margin-bottom:4px}
+.regime-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
+.regime-sub{font-size:11px;color:var(--tx2);margin-top:6px}
+.leader-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.6)}
+.leader-row:last-child{border:none}
+.leader-asset{flex:1;font-size:12px;font-weight:600}
+.leader-score{font-size:12px;font-weight:700}
+.leader-tag{font-size:10px;padding:2px 6px;border-radius:999px;text-transform:uppercase;letter-spacing:.4px}
+.event-risk{background:var(--s2);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.event-risk-title{font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.event-risk-body{font-size:12px;line-height:1.4}
 
 .empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}
 
 /* Scrollable panel bodies */
-.panel-body{overflow-y:auto;max-height:360px}
-#assetGrid{max-height:320px;overflow-y:auto}
-#newsPanel{max-height:360px;overflow-y:auto}
-#eventsPanel{max-height:280px;overflow-y:auto}
-#distPanel{max-height:240px;overflow-y:auto}
+#assetGrid{min-height:340px;max-height:none;overflow:visible}
+#newsPanel{min-height:280px;max-height:520px;overflow-y:auto}
+#eventsPanel{min-height:220px;max-height:420px;overflow-y:auto}
+#distPanel{min-height:172px;max-height:none;overflow-y:auto}
+
+@media(max-width:1400px){
+  .content{grid-template-columns:repeat(2,minmax(320px,1fr))}
+  .panel-full{grid-column:span 2}
+}
+
+@media(max-width:1080px){
+  .content{grid-template-columns:minmax(0,1fr)}
+  .panel-full,.panel-wide{grid-column:span 1}
+}
 
 /* Scrollbar styling */
 ::-webkit-scrollbar{width:8px;height:8px}
@@ -137,7 +165,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       <button class="hamburger" id="menuBtn" aria-label="Menu" onclick="toggleSidebar()"><span></span><span></span><span></span></button><div class="page-title"><div class="dot"></div>Sentiment Intelligence</div></div>
     <div class="content">
       <!-- Composite score -->
-      <div class="panel">
+      <div class="panel metric-panel">
         <div class="panel-header"><span class="panel-title">🌐 Composite Score</span></div>
         <div class="score-center">
           <div class="score-num" id="compScore">—</div>
@@ -148,7 +176,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       </div>
 
       <!-- Fear/Greed -->
-      <div class="panel">
+      <div class="panel metric-panel">
         <div class="panel-header"><span class="panel-title">😱 Fear & Greed</span></div>
         <div class="fg-wrap">
           <div class="fg-num" id="fgNum">—</div>
@@ -158,33 +186,43 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       </div>
 
       <!-- Distribution -->
-      <div class="panel">
+      <div class="panel metric-panel">
         <div class="panel-header"><span class="panel-title">📊 Distribution</span></div>
-        <div class="panel-body" id="distPanel" style="max-height:200px;overflow-y:auto"><div class="empty">Loading…</div></div>
+        <div class="panel-body" id="distPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <!-- Real regime inputs -->
+      <div class="panel panel-wide regime-panel">
+        <div class="panel-header"><span class="panel-title">📡 Market Regime Inputs</span></div>
+        <div class="panel-body">
+          <div class="regime-grid" id="regimePanel"><div class="empty" style="grid-column:span 2">Loading…</div></div>
+        </div>
+      </div>
+
+      <!-- Top conviction assets -->
+      <div class="panel leader-panel">
+        <div class="panel-header"><span class="panel-title">🏁 Sentiment Leaders</span></div>
+        <div class="panel-body" id="leaderPanel"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Per-asset sentiment heatmap -->
-      <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">� Sentiment Trend (24H)</span></div>
-        <div style="padding:12px 16px;height:180px"><canvas id="sentTrendChart"></canvas></div>
-      </div>
-
-      <!-- Per-asset sentiment heatmap -->
-      <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">�🔥 Per-Asset Sentiment Heatmap</span></div>
-        <div class="asset-sent-grid" id="assetGrid"><div class="empty" style="grid-column:span 5">Loading…</div></div>
+      <div class="panel panel-full heatmap-panel">
+        <div class="panel-header"><span class="panel-title">🔥 Per-Asset Sentiment Heatmap</span></div>
+        <div class="panel-body heatmap-body">
+          <div class="asset-sent-grid" id="assetGrid"><div class="empty" style="grid-column:span 5">Loading…</div></div>
+        </div>
       </div>
 
       <!-- News feed -->
-      <div class="panel panel-wide">
+      <div class="panel panel-wide news-panel">
         <div class="panel-header"><span class="panel-title">📰 News Sentiment Feed</span></div>
-        <div class="panel-body" id="newsPanel" style="max-height:320px;overflow-y:auto"><div class="empty">Loading…</div></div>
+        <div class="panel-body" id="newsPanel"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Market events -->
-      <div class="panel">
-        <div class="panel-header"><span class="panel-title">📅 Market Events</span></div>
-        <div class="panel-body" id="eventsPanel" style="max-height:260px;overflow-y:auto"><div class="empty">Loading…</div></div>
+      <div class="panel events-panel">
+        <div class="panel-header"><span class="panel-title">📅 Event Risk</span></div>
+        <div class="panel-body" id="eventsPanel"><div class="empty">Loading…</div></div>
       </div>
     </div>
   </div>
@@ -229,6 +267,27 @@ async function load(){
     document.getElementById('fgLbl').textContent=fg.classification;
     document.getElementById('fgPtr').style.left=fg.value+'%';
 
+    // Regime inputs
+    const vix = d.vix || {value:20, classification:'Normal'};
+    const whaleAlerts = d.whale_alerts || [];
+    const risk = ev.risk_outlook || {};
+    const riskReduce = !!risk.reduce_trading;
+    const highImpactCount = (ev.events || []).filter(e => String(e.impact || '').toUpperCase() === 'HIGH').length;
+    const riskText = riskReduce ? 'Reduce risk' : highImpactCount ? 'Elevated' : 'Normal';
+    const riskColor = riskReduce ? 'var(--rd)' : highImpactCount ? 'var(--am)' : 'var(--gr)';
+    document.getElementById('regimePanel').innerHTML = [
+      {label:'VIX', value: Number(vix.value || 0).toFixed(1), sub: vix.classification || 'Normal', color: Number(vix.value || 0) >= 25 ? 'var(--rd)' : Number(vix.value || 0) >= 18 ? 'var(--am)' : 'var(--gr)'},
+      {label:'News Articles', value: String(d.article_count || 0), sub: 'tracked in dashboard window', color: 'var(--cy)'},
+      {label:'Whale Alerts', value: String(whaleAlerts.length), sub: '24h alerts above threshold', color: whaleAlerts.length ? 'var(--am)' : 'var(--tx2)'},
+      {label:'Event Risk', value: riskText, sub: risk.summary || `${highImpactCount} high-impact events queued`, color: riskColor},
+    ].map(item => `
+      <div class="regime-card">
+        <div class="regime-val" style="color:${item.color}">${item.value}</div>
+        <div class="regime-lbl">${item.label}</div>
+        <div class="regime-sub">${item.sub}</div>
+      </div>
+    `).join('');
+
     // Distribution
     const dist=d.sentiment_distribution||{bullish:0,neutral:0,bearish:0};
     const total=Math.max(1,dist.bullish+dist.neutral+dist.bearish);
@@ -255,14 +314,31 @@ async function load(){
           <span>${(a.date||'').substring(0,10)}</span>
           <span class="news-score ${sClass(a.sentiment||0)}">${(a.sentiment||0)>=0?'+':''}${(a.sentiment||0).toFixed(2)}</span>
         </div>
-      </div>`).join('');}
+        </div>`).join('');}
 
-  }catch(e){}
+    // Leaders
+    const leaderEl=document.getElementById('leaderPanel');
+    const ranked=(da.assets||[]).filter(a=>typeof a.score==='number');
+    if(!ranked.length){
+      leaderEl.innerHTML='<div class="empty">No asset-level sentiment yet</div>';
+    }else{
+      const bullish=[...ranked].sort((a,b)=>b.score-a.score).slice(0,3);
+      const bearish=[...ranked].sort((a,b)=>a.score-b.score).slice(0,3);
+      const leaders=[...bullish, ...bearish.filter(item => !bullish.some(top => top.asset===item.asset))].slice(0,6);
+      leaderEl.innerHTML=leaders.map(item=>{
+        const positive=item.score>=0;
+        const color=sColor(item.score);
+        const tagBg=positive?'rgba(0,208,132,.15)':'rgba(255,69,96,.15)';
+        const tagLabel=positive?'Bullish':'Bearish';
+        return `<div class="leader-row">
+          <div class="leader-asset">${item.asset}</div>
+          <div class="leader-tag" style="background:${tagBg};color:${color}">${tagLabel}</div>
+          <div class="leader-score" style="color:${color}">${item.score>=0?'+':''}${item.score.toFixed(2)}</div>
+        </div>`;
+      }).join('');
+    }
 
-  // Per-asset
-  try{
-    const page = await fetchSentimentOverview();
-    const da = page.by_asset || {assets:[]};
+    // Per-asset heatmap
     const grid=document.getElementById('assetGrid');
     if(!da.assets?.length){grid.innerHTML='<div class="empty" style="grid-column:span 5">Unavailable</div>';return;}
     const max=Math.max(...da.assets.map(a=>Math.abs(a.score)),0.1);
@@ -276,87 +352,23 @@ async function load(){
         <div class="as-label" style="color:${col}">${a.label}</div>
       </div>`;
     }).join('');
-  }catch(e){}
 
-  // Events
-  try{
-    const page = await fetchSentimentOverview();
-    const ev = page.events || {};
+    // Events + risk
     const evs = ev.events || [];
     const eEl=document.getElementById('eventsPanel');
-    if(!evs.length){eEl.innerHTML='<div class="empty">No events</div>';}
-    else{eEl.innerHTML=evs.slice(0,8).map(e=>`
+    const riskPanel = `<div class="event-risk">
+      <div class="event-risk-title">Risk Outlook</div>
+      <div class="event-risk-body" style="color:${riskColor}">${risk.summary || (riskReduce ? 'Reduce trade frequency around high-impact windows.' : highImpactCount ? 'Expect elevated macro sensitivity in the next sessions.' : 'No special event-risk flags right now.')}</div>
+    </div>`;
+    if(!evs.length){eEl.innerHTML = riskPanel + '<div class="empty">No events</div>';}
+    else{eEl.innerHTML = riskPanel + evs.slice(0,8).map(e=>`
       <div style="padding:7px 0;border-bottom:1px solid rgba(30,38,53,.5)">
         <div style="font-size:13px;margin-bottom:2px">${e.title||e.event||''}</div>
-        <div style="font-size:11px;color:var(--tx3)">${e.time||e.date||''} ${e.impact?`· <span style="color:${e.impact==='High'?'var(--rd)':'var(--am)'}">${e.impact}</span>`:''}</div>
+        <div style="font-size:11px;color:var(--tx3)">${e.time||e.date||''} ${e.impact?`· <span style="color:${String(e.impact).toUpperCase()==='HIGH'?'var(--rd)':'var(--am)'}">${e.impact}</span>`:''}</div>
       </div>`).join('');}
   }catch(e){}
 }
-
-let sentTrendChart = null;
-
-async function loadSentimentTrend(){
-  try{
-    const page = await fetchSentimentOverview();
-    const d = page.by_asset || {assets:[]};
-    if(!d.assets?.length) return;
-    
-    // Build historical trend (simulate from current and past scores)
-    const now = Date.now();
-    const points = [];
-    const times = [];
-    for(let i = 24; i >= 0; i--){
-      const t = new Date(now - i * 3600000);
-      times.push(t.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false}));
-      // Simulate trend data - in production, fetch from historical data
-      points.push((d.avg_score || 0) + (Math.random() - 0.5) * 0.2);
-    }
-    
-    if(sentTrendChart) sentTrendChart.destroy();
-    
-    sentTrendChart = new Chart(document.getElementById('sentTrendChart'), {
-      type: 'line',
-      data: {
-        labels: times,
-        datasets: [{
-          label: 'Sentiment Score',
-          data: points,
-          borderColor: '#00e5ff',
-          backgroundColor: 'rgba(0, 229, 255, 0.1)',
-          fill: true,
-          tension: 0.3,
-          pointRadius: 1,
-          pointBorderColor: 'transparent'
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: {display: false},
-          tooltip: {
-            backgroundColor: 'rgba(13, 17, 23, 0.9)',
-            borderColor: '#1e2635'
-          }
-        },
-        scales: {
-          y: {
-            min: -1,
-            max: 1,
-            ticks: {color: '#7a8899', font: {size: 9}, callback: v => v.toFixed(1)},
-            grid: {color: 'rgba(30, 38, 53, 0.3)'}
-          },
-          x: {
-            ticks: {color: '#7a8899', font: {size: 9}, maxTicksLimit: 6},
-            grid: {display: false}
-          }
-        }
-      }
-    });
-  }catch(e){console.error('[SentTrend]', e);}
-}
-
-load();loadSentimentTrend();setInterval(load,60000);setInterval(loadSentimentTrend,300000);
+load();setInterval(load,60000);
 </script>
 
 <script>

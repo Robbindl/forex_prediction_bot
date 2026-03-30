@@ -3,15 +3,17 @@ solana_tracker.py — Solana whale tracker using Solana RPC.
 """
 from __future__ import annotations
 
-import os
 import requests
 from typing import Dict, Optional
+import time
+from config.config import SOLANA_RPC_URL
 from utils.logger import get_logger
 
 logger = get_logger()
-
-SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
 MIN_SOL_DELTA = 100.0  # Minimum SOL change to track (lamports: 1 SOL = 1e9 lamports)
+_RPC_BACKOFF_UNTIL = 0.0
+_RPC_BACKOFF_NOTIFIED = False
+_RPC_BACKOFF_SECS = 180.0
 
 
 class SolanaTracker:
@@ -26,6 +28,16 @@ class SolanaTracker:
         Fetch SOL balance for a wallet address via Solana RPC.
         Returns balance in SOL (lamports converted to decimal).
         """
+        global _RPC_BACKOFF_UNTIL, _RPC_BACKOFF_NOTIFIED
+        now = time.time()
+        if now < _RPC_BACKOFF_UNTIL:
+            if not _RPC_BACKOFF_NOTIFIED:
+                logger.warning(
+                    f"[SolanaTracker] RPC backoff active — skipping balance calls for "
+                    f"{int(_RPC_BACKOFF_UNTIL - now)}s"
+                )
+                _RPC_BACKOFF_NOTIFIED = True
+            return None
         try:
             payload = {
                 "jsonrpc": "2.0",
@@ -43,9 +55,16 @@ class SolanaTracker:
 
             balance_lamports = data.get("result", {}).get("value", 0)
             balance_sol = balance_lamports / 1e9  # Convert lamports to SOL
+            _RPC_BACKOFF_UNTIL = 0.0
+            _RPC_BACKOFF_NOTIFIED = False
             return balance_sol
         except Exception as e:
-            logger.error(f"[SolanaTracker] Failed to fetch balance for {address[:10]}...: {e}")
+            _RPC_BACKOFF_UNTIL = time.time() + _RPC_BACKOFF_SECS
+            _RPC_BACKOFF_NOTIFIED = False
+            logger.warning(
+                f"[SolanaTracker] Failed to fetch balance for {address[:10]}...: {e} "
+                f"— backing off {int(_RPC_BACKOFF_SECS)}s"
+            )
             return None
 
     def classify_movement(self, delta_sol: float) -> str:
@@ -59,6 +78,16 @@ class SolanaTracker:
         Fetch SPL token balance for a wallet.
         Requires associated token account lookup (more complex).
         """
+        global _RPC_BACKOFF_UNTIL, _RPC_BACKOFF_NOTIFIED
+        now = time.time()
+        if now < _RPC_BACKOFF_UNTIL:
+            if not _RPC_BACKOFF_NOTIFIED:
+                logger.warning(
+                    f"[SolanaTracker] RPC backoff active — skipping token balance calls for "
+                    f"{int(_RPC_BACKOFF_UNTIL - now)}s"
+                )
+                _RPC_BACKOFF_NOTIFIED = True
+            return None
         try:
             payload = {
                 "jsonrpc": "2.0",
@@ -88,7 +117,14 @@ class SolanaTracker:
                 balance_info = parsed.get("info", {}).get("tokenAmount", {})
                 total += float(balance_info.get("uiAmount", 0))
 
+            _RPC_BACKOFF_UNTIL = 0.0
+            _RPC_BACKOFF_NOTIFIED = False
             return total
         except Exception as e:
-            logger.error(f"[SolanaTracker] Failed to fetch token balance: {e}")
+            _RPC_BACKOFF_UNTIL = time.time() + _RPC_BACKOFF_SECS
+            _RPC_BACKOFF_NOTIFIED = False
+            logger.warning(
+                f"[SolanaTracker] Failed to fetch token balance: {e} "
+                f"— backing off {int(_RPC_BACKOFF_SECS)}s"
+            )
             return None

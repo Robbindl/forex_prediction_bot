@@ -182,15 +182,19 @@ class OrderFlowSignalValidator:
 
     def _subscribe_loop(self) -> None:
         """Background thread — subscribes to wall and hunt alerts."""
-        if not self._pub:
-            logger.info("[OrderFlowValidator] No Redis — running in validation-only mode")
-            return
-        
         ps = None
+        redis_unavailable_logged = False
         while self._running:
             try:
                 from services.redis_pool import get_pubsub as _get_pubsub
                 ps = _get_pubsub(old_pubsub=ps)
+                if ps is None:
+                    if not redis_unavailable_logged:
+                        logger.info("[OrderFlowValidator] No Redis — running in validation-only mode")
+                        redis_unavailable_logged = True
+                    time.sleep(10)
+                    continue
+                redis_unavailable_logged = False
                 ps.subscribe("LIQUIDITY_WALL_DETECTED", "STOP_HUNT_DETECTED")
                 logger.info("[OrderFlowValidator] Subscribed to wall and hunt alerts")
                 
@@ -208,9 +212,9 @@ class OrderFlowSignalValidator:
                         except Exception as e:
                             logger.debug(f"[OrderFlowValidator] Ingest error: {e}")
             except Exception as e:
-                logger.error(f"[OrderFlowValidator] Subscribe loop error: {e}")
+                logger.warning(f"[OrderFlowValidator] Subscriber dropped ({e}) — retrying in 10s")
                 if self._running:
-                    import time; time.sleep(10)
+                    time.sleep(10)
 
     def _ingest_wall(self, event: dict) -> None:
         """Ingest a LIQUIDITY_WALL_DETECTED event."""

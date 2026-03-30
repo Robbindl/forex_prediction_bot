@@ -16,9 +16,8 @@ live_prices_lock = threading.Lock()
 
 # ─── Per-exchange connection status ───────────────────────────────────────────
 connection_status: dict = {
-    'bybit':      {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Crypto'},
-    'finnhub':    {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Stocks'},
-    'twelvedata': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Forex & Commodities'},
+    'deriv': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Forex, Crypto, Commodities, Indices'},
+    'binance': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'BNB, SOL, XRP'},
 }
 
 
@@ -47,8 +46,7 @@ def set_connected(source: str, connected: bool, symbol_count: int = 0):
     src = source.lower()
     if src in connection_status:
         connection_status[src]['connected'] = connected
-        if symbol_count:
-            connection_status[src]['symbol_count'] = symbol_count
+        connection_status[src]['symbol_count'] = symbol_count
 
 
 def get_feed(source_filter: str = None, limit: int = 200) -> list:

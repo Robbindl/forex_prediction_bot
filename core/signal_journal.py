@@ -27,8 +27,8 @@ _EMOJI = {
 @dataclass
 class JournalEntry:
     """A single recorded decision from one layer or phase."""
-    layer:       int            # 0 = pre-pipeline / post-pipeline
-    name:        str            # layer or phase name
+    layer:       int            # 0 = pre-decision / post-decision
+    name:        str            # decision step or phase name
     decision:    str            # PASS | KILLED | SKIPPED | BOOSTED | REDUCED | INFO
     reason:      str            # human-readable explanation
     conf_before: float          # confidence before this stage
@@ -61,7 +61,7 @@ class JournalEntry:
 
 class SignalJournal:
     """
-    Mutable log attached to a Signal. Every layer writes one entry.
+    Mutable log attached to a Signal. Every decision step writes one entry.
     Immutable once the signal is dead or executed.
     """
 
@@ -84,7 +84,7 @@ class SignalJournal:
         data:        Optional[Dict[str, Any]] = None,
         elapsed_ms:  float = 0.0,
     ) -> None:
-        """Add one entry. Thread-safe — called from pipeline layers."""
+        """Add one entry. Thread-safe — called from decision steps."""
         self.entries.append(JournalEntry(
             layer       = layer,
             name        = name,
@@ -193,7 +193,7 @@ class SignalJournal:
     def to_telegram(self, signal=None) -> str:
         """
         Format the full journal as a Telegram Markdown message.
-        Called by pipeline_reporter.py after the pipeline completes.
+        Called by the signal reporter after the decision cycle completes.
         """
         survived = self.final_decision() == "SURVIVED"
         direction = self._escape_markdown(self.direction)
@@ -277,7 +277,7 @@ class SignalJournal:
                 f"   Size:  {size:.4f}"
             )
 
-        lines.append(f"\n_Pipeline: {self.total_elapsed_ms():.0f}ms_")
+        lines.append(f"\n_Decision engine: {self.total_elapsed_ms():.0f}ms_")
         return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:

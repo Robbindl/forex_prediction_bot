@@ -19,18 +19,18 @@ def _pick_asset() -> tuple:
         ("XRP-USD",  "crypto"),
         ("BNB-USD",  "crypto"),
         ("EUR/USD",  "forex"),
+        ("EUR/JPY",  "forex"),
         ("GBP/USD",  "forex"),
         ("GBP/JPY",  "forex"),
         ("USD/JPY",  "forex"),
         ("AUD/USD",  "forex"),
         ("USD/CAD",  "forex"),
-        ("GC=F",     "commodities"),
-        ("SI=F",     "commodities"),
-        ("CL=F",     "commodities"),
-        ("^DJI",     "indices"),
-        ("^IXIC",    "indices"),
-        ("^GSPC",    "indices"),
-        ("^FTSE",    "indices"),
+        ("XAU/USD",  "commodities"),
+        ("XAG/USD",  "commodities"),
+        ("US30",     "indices"),
+        ("US100",    "indices"),
+        ("US500",    "indices"),
+        ("UK100",    "indices"),
     ]
     print()
     for i, (asset, cat) in enumerate(assets, 1):
@@ -215,8 +215,8 @@ def multi_asset_test() -> None:
         ("EUR/USD",  "forex"),
         ("GBP/USD",  "forex"),
         ("USD/JPY",  "forex"),
-        ("GC=F",     "commodities"),
-        ("^DJI",     "indices"),
+        ("XAU/USD",  "commodities"),
+        ("US30",     "indices"),
     ]
 
     print(f"\n  Testing {chosen_name} across {len(test_assets)} assets...\n")
@@ -239,12 +239,13 @@ def full_report() -> None:
     assets = [
         ("BTC-USD",  "crypto"),
         ("ETH-USD",  "crypto"),
+        ("EUR/JPY",  "forex"),
         ("EUR/USD",  "forex"),
         ("GBP/USD",  "forex"),
         ("GBP/JPY",  "forex"),
-        ("GC=F",     "commodities"),
-        ("^DJI",     "indices"),
-        ("^GSPC",    "indices"),
+        ("XAU/USD",  "commodities"),
+        ("US30",     "indices"),
+        ("US500",    "indices"),
     ]
 
     configs = StrategyBuilder.all_configs()

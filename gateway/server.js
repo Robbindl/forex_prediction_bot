@@ -14,13 +14,16 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 // ── Config ─────────────────────────────────────────────────────────────────
 const WS_PORT      = 8081;
 const FLASK_URL    = 'http://localhost:5000';
-const REDIS_HOST   = process.env.REDIS_HOST || '127.0.0.1';
-const REDIS_PORT   = parseInt(process.env.REDIS_PORT || '6379');
-const REDIS_PASS   = process.env.REDIS_PASSWORD || null;
+const REDIS_URL    = process.env.REDIS_URL || 'redis://127.0.0.1:6379/0';
+let REDIS_ENDPOINT = 'redis';
+try {
+  const parsed = new URL(REDIS_URL);
+  REDIS_ENDPOINT = `${parsed.hostname}:${parsed.port || '6379'}`;
+} catch (_) {}
 
 // Channels that go to ALL subscribers
 const BROADCAST_CHANNELS = [
-  'signals',      // trading signals that passed 7-layer pipeline
+  'signals',      // trading signals approved by the decision engine
   'prices',       // live price ticks per asset
   'whale_alerts', // whale movement events
   'sentiment',    // composite sentiment updates
@@ -58,9 +61,6 @@ const wss    = new WebSocket.Server({ server });
 
 // ── Redis connection options ────────────────────────────────────────────────
 const redisOpts = {
-  host:            REDIS_HOST,
-  port:            REDIS_PORT,
-  password:        REDIS_PASS || undefined,
   // FIX: Use unlimited retries with exponential back-off capped at 30s.
   // Previously retryStrategy returned null after 5 attempts, permanently
   // breaking the gateway whenever Redis restarted — the only recovery was
@@ -76,8 +76,8 @@ const redisOpts = {
 };
 
 // ── Redis connections ───────────────────────────────────────────────────────
-const sub = new Redis(redisOpts);
-const pub = new Redis(redisOpts);
+const sub = new Redis(REDIS_URL, redisOpts);
+const pub = new Redis(REDIS_URL, redisOpts);
 
 let redisConnected = false;
 let redisAttempted = false;
@@ -85,7 +85,7 @@ let redisAttempted = false;
 function tryConnectRedis() {
   if (redisAttempted) return;
   redisAttempted = true;
-  console.log(`[Redis] Connecting to ${REDIS_HOST}:${REDIS_PORT}…`);
+  console.log(`[Redis] Connecting to ${REDIS_ENDPOINT}…`);
   sub.connect().catch(() => {});
   pub.connect().catch(() => {});
 }
@@ -104,7 +104,7 @@ async function subscribeChannels() {
 
 // ── Subscriber connection events ───────────────────────────────────────────
 sub.on('connect', async () => {
-  console.log(`[Redis] Connected to ${REDIS_HOST}:${REDIS_PORT}`);
+  console.log(`[Redis] Connected to ${REDIS_ENDPOINT}`);
   redisConnected = true;
   await subscribeChannels();
 });

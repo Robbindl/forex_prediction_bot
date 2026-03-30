@@ -6,15 +6,16 @@ logger = get_logger()
 MIN_CONF = 0.62   # minimum confidence to trade
 MAX_CONF = 0.90   # confidence at which lot size doubles
 
-# ── JustMarkets/TIOmarkets contract specs ────────────────────────────────────
+# ── Reference contract specs ─────────────────────────────────────────────────
 # contract  = coins/units per 1 standard lot
 # pip       = minimum price movement
 # pip_val   = USD value per pip per 1 standard lot
 # base_lots = lots needed so medium move ≈ $2,000 P&L (Gold standard)
-MT5_SPECS = {
+CONTRACT_SPECS = {
     # ── FOREX ─────────────────────────────────────────────────────────────────
     # 1 lot = 100,000 units, USD quote pairs = $10/pip/lot
     "EUR/USD": {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 4.000},
+    "EUR/JPY": {"contract": 100_000, "pip": 0.01,   "pip_val":  6.80, "base_lots": 4.000},
     "GBP/USD": {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 4.000},
     "AUD/USD": {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 5.000},
     "GBP/JPY": {"contract": 100_000, "pip": 0.01,   "pip_val":  6.80, "base_lots": 3.676},
@@ -23,23 +24,31 @@ MT5_SPECS = {
 
     # ── COMMODITIES ───────────────────────────────────────────────────────────
     # Gold: 1 lot = 100 oz, $1/pip/lot — $100 move at 0.2 lots = $2,000
-    "GC=F":  {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.200},
+    "XAU/USD": {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.200},
+    "GC=F":    {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.200},
     # Silver: 1 lot = 5,000 oz, $5/pip/lot
-    "SI=F":  {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.800},
+    "XAG/USD": {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.800},
+    "SI=F":    {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.800},
     # Oil: 1 lot = 1,000 bbl, $10/pip/lot
-    "CL=F":  {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 1.000},
+    "WTI":     {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 1.000},
+    "WTI/USD": {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 1.000},
+    "CL=F":    {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 1.000},
 
     # ── INDICES ───────────────────────────────────────────────────────────────
     # S&P 500: 1 lot = $50/pt, 20 pt move at 2 lots = $2,000
+    "US500": {"contract":  50,  "pip": 0.25, "pip_val": 12.50, "base_lots": 2.000},
     "^GSPC": {"contract":  50,  "pip": 0.25, "pip_val": 12.50, "base_lots": 2.000},
     # Dow Jones: 1 lot = $5/pt, 200 pt move at 2 lots = $2,000
+    "US30":  {"contract":   5,  "pip": 1.0,  "pip_val":  5.00, "base_lots": 2.000},
     "^DJI":  {"contract":   5,  "pip": 1.0,  "pip_val":  5.00, "base_lots": 2.000},
     # Nasdaq: 1 lot = $20/pt, 50 pt move at 2 lots = $2,000
+    "US100": {"contract":  20,  "pip": 0.25, "pip_val":  5.00, "base_lots": 2.000},
     "^IXIC": {"contract":  20,  "pip": 0.25, "pip_val":  5.00, "base_lots": 2.000},
     # FTSE: 1 lot = £10/pt (~$12.60), 160 pt move at 1 lot = $2,016
+    "UK100": {"contract":  10,  "pip": 1.0,  "pip_val": 12.60, "base_lots": 0.992},
     "^FTSE": {"contract":  10,  "pip": 1.0,  "pip_val": 12.60, "base_lots": 0.992},
 
-    # ── CRYPTO (JustMarkets confirmed specs from MT5 Properties screenshots) ────
+    # ── CRYPTO ────────────────────────────────────────────────────────────────
     # BTC: 1 lot = 1 BTC — $2,000 move at 1.0 lot = $2,000
     "BTC-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots":  1.000},
     # ETH: 1 lot = 1 ETH — $150 move at 13.333 lots = $2,000
@@ -79,7 +88,7 @@ def _confidence_lots(base_lots: float, confidence: float) -> float:
 
 class PositionSizer:
     """
-    JustMarkets/TIOmarkets-accurate position sizer with confidence scaling.
+    Contract-spec position sizer with confidence scaling.
 
     Position size = confidence_scaled_lots × contract_size
     P&L = price_change × position_size (in units)
@@ -103,7 +112,7 @@ class PositionSizer:
         """
         Returns position size in base asset units (coins/oz/contracts).
 
-        FIX CRITICAL: MT5_SPECS are calibrated for a $10,000+ account.
+        FIX CRITICAL: CONTRACT_SPECS are calibrated for a $10,000+ account.
         On a $30 account, raw specs produce absurd notional exposure:
           EUR/USD: 400,000 units = $432,000 notional (14,400× leverage)
           BTC:     1.0 BTC       = $80,000 notional  (2,666× leverage)
@@ -116,7 +125,7 @@ class PositionSizer:
         if not entry_price:
             return 0.0
 
-        spec      = MT5_SPECS.get(asset) or _DEFAULTS.get(category, _DEFAULTS["forex"])
+        spec      = CONTRACT_SPECS.get(asset) or _DEFAULTS.get(category, _DEFAULTS["forex"])
         base_lots = spec["base_lots"]
         contract  = spec["contract"]
         pip_val   = spec["pip_val"]
@@ -151,7 +160,7 @@ class PositionSizer:
             entry: float, current: float,
             size: float, direction: str) -> float:
         """
-        MT5-accurate P&L using pip-based calculation.
+        Pip-based P&L using the configured contract specs.
         Handles cross pairs (JPY, CAD) correctly.
 
         Formula: lots × (price_diff / pip_size) × pip_val_usd
@@ -166,7 +175,7 @@ class PositionSizer:
           pip_val = $6.80/lot (already in USD)
           P&L = lots × pips × 6.80 ✅
         """
-        spec = MT5_SPECS.get(asset) or _DEFAULTS.get(category, _DEFAULTS["forex"])
+        spec = CONTRACT_SPECS.get(asset) or _DEFAULTS.get(category, _DEFAULTS["forex"])
         pip_size = spec["pip"]
         pip_val  = spec["pip_val"]
         contract = spec["contract"]
@@ -181,5 +190,5 @@ class PositionSizer:
 
 # Convenience function used in tests
 def get_lot_size(asset: str, confidence: float = 0.70) -> float:
-    spec = MT5_SPECS.get(asset) or _DEFAULTS.get("forex")
+    spec = CONTRACT_SPECS.get(asset) or _DEFAULTS.get("forex")
     return _confidence_lots(spec["base_lots"], confidence)

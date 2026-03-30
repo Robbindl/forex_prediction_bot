@@ -17,6 +17,64 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
+_CREATE_STRATEGY_PERFORMANCE = """
+CREATE TABLE IF NOT EXISTS strategy_performance (
+    asset        TEXT NOT NULL,
+    category     TEXT NOT NULL,
+    strategy_id  TEXT NOT NULL,
+    win_rate     REAL NOT NULL DEFAULT 0,
+    sharpe_ratio REAL NOT NULL DEFAULT 0,
+    total_trades INT  NOT NULL DEFAULT 0,
+    recorded_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (asset, strategy_id)
+);
+"""
+
+_CREATE_STRATEGY_OPTIMISATION = """
+CREATE TABLE IF NOT EXISTS strategy_optimisation (
+    asset         TEXT NOT NULL,
+    category      TEXT NOT NULL,
+    best_params   TEXT NOT NULL DEFAULT '{}',
+    sharpe        REAL NOT NULL DEFAULT 0,
+    win_rate      REAL NOT NULL DEFAULT 0,
+    optimised_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (asset, category)
+);
+"""
+
+_CREATE_PREDICTION_OUTCOMES = """
+CREATE TABLE IF NOT EXISTS prediction_outcomes (
+    id                SERIAL PRIMARY KEY,
+    asset             TEXT NOT NULL,
+    category          TEXT,
+    direction         TEXT NOT NULL,
+    entry_price       FLOAT,
+    target_price      FLOAT,
+    confidence        FLOAT,
+    signal_time       TIMESTAMP NOT NULL,
+    horizon_minutes   INT NOT NULL,
+    eval_time         TIMESTAMP,
+    actual_price      FLOAT,
+    direction_correct BOOLEAN,
+    target_hit        BOOLEAN,
+    pct_move          FLOAT,
+    evaluated         BOOLEAN DEFAULT FALSE,
+    strategy          TEXT,
+    session           TEXT,
+    regime            TEXT,
+    signal_features   TEXT,
+    signal_metadata   TEXT
+);
+"""
+
+_PREDICTION_OUTCOME_MIGRATIONS = (
+    "ALTER TABLE prediction_outcomes ADD COLUMN IF NOT EXISTS signal_features TEXT",
+    "ALTER TABLE prediction_outcomes ADD COLUMN IF NOT EXISTS signal_metadata TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_prediction_outcomes_eval_signal_time ON prediction_outcomes (evaluated, signal_time DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_prediction_outcomes_category_eval_signal_time ON prediction_outcomes (category, evaluated, signal_time DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_prediction_outcomes_asset_horizon_signal_time ON prediction_outcomes (asset, horizon_minutes, signal_time)",
+)
+
 
 def _np(value: Any) -> Any:
     """Convert numpy scalars to Python native types for SQLAlchemy."""
@@ -27,6 +85,20 @@ def _np(value: Any) -> Any:
     if isinstance(value, np.bool_):     return bool(value)
     if isinstance(value, np.ndarray):   return value.tolist()
     return value
+
+
+def _coerce_datetime(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 class DatabaseService:
@@ -157,11 +229,23 @@ class DatabaseService:
         logger.debug(f"[DB] Trade saved: {tid}")
         return tid
 
-    def get_recent_trades(self, limit: int = 50) -> List[Dict]:
+    def get_recent_trades(
+        self,
+        limit: int = 50,
+        category: str = "",
+        pnl_filter: str = "all",
+    ) -> List[Dict]:
         with self.get_session() as s:
+            query = s.query(Trade).filter(Trade.exit_time.isnot(None))
+            if category:
+                query = query.filter(Trade.category == category)
+            if pnl_filter == "won":
+                query = query.filter(Trade.pnl > 0)
+            elif pnl_filter == "lost":
+                query = query.filter(Trade.pnl < 0)
+
             rows = (
-                s.query(Trade)
-                .order_by(desc(Trade.entry_time))
+                query.order_by(desc(func.coalesce(Trade.exit_time, Trade.entry_time)))
                 .limit(limit)
                 .all()
             )
@@ -183,11 +267,57 @@ class DatabaseService:
             s.query(Trade).delete()
             if clear_daily_stats:
                 s.query(DailyStats).delete()
+
+    def get_closed_trade_rollups(self) -> Dict[str, Dict[str, Dict[str, float]]]:
+        """Aggregate closed-trade win/loss/PnL stats for state rebuilds."""
+        with self.get_session() as s:
+            rows = s.execute(text("""
+                SELECT strategy_id, canonical_asset, pnl
+                FROM   trades
+                WHERE  exit_time IS NOT NULL
+                  AND  pnl IS NOT NULL
+            """)).fetchall()
+
+        strategy_rollups: Dict[str, Dict[str, float]] = {}
+        asset_rollups: Dict[str, Dict[str, float]] = {}
+
+        for strategy_id, canonical_asset, pnl_raw in rows:
+            pnl = float(pnl_raw)
+            win = pnl > 0
+
+            strategy_key = str(strategy_id or "").strip()
+            if strategy_key:
+                strategy_stats = strategy_rollups.setdefault(
+                    strategy_key,
+                    {"wins": 0, "losses": 0, "pnl": 0.0},
+                )
+                strategy_stats["pnl"] += pnl
+                if win:
+                    strategy_stats["wins"] += 1
+                else:
+                    strategy_stats["losses"] += 1
+
+            asset_key = str(canonical_asset or "").strip()
+            if asset_key:
+                asset_stats = asset_rollups.setdefault(
+                    asset_key,
+                    {"wins": 0, "losses": 0, "pnl": 0.0},
+                )
+                asset_stats["pnl"] += pnl
+                if win:
+                    asset_stats["wins"] += 1
+                else:
+                    asset_stats["losses"] += 1
+
+        return {
+            "rows": rows,
+            "strategy": strategy_rollups,
+            "asset": asset_rollups,
+        }
     # ── Performance ───────────────────────────────────────────────────────────
 
     def get_performance_summary(self, days: int = 30) -> Dict:
-        # entry_time stored as EAT (UTC+3) via server_default — add 3h buffer to cutoff
-        cutoff = datetime.utcnow() - timedelta(days=days) - timedelta(hours=4)
+        cutoff = datetime.utcnow() - timedelta(days=days)
         with self.get_session() as s:
             trades = (
                 s.query(Trade)
@@ -254,20 +384,32 @@ class DatabaseService:
 
     # ── Whale alerts ──────────────────────────────────────────────────────────
 
-    def save_whale_alert(self, alert: Dict) -> None:
+    def save_whale_alert(self, alert: Dict) -> bool:
+        alert_time = _coerce_datetime(alert.get("alert_time") or alert.get("date")) or datetime.utcnow()
         with self.get_session() as s:
+            exists = (
+                s.query(WhaleAlert)
+                .filter(
+                    WhaleAlert.title == str(alert.get("title", "")),
+                    WhaleAlert.alert_time == alert_time,
+                )
+                .first()
+            )
+            if exists:
+                return False
             row = WhaleAlert(
                 title      = str(alert.get("title", "")),
                 symbol     = str(alert.get("symbol", alert.get("asset", ""))),
                 value_usd  = _np(alert.get("value_usd", alert.get("size_usd", 0))),
                 source     = str(alert.get("source", "")),
                 direction  = str(alert.get("direction", "")),
-                alert_time = datetime.utcnow(),
+                alert_time = alert_time,
             )
             s.add(row)
+            return True
 
     def get_recent_whale_alerts(self, hours: int = 24, symbol: str = "") -> List[Dict]:
-        cutoff = datetime.utcnow() - timedelta(hours=hours) - timedelta(hours=4)  # EAT offset
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
         with self.get_session() as s:
             q = s.query(WhaleAlert).filter(WhaleAlert.alert_time >= cutoff)
             if symbol:
@@ -281,6 +423,220 @@ class DatabaseService:
         with self.get_session() as s:
             row = s.query(DailyStats).order_by(desc(DailyStats.date)).first()
             return float(row.balance_end) if row and row.balance_end else None
+
+    # ── Strategy reporting ───────────────────────────────────────────────────
+
+    def ensure_strategy_reporting_tables(self) -> None:
+        with self.get_session() as s:
+            s.execute(text(_CREATE_STRATEGY_PERFORMANCE))
+            s.execute(text(_CREATE_STRATEGY_OPTIMISATION))
+
+    # ── Prediction outcomes ──────────────────────────────────────────────────
+
+    def ensure_prediction_outcomes_table(self) -> None:
+        with self.get_session() as s:
+            s.execute(text(_CREATE_PREDICTION_OUTCOMES))
+            for stmt in _PREDICTION_OUTCOME_MIGRATIONS:
+                s.execute(text(stmt))
+
+    def save_prediction_outcomes(self, records: List[Dict[str, Any]]) -> None:
+        if not records:
+            return
+        with self.get_session() as s:
+            for record in records:
+                s.execute(text("""
+                    INSERT INTO prediction_outcomes
+                        (asset, category, direction, entry_price, target_price,
+                         confidence, signal_time, horizon_minutes, eval_time,
+                         strategy, session, regime, signal_features,
+                         signal_metadata, evaluated)
+                    VALUES
+                        (:asset, :category, :direction, :entry_price, :target_price,
+                         :confidence, :signal_time, :horizon_minutes, :eval_time,
+                         :strategy, :session, :regime, :signal_features,
+                         :signal_metadata, false)
+                """), {
+                    "asset": record["asset"],
+                    "category": record.get("category", ""),
+                    "direction": record["direction"],
+                    "entry_price": record["entry_price"],
+                    "target_price": record.get("target_price"),
+                    "confidence": record["confidence"],
+                    "signal_time": record["signal_time"],
+                    "horizon_minutes": record["horizon_minutes"],
+                    "eval_time": record["eval_time"],
+                    "strategy": record.get("strategy", ""),
+                    "session": record.get("session", ""),
+                    "regime": record.get("regime", ""),
+                    "signal_features": record.get("signal_features"),
+                    "signal_metadata": record.get("signal_metadata"),
+                })
+
+    def mark_prediction_outcome_evaluated(self, record: Dict[str, Any]) -> None:
+        with self.get_session() as s:
+            s.execute(text("""
+                UPDATE prediction_outcomes SET
+                    actual_price      = :actual,
+                    direction_correct = :correct,
+                    target_hit        = :hit,
+                    pct_move          = :move,
+                    evaluated         = true
+                WHERE asset = :asset
+                  AND signal_time = :signal_time
+                  AND horizon_minutes = :horizon
+            """), {
+                "actual": record["actual_price"],
+                "correct": record["direction_correct"],
+                "hit": record["target_hit"],
+                "move": record["pct_move"],
+                "asset": record["asset"],
+                "signal_time": record["signal_time"],
+                "horizon": record["horizon_minutes"],
+            })
+
+    def get_prediction_accuracy_rollups(
+        self,
+        since: datetime,
+        asset_limit: int = 50,
+        recent_limit: int = 20,
+    ) -> Dict[str, List[Any]]:
+        with self.get_session() as s:
+            horizon_rows = s.execute(text("""
+                SELECT
+                    horizon_minutes,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN direction_correct THEN 1 ELSE 0 END) AS correct,
+                    SUM(CASE WHEN target_hit THEN 1 ELSE 0 END) AS targets_hit,
+                    AVG(pct_move) AS avg_move,
+                    AVG(confidence) AS avg_confidence
+                FROM prediction_outcomes
+                WHERE evaluated = true AND signal_time >= :since
+                GROUP BY horizon_minutes
+            """), {"since": since}).fetchall()
+
+            asset_rows = s.execute(text("""
+                SELECT
+                    asset,
+                    horizon_minutes,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN direction_correct THEN 1 ELSE 0 END) AS correct
+                FROM prediction_outcomes
+                WHERE evaluated = true AND signal_time >= :since
+                GROUP BY asset, horizon_minutes
+                ORDER BY total DESC
+                LIMIT :asset_limit
+            """), {"since": since, "asset_limit": asset_limit}).fetchall()
+
+            recent_rows = s.execute(text("""
+                SELECT asset, direction, entry_price, actual_price,
+                       direction_correct, pct_move, confidence, horizon_minutes, signal_time
+                FROM prediction_outcomes
+                WHERE evaluated = true
+                ORDER BY signal_time DESC
+                LIMIT :recent_limit
+            """), {"recent_limit": recent_limit}).fetchall()
+
+        return {
+            "by_horizon": horizon_rows,
+            "by_asset": asset_rows,
+            "recent": recent_rows,
+        }
+
+    def get_pending_prediction_outcomes(self, lookback_days: int) -> List[Dict[str, Any]]:
+        since = datetime.utcnow() - timedelta(days=lookback_days)
+        with self.get_session() as s:
+            rows = s.execute(text("""
+                SELECT asset, category, direction, entry_price, target_price,
+                       confidence, signal_time, horizon_minutes, eval_time,
+                       strategy, session, regime, signal_features,
+                       signal_metadata
+                FROM prediction_outcomes
+                WHERE evaluated = false
+                  AND signal_time >= :since
+            """), {"since": since}).fetchall()
+
+        cols = [
+            "asset", "category", "direction", "entry_price", "target_price",
+            "confidence", "signal_time", "horizon_minutes", "eval_time",
+            "strategy", "session", "regime", "signal_features",
+            "signal_metadata",
+        ]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def get_live_prediction_training_rows(
+        self,
+        category: str,
+        since: datetime,
+        limit: int = 2000,
+    ) -> List[Any]:
+        with self.get_session() as s:
+            rows = s.execute(text("""
+                SELECT entry_price, actual_price, signal_features, signal_metadata
+                FROM prediction_outcomes
+                WHERE evaluated = true
+                  AND category = :category
+                  AND signal_features IS NOT NULL
+                  AND signal_time >= :since
+                ORDER BY signal_time DESC
+                LIMIT :limit
+            """), {
+                "category": category,
+                "since": since,
+                "limit": limit,
+            }).fetchall()
+        return rows
+
+    def save_strategy_performance_snapshot(
+        self,
+        asset: str,
+        category: str,
+        strategy_id: str,
+        win_rate: float,
+        sharpe_ratio: float,
+        total_trades: int,
+    ) -> None:
+        with self.get_session() as s:
+            s.execute(text("""
+                INSERT INTO strategy_performance
+                    (asset, category, strategy_id, win_rate, sharpe_ratio,
+                     total_trades, recorded_at)
+                VALUES (:asset, :category, :strategy_id, :win_rate, :sharpe_ratio,
+                        :total_trades, NOW())
+                ON CONFLICT (asset, strategy_id)
+                DO UPDATE SET
+                    category     = EXCLUDED.category,
+                    win_rate     = EXCLUDED.win_rate,
+                    sharpe_ratio = EXCLUDED.sharpe_ratio,
+                    total_trades = EXCLUDED.total_trades,
+                    recorded_at  = NOW();
+            """), {
+                "asset": asset,
+                "category": category,
+                "strategy_id": strategy_id,
+                "win_rate": win_rate,
+                "sharpe_ratio": sharpe_ratio,
+                "total_trades": total_trades,
+            })
+
+    def save_strategy_optimisation_result(self, asset: str, category: str, result: Dict[str, Any]) -> None:
+        with self.get_session() as s:
+            s.execute(text("""
+                INSERT INTO strategy_optimisation
+                    (asset, category, best_params, sharpe, win_rate, optimised_at)
+                VALUES (:asset, :category, :best_params, :sharpe, :win_rate, NOW())
+                ON CONFLICT (asset, category)
+                DO UPDATE SET
+                    best_params  = EXCLUDED.best_params,
+                    sharpe       = EXCLUDED.sharpe,
+                    win_rate     = EXCLUDED.win_rate,
+                    optimised_at = NOW();
+            """), {
+                "asset": asset,
+                "category": category,
+                "best_params": json.dumps(result),
+                "sharpe": float(result.get("sharpe", 0.0) or 0.0),
+                "win_rate": float(result.get("win_rate", 0.0) or 0.0),
+            })
 
     # ── Health check ──────────────────────────────────────────────────────────
 

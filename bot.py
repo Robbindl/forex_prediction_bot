@@ -255,10 +255,11 @@ def run_backtest(asset: str, category: str) -> None:
     try:
         from data.fetcher    import DataFetcher
         from backtest.engine import BacktestEngine
-        from config.config   import TRADING_TIMEFRAME
+        from config.config   import get_timeframe_periods, get_trading_timeframe
         fetcher  = DataFetcher()
-        _periods = {"15m": 500, "1h": 300, "4h": 200, "1d": 500}.get(TRADING_TIMEFRAME, 500)
-        df       = fetcher.get_ohlcv(asset, category, TRADING_TIMEFRAME, _periods)
+        timeframe = get_trading_timeframe(category)
+        _periods = get_timeframe_periods(timeframe)
+        df       = fetcher.get_ohlcv(asset, category, timeframe, _periods)
         if df is None or df.empty:
             logger.error(f"[bot] No data for {asset}")
             return
@@ -359,69 +360,69 @@ def main() -> None:
     # AutoTrainer moved to after wait_until_ready — see below
     # (engine.fetcher is None at this point so trainer would get no data)
 
-    # ── Phase 1 — Institutional data feeds ───────────────────────────────
+    # ── Data feeds ────────────────────────────────────────────────────────
     try:
         from data_ingestion import start_all as start_data_feeds
         start_data_feeds(exchanges=["binance", "bybit"])
-        logger.info("[bot] Phase 1 data feeds started")
+        logger.info("[bot] Data feeds started")
     except Exception as e:
-        logger.warning(f"[bot] Phase 1 data feeds failed to start: {e}")
+        logger.warning(f"[bot] Data feeds failed to start: {e}")
 
-    # ── Phase 2 — Whale wallet intelligence ──────────────────────────────
+    # ── Whale wallet intelligence ────────────────────────────────────────
     try:
         from whale_intelligence import start_all as start_whale_intelligence
         start_whale_intelligence()
-        logger.info("[bot] Phase 2 whale intelligence started")
+        logger.info("[bot] Whale wallet intelligence started")
     except Exception as e:
-        logger.warning(f"[bot] Phase 2 whale intelligence failed to start: {e}")
+        logger.warning(f"[bot] Whale wallet intelligence failed to start: {e}")
 
-    # ── Phase 3 — Order flow intelligence ────────────────────────────────
+    # ── Order flow intelligence ───────────────────────────────────────────
     try:
         from order_flow import start_all as start_order_flow
         start_order_flow()
-        logger.info("[bot] Phase 3 order flow intelligence started")
+        logger.info("[bot] Order flow intelligence started")
     except Exception as e:
-        logger.warning(f"[bot] Phase 3 order flow failed to start: {e}")
+        logger.warning(f"[bot] Order flow intelligence failed to start: {e}")
 
-    # ── Phase 4 — Narrative AI ────────────────────────────────────────────
+    # ── Narrative AI ──────────────────────────────────────────────────────
     try:
         from narrative_ai import get_narrative_scores, get_dominant_narrative
-        logger.info("[bot] Phase 4 narrative AI engine ready")
+        logger.info("[bot] Narrative AI engine ready")
     except Exception as e:
-        logger.warning(f"[bot] Phase 4 narrative AI failed to load: {e}")
+        logger.warning(f"[bot] Narrative AI failed to load: {e}")
 
-    # ── Phase 5 — Live strategy bridge ────────────────────────────────────
+    # ── Live strategy bridge ──────────────────────────────────────────────
     try:
         from strategy_lab.live_bridge import list_live_strategies
         active = list_live_strategies()
         if active:
-            logger.info(f"[bot] Phase 5 live strategies active: {active}")
+            logger.info(f"[bot] Live strategies active: {active}")
         else:
-            logger.info("[bot] Phase 5 ready — no lab strategies configured yet")
+            logger.info("[bot] Live strategy bridge ready — no lab strategies configured yet")
     except Exception as e:
-        logger.warning(f"[bot] Phase 5 live bridge failed to load: {e}")
+        logger.warning(f"[bot] Live strategy bridge failed to load: {e}")
 
-    # ── Phase 6 — Meta AI ─────────────────────────────────────────────────
+    # ── Meta AI ───────────────────────────────────────────────────────────
     try:
         from ml.meta_model import predictor as meta_predictor  # noqa: F401
-        logger.info("[bot] Phase 6 Meta AI engine ready")
+        logger.info("[bot] Meta AI engine ready")
     except Exception as e:
-        logger.warning(f"[bot] Phase 6 Meta AI failed to load: {e}")
+        logger.warning(f"[bot] Meta AI failed to load: {e}")
 
     # ── News event monitor ────────────────────────────────────────────────
     try:
         from data_ingestion.news_event_monitor import start_news_monitor
         start_news_monitor()
-        logger.info("[bot] News event monitor started — Finnhub calendar active")
+        logger.info("[bot] News event monitor started — Deriv calendar active")
     except Exception as e:
         logger.warning(f"[bot] News event monitor failed to start: {e}")
 
-    # ── Phase 11 — System health monitoring ──────────────────────────────
+    # ── System health monitoring ──────────────────────────────────────────
     try:
         from monitoring import start_monitoring
-        logger.info("[bot] Phase 11 system health monitoring ready")
+        logger.info("[bot] System health monitoring ready")
     except Exception as e:
-        logger.warning(f"[bot] Phase 11 monitoring failed to load: {e}")
+        logger.warning(f"[bot] System health monitoring failed to load: {e}")
 
     # ── Portfolio risk engine ─────────────────────────────────────────────
     try:
@@ -478,11 +479,12 @@ def main() -> None:
 
     # ── Redis cache upgrade ───────────────────────────────────────────────
     try:
+        from config.config import CACHE_TTL
         from services.redis_cache import get_cache
-        upgraded_cache = get_cache(default_ttl=30)
+        upgraded_cache = get_cache(default_ttl=CACHE_TTL)
         import data.cache as _cache_mod
         _cache_mod.cache = upgraded_cache
-        logger.info("[bot] Redis cache active")
+        logger.info("[bot] Redis shared cache active (market-data cache remains local)")
     except Exception as e:
         logger.debug(f"[bot] Redis cache not available ({e}) — using in-process cache")
 
@@ -497,16 +499,16 @@ def main() -> None:
     # TWO-BOT ARCHITECTURE:
     #
     #   Bot 1 — Command Bot (TelegramCommander, polling)
-    #     Receives: trade open/close alerts, pipeline signal journals,
+    #     Receives: trade open/close alerts, signal journals,
     #               daily loss limit alerts.
     #     Handles:  /menu /signal /ask /close /pause /resume commands.
     #     Why Bot 1: these messages are immediately actionable — you tap
     #               a button directly after seeing a trade alert.
     #
     #   Bot 2 — Intelligence Bot (IntelligenceBot, send-only via requests)
-    #     Receives: Phase 7 market intelligence alerts (whale accumulation,
+    #     Receives: market intelligence alerts (whale accumulation,
     #               liquidation cascades, order flow, narrative trends).
-    #               Phase 11 system health alerts (CPU, RAM, pipeline
+    #               system health alerts (CPU, RAM, decision
     #               latency, stale data sources).
     #     Why Bot 2: passive information — no commands needed, no buttons,
     #               no polling. Raw requests.post, zero conflict risk.
@@ -526,20 +528,20 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[bot] Intelligence Bot init failed: {e}")
 
-    # Phase 7 and Phase 11 always go to Bot 2
+    # Market intelligence and system health always go to Bot 2
     try:
         from services.intelligence_alerts import start_all as start_intel_alerts
         start_intel_alerts(telegram_bot=_intel_bot)
-        logger.info("[bot] Phase 7 intelligence alerts → Bot 2")
+        logger.info("[bot] Market intelligence alerts → Bot 2")
     except Exception as e:
-        logger.warning(f"[bot] Phase 7 intelligence alerts failed: {e}")
+        logger.warning(f"[bot] Market intelligence alerts failed: {e}")
 
     try:
         from monitoring import start_monitoring
         start_monitoring(telegram_bot=_intel_bot)
-        logger.info("[bot] Phase 11 monitoring → Bot 2")
+        logger.info("[bot] System health monitoring → Bot 2")
     except Exception as e:
-        logger.warning(f"[bot] Phase 11 monitoring failed: {e}")
+        logger.warning(f"[bot] System health monitoring failed: {e}")
 
     # ── Bot 1 — Command Bot (polling, interactive) ────────────────────────
     if not args.no_telegram and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
@@ -547,14 +549,14 @@ def main() -> None:
             from telegram_manager import telegram_manager
             started = telegram_manager.start(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, engine)
             if started:
-                # Trade alerts and pipeline journals → Bot 1 only
+                # Trade alerts and signal journals → Bot 1 only
                 engine.telegram = telegram_manager.bot
                 try:
-                    from core.pipeline_reporter import reporter
+                    from core.signal_reporter import reporter
                     reporter.wire_telegram(telegram_manager.bot)
-                    logger.info("[bot] PipelineReporter → Bot 1")
+                    logger.info("[bot] SignalReporter → Bot 1")
                 except Exception as e:
-                    logger.warning(f"[bot] PipelineReporter Telegram wire failed: {e}")
+                    logger.warning(f"[bot] SignalReporter Telegram wire failed: {e}")
                 logger.info("[bot] Command Bot (Bot 1) started and wired to engine")
             else:
                 logger.warning("[bot] Command Bot (Bot 1) not started — duplicate instance or missing creds")
@@ -596,47 +598,41 @@ def main() -> None:
     # ── Whale monitoring ──────────────────────────────────────────────────
     try:
         from whale_alert_manager import WhaleAlertManager
-        from layers.layer6_whale import ingest_whale_alert
+        from services.intelligence_event_utils import canonical_crypto_asset, record_whale_alert_event
         from core.asset_profiles import is_crypto
 
         _whale_mgr = WhaleAlertManager()
 
-        _SYMBOL_MAP = {
-            "BTC":    "BTC-USD", "BITCOIN":   "BTC-USD",
-            "ETH":    "ETH-USD", "ETHEREUM":  "ETH-USD",
-            "BNB":    "BNB-USD", "SOL":       "SOL-USD",
-            "XRP":    "XRP-USD", "RIPPLE":    "XRP-USD",
-        }
-
-        def _symbol_to_asset(symbol: str) -> str:
-            return _SYMBOL_MAP.get(symbol.upper(), "")
-
         def _on_whale_alert(alert: dict) -> None:
             try:
                 symbol = str(alert.get("symbol", alert.get("asset", ""))).upper().strip()
-                asset  = _symbol_to_asset(symbol)
+                asset  = canonical_crypto_asset(symbol)
                 if not asset or not is_crypto(asset):
                     return   # only crypto whale data is valid
 
-                sentiment = float(alert.get("sentiment", 0.1))
-                direction = "BUY" if sentiment >= 0.0 else "SELL"
                 size_usd  = float(alert.get("value_usd", alert.get("usd_amount", 0)))
                 if size_usd < 500_000:
                     return
 
-                ingest_whale_alert(
+                record_whale_alert_event(
                     asset=asset,
-                    direction=direction,
-                    size_usd=size_usd,
                     source=alert.get("source", "whale_alert"),
-                    sentiment=sentiment,
+                    value_usd=size_usd,
+                    raw_text=alert.get("raw_text", alert.get("title", "")),
+                    sentiment=float(alert.get("sentiment", 0.1)),
+                    timestamp=alert.get("alert_time") or alert.get("created_at") or alert.get("date"),
+                    metadata={
+                        "title": alert.get("title", ""),
+                        "url": alert.get("url", ""),
+                    },
+                    external_id=str(alert.get("external_id") or alert.get("url") or ""),
                 )
             except Exception as e:
                 logger.error(f"[bot] on_whale_alert callback error: {e}")
 
         _whale_mgr.on_alert = _on_whale_alert
         _whale_mgr.start_monitoring()
-        logger.info("[bot] WhaleAlertManager started — Layer 6 whale cache active")
+        logger.info("[bot] WhaleAlertManager started — market intelligence feed active")
     except Exception as e:
         logger.warning(f"[bot] WhaleAlertManager failed to start: {e}")
 

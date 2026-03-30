@@ -24,14 +24,14 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0;position:sticky;top:0;z-index:10}
 .page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
 .page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--cy)}
-.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px;min-width:0}
 .content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:flex;flex-direction:column;gap:12px;min-height:0}
 
 /* PANEL */
-.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;min-height:80px}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;min-height:auto;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:0}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
-.panel-body{padding:12px 16px}
+.panel-body{padding:12px 16px;flex:1}
 .tb-btn{padding:4px 10px;border-radius:5px;font-size:11px;cursor:pointer;border:1px solid var(--bd);background:transparent;color:var(--tx2);transition:.12s}
 .tb-btn.on,.tb-btn:hover{background:var(--bl);border-color:var(--bl);color:#fff}
 
@@ -45,19 +45,19 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .resize-handle:hover::after{background:var(--bl)}
 
 /* HEATMAP */
-.heatmap-scroll{overflow:visible}
-.heatmap-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:12px 16px}
-.hm-cell{border-radius:6px;padding:10px 8px;text-align:center;cursor:pointer;transition:.15s}
+.heatmap-scroll{padding:12px 16px 16px;overflow:visible;min-height:132px}
+.heatmap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:0}
+.hm-cell{border-radius:6px;padding:12px 10px;text-align:center;cursor:pointer;transition:.15s;min-height:92px;display:flex;flex-direction:column;justify-content:center}
 .hm-cell:hover{opacity:.85;transform:scale(1.03)}
 .hm-asset{font-size:11px;font-weight:600;margin-bottom:2px}
 .hm-pct{font-size:13px;font-weight:700}
 .hm-price{font-size:10px;opacity:.7;margin-top:1px}
 
 /* CORRELATION */
-.corr-scroll{overflow:auto;padding:8px;width:100%;box-sizing:border-box}
-.corr-grid{display:grid;gap:2px;width:100%}
-.corr-cell{width:100%;min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:9px;font-weight:600;cursor:default}
-.corr-label{font-size:9px;color:var(--tx3);display:flex;align-items:center;justify-content:flex-end;padding-right:4px;height:32px;white-space:nowrap;min-width:40px}
+.corr-scroll{overflow:auto;padding:12px 16px 16px;width:100%;box-sizing:border-box;min-height:260px;max-height:420px}
+.corr-grid{display:grid;gap:4px;min-width:100%;width:max-content}
+.corr-cell{width:100%;min-width:46px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:10px;font-weight:600;cursor:default}
+.corr-label{font-size:10px;color:var(--tx3);display:flex;align-items:center;justify-content:flex-end;padding-right:6px;height:36px;white-space:nowrap;min-width:64px}
 
 select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--tx);outline:none}
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.mu{color:var(--tx2)}
@@ -69,7 +69,23 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
 .spinner{width:14px;height:14px;border:2px solid var(--bd);border-top-color:var(--bl);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 @keyframes spin{to{transform:rotate(360deg)}}
 .status-tag{font-size:10px;padding:2px 7px;border-radius:10px;background:rgba(41,121,255,.15);color:var(--bl)}
-.chart-controls{display:flex;gap:4px}
+.chart-controls{display:flex;gap:4px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
+.chart-controls::-webkit-scrollbar{display:none}
+.dp-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,1fr);gap:12px;padding:12px 16px;align-items:start}
+.dp-stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.dp-stat{background:var(--s2);border-radius:8px;padding:10px 12px;min-height:82px}
+.dp-val{font-size:18px;font-weight:700;margin-bottom:2px}
+.dp-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
+.dp-sub{font-size:11px;color:var(--tx2);margin-top:10px}
+.dp-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.dp-tag{padding:3px 8px;border-radius:999px;background:rgba(41,121,255,.12);color:var(--bl);font-size:10px;letter-spacing:.4px;text-transform:uppercase}
+.event-risk-card{background:var(--s2);border-radius:8px;padding:10px 12px;margin-bottom:10px;min-height:78px}
+.event-risk-title{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.event-risk-text{font-size:12px;line-height:1.4}
+.event-item{padding:8px 0;border-bottom:1px solid rgba(30,38,53,.5)}
+.event-item:last-child{border:none}
+.event-name{font-size:12px;margin-bottom:3px}
+.event-meta{font-size:10px;color:var(--tx3)}
 
 /* ── MOBILE HAMBURGER & SIDEBAR OVERLAY ─────────────────────────────── */
 .hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;
@@ -88,7 +104,14 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
     box-shadow:4px 0 24px rgba(0,0,0,.5);overflow-y:auto}
   .sidebar.open{left:0}
   .sb-overlay.open{display:block}
-  .topbar{padding:0 12px}
+  .topbar{height:auto;min-height:52px;padding:8px 12px;align-items:flex-start;flex-wrap:wrap}
+  .tb-right{width:100%;margin-left:0;gap:8px;flex-wrap:wrap}
+  #chartAsset{min-width:140px;flex:1 1 140px}
+  .chart-controls{max-width:100%;flex:1 1 100%}
+  .dp-grid{grid-template-columns:1fr}
+  .dp-stat-grid{grid-template-columns:repeat(2,1fr)}
+  .heatmap-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .corr-scroll{min-height:220px;max-height:none}
 }
 
 /* ── MOBILE SCROLL FIX ───────────────────────────────────────────────── */
@@ -130,7 +153,9 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
           <button class="tb-btn" onclick="setTf('1m',this)">1m</button>
           <button class="tb-btn on" onclick="setTf('5m',this)">5m</button>
           <button class="tb-btn" onclick="setTf('15m',this)">15m</button>
+          <button class="tb-btn" onclick="setTf('30m',this)">30m</button>
           <button class="tb-btn" onclick="setTf('1h',this)">1h</button>
+          <button class="tb-btn" onclick="setTf('4h',this)">4h</button>
           <button class="tb-btn" onclick="setTf('1d',this)">1d</button>
         </div>
       </div>
@@ -149,6 +174,28 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
           <div id="lwChart"></div>
         </div>
         <div class="resize-handle" id="resizeHandle" title="Drag to resize chart"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">🧭 Market Data Plane</span>
+          <span id="dataPlaneStatus" class="status-tag" style="margin-left:auto">Loading…</span>
+        </div>
+        <div class="dp-grid">
+          <div>
+            <div class="dp-stat-grid" id="dataPlaneSummary">
+              <div class="dp-stat skeleton" style="height:74px"></div>
+              <div class="dp-stat skeleton" style="height:74px"></div>
+              <div class="dp-stat skeleton" style="height:74px"></div>
+              <div class="dp-stat skeleton" style="height:74px"></div>
+            </div>
+            <div class="dp-sub" id="dataPlaneDetail">Loading asset universe…</div>
+            <div class="dp-tags" id="dataPlaneTags"></div>
+          </div>
+          <div id="eventRiskPanel">
+            <div class="event-risk-card skeleton" style="height:78px"></div>
+          </div>
+        </div>
       </div>
 
       <!-- HEATMAP -->
@@ -202,6 +249,65 @@ let lwChart, cSeries, vSeries, sseSource;
 let _lastAsset = null, _lastTf = null, _userZoomed = false;
 let currentAsset = 'EUR/USD', currentTf = '5m';
 let candlesLoading = false;
+let _chartCandles = [];
+let _chartTfUsed = '5m';
+
+function intervalSeconds(tf) {
+  return {
+    '1m': 60,
+    '5m': 300,
+    '15m': 900,
+    '30m': 1800,
+    '1h': 3600,
+    '4h': 14400,
+    '1d': 86400,
+  }[tf] || null;
+}
+
+function volumeBarFor(candle) {
+  return {
+    time: candle.time,
+    value: candle.volume || 0,
+    color: candle.close >= candle.open ? 'rgba(0,208,132,.25)' : 'rgba(255,69,96,.25)',
+  };
+}
+
+function applyLiveTickToChart(price, ts) {
+  if (!Number.isFinite(price) || !_chartCandles.length) return;
+  const sec = intervalSeconds(_chartTfUsed || currentTf);
+  if (!sec) return;
+
+  const bucket = Math.floor(Number(ts) / sec) * sec;
+  const last = _chartCandles[_chartCandles.length - 1];
+  if (!last || !Number.isFinite(last.time)) return;
+
+  let next;
+  if (last.time === bucket) {
+    next = {
+      ...last,
+      high: Math.max(Number(last.high), price),
+      low: Math.min(Number(last.low), price),
+      close: price,
+    };
+    _chartCandles[_chartCandles.length - 1] = next;
+  } else if (bucket > last.time) {
+    next = {
+      time: bucket,
+      open: Number(last.close),
+      high: Math.max(Number(last.close), price),
+      low: Math.min(Number(last.close), price),
+      close: price,
+      volume: 0,
+    };
+    _chartCandles.push(next);
+    if (_chartCandles.length > 4000) _chartCandles = _chartCandles.slice(-4000);
+  } else {
+    return;
+  }
+
+  cSeries.update(next);
+  vSeries.update(volumeBarFor(next));
+}
 
 // ── Fetch helper ──────────────────────────────────────────────────────────────
 async function fetchWithTimeout(url, ms=20000) {
@@ -275,6 +381,11 @@ async function loadCandles() {
     _lastTf    = currentTf;
     const usedTf = d.interval_used || currentTf;
     const isFallback = usedTf !== currentTf;
+    const requestedBars = Number(d.bars_requested || d.candles.length);
+    const returnedBars = d.candles.length;
+    const barLabel = returnedBars < requestedBars
+      ? `${returnedBars}/${requestedBars} bars`
+      : `${returnedBars} bars`;
 
     // Save current visible range before updating data
     let savedRange = null;
@@ -282,15 +393,13 @@ async function loadCandles() {
       try { savedRange = lwChart.timeScale().getVisibleRange(); } catch(e) {}
     }
 
+    _chartCandles = d.candles.slice();
+    _chartTfUsed = usedTf;
     cSeries.setData([]);
     vSeries.setData([]);
 
-    cSeries.setData(d.candles);
-    vSeries.setData(d.candles.map(c => ({
-      time:  c.time,
-      value: c.volume,
-      color: c.close >= c.open ? 'rgba(0,208,132,.25)' : 'rgba(255,69,96,.25)',
-    })));
+    cSeries.setData(_chartCandles);
+    vSeries.setData(_chartCandles.map(volumeBarFor));
 
     if (assetChanged || !_userZoomed) {
       // New asset or first load — fit everything
@@ -303,11 +412,12 @@ async function loadCandles() {
     }
 
     st.textContent = isFallback
-      ? `${d.candles.length} bars · requested ${currentTf}, showing ${usedTf}`
-      : `${d.candles.length} bars · ${usedTf}`;
+      ? `${barLabel} · requested ${currentTf}, showing ${usedTf}`
+      : `${barLabel} · ${usedTf}`;
     st.style.background = isFallback ? 'rgba(255,165,0,.15)' : 'rgba(0,208,132,.12)';
     st.style.color = isFallback ? 'var(--am)' : 'var(--gr)';
   } else {
+    _chartCandles = [];
     st.textContent = `No ${currentTf} data`;
     st.style.background = 'rgba(255,69,96,.12)';
     st.style.color = 'var(--rd)';
@@ -344,6 +454,75 @@ async function loadAssets() {
   ).join('');
 }
 
+async function loadDataPlane() {
+  const status = document.getElementById('dataPlaneStatus');
+  const summaryEl = document.getElementById('dataPlaneSummary');
+  const detailEl = document.getElementById('dataPlaneDetail');
+  const tagsEl = document.getElementById('dataPlaneTags');
+  const eventEl = document.getElementById('eventRiskPanel');
+
+  status.textContent = 'Loading…';
+  status.style.background = 'rgba(41,121,255,.15)';
+  status.style.color = 'var(--bl)';
+
+  const page = await fetchMarketIntelligenceOverview();
+  const assetPayload = page.success ? (page.assets || {assets:[]}) : await fetchWithTimeout('/api/chart/assets', 8000) || {assets:[]};
+  const eventPayload = await fetchWithTimeout('/api/market/events', 15000) || {success:false, events:[], risk_outlook:{}};
+  const assets = assetPayload.assets || [];
+  const grouped = assets.reduce((acc, item) => {
+    acc[item.category] = (acc[item.category] || 0) + 1;
+    return acc;
+  }, {});
+
+  summaryEl.innerHTML = [
+    {label:'Active Assets', value:String(assets.length), color:'var(--cy)'},
+    {label:'Primary Feed', value:'Deriv', color:'var(--gr)'},
+    {label:'Secondary Feed', value:'Binance', color:'var(--am)'},
+    {label:'Chart Intervals', value:'7', color:'var(--bl)'},
+  ].map(item => `
+    <div class="dp-stat">
+      <div class="dp-val" style="color:${item.color}">${item.value}</div>
+      <div class="dp-lbl">${item.label}</div>
+    </div>
+  `).join('');
+
+  detailEl.textContent = assets.length
+    ? 'Deriv is the primary live market feed. Binance only backfills unsupported alt-crypto symbols.'
+    : 'Asset universe unavailable right now.';
+
+  tagsEl.innerHTML = Object.entries(grouped).map(([category, count]) => `
+    <div class="dp-tag">${category} ${count}</div>
+  `).join('');
+
+  const risk = eventPayload.risk_outlook || {};
+  const events = eventPayload.events || [];
+  const highImpactCount = events.filter(e => String(e.impact || '').toUpperCase() === 'HIGH').length;
+  const riskReduce = !!risk.reduce_trading;
+  const riskColor = riskReduce ? 'var(--rd)' : highImpactCount ? 'var(--am)' : 'var(--gr)';
+  const riskText = risk.summary || (riskReduce
+    ? 'Reduce risk around the next high-impact macro windows.'
+    : highImpactCount
+      ? `${highImpactCount} high-impact events on deck.`
+      : 'No elevated event-risk flags right now.');
+
+  eventEl.innerHTML = `
+    <div class="event-risk-card">
+      <div class="event-risk-title">Event Risk Outlook</div>
+      <div class="event-risk-text" style="color:${riskColor}">${riskText}</div>
+    </div>
+    ${(events.length ? events.slice(0,4) : [{title:'No scheduled events', date:'', impact:''}]).map(event => `
+      <div class="event-item">
+        <div class="event-name">${event.title || event.event || 'No scheduled events'}</div>
+        <div class="event-meta">${event.time || event.date || ''}${event.impact ? ` · ${event.impact}` : ''}</div>
+      </div>
+    `).join('')}
+  `;
+
+  status.textContent = assets.length ? `${assets.length} assets` : 'Unavailable';
+  status.style.background = assets.length ? 'rgba(0,208,132,.12)' : 'rgba(255,69,96,.12)';
+  status.style.color = assets.length ? 'var(--gr)' : 'var(--rd)';
+}
+
 // ── Live price stream ─────────────────────────────────────────────────────────
 function startStream() {
   if (sseSource) sseSource.close();
@@ -355,6 +534,7 @@ function startStream() {
         const price = d.price;
         document.getElementById('livePrice').textContent =
           price ? (price < 10 ? price.toFixed(5) : price.toFixed(2)) : '—';
+        if (price && d.ts) applyLiveTickToChart(Number(price), Number(d.ts));
       }
     } catch(err) {}
   };
@@ -370,8 +550,7 @@ async function loadHeatmap(manual=false) {
     st.style.background = 'rgba(41,121,255,.15)';
     st.style.color = 'var(--bl)';
   }
-  const page = await fetchMarketIntelligenceOverview();
-  const d = page.success ? (page.heatmap || {}) : await fetchWithTimeout('/api/market/heatmap', 30000);
+  const d = await fetchWithTimeout('/api/market/heatmap', 40000);
   if (!d || !d.items || !d.items.length) {
     grid.innerHTML = '<div class="empty" style="grid-column:span 5">Price data loading — check back in 30s</div>';
     st.textContent = 'Unavailable';
@@ -394,9 +573,13 @@ async function loadHeatmap(manual=false) {
       <div class="hm-price">${i.price > 10 ? i.price.toFixed(2) : i.price.toFixed(5)}</div>
     </div>`;
   }).join('');
-  st.textContent = `${d.items.length} assets`;
-  st.style.background = 'rgba(0,208,132,.12)';
-  st.style.color = 'var(--gr)';
+  const expectedAssets = Number(d.expected_assets || d.items.length);
+  const partial = !!d.partial || d.items.length < expectedAssets;
+  st.textContent = partial
+    ? `${d.items.length}/${expectedAssets} assets`
+    : `${d.items.length} assets`;
+  st.style.background = partial ? 'rgba(255,165,0,.15)' : 'rgba(0,208,132,.12)';
+  st.style.color = partial ? 'var(--am)' : 'var(--gr)';
 }
 
 // ── Correlation matrix — with retry ──────────────────────────────────────────
@@ -417,14 +600,14 @@ async function loadCorrelation(manual=false) {
     </div>`;
   }
 
-  const d = await fetchWithTimeout('/api/correlation-matrix', 45000);
+  const d = await fetchWithTimeout('/api/correlation-matrix', 60000);
   corrAttempts++;
 
-  if (!d || !d.labels || !d.matrix) {
+  if (!d || !d.success || !Array.isArray(d.labels) || !Array.isArray(d.matrix) || !d.labels.length || !d.matrix.length) {
     const msg = corrAttempts < 3
       ? `Fetching price history… retry ${corrAttempts}/3`
       : 'Unavailable — needs 30d price history';
-    st.textContent = corrAttempts < 3 ? 'Loading…' : 'Unavailable';
+    st.textContent = corrAttempts < 3 ? `Loading ${corrAttempts}/3…` : 'Unavailable';
     st.style.background = corrAttempts < 3 ? 'rgba(255,165,0,.15)' : 'rgba(255,69,96,.12)';
     st.style.color = corrAttempts < 3 ? 'var(--am)' : 'var(--rd)';
     wrap.innerHTML = `<div class="empty">${msg}</div>`;
@@ -448,19 +631,23 @@ async function loadCorrelation(manual=false) {
   d.matrix.forEach((row, i) => {
     html += `<div class="corr-label">${d.labels[i].replace('-USD','').replace('/USD','').replace('=F','').replace('^','')}</div>`;
     row.forEach((val, j) => {
-      const v   = parseFloat(val);
+      const parsed = Number(val);
+      const valid = Number.isFinite(parsed);
+      const v   = valid ? parsed : 0;
       const abs = Math.abs(v);
       let bg;
-      if (i === j)   bg = 'rgba(41,121,255,.2)';
+      if (!valid)    bg = 'rgba(122,136,153,.12)';
+      else if (i === j)   bg = 'rgba(41,121,255,.2)';
       else if (v > 0) bg = `rgba(0,208,132,${abs * 0.8})`;
       else            bg = `rgba(255,69,96,${abs * 0.8})`;
-      const tc = i === j ? 'var(--bl)' : abs > 0.5 ? (v > 0 ? 'var(--gr)' : 'var(--rd)') : 'var(--tx2)';
-      html += `<div class="corr-cell" style="background:${bg};color:${tc}" title="${d.labels[i]} / ${d.labels[j]}: ${v}">${v.toFixed(2)}</div>`;
+      const tc = !valid ? 'var(--tx3)' : i === j ? 'var(--bl)' : abs > 0.5 ? (v > 0 ? 'var(--gr)' : 'var(--rd)') : 'var(--tx2)';
+      const display = valid ? v.toFixed(2) : '—';
+      html += `<div class="corr-cell" style="background:${bg};color:${tc}" title="${d.labels[i]} / ${d.labels[j]}: ${valid ? v : 'n/a'}">${display}</div>`;
     });
   });
   html += '</div>';
   wrap.innerHTML = html;
-  st.textContent = 'Updated';
+  st.textContent = `${d.labels.length} assets`;
   st.style.background = 'rgba(0,208,132,.12)';
   st.style.color = 'var(--gr)';
 }
@@ -548,6 +735,7 @@ function _boot() {
   }
   initChart();
   loadAssets().then(() => { loadCandles(); startStream(); });
+  setTimeout(() => loadDataPlane(), 150);
   setTimeout(() => loadHeatmap(), 300);
   setTimeout(() => loadCorrelation(), 1000);
 }
@@ -555,6 +743,7 @@ _boot();
 
 // Refresh chart every 60s, heatmap every 60s
 setInterval(() => { loadCandles(); }, 15000);  // 15s — responsive within-candle updates
+setInterval(() => { loadDataPlane(); }, 60000);
 setInterval(() => { loadHeatmap(); }, 60000);  // 60s — heatmap doesn't need to be faster
 </script>
 

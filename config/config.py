@@ -10,19 +10,22 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MARKET DATA APIs
+# MARKET DATA
 # ─────────────────────────────────────────────────────────────────────────────
 
-ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
-FINNHUB_API_KEY       = os.getenv("FINNHUB_KEY", "")
-TWELVE_DATA_API_KEY   = os.getenv("TWELVEDATA_KEY", "")
-ITICK_TOKEN           = os.getenv("ITICK_TOKEN", "")
-OILPRICE_API_KEY      = os.getenv("OILPRICE_API_KEY", "")
+DERIV_ENABLED         = os.getenv("DERIV_ENABLED", "true").lower() == "true"
+DERIV_APP_ID          = os.getenv("DERIV_APP_ID", "").strip()
+DERIV_TOKEN           = os.getenv("DERIV_TOKEN", "").strip()
+DERIV_SYMBOL_MAP      = os.getenv("DERIV_SYMBOL_MAP", "")
+BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
+EIA_API_KEY           = os.getenv("EIA_API_KEY", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NEWS APIs
 # ─────────────────────────────────────────────────────────────────────────────
 
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
+FINNHUB_API_KEY       = os.getenv("FINNHUB_KEY", "")
 NEWSAPI_KEY     = os.getenv("NEWSAPI_KEY", "")
 GNEWS_KEY       = os.getenv("GNEWS_KEY", "")
 RAPIDAPI_KEY    = os.getenv("RAPIDAPI_KEY", "")
@@ -30,6 +33,8 @@ MARKETAUX_TOKEN = os.getenv("MARKETAUX_TOKEN", "")
 APIFY_TOKEN     = os.getenv("APIFY_TOKEN", "")
 WHALE_ALERT_KEY = os.getenv("WHALE_ALERT_KEY", "")
 FRED_API_KEY    = os.getenv("FRED_API_KEY", "")
+BLS_API_KEY     = os.getenv("BLS_API_KEY", "")
+BEA_API_KEY     = os.getenv("BEA_API_KEY", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OPENAI
@@ -51,22 +56,34 @@ TWITTER_ACCESS_SECRET = os.getenv("TWITTER_ACCESS_SECRET", "")
 # TELEGRAM — COMMAND BOT
 # ─────────────────────────────────────────────────────────────────────────────
 
-TELEGRAM_TOKEN   = os.getenv("COMMAND_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("COMMAND_BOT_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
+COMMAND_BOT_TOKEN   = os.getenv("COMMAND_BOT_TOKEN", "").strip()
+COMMAND_BOT_CHAT_ID = os.getenv("COMMAND_BOT_CHAT_ID", "").strip()
+DEBUG_FORCE_TELEGRAM = os.getenv("DEBUG_FORCE_TELEGRAM", "false").lower() == "true"
+TELEGRAM_PID_FILE    = Path(os.getenv("TELEGRAM_PID_FILE", "telegram_bot.pid"))
+# Export compatibility aliases for runtime code, but keep COMMAND_BOT_* as
+# the single source of truth in .env.
+TELEGRAM_TOKEN   = COMMAND_BOT_TOKEN
+TELEGRAM_CHAT_ID = COMMAND_BOT_CHAT_ID
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TELEGRAM — WHALE BOT
 # ─────────────────────────────────────────────────────────────────────────────
 
 WHALE_TELEGRAM_TOKEN = os.getenv("WHALE_TELEGRAM_TOKEN", "")
-# Chat ID for intelligence alerts (Phase 7 + Phase 11 monitoring).
+# Chat ID for intelligence alerts and runtime monitoring.
 # Set INTELLIGENCE_CHAT_ID in .env to send to a different chat.
-# Defaults to your main chat ID if not set.
-INTELLIGENCE_CHAT_ID = os.getenv("INTELLIGENCE_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
+# Defaults to the command-bot chat if not set.
+INTELLIGENCE_CHAT_ID = (
+    os.getenv("INTELLIGENCE_CHAT_ID", "")
+    or COMMAND_BOT_CHAT_ID
+).strip()
 TELEGRAM_API_ID      = os.getenv("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH    = os.getenv("TELEGRAM_API_HASH", "")
 TELEGRAM_PHONE       = os.getenv("TELEGRAM_PHONE", "")
 TELEGRAM_SESSION     = os.getenv("TELEGRAM_SESSION", "whale_session")
+BNB_RPC_URL          = os.getenv("BNB_RPC_URL", "https://bsc-dataseed1.binance.org").strip()
+SOLANA_RPC_URL       = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
+XRPL_RPC_URL         = os.getenv("XRPL_RPC_URL", "https://s1.ripple.com:51234").strip()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EMAIL
@@ -82,6 +99,8 @@ EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 DEVELOPMENT_MODE = os.getenv("DEVELOPMENT_MODE", "false").lower() == "true"
 DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
 SESSION_TOKEN_TTL = int(os.getenv("SESSION_TOKEN_TTL", "3600"))  # 1 hour default
+TZ_OFFSET_HOURS   = int(os.getenv("TZ_OFFSET_HOURS", "3"))
+TZ_NAME           = os.getenv("TZ_NAME", "UTC+3").strip() or "UTC+3"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATABASE
@@ -89,21 +108,20 @@ SESSION_TOKEN_TTL = int(os.getenv("SESSION_TOKEN_TTL", "3600"))  # 1 hour defaul
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://user:password@localhost:5432/trading_bot"
-)
-DB_HOST     = os.getenv("DB_HOST", "localhost")
-DB_PORT     = int(os.getenv("DB_PORT", "5432"))
-DB_NAME     = os.getenv("DB_NAME", "trading_bot")
-DB_USER     = os.getenv("DB_USER", "user")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+    ""
+).strip()
+DB_CONNECT_RETRIES = int(os.getenv("DB_CONNECT_RETRIES", "5"))
+DB_RETRY_DELAY_SECONDS = int(os.getenv("DB_RETRY_DELAY_SECONDS", "3"))
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+DB_POOL_RECYCLE_SECONDS = int(os.getenv("DB_POOL_RECYCLE_SECONDS", "3600"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REDIS
 # ─────────────────────────────────────────────────────────────────────────────
 
 REDIS_URL      = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-REDIS_HOST     = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT_NUM = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_CACHE_PREFIX = os.getenv("REDIS_CACHE_PREFIX", "trading_bot:cache:")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ML SERVICE
@@ -116,14 +134,17 @@ ML_SERVICE_PORT = int(os.getenv("ML_SERVICE_PORT", "9100"))
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_BALANCE         = float(os.getenv("DEFAULT_BALANCE", "10000"))
-DEFAULT_RISK            = float(os.getenv("DEFAULT_RISK", "1.0"))
 MAX_POSITIONS           = int(os.getenv("MAX_POSITIONS", "8"))
-DEFAULT_ACCOUNT_BALANCE = float(os.getenv("DEFAULT_ACCOUNT_BALANCE", "10000"))
 DEFAULT_RISK_PER_TRADE      = float(os.getenv("DEFAULT_RISK_PER_TRADE",      "1.5"))
 CRYPTO_RISK_PER_TRADE       = float(os.getenv("CRYPTO_RISK_PER_TRADE",       "2.0"))
 COMMODITIES_RISK_PER_TRADE  = float(os.getenv("COMMODITIES_RISK_PER_TRADE",  "2.0"))
 INDICES_RISK_PER_TRADE      = float(os.getenv("INDICES_RISK_PER_TRADE",      "1.5"))
 MAX_RISK_PER_TRADE          = float(os.getenv("MAX_RISK_PER_TRADE",          "3.0"))
+DAILY_LOSS_LIMIT_PERCENT    = float(os.getenv("DAILY_LOSS_LIMIT_PERCENT",    "5.0"))
+DRAWDOWN_HALT_PERCENT       = float(os.getenv("DRAWDOWN_HALT_PERCENT",       "8.0"))
+DRAWDOWN_REDUCE_PERCENT     = float(
+    os.getenv("DRAWDOWN_REDUCE_PERCENT", str(max(0.0, min(5.0, DRAWDOWN_HALT_PERCENT - 2.0))))
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRADING — SPREAD THRESHOLDS (Asset-Specific)
@@ -149,7 +170,7 @@ VOLATILITY_FILTER         = os.getenv("VOLATILITY_FILTER", "true").lower() == "t
 CRYPTO_HIGH_RISK          = os.getenv("CRYPTO_HIGH_RISK", "true").lower() == "true"
 CRYPTO_MIN_VOLUME         = int(os.getenv("CRYPTO_MIN_VOLUME", "1000000"))
 CRYPTO_VOLATILITY_MULT    = float(os.getenv("CRYPTO_VOLATILITY_MULTIPLIER", "1.5"))
-# CRYPTO_MAX_POSITION_SIZE removed — position sizing now uses MT5 lot-based model
+# Position sizing uses the bot's internal contract-spec model.
 ENABLE_ALERTS             = os.getenv("ENABLE_ALERTS", "true").lower() == "true"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,15 +196,32 @@ MODEL_MAX_AGE_HOURS     = int(os.getenv("MODEL_MAX_AGE_HOURS", "24"))
 MODEL_DIR               = Path(os.getenv("MODEL_DIR", "models"))
 MODEL_DIR.mkdir(exist_ok=True)
 MAX_TRAINING_WORKERS    = int(os.getenv("MAX_TRAINING_WORKERS", "4"))
+MIN_HOLDOUT_ACCURACY    = float(os.getenv("MIN_HOLDOUT_ACCURACY", "0.52"))
+MIN_WALK_FORWARD_ACCURACY = float(os.getenv("MIN_WALK_FORWARD_ACCURACY", "0.52"))
+MIN_WALK_FORWARD_SAMPLES  = int(os.getenv("MIN_WALK_FORWARD_SAMPLES", "60"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA / ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
 
-TIMEFRAMES         = os.getenv("TIMEFRAMES", "1d,1h,15m").split(",")
+TIMEFRAMES         = os.getenv("TIMEFRAMES", "1m,5m,15m,30m,1h,4h,1d").split(",")
 LOOKBACK_PERIOD    = int(os.getenv("LOOKBACK_PERIOD", "100"))
 PREDICTION_HORIZON = int(os.getenv("PREDICTION_HORIZON", "5"))
 CACHE_TTL          = int(os.getenv("CACHE_TTL", "300"))
+MARKET_DATA_QUOTE_CACHE_TTL = int(os.getenv("MARKET_DATA_QUOTE_CACHE_TTL", "5"))
+MARKET_DATA_OHLCV_CACHE_TTL = int(os.getenv("MARKET_DATA_OHLCV_CACHE_TTL", "60"))
+MARKET_DATA_OHLCV_SLOW_CACHE_TTL = int(os.getenv("MARKET_DATA_OHLCV_SLOW_CACHE_TTL", "300"))
+FREE_INTEL_ENABLED = os.getenv("FREE_INTEL_ENABLED", "true").lower() == "true"
+FREE_INTEL_CACHE_SECONDS = int(os.getenv("FREE_INTEL_CACHE_SECONDS", "1800"))
+
+FRED_US_2Y_SERIES       = os.getenv("FRED_US_2Y_SERIES", "DGS2")
+FRED_US_10Y_SERIES      = os.getenv("FRED_US_10Y_SERIES", "DGS10")
+FRED_US_REAL_10Y_SERIES = os.getenv("FRED_US_REAL_10Y_SERIES", "DFII10")
+FRED_USD_BROAD_SERIES   = os.getenv("FRED_USD_BROAD_SERIES", "DTWEXBGS")
+FRED_VIX_SERIES         = os.getenv("FRED_VIX_SERIES", "VIXCLS")
+
+EIA_CRUDE_STOCKS_SERIES = os.getenv("EIA_CRUDE_STOCKS_SERIES", "PET.WCESTUS1.W")
+CFTC_ENABLED            = os.getenv("CFTC_ENABLED", "true").lower() == "true"
 
 # News and sentiment freshness window (default 12 hours, adjustable 6-12h)
 SENTIMENT_MAX_AGE_HOURS = int(os.getenv("SENTIMENT_MAX_AGE_HOURS", "12"))
@@ -197,6 +235,51 @@ SENTIMENT_MAX_AGE_HOURS = int(os.getenv("SENTIMENT_MAX_AGE_HOURS", "12"))
 # ─────────────────────────────────────────────────────────────────────────────
 
 TRADING_TIMEFRAME = os.getenv("TRADING_TIMEFRAME", "15m")
+FOREX_TRADING_TIMEFRAME = os.getenv("FOREX_TRADING_TIMEFRAME", TRADING_TIMEFRAME)
+CRYPTO_TRADING_TIMEFRAME = os.getenv("CRYPTO_TRADING_TIMEFRAME", TRADING_TIMEFRAME)
+COMMODITIES_TRADING_TIMEFRAME = os.getenv(
+    "COMMODITIES_TRADING_TIMEFRAME",
+    TRADING_TIMEFRAME,
+)
+INDICES_TRADING_TIMEFRAME = os.getenv(
+    "INDICES_TRADING_TIMEFRAME",
+    TRADING_TIMEFRAME,
+)
+
+CATEGORY_TRADING_TIMEFRAMES: dict = {
+    "forex": FOREX_TRADING_TIMEFRAME,
+    "crypto": CRYPTO_TRADING_TIMEFRAME,
+    "commodities": COMMODITIES_TRADING_TIMEFRAME,
+    "indices": INDICES_TRADING_TIMEFRAME,
+}
+
+
+def get_trading_timeframe(category: str = "") -> str:
+    return CATEGORY_TRADING_TIMEFRAMES.get((category or "").lower(), TRADING_TIMEFRAME)
+
+
+def get_timeframe_periods(interval: str) -> int:
+    return {
+        "1m": 600,
+        "5m": 500,
+        "15m": 500,
+        "30m": 400,
+        "1h": 300,
+        "4h": 200,
+        "1d": LOOKBACK_PERIOD,
+    }.get(interval, LOOKBACK_PERIOD)
+
+
+def get_chart_timeframe_periods(interval: str) -> int:
+    return {
+        "1m": 1000,
+        "5m": 1000,
+        "15m": 1000,
+        "30m": 1000,
+        "1h": 1000,
+        "4h": 1000,
+        "1d": 3000,
+    }.get(interval, get_timeframe_periods(interval))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM
@@ -210,14 +293,30 @@ SCAN_INTERVAL_SECONDS  = int(os.getenv("SCAN_INTERVAL_SECONDS", "45"))
 MAX_SCAN_WORKERS       = int(os.getenv("MAX_SCAN_WORKERS", "8"))
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SIGNAL GOVERNANCE
+# ─────────────────────────────────────────────────────────────────────────────
+
+GOVERNANCE_VALIDATION_DAYS = int(os.getenv("GOVERNANCE_VALIDATION_DAYS", "30"))
+GOVERNANCE_VALIDATION_HORIZON = os.getenv("GOVERNANCE_VALIDATION_HORIZON", "1H").upper()
+GOVERNANCE_MIN_LIVE_SAMPLES = int(os.getenv("GOVERNANCE_MIN_LIVE_SAMPLES", "25"))
+GOVERNANCE_MIN_LIVE_ACCURACY = float(os.getenv("GOVERNANCE_MIN_LIVE_ACCURACY", "54.0"))
+GOVERNANCE_MIN_ML_CONFIDENCE = float(os.getenv("GOVERNANCE_MIN_ML_CONFIDENCE", "0.15"))
+GOVERNANCE_MIN_RISK_REWARD = float(os.getenv("GOVERNANCE_MIN_RISK_REWARD", "1.5"))
+GOVERNANCE_MIN_REAL_SOURCES = int(os.getenv("GOVERNANCE_MIN_REAL_SOURCES", "3"))
+GOVERNANCE_REQUIRE_MODEL_RESEARCH = os.getenv("GOVERNANCE_REQUIRE_MODEL_RESEARCH", "true").lower() == "true"
+GOVERNANCE_REQUIRE_NON_DELAYED_PRICE = os.getenv("GOVERNANCE_REQUIRE_NON_DELAYED_PRICE", "true").lower() == "true"
+GOVERNANCE_REQUIRE_NON_DELAYED_OHLCV = os.getenv("GOVERNANCE_REQUIRE_NON_DELAYED_OHLCV", "true").lower() == "true"
+GOVERNANCE_ENABLE_FOREX_FILTER = os.getenv("GOVERNANCE_ENABLE_FOREX_FILTER", "true").lower() == "true"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ASSET UNIVERSE — your 18 assets only
-# These lists are used by sentiment_analyzer, news_sources, and other
+# These lists are used by sentiment, intelligence, and other
 # services that need to know which assets to track.
 # The canonical trading registry lives in core/assets.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 FOREX_PAIRS: list = [
-    "EUR/USD", "GBP/JPY", "GBP/USD",
+    "EUR/USD", "EUR/JPY", "GBP/JPY", "GBP/USD",
     "AUD/USD", "USD/JPY", "USD/CAD",
 ]
 
@@ -227,16 +326,15 @@ CRYPTOCURRENCIES: list = [
 ]
 
 COMMODITIES: list = [
-    "GC=F",   # Gold
-    "SI=F",   # Silver
-    "CL=F",   # Oil
+    "XAU/USD",  # Gold
+    "XAG/USD",  # Silver
 ]
 
 INDICES: list = [
-    "^DJI",   # US30
-    "^IXIC",  # US100
-    "^GSPC",  # US500
-    "^FTSE",  # FTSE
+    "US30",   # US30
+    "US100",  # US100
+    "US500",  # US500
+    "UK100",  # FTSE
 ]
 
 STOCKS: list = []   # not trading stocks

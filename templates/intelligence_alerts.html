@@ -52,6 +52,11 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .empty{text-align:center;padding:24px;color:var(--tx3);font-size:13px}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .metric-card,.panel{animation:fadeUp .3s ease both}
+.outcome-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.outcome-card{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:12px 14px}
+.outcome-kicker{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.outcome-value{font-size:20px;font-weight:700}
+.outcome-note{font-size:11px;color:var(--tx2);margin-top:6px}
 
 /* FILTER TABS */
 .tabs{display:flex;gap:4px;padding:10px 16px 0;border-bottom:1px solid var(--bd)}
@@ -122,6 +127,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   .sidebar.open{left:0}
   .sb-overlay.open{display:block}
   .topbar{padding:0 12px}
+  .outcome-grid{grid-template-columns:1fr}
 }
 
 /* ── MOBILE SCROLL FIX ───────────────────────────────────────────────── */
@@ -165,7 +171,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       <div class="tb-right">
         <span class="tb-time" id="clock">—</span>
         <span class="tb-balance" id="topBalance">—</span>
-        <span class="tb-badge badge-live">Phase 7</span>
+        <span class="tb-badge badge-live">Live</span>
       </div>
     </div>
 
@@ -199,26 +205,53 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       <!-- Intelligence alerts feed -->
       <div class="panel panel-wide" style="animation-delay:.25s">
         <div class="tabs" id="alertTabs">
-          <div class="tab tab-critical active" onclick="filterAlerts('all')">All</div>
-          <div class="tab tab-critical" onclick="filterAlerts('CRITICAL')">Critical</div>
-          <div class="tab tab-high" onclick="filterAlerts('HIGH')">High</div>
-          <div class="tab tab-medium" onclick="filterAlerts('MEDIUM')">Medium</div>
-          <div class="tab tab-low" onclick="filterAlerts('LOW')">Low</div>
+          <div class="tab tab-critical active" onclick="filterAlerts('all', this)">All</div>
+          <div class="tab tab-critical" onclick="filterAlerts('CRITICAL', this)">Critical</div>
+          <div class="tab tab-high" onclick="filterAlerts('HIGH', this)">High</div>
+          <div class="tab tab-medium" onclick="filterAlerts('MEDIUM', this)">Medium</div>
+          <div class="tab tab-low" onclick="filterAlerts('LOW', this)">Low</div>
         </div>
         <div style="flex:1;overflow-y:auto;min-height:200px" id="alertFeed">
           <div class="empty">Loading alerts…</div>
         </div>
       </div>
 
-      <!-- Signal pipeline journal -->
+      <div class="panel panel-wide" style="animation-delay:.28s">
+        <div class="panel-header">
+          <span>🧭</span>
+          <span class="panel-title">Decision Outcomes</span>
+          <span class="panel-badge" id="outcomeBadge">—</span>
+        </div>
+        <div class="panel-body">
+          <div class="outcome-grid">
+            <div class="outcome-card">
+              <div class="outcome-kicker">Executed</div>
+              <div class="outcome-value gn" id="oExecuted">—</div>
+              <div class="outcome-note">Signals that survived the review stack</div>
+            </div>
+            <div class="outcome-card">
+              <div class="outcome-kicker">Rejected</div>
+              <div class="outcome-value rd" id="oRejected">—</div>
+              <div class="outcome-note">Signals stopped before execution</div>
+            </div>
+            <div class="outcome-card">
+              <div class="outcome-kicker">Source Coverage</div>
+              <div class="outcome-value cy" id="oSources">—</div>
+              <div class="outcome-note">Average validated real sources</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Signal decision journal -->
       <div class="panel panel-wide" style="animation-delay:.3s">
         <div class="panel-header">
           <span>🔬</span>
-          <span class="panel-title">Signal Pipeline Journal</span>
+          <span class="panel-title">Decision Review Journal</span>
           <span class="panel-badge" id="journalBadge">—</span>
         </div>
         <div style="flex:1;overflow-y:auto;min-height:200px" id="journalFeed">
-          <div class="empty">Loading pipeline data…</div>
+          <div class="empty">Loading decision data…</div>
         </div>
       </div>
     </div>
@@ -242,10 +275,10 @@ async function checkStatus() {
 }
 checkStatus(); setInterval(checkStatus, 15000);
 
-function filterAlerts(priority) {
+function filterAlerts(priority, tabEl) {
   activeFilter = priority;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  event.target.classList.add('active');
+  if(tabEl) tabEl.classList.add('active');
   renderAlerts();
 }
 
@@ -326,10 +359,23 @@ async function loadJournal() {
     const overview = await fetchIntelligenceOverview();
     const journals = overview.journals || [];
     document.getElementById('journalBadge').textContent = journals.length + ' signals';
+    const executed = journals.filter(j => j.decision === 'SURVIVED').length;
+    const rejected = Math.max(0, journals.length - executed);
+    const sourceJournal = journals.filter(j => Number.isFinite(j.real_sources_valid));
+    const avgSources = sourceJournal.length
+      ? (sourceJournal.reduce((sum, j) => sum + Number(j.real_sources_valid || 0), 0) / sourceJournal.length).toFixed(1)
+      : '—';
+    document.getElementById('oExecuted').textContent = executed;
+    document.getElementById('oRejected').textContent = rejected;
+    document.getElementById('oSources').textContent = avgSources === '—' ? '—' : avgSources;
+    document.getElementById('outcomeBadge').textContent = journals.length ? `${executed} live / ${rejected} rejected` : 'No recent signals';
     if (!journals.length) { document.getElementById('journalFeed').innerHTML = '<div class="empty">No signal journal data</div>'; return; }
 
-    const layerEmoji = dec => dec === 'PASS' ? 'jl-pass' : dec === 'KILLED' ? 'jl-kill' : 'jl-skip';
+    const stepClass = dec => dec === 'PASS' ? 'jl-pass' : dec === 'KILLED' ? 'jl-kill' : 'jl-skip';
     const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[ch]));
+    const formatStepLabel = (name) => String(name || '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, ch => ch.toUpperCase());
     const html = journals.slice(0,15).map(j => {
       const entries  = j.entries || [];
       const survived = j.decision === 'SURVIVED';
@@ -339,22 +385,22 @@ async function loadJournal() {
       const finalScore = Number.isFinite(j.final_policy_score) ? Number(j.final_policy_score).toFixed(3) : '';
       const killedBy = j.killed_by || '';
       const reason = esc(j.final_policy_reason || j.kill_reason || '');
-      const layers   = entries.filter(e => e.layer > 0).map(e =>
-        `<div class="j-layer ${layerEmoji(e.decision)}" title="${esc(e.reason||'')}">${esc((e.name || '').toUpperCase().slice(0,4))}</div>`
+      const steps = entries.filter(e => (e.layer > 0) || e.name).map(e =>
+        `<div class="j-layer ${stepClass(e.decision)}" title="${esc(e.reason||'')}">${esc(formatStepLabel(e.name).slice(0,12))}</div>`
       ).join('');
       const chips = [
         sourcesValid !== null && sourcesRequired !== null ? `<div class="j-chip">Sources ${sourcesValid}/${sourcesRequired}</div>` : '',
         finalPolicy ? `<div class="j-chip ${finalPolicy === 'PASS' ? 'j-chip-good' : 'j-chip-bad'}">Final ${esc(finalPolicy)}</div>` : '',
         finalScore ? `<div class="j-chip">Score ${finalScore}</div>` : '',
-        killedBy ? `<div class="j-chip">Killed by ${esc(String(killedBy).toUpperCase())}</div>` : ''
+        killedBy ? `<div class="j-chip">Rejected at ${esc(formatStepLabel(String(killedBy)))}</div>` : ''
       ].filter(Boolean).join('');
       return `<div class="journal-item">
         <div class="journal-header">
           <div class="j-asset">${esc(j.asset)}</div>
           <div class="j-dir ${j.direction === 'BUY' ? 'j-buy' : 'j-sell'}">${esc(j.direction)}</div>
-          <div class="j-result ${survived ? 'j-survived' : 'j-killed'}">${survived ? 'EXECUTED' : 'KILLED'}</div>
+          <div class="j-result ${survived ? 'j-survived' : 'j-killed'}">${survived ? 'EXECUTED' : 'REJECTED'}</div>
         </div>
-        <div class="j-layers">${layers}</div>
+        <div class="j-layers">${steps}</div>
         ${chips ? `<div class="j-meta">${chips}</div>` : ''}
         ${reason ? `<div class="j-note">${reason}</div>` : ''}
       </div>`;

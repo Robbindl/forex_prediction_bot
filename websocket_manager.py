@@ -1,32 +1,50 @@
-import os
-import websockets
 import asyncio
 import json
 import threading
 import time
-from typing import Dict, List, Callable
 from datetime import datetime
+from typing import Callable, Dict, List, Optional
+
+import websockets
+
+from config.config import DERIV_APP_ID
+from services.binance_market_bridge import binance_market_bridge
+from services.deriv_bridge import deriv_bridge
 from utils.logger import logger
+
+_DERIV_PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 
 class WebSocketManager:
+    """
+    Deriv-first market stream manager with bounded Binance support.
+
+    Deriv remains the live-stream source everywhere it has coverage. Binance is
+    used only for unsupported spot crypto assets such as BNB, SOL, and XRP.
+    """
+
     def __init__(self):
-        self.connections: Dict[str, websockets.WebSocketClientProtocol] = {}
-        self.callbacks: Dict[str, List[Callable]] = {}
+        app_id = str(DERIV_APP_ID or "").strip()
+        self.deriv_url = _DERIV_PUBLIC_WS_URL
+        self._deriv_headers = {"Deriv-App-ID": app_id} if app_id else {}
         self.running = False
         self.loop = None
         self.thread = None
         self.loop_ready = False
-        self._finnhub_disabled = False
-
-        # Connection URLs
-        self.finnhub_url    = "wss://ws.finnhub.io"
-        self.finnhub_token  = os.getenv("FINNHUB_KEY", "")
-        self.bybit_url      = "wss://stream.bybit.com/v5/public/spot"
-        self.twelvedata_url = "wss://ws.twelvedata.com/v1/quotes/price"
-        self.twelvedata_key = os.getenv("TWELVEDATA_KEY", "")
-
-        logger.info("📡 WebSocket Manager initialized (Bybit + Finnhub + Twelve Data)")
+        self._stream_started = False
+        self._callbacks: List[Callable] = []
+        self._asset_categories: Dict[str, str] = {}
+        self._asset_to_symbol: Dict[str, str] = {}
+        self._symbol_to_asset: Dict[str, str] = {}
+        self._binance_asset_to_symbol: Dict[str, str] = {}
+        self._binance_tasks: Dict[str, asyncio.Task] = {}
+        self._ws = None
+        self._deriv_degraded = False
+        self._binance_degraded_assets: Dict[str, bool] = {}
+        self._lock = threading.RLock()
+        if not app_id:
+            logger.warning("[WSManager] DERIV_APP_ID is not configured; Deriv streaming will not start")
+        logger.info("[WSManager] Initialized (Deriv primary, Binance secondary)")
 
     def start(self):
         self.running = True
@@ -34,7 +52,7 @@ class WebSocketManager:
         self.thread.start()
         while not self.loop_ready:
             time.sleep(0.1)
-        logger.info("✅ WebSocket manager started")
+        logger.info("[WSManager] Started")
 
     def _run_loop(self):
         self.loop = asyncio.new_event_loop()
@@ -47,234 +65,268 @@ class WebSocketManager:
             time.sleep(0.1)
         asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    # ───────────────────────── BYBIT ─────────────────────────
+    def subscribe_deriv(self, assets: Dict[str, str], callback: Callable):
+        """
+        Subscribe to canonical assets via Deriv.
 
-    def subscribe_bybit(self, symbols: List[str], callback: Callable):
-        """Crypto — BTCUSDT, ETHUSDT, SOLUSDT …"""
-        self._schedule(self._connect_bybit_with_reconnect(symbols, callback))
-        logger.info(f"📡 Bybit: subscribing to {symbols}")
+        `assets` is a mapping of canonical asset -> category.
+        """
+        with self._lock:
+            if callback not in self._callbacks:
+                self._callbacks.append(callback)
+            for asset, category in (assets or {}).items():
+                if asset:
+                    self._asset_categories[str(asset)] = str(category or "")
 
-    async def _connect_bybit_with_reconnect(self, symbols: List[str], callback: Callable):
-        """Exponential backoff: 5s → 10s → 20s → 40s → 60s cap."""
+        if not self._stream_started:
+            self._stream_started = True
+            self._schedule(self._connect_deriv_with_reconnect())
+        else:
+            self._schedule(self._subscribe_pending_assets())
+
+        logger.info(f"[WSManager] Tracking {sorted(self._asset_categories.keys())}")
+
+    async def _connect_deriv_with_reconnect(self):
         from websocket_dashboard import set_connected
-        backoff, max_backoff = 5, 60
+
+        backoff = 5
+        max_backoff = 60
         while self.running:
             t0 = asyncio.get_event_loop().time()
             try:
-                await self._connect_bybit(symbols, callback)
+                await self._connect_deriv()
                 backoff = 5
             except Exception as e:
                 if asyncio.get_event_loop().time() - t0 > 30:
                     backoff = 5
-                set_connected('bybit', False)
-                logger.error(f"❌ Bybit lost: {e} — retry in {backoff}s")
+                set_connected("deriv", False)
+                if not self._deriv_degraded:
+                    logger.warning(f"[WSManager] Deriv stream lost: {e} - retry in {backoff}s")
+                    self._deriv_degraded = True
+                else:
+                    logger.debug(f"[WSManager] Deriv stream still unavailable: {e} - retry in {backoff}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
 
-    async def _connect_bybit(self, symbols: List[str], callback: Callable):
+    async def _connect_deriv(self):
         from websocket_dashboard import set_connected
-        async with websockets.connect(self.bybit_url) as ws:
-            self.connections['bybit'] = ws
-            set_connected('bybit', True, len(symbols))
-            logger.info("✅ Bybit connected")
 
-            args = [f"publicTrade.{s.upper()}" for s in symbols]
-            await ws.send(json.dumps({"op": "subscribe", "args": args}))
+        async with self._connect_socket(self.deriv_url, headers=self._deriv_headers) as ws:
+            self._ws = ws
+            await self._subscribe_pending_assets()
+            set_connected("deriv", True, len(self._asset_to_symbol))
+            self._deriv_degraded = False
+            logger.info("[WSManager] Deriv stream connected")
 
-            async def heartbeat():
-                while self.running:
-                    await asyncio.sleep(20)
-                    try:
-                        await ws.send(json.dumps({"op": "ping"}))
-                    except Exception:
-                        break
-            asyncio.create_task(heartbeat())
-
-            async for message in ws:
-                try:
-                    data = json.loads(message)
-                    if data.get('op') in ('pong', 'ping'):
-                        continue
-                    if 'topic' in data and 'publicTrade' in data['topic']:
-                        symbol = data['topic'].split('.')[1]
-                        for trade in data.get('data', []):
-                            callback('bybit', symbol,
-                                     float(trade['p']), float(trade['v']),
-                                     trade['S'], datetime.now())
-                except Exception as e:
-                    logger.error(f"Bybit msg error: {e}")
-
-    # ───────────────────────── FINNHUB ─────────────────────────
-
-    def subscribe_finnhub(self, symbols: List[str], callback: Callable):
-        """Stocks — AAPL, MSFT, GOOGL …  (requires paid Finnhub plan for WS)"""
-        if self._finnhub_disabled:
-            logger.warning("Finnhub WS disabled (401 — requires paid plan)")
-            return
-        self._schedule(self._connect_finnhub_with_reconnect(symbols, callback))
-        logger.info(f"📡 Finnhub: subscribing to {symbols}")
-
-    async def _connect_finnhub_with_reconnect(self, symbols: List[str], callback: Callable):
-        from websocket_dashboard import set_connected
-        backoff, max_backoff = 5, 60
-        while self.running and not self._finnhub_disabled:
-            t0 = asyncio.get_event_loop().time()
+            heartbeat = asyncio.create_task(self._heartbeat(ws))
             try:
-                await self._connect_finnhub(symbols, callback)
-                if self._finnhub_disabled:
-                    break
-                backoff = 5
-            except Exception as e:
-                err = str(e)
-                if '401' in err:
-                    self._finnhub_disabled = True
-                    set_connected('finnhub', False)
-                    logger.warning("Finnhub WS: 401 — stopped permanently")
-                    break
-                if asyncio.get_event_loop().time() - t0 > 30:
-                    backoff = 5
-                set_connected('finnhub', False)
-                logger.error(f"❌ Finnhub lost: {e} — retry in {backoff}s")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, max_backoff)
+                async for message in ws:
+                    await self._handle_message(message)
+            finally:
+                heartbeat.cancel()
+                self._ws = None
+                with self._lock:
+                    self._asset_to_symbol.clear()
+                    self._symbol_to_asset.clear()
+                set_connected("deriv", False, 0)
 
-    async def _connect_finnhub(self, symbols: List[str], callback: Callable):
-        from websocket_dashboard import set_connected
-        url = f"{self.finnhub_url}?token={self.finnhub_token}"
-        async with websockets.connect(url) as ws:
-            self.connections['finnhub'] = ws
-            set_connected('finnhub', True, len(symbols))
-            logger.info("✅ Finnhub connected")
+    async def _heartbeat(self, ws):
+        while self.running:
+            await asyncio.sleep(25)
+            try:
+                await ws.send(json.dumps({"ping": 1}))
+            except Exception:
+                break
 
-            for sym in symbols:
-                await ws.send(json.dumps({'type': 'subscribe', 'symbol': sym}))
+    async def _subscribe_pending_assets(self):
+        await self._subscribe_pending_deriv_assets()
+        await self._subscribe_pending_binance_assets()
 
-            async def heartbeat():
-                while self.running:
-                    await asyncio.sleep(25)
-                    try:
-                        await ws.send(json.dumps({'type': 'ping'}))
-                    except Exception:
-                        break
-            asyncio.create_task(heartbeat())
-
-            async for message in ws:
-                try:
-                    data = json.loads(message)
-                    if data.get('type') == 'trade':
-                        for t in data.get('data', []):
-                            callback('finnhub', t['s'], float(t['p']),
-                                     float(t.get('v', 0)), None,
-                                     datetime.fromtimestamp(t['t'] / 1000))
-                except Exception as e:
-                    if '401' in str(e):
-                        self._finnhub_disabled = True
-                        set_connected('finnhub', False)
-                        return
-
-    # ───────────────────────── TWELVE DATA ─────────────────────────
-
-    def subscribe_twelvedata(self, symbols: List[str], callback: Callable):
-        """Forex & Commodities — EUR/USD, GBP/USD, XAU/USD, XAG/USD, WTI/USD …"""
-        if not self.twelvedata_key:
-            logger.debug("⚠️ Twelve Data API key missing (TWELVEDATA_KEY). Skipping Twelve Data websocket.")
+    async def _subscribe_pending_deriv_assets(self):
+        if self._ws is None:
             return
-        self._schedule(self._connect_twelvedata_with_reconnect(symbols, callback))
-        logger.info(f"📡 Twelve Data: subscribing to {symbols}")
 
-    async def _connect_twelvedata_with_reconnect(self, symbols: List[str], callback: Callable):
-        """Exponential backoff same as Bybit."""
         from websocket_dashboard import set_connected
-        backoff, max_backoff = 5, 60
+
+        with self._lock:
+            items = list(self._asset_categories.items())
+
+        for asset, category in items:
+            if asset in self._asset_to_symbol:
+                continue
+            resolved = deriv_bridge.resolve_symbol_info(asset, category=category)
+            if not resolved:
+                logger.debug(f"[WSManager] Deriv has no live symbol for {asset} ({category})")
+                continue
+
+            deriv_symbol = str(resolved.get("symbol", "")).strip()
+            if not deriv_symbol:
+                continue
+
+            await self._ws.send(json.dumps({"ticks": deriv_symbol, "subscribe": 1}))
+            self._asset_to_symbol[asset] = deriv_symbol
+            self._symbol_to_asset[deriv_symbol] = asset
+
+        set_connected("deriv", bool(self._asset_to_symbol), len(self._asset_to_symbol))
+
+    async def _subscribe_pending_binance_assets(self):
+        from websocket_dashboard import set_connected
+
+        with self._lock:
+            items = list(self._asset_categories.items())
+
+        for asset, category in items:
+            if asset in self._binance_tasks:
+                continue
+            if asset in self._asset_to_symbol:
+                continue
+            resolved = binance_market_bridge.resolve_symbol_info(asset, category=category)
+            if not resolved:
+                continue
+
+            symbol = str(resolved.get("symbol", "")).strip()
+            if not symbol:
+                continue
+
+            task = asyncio.create_task(self._connect_binance_with_reconnect(asset, symbol))
+            self._binance_tasks[asset] = task
+            self._binance_asset_to_symbol[asset] = symbol
+            self._binance_degraded_assets.setdefault(asset, False)
+
+        set_connected("binance", bool(self._binance_asset_to_symbol), len(self._binance_asset_to_symbol))
+
+    async def _connect_binance_with_reconnect(self, asset: str, symbol: str):
+        from websocket_dashboard import set_connected
+
+        url = f"wss://stream.binance.com:9443/ws/{symbol.lower()}@bookTicker"
+        backoff = 5
+        max_backoff = 60
         while self.running:
             t0 = asyncio.get_event_loop().time()
             try:
-                await self._connect_twelvedata(symbols, callback)
+                async with self._connect_socket(url) as ws:
+                    set_connected("binance", True, len(self._binance_asset_to_symbol))
+                    logger.info(f"[WSManager] Binance stream connected for {asset} ({symbol})")
+                    async for message in ws:
+                        await self._handle_binance_message(asset, symbol, message)
                 backoff = 5
-            except Exception as e:
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
                 if asyncio.get_event_loop().time() - t0 > 30:
                     backoff = 5
-                set_connected('twelvedata', False)
-                logger.error(f"❌ Twelve Data lost: {e} — retry in {backoff}s")
+                set_connected("binance", False, len(self._binance_asset_to_symbol))
+                if not self._binance_degraded_assets.get(asset):
+                    logger.warning(f"[WSManager] Binance stream lost for {asset}: {exc} - retry in {backoff}s")
+                    self._binance_degraded_assets[asset] = True
+                else:
+                    logger.debug(f"[WSManager] Binance stream still unavailable for {asset}: {exc} - retry in {backoff}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
 
-    async def _connect_twelvedata(self, symbols: List[str], callback: Callable):
-        """
-        Twelve Data WebSocket — real-time forex & commodity quotes.
-        Protocol:
-          • Connect: wss://ws.twelvedata.com/v1/quotes/price?apikey=KEY
-          • Subscribe: {"action":"subscribe","params":{"symbols":"EUR/USD,XAU/USD"}}
-          • Price msg: {"event":"price","symbol":"EUR/USD","price":1.0854,...}
-          • Heartbeat: {"event":"heartbeat"} — reply with same to keep alive
-        """
+    async def _handle_binance_message(self, asset: str, symbol: str, message: str):
         from websocket_dashboard import set_connected
-        url = f"{self.twelvedata_url}?apikey={self.twelvedata_key}"
-        async with websockets.connect(url) as ws:
-            self.connections['twelvedata'] = ws
-            set_connected('twelvedata', True, len(symbols))
-            logger.info("✅ Twelve Data connected")
 
-            # Subscribe
-            sym_str = ",".join(symbols)
-            await ws.send(json.dumps({
-                "action": "subscribe",
-                "params": {"symbols": sym_str}
-            }))
-            logger.info(f"📡 Twelve Data: subscribed to {sym_str}")
+        try:
+            data = json.loads(message)
+        except Exception:
+            return
 
-            async for message in ws:
+        bid = data.get("b")
+        ask = data.get("a")
+        try:
+            bid_f = float(bid or 0.0)
+            ask_f = float(ask or 0.0)
+        except Exception:
+            return
+
+        if bid_f <= 0 and ask_f <= 0:
+            return
+
+        price = (bid_f + ask_f) / 2.0 if bid_f > 0 and ask_f > 0 else (ask_f if ask_f > 0 else bid_f)
+        ts = datetime.now()
+        self._binance_degraded_assets[asset] = False
+        set_connected("binance", True, len(self._binance_asset_to_symbol))
+        for callback in list(self._callbacks):
+            try:
+                callback("BinanceStream", asset, price, None, None, ts)
+            except Exception as exc:
+                logger.error(f"[WSManager] callback error for {asset}: {exc}")
+
+    async def _handle_message(self, message: str):
+        from websocket_dashboard import set_connected
+
+        try:
+            data = json.loads(message)
+        except Exception:
+            return
+
+        if data.get("error"):
+            logger.debug(f"[WSManager] Deriv stream error: {data['error']}")
+            return
+
+        msg_type = str(data.get("msg_type", "")).lower()
+        if msg_type == "ping":
+            return
+
+        if msg_type == "tick":
+            tick = data.get("tick") or {}
+            deriv_symbol = str(tick.get("symbol", "")).strip()
+            asset = self._symbol_to_asset.get(deriv_symbol)
+            if not asset:
+                return
+
+            price = tick.get("quote")
+            try:
+                if price is None:
+                    bid = float(tick.get("bid", 0) or 0)
+                    ask = float(tick.get("ask", 0) or 0)
+                    price = (bid + ask) / 2.0 if bid > 0 and ask > 0 else None
+                price = float(price)
+            except Exception:
+                return
+
+            if price <= 0:
+                return
+
+            ts = datetime.now()
+            epoch = tick.get("epoch")
+            try:
+                if epoch:
+                    ts = datetime.fromtimestamp(float(epoch))
+            except Exception:
+                pass
+
+            set_connected("deriv", True, len(self._asset_to_symbol))
+            for callback in list(self._callbacks):
                 try:
-                    data = json.loads(message)
-                    event = data.get('event', '')
+                    callback("deriv", asset, price, None, None, ts)
+                except Exception as exc:
+                    logger.error(f"[WSManager] callback error for {asset}: {exc}")
 
-                    # Keep-alive heartbeat
-                    if event == 'heartbeat':
-                        await ws.send(json.dumps({"event": "heartbeat"}))
-                        continue
-
-                    # Subscription confirmation
-                    if event == 'subscribe-status':
-                        ok  = data.get('success') or []
-                        bad = data.get('fails')   or []
-                        ok_syms  = [s['symbol'] for s in ok  if isinstance(s, dict) and 'symbol' in s]
-                        bad_syms = [s['symbol'] for s in bad if isinstance(s, dict) and 'symbol' in s]
-                        if ok_syms:
-                            logger.info(f"Twelve Data live: {ok_syms}")
-                        if bad_syms:
-                            # Free tier limit hit — log at debug to avoid noise
-                            logger.debug(
-                                f"Twelve Data symbol limit hit: {bad_syms} rejected vs requested {symbols}. "
-                                f"Streaming {ok_syms}."
-                            )
-                            # Update dashboard to show only confirmed symbols
-                            from websocket_dashboard import set_connected
-                            set_connected('twelvedata', True, len(ok_syms))
-                        continue
-
-                    # Live price tick
-                    if event == 'price':
-                        symbol    = data.get('symbol', '')
-                        price     = float(data.get('price', 0))
-                        bid       = float(data.get('bid', price))
-                        ask       = float(data.get('ask', price))
-                        # Use mid-price; volume not available for forex
-                        if price > 0:
-                            callback('twelvedata', symbol, price, None, None, datetime.now())
-
-                except Exception as e:
-                    logger.error(f"Twelve Data msg error: {e}")
-
-    # ───────────────────────── CONTROL ─────────────────────────
+    @staticmethod
+    def _connect_socket(url: str, headers: Optional[Dict[str, str]] = None):
+        kwargs = {"ping_interval": None, "close_timeout": 2}
+        if headers:
+            try:
+                return websockets.connect(url, additional_headers=headers, **kwargs)
+            except TypeError:
+                return websockets.connect(url, extra_headers=headers, **kwargs)
+        return websockets.connect(url, **kwargs)
 
     def stop(self):
         self.running = False
+        for task in list(self._binance_tasks.values()):
+            try:
+                task.cancel()
+            except Exception:
+                pass
         if self.loop:
             self.loop.call_soon_threadsafe(self.loop.stop)
-        logger.info("📡 WebSocket manager stopped")
-    
+        logger.info("[WSManager] Stopped")
+
     def get_subscribed_assets(self) -> Dict[str, List[str]]:
-        """Get all currently subscribed assets by exchange."""
-        # This would require tracking subscriptions internally
-        # For now, return empty — can be enhanced to track actual subscriptions
-        return {"bybit": [], "twelvedata": [], "finnhub": []}
+        return {
+            "deriv": sorted(self._asset_to_symbol.keys()),
+            "binance": sorted(self._binance_asset_to_symbol.keys()),
+        }

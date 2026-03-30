@@ -13,22 +13,22 @@ logger = get_logger()
 
 # ── All channels to subscribe to ─────────────────────────────────────────────
 SUBSCRIBED_CHANNELS: List[str] = [
-    # Phase 1 — Data Ingestion
+    # Data ingestion
     "LIQUIDATION_CASCADE_ALERT",
     "FUNDING_RATE_ALERT",
     "OI_CHANGE_ALERT",
     "MACRO_NEWS_EVENT",
-    # Phase 2 — Whale Intelligence
+    # Whale intelligence
     "WHALE_ACCUMULATION",
     "WHALE_DISTRIBUTION",
     "WHALE_CLUSTER_ALERT",
     "EXCHANGE_INFLOW_ALERT",
     "EXCHANGE_OUTFLOW_ALERT",
-    # Phase 3 — Order Flow
+    # Order flow
     "LIQUIDITY_WALL_DETECTED",
     "BID_ASK_IMBALANCE_ALERT",
     "STOP_HUNT_DETECTED",
-    # Phase 4 — Narrative AI
+    # Narrative AI
     "NARRATIVE_TREND_DETECTED",
     "REDDIT_TOPIC_SPIKE",
     "TWITTER_TOPIC_SPIKE",
@@ -64,7 +64,7 @@ PRIORITY_RATE_LIMITS: Dict[str, int] = {
 
 class IntelligenceAlertService:
     """
-    Background service that subscribes to all Phase 1-4 Redis channels
+    Background service that subscribes to all market-intelligence Redis channels
     and dispatches formatted alerts to Telegram and dashboard.
     """
 
@@ -110,41 +110,42 @@ class IntelligenceAlertService:
 
     def _subscribe_loop(self, _old_ps=None) -> None:
         """Single background thread — subscribes to all channels."""
-        ps = None
-        try:
-            from services.redis_pool import get_pubsub as _get_pubsub
-            ps = _get_pubsub(old_pubsub=_old_ps)  # close old connection first
-            ps.subscribe(*SUBSCRIBED_CHANNELS)
-            logger.info(f"[IntelAlerts] Subscribed to {len(SUBSCRIBED_CHANNELS)} channels")
-
-            for msg in ps.listen():
-                if not self._running:
-                    break
-                if msg.get("type") != "message":
+        ps = _old_ps
+        redis_unavailable_logged = False
+        while self._running:
+            try:
+                from services.redis_pool import get_pubsub as _get_pubsub
+                ps = _get_pubsub(old_pubsub=ps)  # close old connection first
+                if ps is None:
+                    if not redis_unavailable_logged:
+                        logger.warning("[IntelAlerts] Redis unavailable — subscriber paused")
+                        redis_unavailable_logged = True
+                    time.sleep(30)
                     continue
-                try:
-                    channel = msg.get("channel", b"").decode() if isinstance(
-                        msg.get("channel"), bytes
-                    ) else msg.get("channel", "")
-                    data    = msg.get("data", b"")
-                    if isinstance(data, bytes):
-                        data = data.decode()
-                    event = json.loads(data)
-                    self._handle_event(channel, event)
-                except Exception as e:
-                    logger.debug(f"[IntelAlerts] Parse error: {e}")
 
-        except Exception as e:
-            logger.error(f"[IntelAlerts] Subscribe loop error: {e}", exc_info=True)
-            # Attempt reconnect after 30 seconds — pass old ps to close it
-            if self._running:
+                redis_unavailable_logged = False
+                ps.subscribe(*SUBSCRIBED_CHANNELS)
+                logger.info(f"[IntelAlerts] Subscribed to {len(SUBSCRIBED_CHANNELS)} channels")
+
+                for msg in ps.listen():
+                    if not self._running:
+                        break
+                    if msg.get("type") != "message":
+                        continue
+                    try:
+                        channel = msg.get("channel", b"").decode() if isinstance(
+                            msg.get("channel"), bytes
+                        ) else msg.get("channel", "")
+                        data    = msg.get("data", b"")
+                        if isinstance(data, bytes):
+                            data = data.decode()
+                        event = json.loads(data)
+                        self._handle_event(channel, event)
+                    except Exception as e:
+                        logger.debug(f"[IntelAlerts] Parse error: {e}")
+            except Exception as e:
+                logger.warning(f"[IntelAlerts] Subscriber dropped ({e}) — retrying in 30s")
                 time.sleep(30)
-                threading.Thread(
-                    target=self._subscribe_loop,
-                    args=(ps,),
-                    name="IntelAlerts-reconnect",
-                    daemon=True,
-                ).start()
 
     def _handle_event(self, channel: str, event: dict) -> None:
         """Process one event — rate check, format, route."""

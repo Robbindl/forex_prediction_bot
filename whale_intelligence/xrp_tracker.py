@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import requests
 from typing import Optional
+import time
+from config.config import XRPL_RPC_URL
 from utils.logger import get_logger
 
 logger = get_logger()
-
-XRPL_RPC_URL = "https://s1.ripple.com:51234"  # Public rippled server
 MIN_XRP_DELTA = 100000.0  # Minimum XRP drops to track (1 XRP = 1e6 drops)
+_RPC_BACKOFF_UNTIL = 0.0
+_RPC_BACKOFF_NOTIFIED = False
+_RPC_BACKOFF_SECS = 180.0
 
 
 class XRPTracker:
@@ -25,6 +28,16 @@ class XRPTracker:
         Fetch XRP balance for a wallet address via rippled API.
         Returns balance in XRP (drops converted to decimal).
         """
+        global _RPC_BACKOFF_UNTIL, _RPC_BACKOFF_NOTIFIED
+        now = time.time()
+        if now < _RPC_BACKOFF_UNTIL:
+            if not _RPC_BACKOFF_NOTIFIED:
+                logger.warning(
+                    f"[XRPTracker] RPC backoff active — skipping balance calls for "
+                    f"{int(_RPC_BACKOFF_UNTIL - now)}s"
+                )
+                _RPC_BACKOFF_NOTIFIED = True
+            return None
         try:
             payload = {
                 "method": "account_info",
@@ -47,9 +60,16 @@ class XRPTracker:
             # Balance is in drops (1 XRP = 1,000,000 drops)
             balance_drops = int(data.get("result", {}).get("account_data", {}).get("Balance", "0"))
             balance_xrp = balance_drops / 1e6
+            _RPC_BACKOFF_UNTIL = 0.0
+            _RPC_BACKOFF_NOTIFIED = False
             return balance_xrp
         except Exception as e:
-            logger.error(f"[XRPTracker] Failed to fetch balance for {address[:10]}...: {e}")
+            _RPC_BACKOFF_UNTIL = time.time() + _RPC_BACKOFF_SECS
+            _RPC_BACKOFF_NOTIFIED = False
+            logger.warning(
+                f"[XRPTracker] Failed to fetch balance for {address[:10]}...: {e} "
+                f"— backing off {int(_RPC_BACKOFF_SECS)}s"
+            )
             return None
 
     def classify_movement(self, delta_xrp: float) -> str:
@@ -60,6 +80,16 @@ class XRPTracker:
 
     def get_transaction_history(self, address: str, limit: int = 10) -> Optional[list]:
         """Fetch recent transactions for a wallet to detect whale movements."""
+        global _RPC_BACKOFF_UNTIL, _RPC_BACKOFF_NOTIFIED
+        now = time.time()
+        if now < _RPC_BACKOFF_UNTIL:
+            if not _RPC_BACKOFF_NOTIFIED:
+                logger.warning(
+                    f"[XRPTracker] RPC backoff active — skipping transaction history calls for "
+                    f"{int(_RPC_BACKOFF_UNTIL - now)}s"
+                )
+                _RPC_BACKOFF_NOTIFIED = True
+            return None
         try:
             payload = {
                 "method": "account_tx",
@@ -79,7 +109,14 @@ class XRPTracker:
             if data.get("status") != "success":
                 return None
 
+            _RPC_BACKOFF_UNTIL = 0.0
+            _RPC_BACKOFF_NOTIFIED = False
             return data.get("result", {}).get("transactions", [])
         except Exception as e:
-            logger.error(f"[XRPTracker] Failed to fetch transactions: {e}")
+            _RPC_BACKOFF_UNTIL = time.time() + _RPC_BACKOFF_SECS
+            _RPC_BACKOFF_NOTIFIED = False
+            logger.warning(
+                f"[XRPTracker] Failed to fetch transactions: {e} "
+                f"— backing off {int(_RPC_BACKOFF_SECS)}s"
+            )
             return None

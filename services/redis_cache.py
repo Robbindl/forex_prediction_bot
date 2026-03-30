@@ -1,55 +1,58 @@
 from __future__ import annotations
 import json
-import os
 from typing import Any, Optional
+from config.config import REDIS_CACHE_PREFIX
 from utils.logger import get_logger
 
 logger = get_logger()
-
-_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 class RedisCache:
     """Redis-backed cache. Uses shared connection pool."""
 
-    def __init__(self, url: str = _REDIS_URL, default_ttl: int = 30):
+    def __init__(self, default_ttl: int = 30, prefix: str = REDIS_CACHE_PREFIX):
         from services.redis_pool import get_client as _get_redis_client
         self._r   = _get_redis_client()
         self._ttl = default_ttl
+        self._prefix = self._normalise_prefix(prefix)
         if self._r:
             self._r.ping()
-            logger.info(f"[Cache] Redis pool connected")
+            logger.info(f"[Cache] Redis pool connected (prefix={self._prefix})")
+
+    @staticmethod
+    def _normalise_prefix(prefix: str) -> str:
+        value = str(prefix or "trading_bot:cache:").strip()
+        return value if value.endswith(":") else value + ":"
+
+    def _full_key(self, key: str) -> str:
+        return f"{self._prefix}{key}"
 
     def get(self, key: str) -> Optional[Any]:
         try:
-            raw = self._r.get(key)
+            raw = self._r.get(self._full_key(key))
             return json.loads(raw) if raw is not None else None
         except Exception:
             return None
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         try:
-            self._r.set(key, json.dumps(value), ex=ttl or self._ttl)
+            self._r.set(self._full_key(key), json.dumps(value), ex=ttl or self._ttl)
         except Exception:
             pass
 
     def delete(self, key: str) -> None:
         try:
-            self._r.delete(key)
+            self._r.delete(self._full_key(key))
         except Exception:
             pass
 
     def clear(self) -> None:
-        # FIX S14: flushdb() wipes the ENTIRE Redis database — this would
-        # destroy all pub/sub channels, live price ticks, open positions cache,
-        # ML predictions, and every other subsystem sharing the same Redis
-        # instance.  Replace with a targeted key scan so only cache entries
-        # (written by this class via set()) are removed.
+        # Never scan/delete the whole DB. Only clear namespaced cache keys.
         try:
-            # Scan for all keys; delete in batches of 100 to avoid blocking
             cursor = 0
+            pattern = f"{self._prefix}*"
             while True:
-                cursor, keys = self._r.scan(cursor, count=100)
+                cursor, keys = self._r.scan(cursor, match=pattern, count=100)
                 if keys:
                     self._r.delete(*keys)
                 if cursor == 0:
@@ -62,7 +65,7 @@ class RedisCache:
 
     def __contains__(self, key: str) -> bool:
         try:
-            return bool(self._r.exists(key))
+            return bool(self._r.exists(self._full_key(key)))
         except Exception:
             return False
 

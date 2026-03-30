@@ -150,18 +150,17 @@ DATA_VALIDATION = {
 RECOMMENDED_ENV_OVERRIDES = {
     "TRADING_TIMEFRAME": "15m",
     "DEFAULT_BALANCE": "10000",
-    "MAX_POSITIONS": "8",
+    "MAX_POSITIONS": "6",
     
     # Tighter daily loss limits on 15m (more trades/day = more risk)
     "DAILY_LOSS_LIMIT_PERCENT": "4.0",  # vs default 5%
     "DRAWDOWN_HALT_PERCENT": "7.0",     # vs default 8%
+    "DRAWDOWN_REDUCE_PERCENT": "5.0",   # start scaling down before the halt
     
     # Risk per trade
     "DEFAULT_RISK_PER_TRADE": "1.2",    # 1.2% vs default 1.5%
     "CRYPTO_RISK_PER_TRADE": "1.5",     # 1.5% vs default 2.0%
     
-    # Throttle fast signals to avoid over-trading
-    "MIN_BARS_BETWEEN_SIGNALS": "2",  # Min 2 candles (30 min) between new positions
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,7 +174,7 @@ Before going live with 15m all-assets:
 [ ] Update strategies.rsi RSIStrategy(period=8, oversold=28, overbought=72)
 [ ] Update strategies.macd MACDStrategy(signal=6)
 [ ] Update data_ingestion.news_event_monitor PRE_EVENT_MINS=10 (CRITICAL!)
-[ ] Verify .env MAX_POSITIONS=8 (distribute across asset classes)
+[ ] Verify .env MAX_POSITIONS=6 (distribute across asset classes)
 [ ] Backtest last 6 months on 15m with new parameters
 [ ] Run bot on paper account for 1 week
 [ ] Monitor P&L by asset class (crypto, forex, commodities, indices)

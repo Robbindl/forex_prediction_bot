@@ -13,11 +13,38 @@ import pandas as pd
 from utils.logger import get_logger
 from ml.registry import ModelRegistry, registry
 from ml.features import build_features
+from ml.validation import evaluate_classifier_research
 from config.config import (
-    ASSET_CATEGORIES, LOOKBACK_PERIOD, TRAIN_TEST_SPLIT, MODEL_MAX_AGE_HOURS
+    ASSET_CATEGORIES,
+    LOOKBACK_PERIOD,
+    TRAIN_TEST_SPLIT,
+    MODEL_MAX_AGE_HOURS,
+    MIN_HOLDOUT_ACCURACY,
+    MIN_WALK_FORWARD_ACCURACY,
+    MIN_WALK_FORWARD_SAMPLES,
 )
 
 logger = get_logger()
+
+
+def _build_model():
+    try:
+        from xgboost import XGBClassifier as XGB
+        return XGB(
+            n_estimators=100,
+            max_depth=4,
+            learning_rate=0.1,
+            eval_metric="logloss",
+            random_state=42,
+        )
+    except ImportError:
+        from sklearn.ensemble import GradientBoostingClassifier
+        return GradientBoostingClassifier(
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=4,
+            random_state=42,
+        )
 
 
 def _sync_prediction_outcomes() -> None:
@@ -150,40 +177,59 @@ def _train_model_from_arrays(name: str, X: np.ndarray, y: np.ndarray) -> bool:
         logger.warning(f"[Trainer] Insufficient training samples for {name}")
         return False
 
-    split = int(len(X) * TRAIN_TEST_SPLIT)
-    X_tr, X_te = X[:split], X[split:]
-    y_tr, y_te = y[:split], y[split:]
-
     try:
-        from xgboost import XGBClassifier as XGB
-        model = XGB(n_estimators=100, max_depth=4, learning_rate=0.1,
-                    eval_metric="logloss", random_state=42)
-    except ImportError:
-        from sklearn.ensemble import GradientBoostingClassifier
-        model = GradientBoostingClassifier(n_estimators=100, max_depth=4)
-
-    try:
-        model.fit(X_tr, y_tr)
-    except Exception as fit_err:
-        logger.error(f"[Trainer] Model fit failed for {name}: {fit_err}")
+        research = evaluate_classifier_research(
+            X,
+            y,
+            model_factory=_build_model,
+            train_test_split=TRAIN_TEST_SPLIT,
+        )
+    except Exception as val_err:
+        logger.error(f"[Trainer] Validation failed for {name}: {val_err}")
         return False
 
-    acc = model.score(X_te, y_te) if len(X_te) > 0 else 0.0
-    MIN_ACCEPTABLE_ACCURACY = 0.52
-    if acc < MIN_ACCEPTABLE_ACCURACY:
+    holdout_acc = float(research.get("holdout_accuracy", 0.0))
+    if holdout_acc < MIN_HOLDOUT_ACCURACY:
         logger.warning(
-            f"[Trainer] ⚠️  {name} accuracy={acc:.3f} below minimum {MIN_ACCEPTABLE_ACCURACY} "
+            f"[Trainer] {name} holdout_accuracy={holdout_acc:.3f} below minimum {MIN_HOLDOUT_ACCURACY:.3f} "
             f"— model NOT saved to prevent degraded predictions"
         )
         return False
 
+    wf_samples = int(research.get("walk_forward_samples", 0) or 0)
+    wf_acc = float(research.get("walk_forward_accuracy", 0.0) or 0.0)
+    if wf_samples >= MIN_WALK_FORWARD_SAMPLES and wf_acc < MIN_WALK_FORWARD_ACCURACY:
+        logger.warning(
+            f"[Trainer] {name} walk_forward_accuracy={wf_acc:.3f} below minimum "
+            f"{MIN_WALK_FORWARD_ACCURACY:.3f} with {wf_samples} samples — model NOT saved"
+        )
+        return False
+
     try:
-        registry.save(name, model)
+        model = _build_model()
+        model.fit(X, y)
+    except Exception as save_err:
+        logger.error(f"[Trainer] Final model fit failed for {name}: {save_err}")
+        return False
+
+    metadata = {
+        **research,
+        "holdout_threshold": MIN_HOLDOUT_ACCURACY,
+        "walk_forward_threshold": MIN_WALK_FORWARD_ACCURACY,
+        "walk_forward_required_samples": MIN_WALK_FORWARD_SAMPLES,
+        "research_status": "approved" if research.get("research_approved") else research.get("research_grade", "provisional"),
+    }
+
+    try:
+        registry.save(name, model, metadata=metadata)
     except Exception as save_err:
         logger.error(f"[Trainer] Model save failed for {name}: {save_err}")
         return False
 
-    logger.info(f"[Trainer] ✅ Trained {name} — acc={acc:.3f} samples={len(X)}")
+    logger.info(
+        f"[Trainer] Trained {name} — holdout={holdout_acc:.3f} "
+        f"walk_forward={wf_acc:.3f} wf_samples={wf_samples} samples={len(X)}"
+    )
     return True
 
 
@@ -238,27 +284,17 @@ def _build_live_policy_training_data(category: str):
     mix BUY/SELL outcomes into a label that does not match inference.
     """
     try:
-        from services.database_service import DatabaseService
-        from sqlalchemy import text
+        from services.db_pool import get_db
     except Exception as e:
         logger.debug(f"[Trainer] Live policy training disabled: {e}")
         return None, None
 
     try:
-        db = DatabaseService()
-        since = (datetime.utcnow() - timedelta(days=30)).isoformat()
-        with db.get_session() as session:
-            rows = session.execute(text("""
-                SELECT entry_price, actual_price,
-                       signal_features, signal_metadata
-                FROM prediction_outcomes
-                WHERE evaluated = true
-                  AND category = :category
-                  AND signal_features IS NOT NULL
-                  AND signal_time >= :since
-                ORDER BY signal_time DESC
-                LIMIT 2000
-            """), {'category': category, 'since': since}).fetchall()
+        rows = get_db().get_live_prediction_training_rows(
+            category=category,
+            since=datetime.utcnow() - timedelta(days=30),
+            limit=2000,
+        )
 
         if not rows:
             return None, None
@@ -286,27 +322,17 @@ def _build_live_policy_training_data(category: str):
 
 def _build_live_training_data(category: str):
     try:
-        from services.database_service import DatabaseService
-        from sqlalchemy import text
+        from services.db_pool import get_db
     except Exception as e:
         logger.debug(f"[Trainer] Live training disabled: {e}")
         return None, None
 
     try:
-        db = DatabaseService()
-        since = (datetime.utcnow() - timedelta(days=30)).isoformat()
-        with db.get_session() as session:
-            rows = session.execute(text("""
-                SELECT entry_price, actual_price, signal_features,
-                       signal_metadata
-                FROM prediction_outcomes
-                WHERE evaluated = true
-                  AND category = :category
-                  AND signal_features IS NOT NULL
-                  AND signal_time >= :since
-                ORDER BY signal_time DESC
-                LIMIT 2000
-            """), {'category': category, 'since': since}).fetchall()
+        rows = get_db().get_live_prediction_training_rows(
+            category=category,
+            since=datetime.utcnow() - timedelta(days=30),
+            limit=2000,
+        )
 
         if not rows:
             return None, None
@@ -367,7 +393,6 @@ class AutoTrainer:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
-        _sync_prediction_outcomes()
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._loop, name="AutoTrainer", daemon=True
@@ -390,8 +415,13 @@ class AutoTrainer:
             self._train_category(cat)
 
     def _loop(self) -> None:
+        # PredictionTracker already maintains its own background loop. Keep this
+        # catch-up in the trainer thread so bot startup is never blocked by a
+        # large pending-outcome backlog.
+        _sync_prediction_outcomes()
+
         # Wait for engine to warm up OHLCV cache before first training attempt.
-        # Without this, training fires before iTick/TwelveData clients are ready
+        # Without this, training fires before Deriv sessions and OHLCV caches are warm
         # and the fetcher returns None for all assets.
         logger.info("[AutoTrainer] Waiting 120s for OHLCV cache to warm up...")
         self._stop.wait(timeout=120)
@@ -469,19 +499,17 @@ class AutoTrainer:
         for asset_df in all_dfs:
             tmp_key = f"_tmp_{policy_key}"
             if _train_policy_model(tmp_key, asset_df):
-                from ml.registry import registry as _reg
-                candidate = _reg.get(tmp_key)
+                candidate = registry.get(tmp_key)
                 if candidate is not None:
-                    X_val, y_val = _build_historical_policy_data(asset_df)
-                    if X_val is not None and len(X_val) > 10:
-                        split = int(len(X_val) * TRAIN_TEST_SPLIT)
-                        try:
-                            acc = float(candidate.score(X_val[split:], y_val[split:]))
-                        except Exception:
-                            acc = 0.0
-                        if acc > best_acc:
-                            best_acc = acc
-                            registry.save(policy_key, candidate)
+                    meta = registry.get_metadata(tmp_key)
+                    acc = float(
+                        meta.get("walk_forward_accuracy")
+                        or meta.get("holdout_accuracy")
+                        or 0.0
+                    )
+                    if acc > best_acc:
+                        best_acc = acc
+                        registry.save(policy_key, candidate, metadata=meta)
         logger.info(
             f"[AutoTrainer] {policy_key} best_acc={best_acc:.3f} "
             f"(trained on {len(all_dfs)} assets individually)"
@@ -489,25 +517,26 @@ class AutoTrainer:
 
     def _get_ohlcv_with_fallback(self, fetcher, asset: str, category: str) -> Optional[pd.DataFrame]:
         """Get OHLCV data with timeframe fallbacks for assets that don't have intraday data."""
-        from config.config import TRADING_TIMEFRAME
+        from config.config import get_trading_timeframe
 
+        primary_tf = get_trading_timeframe(category)
         # Define fallback timeframes: primary -> fallbacks
         timeframe_fallbacks = {
-            "forex": [TRADING_TIMEFRAME],  # Forex usually has all timeframes
-            "crypto": [TRADING_TIMEFRAME, "1h", "1d"],  # Some cryptos may not have 15m
-            "commodities": [TRADING_TIMEFRAME, "1h", "1d"],  # Commodities may not have 15m
-            "indices": [TRADING_TIMEFRAME, "1h", "1d"],      # Indices may not have 15m
+            "forex": [primary_tf],  # Forex usually has all timeframes
+            "crypto": [primary_tf, "1h", "1d"],  # Some cryptos may not have the primary TF
+            "commodities": [primary_tf, "4h", "1d"],
+            "indices": [primary_tf, "4h", "1d"],
         }
 
         periods_map = {"15m": 500, "1h": 300, "4h": 200, "1d": LOOKBACK_PERIOD}
 
-        for tf in timeframe_fallbacks.get(category, [TRADING_TIMEFRAME]):
+        for tf in timeframe_fallbacks.get(category, [primary_tf]):
             try:
                 periods = periods_map.get(tf, LOOKBACK_PERIOD)
                 df = fetcher.get_ohlcv(asset, category, tf, periods)
                 if df is not None and not df.empty:
-                    if tf != TRADING_TIMEFRAME:
-                        logger.info(f"[AutoTrainer] {asset} using fallback timeframe {tf} (primary {TRADING_TIMEFRAME} unavailable)")
+                    if tf != primary_tf:
+                        logger.info(f"[AutoTrainer] {asset} using fallback timeframe {tf} (primary {primary_tf} unavailable)")
                     return df
             except Exception as e:
                 logger.debug(f"[AutoTrainer] Fetch failed for {asset} tf={tf}: {e}")
@@ -584,21 +613,18 @@ class AutoTrainer:
             for asset_df in all_dfs:
                 tmp_key = f"_tmp_{model_key}"
                 if _train_model(tmp_key, asset_df):
-                    # Check if this candidate outperforms what we already have
-                    from ml.registry import registry as _reg
-                    candidate = _reg.get(tmp_key)
+                    candidate = registry.get(tmp_key)
                     if candidate is not None:
-                        X_val, y_val = _build_training_data(asset_df)
-                        if X_val is not None and len(X_val) > 10:
-                            split  = int(len(X_val) * TRAIN_TEST_SPLIT)
-                            try:
-                                acc = float(candidate.score(X_val[split:], y_val[split:]))
-                            except Exception:
-                                acc = 0.0
-                            if acc > best_acc:
-                                best_acc = acc
-                                registry.save(model_key, candidate)
-                                success = True
+                        meta = registry.get_metadata(tmp_key)
+                        acc = float(
+                            meta.get("walk_forward_accuracy")
+                            or meta.get("holdout_accuracy")
+                            or 0.0
+                        )
+                        if acc > best_acc:
+                            best_acc = acc
+                            registry.save(model_key, candidate, metadata=meta)
+                            success = True
             logger.info(
                 f"[AutoTrainer] {model_key} best_acc={best_acc:.3f} "
                 f"(trained on {len(all_dfs)} assets individually)"

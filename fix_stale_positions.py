@@ -4,14 +4,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 load_dotenv()
 
-from config.database import init_db, SessionLocal
+from config.database import init_db
+from services.db_pool import get_db
 from sqlalchemy import text
 
 init_db()
 
 print("\n=== Stale Position Cleaner ===\n")
 
-with SessionLocal() as s:
+db = get_db()
+
+with db.get_session() as s:
     # Get all open positions
     open_rows = s.execute(text(
         "SELECT trade_id, asset, direction, entry_price FROM open_positions"
@@ -45,12 +48,11 @@ if answer.lower() != 'y':
     print("Aborted.")
     sys.exit(0)
 
-with SessionLocal() as s:
+with db.get_session() as s:
     for row in stale:
         tid = row[0]
         s.execute(text("DELETE FROM open_positions WHERE trade_id = :tid"), {"tid": tid})
         print(f"  Deleted: {tid} ({row[1]})")
-    s.commit()
 
 print(f"\nDone — deleted {len(stale)} stale position(s)")
 print("Restart the bot to see correct position count.\n")

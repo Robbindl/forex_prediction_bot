@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 from typing import Any, Callable, Dict, Optional
 
 # ── Predefined metric names ───────────────────────────────────────────────────
-PIPELINE      = "pipeline"
+DECISION      = "decision"
 PREDICTION    = "prediction"
 BACKTEST      = "backtest"
 SENTIMENT     = "sentiment_fetch"
@@ -14,7 +14,7 @@ WHALE         = "whale_fetch"
 ORDERFLOW     = "orderflow_update"
 NARRATIVE     = "narrative_ingest"
 TELEGRAM      = "telegram_send"
-LAYER_PREFIX  = "layer_"   # used as layer_1, layer_2, ... layer_8
+STEP_PREFIX   = "step_"    # used as step_1, step_2, ... for decision stages
 
 
 class MetricsCollector:
@@ -91,8 +91,8 @@ class MetricsCollector:
         """Forward specific metrics to SystemHealthService."""
         try:
             from monitoring.system_health_service import monitor
-            if name == PIPELINE:
-                monitor.record_pipeline_latency(elapsed_ms)
+            if name == DECISION:
+                monitor.record_decision_latency(elapsed_ms)
             elif name == PREDICTION:
                 monitor.record_prediction_latency(elapsed_ms)
         except Exception:
@@ -139,8 +139,8 @@ def track_latency(
     Decorator that times a function and records its latency.
 
     Usage:
-        @track_latency("pipeline")
-        def run_pipeline(signal, context):
+        @track_latency("decision")
+        def run_decision_cycle(signal, context):
             ...
     """
     def decorator(fn: Callable) -> Callable:

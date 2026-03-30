@@ -77,10 +77,18 @@ class LiquidationStream:
             logger.info("[LiqStream] No Redis — running in direct-ingest mode only")
             return
         ps = None
+        redis_unavailable_logged = False
         while self._running:
             try:
                 from services.redis_pool import get_pubsub as _get_pubsub
                 ps = _get_pubsub(old_pubsub=ps)  # close old before new
+                if ps is None:
+                    if not redis_unavailable_logged:
+                        logger.warning("[LiqStream] Redis unavailable — subscriber paused")
+                        redis_unavailable_logged = True
+                    time.sleep(10)
+                    continue
+                redis_unavailable_logged = False
                 ps.subscribe("LIQUIDATION_EVENT")
                 logger.info("[LiqStream] Subscribed to LIQUIDATION_EVENT")
                 for msg in ps.listen():
@@ -92,9 +100,9 @@ class LiquidationStream:
                         except Exception as e:
                             logger.debug(f"[LiqStream] Process error: {e}")
             except Exception as e:
-                logger.error(f"[LiqStream] Subscribe error: {e}")
+                logger.warning(f"[LiqStream] Subscriber dropped ({e}) — retrying in 10s")
                 if self._running:
-                    import time; time.sleep(10)
+                    time.sleep(10)
 
     def _process(self, event: dict) -> None:
         asset    = event.get("asset", "UNKNOWN")

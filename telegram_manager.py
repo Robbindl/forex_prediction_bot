@@ -6,6 +6,7 @@ Handles stale PID files from crashed/force-closed previous runs
 import os
 import atexit
 from pathlib import Path
+from config.config import DEBUG_FORCE_TELEGRAM, TELEGRAM_PID_FILE
 from utils.logger import logger
 
 
@@ -13,7 +14,7 @@ class TelegramManager:
     """Simple manager to prevent multiple bot instances"""
 
     _instance = None
-    _pid_file = Path("telegram_bot.pid")
+    _pid_file = Path(TELEGRAM_PID_FILE)
 
     def __new__(cls):
         if cls._instance is None:
@@ -86,8 +87,8 @@ class TelegramManager:
             return False
 
         if self._check_pid_file():
-            if os.getenv("DEBUG_FORCE_TELEGRAM", "0") == "1":
-                logger.warning("Telegram bot existing instance detected, but DEBUG_FORCE_TELEGRAM=1: forcing start")
+            if DEBUG_FORCE_TELEGRAM:
+                logger.warning("Telegram bot existing instance detected, but DEBUG_FORCE_TELEGRAM=true: forcing start")
             else:
                 logger.warning("Telegram bot not started — another live instance is running")
                 return False

@@ -58,7 +58,7 @@ class OpenInterestMonitor:
 
     def get_signal(self, symbol: str) -> str:
         """
-        Returns a quick signal label for the prediction pipeline.
+        Returns a quick signal label for the prediction engine.
         TREND_CONTINUATION | POTENTIAL_REVERSAL | NEUTRAL
         """
         hist = self._history.get(symbol, [])

@@ -113,7 +113,7 @@ class AlertFormatter:
             f"Impact:  `{impact}`"
         )
 
-    # ── Phase 2 formatters ────────────────────────────────────────────────────
+    # ── Whale intelligence formatters ─────────────────────────────────────────
 
     def _format_WHALE_ACCUMULATION(self, e: dict) -> str:
         return self._format_whale_move(e, "BUY")

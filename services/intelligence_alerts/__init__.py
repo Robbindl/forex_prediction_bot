@@ -1,9 +1,10 @@
 """
 services/intelligence_alerts/__init__.py — Intelligence Alert System.
 
-Subscribes to ALL Redis market event channels published by Phases 1-4
+Subscribes to all Redis market event channels published by the data,
+whale, order-flow, and narrative subsystems
 and dispatches rich formatted alerts to Telegram, email, and the
-dashboard — completely independent of the signal pipeline.
+dashboard — completely independent of the signal decision engine.
 
 These are MARKET INTELLIGENCE alerts, not trade signals. They fire
 when something significant happens in the market regardless of whether
@@ -11,25 +12,25 @@ a trade signal was generated.
 
 Alert sources (Redis channels subscribed)
 -----------------------------------------
-Phase 1 (Data Ingestion)
+Data ingestion
     LIQUIDATION_CASCADE_ALERT   — $10M+ liquidated in 60 seconds
     FUNDING_RATE_ALERT          — extreme funding rates detected
     OI_CHANGE_ALERT             — open interest spike/drop
     MACRO_NEWS_EVENT            — FRED economic data change
 
-Phase 2 (Whale Intelligence)
+Whale intelligence
     WHALE_ACCUMULATION          — single wallet large buy
     WHALE_DISTRIBUTION          — single wallet large sell
     WHALE_CLUSTER_ALERT         — 3+ wallets coordinated move
     EXCHANGE_INFLOW_ALERT       — large transfer to exchange
     EXCHANGE_OUTFLOW_ALERT      — large transfer from exchange
 
-Phase 3 (Order Flow)
+Order flow
     LIQUIDITY_WALL_DETECTED     — large order cluster found
     BID_ASK_IMBALANCE_ALERT     — severe order book imbalance
     STOP_HUNT_DETECTED          — wick-and-revert pattern
 
-Phase 4 (Narrative AI)
+Narrative AI
     NARRATIVE_TREND_DETECTED    — topic velocity spike
     REDDIT_TOPIC_SPIKE          — subreddit narrative surge
     TWITTER_TOPIC_SPIKE         — Twitter narrative surge
@@ -62,7 +63,7 @@ alert_service = IntelligenceAlertService()
 
 
 def start_all(telegram_bot=None) -> None:
-    """Start Phase 7. Call once from bot.py after Telegram is started."""
+    """Start intelligence alerts. Call once from bot.py after Telegram is started."""
     if telegram_bot:
         alert_service.set_telegram(telegram_bot)
     alert_service.start()

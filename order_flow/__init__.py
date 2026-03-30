@@ -76,10 +76,19 @@ def _subscribe_loop() -> None:
     """Background thread — subscribes to Redis ORDER_BOOK_UPDATE channel."""
     import json
     ps = None
+    redis_unavailable_logged = False
     while _running:
         try:
             from services.redis_pool import get_pubsub as _get_pubsub
             ps = _get_pubsub(old_pubsub=ps)  # close old before new
+            if ps is None:
+                if not redis_unavailable_logged:
+                    logger.warning("[OrderFlow] Redis unavailable — subscriber paused")
+                    redis_unavailable_logged = True
+                import time
+                time.sleep(10)
+                continue
+            redis_unavailable_logged = False
             ps.subscribe("ORDER_BOOK_UPDATE")
             logger.info("[OrderFlow] Subscribed to ORDER_BOOK_UPDATE")
 
@@ -92,7 +101,7 @@ def _subscribe_loop() -> None:
                     except Exception as e:
                         logger.debug(f"[OrderFlow] Handler error: {e}")
         except Exception as e:
-            logger.error(f"[OrderFlow] Subscribe loop error: {e}")
+            logger.warning(f"[OrderFlow] Subscriber dropped ({e}) — retrying in 10s")
             if _running:
                 import time; time.sleep(10)
 

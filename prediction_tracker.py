@@ -22,14 +22,14 @@ try:
     import core.engine as _eng_mod
     _fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
     if _fetcher is None:
-        from data.fetcher import DataFetcher
-        _fetcher = DataFetcher()
+        from data.fetcher import get_shared_fetcher
+        _fetcher = get_shared_fetcher()
 except Exception:
     _fetcher = None
 
 try:
-    from services.database_service import DatabaseService
-    _db = DatabaseService()
+    from services.db_pool import get_db
+    _db = get_db()
     _DB_AVAILABLE = True
 except Exception:
     _db = None
@@ -71,43 +71,8 @@ class PredictionTracker:
         if not _DB_AVAILABLE:
             return
         try:
-            with _db.get_session() as session:
-                from sqlalchemy import text
-                session.execute(text("""
-                    CREATE TABLE IF NOT EXISTS prediction_outcomes (
-                        id               SERIAL PRIMARY KEY,
-                        asset            TEXT NOT NULL,
-                        category         TEXT,
-                        direction        TEXT NOT NULL,
-                        entry_price      FLOAT,
-                        target_price     FLOAT,
-                        confidence       FLOAT,
-                        signal_time      TIMESTAMP NOT NULL,
-                        horizon_minutes  INT NOT NULL,
-                        eval_time        TIMESTAMP,
-                        actual_price     FLOAT,
-                        direction_correct BOOLEAN,
-                        target_hit       BOOLEAN,
-                        pct_move         FLOAT,
-                        evaluated        BOOLEAN DEFAULT FALSE,
-                        strategy         TEXT,
-                        session          TEXT,
-                        regime           TEXT,
-                        signal_features  TEXT,
-                        signal_metadata  TEXT
-                    )
-                """))
-                session.commit()
-                for stmt in [
-                    "ALTER TABLE prediction_outcomes ADD COLUMN IF NOT EXISTS signal_features TEXT",
-                    "ALTER TABLE prediction_outcomes ADD COLUMN IF NOT EXISTS signal_metadata TEXT",
-                ]:
-                    try:
-                        session.execute(text(stmt))
-                    except Exception:
-                        pass
-                session.commit()
-                logger.info("[PredTracker] Table ready")
+            _db.ensure_prediction_outcomes_table()
+            logger.info("[PredTracker] Table ready")
         except Exception as e:
             logger.warning(f"[PredTracker] Table creation failed: {e}")
 
@@ -115,7 +80,7 @@ class PredictionTracker:
 
     def record_signal(self, signal: Dict):
         """
-        Call this whenever a signal passes the 7-layer quality gate.
+        Call this whenever a signal passes the decision engine.
         signal must have: asset, signal (direction), entry_price, confidence
         Optional: tp1, stop_loss, category, strategy, session, regime
         """
@@ -309,11 +274,13 @@ class PredictionTracker:
             periods = self._history_periods(target_time, interval)
             cache_key = (asset, category, interval, periods)
             if cache_key not in history_cache:
-                if _data_cache is not None:
-                    try:
+                try:
+                    if hasattr(_fetcher, "invalidate_ohlcv_cache"):
+                        _fetcher.invalidate_ohlcv_cache(asset, category=category, interval=interval)
+                    elif _data_cache is not None:
                         _data_cache.delete(f"ohlcv:{asset}:{interval}")
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
                 try:
                     history_cache[cache_key] = _fetcher.get_ohlcv(asset, category, interval, periods)
                 except Exception as e:
@@ -367,37 +334,7 @@ class PredictionTracker:
         if not _DB_AVAILABLE:
             return
         try:
-            with _db.get_session() as session:
-                from sqlalchemy import text
-                for r in records:
-                    session.execute(text("""
-                        INSERT INTO prediction_outcomes
-                            (asset, category, direction, entry_price, target_price,
-                             confidence, signal_time, horizon_minutes, eval_time,
-                             strategy, session, regime, signal_features,
-                             signal_metadata, evaluated)
-                        VALUES
-                            (:asset, :category, :direction, :entry_price, :target_price,
-                             :confidence, :signal_time, :horizon_minutes, :eval_time,
-                             :strategy, :session, :regime, :signal_features,
-                             :signal_metadata, false)
-                    """), {
-                        'asset':            r['asset'],
-                        'category':         r.get('category', ''),
-                        'direction':        r['direction'],
-                        'entry_price':      r['entry_price'],
-                        'target_price':     r.get('target_price'),
-                        'confidence':       r['confidence'],
-                        'signal_time':      r['signal_time'],
-                        'horizon_minutes':  r['horizon_minutes'],
-                        'eval_time':        r['eval_time'],
-                        'strategy':         r.get('strategy', ''),
-                        'session':          r.get('session', ''),
-                        'regime':           r.get('regime', ''),
-                        'signal_features':  r.get('signal_features'),
-                        'signal_metadata':  r.get('signal_metadata'),
-                    })
-                session.commit()
+            _db.save_prediction_outcomes(records)
         except Exception as e:
             logger.debug(f"[PredTracker] Store pending failed: {e}")
 
@@ -437,28 +374,7 @@ class PredictionTracker:
         if not _DB_AVAILABLE:
             return
         try:
-            with _db.get_session() as session:
-                from sqlalchemy import text
-                session.execute(text("""
-                    UPDATE prediction_outcomes SET
-                        actual_price      = :actual,
-                        direction_correct = :correct,
-                        target_hit        = :hit,
-                        pct_move          = :move,
-                        evaluated         = true
-                    WHERE asset = :asset
-                      AND signal_time = :signal_time
-                      AND horizon_minutes = :horizon
-                """), {
-                    'actual':      rec['actual_price'],
-                    'correct':     rec['direction_correct'],
-                    'hit':         rec['target_hit'],
-                    'move':        rec['pct_move'],
-                    'asset':       rec['asset'],
-                    'signal_time': rec['signal_time'],
-                    'horizon':     rec['horizon_minutes'],
-                })
-                session.commit()
+            _db.mark_prediction_outcome_evaluated(rec)
         except Exception as e:
             logger.debug(f"[PredTracker] Store outcome failed: {e}")
 
@@ -489,93 +405,59 @@ class PredictionTracker:
         if not _DB_AVAILABLE:
             return self._empty_stats()
 
-        since = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
+        since = datetime.utcnow() - timedelta(days=days_back)
 
         try:
-            with _db.get_session() as session:
-                from sqlalchemy import text
-                rows = session.execute(text("""
-                    SELECT
-                        horizon_minutes,
-                        COUNT(*) AS total,
-                        SUM(CASE WHEN direction_correct THEN 1 ELSE 0 END) AS correct,
-                        SUM(CASE WHEN target_hit THEN 1 ELSE 0 END) AS targets_hit,
-                        AVG(pct_move) AS avg_move,
-                        AVG(confidence) AS avg_confidence
-                    FROM prediction_outcomes
-                    WHERE evaluated = true AND signal_time >= :since
-                    GROUP BY horizon_minutes
-                """), {'since': since}).fetchall()
+            rollups = _db.get_prediction_accuracy_rollups(since=since)
+            rows = rollups["by_horizon"]
 
-                by_horizon = {}
-                for row in rows:
-                    h    = row[0]
-                    tot  = row[1] or 0
-                    corr = row[2] or 0
-                    acc  = round(corr / tot * 100, 1) if tot > 0 else 0
-                    by_horizon[HORIZON_LABELS.get(h, f'{h}m')] = {
-                        'total':          tot,
-                        'correct':        corr,
-                        'accuracy_pct':   acc,
-                        'targets_hit':    row[3] or 0,
-                        'avg_move_pct':   round(row[4] or 0, 3),
-                        'avg_confidence': round(row[5] or 0, 3),
-                    }
-
-                # Per-asset accuracy
-                asset_rows = session.execute(text("""
-                    SELECT
-                        asset,
-                        horizon_minutes,
-                        COUNT(*) AS total,
-                        SUM(CASE WHEN direction_correct THEN 1 ELSE 0 END) AS correct
-                    FROM prediction_outcomes
-                    WHERE evaluated = true AND signal_time >= :since
-                    GROUP BY asset, horizon_minutes
-                    ORDER BY total DESC
-                    LIMIT 50
-                """), {'since': since}).fetchall()
-
-                by_asset = defaultdict(dict)
-                for row in asset_rows:
-                    asset  = row[0]
-                    label  = HORIZON_LABELS.get(row[1], f'{row[1]}m')
-                    tot    = row[2] or 0
-                    corr   = row[3] or 0
-                    acc    = round(corr / tot * 100, 1) if tot > 0 else 0
-                    by_asset[asset][label] = {'total': tot, 'accuracy_pct': acc}
-
-                # Recent 20 outcomes
-                recent_rows = session.execute(text("""
-                    SELECT asset, direction, entry_price, actual_price,
-                           direction_correct, pct_move, confidence, horizon_minutes, signal_time
-                    FROM prediction_outcomes
-                    WHERE evaluated = true
-                    ORDER BY signal_time DESC
-                    LIMIT 20
-                """)).fetchall()
-
-                recent = []
-                for row in recent_rows:
-                    recent.append({
-                        'asset':    row[0],
-                        'direction':row[1],
-                        'entry':    row[2],
-                        'actual':   row[3],
-                        'correct':  row[4],
-                        'move_pct': round(row[5] or 0, 3),
-                        'confidence':row[6],
-                        'horizon':  HORIZON_LABELS.get(row[7], f'{row[7]}m'),
-                        'time':     str(row[8]),
-                    })
-
-                return {
-                    'by_horizon':  by_horizon,
-                    'by_asset':    dict(by_asset),
-                    'recent':      recent,
-                    'days_back':   days_back,
-                    'updated_at':  datetime.utcnow().isoformat(),
+            by_horizon = {}
+            for row in rows:
+                h    = row[0]
+                tot  = row[1] or 0
+                corr = row[2] or 0
+                acc  = round(corr / tot * 100, 1) if tot > 0 else 0
+                by_horizon[HORIZON_LABELS.get(h, f'{h}m')] = {
+                    'total':          tot,
+                    'correct':        corr,
+                    'accuracy_pct':   acc,
+                    'targets_hit':    row[3] or 0,
+                    'avg_move_pct':   round(row[4] or 0, 3),
+                    'avg_confidence': round(row[5] or 0, 3),
                 }
+
+            asset_rows = rollups["by_asset"]
+            by_asset = defaultdict(dict)
+            for row in asset_rows:
+                asset  = row[0]
+                label  = HORIZON_LABELS.get(row[1], f'{row[1]}m')
+                tot    = row[2] or 0
+                corr   = row[3] or 0
+                acc    = round(corr / tot * 100, 1) if tot > 0 else 0
+                by_asset[asset][label] = {'total': tot, 'accuracy_pct': acc}
+
+            recent_rows = rollups["recent"]
+            recent = []
+            for row in recent_rows:
+                recent.append({
+                    'asset':    row[0],
+                    'direction':row[1],
+                    'entry':    row[2],
+                    'actual':   row[3],
+                    'correct':  row[4],
+                    'move_pct': round(row[5] or 0, 3),
+                    'confidence':row[6],
+                    'horizon':  HORIZON_LABELS.get(row[7], f'{row[7]}m'),
+                    'time':     str(row[8]),
+                })
+
+            return {
+                'by_horizon':  by_horizon,
+                'by_asset':    dict(by_asset),
+                'recent':      recent,
+                'days_back':   days_back,
+                'updated_at':  datetime.utcnow().isoformat(),
+            }
         except Exception as e:
             logger.warning(f"[PredTracker] Stats query failed: {e}")
             return self._empty_stats()
@@ -624,42 +506,26 @@ class PredictionTracker:
         if not _DB_AVAILABLE:
             return
         try:
-            with _db.get_session() as session:
-                from sqlalchemy import text
-                rows = session.execute(text(f"""
-                    SELECT asset, category, direction, entry_price, target_price,
-                           confidence, signal_time, horizon_minutes, eval_time,
-                           strategy, session, regime, signal_features,
-                           signal_metadata
-                    FROM prediction_outcomes
-                    WHERE evaluated = false
-                      AND signal_time >= NOW() - INTERVAL '{_EVAL_LOOKBACK_DAYS} days'
-                """)).fetchall()
+            rows = _db.get_pending_prediction_outcomes(_EVAL_LOOKBACK_DAYS)
+            added = 0
+            with self._lock:
+                if merge:
+                    existing_keys = {self._pending_key(rec) for rec in self._pending}
+                else:
+                    existing_keys = set()
+                    self._pending.clear()
+                for rec in rows:
+                    rec['signal_time'] = str(rec['signal_time'])
+                    rec['eval_time']   = str(rec['eval_time'])
+                    rec['evaluated']   = False
+                    key = self._pending_key(rec)
+                    if key in existing_keys:
+                        continue
+                    self._pending.append(rec)
+                    existing_keys.add(key)
+                    added += 1
 
-                cols = ['asset','category','direction','entry_price','target_price',
-                        'confidence','signal_time','horizon_minutes','eval_time',
-                        'strategy','session','regime','signal_features',
-                        'signal_metadata']
-                added = 0
-                with self._lock:
-                    if merge:
-                        existing_keys = {self._pending_key(rec) for rec in self._pending}
-                    else:
-                        existing_keys = set()
-                        self._pending.clear()
-                    for row in rows:
-                        rec = dict(zip(cols, row))
-                        rec['signal_time'] = str(rec['signal_time'])
-                        rec['eval_time']   = str(rec['eval_time'])
-                        rec['evaluated']   = False
-                        key = self._pending_key(rec)
-                        if key in existing_keys:
-                            continue
-                        self._pending.append(rec)
-                        existing_keys.add(key)
-                        added += 1
-
-                logger.info(f"[PredTracker] Reloaded {added} pending predictions from DB")
+            logger.info(f"[PredTracker] Reloaded {added} pending predictions from DB")
         except Exception as e:
             logger.debug(f"[PredTracker] Reload failed: {e}")
 

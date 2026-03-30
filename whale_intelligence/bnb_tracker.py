@@ -4,22 +4,22 @@ Etherscan/BscScan free tier only support Ethereum. Using direct RPC for BNB.
 """
 from __future__ import annotations
 
-import os
 import requests
 from typing import Dict, Optional
+import time
+from config.config import BNB_RPC_URL
 from utils.logger import get_logger
 
 logger = get_logger()
-
-# BNB Chain public RPC endpoints (free, no API key needed)
-BNB_RPC_ENDPOINT = os.getenv("BNB_RPC_URL", "https://bsc-dataseed1.binance.org")
-
+_RPC_BACKOFF_UNTIL = 0.0
+_RPC_BACKOFF_NOTIFIED = False
+_RPC_BACKOFF_SECS = 180.0
 
 class BNBTracker:
     """Track whale wallets on BNB Chain via public RPC endpoint."""
 
     def __init__(self) -> None:
-        self._rpc_url = BNB_RPC_ENDPOINT
+        self._rpc_url = BNB_RPC_URL
         self._enabled = True  # Always enabled - uses public RPC
 
     def fetch_balance(self, address: str) -> Optional[float]:
@@ -27,6 +27,16 @@ class BNBTracker:
         Fetch BNB balance for a wallet address via RPC eth_getBalance call.
         Returns balance in BNB (wei converted to decimal).
         """
+        global _RPC_BACKOFF_UNTIL, _RPC_BACKOFF_NOTIFIED
+        now = time.time()
+        if now < _RPC_BACKOFF_UNTIL:
+            if not _RPC_BACKOFF_NOTIFIED:
+                logger.warning(
+                    f"[BNBTracker] RPC backoff active — skipping balance calls for "
+                    f"{int(_RPC_BACKOFF_UNTIL - now)}s"
+                )
+                _RPC_BACKOFF_NOTIFIED = True
+            return None
         try:
             # Validate address format
             if not address.startswith("0x") or len(address) != 42:
@@ -52,9 +62,16 @@ class BNBTracker:
             # Convert hex to int, then wei to BNB
             balance_wei = int(result, 16)
             balance_bnb = balance_wei / 1e18
+            _RPC_BACKOFF_UNTIL = 0.0
+            _RPC_BACKOFF_NOTIFIED = False
             return balance_bnb
         except Exception as e:
-            logger.error(f"[BNBTracker] Failed to fetch balance for {address[:10]}...: {e}")
+            _RPC_BACKOFF_UNTIL = time.time() + _RPC_BACKOFF_SECS
+            _RPC_BACKOFF_NOTIFIED = False
+            logger.warning(
+                f"[BNBTracker] Failed to fetch balance for {address[:10]}...: {e} "
+                f"— backing off {int(_RPC_BACKOFF_SECS)}s"
+            )
             return None
 
     def classify_movement(self, delta_bnb: float) -> str:

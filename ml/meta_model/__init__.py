@@ -2,8 +2,8 @@
 ml/meta_model/__init__.py — Meta AI Model.
 
 Combines predictions from all signal engines into one ensemble score.
-Runs as Layer 8 in the signal pipeline — after all existing layers,
-before PipelineReporter.
+Runs inside the policy review stage of the decision engine,
+before the signal reporter.
 
 Every decision is written to signal.journal and appears automatically
 in the Telegram signal report. No extra wiring needed for future additions.
@@ -17,7 +17,7 @@ Components
 Engines combined
 ----------------
     technical   — ML predictor (ml/predictor.py)
-    sentiment   — SentimentAnalyzer + narrative scores (Phase 4)
+    sentiment   — sentiment service + narrative scores
     whale       — whale cache + on-chain data (Phase 2)
     orderflow   — bid/ask imbalance (Phase 3)
     macro       — funding rates + OI signals (Phase 1)

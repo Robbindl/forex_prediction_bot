@@ -4,15 +4,60 @@ import threading
 from typing import Dict, Optional, Tuple
 from risk.position_sizer import PositionSizer
 from utils.logger import get_logger
-from config.config import MAX_RISK_PER_TRADE, MIN_CONFIDENCE_SCORE
+from config.config import DAILY_LOSS_LIMIT_PERCENT, MAX_RISK_PER_TRADE, MIN_CONFIDENCE_SCORE
+from config.optimization import ASSET_CLASS_TUNING
 
 logger = get_logger()
 
-_DAILY_LOSS_LIMIT_PCT = 5.0   # halt trading if daily loss > 5% of balance
+_STOP_FALLBACK_PCT = {
+    "forex": 0.0035,
+    "crypto": 0.0090,
+    "commodities": 0.0075,
+    "indices": 0.0060,
+}
+
+_STOP_MIN_PCT = {
+    "forex": 0.0015,
+    "crypto": 0.0040,
+    "commodities": 0.0030,
+    "indices": 0.0025,
+}
+
+_STOP_MAX_PCT = {
+    "forex": 0.0060,
+    "crypto": 0.0120,
+    "commodities": 0.0100,
+    "indices": 0.0090,
+}
+
+_DEFAULT_RISK_REWARD = 1.5
+
+
+def _stop_atr_multiplier(category: str) -> float:
+    tuning = ASSET_CLASS_TUNING.get((category or "").lower(), {})
+    return float(tuning.get("stop_loss_atr", 1.4))
+
+
+def _default_risk_reward(category: str) -> float:
+    tuning = ASSET_CLASS_TUNING.get((category or "").lower(), {})
+    stop_mult = float(tuning.get("stop_loss_atr", 1.0) or 1.0)
+    take_mult = float(tuning.get("take_profit_atr", _DEFAULT_RISK_REWARD) or _DEFAULT_RISK_REWARD)
+    if stop_mult > 0:
+        return max(_DEFAULT_RISK_REWARD, take_mult / stop_mult)
+    return _DEFAULT_RISK_REWARD
+
+
+def _clamp_stop_distance(entry: float, category: str, dist: float) -> float:
+    if entry <= 0 or dist <= 0:
+        return max(float(dist or 0.0), 0.0)
+    cat = (category or "").lower()
+    min_dist = entry * _STOP_MIN_PCT.get(cat, 0.0025)
+    max_dist = entry * _STOP_MAX_PCT.get(cat, 0.0090)
+    return max(min_dist, min(max_dist, dist))
 
 
 class DailyLossGuard:
-    def __init__(self, balance: float, limit_pct: float = _DAILY_LOSS_LIMIT_PCT):
+    def __init__(self, balance: float, limit_pct: float = DAILY_LOSS_LIMIT_PERCENT):
         self._initial  = balance
         self._current  = balance   # FIX: track current balance separately
         self._limit    = limit_pct
@@ -50,7 +95,7 @@ class RiskManager:
 
         FIX: Previously this created a NEW DailyLossGuard on every trade close,
         which reset the baseline (_initial) after each trade.  That meant the
-        5% daily loss protection degraded throughout the day — each consecutive
+        daily loss protection degraded throughout the day — each consecutive
         losing trade reset the guard to the new (lower) balance, effectively
         allowing unlimited compounding losses.  Now we update the guard's
         running balance without re-seeding the initial baseline.
@@ -97,14 +142,23 @@ class RiskManager:
         return True, "OK"
 
     def get_stop_loss(self, entry: float, direction: str, category: str, atr: float = 0.0) -> float:
-        """Calculate SL based on ATR or fixed percentage."""
-        mult = {"crypto": 2.0, "forex": 1.5, "stocks": 1.8}.get(category, 1.5)
-        if atr:
-            dist = atr * mult
+        """Calculate SL using ATR when available, otherwise category fallback."""
+        if atr and atr > 0:
+            dist = _clamp_stop_distance(entry, category, atr * _stop_atr_multiplier(category))
         else:
-            dist = entry * 0.015   # 1.5% default
+            dist = entry * _STOP_FALLBACK_PCT.get((category or "").lower(), 0.0060)
         return entry - dist if direction == "BUY" else entry + dist
 
-    def get_take_profit(self, entry: float, stop_loss: float, direction: str, rr: float = 2.0) -> float:
+    def get_take_profit(
+        self,
+        entry: float,
+        stop_loss: float,
+        direction: str,
+        category: str = "",
+        rr: Optional[float] = None,
+    ) -> float:
         dist = abs(entry - stop_loss)
-        return entry + dist * rr if direction == "BUY" else entry - dist * rr
+        ratio = float(rr) if rr and rr > 0 else _default_risk_reward(category)
+        if dist <= 0:
+            return entry
+        return entry + dist * ratio if direction == "BUY" else entry - dist * ratio

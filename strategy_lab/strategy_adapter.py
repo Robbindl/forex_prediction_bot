@@ -211,8 +211,8 @@ def compare_all_strategies_from_asset(
     if fetcher is None:
         from data.fetcher import DataFetcher
         fetcher = DataFetcher()
-    from config.config import TRADING_TIMEFRAME
-    _TF = TRADING_TIMEFRAME
+    from config.config import get_trading_timeframe
+    _TF = get_trading_timeframe(category)
     df = fetcher.get_ohlcv(asset, category, _TF, periods)
     if df is None or df.empty:
         raise ValueError(f"No OHLCV data for {asset} ({category})")

@@ -1,17 +1,17 @@
 from __future__ import annotations
 import json
-import os
 import socket
 import struct
 import threading
 import time
 from typing import Optional, Tuple
+from config.config import ML_SERVICE_PORT
 from utils.logger import get_logger
 
 logger = get_logger()
 
 _HOST        = "127.0.0.1"
-_PORT        = int(os.getenv("ML_SERVICE_PORT", "9100"))
+_PORT        = ML_SERVICE_PORT
 _TIMEOUT_SEC = 2.0
 _HEADER_FMT  = "!I"   # 4-byte big-endian unsigned int (message length)
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)

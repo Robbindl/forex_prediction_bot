@@ -238,15 +238,3 @@ class TechnicalIndicators:
         )
         
         return df
-
-
-if __name__ == "__main__":
-    # Test indicators
-    import yfinance as yf
-    
-    ticker = yf.Ticker("EURUSD=X")
-    df = ticker.history(period="100d")
-    df.columns = df.columns.str.lower()
-    
-    df = TechnicalIndicators.add_all_indicators(df)
-    logger.info(df[['close', 'rsi', 'macd', 'bb_upper', 'bb_lower']].tail())

@@ -13,7 +13,7 @@ logger = get_logger()
 class MarketConditionClassifier:
     """
     Stateless regime classifier. Call classify() on every signal.
-    Uses price data from the pipeline context + macro signals from Phase 1.
+    Uses price data from the decision context plus macro signals from Phase 1.
     """
 
     # ── Thresholds ────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ class MarketConditionClassifier:
 
     def classify_from_context(self, context: dict) -> str:
         """
-        Convenience method — pulls all inputs from the pipeline context dict.
+        Convenience method — pulls all inputs from the decision context dict.
         Called by EnsemblePredictor.
 
         FIX: macro_impact and narrative_strength are now populated in
@@ -93,9 +93,9 @@ class MarketConditionClassifier:
         TRADING_TIMEFRAME so annualisation is timeframe-correct.
         """
         try:
-            from config.config import TRADING_TIMEFRAME
             _bars_map = {"1d": 1, "4h": 6, "1h": 24, "30m": 48, "15m": 96, "5m": 288}
-            bars_per_day = _bars_map.get(TRADING_TIMEFRAME, 96)
+            timeframe = str(context.get("timeframe") or "15m").lower()
+            bars_per_day = _bars_map.get(timeframe, 96)
         except Exception:
             bars_per_day = 96  # safe default for 15m
 

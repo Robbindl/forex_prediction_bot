@@ -5,23 +5,22 @@ from typing import Dict, FrozenSet, Set
 # ── Asset universe ────────────────────────────────────────────────────────────
 
 FOREX_ASSETS: FrozenSet[str] = frozenset({
-    "EUR/USD", "GBP/JPY", "GBP/USD", "AUD/USD", "USD/JPY", "USD/CAD",
+    "EUR/USD", "EUR/JPY", "GBP/JPY", "GBP/USD", "AUD/USD", "USD/JPY", "USD/CAD",
 })
 
 US_INDEX_ASSETS: FrozenSet[str] = frozenset({
-    "^DJI", "^IXIC", "^GSPC",
+    "US30", "US100", "US500",
 })
 
 UK_INDEX_ASSETS: FrozenSet[str] = frozenset({
-    "^FTSE",
+    "UK100",
 })
 
 INDEX_ASSETS: FrozenSet[str] = US_INDEX_ASSETS | UK_INDEX_ASSETS
 
 COMMODITY_ASSETS: FrozenSet[str] = frozenset({
-    "GC=F",   # Gold
-    "SI=F",   # Silver
-    "CL=F",   # Crude Oil
+    "XAU/USD",  # Gold
+    "XAG/USD",  # Silver
 })
 
 CRYPTO_ASSETS: FrozenSet[str] = frozenset({
@@ -41,21 +40,21 @@ class AssetProfile:
 
     category: str                          # forex | indices | commodities | crypto
 
-    # Pipeline layers
-    use_order_flow:    bool = False        # Phase 3 order book + imbalance
-    use_liquidations:  bool = False        # Phase 1 liquidation stream
-    use_funding_rates: bool = False        # Phase 1 funding rate monitor
-    use_whale_data:    bool = False        # Phase 2 + Layer 6
+    # Decision-engine inputs
+    use_order_flow:    bool = False        # Order book + imbalance
+    use_liquidations:  bool = False        # Liquidation stream
+    use_funding_rates: bool = False        # Funding-rate monitor
+    use_whale_data:    bool = False        # Whale and on-chain intelligence
     use_aaii:          bool = False        # AAII bullish/bearish survey
     use_put_call:      bool = False        # Equity put/call ratio
     use_reddit:        bool = False        # Reddit sentiment
-    use_session_gates: bool = True         # Layer 4 market-hours gating
+    use_session_gates: bool = True         # Market-hours gating
     use_macro_news:    bool = True         # Macro news / economic events
 
-    # Minimum valid layers required to emit a signal
+    # Minimum valid inputs required to emit a signal
     min_valid_layers:  int  = 3
 
-    # News keyword filter for this asset type (used by SentimentAnalyzer)
+    # News keyword filter for this asset type (used by the sentiment service)
     news_keywords: tuple = field(default_factory=tuple)
 
     # Market hours identifier (used by Layer 4 and dashboard)
@@ -72,7 +71,7 @@ _FOREX_PROFILE = AssetProfile(
     use_whale_data    = False,
     use_aaii          = False,
     use_put_call      = False,
-    use_reddit        = True,
+    use_reddit        = False,
     use_session_gates = True,
     use_macro_news    = True,
     min_valid_layers  = 3,
@@ -89,7 +88,7 @@ _US_INDEX_PROFILE = AssetProfile(
     use_whale_data    = False,
     use_aaii          = True,    # AAII valid for US indices only
     use_put_call      = True,    # Put/call valid for US indices only
-    use_reddit        = True,
+    use_reddit        = False,
     use_session_gates = True,
     use_macro_news    = True,
     min_valid_layers  = 3,
@@ -106,7 +105,7 @@ _UK_INDEX_PROFILE = AssetProfile(
     use_whale_data    = False,
     use_aaii          = False,   # AAII not applicable to UK
     use_put_call      = False,   # US put/call not applicable to UK
-    use_reddit        = True,
+    use_reddit        = False,
     use_session_gates = True,
     use_macro_news    = True,
     min_valid_layers  = 3,
@@ -123,7 +122,7 @@ _COMMODITY_PROFILE = AssetProfile(
     use_whale_data    = False,
     use_aaii          = False,
     use_put_call      = False,
-    use_reddit        = True,
+    use_reddit        = False,
     use_session_gates = True,
     use_macro_news    = True,
     min_valid_layers  = 3,
@@ -154,6 +153,17 @@ _CRYPTO_PROFILE = AssetProfile(
 
 _PROFILE_REGISTRY: Dict[str, AssetProfile] = {}
 
+_LEGACY_CANONICAL = {
+    "GC=F": "XAU/USD",
+    "SI=F": "XAG/USD",
+    "CL=F": "WTI",
+    "WTI/USD": "WTI",
+    "^DJI": "US30",
+    "^IXIC": "US100",
+    "^GSPC": "US500",
+    "^FTSE": "UK100",
+}
+
 for _asset in FOREX_ASSETS:
     _PROFILE_REGISTRY[_asset] = _FOREX_PROFILE
 
@@ -175,8 +185,11 @@ def get_profile(asset: str) -> AssetProfile:
     Return the AssetProfile for a given canonical asset ID.
     Falls back to a conservative default if the asset is unknown.
     """
+    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
+    if canonical == "WTI":
+        return _COMMODITY_PROFILE
     return _PROFILE_REGISTRY.get(
-        asset,
+        canonical,
         AssetProfile(
             category          = "unknown",
             use_order_flow    = False,
@@ -195,24 +208,26 @@ def get_profile(asset: str) -> AssetProfile:
 
 
 def is_crypto(asset: str) -> bool:
-    return asset in CRYPTO_ASSETS
+    return get_profile(asset).category == "crypto"
 
 
 def is_forex(asset: str) -> bool:
-    return asset in FOREX_ASSETS
+    return get_profile(asset).category == "forex"
 
 
 def is_index(asset: str) -> bool:
-    return asset in INDEX_ASSETS
+    return get_profile(asset).category == "indices"
 
 
 def is_us_index(asset: str) -> bool:
-    return asset in US_INDEX_ASSETS
+    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
+    return canonical in US_INDEX_ASSETS
 
 
 def is_commodity(asset: str) -> bool:
-    return asset in COMMODITY_ASSETS
+    return get_profile(asset).category == "commodities"
 
 def is_uk_index(asset: str) -> bool:
-    return asset in UK_INDEX_ASSETS
+    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
+    return canonical in UK_INDEX_ASSETS
     

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from typing import Optional
 
 from utils.logger import get_logger
@@ -12,11 +13,17 @@ logger = get_logger()
 _pool       = None
 _pool_lock  = threading.Lock()
 _available  = False
+_next_retry_at = 0.0
+_last_unavailable_log = 0.0
+_last_unavailable_message = ""
 
 
 def _build_pool():
     """Build the connection pool once. Thread-safe."""
-    global _pool, _available
+    global _pool, _available, _next_retry_at, _last_unavailable_log, _last_unavailable_message
+    now = time.monotonic()
+    if now < _next_retry_at:
+        return
     try:
         import redis
         from config.config import REDIS_URL
@@ -39,6 +46,8 @@ def _build_pool():
         client.ping()
         _pool      = pool
         _available = True
+        _next_retry_at = 0.0
+        _last_unavailable_message = ""
         logger.info(
             f"[RedisPool] Connected — max_connections={max_connections}  "
             f"url={REDIS_URL[:40]}…"
@@ -46,7 +55,14 @@ def _build_pool():
     except Exception as e:
         _pool      = None
         _available = False
-        logger.warning(f"[RedisPool] Unavailable ({e}) — all Redis ops will no-op")
+        message = str(e)
+        _next_retry_at = now + 10.0
+        if message != _last_unavailable_message or (now - _last_unavailable_log) >= 60:
+            logger.warning(f"[RedisPool] Unavailable ({message}) — all Redis ops will no-op")
+            _last_unavailable_log = now
+            _last_unavailable_message = message
+        else:
+            logger.debug(f"[RedisPool] Unavailable ({message}) — all Redis ops will no-op")
 
 
 def _ensure_pool() -> None:

@@ -47,6 +47,13 @@ class Cache:
         with self._lock:
             self._store.pop(key, None)
 
+    def delete_prefix(self, prefix: str) -> int:
+        with self._lock:
+            keys = [key for key in self._store.keys() if str(key).startswith(prefix)]
+            for key in keys:
+                self._store.pop(key, None)
+            return len(keys)
+
     def clear(self) -> None:
         with self._lock:
             self._store.clear()

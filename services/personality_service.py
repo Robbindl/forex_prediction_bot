@@ -7,11 +7,11 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from config.database import SessionLocal
 from models.trade_models import (
     BotPersonality, HumanExplanations,
     MemorableMoments, Trade, TradingDiary,
 )
+from services.db_pool import get_db
 from utils.logger import logger
 
 
@@ -30,38 +30,35 @@ class PersonalityDatabase:
         self._lock = threading.Lock()
         self._ensure_personality_exists()
 
-    def _get_session(self) -> Session:
-        """Return a fresh short-lived session. Caller must close it."""
-        return SessionLocal()
+    def _get_session(self):
+        """Return a fresh shared-service session context."""
+        return get_db().get_session()
 
     # ── Setup ─────────────────────────────────────────────────────────────────
 
     def _ensure_personality_exists(self) -> None:
         """Create Robbie's default personality row if none exists."""
-        session = self._get_session()
         try:
-            p = session.query(BotPersonality).first()
-            if not p:
-                p = BotPersonality(
-                    bot_name             = "Robbie",
-                    base_confidence      = 0.7,
-                    cautiousness         = 0.5,
-                    optimism             = 0.6,
-                    talkativeness        = 0.7,
-                    current_mood         = "neutral",
-                    mood_emoji           = "😐",
-                    consecutive_wins     = 0,
-                    consecutive_losses   = 0,
-                    total_trades_remembered = 0,
-                    last_10_wins         = 0,
-                    last_10_pnl          = 0,
-                )
-                session.add(p)
-                session.commit()
+            with self._get_session() as session:
+                p = session.query(BotPersonality).first()
+                if not p:
+                    p = BotPersonality(
+                        bot_name             = "Robbie",
+                        base_confidence      = 0.7,
+                        cautiousness         = 0.5,
+                        optimism             = 0.6,
+                        talkativeness        = 0.7,
+                        current_mood         = "neutral",
+                        mood_emoji           = "😐",
+                        consecutive_wins     = 0,
+                        consecutive_losses   = 0,
+                        total_trades_remembered = 0,
+                        last_10_wins         = 0,
+                        last_10_pnl          = 0,
+                    )
+                    session.add(p)
         except Exception as e:
             logger.warning(f"[Personality] Could not ensure personality row: {e}")
-        finally:
-            session.close()
 
     # ── Trade recording ───────────────────────────────────────────────────────
 
@@ -71,94 +68,80 @@ class PersonalityDatabase:
         Called by core/engine.py on_trade_closed → personality.record_trade().
         """
         with self._lock:
-            session = self._get_session()
             try:
-                meta       = trade_data.get("metadata", trade_data.get("trade_metadata", {})) or {}
-                regime     = str(meta.get("regime", "unknown")).lower()
-                rsi        = float(meta.get("rsi", 0) or 0)
+                meta = trade_data.get("metadata", trade_data.get("trade_metadata", {})) or {}
+                regime = str(meta.get("regime", "unknown")).lower()
+                rsi = float(meta.get("rsi", 0) or 0)
                 setup_type = _classify_setup(regime, rsi, trade_data.get("exit_reason", ""))
 
-                entry = TradingDiary(
-                    asset         = trade_data.get("asset", ""),
-                    trade_id      = trade_data.get("trade_id"),
-                    setup_type    = setup_type,
-                    pnl           = float(trade_data.get("pnl", 0)),
-                    exit_reason   = trade_data.get("exit_reason", ""),
-                    entry_price   = float(trade_data.get("entry_price", 0) or 0),
-                    exit_price    = float(trade_data.get("exit_price",  0) or 0),
-                    confidence    = float(trade_data.get("confidence",  0.5) or 0.5),
-                    rsi_at_entry  = float(rsi) if rsi else None,
-                    market_regime = regime,
-                    notes         = {
-                        "strategy_id": trade_data.get("strategy_id", ""),
-                        "category":    trade_data.get("category", ""),
-                        "direction":   trade_data.get("direction", trade_data.get("signal", "")),
-                    },
-                )
-                session.add(entry)
-                session.commit()
+                with self._get_session() as session:
+                    entry = TradingDiary(
+                        asset         = trade_data.get("asset", ""),
+                        trade_id      = trade_data.get("trade_id"),
+                        setup_type    = setup_type,
+                        pnl           = float(trade_data.get("pnl", 0)),
+                        exit_reason   = trade_data.get("exit_reason", ""),
+                        entry_price   = float(trade_data.get("entry_price", 0) or 0),
+                        exit_price    = float(trade_data.get("exit_price",  0) or 0),
+                        confidence    = float(trade_data.get("confidence",  0.5) or 0.5),
+                        rsi_at_entry  = float(rsi) if rsi else None,
+                        market_regime = regime,
+                        notes         = {
+                            "strategy_id": trade_data.get("strategy_id", ""),
+                            "category":    trade_data.get("category", ""),
+                            "direction":   trade_data.get("direction", trade_data.get("signal", "")),
+                        },
+                    )
+                    session.add(entry)
+                    session.flush()
+                    entry_id = entry.id
 
-                self._update_mood_from_trade(trade_data, session)
-                self._check_memorable(trade_data, setup_type, session)
+                self._update_mood_from_trade(trade_data)
+                self._check_memorable(trade_data, setup_type)
 
-                return entry.id
+                return entry_id
 
             except Exception as e:
                 logger.error(f"[Personality] record_trade failed: {e}")
-                try:
-                    session.rollback()
-                except Exception:
-                    pass
                 return None
-            finally:
-                session.close()
 
-    def _update_mood_from_trade(self, trade_data: Dict, session=None) -> None:
+    def _update_mood_from_trade(self, trade_data: Dict) -> None:
         """Shift Robbie's mood based on the closed trade."""
-        own_session = session is None
-        if own_session:
-            session = self._get_session()
         try:
-            p    = session.query(BotPersonality).first()
-            if not p:
-                return
-            pnl  = float(trade_data.get("pnl", 0))
-            win  = pnl > 0
+            with self._get_session() as session:
+                p = session.query(BotPersonality).first()
+                if not p:
+                    return
+                pnl = float(trade_data.get("pnl", 0))
+                win = pnl > 0
 
-            if win:
-                p.consecutive_wins   += 1
-                p.consecutive_losses  = 0
-            else:
-                p.consecutive_losses += 1
-                p.consecutive_wins    = 0
+                if win:
+                    p.consecutive_wins += 1
+                    p.consecutive_losses = 0
+                else:
+                    p.consecutive_losses += 1
+                    p.consecutive_wins = 0
 
-            p.total_trades_remembered += 1
+                p.total_trades_remembered += 1
 
-            recent = (
-                session.query(TradingDiary)
-                .order_by(TradingDiary.created_at.desc())
-                .limit(10).all()
-            )
-            if recent:
-                p.last_10_wins = sum(1 for t in recent if t.pnl and t.pnl > 0)
-                p.last_10_pnl  = sum(float(t.pnl) for t in recent if t.pnl)
+                recent = (
+                    session.query(TradingDiary)
+                    .order_by(TradingDiary.created_at.desc())
+                    .limit(10).all()
+                )
+                if recent:
+                    p.last_10_wins = sum(1 for t in recent if t.pnl and t.pnl > 0)
+                    p.last_10_pnl = sum(float(t.pnl) for t in recent if t.pnl)
 
-            p.current_mood, p.mood_emoji = _calculate_mood(p)
-            session.commit()
+                p.current_mood, p.mood_emoji = _calculate_mood(p)
         except Exception as e:
             logger.debug(f"[Personality] mood update failed: {e}")
-        finally:
-            if own_session:
-                session.close()
 
-    def _check_memorable(self, trade_data: Dict, setup_type: str, session=None) -> None:
+    def _check_memorable(self, trade_data: Dict, setup_type: str) -> None:
         """Save a MemorableMoment if this trade crosses a significance threshold."""
-        own_session = session is None
-        if own_session:
-            session = self._get_session()
         try:
-            pnl    = float(trade_data.get("pnl", 0))
-            asset  = trade_data.get("asset", "")
+            pnl = float(trade_data.get("pnl", 0))
+            asset = trade_data.get("asset", "")
             is_win = pnl > 0
 
             title = None
@@ -172,47 +155,44 @@ class PersonalityDatabase:
             if not title:
                 return
 
-            moment = MemorableMoments(
-                moment_date  = datetime.now(),
-                title        = title,
-                description  = trade_data.get("exit_reason", ""),
-                asset        = asset,
-                pnl          = pnl,
-                is_win       = is_win,
-                is_memorable = True,
-                tags         = {
-                    "setup":      setup_type,
-                    "strategy":   trade_data.get("strategy_id", ""),
-                    "confidence": trade_data.get("confidence", 0),
-                    "regime":     (trade_data.get("metadata") or {}).get("regime", ""),
-                },
-            )
-            session.add(moment)
-            session.commit()
+            with self._get_session() as session:
+                moment = MemorableMoments(
+                    moment_date  = datetime.now(),
+                    title        = title,
+                    description  = trade_data.get("exit_reason", ""),
+                    asset        = asset,
+                    pnl          = pnl,
+                    is_win       = is_win,
+                    is_memorable = True,
+                    tags         = {
+                        "setup":      setup_type,
+                        "strategy":   trade_data.get("strategy_id", ""),
+                        "confidence": trade_data.get("confidence", 0),
+                        "regime":     (trade_data.get("metadata") or {}).get("regime", ""),
+                    },
+                )
+                session.add(moment)
         except Exception as e:
             logger.debug(f"[Personality] memorable check failed: {e}")
-        finally:
-            if own_session:
-                session.close()
 
     # ── Historical context ────────────────────────────────────────────────────
 
     def find_similar_setups(self, asset: str, setup_type: str,
                              days_back: int = 30) -> List[Dict]:
         """Return past diary entries for the same asset+setup."""
-        session = self._get_session()
         try:
             cutoff  = datetime.now() - timedelta(days=days_back)
-            rows    = (
-                session.query(TradingDiary)
-                .filter(
-                    TradingDiary.asset      == asset,
-                    TradingDiary.setup_type == setup_type,
-                    TradingDiary.created_at >= cutoff,
+            with self._get_session() as session:
+                rows = (
+                    session.query(TradingDiary)
+                    .filter(
+                        TradingDiary.asset      == asset,
+                        TradingDiary.setup_type == setup_type,
+                        TradingDiary.created_at >= cutoff,
+                    )
+                    .order_by(TradingDiary.created_at.desc())
+                    .limit(10).all()
                 )
-                .order_by(TradingDiary.created_at.desc())
-                .limit(10).all()
-            )
             return [
                 {
                     "date":       r.created_at.strftime("%Y-%m-%d %H:%M"),
@@ -226,8 +206,6 @@ class PersonalityDatabase:
         except Exception as e:
             logger.debug(f"[Personality] find_similar_setups failed: {e}")
             return []
-        finally:
-            session.close()
 
     def get_historical_context(self, asset: str, setup_type: str) -> Optional[str]:
         """Return a one-line human-readable historical context string."""
@@ -251,15 +229,15 @@ class PersonalityDatabase:
 
     def get_asset_memory(self, asset: str, days_back: int = 14) -> Dict:
         """Return Robbie's recent memory for a specific asset."""
-        session = self._get_session()
         try:
             cutoff = datetime.now() - timedelta(days=days_back)
-            rows   = (
-                session.query(TradingDiary)
-                .filter(TradingDiary.asset == asset, TradingDiary.created_at >= cutoff)
-                .order_by(TradingDiary.created_at.desc())
-                .limit(20).all()
-            )
+            with self._get_session() as session:
+                rows = (
+                    session.query(TradingDiary)
+                    .filter(TradingDiary.asset == asset, TradingDiary.created_at >= cutoff)
+                    .order_by(TradingDiary.created_at.desc())
+                    .limit(20).all()
+                )
             if not rows:
                 return {"has_memory": False}
 
@@ -285,113 +263,106 @@ class PersonalityDatabase:
         except Exception as e:
             logger.debug(f"[Personality] get_asset_memory failed: {e}")
             return {"has_memory": False}
-        finally:
-            session.close()
 
     # ── Personality report ────────────────────────────────────────────────────
 
     def get_personality_report(self) -> Dict:
         """Full personality snapshot for /mood, /diary, and dashboard."""
-        session = self._get_session()
         try:
-            p = session.query(BotPersonality).first()
+            with self._get_session() as session:
+                p = session.query(BotPersonality).first()
 
-            last_week    = datetime.now() - timedelta(days=7)
-            weekly_total = session.query(TradingDiary).filter(
-                TradingDiary.created_at >= last_week
-            ).count()
-            weekly_wins  = session.query(TradingDiary).filter(
-                TradingDiary.created_at >= last_week,
-                TradingDiary.pnl > 0,
-            ).count()
+                last_week = datetime.now() - timedelta(days=7)
+                weekly_total = session.query(TradingDiary).filter(
+                    TradingDiary.created_at >= last_week
+                ).count()
+                weekly_wins = session.query(TradingDiary).filter(
+                    TradingDiary.created_at >= last_week,
+                    TradingDiary.pnl > 0,
+                ).count()
 
-            # Fallback: if TradingDiary is empty, read directly from trades table.
-            # Diary entries only exist when record_trade() was called — trades that
-            # closed before personality service started (gap-fill, offline SL/TP)
-            # never get diary entries but ARE in the trades table.
-            if weekly_total == 0:
-                try:
-                    from models.trade_models import Trade
-                    weekly_total = session.query(Trade).filter(
-                        Trade.exit_time >= last_week,
-                        Trade.exit_time.isnot(None),
-                    ).count()
-                    weekly_wins = session.query(Trade).filter(
-                        Trade.exit_time >= last_week,
-                        Trade.exit_time.isnot(None),
-                        Trade.pnl > 0,
-                    ).count()
-                except Exception:
-                    pass
+                # Fallback: if TradingDiary is empty, read directly from trades table.
+                # Diary entries only exist when record_trade() was called — trades that
+                # closed before personality service started (gap-fill, offline SL/TP)
+                # never get diary entries but ARE in the trades table.
+                if weekly_total == 0:
+                    try:
+                        weekly_total = session.query(Trade).filter(
+                            Trade.exit_time >= last_week,
+                            Trade.exit_time.isnot(None),
+                        ).count()
+                        weekly_wins = session.query(Trade).filter(
+                            Trade.exit_time >= last_week,
+                            Trade.exit_time.isnot(None),
+                            Trade.pnl > 0,
+                        ).count()
+                    except Exception:
+                        pass
 
-            moments = (
-                session.query(MemorableMoments)
-                .order_by(MemorableMoments.moment_date.desc())
-                .limit(5).all()
-            )
+                moments = (
+                    session.query(MemorableMoments)
+                    .order_by(MemorableMoments.moment_date.desc())
+                    .limit(5).all()
+                )
 
-            return {
-                "name":         p.bot_name if p else "Robbie",
-                "current_mood": p.current_mood if p else "neutral",
-                "mood_emoji":   p.mood_emoji   if p else "😐",
-                "traits": {
-                    "base_confidence": float(p.base_confidence) if p else 0.7,
-                    "cautiousness":    float(p.cautiousness)    if p else 0.5,
-                    "optimism":        float(p.optimism)        if p else 0.6,
-                    "talkativeness":   float(p.talkativeness)   if p else 0.7,
-                },
-                "stats": {
-                    "total_trades_remembered": p.total_trades_remembered if p else 0,
-                    "consecutive_wins":        p.consecutive_wins         if p else 0,
-                    "consecutive_losses":      p.consecutive_losses       if p else 0,
-                    "last_10_wins":            p.last_10_wins             if p else 0,
-                    "last_10_pnl":   float(p.last_10_pnl) if p and p.last_10_pnl else 0.0,
-                    "weekly_trades":  weekly_total,
-                    "weekly_win_rate":(weekly_wins / weekly_total * 100) if weekly_total else 0,
-                },
-                "memorable_moments": [
-                    {
-                        "title":  m.title,
-                        "date":   m.moment_date.strftime("%Y-%m-%d"),
-                        "asset":  m.asset,
-                        "pnl":    float(m.pnl) if m.pnl else 0.0,
-                        "is_win": m.is_win,
-                    }
-                    for m in moments
-                ],
-            }
+                return {
+                    "name":         p.bot_name if p else "Robbie",
+                    "current_mood": p.current_mood if p else "neutral",
+                    "mood_emoji":   p.mood_emoji   if p else "😐",
+                    "traits": {
+                        "base_confidence": float(p.base_confidence) if p else 0.7,
+                        "cautiousness":    float(p.cautiousness)    if p else 0.5,
+                        "optimism":        float(p.optimism)        if p else 0.6,
+                        "talkativeness":   float(p.talkativeness)   if p else 0.7,
+                    },
+                    "stats": {
+                        "total_trades_remembered": p.total_trades_remembered if p else 0,
+                        "consecutive_wins":        p.consecutive_wins         if p else 0,
+                        "consecutive_losses":      p.consecutive_losses       if p else 0,
+                        "last_10_wins":            p.last_10_wins             if p else 0,
+                        "last_10_pnl":   float(p.last_10_pnl) if p and p.last_10_pnl else 0.0,
+                        "weekly_trades":  weekly_total,
+                        "weekly_win_rate":(weekly_wins / weekly_total * 100) if weekly_total else 0,
+                    },
+                    "memorable_moments": [
+                        {
+                            "title":  m.title,
+                            "date":   m.moment_date.strftime("%Y-%m-%d"),
+                            "asset":  m.asset,
+                            "pnl":    float(m.pnl) if m.pnl else 0.0,
+                            "is_win": m.is_win,
+                        }
+                        for m in moments
+                    ],
+                }
         except Exception as e:
             logger.error(f"[Personality] get_personality_report failed: {e}")
             return _default_report()
-        finally:
-            session.close()
 
     # ── Explanation storage ───────────────────────────────────────────────────
 
     def save_explanation(self, data: Dict) -> Optional[int]:
-        session = self._get_session()
         try:
             text = data.get("text", "")
-            row  = HumanExplanations(
-                asset            = data.get("asset", ""),
-                explanation_text = text[:4000],
-                direction        = data.get("direction", ""),
-                confidence       = float(data.get("confidence", 0)),
-                rsi_value        = data.get("rsi"),
-                volume_value     = data.get("volume"),
-                news_count       = int(data.get("news_count", 0)),
-                sentiment_score  = float(data.get("sentiment", 0)),
-                sent_to_telegram = bool(data.get("sent_to_telegram", False)),
-                telegram_chat_id = data.get("chat_id"),
-            )
-            session.add(row)
-            session.commit()
-            return row.id
+            with self._get_session() as session:
+                row = HumanExplanations(
+                    asset            = data.get("asset", ""),
+                    explanation_text = text[:4000],
+                    direction        = data.get("direction", ""),
+                    confidence       = float(data.get("confidence", 0)),
+                    rsi_value        = data.get("rsi"),
+                    volume_value     = data.get("volume"),
+                    news_count       = int(data.get("news_count", 0)),
+                    sentiment_score  = float(data.get("sentiment", 0)),
+                    sent_to_telegram = bool(data.get("sent_to_telegram", False)),
+                    telegram_chat_id = data.get("chat_id"),
+                )
+                session.add(row)
+                session.flush()
+                return row.id
         except Exception as e:
             logger.debug(f"[Personality] save_explanation failed: {e}")
             return None
-        finally:
-            session.close()
 
     def close(self) -> None:
         pass  # no permanent session to close anymore
@@ -579,7 +550,7 @@ class RobbieExplainer:
         if not signal or signal.get("direction", "HOLD") == "HOLD":
             no_sig = random.choice([
                 f"Honestly? I'm not seeing a clean entry on {asset} right now. 🤷",
-                f"The pipeline isn't giving me a clear signal on {asset} at the moment.",
+                f"The decision engine isn't giving me a clear signal on {asset} at the moment.",
                 f"Nothing's jumping out at me on {asset}. I'd wait for a better setup.",
             ])
             if memory.get("has_memory"):
@@ -610,7 +581,7 @@ class RobbieExplainer:
             opener = random.choice([
                 f"There's a {direction} setup on {asset}.",
                 f"I'm seeing a {direction} signal here.",
-                f"The pipeline flagged {asset} {direction.lower()}.",
+                f"The decision engine flagged {asset} {direction.lower()}.",
             ])
 
         lines = [opener, ""]
@@ -682,7 +653,7 @@ class RobbieExplainer:
     def _answer_why_no_signal(self, asset, mood) -> str:
         return (
             f"I don't have an active signal on {asset} right now, so I can't give you a full breakdown. "
-            f"Run `/signal {asset}` to check the live pipeline, then `/ask {asset} why` once a signal is active."
+            f"Run `/signal {asset}` to check the live decision engine, then `/ask {asset} why` once a signal is active."
         )
 
     def _answer_risk_question(self, asset, signal, mood, memory) -> str:
@@ -725,7 +696,7 @@ class RobbieExplainer:
         return (
             f"I don't have a live news feed wired into this command right now. "
             f"For sentiment context, check `/why {asset}` which pulls from the "
-            f"sentiment layer of the signal pipeline — that's where I factor in "
+            f"sentiment review inside the decision engine — that's where I factor in "
             f"news and social signals."
         )
 

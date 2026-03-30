@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-validate.py — Quick validation that optimization settings are in place.
+validate.py — Quick validation that current runtime settings are in place.
 
 Run: python validate.py
-Expected: All checks pass ✅
+Expected: All checks pass [OK]
 """
 import sys
 from pathlib import Path
@@ -13,19 +13,22 @@ GREEN = "\033[92m"
 RED = "\033[91m"
 YELLOW = "\033[93m"
 RESET = "\033[0m"
+OK_MARK = "[OK]"
+FAIL_MARK = "[FAIL]"
+INFO_MARK = "[INFO]"
 
 def check(condition, message):
     """Print check result."""
     if condition:
-        print(f"{GREEN}✅{RESET} {message}")
+        print(f"{GREEN}{OK_MARK}{RESET} {message}")
         return True
     else:
-        print(f"{RED}❌{RESET} {message}")
+        print(f"{RED}{FAIL_MARK}{RESET} {message}")
         return False
 
 def main():
     print("\n" + "=" * 70)
-    print("TIMEFRAME OPTIMIZATION VALIDATION")
+    print("RUNTIME CONFIG VALIDATION")
     print("=" * 70 + "\n")
     
     all_ok = True
@@ -40,8 +43,15 @@ def main():
     if env_exists:
         env_content = Path(".env").read_text()
         all_ok &= check("TRADING_TIMEFRAME=15m" in env_content, "TRADING_TIMEFRAME=15m configured")
-        all_ok &= check("DAILY_LOSS_LIMIT_PERCENT=4" in env_content, "DAILY_LOSS_LIMIT_PERCENT=4% (tighter risk)")
-        all_ok &= check("ITICK_TOKEN=" in env_content, "ITICK_TOKEN present in .env")
+        all_ok &= check("deriv_enabled=true" in env_content.lower(), "DERIV_ENABLED=true configured")
+        all_ok &= check("DERIV_APP_ID=" in env_content, "DERIV_APP_ID present in .env")
+        all_ok &= check("BINANCE_PUBLIC_DATA_ENABLED=true" in env_content, "BINANCE_PUBLIC_DATA_ENABLED=true configured")
+        all_ok &= check("DAILY_LOSS_LIMIT_PERCENT=4.0" in env_content, "DAILY_LOSS_LIMIT_PERCENT=4.0 configured")
+        all_ok &= check("DRAWDOWN_HALT_PERCENT=7.0" in env_content, "DRAWDOWN_HALT_PERCENT=7.0 configured")
+        all_ok &= check("MARKET_DATA_QUOTE_CACHE_TTL=5" in env_content, "MARKET_DATA_QUOTE_CACHE_TTL=5 configured")
+        all_ok &= check("MARKET_DATA_OHLCV_CACHE_TTL=60" in env_content, "MARKET_DATA_OHLCV_CACHE_TTL=60 configured")
+        all_ok &= check("TIMEFRAMES=1m,5m,15m,30m,1h,4h,1d" in env_content, "TIMEFRAMES include 30m and 4h")
+        all_ok &= check("TZ_OFFSET_HOURS=3" in env_content, "TZ_OFFSET_HOURS=3 configured")
     
     # Check 2: Strategy parameters
     print("\n2. STRATEGY PARAMETERS")
@@ -100,7 +110,7 @@ def main():
     print("-" * 70)
     
     db_ok = Path("trading_data.db").exists() or Path("data/system_state.json").exists()
-    print(f"{YELLOW}ℹ{RESET}  Database state: {'exists' if db_ok else 'will be created on startup'}")
+    print(f"{YELLOW}{INFO_MARK}{RESET} Database state: {'exists' if db_ok else 'will be created on startup'}")
     
     # Check 6: Optimal assets
     print("\n6. ASSET CONFIGURATION")
@@ -116,11 +126,11 @@ def main():
         }
         
         all_ok &= check(assets["crypto"] >= 5, f"Crypto assets: {assets['crypto']} (BTC/ETH/SOL/BNB/XRP)")
-        all_ok &= check(assets["forex"] >= 6, f"Forex pairs: {assets['forex']}")
-        all_ok &= check(assets["commodities"] >= 3, f"Commodities: {assets['commodities']}")
+        all_ok &= check(assets["forex"] >= 7, f"Forex pairs: {assets['forex']}")
+        all_ok &= check(assets["commodities"] >= 2, f"Commodities: {assets['commodities']}")
         all_ok &= check(assets["indices"] >= 4, f"Indices: {assets['indices']}")
         
-        print(f"{YELLOW}ℹ{RESET}  Total assets: {sum(assets.values())} (recommended: 18)")
+        print(f"{YELLOW}{INFO_MARK}{RESET} Total assets: {sum(assets.values())} (recommended: 18)")
     except Exception as e:
         all_ok &= check(False, f"Asset config load failed: {e}")
     
@@ -132,7 +142,7 @@ def main():
         ("config/optimization.py", "Optimization config"),
         ("risk/forex_filter.py", "Forex-specific filters"),
         (".env", "Active env file"),
-        ("DEPLOYMENT.md", "Deployment guide"),
+        ("DEPLOYMENT_GUIDE.md", "Deployment guide"),
     ]
     
     for filepath, description in critical_files:
@@ -142,17 +152,18 @@ def main():
     # Summary
     print("\n" + "=" * 70)
     if all_ok:
-        print(f"{GREEN}✅ ALL CHECKS PASSED!{RESET}")
-        print("\nYou're ready to deploy 15m trading. Next steps:")
-        print("  1. Update ITICK_TOKEN in .env (or other data API)")
-        print("  2. Run: python bot.py --no-telegram")
-        print("  3. Monitor paper trades for 3 days")
-        print("  4. Review DEPLOYMENT.md for full guide")
+        print(f"{GREEN}{OK_MARK} ALL CHECKS PASSED!{RESET}")
+        print("\nYou're ready to run the current market-data stack. Next steps:")
+        print("  1. Verify DERIV_APP_ID / DERIV_SYMBOL_MAP in .env")
+        print("  2. Verify BINANCE_PUBLIC_DATA_ENABLED=true for BNB/SOL/XRP fallback")
+        print("  3. Run: python bot.py --no-telegram")
+        print("  4. Monitor paper trades for 3 days")
+        print("  5. Review DEPLOYMENT_GUIDE.md for full guide")
         return 0
     else:
-        print(f"{RED}❌ SOME CHECKS FAILED!{RESET}")
+        print(f"{RED}{FAIL_MARK} SOME CHECKS FAILED!{RESET}")
         print("\nFix any failures above, then run this script again.")
-        print("See DEPLOYMENT_15M.md for troubleshooting.")
+        print("See DEPLOYMENT_GUIDE.md for troubleshooting.")
         return 1
 
 if __name__ == "__main__":

@@ -69,6 +69,7 @@ class _ExchangeConnection:
         self._on_event    = on_event
         self._running     = running_flag
         self._delay       = _RECONNECT_DELAY_SECS
+        self._degraded    = False
         self._thread: Optional[threading.Thread] = None
 
     # ── Public ──────────────────────────────────────────────────────────────
@@ -90,10 +91,17 @@ class _ExchangeConnection:
                 self._connect_and_read()
                 self._delay = _RECONNECT_DELAY_SECS   # reset on clean close
             except Exception as exc:
-                logger.warning(
-                    f"[ExStream] {self.exchange} error: {exc} "
-                    f"— reconnecting in {self._delay}s"
-                )
+                if not self._degraded:
+                    logger.warning(
+                        f"[ExStream] {self.exchange} error: {exc} "
+                        f"— reconnecting in {self._delay}s"
+                    )
+                    self._degraded = True
+                else:
+                    logger.debug(
+                        f"[ExStream] {self.exchange} still unavailable: {exc} "
+                        f"— reconnecting in {self._delay}s"
+                    )
             if self._running.is_set():
                 time.sleep(self._delay)
                 self._delay = min(self._delay * 2, 60)
@@ -105,6 +113,8 @@ class _ExchangeConnection:
         sub = SUBSCRIPTIONS[self.exchange]
 
         def on_open(ws):
+            self._degraded = False
+            self._delay = _RECONNECT_DELAY_SECS
             logger.info(f"[ExStream] {self.exchange} connected")
             ws.send(json.dumps(sub))
 

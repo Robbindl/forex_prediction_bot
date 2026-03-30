@@ -20,12 +20,12 @@ Usage anywhere in the codebase
         result = predictor.predict(asset, category, df)
 
     # Decorator
-    @track_latency("pipeline")
-    def run():
+    @track_latency("decision")
+    def run_decision_cycle():
         ...
 
     # Record an error
-    metrics.record_error("layer3_regime", "ADX calculation failed")
+    metrics.record_error("decision_regime", "ADX calculation failed")
 """
 from __future__ import annotations
 
@@ -33,13 +33,13 @@ from monitoring.system_health_service import SystemHealthService, monitor, start
 from monitoring.metrics import (
     MetricsCollector, MetricsTimer, track_latency,
     metrics,
-    PIPELINE, PREDICTION, BACKTEST, SENTIMENT,
+    DECISION, PREDICTION, BACKTEST, SENTIMENT,
     WHALE, ORDERFLOW, NARRATIVE, TELEGRAM,
 )
 
 __all__ = [
     "SystemHealthService", "monitor", "start_monitoring",
     "MetricsCollector", "MetricsTimer", "track_latency", "metrics",
-    "PIPELINE", "PREDICTION", "BACKTEST", "SENTIMENT",
+    "DECISION", "PREDICTION", "BACKTEST", "SENTIMENT",
     "WHALE", "ORDERFLOW", "NARRATIVE", "TELEGRAM",
 ]

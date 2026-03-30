@@ -69,7 +69,7 @@ class SignalGeneratedEvent(BaseEvent):
     stop_loss: float
     take_profit: float
     strategy_id: str
-    layer_reached: int
+    step_reached: int
     reason: str
 
 
@@ -81,7 +81,7 @@ class SignalRejectedEvent(BaseEvent):
     direction: str
     confidence: float
     reject_reason: str
-    reject_layer: str
+    reject_step: str
 
 
 @dataclass

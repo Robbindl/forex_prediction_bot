@@ -14,6 +14,7 @@ except ImportError:
 from core.asset_profiles import (
     is_crypto, is_forex, is_index, is_commodity,
     US_INDEX_ASSETS, UK_INDEX_ASSETS,
+    get_profile,
 )
 
 
@@ -100,9 +101,9 @@ def _uk_index_open(asset: str) -> Tuple[bool, str]:
 
 def _commodity_open(asset: str) -> Tuple[bool, str]:
     """
-    CME COMEX/NYMEX futures:
-      Gold (GC=F), Silver (SI=F): Sun-Fri  18:00-17:00 ET (23h/day), 1h break 17-18 ET
-      Crude Oil (CL=F):           Sun-Fri  18:00-17:00 ET same session
+    Commodity trading hours approximation:
+      Gold (XAU/USD), Silver (XAG/USD): Sun-Fri 18:00-17:00 ET, 1h break 17-18 ET
+      WTI Oil (WTI):                    Sun-Fri 18:00-17:00 ET same session
     Closed Saturday and the 1h break 17:00-18:00 ET daily.
     """
     if not _is_weekday():
@@ -112,7 +113,7 @@ def _commodity_open(asset: str) -> Tuple[bool, str]:
         except Exception:
             et = (_utc_now() - timedelta(hours=5)).replace(tzinfo=timezone.utc)
         if et.weekday() == 6 and et.time() >= time(18, 0):
-            return True, "Futures open (Sunday evening session)"
+            return True, "Commodity market open (Sunday evening session)"
         return False, "Weekend (closed)"
 
     try:
@@ -129,11 +130,27 @@ def _commodity_open(asset: str) -> Tuple[bool, str]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _deriv_market_status(asset: str) -> Optional[Tuple[bool, str]]:
+    try:
+        from services.deriv_bridge import deriv_bridge
+
+        profile = get_profile(asset)
+        status = deriv_bridge.get_market_status(asset, category=profile.category)
+        if status and "market_open" in status:
+            return bool(status["market_open"]), str(status.get("reason", "Deriv market status"))
+    except Exception:
+        pass
+    return None
+
+
 def is_market_open_for_asset(asset: str) -> Tuple[bool, str]:
     """
     Return (is_open: bool, reason: str) for any canonical asset ID.
     Never returns hardcoded True — always computes from current UTC time.
     """
+    deriv_status = _deriv_market_status(asset)
+    if deriv_status is not None:
+        return deriv_status
     if is_crypto(asset):
         return _crypto_open()
     if is_forex(asset):
@@ -152,13 +169,31 @@ def market_status(asset: str) -> Dict:
     """
     Return a full status dict suitable for the dashboard API response.
     """
-    open_, reason = is_market_open_for_asset(asset)
-    return {
+    deriv_status = _deriv_market_status(asset)
+    if deriv_status is not None:
+        open_, reason = deriv_status
+    else:
+        if is_crypto(asset):
+            open_, reason = _crypto_open()
+        elif is_forex(asset):
+            open_, reason = _forex_open()
+        elif asset in US_INDEX_ASSETS:
+            open_, reason = _us_index_open(asset)
+        elif asset in UK_INDEX_ASSETS:
+            open_, reason = _uk_index_open(asset)
+        elif is_commodity(asset):
+            open_, reason = _commodity_open(asset)
+        else:
+            open_, reason = False, f"Unknown asset type ({asset})"
+    payload = {
         "asset":       asset,
         "market_open": open_,
         "reason":      reason,
         "utc_now":     _utc_now().strftime("%Y-%m-%d %H:%M UTC"),
     }
+    if deriv_status is not None:
+        payload["source"] = "Deriv"
+    return payload
 
 
 def all_market_statuses() -> Dict[str, Dict]:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import threading
 import time
@@ -8,16 +7,26 @@ from datetime import datetime
 from typing import Dict, List, Optional
 import asyncio
 
+from config.config import (
+    TELEGRAM_API_HASH,
+    TELEGRAM_API_ID,
+    TELEGRAM_PHONE,
+    TELEGRAM_SESSION,
+    WHALE_TELEGRAM_TOKEN,
+)
+from services.intelligence_event_utils import record_whale_alert_event
 from utils.logger import get_logger
 
 logger = get_logger()
 
-# ── Credentials from .env ─────────────────────────────────────────────────────
-_BOT_TOKEN   = os.getenv("WHALE_TELEGRAM_TOKEN", "")
-_API_ID      = os.getenv("TELEGRAM_API_ID", "")
-_API_HASH    = os.getenv("TELEGRAM_API_HASH", "")
-_PHONE       = os.getenv("TELEGRAM_PHONE", "")
-_SESSION     = os.getenv("TELEGRAM_SESSION", "whale_session")
+# ── Credentials from config ───────────────────────────────────────────────────
+_BOT_TOKEN   = WHALE_TELEGRAM_TOKEN
+_API_ID      = TELEGRAM_API_ID
+_API_HASH    = TELEGRAM_API_HASH
+_PHONE       = TELEGRAM_PHONE
+# Telethon persists auth in <session>.session. For this bot that file is
+# typically whale_session.session and should be preserved across runs.
+_SESSION     = TELEGRAM_SESSION
 
 # ── Whale alert channels to monitor ──────────────────────────────────────────
 # Add or remove channel usernames as needed
@@ -137,6 +146,7 @@ def _parse_alert(text: str, source: str, date: datetime) -> Optional[Dict]:
         "source":    f"Telegram/{source}",
         "sentiment": sentiment,
         "raw_text":  text[:200],
+        "external_id": f"telegram:{source}:{date.isoformat()}:{symbol}:{int(value_usd)}",
     }
 
 
@@ -289,7 +299,7 @@ class TelegramWhaleWatcher:
                     f"[TelegramWhaleWatcher] NEW alert: "
                     f"{alert['symbol']} ${alert['value_usd']/1_000_000:.1f}M"
                 )
-                # Fire callback to bot.py → ingest_whale_alert()
+                # Fire optional callback for downstream fan-out.
                 if self.on_alert:
                     try:
                         self.on_alert(alert)
@@ -308,9 +318,22 @@ class TelegramWhaleWatcher:
 
     def _add_alert(self, alert: Dict) -> None:
         """Thread-safe insert into recent alerts list."""
+        inserted = False
         with self._lock:
             # Deduplicate by title
             existing_titles = {a["title"] for a in self._recent_alerts}
             if alert["title"] not in existing_titles:
                 self._recent_alerts.insert(0, alert)
                 self._recent_alerts = self._recent_alerts[: self._max_alerts]
+                inserted = True
+        if inserted:
+            record_whale_alert_event(
+                symbol=alert.get("symbol", ""),
+                source=alert.get("source", "Telegram"),
+                value_usd=float(alert.get("value_usd", 0.0) or 0.0),
+                raw_text=alert.get("raw_text", alert.get("title", "")),
+                sentiment=float(alert.get("sentiment", 0.1) or 0.1),
+                timestamp=alert.get("date"),
+                metadata={"title": alert.get("title", "")},
+                external_id=str(alert.get("external_id", "")),
+            )

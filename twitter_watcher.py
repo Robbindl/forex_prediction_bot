@@ -6,6 +6,7 @@ import threading
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from services.intelligence_event_utils import record_whale_alert_event, score_whale_text
 from utils.logger import logger
 
 try:
@@ -44,31 +45,31 @@ class TwitterWhaleWatcher:
     _price_cache_ts: Dict[str, float] = {}
     _price_ttl: float = 300.0
 
-    _YF_SYMBOLS: Dict[str, str] = {
+    _PRICE_ASSETS: Dict[str, str] = {
         "BTC": "BTC-USD", "ETH": "ETH-USD", "BNB": "BNB-USD",
         "SOL": "SOL-USD", "XRP": "XRP-USD", "ADA": "ADA-USD",
         "DOGE": "DOGE-USD",
     }
 
     def _get_live_price(self, symbol: str) -> Optional[float]:
-        """Fetch live price from yfinance. Returns None if unavailable."""
+        """Fetch live price from Deriv. Returns None if unavailable."""
         now = time.time()
         sym = symbol.upper()
         if sym in self._price_cache:
             if now - self._price_cache_ts.get(sym, 0) < self._price_ttl:
                 return self._price_cache[sym]
-        yf_sym = self._YF_SYMBOLS.get(sym)
-        if not yf_sym:
+        canonical_asset = self._PRICE_ASSETS.get(sym)
+        if not canonical_asset:
             return None
         try:
-            import yfinance as yf
-            h = yf.Ticker(yf_sym).history(period="1d", interval="1d")
-            if not h.empty:
-                price = float(h["Close"].iloc[-1])
-                if price > 0:
-                    self._price_cache[sym] = price
-                    self._price_cache_ts[sym] = now
-                    return price
+            from data.fetcher import get_shared_fetcher
+
+            fetcher = get_shared_fetcher()
+            price, _ = fetcher.get_real_time_price(canonical_asset, "crypto")
+            if price and price > 0:
+                self._price_cache[sym] = float(price)
+                self._price_cache_ts[sym] = now
+                return float(price)
         except Exception:
             pass
         return None
@@ -214,12 +215,28 @@ class TwitterWhaleWatcher:
                     pass
                 info = self.extract_whale_info(tweet.get("text", ""))
                 if info:
+                    sentiment = score_whale_text(tweet.get("text", ""))
+                    created_at = tweet.get("created_at") or datetime.utcnow()
+                    fallback_id = f"{account}:{info['symbol']}:{int(info['value_usd'])}:{int(created_at.timestamp())}"
+                    external_id = f"twitter:{tweet.get('id') or fallback_id}"
+                    record_whale_alert_event(
+                        symbol=info["symbol"],
+                        source=tweet.get("source", f"Twitter @{account}"),
+                        value_usd=info["value_usd"],
+                        raw_text=tweet.get("text", ""),
+                        sentiment=sentiment,
+                        timestamp=created_at,
+                        metadata={"account": account, "tweet_id": tweet.get("id")},
+                        external_id=external_id,
+                    )
                     all_tweets.append({
                         "id":         tweet.get("id"),
                         "text":       tweet.get("text"),
-                        "created_at": tweet.get("created_at", datetime.utcnow()),
+                        "created_at": created_at,
                         "account":    account,
                         "whale_info": info,
+                        "sentiment":  sentiment,
+                        "external_id": external_id,
                         "source":     tweet.get("source", f"Twitter @{account}"),
                     })
             time.sleep(0.5)
@@ -274,5 +291,10 @@ class TwitterWhaleWatcher:
                     "date":      dt.isoformat() if hasattr(dt, "isoformat") else str(dt),
                     "source":    tweet.get("source", "Twitter"),
                     "account":   tweet.get("account", ""),
+                    "created_at": dt,
+                    "text":      tweet.get("text", ""),
+                    "whale_info": info,
+                    "sentiment":  tweet.get("sentiment", 0.1),
+                    "external_id": tweet.get("external_id", ""),
                 })
         return alerts

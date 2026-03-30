@@ -51,6 +51,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .mc-sub{font-size:12px;color:var(--tx2)}
 .mc-icon{position:absolute;right:14px;top:14px;font-size:22px;opacity:.25}
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.pu{color:var(--pu)}.mu{color:var(--tx2)}
+.mini-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.mini-chip{padding:3px 8px;border-radius:999px;font-size:10px;text-transform:uppercase;letter-spacing:.4px;background:var(--s3);color:var(--tx2)}
+.mini-chip.ok{background:rgba(0,208,132,.12);color:var(--gr)}
+.mini-chip.warn{background:rgba(255,165,0,.15);color:var(--am)}
+.mini-chip.bad{background:rgba(255,69,96,.12);color:var(--rd)}
+.pulse-label{font-size:11px;color:var(--tx2)}
 
 /* PANELS */
 .panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden;min-height:80px;display:flex;flex-direction:column}
@@ -93,6 +99,11 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .whale-title{font-size:12px;font-weight:600}
 .whale-meta{font-size:11px;color:var(--tx3);margin-top:1px}
 .whale-amount{font-size:13px;font-weight:700;color:var(--cy);white-space:nowrap}
+.pulse-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.pulse-card{background:var(--s2);border-radius:8px;padding:10px 12px}
+.pulse-val{font-size:20px;font-weight:700;margin-bottom:3px}
+.pulse-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
+.pulse-sub{font-size:11px;color:var(--tx2);margin-top:5px}
 
 .empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
 
@@ -171,7 +182,10 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
-    <div class="sb-bottom"></div>
+    <div class="sb-bottom">
+      <div class="status-row"><span id="engineDot" class="pulse off"></span><span id="engineStatus">Engine syncing</span></div>
+      <div class="status-row"><span id="readyDot" class="pulse off"></span><span id="readyStatus">Decision stack warming</span></div>
+    </div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
 
@@ -225,12 +239,15 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel" style="animation-delay:.3s">
         <div class="panel-header">
-          <span class="panel-title">💬 Sentiment</span>
+          <span class="panel-title">💬 Market Pulse</span>
         </div>
         <div class="gauge-wrap">
           <div class="gauge-score" id="sentScore">—</div>
           <div class="gauge-label" id="sentLabel">Loading…</div>
           <div class="gauge-bar"><div class="gb-fill" id="sentBar" style="width:50%;background:var(--am)"></div></div>
+          <div class="mini-row" id="pulseChips">
+            <span class="mini-chip">Loading…</span>
+          </div>
         </div>
       </div>
 
@@ -406,8 +423,11 @@ async function loadMain(){
     document.getElementById('mPos').textContent=posLen;
     document.getElementById('posCount').textContent=posLen;
     const running=d.engine_running;
+    const ready=!!d.engine_ready;
     document.getElementById('engineDot').className='pulse'+(running?'':' off');
     document.getElementById('engineStatus').textContent=running?'Engine running':'Engine stopped';
+    document.getElementById('readyDot').className='pulse'+(ready?'':' off');
+    document.getElementById('readyStatus').textContent=ready?'Decision stack ready':'Decision stack warming';
     document.getElementById('engineBadge').textContent=running?'Live':'Offline';
     document.getElementById('engineBadge').className='tb-badge '+(running?'badge-live':'badge-off');
   }catch(e){console.error('[CC] metrics:',e);}
@@ -449,6 +469,12 @@ async function loadMain(){
     document.getElementById('sentLabel').textContent=ssLabel;
     document.getElementById('sentBar').style.width=((ss+1)/2*100)+'%';
     document.getElementById('sentBar').style.background=ssColor;
+    const chips = [
+      {label:`Whales ${d.alert_count_24h||0}`, cls:(d.alert_count_24h||0)?'warn':'ok'},
+      {label:d.engine_ready?'Ready':'Warming', cls:d.engine_ready?'ok':'warn'},
+      {label:`Positions ${d.open_positions||0}`, cls:(d.open_positions||0)?'ok':''},
+    ];
+    document.getElementById('pulseChips').innerHTML = chips.map(c=>`<span class="mini-chip ${c.cls||''}">${c.label}</span>`).join('');
   }catch(e){console.error('[CC] sentiment:',e);}
 
   // ── Open positions table ─────────────────────────────────────────────────
@@ -527,7 +553,7 @@ setInterval(loadMain,15000);setInterval(loadWhales,30000);setInterval(loadHistor
 async function loadHistory(){
   try{
     const filter=document.getElementById('historyFilter')?.value||'all';
-    const d=await fetch('/api/trade-history?limit=50', {headers: apiHeaders()}).then(r=>r.json());
+    const d=await fetch(`/api/trade-history?limit=50&no_cache=1&_=${Date.now()}`, {headers: apiHeaders(), cache:'no-store'}).then(r=>r.json());
     if(!d.success)return;
     let trades=d.trades||[];
 
@@ -629,7 +655,7 @@ let _pnlChart = null;
 
 async function loadPnlChart(){
   try{
-    const d=await fetch('/api/trade-history?limit=200', {headers: apiHeaders()}).then(r=>r.json());
+    const d=await fetch(`/api/trade-history?limit=200&no_cache=1&_=${Date.now()}`, {headers: apiHeaders(), cache:'no-store'}).then(r=>r.json());
     if(!d.success || !d.trades)return;
     
     const trades = (d.trades || []).sort((a,b) => {

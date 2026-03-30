@@ -32,7 +32,7 @@ class Trade(Base):
     pnl_percent   = Column(Numeric(10, 4))
     duration_minutes = Column(Integer, default=0)
     entry_time    = Column(DateTime(timezone=True), server_default=func.now(), index=True)
-    exit_time     = Column(DateTime(timezone=True))
+    exit_time     = Column(DateTime(timezone=True), index=True)
     exit_reason   = Column(String(50))
     strategy_id   = Column(String(30), nullable=False, index=True)
     confidence    = Column(Numeric(5, 4))
@@ -40,6 +40,11 @@ class Trade(Base):
     trade_metadata  = Column(JSON)
 
     diary_entry = relationship("TradingDiary", back_populates="trade", uselist=False)
+
+    __table_args__ = (
+        Index("idx_trades_category_exit_time", "category", "exit_time"),
+        Index("idx_trades_canonical_asset_exit_time", "canonical_asset", "exit_time"),
+    )
 
     def to_dict(self) -> dict:
         return {
@@ -140,6 +145,11 @@ class TradingDiary(Base):
 
     trade = relationship("Trade", back_populates="diary_entry")
 
+    __table_args__ = (
+        Index("idx_trading_diary_asset_setup_date", "asset", "setup_type", "created_at"),
+        Index("idx_trading_diary_asset_date", "asset", "created_at"),
+    )
+
 
 class BotPersonality(Base):
     __tablename__ = "bot_personality"
@@ -174,6 +184,10 @@ class MemorableMoments(Base):
     is_memorable = Column(Boolean, default=True)
     tags         = Column(JSON)
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_memorable_moments_date", "moment_date"),
+    )
 
 
 class HumanExplanations(Base):

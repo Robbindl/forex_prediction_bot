@@ -10,9 +10,6 @@ xgboost>=2.0.0
 joblib>=1.3.0
 
 # Data
-yfinance>=0.2.33
-twelvedata>=0.3.0
-alpha-vantage>=2.3.1
 finnhub-python>=2.4.18
 requests>=2.31.0
 websocket-client>=1.9.0
@@ -23,7 +20,6 @@ ujson>=5.11.0
 flask>=2.3.0
 flask-cors>=4.0.0
 flask-socketio>=5.3.0
-eventlet>=0.33.0
 python-multipart>=0.0.22
 hypercorn>=1.0.0
 h2>=4.1.0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import threading
 from typing import Dict, List, Optional, Tuple
+from config.config import DRAWDOWN_HALT_PERCENT, DRAWDOWN_REDUCE_PERCENT
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -9,8 +10,8 @@ logger = get_logger()
 def _lot_exposure(asset: str, category: str, units: float, entry: float) -> float:
     """Convert position units to USD exposure using lot-based calculation."""
     try:
-        from risk.position_sizer import MT5_SPECS, _DEFAULTS
-        spec     = MT5_SPECS.get(asset) or _DEFAULTS.get(category, {})
+        from risk.position_sizer import CONTRACT_SPECS, _DEFAULTS
+        spec     = CONTRACT_SPECS.get(asset) or _DEFAULTS.get(category, {})
         contract = spec.get("contract", 1)
         pip_val  = spec.get("pip_val", 10.0)
         lots     = units / contract if contract > 0 else units
@@ -22,8 +23,8 @@ def _lot_exposure(asset: str, category: str, units: float, entry: float) -> floa
 _MAX_SINGLE_ASSET_PCT   = 20.0   # max % of portfolio in any one asset
 _MAX_CATEGORY_PCT       = 40.0   # max % in any one category (crypto, forex…)
 _MAX_CORRELATION        = 0.85   # block new position if corr with open pos > this
-_DRAWDOWN_HALT_PCT      = 8.0    # block all new positions if drawdown > 8%
-_DRAWDOWN_REDUCE_PCT    = 5.0    # start scaling down above 5%
+_DRAWDOWN_HALT_PCT      = DRAWDOWN_HALT_PERCENT
+_DRAWDOWN_REDUCE_PCT    = DRAWDOWN_REDUCE_PERCENT
 
 _TARGET_ALLOCATION = {
     "crypto":      40.0,
@@ -52,7 +53,7 @@ class PortfolioRiskEngine:
         self._max_asset    = max_single_asset_pct
         self._max_cat      = max_category_pct
         self._dd_halt      = drawdown_halt_pct
-        self._dd_reduce    = drawdown_reduce_pct
+        self._dd_reduce    = min(drawdown_reduce_pct, max(0.0, drawdown_halt_pct - 0.1))
         self._targets      = target_allocation or dict(_TARGET_ALLOCATION)
         self._lock         = threading.RLock()
         self._peak_balance = 0.0
@@ -80,8 +81,8 @@ class PortfolioRiskEngine:
             entry    = float(signal.get("entry_price", 0))
             # Lot-based exposure: convert units back to lots for correct notional value
             try:
-                from risk.position_sizer import MT5_SPECS, _DEFAULTS
-                spec     = MT5_SPECS.get(asset) or _DEFAULTS.get(category, {})
+                from risk.position_sizer import CONTRACT_SPECS, _DEFAULTS
+                spec     = CONTRACT_SPECS.get(asset) or _DEFAULTS.get(category, {})
                 contract = spec.get("contract", 1)
                 lots     = size / contract if contract > 0 else size
                 pip_val  = spec.get("pip_val", 10.0)
@@ -100,7 +101,8 @@ class PortfolioRiskEngine:
                     )
                 if drawdown_pct >= self._dd_reduce:
                     # Allow but scale down
-                    scale = 1.0 - (drawdown_pct - self._dd_reduce) / (self._dd_halt - self._dd_reduce)
+                    gap = max(0.1, self._dd_halt - self._dd_reduce)
+                    scale = 1.0 - (drawdown_pct - self._dd_reduce) / gap
                     signal["position_size"] = size * max(0.25, scale)
                     logger.info(
                         f"[PortfolioRisk] Scaling position to {scale:.0%} "

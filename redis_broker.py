@@ -13,7 +13,7 @@ class RedisBroker:
     """
 
     CHANNELS = [
-        'signals',      # trading signals that passed the 7-layer pipeline
+        'signals',      # trading signals accepted by the decision engine
         'prices',       # live price ticks per asset
         'whale_alerts', # whale movement events from WhaleAlertManager
         'sentiment',    # composite sentiment updates

@@ -20,7 +20,7 @@ logger = get_logger()
 CPU_ALERT_PCT         = 90.0
 RAM_ALERT_PCT         = 85.0
 PHASE_SILENT_SECS     = 300
-PIPELINE_SLOW_MS      = 5000
+DECISION_SLOW_MS      = 5000
 ERROR_RATE_PER_MIN    = 10
 ALERT_COOLDOWN_SECS   = 300
 
@@ -75,11 +75,13 @@ class SystemHealthService:
         self._running        = False
         self._telegram       = None
         self._pub            = None
+        self._redis_retry_at = 0.0
+        self._redis_degraded_logged = False
 
         self._start_time     = time.time()
         self._signal_count   = 0
         self._signal_kills:  Dict[str, int]  = defaultdict(int)
-        self._pipeline_lats: Deque[float]    = deque(maxlen=200)
+        self._decision_lats: Deque[float]    = deque(maxlen=200)
         self._pred_lats:     Deque[float]    = deque(maxlen=200)
         self._error_log:     Deque[Dict]     = deque(maxlen=100)
         self._error_times:   Deque[float]    = deque(maxlen=500)
@@ -192,8 +194,8 @@ class SystemHealthService:
 
     # ── Existing metric recording API ─────────────────────────────────────────
 
-    def record_pipeline_latency(self, ms: float) -> None:
-        self._pipeline_lats.append(ms)
+    def record_decision_latency(self, ms: float) -> None:
+        self._decision_lats.append(ms)
 
     def record_prediction_latency(self, ms: float) -> None:
         self._pred_lats.append(ms)
@@ -253,9 +255,9 @@ class SystemHealthService:
     def get_snapshot(self) -> Dict:
         total_trades = self._win_count + self._loss_count
         win_rate     = self._win_count / total_trades if total_trades else 0.0
-        avg_pipeline = (
-            sum(self._pipeline_lats) / len(self._pipeline_lats)
-            if self._pipeline_lats else 0.0
+        avg_decision = (
+            sum(self._decision_lats) / len(self._decision_lats)
+            if self._decision_lats else 0.0
         )
         avg_pred = (
             sum(self._pred_lats) / len(self._pred_lats)
@@ -270,7 +272,7 @@ class SystemHealthService:
             "total_signals":       self._signal_count,
             "total_trades":        total_trades,
             "win_rate":            round(win_rate, 3),
-            "avg_pipeline_ms":     round(avg_pipeline, 1),
+            "avg_decision_ms":     round(avg_decision, 1),
             "avg_prediction_ms":   round(avg_pred, 1),
             "signal_kills":        dict(self._signal_kills),
             "recent_error_count":  len(recent_errors),
@@ -284,17 +286,34 @@ class SystemHealthService:
         try:
             from services.redis_pool import get_client as _get_redis_client
             self._pub = _get_redis_client()
-            self._pub.ping()
+            if self._pub:
+                self._pub.ping()
+                self._redis_degraded_logged = False
+            else:
+                raise RuntimeError("Redis client unavailable")
         except Exception as e:
-            logger.warning(f"[Monitor] Redis unavailable: {e}")
+            self._pub = None
+            self._redis_retry_at = time.time() + 60
+            if not self._redis_degraded_logged:
+                logger.warning(f"[Monitor] Redis unavailable: {e}")
+                self._redis_degraded_logged = True
 
     def _collect_loop(self) -> None:
         while self._running:
             try:
                 snapshot = self.get_snapshot()
+                if self._pub is None and time.time() >= self._redis_retry_at:
+                    self._init_redis()
                 if self._pub:
                     import json
-                    self._pub.set("monitor:snapshot", json.dumps(snapshot), ex=120)
+                    try:
+                        self._pub.set("monitor:snapshot", json.dumps(snapshot), ex=120)
+                    except Exception as e:
+                        self._pub = None
+                        self._redis_retry_at = time.time() + 60
+                        if not self._redis_degraded_logged:
+                            logger.warning(f"[Monitor] Redis snapshot publish failed: {e}")
+                            self._redis_degraded_logged = True
             except Exception as e:
                 logger.error(f"[Monitor] Collect loop error: {e}")
             time.sleep(TELEMETRY_INTERVAL)
@@ -320,13 +339,13 @@ class SystemHealthService:
         except Exception as e:
             logger.error(f"[Monitor] CPU/RAM check failed: {e}")
 
-        # Pipeline latency
-        if self._pipeline_lats:
-            avg_ms = sum(self._pipeline_lats) / len(self._pipeline_lats)
-            if avg_ms > PIPELINE_SLOW_MS:
+        # Decision latency
+        if self._decision_lats:
+            avg_ms = sum(self._decision_lats) / len(self._decision_lats)
+            if avg_ms > DECISION_SLOW_MS:
                 self._send_alert(
-                    "pipeline_slow",
-                    f"Pipeline avg latency {avg_ms:.0f}ms > {PIPELINE_SLOW_MS}ms",
+                    "decision_slow",
+                    f"Decision engine avg latency {avg_ms:.0f}ms > {DECISION_SLOW_MS}ms",
                 )
 
         # Error rate

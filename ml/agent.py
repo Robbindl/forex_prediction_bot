@@ -209,6 +209,7 @@ class TradingAgent:
         if signal is None:
             return None
 
+        model_key = f"{signal.category}_policy"
         ctx = dict(context or {})
         merged_metadata = {
             **signal.metadata,
@@ -222,6 +223,7 @@ class TradingAgent:
         }
 
         prob, conf = self.score(signal.asset, signal.category, ctx.get("price_data"), ctx)
+        signal.metadata["policy_model"] = model_key
         signal.metadata["agent_score"] = prob
         signal.metadata["agent_confidence"] = conf
 

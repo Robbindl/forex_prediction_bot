@@ -62,7 +62,7 @@ class EnsemblePredictor:
             for k in ["technical", "sentiment", "whale", "orderflow", "macro"]
         )
         signal.journal.record(
-            layer       = 8,
+            layer       = 4,
             name        = "meta_ai",
             decision    = "PASS",
             reason      = reason,

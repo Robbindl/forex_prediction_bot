@@ -168,7 +168,7 @@ class PaperTrader:
         else:
             pos["lowest_price"]  = min(float(pos.get("lowest_price", entry)), price)
 
-        # MT5-accurate P&L using pip-based calculation (JustMarkets model)
+        # Pip-based P&L using the configured contract specs
         try:
             from risk.position_sizer import PositionSizer as _PS
             pnl = _PS.pnl(asset, category, entry, price, size, direction)
@@ -178,7 +178,7 @@ class PaperTrader:
         # ── Weekend market-closed guard ───────────────────────────────────────
         # Non-crypto markets (forex, commodities, indices) are closed on
         # Saturday all day and Sunday before 22:00 UTC.  SL and TP must not
-        # trigger during this window — MT5 brokers hold the position open and
+        # trigger during this window - contract markets hold the position open and
         # only execute when the market reopens.  Crypto is 24/7 so it is
         # always exempt from this guard.
         try:

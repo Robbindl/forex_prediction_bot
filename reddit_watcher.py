@@ -8,6 +8,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any, Tuple
 # TextBlob removed — replaced with financial keyword scorer (see _score_headline)
+from services.intelligence_event_utils import record_whale_alert_event, score_whale_text
 from utils.logger import logger
 
 
@@ -20,6 +21,11 @@ _cache_lock = threading.Lock()
 
 
 _rate_limit_until: float = 0.0  # global 429 backoff — block ALL requests until this time
+_subreddit_backoff_until: Dict[str, float] = {}
+_subreddit_backoff_notified: Set[str] = set()
+
+_SUBREDDIT_NETWORK_BACKOFF_SECS = 180.0
+_SUBREDDIT_FORBIDDEN_BACKOFF_SECS = 600.0
 
 def _rate_limited_request(url: str, headers: Dict, timeout: int = 10) -> requests.Response:
     """
@@ -80,6 +86,7 @@ class RedditWatcher:
         
         # Forex
         "EUR/USD": ["Forex", "Forexstrategy", "trading"],
+        "EUR/JPY": ["Forex", "Forexstrategy", "trading"],
         "GBP/USD": ["Forex", "Forexstrategy", "trading"],
         "USD/JPY": ["Forex", "Forexstrategy", "trading"],
         "AUD/USD": ["Forex", "Forexstrategy", "trading"],
@@ -87,32 +94,31 @@ class RedditWatcher:
         "GBP/JPY": ["Forex", "Forexstrategy", "trading"],
         
         # Indices
-        "^DJI": ["stocks", "investing", "wallstreetbets", "trading"],
-        "^IXIC": ["stocks", "investing", "wallstreetbets", "trading"],
-        "^GSPC": ["stocks", "investing", "wallstreetbets", "trading"],
-        "^FTSE": ["stocks", "investing", "UKPersonalFinance", "trading"],
+        "US30": ["stocks", "investing", "wallstreetbets", "trading"],
+        "US100": ["stocks", "investing", "wallstreetbets", "trading"],
+        "US500": ["stocks", "investing", "wallstreetbets", "trading"],
+        "UK100": ["stocks", "investing", "UKPersonalFinance", "trading"],
         
         # Commodities
-        "GC=F": ["Gold", "Silverbugs", "investing", "commodities"],
-        "SI=F": ["Silverbugs", "investing", "commodities"],
-        "CL=F": ["oil", "investing", "commodities", "energy"],
+        "XAU/USD": ["Gold", "Silverbugs", "investing", "commodities"],
+        "XAG/USD": ["Silverbugs", "investing", "commodities"],
     }
     
     # Asset search terms (common names)
     ASSET_TERMS: Dict[str, List[str]] = {
-        "GC=F": ["gold", "xau", "gold price"],
-        "SI=F": ["silver", "xag", "silver price"],
-        "CL=F": ["oil", "crude", "wti", "brent", "oil price"],
+        "XAU/USD": ["gold", "xau", "gold price"],
+        "XAG/USD": ["silver", "xag", "silver price"],
         "EUR/USD": ["eur", "euro", "eurusd", "euro dollar"],
+        "EUR/JPY": ["eur/jpy", "eurjpy", "euro yen", "euro jpy"],
         "GBP/USD": ["gbp", "pound", "cable", "gbpusd"],
         "USD/JPY": ["usd/jpy", "yen", "usdjpy", "dollar yen"],
         "AUD/USD": ["aud", "aussie", "audusd"],
         "USD/CAD": ["cad", "loonie", "usdcad"],
         "GBP/JPY": ["gbp/jpy", "gpbjpy"],
-        "^DJI": ["dow", "dow jones", "us30", "dji"],
-        "^IXIC": ["nasdaq", "us100", "nas100", "ixic"],
-        "^GSPC": ["sp500", "s&p", "spx", "sp 500"],
-        "^FTSE": ["ftse", "ftse100", "uk100"],
+        "US30": ["dow", "dow jones", "us30", "dji"],
+        "US100": ["nasdaq", "us100", "nas100", "ixic"],
+        "US500": ["sp500", "s&p", "spx", "sp 500"],
+        "UK100": ["ftse", "ftse100", "uk100"],
     }
     
     # Whale-specific subreddits and keywords (reduced for rate limiting)
@@ -122,14 +128,14 @@ class RedditWatcher:
         "accumulation", "distribution", "withdrawal", "deposit", "transaction"
     ]
     
-    # Live crypto price cache — fetched from yfinance, no hardcoded fallbacks.
+    # Live crypto price cache — fetched from Deriv, no hardcoded fallbacks.
     # If price unavailable the whale alert is skipped rather than using a
     # stale number that could be thousands of dollars wrong.
     _price_cache: Dict[str, float] = {}
     _price_cache_ts: Dict[str, float] = {}
     _price_ttl: float = 300.0   # 5 min per symbol
 
-    _YF_SYMBOLS: Dict[str, str] = {
+    _PRICE_ASSETS: Dict[str, str] = {
         "BTC": "BTC-USD", "ETH": "ETH-USD", "BNB": "BNB-USD",
         "SOL": "SOL-USD", "XRP": "XRP-USD", "ADA": "ADA-USD",
         "DOGE": "DOGE-USD", "LINK": "LINK-USD", "DOT": "DOT-USD",
@@ -147,20 +153,19 @@ class RedditWatcher:
         if sym in self._price_cache:
             if now - self._price_cache_ts.get(sym, 0) < self._price_ttl:
                 return self._price_cache[sym]
-        yf_sym = self._YF_SYMBOLS.get(sym)
-        if not yf_sym:
+        canonical_asset = self._PRICE_ASSETS.get(sym)
+        if not canonical_asset:
             return None
         try:
-            import yfinance as yf
-            t = yf.Ticker(yf_sym)
-            h = t.history(period="1d", interval="1d")
-            if not h.empty:
-                price = float(h["Close"].iloc[-1])
-                if price > 0:
-                    self._price_cache[sym] = price
-                    self._price_cache_ts[sym] = now
-                    logger.debug(f"[RedditWatcher] {sym} price: ${price:,.2f}")
-                    return price
+            from data.fetcher import get_shared_fetcher
+
+            fetcher = get_shared_fetcher()
+            price, _ = fetcher.get_real_time_price(canonical_asset, "crypto")
+            if price and price > 0:
+                self._price_cache[sym] = float(price)
+                self._price_cache_ts[sym] = now
+                logger.debug(f"[RedditWatcher] {sym} price: ${float(price):,.2f}")
+                return float(price)
         except Exception as e:
             logger.debug(f"[RedditWatcher] Price fetch failed for {sym}: {e}")
         return None
@@ -207,6 +212,16 @@ class RedditWatcher:
         logger.info(
             f"[RedditWatcher] Whale alert monitoring on {len(self.WHALE_SUBREDDITS)} subreddits"
         )
+
+    @classmethod
+    def _default_subreddits_for_asset(cls, asset: str) -> List[str]:
+        if "/" in asset:
+            return ["Forex", "Forexstrategy", "trading"]
+        if asset.endswith("-USD"):
+            return ["CryptoCurrency", "CryptoMarkets", "trading"]
+        if asset.startswith("US") or asset.startswith("UK"):
+            return ["investing", "wallstreetbets", "trading"]
+        return ["trading", "investing"]
     
     def _fetch_subreddit(
         self, 
@@ -227,13 +242,23 @@ class RedditWatcher:
         """
         cache_key = f"{subreddit}_{sort}_{limit}"
         now = time.time()
-        
+
         # Check SHARED cache (global, across all instances)
         with _cache_lock:
             cached = _shared_cache.get(cache_key)
             if cached and now - cached[1] < self._cache_ttl:
                 logger.debug(f"[RedditWatcher] Cache hit for r/{subreddit}")
                 return cached[0]
+
+        backoff_until = _subreddit_backoff_until.get(subreddit, 0.0)
+        if now < backoff_until:
+            if subreddit not in _subreddit_backoff_notified:
+                logger.warning(
+                    f"[RedditWatcher] Backoff active for r/{subreddit} — "
+                    f"skipping requests for {int(backoff_until - now)}s"
+                )
+                _subreddit_backoff_notified.add(subreddit)
+            return cached[0] if cached else None
         
         # Fetch from Reddit with global rate limiting
         url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}"
@@ -252,6 +277,8 @@ class RedditWatcher:
                 # Store in SHARED cache
                 with _cache_lock:
                     _shared_cache[cache_key] = (result, now)
+                _subreddit_backoff_until.pop(subreddit, None)
+                _subreddit_backoff_notified.discard(subreddit)
                 logger.debug(f"[RedditWatcher] Fetched {len(result)} posts from r/{subreddit}")
                 return result
             elif response.status_code == 429:
@@ -268,16 +295,35 @@ class RedditWatcher:
                         return existing[0]
                 return None
             else:
+                if response.status_code in (403, 404, 451, 500, 502, 503, 504):
+                    _subreddit_backoff_until[subreddit] = time.time() + _SUBREDDIT_NETWORK_BACKOFF_SECS
+                    _subreddit_backoff_notified.discard(subreddit)
                 logger.warning(
                     f"[RedditWatcher] HTTP {response.status_code} for r/{subreddit}"
                 )
                 return None
                 
         except requests.RequestException as e:
-            logger.error(f"[RedditWatcher] Network error fetching r/{subreddit}: {e}")
+            msg = str(e).lower()
+            backoff_secs = (
+                _SUBREDDIT_FORBIDDEN_BACKOFF_SECS
+                if "10013" in msg or "forbidden by its access permissions" in msg
+                else _SUBREDDIT_NETWORK_BACKOFF_SECS
+            )
+            _subreddit_backoff_until[subreddit] = time.time() + backoff_secs
+            _subreddit_backoff_notified.discard(subreddit)
+            logger.warning(
+                f"[RedditWatcher] Network error fetching r/{subreddit}: {e} "
+                f"— backing off {int(backoff_secs)}s"
+            )
             return None
         except Exception as e:
-            logger.error(f"[RedditWatcher] Error fetching r/{subreddit}: {e}")
+            _subreddit_backoff_until[subreddit] = time.time() + _SUBREDDIT_NETWORK_BACKOFF_SECS
+            _subreddit_backoff_notified.discard(subreddit)
+            logger.warning(
+                f"[RedditWatcher] Error fetching r/{subreddit}: {e} "
+                f"— backing off {int(_SUBREDDIT_NETWORK_BACKOFF_SECS)}s"
+            )
             return None
     
     # ── Financial keyword sets (self-contained, no external deps) ────────────
@@ -470,18 +516,23 @@ class RedditWatcher:
                 
                 whale_info = self.extract_whale_info(title)
                 if whale_info and whale_info['value_usd'] >= min_value_usd:
+                    url = f"https://reddit.com{post.get('permalink', '')}"
+                    sentiment = score_whale_text(title)
                     alerts.append({
                         'title': title,
                         'value_usd': whale_info['value_usd'],
                         'symbol': whale_info['symbol'],
                         'amount': whale_info['amount'],
-                        'url': f"https://reddit.com{post.get('permalink', '')}",
+                        'url': url,
                         'score': post.get('score', 0),
                         'comments': post.get('num_comments', 0),
                         'created': datetime.fromtimestamp(post.get('created_utc', 0)),
                         'subreddit': subreddit,
                         'source': f"Reddit r/{subreddit}",
                         'type': 'whale_alert',
+                        'raw_text': title,
+                        'sentiment': sentiment,
+                        'external_id': f"reddit:{url}",
                     })
         
         # Remove duplicates by URL and sort by value
@@ -493,7 +544,23 @@ class RedditWatcher:
                 unique_alerts.append(alert)
         
         self.recent_whale_alerts = unique_alerts[:self.max_alerts]
-        
+
+        for alert in self.recent_whale_alerts:
+            record_whale_alert_event(
+                symbol=alert.get('symbol', ''),
+                source=alert.get('source', 'Reddit'),
+                value_usd=float(alert.get('value_usd', 0.0) or 0.0),
+                raw_text=alert.get('raw_text', alert.get('title', '')),
+                sentiment=float(alert.get('sentiment', 0.1) or 0.1),
+                timestamp=alert.get('created'),
+                metadata={
+                    'title': alert.get('title', ''),
+                    'url': alert.get('url', ''),
+                    'subreddit': alert.get('subreddit', ''),
+                },
+                external_id=str(alert.get('external_id', '')),
+            )
+
         if unique_alerts:
             logger.info(f"[RedditWatcher] Found {len(unique_alerts)} whale alerts")
         
@@ -542,7 +609,7 @@ class RedditWatcher:
         Get sentiment for a specific asset.
         Reduced subreddit count per asset to 2 (was 3).
         """
-        subreddits = self.ASSET_SUBREDDITS.get(asset, ["stocks", "investing", "trading"])
+        subreddits = self.ASSET_SUBREDDITS.get(asset, self._default_subreddits_for_asset(asset))
         search_terms = self.ASSET_TERMS.get(
             asset, 
             [asset.replace("-USD", "").replace("=F", "").lower()]

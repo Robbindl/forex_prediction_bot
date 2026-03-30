@@ -1,40 +1,11 @@
 from __future__ import annotations
 
-# ── DDL for strategy tables ───────────────────────────────────────────────────
-
-_CREATE_STRATEGY_PERFORMANCE = """
-CREATE TABLE IF NOT EXISTS strategy_performance (
-    asset        TEXT NOT NULL,
-    category     TEXT NOT NULL,
-    strategy_id  TEXT NOT NULL,
-    win_rate     REAL NOT NULL DEFAULT 0,
-    sharpe_ratio REAL NOT NULL DEFAULT 0,
-    total_trades INT  NOT NULL DEFAULT 0,
-    recorded_at  TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (asset, strategy_id)
-);
-"""
-
-_CREATE_STRATEGY_OPTIMISATION = """
-CREATE TABLE IF NOT EXISTS strategy_optimisation (
-    asset         TEXT NOT NULL,
-    category      TEXT NOT NULL,
-    best_params   TEXT NOT NULL DEFAULT '{}',
-    sharpe        REAL NOT NULL DEFAULT 0,
-    win_rate      REAL NOT NULL DEFAULT 0,
-    optimised_at  TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (asset, category)
-);
-"""
-
 import json
 import threading
 import time
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from config.config import MIN_FINAL_CONFIDENCE
-from config.config import MIN_FINAL_CONFIDENCE
-from sqlalchemy import text
 from utils.logger import get_logger
 from core.signal_journal import PASS, KILLED, INFO
 
@@ -53,7 +24,7 @@ DAILY_OPTIMISE_HOUR       = 3      # run daily optimisation at 3 AM UTC
 TELEGRAM_ASSET_ALERT_COOLDOWN_SECS = 3600  # 1h dedupe window per asset
 TELEGRAM_SIGNAL_MIN_CONFIDENCE = MIN_FINAL_CONFIDENCE  # follow config value from .env
 # Only alert on signals that will actually be executed as trades.
-# Layer 7 floor is 0.55 — signals between 0.55-0.62 survive the pipeline
+# Signals between 0.55-0.62 can survive the decision engine
 # but are skipped by the trading loop, so no need to alert on them.
 
 # ── Backtest cache (avoids re-running for same asset repeatedly) ──────────────
@@ -62,16 +33,16 @@ _cache_ttl_secs    = 3600                  # cache results for 1 hour
 _cache_lock        = threading.Lock()
 
 
-class PipelineReporter:
+class SignalReporter:
     """
-    Singleton post-pipeline reporter.
-    Wire into pipeline.py — call report() after every pipeline.run().
+    Singleton post-decision reporter.
+    Wire into the decision engine after every evaluation.
     """
 
-    _instance: Optional["PipelineReporter"] = None
+    _instance: Optional["SignalReporter"] = None
     _lock      = threading.Lock()
 
-    def __new__(cls) -> "PipelineReporter":
+    def __new__(cls) -> "SignalReporter":
         with cls._lock:
             if cls._instance is None:
                 inst = super().__new__(cls)
@@ -92,20 +63,20 @@ class PipelineReporter:
         self._init_db()
         # FIX Race1: DailyOptimiser is now started from wire_telegram() so it
         # only runs after the engine + Telegram are fully wired.
-        logger.info("[PipelineReporter] Initialised")
+        logger.info("[SignalReporter] Initialised")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def wire_telegram(self, telegram_bot) -> None:
         """Call from bot.py after Telegram is started."""
         self._telegram = telegram_bot
-        logger.info("[PipelineReporter] Telegram wired")
+        logger.info("[SignalReporter] Telegram wired")
         # FIX Race1: start DailyOptimiser here, after engine + Telegram ready
         self._start_daily_optimiser()
 
     def report(self, signal: "Signal", context: Dict[str, Any]) -> "Signal":
         """
-        Called by pipeline.py after every pipeline.run().
+        Called by the decision engine after every evaluation.
         Works for both surviving AND killed signals.
         Returns the (possibly confidence-adjusted) signal.
         """
@@ -123,7 +94,7 @@ class PipelineReporter:
             self._publish_redis(signal)
 
         except Exception as e:
-            logger.error(f"[PipelineReporter] report() error: {e}", exc_info=True)
+            logger.error(f"[SignalReporter] report() error: {e}", exc_info=True)
 
         return signal
 
@@ -131,58 +102,55 @@ class PipelineReporter:
 
     def _run_backtest(self, signal: "Signal") -> "Signal":
         """
-        Policy-only operation: strategy lab backtest adjustment is disabled.
+        Record the current model-research and live-validation summary.
+        This replaces the old placeholder "backtest disabled" entry.
         """
+        validation = signal.metadata.get("governance_validation") or {}
+        research = validation.get("model_research") or {}
+        live = validation.get("live_validation") or {}
         signal.journal.record(
-            layer=0, name="policy_backtest", decision=INFO,
-            reason="strategy lab backtest adjustment is disabled in policy-only mode",
+            layer=0, name="research_validation", decision=INFO,
+            reason=(
+                f"wf={float(research.get('walk_forward_accuracy', 0.0)):.3f} "
+                f"holdout={float(research.get('holdout_accuracy', 0.0)):.3f} "
+                f"live={float(live.get('accuracy_pct', 0.0)):.1f}%"
+            ),
             conf_before=signal.confidence,
             conf_after=signal.confidence,
-            data={},
+            data={
+                "model_key": validation.get("model_key"),
+                "research_grade": research.get("research_grade"),
+                "research_approved": research.get("research_approved"),
+                "walk_forward_accuracy": research.get("walk_forward_accuracy", 0.0),
+                "holdout_accuracy": research.get("holdout_accuracy", 0.0),
+                "live_validation_scope": live.get("scope", "n/a"),
+                "live_validation_total": live.get("total", 0),
+                "live_validation_accuracy_pct": live.get("accuracy_pct", 0.0),
+            },
         )
         return signal
 
     # ── Performance storage (Option C) ───────────────────────────────────────
 
     def _store_performance(self, signal: "Signal") -> None:
-        """Store backtest result and signal outcome in DB."""
+        """Store validation/performance data for the strategy dashboard."""
         if not self._db_ok:
             return
         try:
             from services.db_pool import get_db
-            from sqlalchemy import text
-            backtest_entry = next(
-                (e for e in signal.journal.entries if e.name == "backtest"),
-                None
-            )
-            if not backtest_entry:
+            performance = self._extract_strategy_performance(signal)
+            if not performance:
                 return
-            sql = text("""
-                INSERT INTO strategy_performance
-                    (asset, category, strategy_id, win_rate, sharpe_ratio,
-                     total_trades, recorded_at)
-                VALUES (:asset, :category, :strategy_id, :win_rate, :sharpe_ratio,
-                        :total_trades, NOW())
-                ON CONFLICT (asset, strategy_id)
-                DO UPDATE SET
-                    win_rate     = EXCLUDED.win_rate,
-                    sharpe_ratio = EXCLUDED.sharpe_ratio,
-                    total_trades = EXCLUDED.total_trades,
-                    recorded_at  = NOW();
-            """)
-            data = backtest_entry.data
-            db = get_db()
-            with db.get_session() as s:
-                s.execute(sql, {
-                    "asset": signal.canonical_asset or signal.asset,
-                    "category": signal.category,
-                    "strategy_id": signal.strategy_id or "voting",
-                    "win_rate": data.get("win_rate", 0.0),
-                    "sharpe_ratio": data.get("sharpe", 0.0),
-                    "total_trades": data.get("trades", 0),
-                })
+            get_db().save_strategy_performance_snapshot(
+                asset=signal.canonical_asset or signal.asset,
+                category=signal.category,
+                strategy_id=signal.strategy_id or "voting",
+                win_rate=performance["win_rate"],
+                sharpe_ratio=performance["sharpe_ratio"],
+                total_trades=performance["total_trades"],
+            )
         except Exception as e:
-            logger.debug(f"[PipelineReporter] store_performance: {e}")
+            logger.debug(f"[SignalReporter] store_performance: {e}")
 
     # ── Telegram (Option A) ───────────────────────────────────────────────────
 
@@ -190,12 +158,12 @@ class PipelineReporter:
         if not self._telegram:
             return
         if not signal.alive:
-            logger.debug(f"[PipelineReporter] Skipping Telegram for dead signal {signal.asset} {signal.direction}")
+            logger.debug(f"[SignalReporter] Skipping Telegram for dead signal {signal.asset} {signal.direction}")
             return
 
         if signal.confidence < TELEGRAM_SIGNAL_MIN_CONFIDENCE:
             logger.debug(
-                f"[PipelineReporter] Skipping Telegram for {signal.asset} due to low final confidence "
+                f"[SignalReporter] Skipping Telegram for {signal.asset} due to low final confidence "
                 f"({signal.confidence:.3f} < {TELEGRAM_SIGNAL_MIN_CONFIDENCE})"
             )
             return
@@ -205,19 +173,19 @@ class PipelineReporter:
         last = self._last_telegram_sent.get(asset_key, 0.0)
         if now - last < TELEGRAM_ASSET_ALERT_COOLDOWN_SECS:
             logger.debug(
-                f"[PipelineReporter] Skipping Telegram for {asset_key} due to dedupe cooldown "
+                f"[SignalReporter] Skipping Telegram for {asset_key} due to dedupe cooldown "
                 f"({now-last:.0f}s < {TELEGRAM_ASSET_ALERT_COOLDOWN_SECS}s)"
             )
             return
 
         try:
             msg = signal.journal.to_telegram(signal)
-            logger.info(f"[PipelineReporter] Sending Telegram alert: {signal.journal.final_decision()} {signal.asset} {signal.direction}")
+            logger.info(f"[SignalReporter] Sending Telegram alert: {signal.journal.final_decision()} {signal.asset} {signal.direction}")
             self._telegram.send_message(msg)
-            logger.info(f"[PipelineReporter] Telegram sent for {signal.asset} {signal.direction}")
+            logger.info(f"[SignalReporter] Telegram sent for {signal.asset} {signal.direction}")
             self._last_telegram_sent[asset_key] = now
         except Exception as e:
-            logger.debug(f"[PipelineReporter] Telegram send: {e}")
+            logger.debug(f"[SignalReporter] Telegram send: {e}")
 
     # ── Redis publish ─────────────────────────────────────────────────────────
 
@@ -238,7 +206,7 @@ class PipelineReporter:
             self._pub.lpush("SIGNAL_JOURNAL_LOG", json.dumps(journal_payload, default=str))
             self._pub.ltrim("SIGNAL_JOURNAL_LOG", 0, 99)
         except Exception as e:
-            logger.debug(f"[PipelineReporter] Redis publish: {e}")
+            logger.debug(f"[SignalReporter] Redis publish: {e}")
 
     # ── Daily optimiser (Option C) ────────────────────────────────────────────
 
@@ -257,7 +225,7 @@ class PipelineReporter:
             daemon=True,
         )
         self._daily_thread.start()
-        logger.info("[PipelineReporter] DailyOptimiser thread started")
+        logger.info("[SignalReporter] DailyOptimiser thread started")
 
     def _daily_optimise_loop(self) -> None:
         """Run once daily at DAILY_OPTIMISE_HOUR UTC."""
@@ -270,11 +238,11 @@ class PipelineReporter:
                 today = now.date()
                 if now.hour == DAILY_OPTIMISE_HOUR and last_run_date != today:
                     last_run_date = today
-                    logger.info("[PipelineReporter] Daily optimisation starting...")
+                    logger.info("[SignalReporter] Daily optimisation starting...")
                     self._run_daily_optimisation()
-                    logger.info("[PipelineReporter] Daily optimisation complete")
+                    logger.info("[SignalReporter] Daily optimisation complete")
             except Exception as e:
-                logger.error(f"[PipelineReporter] Daily optimiser error: {e}")
+                logger.error(f"[SignalReporter] Daily optimiser error: {e}")
             time.sleep(1800)   # check every 30 minutes
 
     def _run_daily_optimisation(self) -> None:
@@ -305,39 +273,19 @@ class PipelineReporter:
                             with _cache_lock:
                                 _backtest_cache.pop(f"{asset}:{category}", None)
                     except Exception as e:
-                        logger.debug(f"[PipelineReporter] Optimise {asset}: {e}")
+                        logger.debug(f"[SignalReporter] Optimise {asset}: {e}")
                     time.sleep(2)   # gentle pacing between assets
         except Exception as e:
-            logger.error(f"[PipelineReporter] _run_daily_optimisation: {e}")
+            logger.error(f"[SignalReporter] _run_daily_optimisation: {e}")
 
     def _store_optimisation_result(self, asset: str, category: str, result: Dict) -> None:
         if not self._db_ok:
             return
         try:
             from services.db_pool import get_db
-            from sqlalchemy import text
-            sql = text("""
-                INSERT INTO strategy_optimisation
-                    (asset, category, best_params, sharpe, win_rate, optimised_at)
-                VALUES (:asset, :category, :best_params, :sharpe, :win_rate, NOW())
-                ON CONFLICT (asset, category)
-                DO UPDATE SET
-                    best_params  = EXCLUDED.best_params,
-                    sharpe       = EXCLUDED.sharpe,
-                    win_rate     = EXCLUDED.win_rate,
-                    optimised_at = NOW();
-            """)
-            db = get_db()
-            with db.get_session() as s:
-                s.execute(sql, {
-                    "asset": asset,
-                    "category": category,
-                    "best_params": json.dumps(result),
-                    "sharpe": result.get("sharpe", 0.0),
-                    "win_rate": result.get("win_rate", 0.0),
-                })
+            get_db().save_strategy_optimisation_result(asset, category, result)
         except Exception as e:
-            logger.debug(f"[PipelineReporter] store_optimisation: {e}")
+            logger.debug(f"[SignalReporter] store_optimisation: {e}")
 
     # ── Internal setup ────────────────────────────────────────────────────────
 
@@ -349,41 +297,49 @@ class PipelineReporter:
                 raise RuntimeError("Redis pool unavailable")
             self._pub.ping()
         except Exception as e:
-            logger.debug(f"[PipelineReporter] Redis unavailable: {e}")
+            logger.debug(f"[SignalReporter] Redis unavailable: {e}")
 
     def _init_db(self) -> None:
         try:
             from services.db_pool import get_db
-            db = get_db()
-            with db.get_session() as s:
-                s.execute(text("""
-                    CREATE TABLE IF NOT EXISTS strategy_performance (
-                        asset        TEXT NOT NULL,
-                        category     TEXT NOT NULL,
-                        strategy_id  TEXT NOT NULL,
-                        win_rate     REAL NOT NULL DEFAULT 0,
-                        sharpe_ratio REAL NOT NULL DEFAULT 0,
-                        total_trades INT  NOT NULL DEFAULT 0,
-                        recorded_at  TIMESTAMP NOT NULL DEFAULT NOW(),
-                        PRIMARY KEY (asset, strategy_id)
-                    );
-                """))
-                s.execute(text("""
-                    CREATE TABLE IF NOT EXISTS strategy_optimisation (
-                        asset         TEXT NOT NULL,
-                        category      TEXT NOT NULL,
-                        best_params   TEXT NOT NULL DEFAULT '{}',
-                        sharpe        REAL NOT NULL DEFAULT 0,
-                        win_rate      REAL NOT NULL DEFAULT 0,
-                        optimised_at  TIMESTAMP NOT NULL DEFAULT NOW(),
-                        PRIMARY KEY (asset, category)
-                    );
-                """))
+            get_db().ensure_strategy_reporting_tables()
             self._db_ok = True
-            logger.info("[PipelineReporter] DB tables ready")
+            logger.info("[SignalReporter] DB tables ready")
         except Exception as e:
-            logger.warning(f"[PipelineReporter] DB unavailable ({e}) — using memory only")
+            logger.warning(f"[SignalReporter] DB unavailable ({e}) — using memory only")
+
+    def _extract_strategy_performance(self, signal: "Signal") -> Optional[Dict[str, float]]:
+        validation_entry = next(
+            (entry for entry in signal.journal.entries if entry.name == "research_validation"),
+            None,
+        )
+        if validation_entry:
+            data = validation_entry.data or {}
+            live_total = int(data.get("live_validation_total", 0) or 0)
+            live_accuracy = float(data.get("live_validation_accuracy_pct", 0.0) or 0.0) / 100.0
+            holdout_accuracy = float(data.get("holdout_accuracy", 0.0) or 0.0)
+            walk_forward_accuracy = float(data.get("walk_forward_accuracy", 0.0) or 0.0)
+            derived_win_rate = live_accuracy if live_total > 0 else max(holdout_accuracy, walk_forward_accuracy)
+            return {
+                "win_rate": max(0.0, min(1.0, derived_win_rate)),
+                "sharpe_ratio": float(data.get("sharpe", 0.0) or 0.0),
+                "total_trades": max(0, live_total),
+            }
+
+        backtest_entry = next(
+            (entry for entry in signal.journal.entries if entry.name == "backtest"),
+            None,
+        )
+        if backtest_entry:
+            data = backtest_entry.data or {}
+            return {
+                "win_rate": float(data.get("win_rate", 0.0) or 0.0),
+                "sharpe_ratio": float(data.get("sharpe", 0.0) or 0.0),
+                "total_trades": int(data.get("trades", 0) or 0),
+            }
+
+        return None
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────
-reporter = PipelineReporter()
+reporter = SignalReporter()

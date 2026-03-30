@@ -9,8 +9,8 @@ from core.signal_journal import SignalJournal
 @dataclass
 class Signal:
     """
-    Universal signal object. Created by strategies, mutated by pipeline layers,
-    consumed by execution. If any layer sets alive=False the trade is killed.
+    Universal signal object. Created by strategies, reviewed by the decision engine,
+    and consumed by execution. If any review step sets alive=False the trade is killed.
     """
     # ── Identity ──────────────────────────────────────────────────────────
     asset:      str
@@ -36,10 +36,10 @@ class Signal:
     indicators:   Dict[str, Any] = field(default_factory=dict)
     timestamp:    datetime = field(default_factory=datetime.utcnow)
 
-    # ── Pipeline state ────────────────────────────────────────────────────
+    # ── Decision state ────────────────────────────────────────────────────
     alive:         bool = True          # set False to kill the trade
     kill_reason:   str  = ""
-    layer_reached: int  = 0             # last layer that processed this signal
+    step_reached:  int  = 0             # primary runtime name
     metadata:      Dict[str, Any] = field(default_factory=dict)
 
     # ── Canonical asset ───────────────────────────────────────────────────
@@ -47,7 +47,7 @@ class Signal:
 
     # ── Signal Journal ────────────────────────────────────────────────────
     # Automatically created — records every stage decision for Telegram reporting.
-    # Access via signal.journal.record(...) from any layer or phase.
+    # Access via signal.journal.record(...) from any review step or phase.
     journal: SignalJournal = field(init=False)
 
     def __post_init__(self) -> None:
@@ -59,9 +59,9 @@ class Signal:
     def kill(self, reason: str, layer: int) -> None:
         """Mark signal as dead. Once dead it cannot be revived."""
         if self.alive:
-            self.alive         = False
-            self.kill_reason   = reason
-            self.layer_reached = layer
+            self.alive        = False
+            self.kill_reason  = reason
+            self.step_reached = int(layer)
 
     def boost(self, delta: float) -> None:
         """Increase confidence, capped at 0.95 to prevent false certainty."""
@@ -92,7 +92,7 @@ class Signal:
             "timestamp":          self.timestamp.isoformat(),
             "alive":              self.alive,
             "kill_reason":        self.kill_reason,
-            "layer_reached":      self.layer_reached,
+            "step_reached":       self.step_reached,
             "metadata":           self.metadata,
         }
 
@@ -121,7 +121,7 @@ class Signal:
             timestamp         = ts or datetime.utcnow(),
             alive             = bool(d.get("alive", True)),
             kill_reason       = d.get("kill_reason", ""),
-            layer_reached     = int(d.get("layer_reached", 0)),
+            step_reached      = int(d.get("step_reached", 0)),
             metadata          = d.get("metadata", {}),
             canonical_asset   = d.get("canonical_asset", d.get("asset", "")),
         )

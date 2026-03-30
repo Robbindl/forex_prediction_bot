@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,7 @@ from telegram.ext import (
     filters,
 )
 
+from core.assets import registry
 from utils.logger import logger
 
 # ── Conversation state ────────────────────────────────────────────────────────
@@ -32,32 +34,24 @@ WAITING_ASK_QUESTION = 2
 # ── Asset display names ───────────────────────────────────────────────────────
 _DISPLAY = {
     "BTC-USD": "₿ BTC",  "ETH-USD": "Ξ ETH",   "BNB-USD": "BNB",
-    "XRP-USD": "XRP",    "SOL-USD": "SOL",      "ADA-USD": "ADA",
-    "DOGE-USD":"DOGE",   "DOT-USD": "DOT",      "LTC-USD": "LTC",
-    "AVAX-USD":"AVAX",   "LINK-USD":"LINK",
-    "EUR/USD": "EUR/USD","GBP/USD": "GBP/USD",  "USD/JPY": "USD/JPY",
-    "USD/CHF": "USD/CHF","AUD/USD": "AUD/USD",  "USD/CAD": "USD/CAD",
-    "NZD/USD": "NZD/USD","EUR/GBP": "EUR/GBP",  "GBP/JPY": "GBP/JPY",
-    "AUD/JPY": "AUD/JPY",
-    "AAPL":    "Apple",  "MSFT": "Microsoft",   "GOOGL": "Google",
-    "AMZN":    "Amazon", "TSLA": "Tesla",        "META":  "Meta",
-    "NVDA":    "Nvidia", "JPM":  "JPMorgan",     "V":     "Visa",
-    "MA":      "Mastercard",
-    "XAU/USD": "Gold",   "XAG/USD": "Silver",   "WTI/USD":"WTI Oil",
-    "GC=F":    "Gold F", "SI=F":  "Silver F",   "CL=F":  "Crude F",
-    "NG/USD":  "Nat Gas","XCU/USD":"Copper",
-    "^GSPC":   "S&P 500","^DJI":  "Dow Jones",  "^IXIC": "Nasdaq",
-    "^FTSE":   "FTSE100","^N225": "Nikkei",
+    "XRP-USD": "XRP",    "SOL-USD": "SOL",
+    "EUR/USD": "EUR/USD","EUR/JPY": "EUR/JPY",  "GBP/USD": "GBP/USD",  "USD/JPY": "USD/JPY",
+    "AUD/USD": "AUD/USD","USD/CAD": "USD/CAD",  "GBP/JPY": "GBP/JPY",
+    "XAU/USD": "Gold",   "XAG/USD": "Silver",
+    "US500":   "S&P 500","US30":  "Dow Jones",  "US100": "Nasdaq",
+    "UK100":   "FTSE100",
 }
 
+_CATEGORY_ORDER = ["crypto", "forex", "commodities", "indices"]
 _CATEGORY_ASSETS: Dict[str, List[str]] = {
-    "crypto":      ["BTC-USD","ETH-USD","BNB-USD","XRP-USD","SOL-USD",
-                    "ADA-USD","DOGE-USD","DOT-USD","LTC-USD","AVAX-USD","LINK-USD"],
-    "forex":       ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD",
-                    "USD/CAD","NZD/USD","EUR/GBP","GBP/JPY","AUD/JPY"],
-    "stocks":      ["AAPL","MSFT","GOOGL","AMZN","TSLA","META","NVDA","JPM","V","MA"],
-    "commodities": ["XAU/USD","XAG/USD","WTI/USD","GC=F","SI=F","CL=F","NG/USD","XCU/USD"],
-    "indices":     ["^GSPC","^DJI","^IXIC","^FTSE","^N225"],
+    category: registry.assets_by_category(category)
+    for category in _CATEGORY_ORDER
+}
+_ASK_CATEGORY_LABELS = {
+    "crypto": "🪙 Crypto",
+    "forex": "💱 Forex",
+    "commodities": "📦 Commodities",
+    "indices": "📉 Indices",
 }
 
 # ── Keyboard builders ─────────────────────────────────────────────────────────
@@ -65,8 +59,8 @@ _CATEGORY_ASSETS: Dict[str, List[str]] = {
 def _units_to_lots(asset: str, category: str, units: float) -> float:
     """Convert raw position units back to lots for display."""
     try:
-        from risk.position_sizer import MT5_SPECS, _DEFAULTS
-        spec = MT5_SPECS.get(asset) or _DEFAULTS.get(category, {})
+        from risk.position_sizer import CONTRACT_SPECS, _DEFAULTS
+        spec = CONTRACT_SPECS.get(asset) or _DEFAULTS.get(category, {})
         contract = spec.get("contract", 1)
         return units / contract if contract > 0 else units
     except Exception:
@@ -95,8 +89,7 @@ def _back_button(dest: str = "menu") -> List:
 def _category_keyboard() -> InlineKeyboardMarkup:
     return _kb(
         [("🪙 Crypto",      "cat:crypto"),  ("💱 Forex",       "cat:forex")],
-        [("📈 Stocks",      "cat:stocks"),  ("📦 Commodities", "cat:commodities")],
-        [("📉 Indices",     "cat:indices")],
+        [("📦 Commodities", "cat:commodities"), ("📉 Indices", "cat:indices")],
         _back_button(),
     )
 
@@ -115,12 +108,9 @@ def _asset_keyboard(category: str) -> InlineKeyboardMarkup:
 
 # ── Ask Robbie keyboard builders ──────────────────────────────────────────────
 
-# Only the 18 assets your bot actually trades
 _ASK_CATEGORY_ASSETS: Dict[str, List[str]] = {
-    "🪙 Crypto":      ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD"],
-    "💱 Forex":       ["EUR/USD", "GBP/JPY", "GBP/USD", "AUD/USD", "USD/JPY", "USD/CAD"],
-    "📦 Commodities": ["GC=F",    "SI=F",    "CL=F"],
-    "📉 Indices":     ["^DJI",    "^IXIC",   "^GSPC",  "^FTSE"],
+    _ASK_CATEGORY_LABELS[category]: list(_CATEGORY_ASSETS.get(category, []))
+    for category in _CATEGORY_ORDER
 }
 
 _ASK_QUESTIONS = [
@@ -372,6 +362,9 @@ class TelegramCommander:
 
     def send_message(self, text: str, parse_mode: str = ParseMode.MARKDOWN,
                      reply_markup=None) -> bool:
+        if not str(text or "").strip():
+            logger.debug("[Telegram] skipping empty message")
+            return False
         if not self._rate_ok():
             return False
         if not self.application or not self._loop or self._loop.is_closed():
@@ -393,6 +386,12 @@ class TelegramCommander:
             future = asyncio.run_coroutine_threadsafe(_send(), self._loop)
             future.result(timeout=15)
             return True
+        except FutureTimeoutError:
+            try:
+                future.cancel()
+            except Exception:
+                pass
+            logger.warning("[Telegram] send timed out")
         except RetryAfter as e:
             wait = e.retry_after if isinstance(e.retry_after, (int, float)) else 30
             logger.warning(f"[Telegram] flood control — retry in {wait}s")
@@ -434,7 +433,7 @@ class TelegramCommander:
                     logger.error(f"[Telegram] send fallback plain text error: {e2}")
                     return False
             if "unauthorized" not in msg and "401" not in msg:
-                logger.error(f"[Telegram] send error: {e}")
+                logger.error(f"[Telegram] send error ({type(e).__name__}): {e}")
         return False
 
     def _rate_ok(self) -> bool:
@@ -787,7 +786,7 @@ class TelegramCommander:
 
     async def _btn_signal(self, query, asset: str) -> None:
         await query.edit_message_text(
-            f"⏳ Scanning {asset} through the 7-layer pipeline…",
+            f"⏳ Reviewing {asset} through the decision engine…",
             parse_mode=ParseMode.MARKDOWN,
         )
         text, kb = await self._build_signal(asset)
@@ -1109,26 +1108,14 @@ class TelegramCommander:
     async def _show_history(self, send_fn, filter_cat: str = "all") -> None:
         """Render last 10 closed trades with open/close times and P&L."""
         try:
-            from models.trade_models import Trade
-            from config.database import SessionLocal
-            db = SessionLocal()
-            try:
-                trades = (db.query(Trade)
-                          .filter(Trade.exit_time.isnot(None))
-                          .order_by(Trade.exit_time.desc())
-                          .limit(30)
-                          .all())
-            finally:
-                db.close()
-
-            # Apply filter
-            if filter_cat and filter_cat != "all":
-                if filter_cat in ("forex", "crypto", "commodities", "indices"):
-                    trades = [t for t in trades if t.category == filter_cat]
-                elif filter_cat == "won":
-                    trades = [t for t in trades if (t.pnl or 0) > 0]
-                elif filter_cat == "lost":
-                    trades = [t for t in trades if (t.pnl or 0) < 0]
+            from services.db_pool import get_db
+            category_filter = filter_cat if filter_cat in ("forex", "crypto", "commodities", "indices") else ""
+            pnl_filter = filter_cat if filter_cat in ("won", "lost") else "all"
+            trades = get_db().get_recent_trades(
+                limit=30,
+                category=category_filter,
+                pnl_filter=pnl_filter,
+            )
 
             if not trades:
                 await send_fn(
@@ -1137,6 +1124,7 @@ class TelegramCommander:
                     reply_markup=_kb(
                         [("📋 All", "history_filter:all"), ("💱 Forex", "history_filter:forex")],
                         [("₿ Crypto", "history_filter:crypto"), ("🥇 Comms", "history_filter:commodities")],
+                        [("📉 Indices", "history_filter:indices")],
                         [("🟢 Winners", "history_filter:won"), ("🔴 Losers", "history_filter:lost")],
                         [("🏠 Menu", "menu")],
                     ),
@@ -1156,14 +1144,25 @@ class TelegramCommander:
             lines.append(f"Last {min(10,len(trades))} trades | 🟢 {won} won | 🔴 {lost} lost | Net: ${total_pnl:+.2f}\n")
 
             for t in trades[:10]:
-                pnl  = float(t.pnl or 0)
-                em   = cat_emojis.get(t.category or "", "📊")
+                pnl  = float(t.get("pnl", 0) or 0)
+                category = str(t.get("category", "") or "")
+                em   = cat_emojis.get(category, "📊")
                 pnl_em = "🟢" if pnl >= 0 else "🔴"
-                dir_  = (t.direction or "BUY").upper()
+                dir_  = str(t.get("direction") or "BUY").upper()
 
                 # Times and duration
-                open_t  = t.entry_time
-                close_t = t.exit_time
+                open_t_raw = t.get("entry_time")
+                close_t_raw = t.get("exit_time")
+                open_t = None
+                close_t = None
+                try:
+                    if open_t_raw:
+                        open_t = datetime.fromisoformat(str(open_t_raw).replace("Z", "+00:00"))
+                    if close_t_raw:
+                        close_t = datetime.fromisoformat(str(close_t_raw).replace("Z", "+00:00"))
+                except Exception:
+                    open_t = None
+                    close_t = None
                 dur_str = ""
                 if open_t and close_t:
                     mins = int((close_t - open_t).total_seconds() / 60)
@@ -1175,11 +1174,11 @@ class TelegramCommander:
                 close_str = close_t.strftime("%d %b %H:%M") if close_t else "—"
 
                 # Exit reason emoji
-                reason = t.exit_reason or ""
+                reason = str(t.get("exit_reason") or "")
                 r_em = next((v for k, v in reason_emojis.items() if k in reason), "📌")
 
                 lines.append(
-                    f"{em} *{t.asset}* {dir_}\n"
+                    f"{em} *{t.get('asset', 'UNKNOWN')}* {dir_}\n"
                     f"  🕐 {open_str} → {close_str} ({dur_str})\n"
                     f"  {r_em} {reason or '—'} | {pnl_em} ${pnl:+.2f}\n"
                 )
@@ -1190,6 +1189,7 @@ class TelegramCommander:
                 reply_markup=_kb(
                     [("📋 All", "history_filter:all"), ("💱 Forex", "history_filter:forex")],
                     [("₿ Crypto", "history_filter:crypto"), ("🥇 Comms", "history_filter:commodities")],
+                    [("📉 Indices", "history_filter:indices")],
                     [("🟢 Winners", "history_filter:won"), ("🔴 Losers", "history_filter:lost")],
                     [("🏠 Menu", "menu")],
                 ),
@@ -1473,7 +1473,7 @@ class TelegramCommander:
         if not sig or sig.get("direction", "HOLD") == "HOLD":
             text = (
                 f"⏸ *{display}* — No signal\n\n"
-                f"The 7-layer pipeline doesn't see a clean entry right now.\n"
+                f"The decision engine doesn't see a clean entry right now.\n"
                 f"_Try again in a few minutes._"
             )
             kb = _kb(
@@ -1515,7 +1515,7 @@ class TelegramCommander:
             f"Regime:     {regime.replace('_', ' ') or '—'}\n"
             f"Session:    {sess or '—'}\n"
             f"Strategy:   {sig.get('strategy_id', '—')}\n\n"
-            f"_7-layer pipeline ✅_"
+            f"_Decision engine ✅_"
         )
         kb = _kb(
             [(f"🧠 Why {display}?", f"why:{asset}"), ("🔄 Refresh", f"sig:{asset}")],
@@ -1743,11 +1743,11 @@ _ALIASES = {
     "DOT": "DOT-USD", "LTC": "LTC-USD",  "AVAX": "AVAX-USD",
     "LINK":"LINK-USD",
     "GOLD":"XAU/USD", "XAU": "XAU/USD",  "SILVER": "XAG/USD",
-    "XAG": "XAG/USD", "OIL": "WTI/USD", "WTI": "WTI/USD",
+    "XAG": "XAG/USD", "EURJPY":"EUR/JPY", "EUROYEN":"EUR/JPY",
     "EURO":"EUR/USD", "EUR": "EUR/USD",   "POUND": "GBP/USD",
     "GBP": "GBP/USD", "YEN": "USD/JPY",  "JPY":   "USD/JPY",
-    "SP500":"^GSPC",  "SPX": "^GSPC",    "DOW":   "^DJI",
-    "NASDAQ":"^IXIC", "FTSE":"^FTSE",    "NIKKEI":"^N225",
+    "SP500":"US500",  "SPX": "US500",    "DOW":   "US30",
+    "NASDAQ":"US100", "FTSE":"UK100",    "NIKKEI":"^N225",
     "APPLE":"AAPL",   "GOOGLE":"GOOGL",  "AMAZON":"AMZN",
     "TESLA":"TSLA",   "NVIDIA":"NVDA",   "FACEBOOK":"META",
 }

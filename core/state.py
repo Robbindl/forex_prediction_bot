@@ -510,7 +510,8 @@ class SystemState:
         """Restore open positions from PostgreSQL on startup."""
         try:
             from services.db_pool import get_db
-            positions = get_db().load_open_positions()
+            db = get_db()
+            positions = db.load_open_positions()
             if positions:
                 restored = 0
                 for pos in positions:
@@ -523,7 +524,7 @@ class SystemState:
                 # Ensure any JSON cache positions are also reflected in DB (cross-merge)
                 for pos in list(self._open_positions.values()):
                     try:
-                        get_db().save_open_position(pos)
+                        db.save_open_position(pos)
                     except Exception:
                         pass
 
@@ -537,7 +538,7 @@ class SystemState:
                     )
                     for pos in list(self._open_positions.values()):
                         try:
-                            get_db().save_open_position(pos)
+                            db.save_open_position(pos)
                         except Exception as e:
                             logger.error(f"[State] failed backfilling open position {pos.get('trade_id')}: {e}")
 
@@ -554,48 +555,15 @@ class SystemState:
         """
         try:
             from services.db_pool import get_db
-            from sqlalchemy import text
             db = get_db()
-            with db.get_session() as s:
-                rows = s.execute(text("""
-                    SELECT strategy_id, asset, pnl
-                    FROM   trades
-                    WHERE  exit_time IS NOT NULL
-                      AND  pnl IS NOT NULL
-                      AND  strategy_id IS NOT NULL
-                      AND  strategy_id != ''
-                """)).fetchall()
+            rollups = db.get_closed_trade_rollups()
+            rows = rollups["rows"]
 
             if not rows:
                 return
 
-            # Build counts from DB
-            db_strategy: dict = {}
-            db_asset:    dict = {}
-
-            for strategy_id, canonical_asset, pnl_raw in rows:
-                pnl = float(pnl_raw)
-                win = pnl > 0
-
-                # Strategy stats
-                if strategy_id not in db_strategy:
-                    db_strategy[strategy_id] = {"wins": 0, "losses": 0, "pnl": 0.0}
-                db_strategy[strategy_id]["pnl"] += pnl
-                if win:
-                    db_strategy[strategy_id]["wins"]   += 1
-                else:
-                    db_strategy[strategy_id]["losses"] += 1
-
-                # Asset stats
-                asset_key = canonical_asset or ""
-                if asset_key:
-                    if asset_key not in db_asset:
-                        db_asset[asset_key] = {"wins": 0, "losses": 0, "pnl": 0.0}
-                    db_asset[asset_key]["pnl"] += pnl
-                    if win:
-                        db_asset[asset_key]["wins"]   += 1
-                    else:
-                        db_asset[asset_key]["losses"] += 1
+            db_strategy = rollups["strategy"]
+            db_asset = rollups["asset"]
 
             # Merge into in-memory dicts — DB is source of truth if JSON was empty
             with self._lock:
