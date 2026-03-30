@@ -2499,6 +2499,28 @@ def test_portfolio_risk_uses_configured_drawdown_halt(monkeypatch) -> None:
         importlib.reload(portfolio_mod)
 
 
+def test_portfolio_risk_scales_asset_exposure_to_cap() -> None:
+    portfolio_mod = importlib.import_module("risk.portfolio_risk")
+    engine = portfolio_mod.PortfolioRiskEngine(max_single_asset_pct=35.0, max_category_pct=40.0)
+    signal = {
+        "asset": "EUR/USD",
+        "category": "forex",
+        "position_size": 40_000.0,
+        "entry_price": 1.10,
+        "direction": "BUY",
+    }
+
+    approved, reason = engine.evaluate(
+        signal=signal,
+        open_positions=[],
+        balance=1_000.0,
+    )
+
+    assert approved is True
+    assert "asset EUR/USD scaled" in reason
+    assert round(signal["position_size"], 2) == 35_000.0
+
+
 def test_chain_trackers_use_configured_rpc_urls(monkeypatch) -> None:
     config_mod = importlib.import_module("config.config")
     bnb_mod = importlib.import_module("whale_intelligence.bnb_tracker")
@@ -2829,3 +2851,105 @@ def test_trade_and_personality_models_define_runtime_indexes() -> None:
     assert 'Index("idx_trading_diary_asset_setup_date", "asset", "setup_type", "created_at")' in source
     assert 'Index("idx_trading_diary_asset_date", "asset", "created_at")' in source
     assert 'Index("idx_memorable_moments_date", "moment_date")' in source
+
+
+def test_engine_uses_configured_trade_close_cooldown() -> None:
+    source = Path("core/engine.py").read_text(encoding="utf-8")
+
+    assert "TRADE_CLOSE_COOLDOWN_MINUTES = CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES" in source
+
+
+def test_execute_signal_treats_category_caps_as_soft(monkeypatch) -> None:
+    engine_mod = importlib.import_module("core.engine")
+    config_mod = importlib.import_module("config.config")
+
+    monkeypatch.setattr(config_mod, "CATEGORY_CAPS", {"forex": 2}, raising=False)
+    monkeypatch.setattr(config_mod, "CATEGORY_CAP_SOFT_BUFFER", 2, raising=False)
+
+    risk_called = {"value": False}
+
+    class _Risk:
+        def validate_signal(self, **kwargs):
+            risk_called["value"] = True
+            return False, "risk-stop"
+
+    class _State:
+        daily_pnl = 0.0
+
+        @staticmethod
+        def open_position_count():
+            return 0
+
+        @staticmethod
+        def get_open_positions():
+            return [{"category": "forex"}, {"category": "forex"}]
+
+    core = engine_mod.TradingCore.__new__(engine_mod.TradingCore)
+    core.state = _State()
+    core._risk_manager = _Risk()
+
+    signal = SimpleNamespace(category="forex", asset="EUR/USD", confidence=0.82)
+    approved = engine_mod.TradingCore._execute_signal(core, signal)
+
+    assert approved is False
+    assert risk_called["value"] is True
+
+
+def test_portfolio_risk_allows_same_direction_cluster_when_category_exposure_is_small() -> None:
+    portfolio_mod = importlib.import_module("risk.portfolio_risk")
+    engine = portfolio_mod.PortfolioRiskEngine(
+        max_single_asset_pct=80.0,
+        max_category_pct=60.0,
+        max_same_direction_positions=4,
+        correlation_category_trigger_pct=85.0,
+        target_allocation={"forex": 60.0},
+    )
+
+    open_positions = [
+        {"asset": "EUR/USD", "category": "forex", "direction": "BUY", "position_size": 20_000.0, "entry_price": 1.10},
+        {"asset": "GBP/USD", "category": "forex", "direction": "BUY", "position_size": 20_000.0, "entry_price": 1.28},
+        {"asset": "AUD/USD", "category": "forex", "direction": "BUY", "position_size": 20_000.0, "entry_price": 0.67},
+        {"asset": "USD/CAD", "category": "forex", "direction": "BUY", "position_size": 20_000.0, "entry_price": 1.35},
+    ]
+    signal = {
+        "asset": "EUR/JPY",
+        "category": "forex",
+        "direction": "BUY",
+        "position_size": 20_000.0,
+        "entry_price": 162.0,
+    }
+
+    approved, reason = engine.evaluate(signal, open_positions=open_positions, balance=10_000.0)
+
+    assert approved is True
+    assert "Correlation risk" not in reason
+
+
+def test_portfolio_risk_blocks_same_direction_cluster_only_when_category_exposure_is_high() -> None:
+    portfolio_mod = importlib.import_module("risk.portfolio_risk")
+    engine = portfolio_mod.PortfolioRiskEngine(
+        max_single_asset_pct=80.0,
+        max_category_pct=60.0,
+        max_same_direction_positions=4,
+        correlation_category_trigger_pct=85.0,
+        target_allocation={"forex": 60.0},
+    )
+
+    open_positions = [
+        {"asset": "EUR/USD", "category": "forex", "direction": "BUY", "position_size": 120_000.0, "entry_price": 1.10},
+        {"asset": "GBP/USD", "category": "forex", "direction": "BUY", "position_size": 120_000.0, "entry_price": 1.28},
+        {"asset": "AUD/USD", "category": "forex", "direction": "BUY", "position_size": 120_000.0, "entry_price": 0.67},
+        {"asset": "USD/CAD", "category": "forex", "direction": "BUY", "position_size": 120_000.0, "entry_price": 1.35},
+    ]
+    signal = {
+        "asset": "EUR/JPY",
+        "category": "forex",
+        "direction": "BUY",
+        "position_size": 120_000.0,
+        "entry_price": 162.0,
+    }
+
+    approved, reason = engine.evaluate(signal, open_positions=open_positions, balance=10_000.0)
+
+    assert approved is False
+    assert "Correlation risk" in reason

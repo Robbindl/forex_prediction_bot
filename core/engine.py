@@ -11,12 +11,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 import pandas as pd
 
-from config.config import MIN_FINAL_CONFIDENCE, get_timeframe_periods, get_trading_timeframe
+from config.config import (
+    MIN_FINAL_CONFIDENCE,
+    TRADE_CLOSE_COOLDOWN_MINUTES as CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES,
+    get_timeframe_periods,
+    get_trading_timeframe,
+)
 from utils.logger import get_logger
 from core.signal import Signal
 from core.decision_engine import SignalDecisionEngine, decision_engine as _global_decision_engine
 
-TRADE_CLOSE_COOLDOWN_MINUTES = 60
+TRADE_CLOSE_COOLDOWN_MINUTES = CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES
 TRADE_MIN_CONFIDENCE = MIN_FINAL_CONFIDENCE  # follow config value from .env
 
 logger = get_logger()
@@ -791,14 +796,26 @@ class TradingCore:
         if self.state.open_position_count() >= MAX_POSITIONS:
             return False
 
-        from config.config import CATEGORY_CAPS
+        from config.config import CATEGORY_CAPS, CATEGORY_CAP_SOFT_BUFFER
         cat = signal.category
         cat_open = sum(
             1 for p in self.state.get_open_positions()
             if p.get("category") == cat
         )
-        if cat_open >= CATEGORY_CAPS.get(cat, 99):
+        soft_cap = CATEGORY_CAPS.get(cat, 99)
+        hard_cap = soft_cap + max(0, CATEGORY_CAP_SOFT_BUFFER)
+        if cat_open >= hard_cap:
+            logger.warning(
+                f"[TradingCore] Category cap blocked {signal.asset}: "
+                f"{cat_open} open {cat} positions >= hard cap {hard_cap}"
+            )
             return False
+        if cat_open >= soft_cap:
+            logger.info(
+                f"[TradingCore] Category soft cap exceeded for {signal.asset}: "
+                f"{cat_open} open {cat} positions >= soft cap {soft_cap}; "
+                f"allowing execution and deferring concentration control to portfolio risk"
+            )
 
         # FIX S6: Call validate_signal so the daily loss guard is actually
         # enforced.  Previously this was never called → 5% daily loss halt
@@ -863,6 +880,10 @@ class TradingCore:
                         f"[TradingCore] PortfolioRisk blocked {signal.asset}: {pr_reason}"
                     )
                     return False
+                if pr_reason:
+                    logger.info(
+                        f"[TradingCore] PortfolioRisk resized {signal.asset}: {pr_reason}"
+                    )
             except Exception as _pre:
                 logger.debug(f"[TradingCore] PortfolioRisk check error: {_pre}")
 

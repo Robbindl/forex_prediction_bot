@@ -112,10 +112,10 @@ class AssetRegistry:
         "XRPUSD": "XRP-USD",
     }
 
-    # ── Category → max concurrent open positions ──────────────────────────────
+    # ── Category → soft target concurrent open positions ──────────────────────
     _CATEGORY_CAPS: Dict[str, int] = {
-        "forex":       3,
-        "crypto":      3,
+        "forex":       4,
+        "crypto":      5,
         "commodities": 2,
         "indices":     2,
     }

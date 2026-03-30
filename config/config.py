@@ -141,9 +141,18 @@ COMMODITIES_RISK_PER_TRADE  = float(os.getenv("COMMODITIES_RISK_PER_TRADE",  "2.
 INDICES_RISK_PER_TRADE      = float(os.getenv("INDICES_RISK_PER_TRADE",      "1.5"))
 MAX_RISK_PER_TRADE          = float(os.getenv("MAX_RISK_PER_TRADE",          "3.0"))
 DAILY_LOSS_LIMIT_PERCENT    = float(os.getenv("DAILY_LOSS_LIMIT_PERCENT",    "5.0"))
-DRAWDOWN_HALT_PERCENT       = float(os.getenv("DRAWDOWN_HALT_PERCENT",       "8.0"))
+DRAWDOWN_HALT_PERCENT       = float(os.getenv("DRAWDOWN_HALT_PERCENT",       "25.0"))
 DRAWDOWN_REDUCE_PERCENT     = float(
-    os.getenv("DRAWDOWN_REDUCE_PERCENT", str(max(0.0, min(5.0, DRAWDOWN_HALT_PERCENT - 2.0))))
+    os.getenv(
+        "DRAWDOWN_REDUCE_PERCENT",
+        str(max(5.0, min(15.0, DRAWDOWN_HALT_PERCENT * 0.5))),
+    )
+)
+PORTFOLIO_MAX_SINGLE_ASSET_PCT = float(os.getenv("PORTFOLIO_MAX_SINGLE_ASSET_PCT", "35.0"))
+PORTFOLIO_MAX_CATEGORY_PCT = float(os.getenv("PORTFOLIO_MAX_CATEGORY_PCT", "40.0"))
+PORTFOLIO_MAX_SAME_DIRECTION_POSITIONS = int(os.getenv("PORTFOLIO_MAX_SAME_DIRECTION_POSITIONS", "4"))
+PORTFOLIO_CORRELATION_CATEGORY_TRIGGER_PCT = float(
+    os.getenv("PORTFOLIO_CORRELATION_CATEGORY_TRIGGER_PCT", "85.0")
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,10 +171,11 @@ SPREAD_THRESHOLDS: dict = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 MIN_CONFIDENCE_SCORE      = float(os.getenv("MIN_CONFIDENCE_SCORE", "0.70"))
-MIN_FINAL_CONFIDENCE      = float(os.getenv("MIN_FINAL_CONFIDENCE", "0.62"))
+MIN_FINAL_CONFIDENCE      = float(os.getenv("MIN_FINAL_CONFIDENCE", "0.58"))
 ALERT_THRESHOLD           = float(os.getenv("ALERT_THRESHOLD", "0.75"))
 CRYPTO_ALERT_THRESHOLD    = float(os.getenv("CRYPTO_ALERT_THRESHOLD", "0.80"))
 MAX_CORRELATION_THRESHOLD = float(os.getenv("MAX_CORRELATION_THRESHOLD", "0.7"))
+TRADE_CLOSE_COOLDOWN_MINUTES = int(os.getenv("TRADE_CLOSE_COOLDOWN_MINUTES", "15"))
 VOLATILITY_FILTER         = os.getenv("VOLATILITY_FILTER", "true").lower() == "true"
 CRYPTO_HIGH_RISK          = os.getenv("CRYPTO_HIGH_RISK", "true").lower() == "true"
 CRYPTO_MIN_VOLUME         = int(os.getenv("CRYPTO_MIN_VOLUME", "1000000"))
@@ -179,11 +189,12 @@ ENABLE_ALERTS             = os.getenv("ENABLE_ALERTS", "true").lower() == "true"
 # ─────────────────────────────────────────────────────────────────────────────
 
 CATEGORY_CAPS: dict = {
-    "forex":       int(os.getenv("CAP_FOREX",       "3")),
-    "crypto":      int(os.getenv("CAP_CRYPTO",      "3")),
+    "forex":       int(os.getenv("CAP_FOREX",       "4")),
+    "crypto":      int(os.getenv("CAP_CRYPTO",      "5")),
     "commodities": int(os.getenv("CAP_COMMODITIES", "2")),
     "indices":     int(os.getenv("CAP_INDICES",     "2")),
 }
+CATEGORY_CAP_SOFT_BUFFER = int(os.getenv("CATEGORY_CAP_SOFT_BUFFER", "2"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ML SETTINGS

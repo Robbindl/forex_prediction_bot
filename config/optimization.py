@@ -152,10 +152,10 @@ RECOMMENDED_ENV_OVERRIDES = {
     "DEFAULT_BALANCE": "10000",
     "MAX_POSITIONS": "6",
     
-    # Tighter daily loss limits on 15m (more trades/day = more risk)
-    "DAILY_LOSS_LIMIT_PERCENT": "4.0",  # vs default 5%
-    "DRAWDOWN_HALT_PERCENT": "7.0",     # vs default 8%
-    "DRAWDOWN_REDUCE_PERCENT": "5.0",   # start scaling down before the halt
+    # Current live bot risk posture
+    "DAILY_LOSS_LIMIT_PERCENT": "50.0",
+    "DRAWDOWN_HALT_PERCENT": "25.0",
+    "DRAWDOWN_REDUCE_PERCENT": "12.0",
     
     # Risk per trade
     "DEFAULT_RISK_PER_TRADE": "1.2",    # 1.2% vs default 1.5%
