@@ -103,6 +103,21 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
 .t-buy{background:rgba(0,208,132,.15);color:var(--gr)}.t-sell{background:rgba(255,69,96,.15);color:var(--rd)}
 .t-info{flex:1}
 .t-pnl{font-weight:600;flex-shrink:0}
+.robust-wrap{padding:0 16px 16px}
+.robust-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:12px}
+.robust-card{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
+.robust-kicker{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.robust-value{font-size:18px;font-weight:700;line-height:1.1}
+.robust-note{font-size:11px;color:var(--tx2);margin-top:5px}
+.robust-section{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.robust-heading{font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+.robust-chip-row{display:flex;gap:8px;flex-wrap:wrap}
+.robust-chip{padding:4px 8px;border-radius:20px;background:var(--s3);font-size:11px;color:var(--tx2);border:1px solid var(--bd)}
+.robust-table{width:100%;border-collapse:collapse;font-size:11px}
+.robust-table th{color:var(--tx3);font-size:10px;text-transform:uppercase;letter-spacing:.4px;padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;font-weight:500}
+.robust-table td{padding:7px 8px;border-bottom:1px solid rgba(30,38,53,.5)}
+.robust-table tr:last-child td{border:none}
+.robust-table td:last-child,.robust-table th:last-child{text-align:right}
 
 /* LOADING */
 .loading{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
@@ -134,6 +149,7 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
   .sb-overlay.open{display:block}
   .topbar{padding:0 12px}
   .snapshot-grid{grid-template-columns:repeat(2,1fr)}
+  .robust-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 /* ── MOBILE SCROLL FIX ───────────────────────────────────────────────── */
@@ -215,6 +231,41 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
         </div>
       </div>
 
+      <div class="panel" style="animation-delay:.04s;width:100%">
+        <div class="panel-header">
+          <span>♻️</span>
+          <span class="panel-title">Auto Research</span>
+          <button class="btn btn-secondary" id="autoResearchRunBtn" style="padding:6px 10px;font-size:11px" onclick="runAutoResearchNow()">
+            <span>⟳</span> Run Auto Cycle Now
+          </button>
+          <span class="panel-badge" id="autoResearchBadge">Loading…</span>
+        </div>
+        <div class="panel-body">
+          <div class="snapshot-grid">
+            <div class="snapshot-card">
+              <div class="snapshot-kicker">Scheduler</div>
+              <div class="snapshot-value" id="autoResearchState">—</div>
+              <div class="snapshot-note" id="autoResearchStateNote">Waiting for runtime config</div>
+            </div>
+            <div class="snapshot-card">
+              <div class="snapshot-kicker">Last Cycle</div>
+              <div class="snapshot-value cy" id="autoResearchLast">—</div>
+              <div class="snapshot-note" id="autoResearchLastNote">No completed cycle yet</div>
+            </div>
+            <div class="snapshot-card">
+              <div class="snapshot-kicker">Auto Live Set</div>
+              <div class="snapshot-value pu" id="autoResearchPromoted">—</div>
+              <div class="snapshot-note" id="autoResearchPromotedNote">No auto-managed live strategies yet</div>
+            </div>
+            <div class="snapshot-card">
+              <div class="snapshot-kicker">Profiles</div>
+              <div class="snapshot-value bl" id="autoResearchProfiles">—</div>
+              <div class="snapshot-note" id="autoResearchProfilesNote">Standard screening, deep final validation</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Control Panel -->
       <div class="panel control-panel" style="animation-delay:.05s;width:100%">
         <div class="mode-tabs">
@@ -271,10 +322,10 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
             <div class="form-group">
               <label class="form-label">Historical Bars</label>
               <select id="btPeriods">
-                <option value="100">100 bars (~3 months)</option>
-                <option value="200">200 bars (~6 months)</option>
-                <option value="300" selected>300 bars (~1 year)</option>
-                <option value="500">500 bars (~2 years)</option>
+                <option value="3000">3000 closed bars</option>
+                <option value="6000">6000 closed bars</option>
+                <option value="12000" selected>12000 closed bars</option>
+                <option value="20000">20000 closed bars</option>
               </select>
             </div>
             <div class="btn-row">
@@ -299,12 +350,13 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
             <div class="form-group">
               <label class="form-label">Historical Bars</label>
               <select id="cmpPeriods">
-                <option value="200">200 bars</option>
-                <option value="300" selected>300 bars</option>
-                <option value="500">500 bars</option>
+                <option value="3000">3000 closed bars</option>
+                <option value="6000">6000 closed bars</option>
+                <option value="12000" selected>12000 closed bars</option>
+                <option value="20000">20000 closed bars</option>
               </select>
             </div>
-            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs every registered lab preset plus the live strategy set for the selected asset. Runtime depends on the active preset count.</p>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs every registered lab preset on the selected asset, then research-validates the strongest candidate automatically.</p>
             <button class="btn btn-primary btn-full" id="cmpBtn" onclick="runCompare()">
               <span>⚖</span> Compare All Strategies
             </button>
@@ -328,11 +380,13 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
             <div class="form-group">
               <label class="form-label">Historical Bars</label>
               <select id="optPeriods">
-                <option value="200">200 bars</option>
-                <option value="300" selected>300 bars</option>
+                <option value="3000">3000 closed bars</option>
+                <option value="6000">6000 closed bars</option>
+                <option value="12000" selected>12000 closed bars</option>
+                <option value="20000">20000 closed bars</option>
               </select>
             </div>
-            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Grid: RSI 10/14/21 × stop 1.0/1.5/2.0 × TP 2.0/3.0/4.0 (27 combinations)</p>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Grid: RSI 10/14/21 × stop 1.0/1.5/2.0 × TP 2.0/3.0/4.0 (27 combinations). The top parameter set gets a research pass automatically.</p>
             <button class="btn btn-primary btn-full" id="optBtn" onclick="runOptimize()">
               <span>🔍</span> Find Best Parameters
             </button>
@@ -347,11 +401,13 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
             <div class="form-group">
               <label class="form-label">Historical Bars</label>
               <select id="maPeriods">
-                <option value="200">200 bars</option>
-                <option value="300" selected>300 bars</option>
+                <option value="3000">3000 closed bars</option>
+                <option value="6000">6000 closed bars</option>
+                <option value="12000" selected>12000 closed bars</option>
+                <option value="20000">20000 closed bars</option>
               </select>
             </div>
-            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs the chosen strategy across the current active cross-asset universe used by the lab backend.</p>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs the chosen strategy across the current active cross-asset universe, then research-validates the strongest asset automatically.</p>
             <button class="btn btn-primary btn-full" id="maBtn" onclick="runMultiAsset()">
               <span>🌐</span> Test Across All Assets
             </button>
@@ -380,14 +436,14 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
       <div class="panel results-panel" style="animation-delay:.15s;width:100%">
           <div class="panel-header">
             <span>📈</span>
-            <span class="panel-title" id="resultsTitle">Results</span>
+            <span class="panel-title" id="resultsTitle">Results & Research</span>
             <span class="panel-badge" id="resultsBadge">—</span>
           </div>
           <div id="resultsBody" class="results-body">
             <div style="text-align:center;padding:60px 20px">
               <div style="font-size:40px;margin-bottom:12px">🧪</div>
               <div style="font-size:14px;color:var(--tx2);margin-bottom:6px">Select a mode and run a backtest</div>
-              <div style="font-size:12px;color:var(--tx3)">Results appear here — equity curve, trade log, metrics</div>
+              <div style="font-size:12px;color:var(--tx3)">Results appear here — metrics, trade log, and research validation</div>
             </div>
           </div>
         </div>
@@ -395,6 +451,7 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
     </div>
   </div>
 
+<script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
 let eqChart = null;
 let _strategyLabCache = null;
@@ -403,7 +460,7 @@ async function fetchStrategyLabOverview(){
   if(_strategyLabCache && now - _strategyLabCache.fetched < 10000){
     return _strategyLabCache.data;
   }
-  const d = await fetch('/api/page-overview?page=strategy_lab').then(r=>r.json()).catch(()=>({success:false}));
+  const d = await window.dashboardFetchJson('/api/page-overview?page=strategy_lab', {timeoutMs: 12000});
   if(d.success){
     _strategyLabCache = {fetched: now, data: d};
     return d;
@@ -432,12 +489,94 @@ function formatCompactUsd(value){
   return '$' + n.toFixed(0);
 }
 
+function formatUtcTimestamp(value){
+  if(!value) return '—';
+  const d = new Date(value);
+  if(Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString('en-GB', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'UTC',
+  }) + ' UTC';
+}
+
+function renderAutoResearch(automation = {}){
+  const settings = automation.settings || {};
+  const status = automation.status || {};
+  const entries = automation.auto_live_entries || [];
+  const enabled = !!settings.enabled;
+  const running = !!status.running;
+  const assets = Array.isArray(settings.assets) ? settings.assets : [];
+  const promotedNames = (status.promoted_names || []).filter(Boolean);
+  const lastSummary = status.last_summary || {};
+  const badge = running ? 'Cycle running' : (enabled ? `${entries.length} auto live` : 'Disabled');
+  const stateEl = document.getElementById('autoResearchState');
+  const runBtn = document.getElementById('autoResearchRunBtn');
+
+  document.getElementById('autoResearchBadge').textContent = badge;
+  if(runBtn){
+    runBtn.disabled = running;
+    runBtn.innerHTML = running
+      ? '<div class="spinner" style="width:12px;height:12px;margin:0"></div> Running…'
+      : '<span>⟳</span> Run Auto Cycle Now';
+  }
+  stateEl.textContent = running ? 'RUNNING' : (enabled ? 'ENABLED' : 'OFF');
+  stateEl.className = 'snapshot-value ' + (running ? 'am' : (enabled ? 'gn' : 'rd'));
+  document.getElementById('autoResearchStateNote').textContent = enabled
+    ? `Startup ${Number(settings.startup_delay_seconds || 0)}s · every ${Number(settings.interval_hours || 0)}h`
+    : 'Disabled in config/bot_runtime.json';
+
+  document.getElementById('autoResearchLast').textContent = formatUtcTimestamp(status.last_completed_at || status.last_started_at);
+  document.getElementById('autoResearchLastNote').textContent = status.last_error
+    ? `Last error: ${status.last_error}`
+    : `${String(lastSummary.trigger || status.last_trigger || 'idle').toUpperCase()} · ${Number(lastSummary.assets_scanned || assets.length || 0)} assets`;
+
+  document.getElementById('autoResearchPromoted').textContent = entries.length || 0;
+  document.getElementById('autoResearchPromotedNote').textContent = promotedNames.length
+    ? promotedNames.join(', ')
+    : (entries.length ? entries.map(e => e.name || 'unknown').join(', ') : 'No auto-managed live strategies yet');
+
+  document.getElementById('autoResearchProfiles').textContent =
+    `${String(settings.screening_profile || 'standard').toUpperCase()} → ${String(settings.final_profile || 'deep').toUpperCase()}`;
+  document.getElementById('autoResearchProfilesNote').textContent =
+    `${assets.length} watched assets · shortlist ${Number(settings.shortlist || 0)} · parallel ${Number(settings.max_parallel_assets || 1)}`;
+}
+
+async function runAutoResearchNow(){
+  const btn = document.getElementById('autoResearchRunBtn');
+  if(btn) btn.disabled = true;
+  if(btn) btn.innerHTML = '<div class="spinner" style="width:12px;height:12px;margin:0"></div> Starting…';
+  try{
+    const r = await fetch('/api/strategy-lab/automation/run', { method: 'POST' });
+    const d = await r.json();
+    if(d.success){
+      document.getElementById('autoResearchBadge').textContent = 'Cycle running';
+      document.getElementById('autoResearchState').textContent = 'RUNNING';
+      document.getElementById('autoResearchState').className = 'snapshot-value am';
+      document.getElementById('autoResearchStateNote').textContent = 'Manual cycle started from dashboard';
+    }else{
+      document.getElementById('autoResearchBadge').textContent = 'Already running';
+      document.getElementById('autoResearchStateNote').textContent = d.message || 'Auto research cycle already running';
+    }
+  }catch(e){
+    document.getElementById('autoResearchBadge').textContent = 'Trigger failed';
+    document.getElementById('autoResearchStateNote').textContent = e.message || 'Could not start auto research cycle';
+  }
+  await loadStrategies();
+}
+
 // Load available strategies
 async function loadStrategies() {
   try {
     const page = await fetchStrategyLabOverview();
     const strategyList = page.strategies || {};
     const performance = page.performance || {};
+    const automation = page.automation || {};
+    const perfSummary = performance.summary || {};
     const presets = strategyList.presets || [];
     const liveStrategies = performance.strategies || {};
     const liveNames = Object.keys(liveStrategies);
@@ -452,10 +591,14 @@ async function loadStrategies() {
 
     document.getElementById('snapPresets').textContent = presets.length || 0;
     document.getElementById('snapLiveStrategies').textContent = liveNames.length || 0;
-    document.getElementById('labBadge').textContent = presets.length ? (presets.length + ' presets loaded') : 'No presets';
 
     const liveTradeCount = liveNames.reduce((sum, name) => sum + Number(liveStrategies[name]?.total || 0), 0);
     document.getElementById('snapLiveTrades').textContent = liveTradeCount || 0;
+    if(liveTradeCount){
+      document.getElementById('labBadge').textContent = `Exec ${Number(perfSummary.avg_execution_quality || 0).toFixed(0)} · ${liveTradeCount} live outcomes`;
+    }else{
+      document.getElementById('labBadge').textContent = presets.length ? (presets.length + ' presets loaded') : 'No presets';
+    }
 
     let bestName = '';
     let bestScore = -Infinity;
@@ -471,11 +614,16 @@ async function loadStrategies() {
     });
     document.getElementById('snapBestStrategy').textContent = bestName || '—';
     document.getElementById('snapBestStrategy').className = 'snapshot-value ' + (bestName ? (bestScore >= 0 ? 'gn' : 'rd') : '');
-    document.getElementById('snapBestNote').textContent = bestName ? ('Avg trade ' + formatCompactUsd(bestScore)) : 'Waiting for performance data';
+    const bestStrategy = bestName ? (liveStrategies[bestName] || {}) : {};
+    document.getElementById('snapBestNote').textContent = bestName
+      ? `Avg trade ${formatCompactUsd(bestScore)} · Mem ${Number(bestStrategy.avg_memory_score || 0).toFixed(0)} · Exec ${Number(bestStrategy.avg_execution_quality || 0).toFixed(0)}`
+      : 'Waiting for performance data';
+    renderAutoResearch(automation);
     updateStrategyOptions();
   } catch(e) {}
 }
 loadStrategies();
+setInterval(loadStrategies, 60000);
 
 function updateStrategyOptions() {
   const strategySelect = document.getElementById('btStrategy');
@@ -502,6 +650,18 @@ function setLoading(btn, msg) {
 function clearLoading(btn, label) {
   document.getElementById(btn).disabled = false;
   document.getElementById(btn).innerHTML = label;
+}
+
+function renderResearchShell(title, message='Running robustness suite...') {
+  return `
+    <div class="robust-wrap">
+      <div class="robust-section">
+        <div class="robust-heading">${title}</div>
+        <div class="robust-section" id="robustnessSection">
+          <div class="loading"><div class="spinner"></div><br>${message}</div>
+        </div>
+      </div>
+    </div>`;
 }
 
 // ── Backtest ──────────────────────────────────────────────────────────────────
@@ -562,11 +722,217 @@ function renderBacktestResult(d) {
     <div style="padding:0 16px 14px">
       <div style="font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Trade Log (last 20)</div>
       <div style="max-height:200px;overflow-y:auto">${tradeHtml || '<div class="empty">No trades</div>'}</div>
-    </div>`;
+    </div>
+    ${renderResearchShell('Research Suite')}`;
 
   // Draw equity chart
-  const eq = (m.equity_curve || []).map(p => p.value);
-  drawEquityChart(eq);
+  drawEquityChart(Array.isArray(d.equity_curve) ? d.equity_curve : []);
+  loadRobustness(d.asset, d.strategy, d.periods || 300);
+}
+
+function renderRobustness(report) {
+  const mount = document.getElementById('robustnessSection');
+  if (!mount) return;
+  const monte = report.bootstrap_monte_carlo || {};
+  const walk = report.walk_forward_validation || {};
+  const stress = report.stress_testing || {};
+  const sens = report.sensitivity_analysis || {};
+  const psr = report.probabilistic_sharpe || {};
+  const cost = report.transaction_cost_impact || {};
+  const regime = report.regime_analysis || {};
+  const cross = report.cross_asset_validation || {};
+  const verdictColor = report.verdict === 'robust' ? 'gn' : report.verdict === 'mixed' ? 'am' : report.verdict === 'insufficient_data' ? 'am' : 'rd';
+  const tradeCount = Number((report.base_metrics || {}).total_trades || 0);
+  const minTrades = Number(report.minimum_trades_required || 0);
+
+  const stressRows = (stress.scenarios || []).map((row) => `
+    <tr>
+      <td>${row.name || 'scenario'}</td>
+      <td class="${Number(row.total_pnl || 0) >= 0 ? 'gn' : 'rd'}">$${Number(row.total_pnl || 0).toFixed(0)}</td>
+      <td>${Number((row.max_drawdown || 0) * 100).toFixed(1)}%</td>
+      <td style="color:var(--pu);font-weight:600">${Number(row.scenario_score || 0).toFixed(0)}</td>
+    </tr>
+  `).join('');
+
+  const foldRows = (walk.folds || []).slice(0, 4).map((row) => `
+    <tr>
+      <td>W${row.window}</td>
+      <td style="color:var(--pu);font-weight:600">${Number(row.test_sharpe || 0).toFixed(2)}</td>
+      <td class="${Number(row.test_pnl || 0) >= 0 ? 'gn' : 'rd'}">$${Number(row.test_pnl || 0).toFixed(0)}</td>
+      <td>${Number((row.test_win_rate || 0) * 100).toFixed(1)}%</td>
+      <td>${row.passed ? '<span class="gn">Pass</span>' : '<span class="rd">Fail</span>'}</td>
+    </tr>
+  `).join('');
+
+  const paramRows = (sens.parameters || []).slice(0, 3).map((row) => `
+    <tr>
+      <td>${row.parameter || 'param'}</td>
+      <td>${row.base_value ?? '—'}</td>
+      <td>${row.best_value ?? '—'}</td>
+      <td style="color:var(--pu);font-weight:600">${Number(row.swing_sharpe || 0).toFixed(2)}</td>
+      <td>${Number((row.stability || 0) * 100).toFixed(0)}%</td>
+    </tr>
+  `).join('');
+
+  const regimeRows = (regime.regimes || []).slice(0, 3).map((row) => `
+    <tr>
+      <td>${row.regime || 'regime'}</td>
+      <td>${row.trades || 0}</td>
+      <td class="${Number(row.total_pnl || 0) >= 0 ? 'gn' : 'rd'}">$${Number(row.total_pnl || 0).toFixed(0)}</td>
+      <td>${Number((row.win_rate || 0) * 100).toFixed(1)}%</td>
+      <td>${Number((row.stability || 0) * 100).toFixed(0)}%</td>
+    </tr>
+  `).join('');
+
+  const costRows = (cost.scenarios || []).map((row) => `
+    <tr>
+      <td>x${Number(row.cost_multiplier || 0).toFixed(1)}</td>
+      <td class="${Number(row.total_pnl || 0) >= 0 ? 'gn' : 'rd'}">$${Number(row.total_pnl || 0).toFixed(0)}</td>
+      <td style="color:var(--pu);font-weight:600">${Number(row.sharpe_ratio || 0).toFixed(2)}</td>
+      <td>${Number((row.max_drawdown || 0) * 100).toFixed(1)}%</td>
+    </tr>
+  `).join('');
+
+  const crossRows = (cross.assets || []).slice(0, 5).map((row) => `
+    <tr>
+      <td>${row.asset || 'asset'}</td>
+      <td style="color:var(--pu);font-weight:600">${Number(row.sharpe_ratio || 0).toFixed(2)}</td>
+      <td class="${Number(row.total_pnl || 0) >= 0 ? 'gn' : 'rd'}">$${Number(row.total_pnl || 0).toFixed(0)}</td>
+      <td>${row.trades || 0}</td>
+    </tr>
+  `).join('');
+
+  const critical = (sens.critical_parameters || []).map((name) => `<span class="robust-chip">${name}</span>`).join('');
+
+  mount.innerHTML = `
+    <div class="robust-heading">Research Suite</div>
+    <div class="robust-grid">
+      <div class="robust-card">
+        <div class="robust-kicker">Overall Robustness</div>
+        <div class="robust-value ${verdictColor}">${Number(report.overall_score || 0).toFixed(0)}</div>
+        <div class="robust-note">${(report.verdict || 'unknown').toUpperCase()} · ${String(report.research_profile || 'standard').toUpperCase()} · ${tradeCount} trades${minTrades ? ` / ${minTrades} min` : ''}</div>
+      </div>
+      <div class="robust-card">
+        <div class="robust-kicker">Walk-Forward</div>
+        <div class="robust-value pu">${Number((walk.pass_rate || 0) * 100).toFixed(0)}%</div>
+        <div class="robust-note">${walk.fold_count || 0} folds · Avg test Sharpe ${Number(walk.avg_test_sharpe || 0).toFixed(2)}</div>
+      </div>
+      <div class="robust-card">
+        <div class="robust-kicker">Monte Carlo</div>
+        <div class="robust-value cy">${Number((monte.profit_probability || 0) * 100).toFixed(0)}%</div>
+        <div class="robust-note">${monte.insufficient_data ? 'Need more closed trades' : `Profit probability · DD P95 ${Number((monte.max_drawdown_p95 || 0) * 100).toFixed(1)}%`}</div>
+      </div>
+      <div class="robust-card">
+        <div class="robust-kicker">Stress Resilience</div>
+        <div class="robust-value am">${Number(stress.resilience_score || 0).toFixed(0)}</div>
+        <div class="robust-note">${stress.worst_case_scenario || 'No worst case'} worst case</div>
+      </div>
+      <div class="robust-card">
+        <div class="robust-kicker">Probabilistic Sharpe</div>
+        <div class="robust-value bl">${Number((psr.probability_sharpe_positive || 0) * 100).toFixed(0)}%</div>
+        <div class="robust-note">P(SR &gt; 0) · ${String(psr.confidence_label || 'unknown').toUpperCase()}</div>
+      </div>
+      <div class="robust-card">
+        <div class="robust-kicker">Cost Impact</div>
+        <div class="robust-value cy">${Number(cost.cost_resilience_score || 0).toFixed(0)}</div>
+        <div class="robust-note">Break-even near x${Number(cost.break_even_cost_multiplier || 0).toFixed(1)} costs</div>
+      </div>
+      <div class="robust-card">
+        <div class="robust-kicker">Regime Balance</div>
+        <div class="robust-value am">${Number(regime.regime_balance_score || 0).toFixed(0)}</div>
+        <div class="robust-note">${regime.best_regime || 'n/a'} best · ${regime.worst_regime || 'n/a'} worst</div>
+      </div>
+      ${cross && !cross.insufficient_data ? `
+      <div class="robust-card">
+        <div class="robust-kicker">Cross-Asset</div>
+        <div class="robust-value bl">${Number(cross.consistency_score || 0).toFixed(0)}</div>
+        <div class="robust-note">${Number((cross.positive_asset_rate || 0) * 100).toFixed(0)}% positive assets</div>
+      </div>` : ''}
+    </div>
+
+    <div class="robust-section">
+      <div class="robust-heading">Walk-Forward Windows</div>
+      <div style="overflow-x:auto">
+        <table class="robust-table">
+          <thead><tr><th>Fold</th><th>Test Sharpe</th><th>Test P&L</th><th>Win Rate</th><th>Result</th></tr></thead>
+          <tbody>${foldRows || '<tr><td colspan="5" class="empty">Insufficient data</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="robust-section">
+      <div class="robust-heading">Stress Scenarios</div>
+      <div style="overflow-x:auto">
+        <table class="robust-table">
+          <thead><tr><th>Scenario</th><th>P&amp;L</th><th>Max DD</th><th>Score</th></tr></thead>
+          <tbody>${stressRows || '<tr><td colspan="4" class="empty">No stress scenarios</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="robust-section">
+      <div class="robust-heading">Sensitivity Analysis</div>
+      ${critical ? `<div class="robust-chip-row" style="margin-bottom:10px">${critical}</div>` : ''}
+      <div style="overflow-x:auto">
+        <table class="robust-table">
+          <thead><tr><th>Parameter</th><th>Base</th><th>Best</th><th>Sharpe Swing</th><th>Stability</th></tr></thead>
+          <tbody>${paramRows || '<tr><td colspan="5" class="empty">No tunable parameters</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="robust-section">
+      <div class="robust-heading">Transaction Cost Impact</div>
+      <div style="overflow-x:auto">
+        <table class="robust-table">
+          <thead><tr><th>Cost Multiplier</th><th>P&amp;L</th><th>Sharpe</th><th>Max DD</th></tr></thead>
+          <tbody>${costRows || '<tr><td colspan="4" class="empty">No cost sweep</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="robust-section">
+      <div class="robust-heading">Regime Breakdown</div>
+      <div style="overflow-x:auto">
+        <table class="robust-table">
+          <thead><tr><th>Regime</th><th>Trades</th><th>P&amp;L</th><th>Win Rate</th><th>Stability</th></tr></thead>
+          <tbody>${regimeRows || '<tr><td colspan="5" class="empty">No regime trade data</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    ${cross && !cross.insufficient_data ? `
+    <div class="robust-section">
+      <div class="robust-heading">Cross-Asset Validation</div>
+      <div style="overflow-x:auto">
+        <table class="robust-table">
+          <thead><tr><th>Asset</th><th>Sharpe</th><th>P&amp;L</th><th>Trades</th></tr></thead>
+          <tbody>${crossRows || '<tr><td colspan="4" class="empty">No peer assets</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>` : ''}
+  `;
+}
+
+async function loadRobustness(asset, strategy, periods, params = {}) {
+  const mount = document.getElementById('robustnessSection');
+  if (!mount || !asset || !strategy) return;
+  mount.innerHTML = '<div class="loading"><div class="spinner"></div><br>Running robustness suite...</div>';
+  try {
+    const qs = new URLSearchParams({ asset, strategy, periods: String(periods || 300), depth: 'deep' });
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') qs.set(key, String(value));
+    });
+    const r = await fetch(`/api/backtest/robustness?${qs.toString()}`);
+    const d = await r.json();
+    if (!d.success) {
+      mount.innerHTML = `<div class="empty">${d.error || 'Robustness suite unavailable'}</div>`;
+      return;
+    }
+    renderRobustness(d.robustness || {});
+  } catch (e) {
+    mount.innerHTML = `<div class="empty">${e.message || 'Robustness suite unavailable'}</div>`;
+  }
 }
 
 function drawEquityChart(values) {
@@ -652,7 +1018,12 @@ function renderCompareResult(d) {
         </tr></thead>
         <tbody>${rows || '<tr><td colspan="7" class="empty">No results</td></tr>'}</tbody>
       </table>
-    </div>`;
+    </div>
+    ${best ? renderResearchShell(`Research validation — ${best.replace(/_/g,' ')}`) : ''}`;
+
+  if (best) {
+    loadRobustness(d.asset || document.getElementById('cmpAsset').value, best, d.periods || document.getElementById('cmpPeriods').value);
+  }
 }
 
 // ── Optimise ──────────────────────────────────────────────────────────────────
@@ -675,6 +1046,7 @@ async function runOptimize() {
 function renderOptimizeResult(d) {
   const top5 = d.top5 || [];
   if (!top5.length) { document.getElementById('resultsBody').innerHTML = '<div class="empty">No results</div>'; return; }
+  const bestParams = top5[0] || {};
 
   const rows = top5.map((r, i) => {
     const rankClass = i === 0 ? 'rank-1' : i === 1 ? 'rank-2' : i === 2 ? 'rank-3' : '';
@@ -704,8 +1076,15 @@ function renderOptimizeResult(d) {
       </table>
     </div>
     <div style="padding:12px 16px;font-size:11px;color:var(--tx3)">
-      💡 Apply best params by updating <code style="background:var(--s3);padding:1px 5px;border-radius:3px">LIVE_STRATEGY_CONFIGS</code> in strategy_lab/live_bridge.py
-    </div>`;
+      💡 Live promotion is now registry-based. Deployable winners from <code style="background:var(--s3);padding:1px 5px;border-radius:3px">run_lab.py</code> or bot auto-research are written into the live registry automatically.
+    </div>
+    ${renderResearchShell('Research validation — top parameter set')}`;
+
+  loadRobustness(d.asset || document.getElementById('optAsset').value, d.strategy || document.getElementById('optStrategy').value, d.periods || document.getElementById('optPeriods').value, {
+    rsi_period: bestParams.rsi_period,
+    stop_mult: bestParams.stop_mult,
+    tp_mult: bestParams.tp_mult,
+  });
 }
 
 // ── Multi-Asset ───────────────────────────────────────────────────────────────
@@ -751,7 +1130,12 @@ function renderMultiAssetResult(d) {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-    </div>`;
+    </div>
+    ${d.best ? renderResearchShell(`Research validation — ${d.best}`) : ''}`;
+
+  if (d.best) {
+    loadRobustness(d.best, d.strategy || document.getElementById('maStrategy').value, d.periods || document.getElementById('maPeriods').value);
+  }
 }
 
 // ── Live stats ────────────────────────────────────────────────────────────────
@@ -761,6 +1145,7 @@ async function loadLiveStats() {
     const d = page.performance || {};
     if (!d.success) return;
     const strats = d.strategies || {};
+    const summary = d.summary || {};
     const names  = Object.keys(strats);
     if (!names.length) { document.getElementById('liveStats').innerHTML = '<div class="empty">No live data</div>'; return; }
     const html = names.map(n => {
@@ -769,24 +1154,37 @@ async function loadLiveStats() {
       return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid rgba(30,38,53,.5)">
         <div style="flex:1">
           <div style="font-size:13px;font-weight:600">${n}</div>
-          <div style="font-size:10px;color:var(--tx3)">${s.total||0} trades · ${wr.toFixed(1)}% win</div>
+          <div style="font-size:10px;color:var(--tx3)">${s.total||0} trades · ${wr.toFixed(1)}% win · Mem ${Number(s.avg_memory_score || 0).toFixed(0)} · Exec ${Number(s.avg_execution_quality || 0).toFixed(0)}</div>
         </div>
-        <div style="font-size:14px;font-weight:700;${s.pnl >= 0 ? 'color:var(--gr)' : 'color:var(--rd)'}">$${Number(s.pnl||0).toFixed(0)}</div>
+        <div style="text-align:right">
+          <div style="font-size:14px;font-weight:700;${s.pnl >= 0 ? 'color:var(--gr)' : 'color:var(--rd)'}">$${Number(s.pnl||0).toFixed(0)}</div>
+          <div style="font-size:10px;color:var(--tx3)">R ${Number(s.avg_rr_realized || 0).toFixed(2)} · Target ${(Number(s.target_hit_rate || 0) * 100).toFixed(0)}%</div>
+        </div>
       </div>`;
     }).join('');
     document.getElementById('liveStats').innerHTML = html;
 
     const timeline = d.timeline || [];
-    document.getElementById('timelineBadge').textContent = timeline.length ? (timeline.length + ' recent') : 'No recent trades';
+    document.getElementById('timelineBadge').textContent = timeline.length
+      ? (`${timeline.length} recent · Exec ${Number(summary.avg_execution_quality || 0).toFixed(0)}`)
+      : 'No recent trades';
     if(!timeline.length){
       document.getElementById('recentTimeline').innerHTML = '<div class="empty">No recent live strategy outcomes</div>';
       return;
     }
     document.getElementById('recentTimeline').innerHTML = timeline.slice(0, 8).map((t) => {
       const pnl = Number(t.pnl || 0);
+      const flags = [
+        t.premature_stop ? 'premature stop' : '',
+        t.target_miss ? 'target missed' : '',
+        t.late_entry ? 'late entry' : '',
+      ].filter(Boolean).slice(0, 2).join(' · ');
       return `<div class="timeline-row">
         <div class="timeline-asset">${t.asset || '—'}</div>
-        <div class="timeline-meta">${t.strategy || 'unknown'} · ${t.direction || '—'} · conf ${(Number(t.conf || 0) * 100).toFixed(0)}%</div>
+        <div class="timeline-meta">
+          <div>${t.strategy || 'unknown'} · ${t.direction || '—'} · conf ${(Number(t.conf || 0) * 100).toFixed(0)}%</div>
+          <div style="font-size:10px;color:var(--tx3)">Mem ${Number(t.memory_score || 0).toFixed(0)} · Exec ${Number(t.execution_quality_score || 0).toFixed(0)} · R ${Number(t.rr_realized || 0).toFixed(2)}${flags ? ' · ' + flags : ''}</div>
+        </div>
         <div class="timeline-pnl ${pnl >= 0 ? 'gn' : 'rd'}">${formatCompactUsd(pnl)}</div>
       </div>`;
     }).join('');

@@ -19,6 +19,40 @@ DEFAULT_RISK_PER_TRADE = 0.01 # 1% of balance risked per trade (backtest only)
 # Backtest keeps % risk for comparative analysis — actual P&L will differ from live
 
 
+def resolve_execution_profile(
+    *,
+    asset: str = "",
+    category: str = "",
+    commission: Optional[float] = None,
+    slippage: Optional[float] = None,
+    risk_per_trade: Optional[float] = None,
+    execution_profile: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    profile = {
+        "commission": float(DEFAULT_COMMISSION),
+        "slippage": float(DEFAULT_SLIPPAGE),
+        "risk_per_trade": float(DEFAULT_RISK_PER_TRADE),
+    }
+    try:
+        from config.config import get_backtest_execution_profile
+
+        profile.update(get_backtest_execution_profile(category))
+    except Exception:
+        logger.debug("[BacktestV2] Falling back to built-in execution defaults")
+
+    if execution_profile:
+        for key in ("commission", "slippage", "risk_per_trade"):
+            if execution_profile.get(key) is not None:
+                profile[key] = float(execution_profile[key])
+    if commission is not None:
+        profile["commission"] = float(commission)
+    if slippage is not None:
+        profile["slippage"] = float(slippage)
+    if risk_per_trade is not None:
+        profile["risk_per_trade"] = float(risk_per_trade)
+    return profile
+
+
 @dataclass
 class BacktestResult:
     """Complete results from a single backtest run."""
@@ -79,16 +113,29 @@ class BacktestEngineV2:
         self,
         strategy,
         initial_balance:  float = 10_000.0,
-        commission:       float = DEFAULT_COMMISSION,
-        slippage:         float = DEFAULT_SLIPPAGE,
-        risk_per_trade:   float = DEFAULT_RISK_PER_TRADE,
+        commission:       Optional[float] = None,
+        slippage:         Optional[float] = None,
+        risk_per_trade:   Optional[float] = None,
         min_bars_warmup:  int   = 50,
+        asset:            str   = "",
+        category:         str   = "",
+        execution_profile: Optional[Dict[str, float]] = None,
     ) -> None:
         self.strategy         = strategy
         self.initial_balance  = initial_balance
-        self.commission       = commission
-        self.slippage         = slippage
-        self.risk_per_trade   = risk_per_trade
+        self.asset            = asset
+        self.category         = category
+        self.execution_profile = resolve_execution_profile(
+            asset=asset,
+            category=category,
+            commission=commission,
+            slippage=slippage,
+            risk_per_trade=risk_per_trade,
+            execution_profile=execution_profile,
+        )
+        self.commission       = float(self.execution_profile["commission"])
+        self.slippage         = float(self.execution_profile["slippage"])
+        self.risk_per_trade   = float(self.execution_profile["risk_per_trade"])
         self.min_bars_warmup  = min_bars_warmup
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -101,6 +148,11 @@ class BacktestEngineV2:
         df = self._prepare(df)
         if df is None or len(df) < self.min_bars_warmup + 10:
             return self._empty_result()
+        if hasattr(self.strategy, "bind_backtest_window"):
+            try:
+                self.strategy.bind_backtest_window(df)
+            except Exception as exc:
+                logger.debug(f"[BacktestV2] bind_backtest_window failed: {exc}")
 
         balance      = self.initial_balance
         position     = None       # open position dict or None
@@ -172,6 +224,13 @@ class BacktestEngineV2:
     def _prepare(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         df = df.copy()
         df.columns = [c.lower() for c in df.columns]
+        if isinstance(df.index, pd.DatetimeIndex) and "timestamp" not in df.columns:
+            df = df.reset_index()
+            first_col = df.columns[0]
+            if first_col != "timestamp":
+                df = df.rename(columns={first_col: "timestamp"})
+        elif "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
         required = {"open", "high", "low", "close", "volume"}
         if not required.issubset(df.columns):
             logger.warning(f"[BacktestV2] Missing columns: {required - set(df.columns)}")
@@ -179,7 +238,10 @@ class BacktestEngineV2:
         for col in required:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna(subset=list(required))
-        df = df.reset_index(drop=True)
+        if "timestamp" in df.columns:
+            df = df.dropna(subset=["timestamp"]).reset_index(drop=True)
+        else:
+            df = df.reset_index(drop=True)
         return df
 
     def _check_exit(self, position: Dict, bar) -> tuple:

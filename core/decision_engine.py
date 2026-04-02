@@ -7,7 +7,13 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from config.config import MIN_CONFIDENCE_SCORE, MIN_FINAL_CONFIDENCE, SPREAD_THRESHOLDS, get_trading_timeframe
+from config.config import (
+    MAX_SIGNAL_CONFIDENCE,
+    MIN_CONFIDENCE_SCORE,
+    MIN_FINAL_CONFIDENCE,
+    SPREAD_THRESHOLDS,
+    get_trading_timeframe,
+)
 from core.asset_profiles import get_profile
 from core.signal import Signal
 from core.signal_journal import INFO, KILLED, PASS
@@ -28,8 +34,6 @@ STEP_INTELLIGENCE = 2
 STEP_EXECUTION = 3
 STEP_POLICY = 4
 STEP_GOVERNANCE = 5
-
-_SESSION_BOOST = {"europe": 0.04, "us": 0.03, "asia": 0.02}
 _NYSE_FIXED_HOLIDAYS = frozenset({
     (1, 1),
     (5, 1),
@@ -183,11 +187,13 @@ class SignalDecisionEngine:
                 return self._finalize(signal, context)
             if not self._apply_intelligence_review(signal, context):
                 return self._finalize(signal, context)
-            if not self._apply_execution_review(signal, context):
+            if not self._apply_memory_review(signal, context):
                 return self._finalize(signal, context)
             if not self._apply_policy_review(signal, context):
                 return self._finalize(signal, context)
             if not self._apply_governance_review(signal, context):
+                return self._finalize(signal, context)
+            if not self._apply_execution_review(signal, context):
                 return self._finalize(signal, context)
         except Exception as exc:
             logger.error(f"[DecisionEngine] Fatal evaluation error: {exc}", exc_info=True)
@@ -210,21 +216,24 @@ class SignalDecisionEngine:
         data: Dict[str, Any] = {}
         notes: List[str] = []
 
-        if signal.confidence < MIN_CONFIDENCE_SCORE:
-            signal.reduce(0.08)
+        seed_below_floor = signal.confidence < MIN_CONFIDENCE_SCORE
+        signal.metadata["seed_below_floor"] = seed_below_floor
+        data["seed_below_floor"] = seed_below_floor
+        if seed_below_floor:
             notes.append(f"seed_conf<{MIN_CONFIDENCE_SCORE:.2f}")
 
         ml_pred = context.get("ml_prediction")
         ml_conf = float(context.get("ml_confidence", 0.0) or 0.0)
+        signal.metadata["ml_confidence"] = round(ml_conf, 4)
         if ml_pred is not None and ml_conf > 0.1:
             signal.metadata["ml_prediction_real"] = True
+            signal.metadata["ml_prediction"] = round(float(ml_pred), 4)
             ml_direction = "BUY" if ml_pred > 0.5 else "SELL"
-            if ml_direction == signal.direction:
-                signal.boost(0.05)
-                notes.append("ml_agrees")
-            else:
-                signal.reduce(0.05)
-                notes.append("ml_disagrees")
+            signal.metadata["ml_direction"] = ml_direction
+            signal.metadata["ml_direction_agrees"] = ml_direction == signal.direction
+            data["ml_direction"] = ml_direction
+            data["ml_direction_agrees"] = ml_direction == signal.direction
+            notes.append("ml_agrees" if ml_direction == signal.direction else "ml_disagrees")
         else:
             signal.metadata["ml_prediction_real"] = False
             notes.append("ml_unavailable")
@@ -238,10 +247,8 @@ class SignalDecisionEngine:
                     rr = reward / risk
                     signal.risk_reward = round(rr, 2)
                     if rr < 1.2:
-                        signal.reduce(0.08)
                         notes.append("low_rr")
                     elif rr >= 3.0:
-                        signal.boost(0.06)
                         notes.append("excellent_rr")
             except Exception:
                 pass
@@ -253,12 +260,10 @@ class SignalDecisionEngine:
             try:
                 spread_pct = float(spread) / float(signal.entry_price)
                 if spread_pct > 0.005:
-                    penalty = min(0.15, spread_pct * 10)
-                    signal.reduce(penalty)
-                    signal.metadata["spread_penalty"] = round(penalty, 4)
                     notes.append("spread_penalty")
             except Exception:
                 pass
+        signal.metadata["observed_spread_pct"] = round(spread_pct, 6)
         data["spread_pct"] = round(spread_pct, 5)
 
         micro = context.get("market_microstructure") or {}
@@ -269,24 +274,89 @@ class SignalDecisionEngine:
                 aligned_micro = micro_score if signal.direction == "BUY" else -micro_score
                 signal.metadata["market_microstructure"] = dict(micro)
                 signal.metadata["microstructure_score"] = round(micro_score, 3)
+                signal.metadata["stop_hunt_risk"] = round(stop_hunt_risk, 3)
+                signal.metadata["microstructure_alignment"] = round(aligned_micro, 3)
                 data["microstructure_score"] = round(micro_score, 3)
+                data["stop_hunt_risk"] = round(stop_hunt_risk, 3)
                 if stop_hunt_risk >= 0.45:
-                    penalty = min(0.05, stop_hunt_risk * 0.06)
-                    signal.reduce(penalty)
                     notes.append("stop_hunt_penalty")
                 if aligned_micro >= 0.20:
-                    signal.boost(min(0.03, aligned_micro * 0.05))
                     notes.append("micro_boost")
                 elif aligned_micro <= -0.20:
-                    signal.reduce(min(0.05, abs(aligned_micro) * 0.06))
                     notes.append("micro_penalty")
+            except Exception:
+                pass
+
+        structure = context.get("market_structure") or {}
+        if isinstance(structure, dict) and structure:
+            structure_bias = str(structure.get("structure_bias", "neutral")).lower()
+            alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
+            setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
+            pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
+            breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
+            volatility_state = str(structure.get("volatility_state", "unknown"))
+            distance_to_support = structure.get("distance_to_support")
+            distance_to_resistance = structure.get("distance_to_resistance")
+
+            signal.metadata["market_structure"] = dict(structure)
+            signal.metadata["structure_bias"] = structure_bias
+            signal.metadata["alignment_score"] = round(alignment_score, 4)
+            signal.metadata["setup_quality"] = round(setup_quality, 4)
+            signal.metadata["volatility_state"] = volatility_state
+
+            direction_sign = 1 if signal.direction == "BUY" else -1
+            dominant_setup = breakout_score if abs(breakout_score) >= abs(pullback_score) else pullback_score
+            signal.metadata["dominant_setup_score"] = round(dominant_setup, 4)
+            signal.metadata["setup_direction_alignment"] = round(dominant_setup * direction_sign, 4)
+            structure_data = {
+                "structure_bias": structure_bias,
+                "alignment_score": round(alignment_score, 4),
+                "setup_quality": round(setup_quality, 4),
+                "pullback_score": round(pullback_score, 4),
+                "breakout_score": round(breakout_score, 4),
+                "volatility_state": volatility_state,
+                "distance_to_support": distance_to_support,
+                "distance_to_resistance": distance_to_resistance,
+            }
+            data["market_structure"] = structure_data
+
+            if structure_bias in {"buy", "sell"}:
+                if (structure_bias == "buy" and signal.direction == "BUY") or (
+                    structure_bias == "sell" and signal.direction == "SELL"
+                ):
+                    notes.append("structure_aligned")
+                elif alignment_score >= 0.45:
+                    notes.append("structure_conflict")
+
+            if dominant_setup * direction_sign >= 0.45:
+                notes.append("setup_confirmed")
+            elif dominant_setup * direction_sign <= -0.45:
+                notes.append("setup_conflict")
+
+            if setup_quality < 0.25:
+                notes.append("weak_setup_quality")
+
+            if volatility_state == "extreme":
+                notes.append("extreme_volatility")
+            elif volatility_state == "expansion" and dominant_setup * direction_sign >= 0.35:
+                notes.append("volatility_support")
+
+            try:
+                if signal.direction == "BUY" and distance_to_resistance is not None and float(distance_to_resistance) <= 0.0025:
+                    notes.append("near_resistance")
+                if signal.direction == "SELL" and distance_to_support is not None and float(distance_to_support) <= 0.0025:
+                    notes.append("near_support")
             except Exception:
                 pass
 
         profile = get_profile(signal.asset)
         timeframe = context.get("timeframe") or get_trading_timeframe(profile.category)
         df = context.get("price_data")
-        regime = _detect_regime(df, timeframe=timeframe) if df is not None else context.get("regime", "unknown")
+        regime = (
+            str(structure.get("regime"))
+            if isinstance(structure, dict) and structure.get("regime")
+            else _detect_regime(df, timeframe=timeframe) if df is not None else context.get("regime", "unknown")
+        )
         signal.metadata["regime"] = regime
         data["regime"] = regime
 
@@ -302,22 +372,17 @@ class SignalDecisionEngine:
         allowed = {"BUY": {"trending_up", "ranging", "unknown"}, "SELL": {"trending_down", "ranging", "unknown"}}.get(signal.direction, {"unknown"})
         if regime in ("trending_up", "trending_down"):
             if (signal.direction == "BUY" and regime == "trending_up") or (signal.direction == "SELL" and regime == "trending_down"):
-                signal.boost(0.06)
                 notes.append("trend_aligned")
         if regime == "volatile":
-            signal.reduce(0.12)
             notes.append("volatile")
         elif regime not in allowed:
-            signal.reduce(0.12)
             notes.append("regime_conflict")
 
         if profile.use_order_flow:
             direction_sign = 1 if signal.direction == "BUY" else -1
             if imbalance * direction_sign > 0.30:
-                signal.boost(0.02)
                 notes.append("orderflow_support")
             elif imbalance * direction_sign < -0.30:
-                signal.reduce(0.02)
                 notes.append("orderflow_conflict")
 
         session = _active_session()
@@ -350,7 +415,18 @@ class SignalDecisionEngine:
         impact = news.get("impact", "")
         direction = news.get("direction", "")
         mins = news.get("mins_to", 0)
+        signal.metadata["news_state"] = news_state
+        signal.metadata["news_event"] = event_name
+        signal.metadata["news_impact"] = impact
+        signal.metadata["news_direction"] = direction
+        signal.metadata["news_mins_to"] = mins
         data["news_state"] = news_state
+        data["news"] = {
+            "event": event_name,
+            "impact": impact,
+            "direction": direction,
+            "mins_to": mins,
+        }
 
         if news_state == "pre" and impact == "HIGH":
             reason = f"HIGH impact event in {mins}min: {event_name}"
@@ -381,23 +457,16 @@ class SignalDecisionEngine:
             return False
 
         if news_state == "pre" and impact == "MEDIUM":
-            signal.reduce(0.05)
             notes.append("medium_event_pre")
         if news_state == "post" and direction:
             if direction == signal.direction:
-                boost = 0.08 if impact == "HIGH" else 0.04
-                signal.boost(boost)
-                signal.metadata["news_boost"] = f"+{boost} post-{event_name}"
+                signal.metadata["news_alignment"] = "aligned"
                 notes.append("post_event_aligned")
             else:
-                signal.reduce(0.06)
+                signal.metadata["news_alignment"] = "conflict"
                 notes.append("post_event_conflict")
 
-        session_boost = _SESSION_BOOST.get(session, 0.0)
-        if session_boost:
-            signal.boost(session_boost)
-            notes.append(f"session_boost={session_boost:.2f}")
-
+        signal.metadata["market_review_notes"] = list(notes)
         data["notes"] = notes
         signal.step_reached = STEP_MARKET
         signal.journal.record(
@@ -440,7 +509,36 @@ class SignalDecisionEngine:
         spread = context.get("spread")
         category = context.get("category", signal.category or "forex")
         data: Dict[str, Any] = {}
-        max_spread_pct = SPREAD_THRESHOLDS.get(category, 0.002)
+        notes: List[str] = []
+        engine = context.get("engine")
+        adaptive_policy: Dict[str, Any] = {}
+        try:
+            from services.adaptive_policy_service import get_service as get_adaptive_policy_service
+
+            adaptive_policy = get_adaptive_policy_service().get_thresholds(
+                asset=signal.asset,
+                category=category,
+                context=context,
+                signal=signal,
+                state=getattr(engine, "state", None) if engine else None,
+            )
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Adaptive policy unavailable for {signal.asset}: {exc}")
+
+        max_spread_pct = float(adaptive_policy.get("max_spread", SPREAD_THRESHOLDS.get(category, 0.002)) or 0.002)
+        min_final_conf = float(adaptive_policy.get("min_final_confidence", MIN_FINAL_CONFIDENCE) or MIN_FINAL_CONFIDENCE)
+        adaptive_risk_multiplier = float(adaptive_policy.get("risk_multiplier", 1.0) or 1.0)
+        adaptive_min_rr = float(adaptive_policy.get("min_rr", 0.0) or 0.0)
+        if adaptive_policy:
+            signal.metadata["adaptive_policy"] = dict(adaptive_policy)
+            data["adaptive_policy"] = {
+                "min_final_confidence": round(min_final_conf, 4),
+                "max_spread": round(max_spread_pct, 6),
+                "risk_multiplier": round(adaptive_risk_multiplier, 4),
+                "cooldown_minutes": int(adaptive_policy.get("cooldown_minutes", 0) or 0),
+                "min_rr": round(adaptive_min_rr, 2),
+                "notes": list(adaptive_policy.get("notes") or []),
+            }
 
         df = context.get("price_data")
         if df is not None and len(df) >= 20:
@@ -454,20 +552,25 @@ class SignalDecisionEngine:
                 recent_avg_range = (high.iloc[-20:-1] - low.iloc[-20:-1]).mean()
                 if recent_avg_range > 0:
                     volatility_ratio = current_range / recent_avg_range
+                    signal.metadata["volatility_ratio"] = round(float(volatility_ratio), 4)
                     data["volatility_ratio"] = round(float(volatility_ratio), 3)
-                    if volatility_ratio < 0.6:
-                        signal.boost(0.02)
+                    if volatility_ratio < 0.60:
+                        notes.append("compressed_volatility")
+                    elif volatility_ratio > 1.40:
+                        notes.append("expanded_volatility")
                 if entry_range > 0:
                     if signal.direction == "BUY":
                         proximity = (signal.entry_price - recent_low) / entry_range
+                        signal.metadata["support_proximity"] = round(float(proximity), 4)
                         data["support_proximity"] = round(float(proximity), 3)
                         if proximity < 0.15:
-                            signal.boost(0.025)
+                            notes.append("buy_near_support")
                     else:
                         proximity = (recent_high - signal.entry_price) / entry_range
+                        signal.metadata["resistance_proximity"] = round(float(proximity), 4)
                         data["resistance_proximity"] = round(float(proximity), 3)
                         if proximity < 0.15:
-                            signal.boost(0.025)
+                            notes.append("sell_near_resistance")
             except Exception as exc:
                 logger.debug(f"[DecisionEngine] Entry quality check failed for {signal.asset}: {exc}")
 
@@ -488,15 +591,39 @@ class SignalDecisionEngine:
                         data=data,
                     )
                     return False
-                liq_penalty = liquidity / max_spread_pct * 0.05
-                signal.reduce(liq_penalty)
                 signal.metadata["liquidity_proxy"] = round(liquidity, 6)
-                data["liq_penalty"] = round(liq_penalty, 5)
+                if liquidity > max_spread_pct * 0.75:
+                    notes.append("spread_heavy")
             except Exception as exc:
                 logger.debug(f"[DecisionEngine] Spread gate failed for {signal.asset}: {exc}")
 
-        if signal.confidence <= MIN_FINAL_CONFIDENCE:
-            reason = f"final conf {signal.confidence:.3f} below floor {MIN_FINAL_CONFIDENCE}"
+        if adaptive_min_rr > 0 and float(signal.risk_reward or 0.0) < adaptive_min_rr:
+            rr_gap = max(0.0, adaptive_min_rr - float(signal.risk_reward or 0.0))
+            signal.metadata["adaptive_rr_gap"] = round(rr_gap, 4)
+            data["adaptive_rr_gap"] = round(rr_gap, 4)
+            notes.append("rr_below_policy")
+
+        signal.metadata["execution_review_notes"] = list(notes)
+        data["notes"] = list(notes)
+
+        try:
+            from services.signal_scorecard import get_service as get_signal_scorecard_service
+
+            scorecard = get_signal_scorecard_service().score(signal, context)
+            signal.confidence = float(scorecard.get("final_score", signal.confidence) or signal.confidence)
+            signal.metadata["scorecard"] = scorecard
+            signal.metadata["live_validation_profile"] = dict(scorecard.get("live_validation") or {})
+            data["scorecard"] = {
+                "raw_score": scorecard.get("raw_score"),
+                "reliability": scorecard.get("reliability"),
+                "breakdown": dict(scorecard.get("breakdown") or {}),
+                "notes": list(scorecard.get("notes") or []),
+            }
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Signal scorecard unavailable for {signal.asset}: {exc}")
+
+        if signal.confidence <= min_final_conf:
+            reason = f"final score {signal.confidence:.3f} below floor {min_final_conf:.3f}"
             signal.kill(reason, STEP_EXECUTION)
             signal.journal.record(
                 layer=STEP_EXECUTION,
@@ -509,18 +636,21 @@ class SignalDecisionEngine:
             )
             return False
 
-        engine = context.get("engine")
         if engine and getattr(engine, "_risk_manager", None):
             try:
+                sizing_confidence = min(MAX_SIGNAL_CONFIDENCE, max(MIN_CONFIDENCE_SCORE, signal.confidence * adaptive_risk_multiplier))
                 size = engine._risk_manager.calculate_position_size(
                     entry_price=signal.entry_price,
                     stop_loss=signal.stop_loss,
                     category=signal.category,
+                    confidence=sizing_confidence,
                     asset=signal.asset,
                 )
                 signal.position_size = size
                 signal.risk_parameters["position_size"] = size
+                signal.risk_parameters["adaptive_risk_multiplier"] = round(adaptive_risk_multiplier, 4)
                 data["position_size"] = round(size, 6)
+                data["sizing_confidence"] = round(sizing_confidence, 4)
             except Exception as exc:
                 logger.debug(f"[DecisionEngine] Position sizing failed for {signal.asset}: {exc}")
 
@@ -542,10 +672,63 @@ class SignalDecisionEngine:
             layer=STEP_EXECUTION,
             name="execution",
             decision=PASS,
-            reason=f"final_conf={signal.confidence:.3f} size={signal.position_size:.4f} tp_levels={len(signal.take_profit_levels)}",
+            reason=f"final_score={signal.confidence:.3f} size={signal.position_size:.4f} tp_levels={len(signal.take_profit_levels)}",
             conf_before=conf_before,
             conf_after=signal.confidence,
             data=data,
+        )
+        return True
+
+    def _apply_memory_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
+        conf_before = signal.confidence
+        try:
+            from services.setup_memory_service import get_service as get_setup_memory_service
+
+            memory = get_setup_memory_service().score_setup(signal, context)
+        except Exception as exc:
+            signal.journal.record(
+                layer=0,
+                name="memory",
+                decision=INFO,
+                reason=f"setup memory unavailable: {exc}",
+                conf_before=conf_before,
+                conf_after=signal.confidence,
+            )
+            return True
+
+        fingerprint = memory.get("fingerprint") or {}
+        signal.metadata["setup_memory_fingerprint"] = fingerprint
+        signal.metadata["setup_memory"] = memory
+        signal.metadata["memory_score"] = memory.get("memory_score")
+        signal.metadata["memory_edge"] = memory.get("memory_edge")
+        signal.metadata["memory_win_rate"] = memory.get("win_rate")
+        signal.metadata["memory_similarity"] = memory.get("avg_similarity")
+        signal.metadata["memory_sample_count"] = memory.get("sample_count")
+
+        adjustment = float(memory.get("adjustment", 0.0) or 0.0)
+        reason = (
+            f"memory score={float(memory.get('memory_score', 50.0)):.1f} "
+            f"edge={float(memory.get('memory_edge', 0.0)):+.3f} "
+            f"samples={int(memory.get('sample_count', 0) or 0)}"
+        )
+        signal.journal.record(
+            layer=0,
+            name="memory",
+            decision=INFO,
+            reason=reason,
+            conf_before=conf_before,
+            conf_after=signal.confidence,
+            data={
+                "memory_score": memory.get("memory_score"),
+                "memory_edge": memory.get("memory_edge"),
+                "memory_win_rate": memory.get("win_rate"),
+                "memory_similarity": memory.get("avg_similarity"),
+                "memory_sample_count": memory.get("sample_count"),
+                "same_asset_matches": memory.get("same_asset_matches"),
+                "adjustment": adjustment,
+                "notes": memory.get("notes", []),
+                "fingerprint": fingerprint,
+            },
         )
         return True
 
@@ -568,7 +751,11 @@ class SignalDecisionEngine:
         try:
             from ml.agent import agent as _agent
             policy_context = dict(context or {})
-            policy_context["signal_metadata"] = {**signal.metadata, "confidence": signal.confidence, "direction": signal.direction}
+            policy_context["signal_metadata"] = {
+                **signal.metadata,
+                "seed_candidate_score": signal.metadata.get("seed_candidate_score", signal.confidence),
+                "direction": signal.direction,
+            }
             result = _agent.decide(signal, policy_context)
             if result is None:
                 reason = signal.metadata.get("agent_rejection_reason", "Agent rejected signal")
@@ -587,19 +774,25 @@ class SignalDecisionEngine:
                     },
                 )
                 return False
+            policy_status = str(signal.metadata.get("agent_policy_status", "ok") or "ok")
             signal.metadata["policy_review_passed"] = True
             signal.step_reached = STEP_POLICY
+            if policy_status == "ok":
+                reason = f"policy accepted {signal.direction} (score={float(signal.metadata.get('agent_score', 0.0)):.3f})"
+            else:
+                reason = f"policy bypassed ({policy_status})"
             signal.journal.record(
                 layer=STEP_POLICY,
                 name="policy",
                 decision=PASS,
-                reason=f"policy accepted {signal.direction} (score={float(signal.metadata.get('agent_score', 0.0)):.3f})",
+                reason=reason,
                 conf_before=conf_before,
                 conf_after=signal.confidence,
                 data={
                     "agent_score": round(float(signal.metadata.get("agent_score", 0.0)), 4),
                     "agent_confidence": round(float(signal.metadata.get("agent_confidence", 0.0)), 4),
                     "agent_directional_edge": round(float(signal.metadata.get("agent_directional_edge", 0.0)), 4),
+                    "agent_policy_status": policy_status,
                     "final_confidence": round(signal.confidence, 4),
                 },
             )
@@ -641,6 +834,19 @@ class SignalDecisionEngine:
             return False
 
         try:
+            try:
+                from services.signal_scorecard import get_service as get_signal_scorecard_service
+
+                provisional_scorecard = get_signal_scorecard_service().score(signal, context)
+                signal.confidence = float(provisional_scorecard.get("final_score", signal.confidence) or signal.confidence)
+                signal.metadata["scorecard"] = provisional_scorecard
+                data["scorecard_preview"] = {
+                    "raw_score": provisional_scorecard.get("raw_score"),
+                    "reliability": provisional_scorecard.get("reliability"),
+                }
+            except Exception as exc:
+                logger.debug(f"[DecisionEngine] Signal scorecard preview unavailable for {signal.asset}: {exc}")
+
             from services.signal_governance import signal_governance
             verdict = signal_governance.evaluate(signal, context)
             signal.metadata["governance_validation"] = verdict
@@ -697,7 +903,7 @@ class SignalDecisionEngine:
             signal.kill_reason = "Forced survive via DEBUG_FORCE_SURVIVE"
 
         if signal.alive:
-            logger.info(f"[DecisionEngine] {signal.asset} accepted conf={signal.confidence:.3f} ({elapsed_ms:.0f}ms)")
+            logger.info(f"[DecisionEngine] {signal.asset} accepted score={signal.confidence:.3f} ({elapsed_ms:.0f}ms)")
         else:
             logger.debug(f"[DecisionEngine] {signal.asset} rejected at step {signal.step_reached}: {signal.kill_reason} ({elapsed_ms:.0f}ms)")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import gzip
 import io
 import inspect
@@ -17,6 +18,7 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 from flask_cors import CORS
 from functools import wraps
 import hashlib
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -68,7 +70,14 @@ app = Flask(
     template_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"),
     static_folder  =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"),
 )
-CORS(app, resources={r"/api/*": {"origins": ["localhost:5000"]}})  # FIX SEC-05: CORS now restricted
+try:
+    from config.config import DASHBOARD_CORS_ORIGINS, TRUST_PROXY_COUNT
+except Exception:
+    DASHBOARD_CORS_ORIGINS = ["http://localhost:5000"]
+    TRUST_PROXY_COUNT = 1
+
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=TRUST_PROXY_COUNT, x_proto=TRUST_PROXY_COUNT, x_host=TRUST_PROXY_COUNT)
+CORS(app, resources={r"/api/*": {"origins": DASHBOARD_CORS_ORIGINS}})
 
 # ── Flask Error Handlers ──────────────────────────────────────────────────────
 
@@ -118,6 +127,7 @@ def handle_api_error_exc(e):
 # ── FIX SEC-05: API Key Authentication & Rate Limiting ───────────────────────
 _DEVELOPMENT_MODE = False  # Will be set from env variable (bypass auth when true)
 _API_KEY_HASH = None  # Will be set from env variable
+_AUTH_CONFIG_ERROR = ""
 _SESSION_TOKENS: Dict[str, float] = {}  # {token: expiry_timestamp}
 _SESSION_TOKEN_LOCK = threading.Lock()
 _RATE_LIMIT_STORE: Dict[str, List[float]] = {}  # {ip: [req_times...]}
@@ -127,17 +137,20 @@ _SESSION_TOKEN_TTL = 3600  # 1 hour default
 
 def _init_api_key():
     """Initialize API key and session TTL from environment."""
-    global _API_KEY_HASH, _SESSION_TOKEN_TTL, _DEVELOPMENT_MODE
+    global _API_KEY_HASH, _SESSION_TOKEN_TTL, _DEVELOPMENT_MODE, _AUTH_CONFIG_ERROR
     try:
         from config.config import DASHBOARD_API_KEY, SESSION_TOKEN_TTL, DEVELOPMENT_MODE
         _DEVELOPMENT_MODE = DEVELOPMENT_MODE
+        _AUTH_CONFIG_ERROR = ""
         if _DEVELOPMENT_MODE:
             logger.warning("[dashboard] ⚠️ DEVELOPMENT MODE ENABLED — All API auth bypassed")
         elif DASHBOARD_API_KEY:
             _API_KEY_HASH = hashlib.sha256(DASHBOARD_API_KEY.encode()).hexdigest()
             logger.info("[dashboard] API key authentication enabled")
         else:
-            logger.warning("[dashboard] DASHBOARD_API_KEY not set — API in dev mode")
+            _AUTH_CONFIG_ERROR = "DASHBOARD_API_KEY is required when DEVELOPMENT_MODE=false"
+            _API_KEY_HASH = None
+            logger.critical(f"[dashboard] {_AUTH_CONFIG_ERROR}")
         _SESSION_TOKEN_TTL = SESSION_TOKEN_TTL
     except Exception as e:
         logger.warning(f"[dashboard] Failed to load API config: {e}")
@@ -154,11 +167,12 @@ def _check_api_auth(fn):
         # Explicit development mode: bypass auth entirely
         if _DEVELOPMENT_MODE:
             return fn(*args, **kwargs)
-        
-        # No API key configured: fallback to dev mode
+
+        if _AUTH_CONFIG_ERROR:
+            return jsonify({"success": False, "error": _AUTH_CONFIG_ERROR}), 503
+
         if not _API_KEY_HASH:
-            # Allow all requests without auth in dev mode
-            return fn(*args, **kwargs)
+            return jsonify({"success": False, "error": "Dashboard authentication unavailable"}), 503
         
         # Production mode: enforce authentication
         auth_header = request.headers.get("Authorization", "")
@@ -348,6 +362,29 @@ def _cache_set(key: str, value: Any, ttl: int = 30) -> None:
     _redis_cache_set(key, value, ttl)
 
 
+def _invalidate_cache_prefixes(*prefixes: str) -> None:
+    active_prefixes = [str(prefix or "") for prefix in prefixes if str(prefix or "").strip()]
+    if not active_prefixes:
+        return
+
+    with _cache_lock:
+        for key in list(_cache_store.keys()):
+            if any(key.startswith(prefix) for prefix in active_prefixes):
+                _cache_store.pop(key, None)
+
+    try:
+        from services.redis_pool import get_client as _get_redis_client
+
+        client = _get_redis_client()
+        if client is None:
+            return
+        for prefix in active_prefixes:
+            for cache_key in client.scan_iter(match=_cache_prefix + prefix + "*"):
+                client.delete(cache_key)
+    except Exception:
+        pass
+
+
 def _render_cached_template(template_name: str, ttl: int = 30) -> str:
     cache_key = f"html_template:{template_name}"
     cached = _cache_get(cache_key)
@@ -356,6 +393,97 @@ def _render_cached_template(template_name: str, ttl: int = 30) -> str:
     html = render_template(template_name)
     _cache_set(cache_key, html, ttl=ttl)
     return html
+
+
+def _interpret_sentiment_score(score: float) -> str:
+    if score > 0.4:
+        return "Strongly Bullish"
+    if score > 0.1:
+        return "Bullish"
+    if score > -0.1:
+        return "Neutral"
+    if score > -0.4:
+        return "Bearish"
+    return "Strongly Bearish"
+
+
+def _sentiment_bucket(score: float) -> str:
+    if score > 0.1:
+        return "bullish"
+    if score < -0.1:
+        return "bearish"
+    return "neutral"
+
+
+def _sentiment_component_label(name: str) -> str:
+    labels = {
+        "fear_greed": "Fear & Greed",
+        "vix": "VIX",
+        "news": "News",
+        "reddit": "Reddit",
+        "price_momentum": "Price Momentum",
+        "macro_event": "Macro Event",
+        "aaii": "AAII",
+        "put_call": "Put/Call",
+    }
+    key = str(name or "").strip().lower()
+    return labels.get(key, str(name or "").replace("_", " ").title())
+
+
+def _build_sentiment_context(
+    market_score: float,
+    news_score: float,
+    fear_greed_value: float,
+    market_interpretation: str,
+    article_count: int,
+) -> Dict[str, str]:
+    market_bucket = _sentiment_bucket(market_score)
+    news_bucket = _sentiment_bucket(news_score)
+
+    if fear_greed_value <= 25 and market_bucket == "bullish" and news_bucket == "bearish":
+        return {
+            "mode": "contrarian_rebound",
+            "display_label": "Bullish Rebound Bias",
+            "summary": (
+                "Macro sentiment is contrarian-bullish: extreme fear is being treated as a rebound signal "
+                "while recent headlines are still bearish."
+            ),
+        }
+    if fear_greed_value >= 75 and market_bucket == "bearish" and news_bucket == "bullish":
+        return {
+            "mode": "contrarian_fade",
+            "display_label": "Bearish Fade Risk",
+            "summary": (
+                "Macro sentiment is contrarian-bearish: extreme greed is being treated as an exhaustion signal "
+                "while recent headlines are still bullish."
+            ),
+        }
+    if market_bucket == news_bucket and market_bucket != "neutral":
+        return {
+            "mode": "aligned",
+            "display_label": market_interpretation,
+            "summary": (
+                f"Macro composite and headline tone are aligned on a {market_bucket} read "
+                f"across {article_count} recent articles."
+            ),
+        }
+    if market_bucket == "neutral" and news_bucket == "neutral":
+        return {
+            "mode": "neutral",
+            "display_label": "Neutral",
+            "summary": "Macro inputs and recent headlines are both broadly neutral right now.",
+        }
+    if article_count <= 0:
+        return {
+            "mode": "macro_only",
+            "display_label": market_interpretation,
+            "summary": "Macro composite is available, but there are not enough recent headlines to compare against it yet.",
+        }
+    return {
+        "mode": "mixed",
+        "display_label": f"{market_interpretation} / Mixed",
+        "summary": "Macro composite and headline tone are mixed, so treat the top-line score as context, not consensus.",
+    }
 
 
 def _unwrap_view(fn):
@@ -392,6 +520,43 @@ def _response_to_dict(resp: Any) -> Any:
     return resp
 
 
+def _run_with_timeout(
+    func,
+    *args,
+    timeout: float = 5.0,
+    default: Any = None,
+    label: str = "dashboard task",
+    **kwargs,
+):
+    """Run a non-request-bound callable with a hard wall-clock budget."""
+    pool = None
+    try:
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(func, *args, **kwargs)
+        try:
+            result = future.result(timeout=timeout)
+            pool.shutdown(wait=False, cancel_futures=True)
+            return result
+        except FuturesTimeout:
+            future.cancel()
+            logger.warning(f"[dashboard] {label} timed out after {timeout:.1f}s")
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception as exc:
+            logger.debug(f"[dashboard] {label} failed: {exc}")
+            pool.shutdown(wait=False, cancel_futures=True)
+    except Exception as exc:
+        logger.debug(f"[dashboard] {label} dispatch failed: {exc}")
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+
+    return copy.deepcopy(default)
+
+
 def _normalized_query_string() -> str:
     params = []
     for key in sorted(request.args.keys()):
@@ -411,6 +576,8 @@ def _get_api_cache_key() -> str:
 @app.before_request
 def _serve_cached_api_response() -> Optional[Response]:
     if request.method != 'GET' or not request.path.startswith('/api/'):
+        return None
+    if request.path == "/api/trade-history" or request.path.startswith("/api/trade-history/"):
         return None
     if request.args.get('no_cache'):
         return None
@@ -462,6 +629,8 @@ def _compress_response(response: Response) -> Response:
 @app.after_request
 def _set_api_cache_headers(response: Response) -> Response:
     if request.path.startswith("/api/") and request.method == "GET":
+        if request.path == "/api/trade-history" or request.path.startswith("/api/trade-history/"):
+            return _compress_response(response)
         response.headers.setdefault("Cache-Control", "public, max-age=5, stale-while-revalidate=30")
         if response.status_code == 200 and response.is_json:
             try:
@@ -721,6 +890,62 @@ def _wr(raw) -> float:
     v = float(raw or 0)
     return round(v * 100, 2) if v <= 1.0 else round(v, 2)
 
+
+def _extract_execution_feedback_fields(metadata: Any) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    feedback = meta.get("execution_feedback") if isinstance(meta.get("execution_feedback"), dict) else {}
+    policy = meta.get("execution_feedback_policy") if isinstance(meta.get("execution_feedback_policy"), dict) else {}
+    notes = feedback.get("notes") if isinstance(feedback.get("notes"), list) else []
+    policy_notes = policy.get("notes") if isinstance(policy.get("notes"), list) else []
+    return {
+        "execution_feedback": feedback,
+        "execution_feedback_policy": policy,
+        "execution_quality_score": float(
+            feedback.get("quality_score", meta.get("execution_quality_score", policy.get("avg_quality_score", 0.0))) or 0.0
+        ),
+        "execution_feedback_sample_count": int(
+            meta.get("execution_feedback_sample_count", policy.get("sample_count", feedback.get("sample_count", 0))) or 0
+        ),
+        "target_rr_multiplier": float(meta.get("target_rr_multiplier", policy.get("target_rr_multiplier", 1.0)) or 1.0),
+        "stop_buffer_multiplier": float(meta.get("stop_buffer_multiplier", policy.get("stop_buffer_multiplier", 1.0)) or 1.0),
+        "execution_notes": [str(n) for n in (notes or policy_notes)[:4]],
+        "exit_family": str(feedback.get("exit_family") or ""),
+        "rr_realized": float(feedback.get("rr_realized", 0.0) or 0.0),
+        "target_capture": float(feedback.get("target_capture", 0.0) or 0.0),
+        "premature_stop": bool(feedback.get("premature_stop")),
+        "late_entry": bool(feedback.get("late_entry")),
+        "target_miss": bool(feedback.get("target_miss")),
+    }
+
+
+def _extract_memory_fields(metadata: Any) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    memory = meta.get("setup_memory") if isinstance(meta.get("setup_memory"), dict) else {}
+    fingerprint = meta.get("setup_memory_fingerprint") if isinstance(meta.get("setup_memory_fingerprint"), dict) else {}
+    notes = memory.get("notes") if isinstance(memory.get("notes"), list) else []
+    return {
+        "setup_memory": memory,
+        "setup_memory_fingerprint": fingerprint,
+        "memory_score": float(meta.get("memory_score", memory.get("memory_score", 0.0)) or 0.0),
+        "memory_edge": float(meta.get("memory_edge", memory.get("memory_edge", 0.0)) or 0.0),
+        "memory_sample_count": int(meta.get("memory_sample_count", memory.get("sample_count", 0)) or 0),
+        "memory_win_rate": float(meta.get("memory_win_rate", memory.get("win_rate", 0.0)) or 0.0),
+        "memory_similarity": float(meta.get("memory_similarity", memory.get("avg_similarity", 0.0)) or 0.0),
+        "memory_notes": [str(n) for n in notes[:4]],
+        "memory_regime": str(fingerprint.get("regime") or ""),
+        "memory_setup_style": str(fingerprint.get("setup_style") or ""),
+    }
+
+
+def _extract_opportunity_fields(metadata: Any) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    breakdown = meta.get("opportunity_breakdown") if isinstance(meta.get("opportunity_breakdown"), dict) else {}
+    return {
+        "opportunity_score": float(meta.get("opportunity_score", 0.0) or 0.0),
+        "opportunity_rank": int(meta.get("opportunity_rank", 0) or 0),
+        "opportunity_breakdown": {str(k): float(v or 0.0) for k, v in breakdown.items()},
+    }
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
@@ -801,8 +1026,8 @@ def api_login():
     In dev mode (no API key configured), returns token without validation.
     In prod mode (API key configured), requires api_key in request body."""
     try:
-        # Development mode: no security needed, just issue a token
-        if not _API_KEY_HASH:
+        # Development mode only: no security needed, just issue a token
+        if _DEVELOPMENT_MODE and not _API_KEY_HASH:
             token = _generate_session_token()
             with _SESSION_TOKEN_LOCK:
                 _SESSION_TOKENS[token] = time.time() + _SESSION_TOKEN_TTL
@@ -813,13 +1038,18 @@ def api_login():
                 "expires_in": _SESSION_TOKEN_TTL,
                 "mode": "dev"
             })
+
+        if _AUTH_CONFIG_ERROR:
+            raise Forbidden(_AUTH_CONFIG_ERROR)
+
+        if not _API_KEY_HASH:
+            raise Forbidden("Dashboard authentication is not configured")
         
         # Production mode: validate API key from request body
-        body = validate_request_json(required_fields=["api_key"])
-        provided_key = body.get("api_key", "")
-        
+        body = request.get_json(silent=True) or {}
+        provided_key = str(body.get("api_key", "") or "").strip()
         if not provided_key:
-            raise BadRequest("api_key cannot be empty")
+            raise BadRequest("Dashboard API key is required", {"required_fields": ["api_key"]})
         
         # Validate key
         provided_hash = hashlib.sha256(provided_key.encode()).hexdigest()
@@ -960,34 +1190,60 @@ def api_command_center():
         # Slow external calls cached 5 minutes
         _cc_slow = _cache_get("cc_slow")
         if _cc_slow is None:
-            sent_score = 0.0; whale_count = 0; whale_recent = []
+            sent_score = 0.0
+            whale_count = 0
+            whale_recent = []
+            pool = None
             try:
+                from concurrent.futures import ThreadPoolExecutor, wait
+
+                pool = ThreadPoolExecutor(max_workers=2)
+                futures = {}
                 sa = _get_sent()
                 if sa:
-                    ms = sa.get_comprehensive_sentiment()
-                    sent_score = float(ms.get("score", 0)) if ms else 0.0
-            except Exception:
-                pass
-            try:
+                    futures[pool.submit(sa.get_comprehensive_sentiment)] = "sentiment"
                 mi = _get_market_intelligence()
                 if mi:
-                    whale_summary = mi.get_whale_dashboard_summary(
+                    futures[pool.submit(
+                        mi.get_whale_dashboard_summary,
                         min_value_usd=500_000,
                         hours=24,
                         recent_limit=5,
                         alert_limit=5,
-                    )
-                    whale_recent = whale_summary.get("recent", [])
-                    whale_count  = int(whale_summary.get("alert_count_24h", 0) or 0)
-            except Exception:
-                pass
+                    )] = "whales"
+
+                if futures:
+                    done, not_done = wait(tuple(futures.keys()), timeout=4.5)
+                    for future in done:
+                        kind = futures[future]
+                        try:
+                            payload = future.result()
+                            if kind == "sentiment":
+                                sent_score = float((payload or {}).get("score", 0) or 0)
+                            elif kind == "whales":
+                                whale_recent = list((payload or {}).get("recent", []) or [])
+                                whale_count = int((payload or {}).get("alert_count_24h", 0) or 0)
+                        except Exception as exc:
+                            logger.debug(f"[dashboard] command-center {kind} error: {exc}")
+                    for future in not_done:
+                        future.cancel()
+                    if not_done:
+                        logger.warning(f"[dashboard] command-center slow data timed out for {len(not_done)} task(s)")
+            except Exception as exc:
+                logger.debug(f"[dashboard] command-center slow data setup failed: {exc}")
+            finally:
+                if pool is not None:
+                    try:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
             _cc_slow = {
                 "sentiment_score":  round(sent_score, 3),
                 "whale_alerts_24h": whale_count,
                 "alert_count_24h":  whale_count,
                 "recent":           whale_recent,
             }
-            _cache_set("cc_slow", _cc_slow, ttl=600)
+            _cache_set("cc_slow", _cc_slow, ttl=600 if whale_recent or whale_count or sent_score else 45)
 
         # Fetch live prices for all open positions in one pass,
         # then use the same prices for both latest_signals and positions table.
@@ -1002,10 +1258,11 @@ def api_command_center():
         if assets:
             from concurrent.futures import ThreadPoolExecutor, wait
             max_workers = min(4, len(assets))
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            pool = ThreadPoolExecutor(max_workers=max_workers)
+            try:
                 futures = {pool.submit(_fetcher.get_real_time_price, asset, cat): asset
                            for asset, cat in assets}
-                done, not_done = wait(tuple(futures.keys()), timeout=8)
+                done, not_done = wait(tuple(futures.keys()), timeout=4)
                 for future in done:
                     asset = futures[future]
                     try:
@@ -1018,11 +1275,20 @@ def api_command_center():
                     for future in not_done:
                         future.cancel()
                     logger.debug(f"[dashboard] command-center live price fetch timed out for {len(not_done)} asset(s)")
+            finally:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
 
         # Build signals list (Active Signals panel)
         signals = []
         for p in positions[:6]:
             _cp2 = _live_prices.get(p.get("asset", ""), 0.0)
+            _meta = dict(p.get("metadata") or {})
+            _exec = _extract_execution_feedback_fields(_meta)
+            _memory = _extract_memory_fields(_meta)
+            _opportunity = _extract_opportunity_fields(_meta)
             signals.append({
                 "asset":         p.get("asset", ""),
                 "signal":        p.get("direction", p.get("signal", "BUY")),
@@ -1035,6 +1301,10 @@ def api_command_center():
                 "category":      p.get("category", ""),
                 "strategy_id":   p.get("strategy_id", ""),
                 "pnl":           float(p.get("pnl", 0) or 0),
+                "metadata":      _meta,
+                **_exec,
+                **_memory,
+                **_opportunity,
             })
 
         # Build enriched positions list (Open Positions table)
@@ -1056,6 +1326,10 @@ def api_command_center():
                     _live_pnl = _PS.pnl(_asset, _cat, _entry, _cp3, _size, _dir)
                 except Exception:
                     _live_pnl = (_cp3 - _entry) * _size if _dir == "BUY" else (_entry - _cp3) * _size
+            _meta = dict(p.get("metadata") or {})
+            _exec = _extract_execution_feedback_fields(_meta)
+            _memory = _extract_memory_fields(_meta)
+            _opportunity = _extract_opportunity_fields(_meta)
             enriched_positions.append({
                 "trade_id":      p.get("trade_id", ""),
                 "asset":         _asset,
@@ -1070,7 +1344,68 @@ def api_command_center():
                 "position_size": _size,
                 "strategy_id":   p.get("strategy_id", ""),
                 "open_time":     str(p.get("open_time", ""))[:16],
+                "risk_reward":   float(p.get("risk_reward", 0) or 0),
+                "metadata":      _meta,
+                **_exec,
+                **_memory,
+                **_opportunity,
             })
+
+        signal_quality = {
+            "avg_memory_score": round(
+                sum(float(s.get("memory_score", 0.0) or 0.0) for s in signals) / len(signals),
+                1,
+            ) if signals else 0.0,
+            "avg_execution_quality": round(
+                sum(float(s.get("execution_quality_score", 0.0) or 0.0) for s in signals) / len(signals),
+                1,
+            ) if signals else 0.0,
+            "avg_opportunity_score": round(
+                sum(float(s.get("opportunity_score", 0.0) or 0.0) for s in signals) / len(signals),
+                3,
+            ) if signals else 0.0,
+            "memory_ready_count": sum(1 for s in signals if int(s.get("memory_sample_count", 0) or 0) > 0),
+            "execution_ready_count": sum(1 for s in signals if int(s.get("execution_feedback_sample_count", 0) or 0) > 0),
+            "top_signal_asset": (
+                max(
+                    signals,
+                    key=lambda item: (
+                        float(item.get("opportunity_score", 0.0) or 0.0),
+                        float(item.get("confidence", 0.0) or 0.0),
+                    ),
+                ).get("asset", "")
+                if signals else ""
+            ),
+        }
+        top_opportunities = _cache_get("cc_top_opportunities")
+        if top_opportunities is None:
+            top_opportunities = (
+                _run_with_timeout(
+                    core.get_top_ranked_opportunities,
+                    limit=5,
+                    timeout=2.5,
+                    default=[],
+                    label="command-center top opportunities",
+                )
+                if core and hasattr(core, "get_top_ranked_opportunities")
+                else []
+            )
+            _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
+
+        weak_positions = _cache_get("cc_weak_positions")
+        if weak_positions is None:
+            weak_positions = (
+                _run_with_timeout(
+                    core.get_weak_positions,
+                    limit=5,
+                    timeout=2.5,
+                    default=[],
+                    label="command-center weak positions",
+                )
+                if core and hasattr(core, "get_weak_positions")
+                else []
+            )
+            _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
 
         return jsonify({
             "success":          True,
@@ -1088,6 +1423,9 @@ def api_command_center():
             "alert_count_24h":  _cc_slow["alert_count_24h"],
             "recent":           _cc_slow["recent"],
             "latest_signals":   signals,
+            "signal_quality":   signal_quality,
+            "top_opportunities": top_opportunities,
+            "weak_positions":   weak_positions,
             "positions":        enriched_positions,
             "timestamp":        datetime.now().isoformat(),
         })
@@ -1111,6 +1449,10 @@ def api_signals_live():
 
         if core:
             for p in core.get_positions():
+                _meta = dict(p.get("metadata") or {})
+                _exec = _extract_execution_feedback_fields(_meta)
+                _memory = _extract_memory_fields(_meta)
+                _opportunity = _extract_opportunity_fields(_meta)
                 d = (p.get("direction") or p.get("signal", "BUY")).upper()
                 c = float(p.get("confidence", 0))
                 if filt == "buy"  and d != "BUY":  continue
@@ -1141,8 +1483,11 @@ def api_signals_live():
                     "pnl":           float(p.get("pnl", 0)),
                     "market_open":   is_market_open_for_asset(p.get("asset", ""))[0],
                     "generated_at":  str(p.get("open_time", ""))[:16],
-                    "metadata":      p.get("metadata", {}),
+                    "metadata":      _meta,
                     "step_reached": p.get("step_reached", 0),
+                    **_exec,
+                    **_memory,
+                    **_opportunity,
                 })
         else:
             with _sig_lock:
@@ -1151,7 +1496,16 @@ def api_signals_live():
             if filt == "buy":    active = [s for s in active if s.get("signal") == "BUY"]
             elif filt == "sell": active = [s for s in active if s.get("signal") == "SELL"]
             elif filt == "high": active = [s for s in active if s.get("confidence", 0) >= 0.70]
-            signals = active
+            signals = []
+            for s in active:
+                _meta = dict(s.get("metadata") or {})
+                signals.append({
+                    **s,
+                    "metadata": _meta,
+                    **_extract_execution_feedback_fields(_meta),
+                    **_extract_memory_fields(_meta),
+                    **_extract_opportunity_fields(_meta),
+                })
 
         buys     = sum(1 for s in signals if s.get("signal") == "BUY")
         sells    = sum(1 for s in signals if s.get("signal") == "SELL")
@@ -1316,7 +1670,8 @@ def api_market_heatmap():
         results = []
         expected_assets = sum(1 for _, cat in ALL_ASSETS if not _is_market_weekend(cat))
         max_workers = min(8, len(ALL_ASSETS))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {pool.submit(_fetch_one, ac): ac for ac in ALL_ASSETS}
             done, not_done = wait(futures, timeout=25)
             for r in done:
@@ -1329,6 +1684,11 @@ def api_market_heatmap():
                 logger.warning(f"[Heatmap] timeout fetching {len(not_done)} assets: {[futures[f] for f in not_done]}")
                 for fut in not_done:
                     fut.cancel()
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
         results.sort(key=lambda x: x["change_pct"], reverse=True)
         payload = {
@@ -1380,7 +1740,8 @@ def api_correlation_matrix():
 
         closes: Dict[str, Any] = {}
         # Use 6 workers — fewer threads avoids throttling while still fetching cached data in parallel
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        pool = ThreadPoolExecutor(max_workers=6)
+        try:
             futures = {pool.submit(_fetch_close, a): a for a in assets}
             done, not_done = wait(futures, timeout=30)
             for future in done:
@@ -1393,6 +1754,11 @@ def api_correlation_matrix():
                 logger.warning(f"[Correlation] timeout fetching {len(not_done)} assets: {[futures[f] for f in not_done]}")
                 for fut in not_done:
                     fut.cancel()
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
         if len(closes) < 2:
             return jsonify({"success": False, "error": "Not enough price data — try again in 30s"})
@@ -1508,13 +1874,7 @@ def api_ai_predictions_overview():
     if cached:
         return jsonify(cached)
 
-    acc_resp = _call_view(api_accuracy)
-    sig_resp = _call_view(api_signals_live)
-
-    acc_data = acc_resp.get_json() if hasattr(acc_resp, 'get_json') else json.loads(acc_resp.get_data(as_text=True))
-    sig_data = sig_resp.get_json() if hasattr(sig_resp, 'get_json') else json.loads(sig_resp.get_data(as_text=True))
-
-    accuracy = acc_data.get("data") if acc_data.get("success") else {
+    default_accuracy = {
         "by_horizon": {
             "1H":  {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
             "4H":  {"total": 0, "correct": 0, "accuracy_pct": 0, "avg_move_pct": 0},
@@ -1523,11 +1883,85 @@ def api_ai_predictions_overview():
         "by_asset": {}, "recent": [], "days_back": days,
     }
 
+    accuracy = (
+        _run_with_timeout(
+            _pred_tracker.get_accuracy_stats,
+            days_back=days,
+            timeout=4.0,
+            default=default_accuracy,
+            label="ai accuracy overview",
+        )
+        if _pred_tracker
+        else default_accuracy
+    )
+
+    sig_resp = _call_view(api_signals_live)
+    sig_data = sig_resp.get_json() if hasattr(sig_resp, 'get_json') else json.loads(sig_resp.get_data(as_text=True))
+
     signal_list = sig_data.get("signals") if sig_data.get("success") else []
+    live_quality = {
+        "signal_count": len(signal_list),
+        "avg_confidence": round(
+            sum(float(s.get("confidence", 0.0) or 0.0) for s in signal_list) / len(signal_list) * 100.0,
+            1,
+        ) if signal_list else 0.0,
+        "avg_memory_score": round(
+            sum(float(s.get("memory_score", 0.0) or 0.0) for s in signal_list) / len(signal_list),
+            1,
+        ) if signal_list else 0.0,
+        "avg_execution_quality": round(
+            sum(float(s.get("execution_quality_score", 0.0) or 0.0) for s in signal_list) / len(signal_list),
+            1,
+        ) if signal_list else 0.0,
+        "avg_opportunity_score": round(
+            sum(float(s.get("opportunity_score", 0.0) or 0.0) for s in signal_list) / len(signal_list),
+            3,
+        ) if signal_list else 0.0,
+        "memory_ready_count": sum(1 for s in signal_list if int(s.get("memory_sample_count", 0) or 0) > 0),
+        "execution_ready_count": sum(1 for s in signal_list if int(s.get("execution_feedback_sample_count", 0) or 0) > 0),
+    }
+    live_leaders = {
+        "memory": [
+            {
+                "asset": s.get("asset", ""),
+                "direction": s.get("direction", ""),
+                "score": round(float(s.get("memory_score", 0.0) or 0.0), 1),
+                "samples": int(s.get("memory_sample_count", 0) or 0),
+                "subtitle": str(s.get("memory_setup_style") or s.get("memory_regime") or s.get("category", "")),
+            }
+            for s in sorted(
+                signal_list,
+                key=lambda item: (
+                    float(item.get("memory_score", 0.0) or 0.0),
+                    int(item.get("memory_sample_count", 0) or 0),
+                ),
+                reverse=True,
+            )[:5]
+        ],
+        "execution": [
+            {
+                "asset": s.get("asset", ""),
+                "direction": s.get("direction", ""),
+                "score": round(float(s.get("execution_quality_score", 0.0) or 0.0), 1),
+                "samples": int(s.get("execution_feedback_sample_count", 0) or 0),
+                "subtitle": str(s.get("strategy_id") or s.get("category", "")),
+            }
+            for s in sorted(
+                signal_list,
+                key=lambda item: (
+                    float(item.get("execution_quality_score", 0.0) or 0.0),
+                    int(item.get("execution_feedback_sample_count", 0) or 0),
+                ),
+                reverse=True,
+            )[:5]
+        ],
+    }
     payload = {
         "success": True,
         "accuracy": accuracy,
         "signals": signal_list,
+        "live_quality": live_quality,
+        "live_leaders": live_leaders,
         "timestamp": datetime.utcnow().isoformat(),
     }
     _cache_set(cache_key, payload, ttl=20)
@@ -1549,13 +1983,25 @@ def api_whale_summary():
         if not mi:
             return jsonify({"success": True, "alerts": [], "total_volume_usd": 0,
                             "top_assets": [], "recent": [], "alert_count_24h": 0})
-        payload = mi.get_whale_dashboard_summary(
+        payload = _run_with_timeout(
+            mi.get_whale_dashboard_summary,
             min_value_usd=500_000,
             hours=24,
             recent_limit=10,
             alert_limit=20,
+            timeout=4.5,
+            default={
+                "success": True,
+                "alerts": [],
+                "total_volume_usd": 0,
+                "top_assets": [],
+                "recent": [],
+                "alert_count_24h": 0,
+            },
+            label="whale summary",
         )
-        _cache_set("whale_summary", payload, ttl=300)
+        ttl = 300 if payload.get("alerts") or payload.get("recent") else 45
+        _cache_set("whale_summary", payload, ttl=ttl)
         return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/whale/summary", e.status_code)
@@ -1585,60 +2031,154 @@ def api_sentiment_dashboard():
             "article_count": 0,
             "sentiment_distribution": {"bullish": 0, "neutral": 0, "bearish": 0},
             "articles": [], "whale_alerts": [],
+            "market_composite": {
+                "score": 0.0,
+                "interpretation": "Neutral",
+                "components": {},
+                "drivers": [],
+            },
+            "news_sentiment": {
+                "score": 0.0,
+                "interpretation": "Neutral",
+                "article_count": 0,
+                "distribution": {"bullish": 0, "neutral": 0, "bearish": 0},
+            },
+            "sentiment_context": {
+                "mode": "neutral",
+                "display_label": "Neutral",
+                "summary": "Awaiting sentiment inputs.",
+            },
         }
+        timed_out_tasks = 0
 
-        ms = sa.get_comprehensive_sentiment()
-        if ms:
-            result["score"]             = float(ms.get("score", 0))
-            result["overall_sentiment"] = ms.get("interpretation", "Neutral")
-
-        fg = sa.fetch_fear_greed_index()
-        if fg:
-            result["fear_greed"] = {"value": fg.get("value", 50),
-                                    "classification": fg.get("classification", "Neutral")}
-
-        vix = sa.fetch_vix()
-        if vix:
-            result["vix"] = {"value": vix.get("value", 20),
-                             "classification": vix.get("classification", "Normal")}
-
-        # News articles via news_integrator shim
+        pool = None
         try:
-            arts = sa.news_integrator.fetch_all_sources()
-            if arts:
-                b  = sum(1 for a in arts if float(a.get("sentiment", 0)) > 0.1)
-                be = sum(1 for a in arts if float(a.get("sentiment", 0)) < -0.1)
-                result["sentiment_distribution"] = {
-                    "bullish": b, "neutral": len(arts) - b - be, "bearish": be,
-                }
-                result["articles"]      = sorted(arts, key=lambda x: x.get("date", ""), reverse=True)[:20]
-                result["article_count"] = len(arts)
-        except Exception as _ae:
-            logger.debug(f"[dashboard] articles error: {_ae}")
+            from concurrent.futures import ThreadPoolExecutor, wait
 
-        # Distribution fallback — if no articles, derive from per-asset scores
-        if result["sentiment_distribution"] == {"bullish": 0, "neutral": 0, "bearish": 0}:
-            try:
-                from core.assets import registry as _reg
-                b = be = n = 0
-                for asset, _ in _reg.all_assets():
-                    try:
-                        score = float(sa.get_comprehensive_sentiment(asset).get("score", 0) or 0)
-                        if score > 0.05:   b  += 1
-                        elif score < -0.05: be += 1
-                        else:               n  += 1
-                    except Exception:
-                        n += 1
-                if b + be + n > 0:
-                    result["sentiment_distribution"] = {
-                        "bullish": b, "neutral": n, "bearish": be
+            pool = ThreadPoolExecutor(max_workers=5)
+            futures = {
+                pool.submit(sa.get_comprehensive_sentiment): "market_sentiment",
+                pool.submit(sa.fetch_fear_greed_index): "fear_greed",
+                pool.submit(sa.fetch_vix): "vix",
+                pool.submit(sa.news_integrator.fetch_all_sources): "articles",
+                pool.submit(sa.fetch_whale_alerts, min_value_usd=1_000_000): "whales",
+            }
+            done, not_done = wait(tuple(futures.keys()), timeout=9.5)
+            for future in done:
+                key = futures[future]
+                try:
+                    payload = future.result()
+                except Exception as exc:
+                    logger.debug(f"[dashboard] sentiment {key} error: {exc}")
+                    continue
+
+                if key == "market_sentiment" and payload:
+                    market_score = float(payload.get("score", 0) or 0)
+                    market_interpretation = payload.get("interpretation", "Neutral")
+                    components = {
+                        str(name): round(float(value or 0.0), 3)
+                        for name, value in dict(payload.get("components", {}) or {}).items()
                     }
-            except Exception as _de:
-                logger.debug(f"[dashboard] distribution fallback error: {_de}")
+                    drivers = [
+                        {
+                            "key": name,
+                            "label": _sentiment_component_label(name),
+                            "score": value,
+                        }
+                        for name, value in sorted(
+                            components.items(),
+                            key=lambda item: abs(float(item[1] or 0.0)),
+                            reverse=True,
+                        )
+                        if abs(float(value or 0.0)) > 0.001
+                    ]
+                    result["score"] = market_score
+                    result["overall_sentiment"] = market_interpretation
+                    result["market_composite"] = {
+                        "score": market_score,
+                        "interpretation": market_interpretation,
+                        "components": components,
+                        "drivers": drivers[:4],
+                    }
+                elif key == "fear_greed" and payload:
+                    result["fear_greed"] = {
+                        "value": payload.get("value", 50),
+                        "classification": payload.get("classification", "Neutral"),
+                    }
+                elif key == "vix" and payload:
+                    result["vix"] = {
+                        "value": payload.get("value", 20),
+                        "classification": payload.get("classification", "Normal"),
+                    }
+                elif key == "articles" and payload:
+                    arts = list(payload or [])
+                    scores = [
+                        float(article.get("sentiment", 0) or 0)
+                        for article in arts
+                        if article.get("sentiment") is not None
+                    ]
+                    news_score = (sum(scores) / len(scores)) if scores else 0.0
+                    b = sum(1 for a in arts if float(a.get("sentiment", 0)) > 0.1)
+                    be = sum(1 for a in arts if float(a.get("sentiment", 0)) < -0.1)
+                    distribution = {
+                        "bullish": b,
+                        "neutral": len(arts) - b - be,
+                        "bearish": be,
+                    }
+                    result["sentiment_distribution"] = distribution
+                    result["articles"] = sorted(arts, key=lambda x: x.get("date", ""), reverse=True)[:20]
+                    result["article_count"] = len(arts)
+                    result["news_sentiment"] = {
+                        "score": round(news_score, 3),
+                        "interpretation": _interpret_sentiment_score(news_score),
+                        "article_count": len(arts),
+                        "distribution": distribution,
+                    }
+                elif key == "whales" and payload:
+                    result["whale_alerts"] = list(payload or [])[:10]
 
-        result["whale_alerts"] = sa.fetch_whale_alerts(min_value_usd=1_000_000)[:10]
+            for future in not_done:
+                future.cancel()
+            if not_done:
+                timed_out_tasks = len(not_done)
+                logger.warning(f"[dashboard] sentiment dashboard timed out for {len(not_done)} task(s)")
+        except Exception as exc:
+            logger.debug(f"[dashboard] sentiment dashboard setup failed: {exc}")
+        finally:
+            if pool is not None:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
 
-        _cache_set("sentiment_dashboard", result, ttl=600)
+        if result["sentiment_distribution"] == {"bullish": 0, "neutral": 0, "bearish": 0}:
+            score = float(result.get("score", 0) or 0)
+            if score > 0.05:
+                result["sentiment_distribution"] = {"bullish": 1, "neutral": 0, "bearish": 0}
+            elif score < -0.05:
+                result["sentiment_distribution"] = {"bullish": 0, "neutral": 0, "bearish": 1}
+            else:
+                result["sentiment_distribution"] = {"bullish": 0, "neutral": 1, "bearish": 0}
+
+        if result["news_sentiment"]["article_count"] == 0:
+            result["news_sentiment"] = {
+                "score": 0.0,
+                "interpretation": _interpret_sentiment_score(0.0),
+                "article_count": int(result.get("article_count", 0) or 0),
+                "distribution": dict(result.get("sentiment_distribution", {}) or {}),
+            }
+
+        fg_value = float((result.get("fear_greed") or {}).get("value", 50) or 50)
+        result["sentiment_context"] = _build_sentiment_context(
+            market_score=float(result.get("score", 0) or 0),
+            news_score=float((result.get("news_sentiment") or {}).get("score", 0) or 0),
+            fear_greed_value=fg_value,
+            market_interpretation=str(result.get("overall_sentiment") or "Neutral"),
+            article_count=int(result.get("article_count", 0) or 0),
+        )
+
+        ttl = 600 if result["article_count"] or result["whale_alerts"] else (5 if timed_out_tasks else 45)
+        _cache_set("sentiment_dashboard", result, ttl=ttl)
         return jsonify(result)
     except APIError as e:
         return handle_api_error(e, "/api/sentiment/dashboard", e.status_code)
@@ -1683,12 +2223,13 @@ def api_sentiment_by_asset():
 
         results = []
         seen = set()  # prevent duplicates
-        max_workers = min(18, len(watch))
+        max_workers = min(8, len(watch))
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {pool.submit(_sent_one, a): a for a in watch}
             try:
-                for future in as_completed(futures, timeout=60):
+                for future in as_completed(futures, timeout=12):
                     try:
                         r = future.result()
                         asset_key = r.get("asset", "")
@@ -1717,6 +2258,11 @@ def api_sentiment_by_asset():
                             "score": 0.0, "label": "Neutral",
                         })
                 logger.warning(f"[Sentiment] by-asset timeout — returning {len(results)}/{len(watch)} assets")
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
         results.sort(key=lambda x: x["score"], reverse=True)
         payload = {"success": True, "assets": results}
@@ -1786,10 +2332,35 @@ def api_risk_portfolio():
         by_cat: Dict = {}
         for p in positions:
             cat = p.get("category", "unknown")
-            by_cat.setdefault(cat, {"count": 0, "pnl": 0.0, "exposure": 0.0})
+            meta = dict(p.get("metadata") or {})
+            memory = _extract_memory_fields(meta)
+            execution = _extract_execution_feedback_fields(meta)
+            opportunity = _extract_opportunity_fields(meta)
+            by_cat.setdefault(cat, {
+                "count": 0,
+                "pnl": 0.0,
+                "exposure": 0.0,
+                "memory_scores": [],
+                "execution_scores": [],
+                "opportunity_scores": [],
+            })
             by_cat[cat]["count"]    += 1
             by_cat[cat]["pnl"]      += float(p.get("pnl") or 0)
             by_cat[cat]["exposure"] += float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
+            if float(memory.get("memory_score", 0.0) or 0.0) > 0:
+                by_cat[cat]["memory_scores"].append(float(memory.get("memory_score", 0.0) or 0.0))
+            if float(execution.get("execution_quality_score", 0.0) or 0.0) > 0:
+                by_cat[cat]["execution_scores"].append(float(execution.get("execution_quality_score", 0.0) or 0.0))
+            if float(opportunity.get("opportunity_score", 0.0) or 0.0) > 0:
+                by_cat[cat]["opportunity_scores"].append(float(opportunity.get("opportunity_score", 0.0) or 0.0))
+
+        for cat, info in by_cat.items():
+            memory_scores = info.pop("memory_scores", [])
+            execution_scores = info.pop("execution_scores", [])
+            opportunity_scores = info.pop("opportunity_scores", [])
+            info["avg_memory_score"] = round(sum(memory_scores) / len(memory_scores), 1) if memory_scores else 0.0
+            info["avg_execution_quality"] = round(sum(execution_scores) / len(execution_scores), 1) if execution_scores else 0.0
+            info["avg_opportunity_score"] = round(sum(opportunity_scores) / len(opportunity_scores), 3) if opportunity_scores else 0.0
 
         closed  = core.get_closed_trades(limit=100)
         wins    = [t for t in closed if float(t.get("pnl") or 0) > 0]
@@ -1797,6 +2368,23 @@ def api_risk_portfolio():
         avg_win = sum(float(t.get("pnl") or 0) for t in wins)   / len(wins)   if wins   else 0.0
         avg_los = sum(float(t.get("pnl") or 0) for t in losses) / len(losses) if losses else 0.0
         pf      = abs(avg_win / avg_los) if avg_los else 0.0
+
+        execution_summary: Dict[str, Any] = {}
+        execution_by_category: Dict[str, Any] = {}
+        try:
+            from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+            feedback_service = get_execution_feedback_service()
+            execution_summary = feedback_service.summarize_history(days_back=120, limit=500)
+            for cat in ("forex", "crypto", "commodities", "indices"):
+                execution_by_category[cat] = feedback_service.summarize_history(
+                    category=cat,
+                    days_back=120,
+                    limit=250,
+                )
+        except Exception:
+            execution_summary = {}
+            execution_by_category = {}
 
         payload = {
             "success":        True,
@@ -1813,6 +2401,29 @@ def api_risk_portfolio():
             "avg_loss":       round(avg_los, 2),
             "total_trades":   perf.get("total_trades", 0),
             "total_pnl":      perf.get("total_pnl", 0),
+            "quality_snapshot": {
+                "avg_memory_score": round(
+                    sum(float(item.get("avg_memory_score", 0.0) or 0.0) for item in by_cat.values()) / len(by_cat),
+                    1,
+                ) if by_cat else 0.0,
+                "avg_execution_quality": round(
+                    sum(float(item.get("avg_execution_quality", 0.0) or 0.0) for item in by_cat.values()) / len(by_cat),
+                    1,
+                ) if by_cat else 0.0,
+                "avg_opportunity_score": round(
+                    sum(float(item.get("avg_opportunity_score", 0.0) or 0.0) for item in by_cat.values()) / len(by_cat),
+                    3,
+                ) if by_cat else 0.0,
+                "top_category": (
+                    max(
+                        by_cat.items(),
+                        key=lambda kv: float(kv[1].get("avg_opportunity_score", 0.0) or 0.0),
+                    )[0]
+                    if by_cat else ""
+                ),
+            },
+            "execution_feedback": execution_summary,
+            "execution_by_category": execution_by_category,
         }
         _cache_set("risk_portfolio", payload, ttl=10)
         return jsonify(payload)
@@ -1836,21 +2447,66 @@ def api_strategy_performance():
         stats  = core.get_strategy_stats()
         trades = core.get_closed_trades(limit=200)
         enriched: Dict = {}
+        summary_memory_scores: List[float] = []
+        summary_exec_scores: List[float] = []
+        summary_rr: List[float] = []
+        summary_target_hits = 0
+        summary_premature_stops = 0
+        summary_timeline_count = 0
         for strat, s in stats.items():
             total   = s.get("wins", 0) + s.get("losses", 0)
             pnl     = s.get("pnl", 0)
             wr      = s.get("wins", 0) / total * 100 if total else 0
-            durs    = [int(t.get("duration_minutes", 0)) for t in trades
-                       if t.get("strategy_id") == strat and t.get("duration_minutes")]
+            strat_trades = []
+            for t in trades:
+                if t.get("strategy_id") != strat:
+                    continue
+                row = dict(t)
+                meta = dict(row.get("metadata") or {})
+                row.update(_extract_execution_feedback_fields(meta))
+                row.update(_extract_memory_fields(meta))
+                strat_trades.append(row)
+
+            durs    = [int(t.get("duration_minutes", 0)) for t in strat_trades if t.get("duration_minutes")]
             avg_dur = sum(durs) / len(durs) if durs else 0
+            memory_scores = [float(t.get("memory_score", 0.0) or 0.0) for t in strat_trades if float(t.get("memory_score", 0.0) or 0.0) > 0]
+            exec_scores = [float(t.get("execution_quality_score", 0.0) or 0.0) for t in strat_trades if float(t.get("execution_quality_score", 0.0) or 0.0) > 0]
+            rr_vals = [float(t.get("rr_realized", 0.0) or 0.0) for t in strat_trades if abs(float(t.get("rr_realized", 0.0) or 0.0)) > 1e-9]
+            target_hits = [1.0 if float(t.get("target_capture", 0.0) or 0.0) >= 0.95 else 0.0 for t in strat_trades if abs(float(t.get("target_capture", 0.0) or 0.0)) > 1e-9]
+            premature_flags = [1.0 if bool(t.get("premature_stop")) else 0.0 for t in strat_trades]
+            summary_memory_scores.extend(memory_scores)
+            summary_exec_scores.extend(exec_scores)
+            summary_rr.extend(rr_vals)
+            summary_target_hits += int(sum(target_hits))
+            summary_premature_stops += int(sum(premature_flags))
+            summary_timeline_count += len(strat_trades)
             enriched[strat] = {**s, "total": total, "win_rate": round(wr, 1),
                                "avg_duration_min": round(avg_dur),
-                               "avg_trade_pnl": round(pnl / total, 4) if total else 0}
-        timeline = [{"asset": t.get("asset", ""), "direction": t.get("direction", ""),
-                     "pnl": float(t.get("pnl") or 0), "strategy": t.get("strategy_id", ""),
-                     "exit_time": str(t.get("exit_time", ""))[:16],
-                     "conf": float(t.get("confidence") or 0)} for t in trades[:50]]
-        return jsonify({"success": True, "strategies": enriched, "timeline": timeline})
+                               "avg_trade_pnl": round(pnl / total, 4) if total else 0,
+                               "avg_memory_score": round(sum(memory_scores) / len(memory_scores), 1) if memory_scores else 0.0,
+                               "avg_execution_quality": round(sum(exec_scores) / len(exec_scores), 1) if exec_scores else 0.0,
+                               "avg_rr_realized": round(sum(rr_vals) / len(rr_vals), 3) if rr_vals else 0.0,
+                               "target_hit_rate": round(sum(target_hits) / len(target_hits), 4) if target_hits else 0.0,
+                               "premature_stop_rate": round(sum(premature_flags) / len(premature_flags), 4) if premature_flags else 0.0}
+        timeline = []
+        for t in trades[:50]:
+            row = {"asset": t.get("asset", ""), "direction": t.get("direction", ""),
+                   "pnl": float(t.get("pnl") or 0), "strategy": t.get("strategy_id", ""),
+                   "exit_time": str(t.get("exit_time", ""))[:16],
+                   "conf": float(t.get("confidence") or 0)}
+            meta = dict(t.get("metadata") or {})
+            row.update(_extract_execution_feedback_fields(meta))
+            row.update(_extract_memory_fields(meta))
+            timeline.append(row)
+        summary = {
+            "avg_memory_score": round(sum(summary_memory_scores) / len(summary_memory_scores), 1) if summary_memory_scores else 0.0,
+            "avg_execution_quality": round(sum(summary_exec_scores) / len(summary_exec_scores), 1) if summary_exec_scores else 0.0,
+            "avg_rr_realized": round(sum(summary_rr) / len(summary_rr), 3) if summary_rr else 0.0,
+            "target_hit_rate": round(summary_target_hits / max(summary_timeline_count, 1), 4) if summary_timeline_count else 0.0,
+            "premature_stop_rate": round(summary_premature_stops / max(summary_timeline_count, 1), 4) if summary_timeline_count else 0.0,
+            "trade_count": summary_timeline_count,
+        }
+        return jsonify({"success": True, "strategies": enriched, "timeline": timeline, "summary": summary})
     except APIError as e:
         return handle_api_error(e, "/api/strategy/performance", e.status_code)
     except Exception as e:
@@ -1870,6 +2526,61 @@ def api_backtest_strategies():
     except Exception as e:
         return handle_api_error(e, "/api/backtest/strategies", 500)
 
+
+@app.route("/api/strategy-lab/automation")
+@_check_api_auth
+@_check_rate_limit
+def api_strategy_lab_automation():
+    try:
+        from strategy_lab.auto_research import (
+            is_auto_research_running,
+            load_auto_research_settings,
+            load_auto_research_status,
+        )
+        from strategy_lab.live_bridge import load_registry_entries
+
+        settings = load_auto_research_settings()
+        status = load_auto_research_status()
+        status["running"] = bool(status.get("running")) or is_auto_research_running()
+        auto_entries = [
+            {
+                "name": str(entry.get("name") or "unknown"),
+                "asset": str(entry.get("asset") or ""),
+                "category": str(entry.get("category") or ""),
+                "research_summary": copy.deepcopy(entry.get("research_summary") or {}),
+            }
+            for entry in load_registry_entries()
+            if str(entry.get("source") or "") == "bot_auto_research"
+        ]
+        return jsonify(
+            {
+                "success": True,
+                "settings": settings,
+                "status": status,
+                "auto_live_entries": auto_entries,
+            }
+        )
+    except APIError as e:
+        return handle_api_error(e, "/api/strategy-lab/automation", e.status_code)
+    except Exception as e:
+        return handle_api_error(e, "/api/strategy-lab/automation", 500)
+
+
+@app.route("/api/strategy-lab/automation/run", methods=["POST"])
+@_check_api_auth
+@_check_rate_limit
+def api_strategy_lab_automation_run():
+    try:
+        from strategy_lab.auto_research import trigger_auto_research_cycle_async
+
+        payload = trigger_auto_research_cycle_async(trigger="manual_button")
+        status_code = 202 if payload.get("started") else 409
+        return jsonify({"success": bool(payload.get("started")), **payload}), status_code
+    except APIError as e:
+        return handle_api_error(e, "/api/strategy-lab/automation/run", e.status_code)
+    except Exception as e:
+        return handle_api_error(e, "/api/strategy-lab/automation/run", 500)
+
 @app.route("/api/backtest/run")
 @_check_api_auth
 @_check_rate_limit
@@ -1877,7 +2588,6 @@ def api_backtest_run():
     try:
         asset    = request.args.get("asset", "").strip()
         strategy = request.args.get("strategy", "").strip()
-        periods  = int(request.args.get("periods", 500))
 
         if not asset or not strategy:
             raise BadRequest("asset and strategy are required")
@@ -1887,17 +2597,33 @@ def api_backtest_run():
         if category == "unknown":
             raise BadRequest(f"Unknown asset: {asset}")
 
-        from strategy_lab import StrategyBuilder, run_backtest
+        from strategy_lab import (
+            StrategyBuilder,
+            resolve_backtest_end_time,
+            resolve_backtest_periods,
+            run_backtest,
+        )
 
         configs = StrategyBuilder.all_configs()
         if strategy not in configs:
             raise BadRequest(f"Unknown strategy: {strategy}")
 
-        result = run_backtest(configs[strategy], canonical, category, periods=periods)
+        raw_periods = request.args.get("periods")
+        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods(category)
+        snapshot_end = resolve_backtest_end_time(category)
+        result = run_backtest(
+            configs[strategy],
+            canonical,
+            category,
+            periods=periods,
+            end_time=snapshot_end,
+        )
         return jsonify({
             "success": True,
             "strategy": strategy,
             "asset": canonical,
+            "periods": periods,
+            "snapshot_end_utc": snapshot_end.isoformat(),
             "metrics": result.to_dict(),
             "trades": result.trades,
             "equity_curve": result.equity_curve,
@@ -1907,13 +2633,91 @@ def api_backtest_run():
     except Exception as e:
         return handle_api_error(e, "/api/backtest/run", 500)
 
+@app.route("/api/backtest/robustness")
+@_check_api_auth
+@_check_rate_limit
+def api_backtest_robustness():
+    try:
+        asset = request.args.get("asset", "").strip()
+        strategy = request.args.get("strategy", "").strip()
+        depth = request.args.get("depth", "standard").strip().lower() or "standard"
+
+        if not asset or not strategy:
+            raise BadRequest("asset and strategy are required")
+
+        canonical = registry.canonical(asset)
+        category = registry.category(canonical)
+        if category == "unknown":
+            raise BadRequest(f"Unknown asset: {asset}")
+
+        param_overrides: Dict[str, Any] = {}
+        for key in ("rsi_period", "stop_mult", "tp_mult", "ema_fast", "ema_slow", "atr_period", "bb_period", "bb_std"):
+            raw = request.args.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                if "." in raw:
+                    param_overrides[key] = float(raw)
+                else:
+                    param_overrides[key] = int(raw)
+            except Exception:
+                raise BadRequest(f"Invalid value for {key}: {raw}")
+
+        from strategy_lab import (
+            StrategyBuilder,
+            resolve_backtest_end_time,
+            resolve_backtest_periods,
+            run_robustness_analysis,
+        )
+        from strategy_lab.parameter_optimizer import ParameterOptimizer
+
+        raw_periods = request.args.get("periods")
+        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods(category)
+        snapshot_end = resolve_backtest_end_time(category)
+        cache_suffix = ":".join(f"{k}={param_overrides[k]}" for k in sorted(param_overrides))
+        cache_key = f"backtest_robustness:{canonical}:{strategy}:{depth}:{periods}:{snapshot_end.isoformat()}:{cache_suffix}"
+        cached = _cache_get(cache_key)
+        if cached:
+            return jsonify(cached)
+
+        configs = StrategyBuilder.all_configs()
+        if strategy not in configs:
+            raise BadRequest(f"Unknown strategy: {strategy}")
+        selected_config = copy.deepcopy(configs[strategy])
+        if param_overrides:
+            selected_config = ParameterOptimizer._apply_params(selected_config, param_overrides)
+
+        report = run_robustness_analysis(
+            strategy_config=selected_config,
+            asset=canonical,
+            category=category,
+            periods=periods,
+            end_time=snapshot_end,
+            research_profile=depth,
+        )
+        payload = {
+            "success": True,
+            "strategy": strategy,
+            "asset": canonical,
+            "periods": periods,
+            "research_profile": depth,
+            "snapshot_end_utc": snapshot_end.isoformat(),
+            "params": param_overrides,
+            "robustness": report,
+        }
+        _cache_set(cache_key, payload, ttl=120)
+        return jsonify(payload)
+    except APIError as e:
+        return handle_api_error(e, "/api/backtest/robustness", e.status_code)
+    except Exception as e:
+        return handle_api_error(e, "/api/backtest/robustness", 500)
+
 @app.route("/api/backtest/compare")
 @_check_api_auth
 @_check_rate_limit
 def api_backtest_compare():
     try:
         asset   = request.args.get("asset", "").strip()
-        periods = int(request.args.get("periods", 500))
 
         if not asset:
             raise BadRequest("asset is required")
@@ -1923,15 +2727,24 @@ def api_backtest_compare():
         if category == "unknown":
             raise BadRequest(f"Unknown asset: {asset}")
 
-        from strategy_lab import StrategyBuilder, run_backtest
+        from strategy_lab import (
+            StrategyBuilder,
+            resolve_backtest_end_time,
+            resolve_backtest_periods,
+            run_backtest,
+        )
         from strategy_lab.performance_analyzer import PerformanceAnalyzer
+
+        raw_periods = request.args.get("periods")
+        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods(category)
+        snapshot_end = resolve_backtest_end_time(category)
 
         configs = StrategyBuilder.all_configs()
         results = []
         labels = []
         for name, config in configs.items():
             try:
-                result = run_backtest(config, canonical, category, periods=periods)
+                result = run_backtest(config, canonical, category, periods=periods, end_time=snapshot_end)
                 results.append(result)
                 labels.append(name)
             except Exception as e:
@@ -1957,7 +2770,14 @@ def api_backtest_compare():
             for row in ranked
         ]
         best = output[0]["name"] if output else ""
-        return jsonify({"success": True, "results": output, "best": best})
+        return jsonify({
+            "success": True,
+            "asset": canonical,
+            "periods": periods,
+            "snapshot_end_utc": snapshot_end.isoformat(),
+            "results": output,
+            "best": best,
+        })
     except APIError as e:
         return handle_api_error(e, "/api/backtest/compare", e.status_code)
     except Exception as e:
@@ -1970,7 +2790,6 @@ def api_backtest_optimize():
     try:
         asset    = request.args.get("asset", "").strip()
         strategy = request.args.get("strategy", "").strip()
-        periods  = int(request.args.get("periods", 500))
 
         if not asset or not strategy:
             raise BadRequest("asset and strategy are required")
@@ -1980,12 +2799,20 @@ def api_backtest_optimize():
         if category == "unknown":
             raise BadRequest(f"Unknown asset: {asset}")
 
-        from strategy_lab import StrategyBuilder, optimize_strategy
+        from strategy_lab import (
+            StrategyBuilder,
+            optimize_strategy,
+            resolve_backtest_end_time,
+            resolve_backtest_periods,
+        )
 
         configs = StrategyBuilder.all_configs()
         if strategy not in configs:
             raise BadRequest(f"Unknown strategy: {strategy}")
 
+        raw_periods = request.args.get("periods")
+        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods(category)
+        snapshot_end = resolve_backtest_end_time(category)
         results = optimize_strategy(
             base_config=configs[strategy],
             param_grid={
@@ -1996,12 +2823,15 @@ def api_backtest_optimize():
             asset=canonical,
             category=category,
             periods=periods,
+            end_time=snapshot_end,
         )
 
         return jsonify({
             "success": True,
             "strategy": strategy,
             "asset": canonical,
+            "periods": periods,
+            "snapshot_end_utc": snapshot_end.isoformat(),
             "total": len(results),
             "top5": results[:5],
         })
@@ -2016,17 +2846,24 @@ def api_backtest_optimize():
 def api_backtest_multi_asset():
     try:
         strategy = request.args.get("strategy", "").strip()
-        periods  = int(request.args.get("periods", 500))
 
         if not strategy:
             raise BadRequest("strategy is required")
 
-        from strategy_lab import StrategyBuilder, run_backtest
+        from strategy_lab import (
+            StrategyBuilder,
+            resolve_backtest_end_time,
+            resolve_backtest_periods,
+            run_backtest,
+        )
 
         configs = StrategyBuilder.all_configs()
         if strategy not in configs:
             raise BadRequest(f"Unknown strategy: {strategy}")
 
+        raw_periods = request.args.get("periods")
+        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods("")
+        snapshot_end = resolve_backtest_end_time("")
         chosen_config = configs[strategy]
         test_assets = [
             ("BTC-USD",  "crypto"),
@@ -2042,7 +2879,7 @@ def api_backtest_multi_asset():
         results = []
         for asset, category in test_assets:
             try:
-                result = run_backtest(chosen_config, asset, category, periods=periods)
+                result = run_backtest(chosen_config, asset, category, periods=periods, end_time=snapshot_end)
                 results.append({
                     "asset": asset,
                     "category": category,
@@ -2059,7 +2896,14 @@ def api_backtest_multi_asset():
             raise BadRequest("No assets could be backtested")
 
         best = max(results, key=lambda r: r.get("sharpe", 0))["asset"]
-        return jsonify({"success": True, "results": results, "best": best})
+        return jsonify({
+            "success": True,
+            "strategy": strategy,
+            "periods": periods,
+            "snapshot_end_utc": snapshot_end.isoformat(),
+            "results": results,
+            "best": best,
+        })
     except APIError as e:
         return handle_api_error(e, "/api/backtest/multi-asset", e.status_code)
     except Exception as e:
@@ -2286,6 +3130,10 @@ def api_trade_history():
         from config.config import TZ_NAME, TZ_OFFSET_HOURS
         def _enrich(trade):
             d = dict(trade)
+            _meta = dict(d.get("metadata") or {})
+            d.update(_extract_execution_feedback_fields(_meta))
+            d.update(_extract_memory_fields(_meta))
+            d.update(_extract_opportunity_fields(_meta))
             # Convert stored UTC timestamps into the configured dashboard timezone.
             display_offset = _td(hours=TZ_OFFSET_HOURS)
             try:
@@ -2365,6 +3213,7 @@ def api_close_position():
         if not core:
             return jsonify({"success": False, "error": "Engine unavailable"}), 503
         result = core.close_position_manually(trade_id)
+        _invalidate_cache_prefixes("risk_portfolio", "page_overview:command_center:", "page_overview:risk_dashboard:")
         return jsonify({"success": bool(result), "trade_id": trade_id,
                         "message": "Position closed"})
     except Exception as e:
@@ -2402,11 +3251,92 @@ def api_close_bulk():
                 closed.append(tid)
             except Exception:
                 skipped.append(tid)
+        _invalidate_cache_prefixes("risk_portfolio", "page_overview:command_center:", "page_overview:risk_dashboard:")
         return jsonify({
             "success": True,
             "closed":  len(closed),
             "skipped": len(skipped),
             "mode":    mode,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/positions/reprice-weak", methods=["POST"])
+@_check_api_auth
+@_check_rate_limit
+def api_reprice_weak_positions():
+    try:
+        data = request.get_json(silent=True) or {}
+        core = _core()
+        if not core:
+            return jsonify({"success": False, "error": "Engine unavailable"}), 503
+
+        limit = max(1, min(10, int(data.get("limit", 3) or 3)))
+        score_threshold = float(data.get("score_threshold", 0.62) or 0.62)
+        tighten_only = bool(data.get("tighten_only", True))
+        updates = core.reprice_weak_exits(
+            tighten_only=tighten_only,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
+        _invalidate_cache_prefixes("risk_portfolio", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        return jsonify({
+            "success": True,
+            "repriced": len(updates),
+            "updates": updates,
+            "tighten_only": tighten_only,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/positions/reduce-weak", methods=["POST"])
+@_check_api_auth
+@_check_rate_limit
+def api_reduce_weak_positions():
+    try:
+        data = request.get_json(silent=True) or {}
+        core = _core()
+        if not core:
+            return jsonify({"success": False, "error": "Engine unavailable"}), 503
+
+        limit = max(1, min(10, int(data.get("limit", 3) or 3)))
+        score_threshold = float(data.get("score_threshold", 0.58) or 0.58)
+        reduction_fraction = float(data.get("reduction_fraction", 0.35) or 0.35)
+        actions = core.reduce_weak_positions(
+            reduction_fraction=reduction_fraction,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
+        _invalidate_cache_prefixes("risk_portfolio", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        return jsonify({
+            "success": True,
+            "reduced": sum(1 for item in actions if item.get("success")),
+            "actions": actions,
+            "reduction_fraction": reduction_fraction,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/opportunities/top")
+@_check_api_auth
+@_check_rate_limit
+def api_top_opportunities():
+    try:
+        core = _core()
+        if not core:
+            return jsonify({"success": False, "error": "Engine unavailable"}), 503
+
+        limit = max(1, min(10, int(request.args.get("limit", 5) or 5)))
+        refresh_flag = str(request.args.get("refresh", "0") or "0").lower() in {"1", "true", "yes"}
+        opportunities = core.get_top_ranked_opportunities(limit=limit, refresh=refresh_flag)
+        return jsonify({
+            "success": True,
+            "count": len(opportunities),
+            "opportunities": opportunities,
+            "refreshed": refresh_flag,
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2654,6 +3584,7 @@ def api_page_overview():
             "status": _response_to_dict(_call_view(api_status)),
             "strategies": _response_to_dict(_call_view(api_backtest_strategies)),
             "performance": _response_to_dict(_call_view(api_strategy_performance)),
+            "automation": _response_to_dict(_call_view(api_strategy_lab_automation)),
         }
         ttl = 20
     elif page == "command_center":
@@ -2680,6 +3611,82 @@ def api_page_overview():
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _run_hypercorn_server(host: str, port: int, http2: bool = False, ssl_cert: str | None = None, ssl_key: str | None = None) -> bool:
+    try:
+        import asyncio
+        from hypercorn.config import Config
+        from hypercorn.asyncio import serve
+        from hypercorn.middleware.wsgi import AsyncioWSGIMiddleware
+        from hypercorn import app_wrappers as _hypercorn_app_wrappers
+
+        if not getattr(_hypercorn_app_wrappers.WSGIWrapper.run_app, "_robbie_empty_response_fix", False):
+            def _safe_run_app(self, environ: dict, send) -> None:
+                headers: list[tuple[bytes, bytes]] = []
+                response_started = False
+                status_code: int | None = None
+
+                def start_response(
+                    status: str,
+                    response_headers: list[tuple[str, str]],
+                    exc_info: Exception | None = None,
+                ) -> None:
+                    nonlocal headers, response_started, status_code
+
+                    raw, _ = status.split(" ", 1)
+                    status_code = int(raw)
+                    headers = [
+                        (name.lower().encode("latin-1"), value.encode("latin-1"))
+                        for name, value in response_headers
+                    ]
+                    response_started = True
+
+                response_body = self.app(environ, start_response)
+
+                try:
+                    sent_start = False
+                    for output in response_body:
+                        if not response_started:
+                            raise RuntimeError("WSGI app did not call start_response")
+
+                        if not sent_start:
+                            send({"type": "http.response.start", "status": status_code, "headers": headers})
+                            sent_start = True
+
+                        send({"type": "http.response.body", "body": output, "more_body": True})
+
+                    if response_started and not sent_start:
+                        send({"type": "http.response.start", "status": status_code, "headers": headers})
+                finally:
+                    if hasattr(response_body, "close"):
+                        response_body.close()
+
+            _safe_run_app._robbie_empty_response_fix = True
+            _hypercorn_app_wrappers.WSGIWrapper.run_app = _safe_run_app
+
+        config = Config()
+        config.bind = [f"{host}:{port}"]
+        config.worker_class = "asyncio"
+        config.loglevel = "info"
+        config.keep_alive_timeout = 5
+        if http2:
+            config.alpn_protocols = ["h2", "http/1.1"]
+
+        if ssl_cert and ssl_key:
+            config.certfile = ssl_cert
+            config.keyfile = ssl_key
+            logger.info(f"[dashboard] Starting Hypercorn server with TLS cert={ssl_cert}")
+        elif http2:
+            logger.info("[dashboard] Starting Hypercorn HTTP/2 server (cleartext, browser support may be limited)")
+        else:
+            logger.info("[dashboard] Starting Hypercorn production server")
+
+        asyncio.run(serve(AsyncioWSGIMiddleware(app), config))
+        return True
+    except Exception as e:
+        logger.warning(f"[dashboard] Hypercorn server unavailable or failed: {e}")
+        return False
+
 
 def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool = False, ssl_cert: str | None = None, ssl_key: str | None = None) -> None:
     """Called by bot.py after engine.start(). Blocking — never returns."""
@@ -2771,46 +3778,22 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
 
     scheme = "https" if http2 and ssl_cert and ssl_key else "http"
     logger.info(f"[dashboard] {scheme}://{host}:{port}/command-center")
-    if http2:
-        try:
-            import asyncio
-            from hypercorn.config import Config
-            from hypercorn.asyncio import serve
-            try:
-                from hypercorn.wsgi import Wsgi
-            except ImportError:
-                from hypercorn.app_wrappers import WSGIWrapper as Wsgi
-
-            config = Config()
-            config.bind = [f"{host}:{port}"]
-            config.alpn_protocols = ["h2", "http/1.1"]
-            config.worker_class = "asyncio"
-            config.loglevel = "info"
-            config.keep_alive_timeout = 5
-
-            if ssl_cert and ssl_key:
-                config.certfile = ssl_cert
-                config.keyfile = ssl_key
-                logger.info(f"[dashboard] Starting Hypercorn with TLS cert={ssl_cert}")
-            else:
-                logger.info("[dashboard] Starting Hypercorn HTTP/2 server (cleartext, browser support may be limited)")
-
-            asyncio.run(serve(Wsgi(app, max_body_size=16 * 1024 * 1024), config))
-            return
-        except Exception as e:
-            logger.warning(f"[dashboard] HTTP/2 server unavailable or failed: {e}")
-            if ssl_cert and ssl_key:
-                logger.info("[dashboard] Falling back to Flask HTTPS server")
-                app.run(
-                    debug=False,
-                    host=host,
-                    port=port,
-                    ssl_context=(ssl_cert, ssl_key),
-                    threaded=True,
-                    use_reloader=False,
-                )
-                return
-            logger.info("[dashboard] Falling back to Flask development server")
+    prefer_hypercorn = http2 or not _DEVELOPMENT_MODE
+    if prefer_hypercorn and _run_hypercorn_server(host, port, http2=http2, ssl_cert=ssl_cert, ssl_key=ssl_key):
+        return
+    if prefer_hypercorn and ssl_cert and ssl_key:
+        logger.info("[dashboard] Falling back to Flask HTTPS server")
+        app.run(
+            debug=False,
+            host=host,
+            port=port,
+            ssl_context=(ssl_cert, ssl_key),
+            threaded=True,
+            use_reloader=False,
+        )
+        return
+    if prefer_hypercorn:
+        logger.info("[dashboard] Falling back to Flask development server")
 
     app.run(debug=False, host=host, port=port, threaded=True, use_reloader=False)
 
@@ -2818,4 +3801,4 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
 # Standalone mode (python -m dashboard.web_app_live)
 if __name__ == "__main__":
     logger.info("[dashboard] Standalone mode — engine not connected")
-    app.run(debug=True, host="0.0.0.0", port=5000, threaded=True)
+    app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)

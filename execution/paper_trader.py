@@ -1,4 +1,5 @@
 from __future__ import annotations
+import sys
 import uuid
 import threading
 from datetime import datetime
@@ -86,6 +87,7 @@ class PaperTrader:
             "stop_loss":          stop_loss,
             "original_sl":        stop_loss,   # preserved for trailing stop detection
             "take_profit":        take_profit,
+            "original_take_profit": take_profit,
             "take_profit_levels": tp_levels,
             "position_size":      pos_size,
             "strategy_id":        strategy,
@@ -94,6 +96,10 @@ class PaperTrader:
             "highest_price":      entry,
             "lowest_price":       entry,
             "tp_hit":             0,
+            "risk_reward":        float(signal.get("risk_reward", 0) or 0),
+            "timestamp":          signal.get("timestamp"),
+            "account_balance":    self.account_balance,
+            "metadata":           dict(signal.get("metadata") or {}),
         }
 
         with self._lock:
@@ -106,7 +112,7 @@ class PaperTrader:
             direction=direction,
             entry=entry,
             size=pos_size,
-            conf=confidence,
+            score=round(confidence, 4),
         )
         return trade
 
@@ -339,8 +345,8 @@ class PaperTrader:
         # — on a $30 account a $1 profit appeared as 0.01% instead of 3.3%.
         # Now we read from SystemState when available, falling back gracefully.
         try:
-            import core.engine as _eng_mod
-            _state = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "state", None)
+            _eng_mod = sys.modules.get("core.engine")
+            _state = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "state", None) if _eng_mod is not None else None
             real_balance = float(_state.balance) if _state else None
         except Exception:
             real_balance = None

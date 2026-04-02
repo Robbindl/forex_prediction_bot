@@ -46,6 +46,18 @@ def _ohlcv_cache_ttl(interval: str) -> int:
     return MARKET_DATA_OHLCV_CACHE_TTL
 
 
+def _normalize_end_time(value: Any) -> Optional[pd.Timestamp]:
+    if value in (None, ""):
+        return None
+    try:
+        ts = pd.to_datetime(value, utc=True, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return pd.Timestamp(ts)
+    except Exception:
+        return None
+
+
 class DataFetcher:
     """
     Deriv-first market data fetcher.
@@ -178,11 +190,15 @@ class DataFetcher:
         category: str,
         interval: Optional[str] = None,
         periods: Optional[int] = None,
+        end_time: Any = None,
+        closed_only: bool = False,
     ) -> Optional[pd.DataFrame]:
         interval = (interval or get_trading_timeframe(category)).lower()
         periods = int(periods or get_timeframe_periods(interval) or LOOKBACK_PERIOD)
         meta_key = f"ohlcv:{asset}:{interval}"
-        cache_key = f"fetcher:{meta_key}:{category}:{periods}"
+        normalized_end = _normalize_end_time(end_time)
+        end_key = normalized_end.isoformat() if normalized_end is not None else "latest"
+        cache_key = f"fetcher:{meta_key}:{category}:{periods}:{end_key}:{int(bool(closed_only))}"
 
         cached = cache.get(cache_key)
         if cached:
@@ -193,8 +209,23 @@ class DataFetcher:
 
         if self._deriv_bridge is not None:
             try:
-                df, deriv_meta = self._deriv_bridge.get_ohlcv(asset, interval, periods, category=category)
+                try:
+                    df, deriv_meta = self._deriv_bridge.get_ohlcv(
+                        asset,
+                        interval,
+                        periods,
+                        category=category,
+                        end_time=normalized_end,
+                        closed_only=closed_only,
+                    )
+                except TypeError:
+                    df, deriv_meta = self._deriv_bridge.get_ohlcv(asset, interval, periods, category=category)
                 if df is not None and not df.empty:
+                    if normalized_end is not None:
+                        if closed_only:
+                            df = df[df.index < normalized_end]
+                        else:
+                            df = df[df.index <= normalized_end]
                     df = df.tail(periods).copy()
                     meta = self._stamp_metadata(
                         deriv_meta,
@@ -213,8 +244,23 @@ class DataFetcher:
 
         if self._binance_bridge is not None:
             try:
-                df, binance_meta = self._binance_bridge.get_ohlcv(asset, interval, periods, category=category)
+                try:
+                    df, binance_meta = self._binance_bridge.get_ohlcv(
+                        asset,
+                        interval,
+                        periods,
+                        category=category,
+                        end_time=normalized_end,
+                        closed_only=closed_only,
+                    )
+                except TypeError:
+                    df, binance_meta = self._binance_bridge.get_ohlcv(asset, interval, periods, category=category)
                 if df is not None and not df.empty:
+                    if normalized_end is not None:
+                        if closed_only:
+                            df = df[df.index < normalized_end]
+                        else:
+                            df = df[df.index <= normalized_end]
                     df = df.tail(periods).copy()
                     meta = self._stamp_metadata(
                         binance_meta,

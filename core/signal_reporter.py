@@ -78,10 +78,10 @@ class SignalReporter:
         """
         Called by the decision engine after every evaluation.
         Works for both surviving AND killed signals.
-        Returns the (possibly confidence-adjusted) signal.
+        Returns the signal after reporting side-effects.
         """
         try:
-            # 1. Run auto-backtest and adjust confidence
+            # 1. Attach research/live-validation context
             signal = self._run_backtest(signal)
 
             # 2. Store performance in DB
@@ -163,7 +163,7 @@ class SignalReporter:
 
         if signal.confidence < TELEGRAM_SIGNAL_MIN_CONFIDENCE:
             logger.debug(
-                f"[SignalReporter] Skipping Telegram for {signal.asset} due to low final confidence "
+                f"[SignalReporter] Skipping Telegram for {signal.asset} due to low final score "
                 f"({signal.confidence:.3f} < {TELEGRAM_SIGNAL_MIN_CONFIDENCE})"
             )
             return
@@ -179,11 +179,14 @@ class SignalReporter:
             return
 
         try:
-            msg = signal.journal.to_telegram(signal)
+            msg = signal.journal.to_telegram_plain(signal)
             logger.info(f"[SignalReporter] Sending Telegram alert: {signal.journal.final_decision()} {signal.asset} {signal.direction}")
-            self._telegram.send_message(msg)
-            logger.info(f"[SignalReporter] Telegram sent for {signal.asset} {signal.direction}")
-            self._last_telegram_sent[asset_key] = now
+            sent = self._telegram.send_message(msg, parse_mode=None)
+            if sent:
+                logger.info(f"[SignalReporter] Telegram sent for {signal.asset} {signal.direction}")
+                self._last_telegram_sent[asset_key] = now
+            else:
+                logger.warning(f"[SignalReporter] Telegram send failed for {signal.asset} {signal.direction}")
         except Exception as e:
             logger.debug(f"[SignalReporter] Telegram send: {e}")
 
@@ -193,7 +196,7 @@ class SignalReporter:
         if not self._pub:
             return
         try:
-            journal_payload = signal.journal.to_dict()
+            journal_payload = signal.journal.to_dict(signal)
             event = {
                 "type":    "SIGNAL_JOURNAL_UPDATE",
                 "asset":   signal.asset,

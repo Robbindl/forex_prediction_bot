@@ -1,12 +1,17 @@
 from __future__ import annotations
 from typing import Optional
 import pandas as pd
+from config.config import (
+    FOREX_FILTER_BOOTSTRAP_MIN_CONFIDENCE,
+    FOREX_FILTER_BOOTSTRAP_MAX_SPREAD_BPS,
+    FOREX_FILTER_MAX_SPREAD_BPS,
+    FOREX_FILTER_MIN_CONFIDENCE,
+)
 from utils.logger import get_logger
 
 logger = get_logger()
 
 # Forex-specific thresholds (optimized for EUR/USD, GBP/USD, etc on 15m)
-FOREX_MIN_CONFIDENCE = 0.65      # Stricter than crypto's 0.58
 FOREX_MIN_ATR = 0.0008           # ~8 pips minimum (EUR/USD scale)
 FOREX_MAX_SPREAD_BPS = 1.5       # 1.5 basis points (tight, but achievable)
 FOREX_MIN_BARS_SINCE_MA_CROSS = 3  # Don't enter right at MA — wait for confirmation
@@ -30,6 +35,7 @@ class ForexFilter:
         df: pd.DataFrame,
         atr: float,
         current_spread_bps: Optional[float] = None,
+        live_validation_scope: str = "asset",
     ) -> tuple[bool, str]:
         """
         Validate a forex signal against forex-specific filters.
@@ -38,17 +44,28 @@ class ForexFilter:
         If should_trade=True, rejection_reason="PASSED" for logging.
         """
         
-        # Filter 1: Stricter confidence floor for forex
-        if signal_confidence < FOREX_MIN_CONFIDENCE:
-            return False, f"confidence {signal_confidence:.2f} < {FOREX_MIN_CONFIDENCE}"
+        # Filter 1: Keep forex selective, but do not require the full asset-grade floor
+        # while the pair is still relying on portfolio/bootstrap live validation.
+        min_confidence = (
+            FOREX_FILTER_MIN_CONFIDENCE
+            if live_validation_scope == "asset"
+            else FOREX_FILTER_BOOTSTRAP_MIN_CONFIDENCE
+        )
+        if signal_confidence < min_confidence:
+            return False, f"confidence {signal_confidence:.2f} < {min_confidence:.2f}"
         
         # Filter 2: Adequate ATR (price needs to move)
         if atr < FOREX_MIN_ATR:
             return False, f"ATR {atr:.5f} < min {FOREX_MIN_ATR}"
         
         # Filter 3: Reject if spread too wide
-        if current_spread_bps and current_spread_bps > FOREX_MAX_SPREAD_BPS:
-            return False, f"spread {current_spread_bps:.1f}bps > max {FOREX_MAX_SPREAD_BPS}"
+        max_spread_bps = (
+            FOREX_FILTER_MAX_SPREAD_BPS
+            if live_validation_scope == "asset"
+            else FOREX_FILTER_BOOTSTRAP_MAX_SPREAD_BPS
+        )
+        if current_spread_bps and current_spread_bps > max_spread_bps:
+            return False, f"spread {current_spread_bps:.1f}bps > max {max_spread_bps:.1f}"
         
         # Filter 4: Avoid entering right at MA crossovers (wait for confirmation)
         try:

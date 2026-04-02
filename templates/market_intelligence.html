@@ -244,6 +244,7 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
   </div>
 </div>
 
+<script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
 let lwChart, cSeries, vSeries, sseSource;
 let _lastAsset = null, _lastTf = null, _userZoomed = false;
@@ -251,6 +252,8 @@ let currentAsset = 'EUR/USD', currentTf = '5m';
 let candlesLoading = false;
 let _chartCandles = [];
 let _chartTfUsed = '5m';
+let _chartBooted = false;
+let _chartRetryCount = 0;
 
 function intervalSeconds(tf) {
   return {
@@ -431,7 +434,7 @@ async function fetchMarketIntelligenceOverview(){
   if(_marketIntelligenceCache && now - _marketIntelligenceCache.fetched < 10000){
     return _marketIntelligenceCache.data;
   }
-  const d = await fetch('/api/page-overview?page=market_intelligence').then(r=>r.json()).catch(()=>({success:false}));
+  const d = await window.dashboardFetchJson('/api/page-overview?page=market_intelligence', {timeoutMs: 10000});
   if(d.success){
     _marketIntelligenceCache = {fetched: now, data: d};
     return d;
@@ -443,15 +446,26 @@ async function loadAssets() {
   const page = await fetchMarketIntelligenceOverview();
   const d   = page.success ? (page.assets || {assets:[]}) : await fetchWithTimeout('/api/chart/assets', 8000) || {assets:[]};
   const sel = document.getElementById('chartAsset');
+  if(!sel) return;
   const grouped = {};
   (d.assets || []).forEach(a => {
     (grouped[a.category] || (grouped[a.category] = [])).push(a);
   });
-  sel.innerHTML = Object.entries(grouped).map(([cat, list]) =>
+  const groupEntries = Object.entries(grouped);
+  if(!groupEntries.length){
+    sel.innerHTML = '<option value="">Asset list unavailable</option>';
+    return;
+  }
+  sel.innerHTML = groupEntries.map(([cat, list]) =>
     `<optgroup label="${cat}">${list.map(a =>
       `<option value="${a.symbol}" ${a.symbol === currentAsset ? 'selected' : ''}>${a.symbol}</option>`
     ).join('')}</optgroup>`
   ).join('');
+  const hasCurrent = (d.assets || []).some(a => a.symbol === currentAsset);
+  if(!hasCurrent && d.assets && d.assets.length){
+    currentAsset = d.assets[0].symbol;
+    sel.value = currentAsset;
+  }
 }
 
 async function loadDataPlane() {
@@ -525,6 +539,7 @@ async function loadDataPlane() {
 
 // ── Live price stream ─────────────────────────────────────────────────────────
 function startStream() {
+  if (!_chartBooted) return;
   if (sseSource) sseSource.close();
   sseSource = new EventSource(`/api/chart/stream?asset=${encodeURIComponent(currentAsset)}`);
   sseSource.onmessage = e => {
@@ -710,14 +725,18 @@ function changeToAsset(a) {
   for (let i = 0; i < sel.options.length; i++) {
     if (sel.options[i].value === a) { sel.selectedIndex = i; break; }
   }
-  loadCandles();
-  startStream();
+  if (_chartBooted) {
+    loadCandles();
+    startStream();
+  }
 }
 
 function changeChartAsset() {
   currentAsset = document.getElementById('chartAsset').value;
-  loadCandles();
-  startStream();
+  if (_chartBooted) {
+    loadCandles();
+    startStream();
+  }
 }
 
 function setTf(tf, el) {
@@ -728,13 +747,36 @@ function setTf(tf, el) {
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-function _boot() {
+function bootChartSection() {
+  if (_chartBooted) return;
   if (typeof LightweightCharts === 'undefined') {
-    setTimeout(_boot, 100);  // wait for script to load
+    _chartRetryCount += 1;
+    const status = document.getElementById('chartStatus');
+    if (status) {
+      status.textContent = _chartRetryCount > 20 ? 'Chart library unavailable' : 'Chart library loading…';
+      status.style.background = _chartRetryCount > 20 ? 'rgba(255,69,96,.12)' : 'rgba(255,165,0,.15)';
+      status.style.color = _chartRetryCount > 20 ? 'var(--rd)' : 'var(--am)';
+    }
+    if (_chartRetryCount <= 20) {
+      setTimeout(bootChartSection, 500);
+    }
     return;
   }
   initChart();
-  loadAssets().then(() => { loadCandles(); startStream(); });
+  _chartBooted = true;
+  loadCandles();
+  startStream();
+}
+
+function _boot() {
+  loadAssets().then(() => {
+    bootChartSection();
+  }).catch(() => {
+    const sel = document.getElementById('chartAsset');
+    if (sel && !sel.options.length) {
+      sel.innerHTML = '<option value="">Asset list unavailable</option>';
+    }
+  });
   setTimeout(() => loadDataPlane(), 150);
   setTimeout(() => loadHeatmap(), 300);
   setTimeout(() => loadCorrelation(), 1000);
@@ -742,7 +784,7 @@ function _boot() {
 _boot();
 
 // Refresh chart every 60s, heatmap every 60s
-setInterval(() => { loadCandles(); }, 15000);  // 15s — responsive within-candle updates
+setInterval(() => { if (_chartBooted) loadCandles(); else bootChartSection(); }, 15000);  // 15s — responsive within-candle updates
 setInterval(() => { loadDataPlane(); }, 60000);
 setInterval(() => { loadHeatmap(); }, 60000);  // 60s — heatmap doesn't need to be faster
 </script>

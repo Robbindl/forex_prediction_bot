@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse
+import os
 import sys
 import signal
 import subprocess
@@ -14,11 +15,22 @@ from pathlib import Path
 from config.config import (
     LOG_LEVEL, LOG_DIR, DEFAULT_BALANCE,
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+    LOG_RETENTION_DAYS, LOG_BACKUP_COUNT, ML_SERVICE_LOG_MAX_BYTES,
+    AUTO_RESEARCH_ALLOW_IN_BOT_RUNTIME,
+    AUTO_RESEARCH_ALLOW_SEPARATE_WORKER,
+    LIVE_APPROVED_REGISTRY_ONLY,
 )
-from utils.logger import TradingLogger, get_logger
+from utils.logger import TradingLogger, get_logger, get_rotating_file_logger, prune_stale_log_artifacts
 
 _trading_logger = TradingLogger(log_dir=str(LOG_DIR), level=LOG_LEVEL)
 logger = get_logger()
+
+try:
+    _removed_logs = prune_stale_log_artifacts(LOG_DIR, retention_days=LOG_RETENTION_DAYS)
+    if _removed_logs:
+        logger.info(f"[bot] Pruned {_removed_logs} stale log artifacts from {LOG_DIR}")
+except Exception as e:
+    logger.debug(f"[bot] Log cleanup skipped: {e}")
 
 _DEFAULT_HTTP2_CERT = Path("cert.pem")
 _DEFAULT_HTTP2_KEY = Path("key.pem")
@@ -40,7 +52,7 @@ except RuntimeError as e:
 # ── Check optional API keys ─────────────────────────────────────────────────
 from config.config import WHALE_ALERT_KEY, WHALE_TELEGRAM_TOKEN, FRED_API_KEY
 if not WHALE_ALERT_KEY:
-    logger.warning("[bot] WHALE_ALERT_KEY not set — whale alerts disabled")
+    logger.warning("[bot] WHALE_ALERT_KEY not set — authenticated whale API enrichment disabled")
 if not WHALE_TELEGRAM_TOKEN:
     logger.warning("[bot] WHALE_TELEGRAM_TOKEN not set — intelligence alerts disabled")
 if not FRED_API_KEY:
@@ -70,6 +82,8 @@ except Exception as e:
 # ── Gateway management ────────────────────────────────────────────────────────
 
 _gateway_proc: subprocess.Popen | None = None
+_auto_research_scheduler = None
+_auto_research_worker_proc: subprocess.Popen | None = None
 _GATEWAY_DIR  = Path(__file__).parent / "gateway"
 _GATEWAY_PORT = 8081
 
@@ -191,8 +205,66 @@ def stop_telegram() -> None:
         logger.debug(f"[bot] Telegram shutdown skipped: {e}")
 
 
+def stop_auto_research() -> None:
+    global _auto_research_scheduler, _auto_research_worker_proc
+    try:
+        if _auto_research_scheduler is not None:
+            _auto_research_scheduler.stop()
+            _auto_research_scheduler = None
+        if _auto_research_worker_proc and _auto_research_worker_proc.poll() is None:
+            logger.info(f"[bot] Stopping auto research worker (PID {_auto_research_worker_proc.pid})...")
+            try:
+                _auto_research_worker_proc.terminate()
+                _auto_research_worker_proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                _auto_research_worker_proc.kill()
+            except Exception:
+                pass
+            _auto_research_worker_proc = None
+    except Exception as e:
+        logger.debug(f"[bot] Auto research shutdown skipped: {e}")
+
+
+def start_auto_research_worker() -> subprocess.Popen | None:
+    global _auto_research_worker_proc
+
+    if _auto_research_worker_proc and _auto_research_worker_proc.poll() is None:
+        return _auto_research_worker_proc
+
+    try:
+        from strategy_lab.auto_research import load_auto_research_settings
+        from strategy_lab.auto_research_runtime import (
+            build_auto_research_worker_command,
+            should_start_separate_auto_research_worker,
+        )
+
+        settings = load_auto_research_settings()
+        if not should_start_separate_auto_research_worker(settings):
+            return None
+
+        command = build_auto_research_worker_command(sys.executable)
+        proc = subprocess.Popen(
+            command,
+            cwd=str(Path(__file__).parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        _auto_research_worker_proc = proc
+        logger.info(
+            "[bot] Auto strategy research worker started "
+            f"(PID {proc.pid}, startup_delay={int(settings.get('startup_delay_seconds', 0) or 0)}s, "
+            f"interval_hours={float(settings.get('interval_hours', 24.0) or 24.0):.1f})"
+        )
+        return proc
+    except Exception as e:
+        logger.warning(f"[bot] Auto research worker failed to start: {e}")
+        return None
+
+
 atexit.register(stop_gateway)
 atexit.register(stop_telegram)
+atexit.register(stop_auto_research)
 
 
 def gateway_is_running() -> bool:
@@ -278,6 +350,8 @@ def main() -> None:
         run_backtest(args.backtest, args.backtest_cat)
         return
 
+    os.environ["BOT_LIVE_RUNTIME"] = "1"
+
     # ── TradingCore ───────────────────────────────────────────────────────
     from core.engine import TradingCore
     engine = TradingCore(
@@ -295,6 +369,7 @@ def main() -> None:
     # ── Graceful shutdown ─────────────────────────────────────────────────
     def _shutdown(signum, frame):
         logger.info("[bot] Shutdown signal received")
+        stop_auto_research()
         stop_telegram()
         stop_gateway()
         engine.stop("signal")
@@ -399,6 +474,11 @@ def main() -> None:
             logger.info(f"[bot] Live strategies active: {active}")
         else:
             logger.info("[bot] Live strategy bridge ready — no lab strategies configured yet")
+            if LIVE_APPROVED_REGISTRY_ONLY:
+                logger.warning(
+                    "[bot] No approved live strategies in registry — live governance will block new trades "
+                    "until the registry is populated"
+                )
     except Exception as e:
         logger.warning(f"[bot] Live strategy bridge failed to load: {e}")
 
@@ -413,14 +493,14 @@ def main() -> None:
     try:
         from data_ingestion.news_event_monitor import start_news_monitor
         start_news_monitor()
-        logger.info("[bot] News event monitor started — Deriv calendar active")
+        logger.info("[bot] News event monitor started")
     except Exception as e:
         logger.warning(f"[bot] News event monitor failed to start: {e}")
 
     # ── System health monitoring ──────────────────────────────────────────
     try:
         from monitoring import start_monitoring
-        logger.info("[bot] System health monitoring ready")
+        logger.info("[bot] System health monitoring module loaded")
     except Exception as e:
         logger.warning(f"[bot] System health monitoring failed to load: {e}")
 
@@ -449,19 +529,41 @@ def main() -> None:
     # ── ML prediction service ─────────────────────────────────────────────
     if not args.no_ml_service:
         try:
-            import pathlib as _pl
-            _logs_dir = _pl.Path("logs")
-            _logs_dir.mkdir(exist_ok=True)
-            # FIX: Route stderr to a log file instead of DEVNULL.
-            # Previously all prediction-service errors were silently discarded,
-            # making it impossible to diagnose why predictions failed.
-            _ml_log = open(_logs_dir / "ml_prediction_service.log", "a")
+            def _relay_ml_output(pipe) -> None:
+                if pipe is None:
+                    return
+                try:
+                    for raw in pipe:
+                        line = str(raw or "").rstrip()
+                        if line:
+                            _ml_service_logger.info(line)
+                except Exception as relay_error:
+                    logger.debug(f"[bot] ML log relay stopped: {relay_error}")
+                finally:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
+
+            _ml_service_logger = get_rotating_file_logger(
+                "ml_prediction_service",
+                LOG_DIR / "ml_prediction_service.log",
+                max_bytes=ML_SERVICE_LOG_MAX_BYTES,
+                backup_count=LOG_BACKUP_COUNT,
+            )
             ml_proc = subprocess.Popen(
                 [sys.executable, "-m", "ml.prediction_service"],
-                stdout=_ml_log,
-                stderr=_ml_log,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
+            threading.Thread(
+                target=_relay_ml_output,
+                args=(ml_proc.stdout,),
+                daemon=True,
+            ).start()
             atexit.register(lambda: ml_proc.terminate())
             time.sleep(2)
             from ml.prediction_service import PredictionClient
@@ -594,6 +696,33 @@ def main() -> None:
         logger.info("[bot] AutoTrainer started")
     except Exception as e:
         logger.warning(f"[bot] AutoTrainer failed to start: {e}")
+
+    # ── Automatic strategy research / promotion ──────────────────────────
+    global _auto_research_scheduler
+    try:
+        from strategy_lab.auto_research import load_auto_research_settings, start_auto_research_scheduler
+        from strategy_lab.auto_research_runtime import should_start_separate_auto_research_worker
+
+        auto_research_settings = load_auto_research_settings()
+        if auto_research_settings.get("enabled") and AUTO_RESEARCH_ALLOW_IN_BOT_RUNTIME:
+            _auto_research_scheduler = start_auto_research_scheduler()
+            if _auto_research_scheduler is not None:
+                logger.info(
+                    "[bot] Auto strategy research scheduler started "
+                    f"(startup_delay={int(auto_research_settings.get('startup_delay_seconds', 0) or 0)}s, "
+                    f"interval_hours={float(auto_research_settings.get('interval_hours', 24.0) or 24.0):.1f})"
+                )
+            else:
+                logger.info("[bot] Auto strategy research scheduler is disabled")
+        elif should_start_separate_auto_research_worker(auto_research_settings):
+            if AUTO_RESEARCH_ALLOW_SEPARATE_WORKER and start_auto_research_worker() is None:
+                logger.warning("[bot] Auto strategy research worker was requested but did not stay running")
+        elif auto_research_settings.get("enabled"):
+            logger.info("[bot] Auto strategy research enabled in config but no runtime mode is allowed")
+        else:
+            logger.info("[bot] Auto strategy research disabled in bot runtime config")
+    except Exception as e:
+        logger.warning(f"[bot] Auto strategy research failed to start: {e}")
 
     # ── Whale monitoring ──────────────────────────────────────────────────
     try:

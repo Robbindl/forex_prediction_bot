@@ -38,6 +38,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .score-center{padding:22px 20px 20px;text-align:center;min-height:172px;display:flex;flex-direction:column;justify-content:center;flex:1}
 .score-num{font-size:56px;font-weight:700;line-height:1;margin-bottom:6px}
 .score-lbl{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--tx2)}
+.score-note{font-size:12px;line-height:1.45;color:var(--tx3);margin-top:8px;max-width:560px;align-self:center}
 .score-bar{height:8px;background:rgba(255,255,255,.07);border-radius:4px;overflow:hidden;margin:14px 0 6px}
 .score-bar-fill{height:100%;border-radius:4px;transition:width .6s}
 .score-range{display:flex;justify-content:space-between;font-size:10px;color:var(--tx3)}
@@ -46,6 +47,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .fg-wrap{padding:22px 16px 20px;display:flex;flex-direction:column;align-items:center;gap:6px;min-height:172px;justify-content:center;flex:1}
 .fg-num{font-size:42px;font-weight:700}
 .fg-lbl{font-size:12px;color:var(--tx2);text-transform:uppercase;letter-spacing:.5px}
+.fg-note{font-size:11px;line-height:1.4;color:var(--tx3);text-align:center;max-width:320px}
 .fg-bar{width:100%;height:10px;border-radius:5px;overflow:hidden;background:linear-gradient(to right,var(--rd),var(--am),var(--gr));position:relative;margin:8px 0}
 .fg-pointer{position:absolute;top:-3px;width:2px;height:16px;background:#fff;transform:translateX(-50%);border-radius:1px;transition:left .5s}
 
@@ -70,6 +72,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .dist-label{width:60px;color:var(--tx2)}.dist-bar{flex:1;height:6px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden}
 .dist-fill{height:100%;border-radius:3px}
 .dist-pct{width:36px;text-align:right;font-weight:600}
+.panel-note{font-size:11px;line-height:1.45;color:var(--tx3);margin-bottom:10px}
 .regime-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .regime-card{background:var(--s2);border-radius:8px;padding:12px}
 .regime-val{font-size:20px;font-weight:700;margin-bottom:4px}
@@ -166,10 +169,11 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <div class="content">
       <!-- Composite score -->
       <div class="panel metric-panel">
-        <div class="panel-header"><span class="panel-title">🌐 Composite Score</span></div>
+        <div class="panel-header"><span class="panel-title">🌐 Macro Composite</span></div>
         <div class="score-center">
           <div class="score-num" id="compScore">—</div>
           <div class="score-lbl" id="compLabel">Loading…</div>
+          <div class="score-note" id="compExplain">Waiting for sentiment inputs…</div>
           <div class="score-bar"><div class="score-bar-fill" id="compBar" style="width:50%"></div></div>
           <div class="score-range"><span>-1.0 Bearish</span><span>+1.0 Bullish</span></div>
         </div>
@@ -177,17 +181,18 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <!-- Fear/Greed -->
       <div class="panel metric-panel">
-        <div class="panel-header"><span class="panel-title">😱 Fear & Greed</span></div>
+        <div class="panel-header"><span class="panel-title">😱 Fear & Greed Input</span></div>
         <div class="fg-wrap">
           <div class="fg-num" id="fgNum">—</div>
           <div class="fg-lbl" id="fgLbl">—</div>
           <div class="fg-bar"><div class="fg-pointer" id="fgPtr" style="left:50%"></div></div>
+          <div class="fg-note" id="fgNote">This is one macro input, not the full sentiment verdict.</div>
         </div>
       </div>
 
       <!-- Distribution -->
       <div class="panel metric-panel">
-        <div class="panel-header"><span class="panel-title">📊 Distribution</span></div>
+        <div class="panel-header"><span class="panel-title">📊 News Tone Distribution</span></div>
         <div class="panel-body" id="distPanel"><div class="empty">Loading…</div></div>
       </div>
 
@@ -201,13 +206,13 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <!-- Top conviction assets -->
       <div class="panel leader-panel">
-        <div class="panel-header"><span class="panel-title">🏁 Sentiment Leaders</span></div>
+        <div class="panel-header"><span class="panel-title">🏁 Snapshot Leaders</span></div>
         <div class="panel-body" id="leaderPanel"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Per-asset sentiment heatmap -->
       <div class="panel panel-full heatmap-panel">
-        <div class="panel-header"><span class="panel-title">🔥 Per-Asset Sentiment Heatmap</span></div>
+        <div class="panel-header"><span class="panel-title">🔥 Per-Asset Snapshot Sentiment</span></div>
         <div class="panel-body heatmap-body">
           <div class="asset-sent-grid" id="assetGrid"><div class="empty" style="grid-column:span 5">Loading…</div></div>
         </div>
@@ -227,16 +232,52 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     </div>
   </div>
 </div>
+<script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
 function sColor(s){return s>0.2?'var(--gr)':s<-0.2?'var(--rd)':'var(--am)'}
 function sClass(s){return s>0.1?'ns-pos':s<-0.1?'ns-neg':'ns-neu'}
+function sBucket(s){return s>0.1?'Bullish':s<-0.1?'Bearish':'Neutral'}
+function fmtScore(s){return `${s>=0?'+':''}${Number(s||0).toFixed(3)}`}
+function avg(values){
+  if(!values.length)return 0;
+  return values.reduce((sum,value)=>sum+value,0)/values.length;
+}
 let _sentimentOverviewCache = null;
+function renderSentimentUnavailable(message){
+  const msg = message || 'Sentiment data unavailable';
+  document.getElementById('compScore').textContent = '—';
+  document.getElementById('compLabel').textContent = msg;
+  document.getElementById('compExplain').textContent = msg;
+  document.getElementById('fgNote').textContent = msg;
+  document.getElementById('distPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('regimePanel').innerHTML = '<div class="empty" style="grid-column:span 2">'+msg+'</div>';
+  document.getElementById('leaderPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('assetGrid').innerHTML = '<div class="empty" style="grid-column:span 5">'+msg+'</div>';
+  document.getElementById('newsPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('eventsPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+}
 async function fetchSentimentOverview(){
   const now = Date.now();
   if(_sentimentOverviewCache && now - _sentimentOverviewCache.fetched < 10000){
     return _sentimentOverviewCache.data;
   }
-  const d = await fetch('/api/page-overview?page=sentiment_intelligence').then(r=>r.json()).catch(()=>({success:false}));
+  let d = await window.dashboardFetchJson('/api/page-overview?page=sentiment_intelligence', {timeoutMs: 12000});
+  if(!d.success){
+    const [sentiment, byAsset, events] = await Promise.all([
+      window.dashboardFetchJson('/api/sentiment/dashboard', {timeoutMs: 12000}),
+      window.dashboardFetchJson('/api/sentiment/by-asset', {timeoutMs: 13000}),
+      window.dashboardFetchJson('/api/market/events', {timeoutMs: 10000}),
+    ]);
+    if(sentiment.success || byAsset.success || events.success){
+      d = {
+        success: true,
+        sentiment: sentiment.success ? sentiment : {success:false},
+        by_asset: byAsset.success ? byAsset : {success:false, assets:[]},
+        events: events.success ? events : {success:false, events:[], risk_outlook:{}},
+        partial: true,
+      };
+    }
+  }
   if(d.success){
     _sentimentOverviewCache = {fetched: now, data: d};
     return d;
@@ -246,17 +287,38 @@ async function fetchSentimentOverview(){
 async function load(){
   try{
     const page = await fetchSentimentOverview();
-    if(!page.success) return;
+    if(!page.success){
+      renderSentimentUnavailable('Sentiment overview timed out');
+      return;
+    }
     const d = page.sentiment || {};
     const da = page.by_asset || {assets:[]};
     const ev = page.events || {};
+    const market = d.market_composite || {
+      score: d.score || 0,
+      interpretation: d.overall_sentiment || 'Neutral',
+      drivers: [],
+      components: {},
+    };
+    const news = d.news_sentiment || {
+      score: 0,
+      interpretation: 'Neutral',
+      article_count: d.article_count || 0,
+    };
+    const context = d.sentiment_context || {
+      display_label: market.interpretation || 'Neutral',
+      summary: 'Macro composite and headline tone are shown separately.',
+      mode: 'mixed',
+    };
 
     // Composite
-    const score=d.score||0;
+    const score=market.score||0;
     const col=sColor(score);
+    const drivers=(market.drivers||[]).slice(0,3).map(driver=>`${driver.label} ${fmtScore(driver.score)}`).join(' · ');
     document.getElementById('compScore').textContent=(score>=0?'+':'')+score.toFixed(3);
     document.getElementById('compScore').style.color=col;
-    document.getElementById('compLabel').textContent=d.overall_sentiment||'Neutral';
+    document.getElementById('compLabel').textContent=context.display_label||market.interpretation||'Neutral';
+    document.getElementById('compExplain').textContent=drivers ? `${context.summary} Drivers: ${drivers}.` : context.summary;
     document.getElementById('compBar').style.cssText=`width:${((score+1)/2*100).toFixed(0)}%;background:${col}`;
 
     // Fear/greed
@@ -266,6 +328,11 @@ async function load(){
     document.getElementById('fgNum').style.color=fgCol;
     document.getElementById('fgLbl').textContent=fg.classification;
     document.getElementById('fgPtr').style.left=fg.value+'%';
+    document.getElementById('fgNote').textContent = fg.value<=25
+      ? 'Extreme fear is treated as a contrarian bullish macro input, not as bearish headline tone.'
+      : fg.value>=75
+        ? 'Extreme greed is treated as a contrarian bearish macro input, not as bullish headline tone.'
+        : 'Fear & Greed is only one macro input in the broader sentiment view.';
 
     // Regime inputs
     const vix = d.vix || {value:20, classification:'Normal'};
@@ -275,11 +342,17 @@ async function load(){
     const highImpactCount = (ev.events || []).filter(e => String(e.impact || '').toUpperCase() === 'HIGH').length;
     const riskText = riskReduce ? 'Reduce risk' : highImpactCount ? 'Elevated' : 'Normal';
     const riskColor = riskReduce ? 'var(--rd)' : highImpactCount ? 'var(--am)' : 'var(--gr)';
+    const ranked=(da.assets||[]).filter(a=>typeof a.score==='number');
+    const activeSnapshots=ranked.filter(a=>String(a.label||'').toLowerCase()!=='market closed');
+    const assetAvg=avg(activeSnapshots.map(a=>Number(a.score||0)));
+    const alignmentColor=context.mode==='aligned'?'var(--gr)':context.mode.startsWith('contrarian')?'var(--am)':'var(--tx2)';
     document.getElementById('regimePanel').innerHTML = [
+      {label:'Alignment', value: context.display_label || 'Mixed', sub: context.summary || 'Macro and news relationship', color: alignmentColor},
       {label:'VIX', value: Number(vix.value || 0).toFixed(1), sub: vix.classification || 'Normal', color: Number(vix.value || 0) >= 25 ? 'var(--rd)' : Number(vix.value || 0) >= 18 ? 'var(--am)' : 'var(--gr)'},
-      {label:'News Articles', value: String(d.article_count || 0), sub: 'tracked in dashboard window', color: 'var(--cy)'},
+      {label:'News Articles', value: String(news.article_count || d.article_count || 0), sub: `headline tone ${fmtScore(news.score || 0)} · ${news.interpretation || sBucket(news.score || 0)}`, color: 'var(--cy)'},
       {label:'Whale Alerts', value: String(whaleAlerts.length), sub: '24h alerts above threshold', color: whaleAlerts.length ? 'var(--am)' : 'var(--tx2)'},
       {label:'Event Risk', value: riskText, sub: risk.summary || `${highImpactCount} high-impact events queued`, color: riskColor},
+      {label:'Asset Snapshots', value: fmtScore(assetAvg), sub: `${activeSnapshots.length} live asset snapshots · ${sBucket(assetAvg)}`, color: sColor(assetAvg)},
     ].map(item => `
       <div class="regime-card">
         <div class="regime-val" style="color:${item.color}">${item.value}</div>
@@ -291,7 +364,7 @@ async function load(){
     // Distribution
     const dist=d.sentiment_distribution||{bullish:0,neutral:0,bearish:0};
     const total=Math.max(1,dist.bullish+dist.neutral+dist.bearish);
-    document.getElementById('distPanel').innerHTML=['Bullish','Neutral','Bearish'].map((lbl,i)=>{
+    document.getElementById('distPanel').innerHTML=`<div class="panel-note">Recent article tone only. This can disagree with the macro composite because the macro score includes contrarian fear/greed and VIX inputs.</div>`+['Bullish','Neutral','Bearish'].map((lbl,i)=>{
       const val=[dist.bullish,dist.neutral,dist.bearish][i];
       const pct=(val/total*100).toFixed(0);
       const col=['var(--gr)','var(--am)','var(--rd)'][i];
@@ -300,13 +373,13 @@ async function load(){
         <div class="dist-bar"><div class="dist-fill" style="width:${pct}%;background:${col}"></div></div>
         <span class="dist-pct" style="color:${col}">${pct}%</span>
       </div>`;
-    }).join('');
+    }).join('')+`<div class="panel-note" style="margin-top:10px">Headline average ${fmtScore(news.score || 0)} · ${news.interpretation || sBucket(news.score || 0)}</div>`;
 
     // News
     const arts=d.articles||[];
     const nEl=document.getElementById('newsPanel');
     if(!arts.length){nEl.innerHTML='<div class="empty">No articles</div>';}
-    else{nEl.innerHTML=arts.slice(0,8).map(a=>`
+    else{nEl.innerHTML=`<div class="panel-note">Individual headlines are scored separately from the macro composite and can stay bearish while the composite turns contrarian-bullish.</div>`+arts.slice(0,8).map(a=>`
       <div class="news-item">
         <div class="news-title">${a.title||a.headline||''}</div>
         <div class="news-meta">
@@ -318,14 +391,13 @@ async function load(){
 
     // Leaders
     const leaderEl=document.getElementById('leaderPanel');
-    const ranked=(da.assets||[]).filter(a=>typeof a.score==='number');
     if(!ranked.length){
       leaderEl.innerHTML='<div class="empty">No asset-level sentiment yet</div>';
     }else{
       const bullish=[...ranked].sort((a,b)=>b.score-a.score).slice(0,3);
       const bearish=[...ranked].sort((a,b)=>a.score-b.score).slice(0,3);
       const leaders=[...bullish, ...bearish.filter(item => !bullish.some(top => top.asset===item.asset))].slice(0,6);
-      leaderEl.innerHTML=leaders.map(item=>{
+      leaderEl.innerHTML=`<div class="panel-note">These are short-horizon per-asset snapshots. They do not have to match the macro composite.</div>`+leaders.map(item=>{
         const positive=item.score>=0;
         const color=sColor(item.score);
         const tagBg=positive?'rgba(0,208,132,.15)':'rgba(255,69,96,.15)';
@@ -342,7 +414,7 @@ async function load(){
     const grid=document.getElementById('assetGrid');
     if(!da.assets?.length){grid.innerHTML='<div class="empty" style="grid-column:span 5">Unavailable</div>';return;}
     const max=Math.max(...da.assets.map(a=>Math.abs(a.score)),0.1);
-    grid.innerHTML=da.assets.map(a=>{
+    grid.innerHTML=`<div class="panel-note" style="grid-column:span 5">Per-asset snapshots use market-intelligence signals for each asset, so this grid can stay neutral while the macro composite is driven by broad fear/greed or VIX.</div>`+da.assets.map(a=>{
       const col=sColor(a.score);
       const int=Math.min(0.9,Math.abs(a.score)/max);
       const bg=a.score>0?`rgba(0,208,132,${0.07+int*0.45})`:`rgba(255,69,96,${0.07+int*0.45})`;
@@ -366,7 +438,9 @@ async function load(){
         <div style="font-size:13px;margin-bottom:2px">${e.title||e.event||''}</div>
         <div style="font-size:11px;color:var(--tx3)">${e.time||e.date||''} ${e.impact?`· <span style="color:${String(e.impact).toUpperCase()==='HIGH'?'var(--rd)':'var(--am)'}">${e.impact}</span>`:''}</div>
       </div>`).join('');}
-  }catch(e){}
+  }catch(e){
+    renderSentimentUnavailable('Sentiment overview timed out');
+  }
 }
 load();setInterval(load,60000);
 </script>

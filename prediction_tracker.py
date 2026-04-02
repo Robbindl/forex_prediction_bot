@@ -19,8 +19,8 @@ except Exception:
     _broker = None
 
 try:
-    import core.engine as _eng_mod
-    _fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
+    _eng_mod = sys.modules.get("core.engine")
+    _fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None) if _eng_mod is not None else None
     if _fetcher is None:
         from data.fetcher import get_shared_fetcher
         _fetcher = get_shared_fetcher()

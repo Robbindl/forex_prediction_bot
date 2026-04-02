@@ -196,6 +196,7 @@ class DatabaseService:
                 existing.pnl         = _np(trade_data.get("pnl"))
                 existing.pnl_percent = _np(trade_data.get("pnl_percent"))
                 existing.duration_minutes = int(_np(trade_data.get("duration_minutes", 0)))
+                existing.trade_metadata = trade_data.get("metadata", existing.trade_metadata or {})
                 return tid
 
             row = Trade(
@@ -257,6 +258,31 @@ class DatabaseService:
                 s.query(Trade)
                 .filter(Trade.entry_time >= since)
                 .order_by(Trade.entry_time)
+                .all()
+            )
+            return [r.to_dict() for r in rows]
+
+    def get_execution_feedback_trades(
+        self,
+        since: datetime,
+        asset: str = "",
+        category: str = "",
+        limit: int = 500,
+    ) -> List[Dict]:
+        with self.get_session() as s:
+            query = s.query(Trade).filter(
+                Trade.exit_time.isnot(None),
+                Trade.entry_time >= since,
+            )
+            if asset:
+                query = query.filter(
+                    func.coalesce(Trade.canonical_asset, Trade.asset) == asset
+                )
+            if category:
+                query = query.filter(Trade.category == category)
+            rows = (
+                query.order_by(desc(func.coalesce(Trade.exit_time, Trade.entry_time)))
+                .limit(limit)
                 .all()
             )
             return [r.to_dict() for r in rows]
@@ -585,6 +611,38 @@ class DatabaseService:
                 "limit": limit,
             }).fetchall()
         return rows
+
+    def get_setup_memory_records(
+        self,
+        category: str,
+        since: datetime,
+        asset: str = "",
+        limit: int = 4000,
+    ) -> List[Dict[str, Any]]:
+        with self.get_session() as s:
+            rows = s.execute(text("""
+                SELECT asset, category, direction, confidence, signal_time,
+                       horizon_minutes, actual_price, direction_correct,
+                       target_hit, pct_move, signal_metadata
+                FROM prediction_outcomes
+                WHERE evaluated = true
+                  AND category = :category
+                  AND signal_time >= :since
+                  AND signal_metadata IS NOT NULL
+                ORDER BY signal_time DESC
+                LIMIT :limit
+            """), {
+                "category": category,
+                "since": since,
+                "limit": limit,
+            }).fetchall()
+
+        cols = [
+            "asset", "category", "direction", "confidence", "signal_time",
+            "horizon_minutes", "actual_price", "direction_correct",
+            "target_hit", "pct_move", "signal_metadata",
+        ]
+        return [dict(zip(cols, row)) for row in rows]
 
     def save_strategy_performance_snapshot(
         self,

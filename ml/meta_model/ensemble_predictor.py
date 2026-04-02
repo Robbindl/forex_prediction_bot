@@ -46,7 +46,7 @@ class EnsemblePredictor:
         scores  = self._collect_scores(signal, context)
 
         ensemble_score, active_engines = self._compute_ensemble(scores, weights)
-        adj_label = self._adjust_confidence(signal, ensemble_score)
+        adj_label = self._classify_ensemble(signal, ensemble_score)
 
         signal.metadata["meta_ai_regime"]   = regime
         signal.metadata["meta_ai_ensemble"] = round(ensemble_score, 4)
@@ -79,8 +79,7 @@ class EnsemblePredictor:
 
         logger.info(
             f"[MetaAI] {signal.asset} regime={regime}  "
-            f"ensemble={ensemble_score:.3f}  {adj_label}  "
-            f"conf {conf_before:.3f} → {signal.confidence:.3f}"
+            f"ensemble={ensemble_score:.3f}  {adj_label}"
         )
         return signal
 
@@ -221,17 +220,21 @@ class EnsemblePredictor:
 
         return round(active_score / active_weight, 4), active_count
 
-    def _adjust_confidence(self, signal: "Signal", ensemble_score: float) -> str:
+    def _classify_ensemble(self, signal: "Signal", ensemble_score: float) -> str:
         distance = abs(ensemble_score - 0.5) * 2
 
         if ensemble_score >= BOOST_THRESHOLD:
             amount = round(BOOST_AMOUNT * distance, 4)
-            signal.boost(amount)
-            return f"+{amount:.3f} boost (strong ensemble)"
+            signal.metadata["meta_ai_bias"] = "support"
+            signal.metadata["meta_ai_strength"] = amount
+            return f"support={amount:.3f} (strong ensemble)"
 
         if ensemble_score <= REDUCE_THRESHOLD:
             amount = round(REDUCE_AMOUNT * distance, 4)
-            signal.reduce(amount)
-            return f"-{amount:.3f} reduce (weak ensemble)"
+            signal.metadata["meta_ai_bias"] = "conflict"
+            signal.metadata["meta_ai_strength"] = amount
+            return f"conflict={amount:.3f} (weak ensemble)"
 
+        signal.metadata["meta_ai_bias"] = "neutral"
+        signal.metadata["meta_ai_strength"] = 0.0
         return NEUTRAL_ZONE_MSG

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import List, Optional
+import time
 import pandas as pd
 from strategies.base import BaseStrategy
 from strategies.rsi      import RSIStrategy
@@ -25,32 +26,56 @@ class VotingStrategy(BaseStrategy):
             MACDStrategy(),
             BollingerStrategy(),
         ]
-        # Auto-load any lab strategies registered in live_bridge.py
-        self._load_live_bridge_strategies()
+        self._live_bridge_names: set[str] = set()
+        self._live_bridge_signature = ""
+        self._live_bridge_last_refresh_at = 0.0
+        self._refresh_live_bridge_strategies(force=True)
 
     def _load_live_bridge_strategies(self) -> None:
+        self._refresh_live_bridge_strategies(force=True)
+
+    def _refresh_live_bridge_strategies(self, force: bool = False) -> None:
         """
-        Automatically loads strategies from strategy_lab/live_bridge.py
-        LIVE_STRATEGY_CONFIGS on every instantiation.
-        This means adding a strategy to LIVE_STRATEGY_CONFIGS and
-        restarting bot.py is all that is needed — no other changes.
-        Silently skips if strategy_lab is not installed.
+        Refresh live bridge strategies from the manual list plus the
+        registry-managed live strategy store.
+
+        Refresh is throttled during normal signal generation so the voting
+        pool can pick up registry changes without reloading on every asset.
         """
+        now = time.monotonic()
+        if not force and (now - self._live_bridge_last_refresh_at) < 60.0:
+            return
+        self._live_bridge_last_refresh_at = now
         try:
-            from strategy_lab.live_bridge    import LIVE_STRATEGY_CONFIGS
-            from strategy_lab.live_bridge    import DynamicStrategyLive
-            for config in LIVE_STRATEGY_CONFIGS:
+            from strategy_lab.live_bridge import DynamicStrategyLive
+            from strategy_lab.live_bridge import get_live_strategy_bundle
+
+            configs, signature = get_live_strategy_bundle()
+            if not force and signature == self._live_bridge_signature:
+                return
+
+            if self._live_bridge_names:
+                stale_names = set(self._live_bridge_names)
+                self._strategies = [s for s in self._strategies if s.name not in stale_names]
+
+            loaded_names: set[str] = set()
+            existing = [s.name for s in self._strategies]
+            for config in configs:
                 live = DynamicStrategyLive(config)
-                existing = [s.name for s in self._strategies]
+                loaded_names.add(live.name)
                 if live.name not in existing:
                     self._strategies.append(live)
+                    existing.append(live.name)
                     logger.info(f"[Voting] Live bridge: added '{live.name}'")
+            self._live_bridge_names = loaded_names
+            self._live_bridge_signature = signature
         except ImportError:
             pass   # strategy_lab not installed — skip silently
         except Exception as e:
             logger.debug(f"[Voting] Live bridge load error: {e}")
 
     def generate(self, asset, canonical, category, df) -> Optional[Signal]:
+        self._refresh_live_bridge_strategies()
         signals: List[Signal] = []
         for strat in self._strategies:
             try:

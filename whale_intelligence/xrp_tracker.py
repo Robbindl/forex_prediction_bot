@@ -14,6 +14,7 @@ MIN_XRP_DELTA = 100000.0  # Minimum XRP drops to track (1 XRP = 1e6 drops)
 _RPC_BACKOFF_UNTIL = 0.0
 _RPC_BACKOFF_NOTIFIED = False
 _RPC_BACKOFF_SECS = 180.0
+_RPC_TIMEOUT = (5, 20)
 
 
 class XRPTracker:
@@ -22,6 +23,11 @@ class XRPTracker:
     def __init__(self, rpc_url: Optional[str] = None) -> None:
         self._rpc_url = rpc_url or XRPL_RPC_URL
         self._enabled = True
+
+    def _post(self, payload: dict) -> dict:
+        resp = requests.post(self._rpc_url, json=payload, timeout=_RPC_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
 
     def fetch_balance(self, address: str) -> Optional[float]:
         """
@@ -48,9 +54,7 @@ class XRPTracker:
                     }
                 ],
             }
-            resp = requests.post(self._rpc_url, json=payload, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._post(payload)
 
             # rippled returns result directly, not status: success
             if "error" in data or "result" not in data:
@@ -102,16 +106,20 @@ class XRPTracker:
                     }
                 ],
             }
-            resp = requests.post(self._rpc_url, json=payload, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._post(payload)
 
-            if data.get("status") != "success":
+            if "error" in data:
+                logger.warning(f"[XRPTracker] RPC error fetching transactions: {data.get('error', 'Unknown error')}")
+                return None
+
+            result = data.get("result", {})
+            status = str(data.get("status") or result.get("status") or "").lower()
+            if status and status != "success":
                 return None
 
             _RPC_BACKOFF_UNTIL = 0.0
             _RPC_BACKOFF_NOTIFIED = False
-            return data.get("result", {}).get("transactions", [])
+            return result.get("transactions", [])
         except Exception as e:
             _RPC_BACKOFF_UNTIL = time.time() + _RPC_BACKOFF_SECS
             _RPC_BACKOFF_NOTIFIED = False

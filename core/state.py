@@ -17,6 +17,28 @@ _STATE_FILE = Path("data/system_state.json")
 _STATE_FILE.parent.mkdir(exist_ok=True)
 
 
+def _merge_trade_metadata(base: Any, extra: Any) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    if isinstance(base, dict):
+        merged.update(base)
+    if isinstance(extra, dict):
+        merged.update(extra)
+    return merged
+
+
+def _attach_execution_feedback(snapshot: Dict[str, Any]) -> None:
+    try:
+        from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+        feedback = get_execution_feedback_service().analyze_trade(snapshot)
+        if isinstance(feedback, dict) and feedback:
+            metadata = _merge_trade_metadata(snapshot.get("metadata"), None)
+            metadata["execution_feedback"] = feedback
+            snapshot["metadata"] = metadata
+    except Exception as e:
+        logger.debug(f"[State] Execution feedback attach skipped: {e}")
+
+
 class SystemState:
     """Single source of truth. Thread-safe. DB-persisted + JSON cache."""
 
@@ -63,7 +85,12 @@ class SystemState:
             logger.error(f"[State] DB save_open_position failed: {e}")
 
     def close_position(
-        self, trade_id: str, exit_price: float, exit_reason: str, pnl: float
+        self,
+        trade_id: str,
+        exit_price: float,
+        exit_reason: str,
+        pnl: float,
+        extra_updates: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict]:
         with self._lock:
             pos = self._open_positions.pop(trade_id, None)
@@ -103,6 +130,18 @@ class SystemState:
                 "exit_time":        exit_time,
                 "duration_minutes": duration_minutes,
             })
+            if extra_updates:
+                extra = dict(extra_updates)
+                update_meta = extra.pop("metadata", None)
+                if update_meta is None:
+                    update_meta = extra.pop("trade_metadata", None)
+                for key, value in extra.items():
+                    if value is not None:
+                        pos[key] = value
+                if update_meta is not None:
+                    pos["metadata"] = _merge_trade_metadata(pos.get("metadata"), update_meta)
+
+            _attach_execution_feedback(pos)
 
             self._daily_pnl  += pnl
             # FIX: Floor the balance at 0 — without this a single large
@@ -388,6 +427,7 @@ class SystemState:
                 return None
 
             partial_snapshot = dict(partial_trade)
+            _attach_execution_feedback(partial_snapshot)
             pnl = float(partial_snapshot.get("pnl", 0.0))
 
             self._daily_pnl += pnl

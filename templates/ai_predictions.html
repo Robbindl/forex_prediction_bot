@@ -29,8 +29,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
 .panel-body{padding:12px 16px;flex:1}
-.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:12px 16px}
-.summary-card{background:var(--s2);border-radius:8px;padding:12px;min-height:96px;display:flex;flex-direction:column;justify-content:center}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;padding:12px 16px}
+.summary-card{background:var(--s2);border-radius:8px;padding:12px;min-height:104px;display:flex;flex-direction:column;justify-content:center}
 .summary-val{font-size:22px;font-weight:700;margin-bottom:3px}
 .summary-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
 .summary-sub{font-size:11px;color:var(--tx2);margin-top:5px}
@@ -225,6 +225,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     </div>
   </div>
 </div>
+<script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
 let accChartInst=null;
 
@@ -235,12 +236,22 @@ function ring(pct,color){
 function hzColor(p){return p>=60?'var(--gr)':p>=45?'var(--am)':'var(--rd)'}
 
 let _aiPredictionsCache = null;
+function renderAiUnavailable(message){
+  const msg = message || 'AI prediction data unavailable';
+  document.getElementById('summaryGrid').innerHTML = '<div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">'+msg+'</div></div>';
+  document.getElementById('ringGrid').innerHTML = '<div class="ring-item"><div class="empty">'+msg+'</div></div>';
+  document.getElementById('recentBody').innerHTML = '<tr><td colspan="8" class="empty">'+msg+'</td></tr>';
+  document.getElementById('leaderGrid').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
+}
 async function fetchAiPredictionsOverview(days){
   const now = Date.now();
   if(_aiPredictionsCache && _aiPredictionsCache.days === days && now - _aiPredictionsCache.fetched < 10000){
     return _aiPredictionsCache.data;
   }
-  const d = await fetch(`/api/page-overview?page=ai_predictions&days=${days}`).then(r=>r.json());
+  let d = await window.dashboardFetchJson(`/api/page-overview?page=ai_predictions&days=${days}`, {timeoutMs: 12000});
+  if(!d.success){
+    d = await window.dashboardFetchJson(`/api/ai-predictions/overview?days=${days}`, {timeoutMs: 12000});
+  }
   if(!d.success) throw new Error('AI overview unavailable');
   _aiPredictionsCache = {days, fetched: now, data: d};
   return d;
@@ -263,7 +274,7 @@ async function loadAcc(days,el){
     const byAsset=accuracy.by_asset||{};
 
     renderPredictionSummary(overview);
-    renderAccuracyLeaders(byAsset);
+    renderAccuracyLeaders(byAsset, overview);
 
     // Rings
     const labels=['1H','4H','24H'];const titles=['1 Hour','4 Hours','24 Hours'];
@@ -312,13 +323,18 @@ async function loadAcc(days,el){
         <td style="color:var(--tx3)">${(r.time||'').substring(5,16)}</td>
       </tr>`;
     }).join('');
-  }catch(e){console.error(e);}
+  }catch(e){
+    console.error(e);
+    renderAiUnavailable('AI overview timed out');
+    if(accChartInst) accChartInst.destroy();
+  }
 }
 
 function renderPredictionSummary(overview){
   try{
     const accuracy = overview.accuracy || {};
     const signals = overview.signals || [];
+    const liveQuality = overview.live_quality || {};
     const byH = accuracy.by_horizon || {};
     const horizons = Object.entries(byH);
     const totalEvaluated = horizons.reduce((sum, [, item]) => sum + Number(item.total || 0), 0);
@@ -329,6 +345,9 @@ function renderPredictionSummary(overview){
     }, 0) / signals.length : 0;
     const buyCount = signals.filter(s => s.direction === 'BUY').length;
     const sellCount = signals.filter(s => s.direction === 'SELL').length;
+    const avgMemory = Number(liveQuality.avg_memory_score || 0);
+    const avgExec = Number(liveQuality.avg_execution_quality || 0);
+    const avgOpp = Number(liveQuality.avg_opportunity_score || 0);
 
     document.getElementById('summaryGrid').innerHTML = [
       {
@@ -344,6 +363,18 @@ function renderPredictionSummary(overview){
         color: avgConf >= 75 ? 'var(--gr)' : avgConf >= 62 ? 'var(--am)' : 'var(--tx2)',
       },
       {
+        value: avgMemory ? avgMemory.toFixed(1) : '—',
+        label: 'Avg Memory Score',
+        sub: `${Number(liveQuality.memory_ready_count || 0)} memory-backed signals`,
+        color: avgMemory >= 62 ? 'var(--gr)' : avgMemory >= 50 ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
+        value: avgExec ? avgExec.toFixed(1) : '—',
+        label: 'Avg Execution Quality',
+        sub: `${Number(liveQuality.execution_ready_count || 0)} execution-backed signals`,
+        color: avgExec >= 62 ? 'var(--gr)' : avgExec >= 50 ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
         value: String(totalEvaluated),
         label: 'Evaluated Forecasts',
         sub: `${accuracy.days_back || 30} day window`,
@@ -355,6 +386,12 @@ function renderPredictionSummary(overview){
         sub: bestHorizon ? `${bestHorizon[1].correct || 0}/${bestHorizon[1].total || 0} correct` : 'not enough data',
         color: 'var(--gr)',
       },
+      {
+        value: avgOpp ? avgOpp.toFixed(3) : '—',
+        label: 'Avg Opportunity Score',
+        sub: signals.length ? 'ranked active decisions' : 'no ranked decisions',
+        color: avgOpp >= 0.72 ? 'var(--cy)' : avgOpp >= 0.58 ? 'var(--bl)' : 'var(--tx2)',
+      },
     ].map(item => `
       <div class="summary-card">
         <div class="summary-val" style="color:${item.color}">${item.value}</div>
@@ -365,7 +402,7 @@ function renderPredictionSummary(overview){
   }catch(e){}
 }
 
-function renderAccuracyLeaders(byAsset){
+function renderAccuracyLeaders(byAsset, overview){
   try{
     const rows = Object.entries(byAsset || {}).map(([asset, item]) => ({
       asset,
@@ -377,7 +414,16 @@ function renderAccuracyLeaders(byAsset){
     const strong = rows.filter(item => item.total >= 3);
     const ranked = (strong.length ? strong : rows).sort((a,b) => b.accuracy - a.accuracy);
     const best = ranked.slice(0, 5);
-    const weak = [...ranked].reverse().slice(0, 5);
+    const liveRanked = (overview?.signals || []).map(item => {
+      const memory = Number(item.memory_score || 0);
+      const execution = Number(item.execution_quality_score || 0);
+      const blend = memory > 0 || execution > 0 ? (memory + execution) / 2 : 0;
+      return {
+        asset: item.asset,
+        subtitle: `${item.direction || '—'} · M ${memory ? memory.toFixed(0) : '—'} · E ${execution ? execution.toFixed(0) : '—'}`,
+        score: blend,
+      };
+    }).filter(item => item.score > 0).sort((a,b) => b.score - a.score).slice(0, 5);
     const renderList = (title, items, positive=true) => `
       <div class="leader-box">
         <div class="leader-title">${title}</div>
@@ -390,7 +436,19 @@ function renderAccuracyLeaders(byAsset){
         `).join('') : '<div class="empty">Not enough evaluated forecasts</div>'}
       </div>
     `;
-    document.getElementById('leaderGrid').innerHTML = renderList('Best Assets', best, true) + renderList('Needs Work', weak, false);
+    const renderQualityList = (title, items) => `
+      <div class="leader-box">
+        <div class="leader-title">${title}</div>
+        ${items.length ? items.map(item => `
+          <div class="leader-row">
+            <div class="leader-asset">${item.asset}</div>
+            <div class="leader-meta">${item.subtitle}</div>
+            <div class="leader-score" style="color:var(--cy)">${item.score.toFixed(0)}</div>
+          </div>
+        `).join('') : '<div class="empty">No live quality signals</div>'}
+      </div>
+    `;
+    document.getElementById('leaderGrid').innerHTML = renderList('Accuracy Leaders', best, true) + renderQualityList('Live Quality Leaders', liveRanked);
   }catch(e){}
 }
 
@@ -411,6 +469,12 @@ async function loadPredictions(){
       const conf = p.confidence <= 1 ? p.confidence * 100 : p.confidence;
       const isBuy=p.direction==='BUY';
       const barCol=conf>=75?'var(--gr)':conf>=62?'var(--am)':'var(--rd)';
+      const memoryScore=Number(p.memory_score||0);
+      const execQ=Number(p.execution_quality_score||0);
+      const oppScore=Number(p.opportunity_score||0);
+      const memSamples=Number(p.memory_sample_count||0);
+      const execSamples=Number(p.execution_feedback_sample_count||0);
+      const notes=[...(Array.isArray(p.memory_notes)?p.memory_notes:[]), ...(Array.isArray(p.execution_notes)?p.execution_notes:[])].slice(0,2);
       const fmt=n=>n?(n<10?n.toFixed(5):n.toFixed(2)):'—';
       return`<div class="pred-card pc-${isBuy?'buy':'sell'}">
         <div class="pc-header">
@@ -428,6 +492,9 @@ async function loadPredictions(){
           <div class="pc-level"><div class="pc-level-l">Target</div><div class="pc-level-v" style="color:var(--gr)">${fmt(p.tp)}</div></div>
         </div>
         <div class="pc-footer"><span>${p.strategy||'Decision Engine'}</span><span class="rr-badge">R:R ${p.rr||'—'}</span></div>
+        <div class="pc-footer"><span>Memory ${memoryScore?memoryScore.toFixed(0):'—'}${memSamples?` · n${memSamples}`:''}</span><span>Exec ${execQ?execQ.toFixed(0):'—'}${execSamples?` · n${execSamples}`:''}</span></div>
+        <div class="pc-footer"><span>${oppScore?`Opp ${oppScore.toFixed(3)}`:'Opportunity pending'}</span><span>${p.opportunity_rank?`Rank #${p.opportunity_rank}`:(p.memory_regime||p.category||'')}</span></div>
+        ${notes.length?`<div class="pc-footer"><span style="color:var(--tx2)">${notes.join(' · ')}</span><span></span></div>`:''}
       </div>`;
     }).join('');
   }catch(e){}

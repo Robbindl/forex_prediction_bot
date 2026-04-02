@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from core.confidence import boost_confidence, clamp_confidence
 from core.signal_journal import SignalJournal
 
 
@@ -51,6 +52,7 @@ class Signal:
     journal: SignalJournal = field(init=False)
 
     def __post_init__(self) -> None:
+        self.confidence = clamp_confidence(self.confidence)
         self.journal = SignalJournal(
             asset     = self.asset,
             direction = self.direction,
@@ -64,10 +66,8 @@ class Signal:
             self.step_reached = int(layer)
 
     def boost(self, delta: float) -> None:
-        """Increase confidence, capped at 0.95 to prevent false certainty."""
-        # Confidence > 0.95 skews risk/reward and trades become overconfident even with
-        # perfect backtests. Keep a 5% uncertainty buffer for unknown unknowns.
-        self.confidence = min(0.95, self.confidence + delta)
+        """Increase confidence, capped to the configured maximum conviction score."""
+        self.confidence = boost_confidence(self.confidence, delta)
 
     def reduce(self, delta: float) -> None:
         """Decrease confidence, floor at 0.0."""
@@ -130,5 +130,5 @@ class Signal:
         status = "ALIVE" if self.alive else f"DEAD({self.kill_reason})"
         return (
             f"Signal({self.asset} {self.direction} "
-            f"conf={self.confidence:.3f} {status})"
+            f"score={self.confidence:.3f} {status})"
         )

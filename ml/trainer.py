@@ -3,6 +3,7 @@ ml/trainer.py — Background model trainer.
 Merges: auto_train_daily.py, auto_train_intelligent.py, training_monitor.py, signal_learning.py
 """
 from __future__ import annotations
+import sys
 import threading
 import time
 import json
@@ -17,6 +18,10 @@ from ml.validation import evaluate_classifier_research
 from config.config import (
     ASSET_CATEGORIES,
     LOOKBACK_PERIOD,
+    POLICY_TRAINING_PERIODS_15M,
+    POLICY_TRAINING_PERIODS_1H,
+    POLICY_TRAINING_PERIODS_4H,
+    POLICY_TRAINING_PERIODS_1D,
     TRAIN_TEST_SPLIT,
     MODEL_MAX_AGE_HOURS,
     MIN_HOLDOUT_ACCURACY,
@@ -25,6 +30,14 @@ from config.config import (
 )
 
 logger = get_logger()
+_METADATA_FEATURE_COUNT = 22
+
+
+def _resolve_engine_fetcher():
+    eng_mod = sys.modules.get("core.engine")
+    if eng_mod is None:
+        return None
+    return getattr(getattr(eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
 
 
 def _build_model():
@@ -101,7 +114,7 @@ def _build_historical_policy_data(df: pd.DataFrame):
     X, y = _build_training_data(df)
     if X is None or y is None:
         return None, None
-    metadata_padding = np.zeros((X.shape[0], 16), dtype=np.float32)
+    metadata_padding = np.zeros((X.shape[0], _METADATA_FEATURE_COUNT), dtype=np.float32)
     return np.hstack([X, metadata_padding]), y
 
 
@@ -141,16 +154,16 @@ def _dominant_to_numeric(value: Any) -> float:
 
 def _build_metadata_features(signal_metadata: Any) -> np.ndarray | None:
     if not signal_metadata:
-        return np.zeros(16, dtype=np.float32)
+        return np.zeros(_METADATA_FEATURE_COUNT, dtype=np.float32)
 
     if isinstance(signal_metadata, str):
         try:
             signal_metadata = json.loads(signal_metadata)
         except Exception:
-            return np.zeros(16, dtype=np.float32)
+            return np.zeros(_METADATA_FEATURE_COUNT, dtype=np.float32)
 
     if not isinstance(signal_metadata, dict):
-        return np.zeros(16, dtype=np.float32)
+        return np.zeros(_METADATA_FEATURE_COUNT, dtype=np.float32)
 
     return np.array([
         _float_val(signal_metadata, "ml_confidence"),
@@ -169,6 +182,12 @@ def _build_metadata_features(signal_metadata: Any) -> np.ndarray | None:
         _float_val(signal_metadata, "liquidity_proxy"),
         _float_val(signal_metadata, "spread_penalty"),
         _float_val(signal_metadata, "confidence"),
+        _float_val(signal_metadata, "memory_score") / 100.0,
+        _float_val(signal_metadata, "memory_edge"),
+        _float_val(signal_metadata, "memory_win_rate"),
+        _float_val(signal_metadata, "memory_similarity"),
+        min(1.0, _float_val(signal_metadata, "memory_sample_count") / 50.0),
+        _float_val(signal_metadata, "opportunity_score"),
     ], dtype=np.float32)
 
 
@@ -236,6 +255,20 @@ def _train_model_from_arrays(name: str, X: np.ndarray, y: np.ndarray) -> bool:
 def _train_policy_model(name: str, df: pd.DataFrame) -> bool:
     X, y = _build_historical_policy_data(df)
     return _train_model_from_arrays(name, X, y)
+
+
+def _stack_historical_policy_data(dfs: List[pd.DataFrame]) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    X_parts: List[np.ndarray] = []
+    y_parts: List[np.ndarray] = []
+    for df in dfs:
+        X, y = _build_historical_policy_data(df)
+        if X is None or y is None or len(X) < 50:
+            continue
+        X_parts.append(X)
+        y_parts.append(y)
+    if not X_parts:
+        return None, None
+    return np.vstack(X_parts), np.concatenate(y_parts)
 
 
 def _parse_signal_metadata(raw_metadata: Any) -> dict:
@@ -459,11 +492,7 @@ class AutoTrainer:
         if not assets:
             return
 
-        try:
-            import core.engine as _eng_mod
-            _fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
-        except Exception:
-            _fetcher = None
+        _fetcher = _resolve_engine_fetcher()
         if _fetcher is None:
             _fetcher = self._fetcher
         if _fetcher is None:
@@ -479,8 +508,18 @@ class AutoTrainer:
             logger.info(f"[AutoTrainer] Live policy training failed for {category}, falling back to historical data")
 
         all_dfs: List[pd.DataFrame] = []
-        for asset in assets[:5]:
-            df = self._get_ohlcv_with_fallback(_fetcher, asset, category)
+        for asset in assets:
+            df = self._get_ohlcv_with_fallback(
+                _fetcher,
+                asset,
+                category,
+                periods_map={
+                    "15m": POLICY_TRAINING_PERIODS_15M,
+                    "1h": POLICY_TRAINING_PERIODS_1H,
+                    "4h": POLICY_TRAINING_PERIODS_4H,
+                    "1d": POLICY_TRAINING_PERIODS_1D,
+                },
+            )
             if df is not None and not df.empty:
                 all_dfs.append(df)
                 logger.info(f"[AutoTrainer] Got {len(df)} bars for {asset}")
@@ -490,6 +529,19 @@ class AutoTrainer:
         if not all_dfs:
             logger.warning(f"[AutoTrainer] No data available for policy training in {category}")
             return
+
+        stacked_X, stacked_y = _stack_historical_policy_data(all_dfs)
+        if stacked_X is not None and stacked_y is not None:
+            logger.info(
+                f"[AutoTrainer] Training {policy_key} on stacked historical policy data "
+                f"({len(stacked_y)} samples across {len(all_dfs)} assets)"
+            )
+            if _train_model_from_arrays(policy_key, stacked_X, stacked_y):
+                return
+            logger.info(
+                f"[AutoTrainer] Stacked historical policy training failed for {category}; "
+                f"falling back to per-asset candidates"
+            )
 
         if len(all_dfs) == 1:
             _train_policy_model(policy_key, all_dfs[0])
@@ -515,7 +567,13 @@ class AutoTrainer:
             f"(trained on {len(all_dfs)} assets individually)"
         )
 
-    def _get_ohlcv_with_fallback(self, fetcher, asset: str, category: str) -> Optional[pd.DataFrame]:
+    def _get_ohlcv_with_fallback(
+        self,
+        fetcher,
+        asset: str,
+        category: str,
+        periods_map: Optional[Dict[str, int]] = None,
+    ) -> Optional[pd.DataFrame]:
         """Get OHLCV data with timeframe fallbacks for assets that don't have intraday data."""
         from config.config import get_trading_timeframe
 
@@ -528,11 +586,13 @@ class AutoTrainer:
             "indices": [primary_tf, "4h", "1d"],
         }
 
-        periods_map = {"15m": 500, "1h": 300, "4h": 200, "1d": LOOKBACK_PERIOD}
+        resolved_periods = {"15m": 500, "1h": 300, "4h": 200, "1d": LOOKBACK_PERIOD}
+        if periods_map:
+            resolved_periods.update(periods_map)
 
         for tf in timeframe_fallbacks.get(category, [primary_tf]):
             try:
-                periods = periods_map.get(tf, LOOKBACK_PERIOD)
+                periods = resolved_periods.get(tf, LOOKBACK_PERIOD)
                 df = fetcher.get_ohlcv(asset, category, tf, periods)
                 if df is not None and not df.empty:
                     if tf != primary_tf:
@@ -550,11 +610,7 @@ class AutoTrainer:
             return
 
         # Try engine singleton fetcher first, fall back to self._fetcher
-        try:
-            import core.engine as _eng_mod
-            _fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
-        except Exception:
-            _fetcher = None
+        _fetcher = _resolve_engine_fetcher()
         if _fetcher is None:
             _fetcher = self._fetcher
         if _fetcher is None:

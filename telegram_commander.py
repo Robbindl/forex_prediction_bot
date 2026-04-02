@@ -235,6 +235,8 @@ class TelegramCommander:
                     await self.application.updater.start_polling(
                         allowed_updates=Update.ALL_TYPES,
                         drop_pending_updates=True,
+                        timeout=20,
+                        error_callback=self._handle_polling_error,
                     )
                     while self.is_running:
                         await asyncio.sleep(1)
@@ -250,6 +252,13 @@ class TelegramCommander:
                 continue
             else:
                 break
+
+    def _handle_polling_error(self, error: Exception) -> None:
+        msg = str(error or "")
+        if isinstance(error, (NetworkError, TimedOut, RetryAfter)):
+            logger.warning(f"[Telegram] polling network issue: {msg}")
+            return
+        logger.error(f"[Telegram] polling callback error: {msg}")
 
     def stop(self) -> None:
         self.is_running = False
@@ -276,6 +285,9 @@ class TelegramCommander:
         app.add_handler(CommandHandler("history",    self._cmd_history))
         app.add_handler(CommandHandler("pause",      self._cmd_pause_direct))
         app.add_handler(CommandHandler("resume",     self._cmd_resume_direct))
+        app.add_handler(CommandHandler("reprice",    self._cmd_reprice_direct))
+        app.add_handler(CommandHandler("reduce_weak", self._cmd_reduce_weak_direct))
+        app.add_handler(CommandHandler("top_setups", self._cmd_top_setups_direct))
 
         # /ask conversation handler
         ask_conv = ConversationHandler(
@@ -397,6 +409,9 @@ class TelegramCommander:
             logger.warning(f"[Telegram] flood control — retry in {wait}s")
         except (TimedOut, NetworkError) as e:
             msg = str(e).lower()
+            if "cannot schedule new futures after shutdown" in msg or "event loop is closed" in msg:
+                logger.debug(f"[Telegram] send skipped during shutdown: {e}")
+                return False
             if "can't parse entities" in msg or "parse entities" in msg:
                 logger.warning(f"[Telegram] parse error: {e}. Retrying without markdown")
                 try:
@@ -416,6 +431,9 @@ class TelegramCommander:
             logger.warning(f"[Telegram] network error: {e}")
         except Exception as e:
             msg = str(e).lower()
+            if "cannot schedule new futures after shutdown" in msg or "event loop is closed" in msg:
+                logger.debug(f"[Telegram] send skipped during shutdown: {e}")
+                return False
             if "can't parse entities" in msg or "parse entities" in msg:
                 logger.warning(f"[Telegram] parse error: {e}. Retrying without markdown")
                 try:
@@ -589,6 +607,19 @@ class TelegramCommander:
         text = self._do_resume()
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
+    async def _cmd_reprice_direct(self, update, ctx):
+        text, kb = self._do_reprice_weak()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _cmd_reduce_weak_direct(self, update, ctx):
+        text, kb = self._do_reduce_weak()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _cmd_top_setups_direct(self, update, ctx):
+        await update.message.reply_text("Scanning current opportunities…", parse_mode=ParseMode.MARKDOWN)
+        text, kb = self._build_top_setups(refresh=True)
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
     # ══════════════════════════════════════════════════════════════════════════
     # /ask conversation
     # ══════════════════════════════════════════════════════════════════════════
@@ -723,6 +754,12 @@ class TelegramCommander:
             await self._btn_pause(query)
         elif data == "resume":
             await self._btn_resume(query)
+        elif data == "reprice_weak":
+            await self._btn_reprice_weak(query)
+        elif data == "reduce_weak":
+            await self._btn_reduce_weak(query)
+        elif data == "top_setups":
+            await self._btn_top_setups(query)
         elif data == "close_menu":
             await self._btn_close_menu(query)
         elif data == "history":
@@ -1088,10 +1125,15 @@ class TelegramCommander:
             lines.append(f"_…and {len(positions) - 8} more_")
 
         buttons.append([
+            ("🧭 Top Setups", "top_setups"),
+            ("⚙️ Reprice Weak", "reprice_weak"),
+        ])
+        buttons.append([
+            ("📉 Reduce Weak", "reduce_weak"),
             ("⚡ Manage Positions", "close_menu"),
             ("📋 Trade History",    "history"),
-            ("🔄 Refresh", "positions"),
         ])
+        buttons.append([("🔄 Refresh", "positions")])
         buttons.append([("🏠 Menu", "menu")])
         return "\n".join(lines), _kb(*buttons)
 
@@ -1104,6 +1146,21 @@ class TelegramCommander:
     async def _btn_history(self, query, filter_cat: str = "all") -> None:
         """Show trade history with optional filter."""
         await self._show_history(query.edit_message_text, filter_cat=filter_cat)
+
+    async def _btn_reprice_weak(self, query) -> None:
+        await query.edit_message_text("Adjusting weak exits…", parse_mode=ParseMode.MARKDOWN)
+        text, kb = self._do_reprice_weak()
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _btn_reduce_weak(self, query) -> None:
+        await query.edit_message_text("Reducing weakest live positions…", parse_mode=ParseMode.MARKDOWN)
+        text, kb = self._do_reduce_weak()
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _btn_top_setups(self, query) -> None:
+        await query.edit_message_text("Scanning current opportunities…", parse_mode=ParseMode.MARKDOWN)
+        text, kb = self._build_top_setups(refresh=True)
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
     async def _show_history(self, send_fn, filter_cat: str = "all") -> None:
         """Render last 10 closed trades with open/close times and P&L."""
@@ -1731,6 +1788,107 @@ class TelegramCommander:
             return "▶️ *Trading Resumed*\n\nScanning for opportunities."
         except Exception as e:
             return f"❌ Error: {e}"
+
+    def _do_reprice_weak(self):
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
+        try:
+            updates = core.reprice_weak_exits(limit=3, score_threshold=0.62, tighten_only=True)
+            if not updates:
+                return (
+                    "No weak exits needed adjustment right now.",
+                    _kb([("📈 Positions", "positions"), ("🏠 Menu", "menu")]),
+                )
+
+            lines = [
+                "*Weak Exit Repricing*",
+                f"{len(updates)} position(s) updated.\n",
+            ]
+            for row in updates[:4]:
+                reasons = ", ".join(row.get("weak_reasons", [])[:2]) or "quality drift"
+                lines.append(
+                    f"*{row.get('asset','?')}*"
+                    f"\n  Stop `{self._fmt_price(float(row.get('old_stop_loss', 0) or 0), row.get('asset',''))}`"
+                    f" → `{self._fmt_price(float(row.get('new_stop_loss', 0) or 0), row.get('asset',''))}`"
+                    f"\n  Target `{self._fmt_price(float(row.get('old_take_profit', 0) or 0), row.get('asset',''))}`"
+                    f" → `{self._fmt_price(float(row.get('new_take_profit', 0) or 0), row.get('asset',''))}`"
+                    f"\n  Quality `{float(row.get('quality_score', 0.0) or 0.0):.1f}` | {reasons}\n"
+                )
+            return "\n".join(lines), _kb(
+                [("📈 Positions", "positions"), ("🧭 Top Setups", "top_setups")],
+                [("🏠 Menu", "menu")],
+            )
+        except Exception as e:
+            logger.error(f"[Telegram] reprice weak error: {e}", exc_info=True)
+            return f"❌ Error: {e}", _kb([("🏠 Menu", "menu")])
+
+    def _do_reduce_weak(self):
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
+        try:
+            actions = core.reduce_weak_positions(limit=3, score_threshold=0.58, reduction_fraction=0.35)
+            if not actions:
+                return (
+                    "No weak positions qualified for reduction right now.",
+                    _kb([("📈 Positions", "positions"), ("🏠 Menu", "menu")]),
+                )
+
+            lines = ["*Weak Position Reduction*\n"]
+            for row in actions[:4]:
+                if row.get("success"):
+                    lines.append(
+                        f"*{row.get('asset','?')}* reduced `{int(float(row.get('reduction_fraction',0) or 0)*100)}%`"
+                        f"\n  Realised `${float(row.get('realized_pnl', 0.0) or 0.0):+.2f}`"
+                        f" | Remaining `{float(row.get('remaining_size', 0.0) or 0.0):.4f}`"
+                        f"\n  Quality `{float(row.get('quality_score', 0.0) or 0.0):.1f}`"
+                        f" | {', '.join(row.get('weak_reasons', [])[:2]) or 'quality drift'}\n"
+                    )
+                else:
+                    lines.append(
+                        f"*{row.get('asset','?')}* skipped"
+                        f"\n  {row.get('reason','not eligible')}\n"
+                    )
+            return "\n".join(lines), _kb(
+                [("📈 Positions", "positions"), ("⚙️ Reprice Weak", "reprice_weak")],
+                [("🏠 Menu", "menu")],
+            )
+        except Exception as e:
+            logger.error(f"[Telegram] reduce weak error: {e}", exc_info=True)
+            return f"❌ Error: {e}", _kb([("🏠 Menu", "menu")])
+
+    def _build_top_setups(self, refresh: bool = False):
+        core = self.trading_system
+        if not core:
+            return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
+        try:
+            setups = core.get_top_ranked_opportunities(limit=5, refresh=refresh)
+            if not setups:
+                return (
+                    "No ranked opportunities available yet.",
+                    _kb([("🎯 Signals", "signals"), ("🏠 Menu", "menu")]),
+                )
+
+            lines = ["*Top Ranked Opportunities*\n"]
+            for idx, item in enumerate(setups, start=1):
+                opp = float(item.get("opportunity_score", 0.0) or 0.0)
+                conf = float(item.get("confidence", 0.0) or 0.0)
+                mem = float(item.get("memory_score", 0.0) or 0.0)
+                exec_q = float(item.get("execution_quality_score", 0.0) or 0.0)
+                source = "live signal" if item.get("source") == "signal" else "open position"
+                lines.append(
+                    f"`#{idx}` *{item.get('asset','?')}* {str(item.get('direction','')).upper()}"
+                    f"\n  Opportunity `{opp:.3f}` | Confidence `{conf:.0%}`"
+                    f"\n  Memory `{mem:.0f}` | Execution `{exec_q:.0f}` | {source}\n"
+                )
+            return "\n".join(lines), _kb(
+                [("⚙️ Reprice Weak", "reprice_weak"), ("📉 Reduce Weak", "reduce_weak")],
+                [("📈 Positions", "positions"), ("🏠 Menu", "menu")],
+            )
+        except Exception as e:
+            logger.error(f"[Telegram] top setups error: {e}", exc_info=True)
+            return f"❌ Error: {e}", _kb([("🏠 Menu", "menu")])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 import pandas as pd
 
 from config.config import (
+    MAX_SIGNAL_CONFIDENCE,
     MIN_FINAL_CONFIDENCE,
     TRADE_CLOSE_COOLDOWN_MINUTES as CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES,
     get_timeframe_periods,
@@ -90,6 +91,8 @@ class TradingCore:
         self._paper_trader: Optional[Any] = None
         self._risk_manager: Optional[Any] = None
         self._portfolio_risk: Optional[Any] = None
+        self._last_ranked_opportunities: List[Dict[str, Any]] = []
+        self._last_ranked_at_utc: str = ""
 
         logger.info(f"[TradingCore] Init — balance=${balance} strategy={strategy_mode}")
 
@@ -146,11 +149,136 @@ class TradingCore:
     def get_daily_stats(self) -> Dict:
         return {"daily_trades": self.state.daily_trades, "daily_pnl": self.state.daily_pnl}
 
-    def reprice_open_positions(self, tighten_only: bool = True) -> List[Dict[str, Any]]:
+    def _extract_position_action_metrics(self, pos: Dict[str, Any]) -> Dict[str, Any]:
+        meta = dict(pos.get("metadata") or {})
+        memory = meta.get("setup_memory") if isinstance(meta.get("setup_memory"), dict) else {}
+        execution = meta.get("execution_feedback") if isinstance(meta.get("execution_feedback"), dict) else {}
+        execution_policy = (
+            meta.get("execution_feedback_policy")
+            if isinstance(meta.get("execution_feedback_policy"), dict)
+            else {}
+        )
+
+        asset = str(pos.get("asset", "") or "")
+        category = str(pos.get("category", "") or "forex")
+        confidence = float(pos.get("confidence", 0.0) or 0.0)
+        opportunity_score = float(meta.get("opportunity_score", 0.0) or 0.0)
+        memory_score = float(meta.get("memory_score", memory.get("memory_score", 0.0)) or 0.0)
+        memory_sample_count = int(meta.get("memory_sample_count", memory.get("sample_count", 0)) or 0)
+        execution_quality_score = float(
+            execution.get(
+                "quality_score",
+                meta.get("execution_quality_score", execution_policy.get("avg_quality_score", 0.0)),
+            )
+            or 0.0
+        )
+        execution_sample_count = int(
+            meta.get(
+                "execution_feedback_sample_count",
+                execution_policy.get("sample_count", execution.get("sample_count", 0)),
+            )
+            or 0
+        )
+        pnl = float(pos.get("pnl", 0.0) or 0.0)
+        risk_reward = float(pos.get("risk_reward", 0.0) or 0.0)
+
+        memory_component = max(0.0, min(1.0, memory_score / 100.0)) if memory_sample_count > 0 else 0.5
+        execution_component = (
+            max(0.0, min(1.0, execution_quality_score / 100.0))
+            if execution_sample_count > 0
+            else 0.5
+        )
+        opportunity_component = (
+            max(0.0, min(1.0, opportunity_score))
+            if opportunity_score > 0
+            else max(0.0, min(1.0, confidence))
+        )
+        confidence_component = max(0.0, min(1.0, confidence)) if confidence > 0 else 0.5
+        rr_component = max(0.0, min(1.0, (risk_reward - 1.0) / 1.5)) if risk_reward > 0 else 0.5
+        pnl_component = 0.40 if pnl < 0 else (0.58 if abs(pnl) < 1e-9 else 0.72)
+        market_open, market_reason = self._market_hours_status(asset, category)
+
+        quality_ratio = max(
+            0.0,
+            min(
+                1.0,
+                (
+                    opportunity_component * 0.32
+                    + execution_component * 0.24
+                    + memory_component * 0.18
+                    + confidence_component * 0.16
+                    + rr_component * 0.05
+                    + pnl_component * 0.05
+                ),
+            ),
+        )
+
+        weak_reasons: List[str] = []
+        if opportunity_component < 0.58:
+            weak_reasons.append("opportunity weak")
+        if memory_sample_count >= 5 and memory_component < 0.55:
+            weak_reasons.append("memory weak")
+        if execution_sample_count >= 5 and execution_component < 0.55:
+            weak_reasons.append("execution weak")
+        if confidence_component < max(0.45, TRADE_MIN_CONFIDENCE - 0.03):
+            weak_reasons.append("confidence fading")
+        if pnl < 0:
+            weak_reasons.append("losing live")
+        if risk_reward > 0 and rr_component < 0.40:
+            weak_reasons.append("compressed rr")
+        if not market_open:
+            weak_reasons.append(f"market closed ({market_reason})")
+
+        return {
+            "trade_id": str(pos.get("trade_id", "") or ""),
+            "asset": asset,
+            "category": category,
+            "direction": str(pos.get("direction") or pos.get("signal") or "BUY").upper(),
+            "quality_ratio": round(quality_ratio, 4),
+            "quality_score": round(quality_ratio * 100.0, 1),
+            "memory_score": round(memory_score, 1),
+            "memory_sample_count": memory_sample_count,
+            "execution_quality_score": round(execution_quality_score, 1),
+            "execution_feedback_sample_count": execution_sample_count,
+            "opportunity_score": round(opportunity_score, 4),
+            "confidence": round(confidence, 4),
+            "pnl": round(pnl, 4),
+            "risk_reward": round(risk_reward, 4),
+            "market_open": market_open,
+            "market_reason": market_reason,
+            "weak_reasons": weak_reasons,
+            "is_weak": quality_ratio < 0.58 or len(weak_reasons) >= 2,
+        }
+
+    def get_weak_positions(
+        self,
+        limit: int = 5,
+        score_threshold: float = 0.58,
+    ) -> List[Dict[str, Any]]:
+        candidates = []
+        for pos in self.state.get_open_positions():
+            metrics = self._extract_position_action_metrics(pos)
+            if metrics["quality_ratio"] <= float(score_threshold or 0.58) or len(metrics["weak_reasons"]) >= 2:
+                candidates.append(metrics)
+        candidates.sort(
+            key=lambda item: (
+                float(item.get("quality_ratio", 1.0) or 1.0),
+                -len(item.get("weak_reasons", [])),
+                float(item.get("pnl", 0.0) or 0.0),
+            )
+        )
+        return candidates[: max(1, int(limit or 5))]
+
+    def reprice_open_positions(
+        self,
+        tighten_only: bool = True,
+        trade_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """Recalculate SL/TP for open positions using the current ATR-based framework."""
         if self.fetcher is None or self._risk_manager is None:
             self._init_subsystems()
 
+        trade_id_filter = {str(tid) for tid in trade_ids or [] if str(tid or "").strip()}
         updates: List[Dict[str, Any]] = []
         for pos in self.state.get_open_positions():
             trade_id = str(pos.get("trade_id", "") or "")
@@ -164,10 +292,46 @@ class TradingCore:
 
             if not trade_id or not asset or entry <= 0 or direction not in {"BUY", "SELL"}:
                 continue
+            if trade_id_filter and trade_id not in trade_id_filter:
+                continue
 
             price_data = self._fetch_price_data(asset, category)
             atr = self._estimate_atr(price_data)
-            proposed_sl = self._risk_manager.get_stop_loss(entry, direction, category, atr=atr)
+            execution_feedback_policy: Dict[str, Any] = {}
+            try:
+                from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+                execution_feedback_policy = get_execution_feedback_service().get_exit_adjustment(
+                    asset,
+                    category,
+                    {"position": pos},
+                )
+            except Exception as exc:
+                logger.debug(f"[TradingCore] Reprice execution feedback unavailable for {asset}: {exc}")
+
+            stop_buffer_multiplier = float(
+                execution_feedback_policy.get("stop_buffer_multiplier", 1.0) or 1.0
+            )
+            target_rr_multiplier = float(
+                execution_feedback_policy.get("target_rr_multiplier", 1.0) or 1.0
+            )
+            scaled_stop_fn = getattr(self._risk_manager, "get_stop_loss_scaled", None)
+            proposed_sl = None
+            if callable(scaled_stop_fn):
+                try:
+                    _scaled_sl = scaled_stop_fn(
+                        entry,
+                        direction,
+                        category,
+                        atr=atr,
+                        distance_multiplier=stop_buffer_multiplier,
+                    )
+                    if isinstance(_scaled_sl, (int, float)):
+                        proposed_sl = float(_scaled_sl)
+                except Exception:
+                    proposed_sl = None
+            if proposed_sl is None:
+                proposed_sl = self._risk_manager.get_stop_loss(entry, direction, category, atr=atr)
 
             if tighten_only and current_sl > 0:
                 if direction == "BUY":
@@ -177,18 +341,31 @@ class TradingCore:
             else:
                 effective_sl = proposed_sl
 
-            effective_tp = self._risk_manager.get_take_profit(
-                entry,
-                effective_sl,
-                direction,
-                category=category,
-            )
+            try:
+                effective_tp = self._risk_manager.get_take_profit(
+                    entry,
+                    effective_sl,
+                    direction,
+                    category=category,
+                    rr_multiplier=target_rr_multiplier,
+                )
+            except TypeError:
+                effective_tp = self._risk_manager.get_take_profit(
+                    entry,
+                    effective_sl,
+                    direction,
+                    category=category,
+                )
             tp_levels = self._build_take_profit_levels(entry, effective_tp, direction)
 
             snapshot = dict(pos)
             snapshot["stop_loss"] = float(round(effective_sl, 6))
             snapshot["take_profit"] = float(round(effective_tp, 6))
             snapshot["take_profit_levels"] = tp_levels
+            snapshot["risk_reward"] = round(
+                abs(snapshot["take_profit"] - entry) / max(abs(entry - snapshot["stop_loss"]), 1e-9),
+                4,
+            )
             if not current_original_sl or abs(current_original_sl - current_sl) < 1e-9:
                 snapshot["original_sl"] = float(round(effective_sl, 6))
             snapshot["metadata"] = {
@@ -196,6 +373,11 @@ class TradingCore:
                 "atr": round(atr, 6) if atr > 0 else 0.0,
                 "exit_model": "atr" if atr > 0 else "category_fallback",
                 "repriced_at_utc": datetime.utcnow().isoformat(),
+                "execution_feedback_policy": execution_feedback_policy,
+                "execution_quality_score": round(float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0), 1),
+                "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
+                "target_rr_multiplier": round(target_rr_multiplier, 4),
+                "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
             }
 
             sl_changed = abs(snapshot["stop_loss"] - current_sl) > 1e-9
@@ -221,10 +403,321 @@ class TradingCore:
                     "old_take_profit": current_tp,
                     "new_take_profit": snapshot["take_profit"],
                     "atr": round(atr, 6) if atr > 0 else 0.0,
+                    "execution_quality_score": round(float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0), 1),
+                    "target_rr_multiplier": round(target_rr_multiplier, 4),
+                    "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
                 }
             )
 
         return updates
+
+    def reprice_weak_exits(
+        self,
+        tighten_only: bool = True,
+        limit: int = 3,
+        score_threshold: float = 0.62,
+    ) -> List[Dict[str, Any]]:
+        candidates = self.get_weak_positions(limit=limit, score_threshold=score_threshold)
+        if not candidates:
+            return []
+
+        updates = self.reprice_open_positions(
+            tighten_only=tighten_only,
+            trade_ids=[item["trade_id"] for item in candidates],
+        )
+        by_trade_id = {item["trade_id"]: item for item in candidates}
+        for update in updates:
+            metrics = by_trade_id.get(str(update.get("trade_id", "") or ""), {})
+            update["quality_score"] = float(metrics.get("quality_score", 0.0) or 0.0)
+            update["weak_reasons"] = list(metrics.get("weak_reasons", []))
+        return updates
+
+    def _record_partial_reduction(
+        self,
+        parent_snapshot: Dict[str, Any],
+        partial_trade: Dict[str, Any],
+        pnl: float,
+    ) -> None:
+        if self._paper_trader and callable(getattr(self._paper_trader, "on_trade_closed", None)):
+            self._paper_trader.on_trade_closed(partial_trade)
+            return
+
+        recorded = self.state.record_partial_close(str(parent_snapshot.get("trade_id", "") or ""), partial_trade)
+        if not recorded:
+            return
+        if self._risk_manager is not None:
+            self._risk_manager.update_balance(self.state.balance)
+        self._notify_telegram_close(recorded)
+        try:
+            from services.personality_service import personality as _personality
+
+            _personality.record_trade(recorded)
+        except Exception:
+            pass
+        try:
+            from monitoring.system_health_service import monitor as _mon
+
+            _mon.record_trade_result(pnl)
+        except Exception:
+            pass
+
+    def reduce_weak_positions(
+        self,
+        reduction_fraction: float = 0.35,
+        limit: int = 3,
+        score_threshold: float = 0.58,
+    ) -> List[Dict[str, Any]]:
+        if self.fetcher is None or self._paper_trader is None:
+            self._init_subsystems()
+
+        fraction = max(0.10, min(0.75, float(reduction_fraction or 0.35)))
+        candidates = self.get_weak_positions(limit=limit, score_threshold=score_threshold)
+        if not candidates:
+            return []
+
+        actions: List[Dict[str, Any]] = []
+        for item in candidates:
+            trade_id = str(item.get("trade_id", "") or "")
+            pos = self.state.get_open_position(trade_id)
+            if not pos:
+                continue
+
+            asset = str(pos.get("asset", "") or "")
+            category = str(pos.get("category", "") or "forex")
+            market_open, market_reason = self._market_hours_status(asset, category)
+            if not market_open:
+                actions.append(
+                    {
+                        **item,
+                        "success": False,
+                        "action": "skipped",
+                        "reason": market_reason,
+                    }
+                )
+                continue
+
+            entry_price = float(pos.get("entry_price", 0.0) or 0.0)
+            position_size = float(pos.get("position_size", 0.0) or 0.0)
+            direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+            if entry_price <= 0.0 or position_size <= 0.0:
+                continue
+
+            exit_price = entry_price
+            try:
+                if self.fetcher is not None:
+                    live_price, _spread = self.fetcher.get_real_time_price(asset, category)
+                    if live_price:
+                        exit_price = float(live_price)
+            except Exception:
+                pass
+
+            try:
+                from risk.position_sizer import PositionSizer as _PS
+
+                total_live_pnl = _PS.pnl(asset, category, entry_price, exit_price, position_size, direction)
+            except Exception:
+                total_live_pnl = (
+                    (exit_price - entry_price) * position_size
+                    if direction == "BUY"
+                    else (entry_price - exit_price) * position_size
+                )
+
+            reduction_size = round(position_size * fraction, 8)
+            remaining_size = round(position_size - reduction_size, 8)
+            if reduction_size <= 0.0 or remaining_size <= 0.0:
+                continue
+
+            partial_pnl = float(total_live_pnl) * fraction
+            remaining_pnl = float(total_live_pnl) - partial_pnl
+
+            metadata = dict(pos.get("metadata") or {})
+            reduction_note = {
+                "reduced_at_utc": datetime.utcnow().isoformat(),
+                "reduction_fraction": round(fraction, 4),
+                "quality_score": float(item.get("quality_score", 0.0) or 0.0),
+                "weak_reasons": list(item.get("weak_reasons", [])),
+            }
+            updated_metadata = {
+                **metadata,
+                "manual_reduction": reduction_note,
+                "execution_notes": list(dict(metadata).get("execution_notes", []) or []),
+            }
+
+            parent_snapshot = dict(pos)
+            parent_snapshot["position_size"] = remaining_size
+            parent_snapshot["pnl"] = round(remaining_pnl, 6)
+            parent_snapshot["metadata"] = updated_metadata
+
+            self.state.sync_open_position(parent_snapshot)
+            if self._paper_trader is not None:
+                with self._paper_trader._lock:
+                    if trade_id in self._paper_trader.open_positions:
+                        self._paper_trader.open_positions[trade_id].update(parent_snapshot)
+                notify_update = getattr(self._paper_trader, "_notify_position_updated", None)
+                if callable(notify_update):
+                    notify_update(parent_snapshot)
+
+            from execution.paper_trader import PaperTrader
+
+            partial_trade = PaperTrader._close(
+                dict(
+                    pos,
+                    trade_id=f"{trade_id}-RW{int(time.time() * 1000) % 1000000}",
+                    parent_trade_id=trade_id,
+                    is_partial_close=True,
+                    position_size=reduction_size,
+                    metadata={
+                        **updated_metadata,
+                        "reduction_action": reduction_note,
+                    },
+                ),
+                exit_price,
+                f"Weak Position Reduction {int(round(fraction * 100))}%",
+                partial_pnl,
+            )
+
+            self._record_partial_reduction(parent_snapshot, partial_trade, partial_pnl)
+            logger.info(
+                f"[TradingCore] Reduced weak position {asset} by {fraction:.0%} "
+                f"(quality={float(item.get('quality_score', 0.0) or 0.0):.1f})"
+            )
+            actions.append(
+                {
+                    **item,
+                    "success": True,
+                    "action": "reduced",
+                    "reduction_fraction": round(fraction, 4),
+                    "reduced_size": reduction_size,
+                    "remaining_size": remaining_size,
+                    "exit_price": round(exit_price, 6),
+                    "realized_pnl": round(partial_pnl, 6),
+                }
+            )
+
+        return actions
+
+    def _remember_ranked_opportunities(
+        self,
+        ranked_pairs: List[Tuple[Signal, Dict[str, Any]]],
+    ) -> None:
+        self._last_ranked_opportunities = []
+        self._last_ranked_at_utc = datetime.utcnow().isoformat()
+        for signal, context in ranked_pairs[:10]:
+            item = signal.to_dict()
+            item.update(
+                {
+                    "source": "signal",
+                    "timeframe": str(context.get("timeframe") or ""),
+                    "memory_score": float(signal.metadata.get("memory_score", 0.0) or 0.0),
+                    "execution_quality_score": float(
+                        signal.metadata.get("execution_quality_score", 0.0) or 0.0
+                    ),
+                    "opportunity_score": float(signal.metadata.get("opportunity_score", 0.0) or 0.0),
+                    "opportunity_rank": int(signal.metadata.get("opportunity_rank", 0) or 0),
+                    "regime": str(signal.metadata.get("regime", "") or ""),
+                    "setup_quality": float(signal.metadata.get("setup_quality", 0.0) or 0.0),
+                }
+            )
+            self._last_ranked_opportunities.append(item)
+
+    def scan_top_ranked_opportunities(self, limit: int = 5) -> List[Dict[str, Any]]:
+        if not self.is_ready:
+            return []
+        signal_ctx_pairs = self._generate_signals()
+        accepted_pairs: List[Tuple[Signal, Dict[str, Any]]] = []
+        for signal, context in signal_ctx_pairs:
+            result = self.decision_engine.evaluate(signal, context)
+            if result and result.alive:
+                accepted_pairs.append((result, context))
+        ranked = self._rank_survivors(accepted_pairs)
+        self._remember_ranked_opportunities(ranked)
+        return self.get_top_ranked_opportunities(limit=limit, refresh=False)
+
+    def get_top_ranked_opportunities(
+        self,
+        limit: int = 5,
+        refresh: bool = False,
+        include_positions: bool = True,
+    ) -> List[Dict[str, Any]]:
+        if refresh or (not self._last_ranked_opportunities and self.is_ready):
+            try:
+                self.scan_top_ranked_opportunities(limit=max(limit, 5))
+            except Exception as exc:
+                logger.debug(f"[TradingCore] Top opportunity refresh failed: {exc}")
+
+        candidates: List[Dict[str, Any]] = []
+        for item in self._last_ranked_opportunities:
+            candidates.append(
+                {
+                    "source": "signal",
+                    "asset": item.get("asset", ""),
+                    "category": item.get("category", ""),
+                    "direction": item.get("direction", ""),
+                    "confidence": float(item.get("confidence", 0.0) or 0.0),
+                    "opportunity_score": float(item.get("opportunity_score", 0.0) or 0.0),
+                    "opportunity_rank": int(item.get("opportunity_rank", 0) or 0),
+                    "memory_score": float(item.get("memory_score", 0.0) or 0.0),
+                    "execution_quality_score": float(item.get("execution_quality_score", 0.0) or 0.0),
+                    "regime": item.get("regime", ""),
+                    "setup_quality": float(item.get("setup_quality", 0.0) or 0.0),
+                    "timeframe": item.get("timeframe", ""),
+                    "strategy_id": item.get("strategy_id", ""),
+                    "recorded_at_utc": self._last_ranked_at_utc,
+                }
+            )
+
+        if include_positions:
+            for pos in self.state.get_open_positions():
+                metrics = self._extract_position_action_metrics(pos)
+                candidates.append(
+                    {
+                        "source": "position",
+                        "trade_id": pos.get("trade_id", ""),
+                        "asset": pos.get("asset", ""),
+                        "category": pos.get("category", ""),
+                        "direction": str(pos.get("direction") or pos.get("signal") or "BUY").upper(),
+                        "confidence": float(pos.get("confidence", 0.0) or 0.0),
+                        "opportunity_score": float(metrics.get("opportunity_score", 0.0) or 0.0),
+                        "opportunity_rank": int(
+                            dict(pos.get("metadata") or {}).get("opportunity_rank", 0) or 0
+                        ),
+                        "memory_score": float(metrics.get("memory_score", 0.0) or 0.0),
+                        "execution_quality_score": float(
+                            metrics.get("execution_quality_score", 0.0) or 0.0
+                        ),
+                        "quality_score": float(metrics.get("quality_score", 0.0) or 0.0),
+                        "pnl": float(pos.get("pnl", 0.0) or 0.0),
+                        "recorded_at_utc": self._last_ranked_at_utc,
+                    }
+                )
+
+        deduped: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        for item in candidates:
+            key = (
+                str(item.get("source", "") or ""),
+                str(item.get("asset", "") or ""),
+                str(item.get("direction", "") or ""),
+            )
+            existing = deduped.get(key)
+            if existing is None or (
+                float(item.get("opportunity_score", 0.0) or 0.0),
+                float(item.get("confidence", 0.0) or 0.0),
+            ) > (
+                float(existing.get("opportunity_score", 0.0) or 0.0),
+                float(existing.get("confidence", 0.0) or 0.0),
+            ):
+                deduped[key] = item
+
+        ranked = sorted(
+            deduped.values(),
+            key=lambda item: (
+                float(item.get("opportunity_score", 0.0) or 0.0),
+                float(item.get("confidence", 0.0) or 0.0),
+                float(item.get("memory_score", 0.0) or 0.0),
+            ),
+            reverse=True,
+        )
+        return ranked[: max(1, int(limit or 5))]
 
     def get_signal_for_asset(self, asset: str) -> Optional[Dict]:
         if not self.is_ready:
@@ -265,6 +758,7 @@ class TradingCore:
                         ctx["spread"]     = spread
                         ctx["market_data"] = {"price": price_meta, "ohlcv": ohlcv_meta}
                         ctx["risk_manager"] = self._risk_manager
+                        self._attach_market_structure_context(ctx, canonical, category, price_data)
                         try:
                             ctx["market_microstructure"] = self.fetcher.get_market_microstructure(
                                 canonical, category
@@ -429,7 +923,23 @@ class TradingCore:
                         )
                         return
 
-                    closed = self.state.close_position(trade_id, exit_price, exit_reason, pnl)
+                    close_updates = {
+                        "pnl_percent": trade.get("pnl_percent"),
+                        "highest_price": trade.get("highest_price"),
+                        "lowest_price": trade.get("lowest_price"),
+                        "tp_hit": trade.get("tp_hit"),
+                        "risk_reward": trade.get("risk_reward"),
+                        "original_sl": trade.get("original_sl"),
+                        "original_take_profit": trade.get("original_take_profit"),
+                        "metadata": trade.get("metadata"),
+                    }
+                    closed = self.state.close_position(
+                        trade_id,
+                        exit_price,
+                        exit_reason,
+                        pnl,
+                        extra_updates=close_updates,
+                    )
                     if closed is None:
                         logger.debug(
                             f"[TradingCore] Ignoring duplicate close callback for {trade_id}"
@@ -595,20 +1105,22 @@ class TradingCore:
             return
 
         # Run each signal through the decision engine with its own context
-        survivors = []
+        accepted_pairs: List[Tuple[Signal, Dict[str, Any]]] = []
         for sig, ctx in signal_ctx_pairs:
             result = self.decision_engine.evaluate(sig, ctx)
             if result is not None:
-                survivors.append(result)
-                # Publish every accepted signal to Redis immediately so the dashboard
-                # does not need to recompute the decision path on its own.
-                try:
-                    from redis_broker import broker as _redis_broker
-                    _redis_broker.publish_signal(result.to_dict())
-                except Exception:
-                    pass
+                accepted_pairs.append((result, ctx))
             else:
                 self._log_decision_rejection(sig, ctx)
+
+        ranked_pairs = self._rank_survivors(accepted_pairs)
+        survivors = [sig for sig, _ctx in ranked_pairs]
+        for result, _ctx in ranked_pairs:
+            try:
+                from redis_broker import broker as _redis_broker
+                _redis_broker.publish_signal(result.to_dict())
+            except Exception:
+                pass
 
         logger.info(
             f"[TradingCore] {len(signal_ctx_pairs)} signals → "
@@ -630,6 +1142,30 @@ class TradingCore:
 
         if processed:
             logger.info(f"[TradingCore] Executed {processed} trade(s)")
+
+    def _rank_survivors(
+        self,
+        accepted_pairs: List[Tuple[Signal, Dict[str, Any]]],
+    ) -> List[Tuple[Signal, Dict[str, Any]]]:
+        if not accepted_pairs:
+            self._remember_ranked_opportunities([])
+            return []
+        try:
+            from services.opportunity_ranker import get_service as get_opportunity_ranker
+
+            ranked_pairs = get_opportunity_ranker().rank(accepted_pairs, self.state)
+            self._remember_ranked_opportunities(ranked_pairs)
+            if ranked_pairs:
+                ranking_summary = ", ".join(
+                    f"{sig.asset}#{sig.metadata.get('opportunity_rank', '?')}={sig.metadata.get('opportunity_score', 0):.3f}"
+                    for sig, _ctx in ranked_pairs[:5]
+                )
+                logger.info(f"[TradingCore] Opportunity ranking: {ranking_summary}")
+            return ranked_pairs
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Opportunity ranking failed: {exc}")
+            self._remember_ranked_opportunities(accepted_pairs)
+            return accepted_pairs
 
     def _generate_signals(self) -> List[Tuple[Signal, Dict]]:
         """
@@ -717,6 +1253,7 @@ class TradingCore:
                     ctx["market_data"] = {"price": price_meta, "ohlcv": ohlcv_meta}
                     ctx["timeframe"] = timeframe
                     ctx["risk_manager"] = self._risk_manager
+                    self._attach_market_structure_context(ctx, canonical, category, price_data)
                     try:
                         ctx["market_microstructure"] = self.fetcher.get_market_microstructure(
                             canonical, category
@@ -736,7 +1273,7 @@ class TradingCore:
                     )
                     if sig:
                         logger.info(
-                            f"[TradingCore] SIGNAL: {canonical} {sig.direction} confidence={sig.confidence:.2%}"
+                            f"[TradingCore] CANDIDATE: {canonical} {sig.direction} seed_score={sig.confidence:.3f}"
                         )
                         return ("signal", (sig, ctx))
                     logger.debug(f"[TradingCore] {canonical}: no seed signal generated")
@@ -912,7 +1449,7 @@ class TradingCore:
                     "OPEN",
                     asset=signal.asset,
                     direction=signal.direction,
-                    confidence=f"{signal.confidence:.3f}",
+                    score=f"{signal.confidence:.3f}",
                     entry=signal.entry_price,
                 )
                 # Publish signal + positions to Redis for dashboard (Issue 8)
@@ -1037,16 +1574,6 @@ class TradingCore:
             "probability": up_prob,
             "confidence": ml_conf,
         }
-        existing_meta = dict(context.get("signal_metadata") or {})
-        context["signal_metadata"] = {
-            **existing_meta,
-            "ml_prediction": up_prob,
-            "ml_confidence": ml_conf,
-            "ml_prediction_real": ml_conf > 0.0,
-            "sentiment_score": context.get("sentiment_score", 0.0),
-            "regime": context.get("regime", "unknown"),
-            "confidence": ml_conf,
-        }
 
         if ml_conf < 0.10:
             context["seed_decision"]["status"] = "rejected"
@@ -1064,6 +1591,57 @@ class TradingCore:
             self._log_seed_decision(asset, context, "classifier_exactly_neutral")
             return None
 
+        structure = context.get("market_structure") or {}
+        structure_bias = str(structure.get("structure_bias", "neutral")).lower()
+        alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
+        setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
+        pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
+        breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
+        volatility_state = str(structure.get("volatility_state", "unknown"))
+
+        structure_note = "neutral"
+        seed_confidence = float(ml_conf)
+        direction_sign = 1 if direction == "BUY" else -1
+        setup_alignment = breakout_score if abs(breakout_score) >= abs(pullback_score) else pullback_score
+
+        if structure_bias in {"buy", "sell"}:
+            if (structure_bias == "buy" and direction == "BUY") or (structure_bias == "sell" and direction == "SELL"):
+                boost = min(0.08, 0.02 + alignment_score * 0.04 + max(0.0, setup_quality - 0.25) * 0.05)
+                seed_confidence = min(MAX_SIGNAL_CONFIDENCE, seed_confidence + boost)
+                structure_note = "aligned"
+            else:
+                penalty = min(0.12, 0.03 + alignment_score * 0.05 + max(0.0, setup_quality - 0.20) * 0.04)
+                seed_confidence = max(0.0, seed_confidence - penalty)
+                structure_note = "conflict"
+
+        if setup_alignment * direction_sign >= 0.40:
+            seed_confidence = min(MAX_SIGNAL_CONFIDENCE, seed_confidence + min(0.03, abs(setup_alignment) * 0.03))
+        elif setup_alignment * direction_sign <= -0.40:
+            seed_confidence = max(0.0, seed_confidence - min(0.04, abs(setup_alignment) * 0.04))
+
+        if setup_quality < 0.15 and seed_confidence < 0.18:
+            context["seed_decision"]["status"] = "rejected"
+            context["seed_decision"]["reason"] = "weak_structure_quality"
+            self._log_seed_decision(asset, context, "weak_structure_quality")
+            return None
+
+        existing_meta = dict(context.get("signal_metadata") or {})
+        context["signal_metadata"] = {
+            **existing_meta,
+            "ml_prediction": up_prob,
+            "ml_confidence": ml_conf,
+            "ml_prediction_real": ml_conf > 0.0,
+            "sentiment_score": context.get("sentiment_score", 0.0),
+            "regime": structure.get("regime", context.get("regime", "unknown")),
+            "confidence": seed_confidence,
+            "structure_bias": structure_bias,
+            "alignment_score": round(alignment_score, 4),
+            "setup_quality": round(setup_quality, 4),
+            "pullback_score": round(pullback_score, 4),
+            "breakout_score": round(breakout_score, 4),
+            "volatility_state": volatility_state,
+        }
+
         try:
             entry_price = float(price_data["close"].iloc[-1])
         except Exception:
@@ -1079,26 +1657,78 @@ class TradingCore:
             return None
 
         atr = self._estimate_atr(price_data)
-        if self._risk_manager is not None:
-            stop_loss = self._risk_manager.get_stop_loss(entry_price, direction, category, atr=atr)
-            take_profit = self._risk_manager.get_take_profit(
-                entry_price, stop_loss, direction, category=category
+        execution_feedback_policy: Dict[str, Any] = {}
+        try:
+            from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+            execution_feedback_policy = get_execution_feedback_service().get_exit_adjustment(
+                canonical,
+                category,
+                context,
             )
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Execution feedback policy unavailable for {asset}: {exc}")
+
+        stop_buffer_multiplier = float(
+            execution_feedback_policy.get("stop_buffer_multiplier", 1.0) or 1.0
+        )
+        target_rr_multiplier = float(
+            execution_feedback_policy.get("target_rr_multiplier", 1.0) or 1.0
+        )
+        if self._risk_manager is not None:
+            scaled_stop_fn = getattr(self._risk_manager, "get_stop_loss_scaled", None)
+            stop_loss = None
+            if callable(scaled_stop_fn):
+                try:
+                    _scaled_sl = scaled_stop_fn(
+                        entry_price,
+                        direction,
+                        category,
+                        atr=atr,
+                        distance_multiplier=stop_buffer_multiplier,
+                    )
+                    if isinstance(_scaled_sl, (int, float)):
+                        stop_loss = float(_scaled_sl)
+                except Exception:
+                    stop_loss = None
+            if stop_loss is None:
+                stop_loss = self._risk_manager.get_stop_loss(
+                    entry_price,
+                    direction,
+                    category,
+                    atr=atr,
+                )
+            try:
+                take_profit = self._risk_manager.get_take_profit(
+                    entry_price,
+                    stop_loss,
+                    direction,
+                    category=category,
+                    rr_multiplier=target_rr_multiplier,
+                )
+            except TypeError:
+                take_profit = self._risk_manager.get_take_profit(
+                    entry_price,
+                    stop_loss,
+                    direction,
+                    category=category,
+                )
         else:
-            dist = atr * 1.5 if atr > 0 else entry_price * 0.006
+            dist = (atr * 1.5 if atr > 0 else entry_price * 0.006) * max(0.75, min(1.25, stop_buffer_multiplier))
             stop_loss = entry_price - dist if direction == "BUY" else entry_price + dist
-            take_profit = entry_price + dist * 1.5 if direction == "BUY" else entry_price - dist * 1.5
+            reward_dist = dist * 1.5 * max(0.80, min(1.20, target_rr_multiplier))
+            take_profit = entry_price + reward_dist if direction == "BUY" else entry_price - reward_dist
 
         signal = Signal(
             asset=asset,
             canonical_asset=canonical,
             category=category,
             direction=direction,
-            confidence=round(min(1.0, max(0.0, ml_conf)), 4),
+            confidence=round(min(MAX_SIGNAL_CONFIDENCE, max(0.0, seed_confidence)), 4),
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            risk_reward=0.0,
+            risk_reward=round(abs(take_profit - entry_price) / max(abs(entry_price - stop_loss), 1e-9), 4),
             strategy_id="policy_agent",
             indicators={"seed_source": "classifier", "seed_model": f"{category}_classifier"},
         )
@@ -1106,14 +1736,41 @@ class TradingCore:
             "ml_prediction": round(up_prob, 4),
             "ml_confidence": round(ml_conf, 4),
             "ml_prediction_real": ml_conf > 0.0,
+            "seed_candidate_score": round(signal.confidence, 4),
             "seed_source": "classifier",
             "seed_model": f"{category}_classifier",
             "market_data": context.get("market_data", {}),
             "atr": round(atr, 6) if atr > 0 else 0.0,
             "exit_model": "atr" if atr > 0 else "category_fallback",
+            "market_structure": dict(structure) if isinstance(structure, dict) else {},
+            "structure_bias": structure_bias,
+            "alignment_score": round(alignment_score, 4),
+            "setup_quality": round(setup_quality, 4),
+            "pullback_score": round(pullback_score, 4),
+            "breakout_score": round(breakout_score, 4),
+            "volatility_state": volatility_state,
+            "seed_structure_note": structure_note,
+            "execution_feedback_policy": execution_feedback_policy,
+            "execution_quality_score": round(float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0), 1),
+            "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
+            "target_rr_multiplier": round(target_rr_multiplier, 4),
+            "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
         })
+        context["execution_feedback_policy"] = execution_feedback_policy
+        context["signal_metadata"] = {
+            **dict(context.get("signal_metadata") or {}),
+            "execution_quality_score": round(float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0), 1),
+            "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
+            "target_rr_multiplier": round(target_rr_multiplier, 4),
+            "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
+        }
         context["seed_decision"]["status"] = "signal"
         context["seed_decision"]["direction"] = direction
+        context["seed_decision"]["confidence"] = round(seed_confidence, 4)
+        context["seed_decision"]["structure_bias"] = structure_bias
+        context["seed_decision"]["structure_note"] = structure_note
+        context["seed_decision"]["setup_quality"] = round(setup_quality, 4)
+        context["seed_decision"]["execution_feedback_policy"] = execution_feedback_policy
         return signal
 
     @staticmethod
@@ -1142,6 +1799,69 @@ class TradingCore:
         except Exception as exc:
             logger.debug(f"[TradingCore] ATR estimation failed: {exc}")
         return 0.0
+
+    @staticmethod
+    def _get_structure_intervals(primary_interval: str) -> List[str]:
+        base = str(primary_interval or "15m").lower()
+        plans = {
+            "1m": ["5m", "15m", "1h"],
+            "5m": ["15m", "1h", "4h"],
+            "15m": ["1h", "4h"],
+            "30m": ["1h", "4h"],
+            "1h": ["4h", "1d"],
+            "4h": ["1d"],
+            "1d": [],
+        }
+        return plans.get(base, ["1h", "4h"])
+
+    def _attach_market_structure_context(
+        self,
+        context: Dict[str, Any],
+        asset: str,
+        category: str,
+        primary_price_data,
+    ) -> None:
+        if primary_price_data is None or getattr(primary_price_data, "empty", True):
+            context["market_structure"] = {}
+            return
+
+        timeframe = str(context.get("timeframe") or get_trading_timeframe(category)).lower()
+        frames: Dict[str, Any] = {timeframe: primary_price_data}
+        frame_lengths: Dict[str, int] = {}
+        try:
+            frame_lengths[timeframe] = int(len(primary_price_data))
+        except Exception:
+            frame_lengths[timeframe] = 0
+
+        if self.fetcher is not None:
+            for interval in self._get_structure_intervals(timeframe):
+                if interval in frames:
+                    continue
+                try:
+                    df = self.fetcher.get_ohlcv(
+                        asset,
+                        category,
+                        interval=interval,
+                        periods=max(60, get_timeframe_periods(interval)),
+                    )
+                    if df is not None and not df.empty:
+                        frames[interval] = df
+                        frame_lengths[interval] = int(len(df))
+                except Exception as exc:
+                    logger.debug(f"[TradingCore] Structure frame {asset} {interval}: {exc}")
+
+        try:
+            from services.market_structure_service import get_service as get_market_structure_service
+
+            structure = get_market_structure_service().analyze(asset, category, frames)
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Market structure build failed for {asset}: {exc}")
+            structure = {}
+
+        context["market_structure"] = structure
+        context["structure_frame_lengths"] = frame_lengths
+        if isinstance(structure, dict) and structure.get("regime"):
+            context["regime"] = structure.get("regime", context.get("regime", "unknown"))
 
     def _get_prices(self) -> Dict[str, float]:
         prices = {}
@@ -1234,6 +1954,7 @@ class TradingCore:
             "oi_signal":         oi_signal,       # Phase 1 → Layer 8 Meta AI
             "news_event":        _get_news_event(category),  # news event state
             "market_data":       {},
+            "market_structure":  {},
             "market_microstructure": {},
             # FIX: wire macro_impact from MacroDataCollector so crisis regime
             # can trigger in MarketConditionClassifier.classify().
@@ -1382,7 +2103,30 @@ class TradingCore:
                     pnl = (breach_price - entry) * size if direction == "BUY" else (entry - breach_price) * size
 
                 # Close in state + DB
-                closed = self.state.close_position(trade_id, breach_price, breach_reason, pnl)
+                close_updates = {
+                    "highest_price": max(
+                        float(pos.get("highest_price", entry) or entry),
+                        float(df["high"].max()),
+                    ),
+                    "lowest_price": min(
+                        float(pos.get("lowest_price", entry) or entry),
+                        float(df["low"].min()),
+                    ),
+                    "metadata": {
+                        **dict(pos.get("metadata") or {}),
+                        "offline_gap_fill": {
+                            "breach_time": breach_time.isoformat() if hasattr(breach_time, "isoformat") else str(breach_time),
+                            "checked_bars": int(len(df)),
+                        },
+                    },
+                }
+                closed = self.state.close_position(
+                    trade_id,
+                    breach_price,
+                    breach_reason,
+                    pnl,
+                    extra_updates=close_updates,
+                )
                 if not closed:
                     continue
 
@@ -1452,7 +2196,17 @@ class TradingCore:
                 pass
 
         # 1. Close in SystemState + DB
-        closed = self.state.close_position(trade_id, exit_price, "Manual Close", pnl)
+        closed = self.state.close_position(
+            trade_id,
+            exit_price,
+            "Manual Close",
+            pnl,
+            extra_updates={
+                "highest_price": max(float(pos.get("highest_price", entry) or entry), float(exit_price)),
+                "lowest_price": min(float(pos.get("lowest_price", entry) or entry), float(exit_price)),
+                "metadata": dict(pos.get("metadata") or {}),
+            },
+        )
         if not closed:
             return None
 

@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from services.economic_calendar_service import economic_calendar_service as deriv_bridge
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -88,7 +89,7 @@ class NewsEventMonitor:
         self._running = True
         self._thread = threading.Thread(target=self._loop, name="NewsEventMonitor", daemon=True)
         self._thread.start()
-        logger.info("[NewsMonitor] Started - polling Deriv economic calendar every 15min")
+        logger.info("[NewsMonitor] Started - polling economic calendar every 15min")
 
     def stop(self) -> None:
         self._running = False
@@ -149,11 +150,12 @@ class NewsEventMonitor:
 
     def _fetch_and_update(self) -> None:
         events = self._fetch_deriv()
+        now = datetime.now(timezone.utc)
         if not events:
-            logger.debug("[NewsMonitor] No Deriv calendar data available")
+            self._prune_cached_events(now)
+            logger.debug("[NewsMonitor] No economic calendar data available")
             return
 
-        now = datetime.now(timezone.utc)
         cutoff = now + timedelta(hours=24)
         recent_cutoff = now - timedelta(minutes=POST_EVENT_MINS)
 
@@ -180,10 +182,21 @@ class NewsEventMonitor:
 
         logger.info(f"[NewsMonitor] Updated: {len(upcoming)} upcoming, {len(recent)} recent events")
 
-    def _fetch_deriv(self) -> Optional[List[Dict[str, Any]]]:
-        try:
-            from services.deriv_bridge import deriv_bridge
+    def _prune_cached_events(self, now: datetime) -> None:
+        cutoff = now + timedelta(hours=24)
+        recent_cutoff = now - timedelta(minutes=POST_EVENT_MINS)
+        with self._data_lock:
+            self._events = [
+                ev for ev in self._events
+                if ev.get("time") and now < ev["time"] <= cutoff
+            ]
+            self._recent = [
+                ev for ev in self._recent
+                if ev.get("time") and recent_cutoff <= ev["time"] <= now
+            ]
 
+    def _fetch_calendar(self) -> Optional[List[Dict[str, Any]]]:
+        try:
             raw_events = deriv_bridge.get_high_impact_events(
                 days=3,
                 currencies=["USD", "EUR", "GBP", "JPY", "CAD", "AUD"],
@@ -222,8 +235,12 @@ class NewsEventMonitor:
 
             return result
         except Exception as exc:
-            logger.debug(f"[NewsMonitor] Deriv fetch: {exc}")
+            logger.debug(f"[NewsMonitor] Economic calendar fetch: {exc}")
             return None
+
+    def _fetch_deriv(self) -> Optional[List[Dict[str, Any]]]:
+        # Backward-compatible hook name used by older tests/callers.
+        return self._fetch_calendar()
 
     @staticmethod
     def _classify_impact(name: str, raw_impact: str) -> str:

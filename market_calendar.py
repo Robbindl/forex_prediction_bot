@@ -1,22 +1,21 @@
-"""market_calendar.py - Deriv-backed market calendar helpers."""
+"""market_calendar.py - shared economic calendar helpers."""
 from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List
+from services.economic_calendar_service import economic_calendar_service as deriv_bridge
 from utils.logger import get_logger
 logger = get_logger()
 
 def get_high_impact_events(days: int = 3) -> List[Dict]:
     try:
-        from services.deriv_bridge import deriv_bridge
-
-        deriv_events = deriv_bridge.get_high_impact_events(
+        calendar_events = deriv_bridge.get_high_impact_events(
             days=days,
             currencies=["USD", "EUR", "GBP", "JPY", "CAD", "AUD"],
         )
-        if deriv_events:
-            return deriv_events
+        if calendar_events:
+            return calendar_events
     except Exception as e:
-        logger.debug(f"[MarketCalendar] Deriv calendar direct fetch unavailable: {e}")
+        logger.debug(f"[MarketCalendar] Direct calendar fetch unavailable: {e}")
 
     try:
         from data_ingestion.news_event_monitor import news_monitor

@@ -11,6 +11,8 @@ config/*_config.json
 config/telegram_config.json
 config/email_config.json
 config/bot_runtime.json
+config/auto_strategy_research_status.json
+config/live_strategy_registry.json
 config/local_*.py
 twitter_cookies.json
 *key*.py
@@ -119,6 +121,7 @@ ml/service_logs/
 *.keras
 *.hdf5
 model_registry.json
+sentiment_test_results.json
 *.mlservice
 ml_service.pid
 ml_service.log

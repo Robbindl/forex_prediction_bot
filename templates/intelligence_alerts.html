@@ -258,6 +258,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   </div>
 </div>
 
+<script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
 let allAlerts = [];
 let activeFilter = 'all';
@@ -311,7 +312,7 @@ async function fetchIntelligenceOverview(){
   if(_intelOverviewCache && now - _intelOverviewCache.fetched < 10000){
     return _intelOverviewCache.data;
   }
-  const d = await fetch('/api/page-overview?page=intelligence_alerts').then(r=>r.json());
+  const d = await window.dashboardFetchJson('/api/page-overview?page=intelligence_alerts', {timeoutMs: 12000});
   if(!d.success) return {alerts:[], journals: []};
   _intelOverviewCache = {fetched: now, data: d};
   return d;
@@ -384,6 +385,14 @@ async function loadJournal() {
       const finalPolicy = j.final_policy_decision || '';
       const finalScore = Number.isFinite(j.final_policy_score) ? Number(j.final_policy_score).toFixed(3) : '';
       const killedBy = j.killed_by || '';
+      const opportunityScore = Number.isFinite(j.opportunity_score) ? Number(j.opportunity_score).toFixed(3) : '';
+      const opportunityRank = Number.isFinite(j.opportunity_rank) ? Number(j.opportunity_rank) : null;
+      const setupQuality = Number.isFinite(j.setup_quality) ? Number(j.setup_quality).toFixed(2) : '';
+      const structureBias = j.structure_bias ? formatStepLabel(j.structure_bias) : '';
+      const topPositiveFactor = j.top_positive_factor ? formatStepLabel(j.top_positive_factor) : '';
+      const topPositiveValue = Number.isFinite(j.top_positive_factor_value) ? Number(j.top_positive_factor_value).toFixed(2) : '';
+      const topNegativeFactor = j.top_negative_factor ? formatStepLabel(j.top_negative_factor) : '';
+      const topNegativeValue = Number.isFinite(j.top_negative_factor_value) ? Number(j.top_negative_factor_value).toFixed(2) : '';
       const reason = esc(j.final_policy_reason || j.kill_reason || '');
       const steps = entries.filter(e => (e.layer > 0) || e.name).map(e =>
         `<div class="j-layer ${stepClass(e.decision)}" title="${esc(e.reason||'')}">${esc(formatStepLabel(e.name).slice(0,12))}</div>`
@@ -392,6 +401,11 @@ async function loadJournal() {
         sourcesValid !== null && sourcesRequired !== null ? `<div class="j-chip">Sources ${sourcesValid}/${sourcesRequired}</div>` : '',
         finalPolicy ? `<div class="j-chip ${finalPolicy === 'PASS' ? 'j-chip-good' : 'j-chip-bad'}">Final ${esc(finalPolicy)}</div>` : '',
         finalScore ? `<div class="j-chip">Score ${finalScore}</div>` : '',
+        opportunityScore ? `<div class="j-chip">Opportunity ${opportunityScore}</div>` : '',
+        opportunityRank !== null ? `<div class="j-chip">Rank #${opportunityRank}</div>` : '',
+        structureBias ? `<div class="j-chip">Structure ${esc(structureBias)}${setupQuality ? ` ${setupQuality}` : ''}</div>` : '',
+        topPositiveFactor ? `<div class="j-chip j-chip-good">Lead ${esc(topPositiveFactor)} +${topPositiveValue}</div>` : '',
+        topNegativeFactor ? `<div class="j-chip j-chip-bad">Drag ${esc(topNegativeFactor)} ${topNegativeValue}</div>` : '',
         killedBy ? `<div class="j-chip">Rejected at ${esc(formatStepLabel(String(killedBy)))}</div>` : ''
       ].filter(Boolean).join('');
       return `<div class="journal-item">

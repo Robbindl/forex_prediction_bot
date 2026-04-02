@@ -38,10 +38,14 @@ class ParameterOptimizer:
         base_config: Dict,
         df: pd.DataFrame,
         initial_balance: float = 10_000.0,
+        asset: str = "",
+        category: str = "",
     ) -> None:
         self._base_config      = base_config
         self._df               = df
         self._initial_balance  = initial_balance
+        self._asset            = asset
+        self._category         = category
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -120,10 +124,12 @@ class ParameterOptimizer:
             from strategy_lab.backtest_engine_v2 import BacktestEngineV2
 
             config   = self._apply_params(copy.deepcopy(self._base_config), params)
-            strategy = StrategyBuilder.from_dict(config)
+            strategy = StrategyBuilder.from_dict(config, asset=self._asset, category=self._category)
             engine   = BacktestEngineV2(
                 strategy=strategy,
                 initial_balance=self._initial_balance,
+                asset=self._asset,
+                category=self._category,
             )
             result = engine.run(self._df)
             return {

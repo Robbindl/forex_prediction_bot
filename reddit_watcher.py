@@ -13,7 +13,17 @@ from utils.logger import logger
 
 
 # ── GLOBAL RATE LIMITER (shared across ALL instances) ─────────────────────────
-_global_request_semaphore = threading.Semaphore(3)      # Max 3 concurrent requests
+_REDDIT_MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("REDDIT_MAX_CONCURRENT_REQUESTS", "1")))
+_REDDIT_MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("REDDIT_MIN_REQUEST_INTERVAL_SECONDS", "12"))
+_REDDIT_GLOBAL_429_BACKOFF_SECONDS = float(os.getenv("REDDIT_GLOBAL_429_BACKOFF_SECONDS", "300"))
+_REDDIT_SUBREDDIT_429_BACKOFF_SECONDS = float(os.getenv("REDDIT_SUBREDDIT_429_BACKOFF_SECONDS", "900"))
+_REDDIT_MAX_BACKOFF_SECONDS = float(os.getenv("REDDIT_MAX_BACKOFF_SECONDS", "3600"))
+_REDDIT_USER_AGENT = os.getenv(
+    "REDDIT_USER_AGENT",
+    "forex_prediction_bot/1.0 (Windows; research bot; contact local)",
+).strip() or "forex_prediction_bot/1.0"
+
+_global_request_semaphore = threading.Semaphore(_REDDIT_MAX_CONCURRENT_REQUESTS)
 _last_request_time = 0.0
 _request_lock = threading.Lock()
 _shared_cache: Dict[str, Tuple[Any, float]] = {}        # Shared cache across instances
@@ -23,6 +33,7 @@ _cache_lock = threading.Lock()
 _rate_limit_until: float = 0.0  # global 429 backoff — block ALL requests until this time
 _subreddit_backoff_until: Dict[str, float] = {}
 _subreddit_backoff_notified: Set[str] = set()
+_global_backoff_notified_until: float = 0.0
 
 _SUBREDDIT_NETWORK_BACKOFF_SECS = 180.0
 _SUBREDDIT_FORBIDDEN_BACKOFF_SECS = 600.0
@@ -37,21 +48,14 @@ def _rate_limited_request(url: str, headers: Dict, timeout: int = 10) -> request
     
     FIX M-11: Sleep happens OUTSIDE _request_lock to avoid blocking concurrent sentiment analysis
     """
-    global _rate_limit_until
-    # Check global 429 backoff
-    wait = _rate_limit_until - time.time()
-    if wait > 0:
-        logger.debug(f"[RedditWatcher] Global backoff active — waiting {wait:.0f}s")
-        time.sleep(wait)
-
     with _global_request_semaphore:
         # Acquire lock only to check/update timestamp, not during sleep
         sleep_time = 0
         with _request_lock:
             global _last_request_time
             elapsed = time.time() - _last_request_time
-            if elapsed < 8.0:
-                sleep_time = 8.0 - elapsed
+            if elapsed < _REDDIT_MIN_REQUEST_INTERVAL_SECONDS:
+                sleep_time = _REDDIT_MIN_REQUEST_INTERVAL_SECONDS - elapsed
             _last_request_time = time.time()
         
         # Sleep OUTSIDE the lock to allow concurrent operations
@@ -60,6 +64,44 @@ def _rate_limited_request(url: str, headers: Dict, timeout: int = 10) -> request
             time.sleep(sleep_time)
         
         return requests.get(url, headers=headers, timeout=timeout)
+
+
+def _get_cached_posts(cache_key: str, *, allow_stale: bool = False, ttl_seconds: float = 0.0) -> Optional[List[Dict]]:
+    with _cache_lock:
+        cached = _shared_cache.get(cache_key)
+    if not cached:
+        return None
+    posts, cached_at = cached
+    if allow_stale or (time.time() - cached_at) < ttl_seconds:
+        return posts
+    return None
+
+
+def _retry_after_seconds(response: requests.Response) -> float:
+    raw = response.headers.get("Retry-After")
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except Exception:
+        return 0.0
+
+
+def _apply_global_backoff(seconds: float, reason: str = "rate_limited") -> None:
+    global _rate_limit_until, _global_backoff_notified_until
+    seconds = max(_REDDIT_GLOBAL_429_BACKOFF_SECONDS, min(float(seconds), _REDDIT_MAX_BACKOFF_SECONDS))
+    until = time.time() + seconds
+    if until > _rate_limit_until:
+        _rate_limit_until = until
+    if _rate_limit_until > _global_backoff_notified_until:
+        logger.warning(f"[RedditWatcher] {reason} — global backoff {int(_rate_limit_until - time.time())}s")
+        _global_backoff_notified_until = _rate_limit_until
+
+
+def _apply_subreddit_backoff(subreddit: str, seconds: float) -> None:
+    seconds = min(max(float(seconds), _REDDIT_SUBREDDIT_429_BACKOFF_SECONDS), _REDDIT_MAX_BACKOFF_SECONDS)
+    _subreddit_backoff_until[subreddit] = max(_subreddit_backoff_until.get(subreddit, 0.0), time.time() + seconds)
+    _subreddit_backoff_notified.discard(subreddit)
 
 
 class RedditWatcher:
@@ -244,11 +286,10 @@ class RedditWatcher:
         now = time.time()
 
         # Check SHARED cache (global, across all instances)
-        with _cache_lock:
-            cached = _shared_cache.get(cache_key)
-            if cached and now - cached[1] < self._cache_ttl:
-                logger.debug(f"[RedditWatcher] Cache hit for r/{subreddit}")
-                return cached[0]
+        cached = _get_cached_posts(cache_key, ttl_seconds=self._cache_ttl)
+        if cached is not None:
+            logger.debug(f"[RedditWatcher] Cache hit for r/{subreddit}")
+            return cached
 
         backoff_until = _subreddit_backoff_until.get(subreddit, 0.0)
         if now < backoff_until:
@@ -258,14 +299,25 @@ class RedditWatcher:
                     f"skipping requests for {int(backoff_until - now)}s"
                 )
                 _subreddit_backoff_notified.add(subreddit)
-            return cached[0] if cached else None
+            return _get_cached_posts(cache_key, allow_stale=True)
+
+        global_wait = _rate_limit_until - now
+        if global_wait > 0:
+            if subreddit not in _subreddit_backoff_notified:
+                logger.debug(
+                    f"[RedditWatcher] Global backoff active — using cache for r/{subreddit} "
+                    f"for {int(global_wait)}s"
+                )
+                _subreddit_backoff_notified.add(subreddit)
+            return _get_cached_posts(cache_key, allow_stale=True)
         
         # Fetch from Reddit with global rate limiting
-        url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}"
+        url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}&raw_json=1"
         
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                "User-Agent": _REDDIT_USER_AGENT,
+                "Accept": "application/json",
             }
             response = _rate_limited_request(url, headers, timeout=10)
             
@@ -282,26 +334,18 @@ class RedditWatcher:
                 logger.debug(f"[RedditWatcher] Fetched {len(result)} posts from r/{subreddit}")
                 return result
             elif response.status_code == 429:
-                # Rate limited — set global backoff so ALL subreddit requests pause
-                global _rate_limit_until
-                _rate_limit_until = time.time() + 60
-                logger.warning(
-                    f"[RedditWatcher] HTTP 429 for r/{subreddit} — global backoff 60s"
-                )
-                # Return stale cache if available
-                with _cache_lock:
-                    existing = _shared_cache.get(cache_key)
-                    if existing:
-                        return existing[0]
-                return None
+                retry_after = _retry_after_seconds(response)
+                _apply_subreddit_backoff(subreddit, max(retry_after, _REDDIT_SUBREDDIT_429_BACKOFF_SECONDS))
+                _apply_global_backoff(max(retry_after, _REDDIT_GLOBAL_429_BACKOFF_SECONDS), f"HTTP 429 for r/{subreddit}")
+                return _get_cached_posts(cache_key, allow_stale=True)
             else:
                 if response.status_code in (403, 404, 451, 500, 502, 503, 504):
-                    _subreddit_backoff_until[subreddit] = time.time() + _SUBREDDIT_NETWORK_BACKOFF_SECS
+                    _apply_subreddit_backoff(subreddit, _SUBREDDIT_NETWORK_BACKOFF_SECS)
                     _subreddit_backoff_notified.discard(subreddit)
                 logger.warning(
                     f"[RedditWatcher] HTTP {response.status_code} for r/{subreddit}"
                 )
-                return None
+                return _get_cached_posts(cache_key, allow_stale=True)
                 
         except requests.RequestException as e:
             msg = str(e).lower()
@@ -310,21 +354,21 @@ class RedditWatcher:
                 if "10013" in msg or "forbidden by its access permissions" in msg
                 else _SUBREDDIT_NETWORK_BACKOFF_SECS
             )
-            _subreddit_backoff_until[subreddit] = time.time() + backoff_secs
+            _apply_subreddit_backoff(subreddit, backoff_secs)
             _subreddit_backoff_notified.discard(subreddit)
             logger.warning(
                 f"[RedditWatcher] Network error fetching r/{subreddit}: {e} "
                 f"— backing off {int(backoff_secs)}s"
             )
-            return None
+            return _get_cached_posts(cache_key, allow_stale=True)
         except Exception as e:
-            _subreddit_backoff_until[subreddit] = time.time() + _SUBREDDIT_NETWORK_BACKOFF_SECS
+            _apply_subreddit_backoff(subreddit, _SUBREDDIT_NETWORK_BACKOFF_SECS)
             _subreddit_backoff_notified.discard(subreddit)
             logger.warning(
                 f"[RedditWatcher] Error fetching r/{subreddit}: {e} "
                 f"— backing off {int(_SUBREDDIT_NETWORK_BACKOFF_SECS)}s"
             )
-            return None
+            return _get_cached_posts(cache_key, allow_stale=True)
     
     # ── Financial keyword sets (self-contained, no external deps) ────────────
     _BEARISH = {

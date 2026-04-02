@@ -339,6 +339,7 @@ class _NewsSentiment:
     _cache: Dict[str, Tuple[Any, float]] = {}
     _lock  = threading.Lock()
     _TTL   = 3600  # 1 hour — news sentiment changes slowly, reduce API calls
+    _DASHBOARD_TTL = 300  # 5 min — keep dashboard news responsive between refreshes
     _MAX_AGE_HOURS = max(1, min(12, SENTIMENT_MAX_AGE_HOURS))  # Use 6-12h as safe range in config
 
     # Words that score BEARISH in financial headlines
@@ -864,6 +865,12 @@ class _NewsSentiment:
           3. RSS feeds via feedparser — no API key, always works
           4. Reddit public search — no credentials needed
         """
+        cache_key = f"dashboard_articles:{max(1, int(limit or 20))}"
+        with cls._lock:
+            cached = cls._cache.get(cache_key)
+            if cached and time.time() < cached[1]:
+                return list(cached[0])[:limit]
+
         articles_out = []
 
         # ── 1. NewsAPI — 'everything' works on free tier ─────────────────────
@@ -934,9 +941,11 @@ class _NewsSentiment:
             ("Reuters Markets",    "https://feeds.reuters.com/reuters/businessNews"),
             ("CNBC Markets",       "https://www.cnbc.com/id/10001147/device/rss/rss.html"),
             ("CoinDesk",           "https://www.coindesk.com/arc/outboundfeeds/rss/"),
-            ("Cointelegraph",      "https://cointelegraph.com/rss"),
             ("FX Street",          "https://www.fxstreet.com/rss"),
             ("Investing.com News", "https://www.investing.com/rss/news.rss"),
+            # Cointelegraph can be materially slower; leave it last so the dashboard
+            # reaches the article limit using faster feeds first.
+            ("Cointelegraph",      "https://cointelegraph.com/rss"),
         ]
         try:
             import feedparser
@@ -973,7 +982,10 @@ class _NewsSentiment:
                 except Exception:
                     continue
             if articles_out:
-                return sorted(articles_out, key=lambda x: x.get("date", ""), reverse=True)[:limit]
+                result = sorted(articles_out, key=lambda x: x.get("date", ""), reverse=True)[:limit]
+                with cls._lock:
+                    cls._cache[cache_key] = (result, time.time() + cls._DASHBOARD_TTL)
+                return result
         except ImportError:
             logger.debug("[Sentiment] feedparser not installed — RSS fallback unavailable")
         except Exception as e:
@@ -1009,7 +1021,11 @@ class _NewsSentiment:
         except Exception as e:
             logger.debug(f"[Sentiment] Reddit public: {e}")
 
-        return articles_out[:limit]
+        result = articles_out[:limit]
+        if result:
+            with cls._lock:
+                cls._cache[cache_key] = (result, time.time() + cls._DASHBOARD_TTL)
+        return result
 
 
 class _CryptoSignals:

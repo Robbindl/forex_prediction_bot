@@ -63,6 +63,17 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .stat-label{font-size:12px;color:var(--tx2)}
 .stat-value{font-size:13px;font-weight:700}
 .empty{text-align:center;padding:24px;color:var(--tx3);font-size:13px}
+.action-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.action-btn{padding:5px 10px;border-radius:7px;border:1px solid var(--bd2);background:var(--s2);color:var(--tx);cursor:pointer;font-size:11px;font-weight:600;transition:.18s}
+.action-btn:hover{background:var(--s3);border-color:var(--bl);color:#fff}
+.action-btn.primary{border-color:rgba(41,121,255,.45);color:var(--bl)}
+.action-btn.warn{border-color:rgba(255,165,0,.4);color:var(--am)}
+.action-status{display:none;margin:0 16px 10px;padding:10px 12px;border-radius:9px;border:1px solid var(--bd2);font-size:12px;line-height:1.45}
+.action-status.show{display:block}
+.action-status.info{background:rgba(41,121,255,.08);color:var(--tx)}
+.action-status.success{background:rgba(0,208,132,.10);border-color:rgba(0,208,132,.25);color:var(--gr)}
+.action-status.warn{background:rgba(255,165,0,.10);border-color:rgba(255,165,0,.25);color:var(--am)}
+.action-status.error{background:rgba(255,69,96,.10);border-color:rgba(255,69,96,.25);color:var(--rd)}
 
 /* Scrollable panel bodies */
 .panel-body{overflow-y:auto;max-height:360px}
@@ -217,17 +228,22 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
             <span class="panel-title">📊 Exposure Breakdown</span>
             <span class="panel-badge" id="posCount">0 open</span>
           </div>
-          <select onchange="riskClose(this.value);this.value=''" style="background:var(--s2);border:1px solid var(--bd);color:var(--tx);padding:3px 8px;border-radius:6px;font-size:11px">
-            <option value="">Close…</option>
-            <option value="forex">Close Forex</option>
-            <option value="crypto">Close Crypto</option>
-            <option value="commodities">Close Commodities</option>
-            <option value="indices">Close Indices</option>
-            <option value="losing">Close Losing</option>
-            <option value="winning">Close Winning</option>
-            <option value="all">Close All</option>
-          </select>
+          <div class="action-toolbar">
+            <button class="action-btn primary" onclick="riskRepriceWeak()">Reprice Weak</button>
+            <button class="action-btn warn" onclick="riskReduceWeak()">Reduce Weak</button>
+            <select onchange="riskClose(this.value);this.value=''" style="background:var(--s2);border:1px solid var(--bd);color:var(--tx);padding:3px 8px;border-radius:6px;font-size:11px">
+              <option value="">Close…</option>
+              <option value="forex">Close Forex</option>
+              <option value="crypto">Close Crypto</option>
+              <option value="commodities">Close Commodities</option>
+              <option value="indices">Close Indices</option>
+              <option value="losing">Close Losing</option>
+              <option value="winning">Close Winning</option>
+              <option value="all">Close All</option>
+            </select>
+          </div>
         </div>
+        <div id="riskActionStatus" class="action-status"></div>
         <div class="panel-body" id="exposurePanel" style="max-height:260px;overflow-y:auto"><div class="empty">Loading…</div></div>
       </div>
 
@@ -247,6 +263,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   </div><!-- .main -->
 </div><!-- .layout -->
 
+<script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
 function toggleSidebar(){
   var sb=document.querySelector('.sidebar'),ov=document.getElementById('sbOverlay'),btn=document.getElementById('menuBtn');
@@ -266,14 +283,51 @@ setInterval(function(){
 function fmt(n){return n===undefined||n===null?'—':(+n).toFixed(2);}
 function fmtPct(n){return n===undefined||n===null?'—':(+n*100).toFixed(1)+'%';}
 
+function apiHeaders(){
+  return {'Content-Type':'application/json'};
+}
+
+async function fetchProtectedJson(url, options = {}){
+  return window.dashboardFetchJson(url, {
+    timeoutMs: options.timeoutMs || 12000,
+    init: {
+      method: options.method || 'GET',
+      headers: Object.assign({}, apiHeaders(), options.headers || {}),
+      body: options.body,
+      cache: options.cache || 'no-store',
+    }
+  });
+}
+
+function setRiskActionStatus(message,type='info'){
+  const el=document.getElementById('riskActionStatus');
+  if(!el)return;
+  if(!message){
+    el.className='action-status';
+    el.textContent='';
+    return;
+  }
+  el.className='action-status show '+type;
+  el.textContent=message;
+}
+
 let _riskDashboardCache = null;
 let drawdownChartInst = null;
+function setRiskUnavailable(message){
+  const msg = message || 'Risk dashboard data unavailable';
+  document.getElementById('exposurePanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('catPanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('statsPanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('ddStats').textContent = msg;
+  document.getElementById('riskModeBadge').textContent = 'Unavailable';
+  document.getElementById('riskStatus').textContent = 'Unavailable';
+}
 async function fetchRiskDashboardOverview() {
   const now = Date.now();
   if (_riskDashboardCache && now - _riskDashboardCache.fetched < 10000) {
     return _riskDashboardCache.data;
   }
-  const d = await fetch('/api/page-overview?page=risk_dashboard').then(r => r.json()).catch(() => ({success:false}));
+  const d = await window.dashboardFetchJson('/api/page-overview?page=risk_dashboard', {timeoutMs: 12000});
   if (d.success) {
     _riskDashboardCache = {fetched: now, data: d};
     return d;
@@ -283,7 +337,10 @@ async function fetchRiskDashboardOverview() {
 
 async function load(){
   const overview = await fetchRiskDashboardOverview();
-  if (!overview.success) return;
+  if (!overview.success){
+    setRiskUnavailable('Risk dashboard timed out');
+    return;
+  }
 
   const status = overview.status || {};
   const d = overview.risk || {};
@@ -350,24 +407,39 @@ async function load(){
     var rows='';
     Object.entries(bycat).forEach(function([cat,info]){
       var pnl=info.pnl||0;
-      rows+='<div class="cat-row"><span class="cat-name">'+cat+'</span><span class="cat-count">'+info.count+' pos</span><span class="cat-pnl '+(pnl>=0?'gn':'rd')+'">'+(pnl>=0?'+':'')+fmt(pnl)+'</span><span class="cat-exp">$'+fmt(info.exposure)+'</span></div>';
+      rows+='<div class="cat-row"><div style="flex:1"><span class="cat-name">'+cat+'</span><span class="cat-count">'+info.count+' pos</span><div style="font-size:10px;color:var(--tx3);margin-top:3px">Mem '+Number(info.avg_memory_score||0).toFixed(0)+' · Exec '+Number(info.avg_execution_quality||0).toFixed(0)+' · Opp '+Number(info.avg_opportunity_score||0).toFixed(3)+'</div></div><span class="cat-pnl '+(pnl>=0?'gn':'rd')+'">'+(pnl>=0?'+':'')+fmt(pnl)+'</span><span class="cat-exp">$'+fmt(info.exposure)+'</span></div>';
     });
     cp.innerHTML=rows;
   }
 
   // Stats
-  document.getElementById('statsPanel').innerHTML=[
-    ['Average Win',   '$'+fmt(d.avg_win)],
-    ['Average Loss',  '$'+fmt(d.avg_loss)],
+  const exec=d.execution_feedback||{};
+  const qualitySnapshot=d.quality_snapshot||{};
+  const pct=v=>Number.isFinite(Number(v))?(Number(v)*100).toFixed(0)+'%':'—';
+  const quality=Number(exec.avg_quality_score||0);
+  const realizedR=Number(exec.avg_rr_realized||0);
+  const statsRows=[
+    ['Average Win', '$'+fmt(d.avg_win)],
+    ['Average Loss', '$'+fmt(d.avg_loss)],
     ['Profit Factor', fmt(d.profit_factor)+'x'],
-    ['Win Rate',      (d.win_rate||0).toFixed(1)+'%'],
-    ['Total Trades',  d.total_trades||0],
-    ['Peak Balance',  '$'+fmt(d.peak_balance)],
-  ].map(function(r){
+    ['Win Rate', (d.win_rate||0).toFixed(1)+'%'],
+    ['Execution Quality', exec.sample_count ? quality.toFixed(1)+'/100' : '—'],
+    ['Avg Realized R', exec.sample_count ? (realizedR>0?'+':'')+realizedR.toFixed(2) : '—'],
+    ['Target Hit Rate', exec.sample_count ? pct(exec.target_hit_rate) : '—'],
+    ['Premature Stop Rate', exec.sample_count ? pct(exec.premature_stop_rate) : '—'],
+    ['Open Memory Score', qualitySnapshot.avg_memory_score ? Number(qualitySnapshot.avg_memory_score).toFixed(1) : '—'],
+    ['Open Execution Score', qualitySnapshot.avg_execution_quality ? Number(qualitySnapshot.avg_execution_quality).toFixed(1) : '—'],
+    ['Open Opportunity', qualitySnapshot.avg_opportunity_score ? Number(qualitySnapshot.avg_opportunity_score).toFixed(3) : '—'],
+    ['Top Ranked Category', qualitySnapshot.top_category || '—'],
+    ['Feedback Sample', exec.sample_count||0],
+    ['Total Trades', d.total_trades||0],
+    ['Peak Balance', '$'+fmt(d.peak_balance)],
+  ];
+  document.getElementById('statsPanel').innerHTML=statsRows.map(function(r){
     return '<div class="stat-row"><span class="stat-label">'+r[0]+'</span><span class="stat-value">'+r[1]+'</span></div>';
   }).join('');
   try{
-    const d = await fetch(`/api/trade-history?limit=200&no_cache=1&_=${Date.now()}`, {cache:'no-store'}).then(r=>r.json());
+    const d = await fetchProtectedJson(`/api/trade-history?limit=200&no_cache=1&_=${Date.now()}`, {timeoutMs: 12000});
     if(!d.success || !d.trades || !d.trades.length){
       document.getElementById('ddStats').textContent = 'No closed trades yet';
       return;
@@ -443,7 +515,66 @@ async function load(){
   }catch(e){console.error('[DrawdownChart]', e);}
 }
 
-load();
+async function riskRepriceWeak(){
+  setRiskActionStatus('Repricing weak exits…','info');
+  try{
+    const r=await fetchProtectedJson('/api/positions/reprice-weak',{
+      method:'POST',
+      timeoutMs: 15000,
+      body:JSON.stringify({limit:3,tighten_only:true})
+    });
+    if(!r.success){
+      setRiskActionStatus(r.error||'Weak exit repricing failed.','error');
+      return;
+    }
+    if(!r.repriced){
+      setRiskActionStatus('No weak exits needed repricing right now.','warn');
+      return;
+    }
+    setRiskActionStatus(`Repriced ${r.repriced} weak position(s).`,'success');
+    _riskDashboardCache=null;
+    load();
+  }catch(e){
+    console.error('[RiskWeakReprice]',e);
+    setRiskActionStatus('Weak exit repricing failed.','error');
+  }
+}
+
+async function riskReduceWeak(){
+  setRiskActionStatus('Reducing weak positions…','info');
+  try{
+    const r=await fetchProtectedJson('/api/positions/reduce-weak',{
+      method:'POST',
+      timeoutMs: 15000,
+      body:JSON.stringify({limit:3,reduction_fraction:0.35})
+    });
+    if(!r.success){
+      setRiskActionStatus(r.error||'Weak position reduction failed.','error');
+      return;
+    }
+    if(!Number(r.reduced||0)){
+      setRiskActionStatus('No weak positions qualified for reduction right now.','warn');
+      return;
+    }
+    setRiskActionStatus(`Reduced ${r.reduced} weak position(s).`,'success');
+    _riskDashboardCache=null;
+    load();
+  }catch(e){
+    console.error('[RiskWeakReduction]',e);
+    setRiskActionStatus('Weak position reduction failed.','error');
+  }
+}
+
+async function bootRiskDashboard(){
+  try{
+    if(window.dashboardAuthReady){
+      await window.dashboardAuthReady;
+    }
+  }catch(_){}
+  await load();
+}
+
+bootRiskDashboard();
 setInterval(load, 15000);
 
 async function riskClose(mode){
@@ -453,11 +584,11 @@ async function riskClose(mode){
   try{
     let r;
     if(isCategory){
-      r=await fetch('/api/position/close-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'category',category:mode})}).then(r=>r.json());
+      r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:'category',category:mode})});
     } else if(mode==='all'){
-      r=await fetch('/api/position/close-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'all'})}).then(r=>r.json());
+      r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:'all'})});
     } else {
-      r=await fetch('/api/position/close-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode})}).then(r=>r.json());
+      r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:mode})});
     }
     alert(r.success?`✅ Closed ${r.closed} position(s)`:`❌ ${r.error||'Failed'}`);
     setTimeout(()=>window.location.reload(),800);

@@ -7,6 +7,7 @@ import threading
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+from core.confidence import squash_confidence
 from utils.logger import get_logger
 
 # Phase 11 — prediction latency tracking
@@ -60,7 +61,7 @@ class MLPredictor:
             with self._lock:
                 proba = model.predict_proba(features.reshape(1, -1))
             up_prob    = float(proba[0][1]) if proba.shape[1] > 1 else float(proba[0][0])
-            confidence = abs(up_prob - 0.5) * 2   # 0 at 0.5, 1 at 0 or 1
+            confidence = squash_confidence(abs(up_prob - 0.5) * 2)
             logger.log_ml(model_key, asset, up_prob, confidence)
             return up_prob, confidence
         except Exception as e:

@@ -106,6 +106,8 @@ class BinanceMarketBridge:
         interval: str,
         periods: int,
         category: str = "",
+        end_time: Any = None,
+        closed_only: bool = False,
     ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
         symbol = self._resolve_symbol(asset, category=category)
         binance_interval = _INTERVAL_MAP.get((interval or "").lower())
@@ -113,13 +115,18 @@ class BinanceMarketBridge:
             return None, {}
 
         try:
+            cutoff = pd.to_datetime(end_time, utc=True, errors="coerce") if end_time not in (None, "") else None
+            request_limit = int(max(2, periods + (2 if cutoff is not None or closed_only else 0)))
+            params = {
+                "symbol": symbol,
+                "interval": binance_interval,
+                "limit": request_limit,
+            }
+            if cutoff is not None and not pd.isna(cutoff):
+                params["endTime"] = int(pd.Timestamp(cutoff).timestamp() * 1000) - (1 if closed_only else 0)
             response = self._session.get(
                 f"{_BASE_URL}{_KLINES_ENDPOINT}",
-                params={
-                    "symbol": symbol,
-                    "interval": binance_interval,
-                    "limit": int(max(2, periods)),
-                },
+                params=params,
                 timeout=10,
             )
             response.raise_for_status()
@@ -149,7 +156,14 @@ class BinanceMarketBridge:
             frame = frame.drop(columns=["open_time"]).set_index("timestamp")
             for column in ("open", "high", "low", "close", "volume"):
                 frame[column] = pd.to_numeric(frame[column], errors="coerce")
-            frame = frame.dropna(subset=["open", "high", "low", "close"]).tail(int(max(2, periods)))
+            frame = frame.dropna(subset=["open", "high", "low", "close"])
+            if cutoff is not None and not pd.isna(cutoff):
+                cutoff_ts = pd.Timestamp(cutoff)
+                if closed_only:
+                    frame = frame[frame.index < cutoff_ts]
+                else:
+                    frame = frame[frame.index <= cutoff_ts]
+            frame = frame.tail(int(max(2, periods)))
             if frame.empty:
                 return None, {}
 

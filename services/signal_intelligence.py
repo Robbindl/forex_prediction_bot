@@ -156,11 +156,9 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
             sources_used.append("put_call")
             pc_aligned = pc_score * direction_sign
             if pc_aligned > 0.3:
-                signal.boost(0.02)
-                adjustments.append("put_call_boost=0.02")
+                adjustments.append("put_call_support")
             elif pc_aligned < -0.3:
-                signal.reduce(0.02)
-                adjustments.append("put_call_penalty=0.02")
+                adjustments.append("put_call_conflict")
 
     if profile.use_reddit:
         reddit_score = components.get("reddit")
@@ -171,22 +169,17 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
             sources_used.append("reddit")
             reddit_aligned = reddit_score * direction_sign
             if reddit_aligned > 0.3:
-                signal.boost(0.02)
-                adjustments.append("reddit_boost=0.02")
+                adjustments.append("reddit_support")
             elif reddit_aligned < -0.3:
-                signal.reduce(0.02)
-                adjustments.append("reddit_penalty=0.02")
+                adjustments.append("reddit_conflict")
 
     if aligned_score <= _KILL_THRESHOLD:
-        signal.reduce(0.12)
-        adjustments.append("strong_opposition_penalty=0.12")
+        adjustments.append("strong_opposition")
 
     if aligned_score >= _STRONG_THRESHOLD:
-        signal.boost(0.04)
-        adjustments.append("sentiment_boost=0.04")
+        adjustments.append("sentiment_support")
     elif aligned_score <= _WEAK_THRESHOLD:
-        signal.reduce(0.03)
-        adjustments.append("sentiment_penalty=0.03")
+        adjustments.append("sentiment_conflict")
 
     if nar_strength > 0.10 and dominant:
         sources_used.append("narrative_ai")
@@ -194,14 +187,12 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
             if (signal.direction == "BUY" and dominant in _CRYPTO_BULLISH_NARRATIVES) or (
                 signal.direction == "SELL" and dominant in _CRYPTO_BEARISH_NARRATIVES
             ):
-                signal.boost(0.02)
-                adjustments.append("crypto_narrative_boost=0.02")
+                adjustments.append("crypto_narrative_support")
 
         if (signal.direction == "BUY" and dominant in _GENERAL_BULLISH_NARRATIVES) or (
             signal.direction == "SELL" and dominant in _GENERAL_BEARISH_NARRATIVES
         ):
-            signal.boost(0.02)
-            adjustments.append("macro_narrative_boost=0.02")
+            adjustments.append("macro_narrative_support")
 
     signal.metadata["sentiment_sources"] = sources_used
 
@@ -253,6 +244,7 @@ def apply_whale_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     clusters = int(snapshot.get("clusters", 0) or 0)
 
     signal.metadata["whale_dominant"] = dominant
+    signal.metadata["whale_ratio"] = round(ratio, 3)
     signal.metadata["whale_bull_weight"] = round(weighted_bull, 3)
     signal.metadata["whale_bear_weight"] = round(weighted_bear, 3)
     if snapshot.get("source_breakdown"):
@@ -261,8 +253,7 @@ def apply_whale_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     adjustments: List[str] = []
     if dominant != signal.direction and ratio > 0.65:
         penalty = 0.10 + min(0.10, ratio * 0.15)
-        signal.reduce(penalty)
-        adjustments.append(f"whale_penalty={penalty:.3f}")
+        adjustments.append(f"whale_conflict={penalty:.3f}")
 
     boost = 0.0
     if dominant == signal.direction:
@@ -271,8 +262,7 @@ def apply_whale_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
         boost = min(0.12, ratio * 0.1 + vol_factor * 0.04)
         if clusters > 0:
             boost = min(0.15, boost + 0.03)
-        signal.boost(boost)
-        adjustments.append(f"whale_boost={boost:.3f}")
+        adjustments.append(f"whale_support={boost:.3f}")
 
     return {
         "applicable": True,

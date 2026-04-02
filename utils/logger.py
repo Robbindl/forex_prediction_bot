@@ -3,9 +3,18 @@ utils/logger.py — Centralised logging for the trading platform.
 """
 from __future__ import annotations
 import json, logging, logging.handlers, sys, threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+from config.config import (
+    ERROR_LOG_MAX_BYTES,
+    LOG_BACKUP_COUNT,
+    LOG_MAX_BYTES,
+    LOG_RETENTION_DAYS,
+    ML_SERVICE_LOG_MAX_BYTES,
+    TRADES_LOG_MAX_BYTES,
+)
 
 
 def _fix_console_encoding() -> None:
@@ -131,7 +140,7 @@ class TradingLogger:
         # Main rotating file
         fh = _SafeRotatingFileHandler(
             self._log_dir / "trading_bot.log",
-            maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8"
+            maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
         )
         fh.setLevel(getattr(logging, level.upper(), logging.INFO))
         fh.setFormatter(fmt_full)
@@ -140,7 +149,7 @@ class TradingLogger:
         # Errors only
         eh = _SafeRotatingFileHandler(
             self._log_dir / "errors.log",
-            maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
+            maxBytes=ERROR_LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
         )
         eh.setLevel(logging.ERROR)
         eh.setFormatter(fmt_full)
@@ -149,7 +158,7 @@ class TradingLogger:
         # Trades only
         th = _SafeRotatingFileHandler(
             self._log_dir / "trades.log",
-            maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
+            maxBytes=TRADES_LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
         )
         th.setLevel(logging.INFO)
         th.setFormatter(fmt_trade)
@@ -168,7 +177,7 @@ class TradingLogger:
     def log_signal(self, asset: str, direction: str, confidence: float,
                    strategy: str, layer: int = 0) -> None:
         self._logger.info(
-            f"SIGNAL | {asset} | {direction} | conf={confidence:.3f} | "
+            f"SIGNAL | {asset} | {direction} | score={confidence:.3f} | "
             f"strategy={strategy} | layer={layer}"
         )
 
@@ -181,7 +190,7 @@ class TradingLogger:
 
     def log_ml(self, model: str, asset: str, prediction: float, confidence: float) -> None:
         self._logger.info(
-            f"ML | {model} | {asset} | pred={prediction:.4f} | conf={confidence:.3f}"
+            f"ML | {model} | {asset} | pred={prediction:.4f} | score={confidence:.3f}"
         )
 
     def log_api(self, api: str, endpoint: str, status: str, duration_ms: float) -> None:
@@ -209,3 +218,97 @@ def get_logger(name: Optional[str] = None) -> TradingLogger:
 
 
 logger = _default_logger
+
+
+_STALE_LOG_PATTERNS = (
+    "*.out.log",
+    "*.err.log",
+    "*.pid",
+    "*.deepcheck.log",
+    "*.preclean.log",
+    "startup_smoke_*.log",
+    "full_startup_*.log",
+    "noise_check*.log",
+    "dashboard.log",
+    "health.log",
+    "telegram.log",
+)
+
+
+def get_rotating_file_logger(
+    name: str,
+    file_path: str | Path,
+    *,
+    level: int = logging.INFO,
+    max_bytes: int = ML_SERVICE_LOG_MAX_BYTES,
+    backup_count: int = LOG_BACKUP_COUNT,
+) -> logging.Logger:
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logger_name = f"trading_bot.file.{name}"
+    named_logger = logging.getLogger(logger_name)
+    named_logger.setLevel(level)
+    named_logger.propagate = False
+
+    desired_path = str(path.resolve())
+    existing_path = getattr(named_logger, "_file_path", "")
+    existing_max = getattr(named_logger, "_max_bytes", None)
+    existing_backups = getattr(named_logger, "_backup_count", None)
+    if (
+        getattr(named_logger, "_configured", False)
+        and existing_path == desired_path
+        and existing_max == int(max_bytes)
+        and existing_backups == int(backup_count)
+    ):
+        return named_logger
+
+    named_logger.handlers.clear()
+    handler = _SafeRotatingFileHandler(
+        path,
+        maxBytes=int(max_bytes),
+        backupCount=int(backup_count),
+        encoding="utf-8",
+    )
+    handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    named_logger.addHandler(handler)
+    named_logger._configured = True  # type: ignore[attr-defined]
+    named_logger._file_path = desired_path  # type: ignore[attr-defined]
+    named_logger._max_bytes = int(max_bytes)  # type: ignore[attr-defined]
+    named_logger._backup_count = int(backup_count)  # type: ignore[attr-defined]
+    return named_logger
+
+
+def prune_stale_log_artifacts(
+    log_dir: str | Path = "logs",
+    *,
+    retention_days: int = LOG_RETENTION_DAYS,
+) -> int:
+    if int(retention_days) <= 0:
+        return 0
+    base = Path(log_dir)
+    if not base.exists():
+        return 0
+    cutoff = datetime.now() - timedelta(days=int(retention_days))
+    removed = 0
+    for pattern in _STALE_LOG_PATTERNS:
+        for path in base.glob(pattern):
+            if not path.is_file():
+                continue
+            try:
+                modified = datetime.fromtimestamp(path.stat().st_mtime)
+            except OSError:
+                continue
+            if modified >= cutoff:
+                continue
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+    return removed

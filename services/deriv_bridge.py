@@ -19,6 +19,10 @@ _ACTIVE_SYMBOLS_TTL_SEC = 6 * 60 * 60
 _TRADING_TIMES_TTL_SEC = 60 * 60
 _ECON_CAL_TTL_SEC = 20 * 60
 _KEEPALIVE_SEC = 25
+_WS_CONNECT_TIMEOUT_SEC = 15
+_WS_REQUEST_TIMEOUT_SEC = 20
+_PING_TIMEOUT_SEC = 5
+_REQUEST_RETRIES = 1
 
 _GRANULARITY_SECONDS = {
     "1m": 60,
@@ -29,6 +33,14 @@ _GRANULARITY_SECONDS = {
     "4h": 14400,
     "1d": 86400,
 }
+
+
+class DerivRequestError(RuntimeError):
+    """Logical Deriv API error returned by the server."""
+
+
+class DerivUnsupportedRequestError(DerivRequestError):
+    """Raised when the current Deriv endpoint does not support a request."""
 
 _CATEGORY_HINTS = {
     "forex": ("forex", "major pairs", "minor pairs", "smart fx"),
@@ -95,6 +107,27 @@ _DERIV_SYMBOL_HINTS = {
     "^IXIC": ("nas100", "ustech", "us100"),
     "^DJI": ("wallstreet", "us30", "dji"),
     "^FTSE": ("uk100", "ftse"),
+}
+
+_DEFAULT_SYMBOL_OVERRIDES = {
+    "EUR/USD": "frxEURUSD",
+    "EUR/JPY": "frxEURJPY",
+    "GBP/USD": "frxGBPUSD",
+    "GBP/JPY": "frxGBPJPY",
+    "AUD/USD": "frxAUDUSD",
+    "USD/JPY": "frxUSDJPY",
+    "USD/CAD": "frxUSDCAD",
+    "BTC-USD": "cryBTCUSD",
+    "ETH-USD": "cryETHUSD",
+    "BNB-USD": "cryBNBUSD",
+    "SOL-USD": "crySOLUSD",
+    "XRP-USD": "cryXRPUSD",
+    "XAU/USD": "frxXAUUSD",
+    "XAG/USD": "frxXAGUSD",
+    "US30": "OTC_DJI",
+    "US100": "OTC_NDX",
+    "US500": "OTC_SPC",
+    "UK100": "OTC_FTSE",
 }
 
 
@@ -229,22 +262,26 @@ class DerivBridge:
         self._next_connect_attempt_at = 0.0
         self._last_connect_error_log = 0.0
         self._last_connect_error_message = ""
+        self._last_request_error_log = 0.0
+        self._last_request_error_message = ""
+        self._economic_calendar_supported: Optional[bool] = None
+        self._econ_disabled_log_at = 0.0
 
     def _parse_symbol_map(self, raw: str) -> Dict[str, str]:
+        overrides = dict(_DEFAULT_SYMBOL_OVERRIDES)
         if not raw:
-            return {}
+            return overrides
         try:
             payload = json.loads(raw)
         except Exception as exc:
             logger.warning(f"[DerivBridge] Invalid DERIV_SYMBOL_MAP JSON: {exc}")
-            return {}
+            return overrides
         if not isinstance(payload, dict):
-            return {}
-        return {
-            str(key): str(value)
-            for key, value in payload.items()
-            if str(key).strip() and str(value).strip()
-        }
+            return overrides
+        for key, value in payload.items():
+            if str(key).strip() and str(value).strip():
+                overrides[str(key)] = str(value)
+        return overrides
 
     def list_profiles(self) -> List[str]:
         return ["deriv"] if self._enabled else []
@@ -327,6 +364,8 @@ class DerivBridge:
         interval: str,
         periods: int,
         category: str = "",
+        end_time: Any = None,
+        closed_only: bool = False,
     ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
         if not self._enabled:
             return None, {}
@@ -343,14 +382,18 @@ class DerivBridge:
             if not resolved:
                 return None, {}
 
+            cutoff = _try_parse_datetime(end_time)
+            request_count = int(max(2, periods + (2 if cutoff is not None or closed_only else 0)))
             payload = {
                 "ticks_history": resolved["symbol"],
                 "adjust_start_time": 1,
-                "count": int(max(2, periods)),
+                "count": request_count,
                 "end": "latest",
                 "granularity": granularity,
                 "style": "candles",
             }
+            if cutoff is not None:
+                payload["end"] = int(cutoff.timestamp()) - (1 if closed_only else 0)
 
             try:
                 response = self._request_locked(payload)
@@ -372,6 +415,12 @@ class DerivBridge:
                     if rows:
                         df = pd.DataFrame(rows).set_index("timestamp")
                         df.index = pd.to_datetime(df.index, utc=True)
+                        if cutoff is not None:
+                            if closed_only:
+                                df = df[df.index < cutoff]
+                            else:
+                                df = df[df.index <= cutoff]
+                        df = df.tail(int(max(2, periods)))
                         keep = ["open", "high", "low", "close", "volume"]
                         return df[keep].astype(float), self._metadata(resolved, source_class="primary_api")
 
@@ -396,6 +445,12 @@ class DerivBridge:
                     if rows:
                         df = pd.DataFrame(rows).set_index("timestamp")
                         df.index = pd.to_datetime(df.index, utc=True)
+                        if cutoff is not None:
+                            if closed_only:
+                                df = df[df.index < cutoff]
+                            else:
+                                df = df[df.index <= cutoff]
+                        df = df.tail(int(max(2, periods)))
                         return df[["open", "high", "low", "close", "volume"]].astype(float), self._metadata(
                             resolved,
                             source_class="primary_api",
@@ -486,20 +541,29 @@ class DerivBridge:
                 "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             }
 
-    def get_high_impact_events(
+    def get_economic_events(
         self,
-        days: int = 3,
+        start_time: Any = None,
+        end_time: Any = None,
         currencies: Optional[List[str]] = None,
+        impacts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         if not self._enabled:
             return []
 
-        start = datetime.now(timezone.utc)
-        end = start + timedelta(days=max(1, days))
+        start = _try_parse_datetime(start_time) or datetime.now(timezone.utc)
+        end = _try_parse_datetime(end_time) or (start + timedelta(days=3))
+        if end < start:
+            start, end = end, start
         currency_key = ",".join(sorted({c.upper() for c in currencies or [] if c}))
-        cache_key = f"{start.date().isoformat()}:{end.date().isoformat()}:{currency_key}"
+        impact_key = ",".join(sorted({_impact_label(i) for i in impacts or ["HIGH", "MEDIUM"]}))
+        cache_key = f"{start.isoformat()}:{end.isoformat()}:{currency_key}:{impact_key}"
 
         with self._lock:
+            if self._economic_calendar_supported is False:
+                self._economic_calendar_cache.setdefault(cache_key, (time.monotonic(), []))
+                return []
+
             cached = self._economic_calendar_cache.get(cache_key)
             if cached and (time.monotonic() - cached[0]) < _ECON_CAL_TTL_SEC:
                 return list(cached[1])
@@ -507,27 +571,65 @@ class DerivBridge:
             if not self._ensure_session_locked():
                 return []
 
-            attempts: List[Dict[str, Any]] = [{
-                "economic_calendar": 1,
-                "date_from": start.date().isoformat(),
-                "date_to": end.date().isoformat(),
-            }]
-            attempts.append({"economic_calendar": 1})
-            for currency in sorted({c.upper() for c in currencies or [] if c}):
-                attempts.append({"economic_calendar": 1, "currency": currency})
-
             events: List[Dict[str, Any]] = []
-            for payload in attempts:
+            request_values = sorted({c.upper() for c in currencies or [] if c}) or ["all"]
+            for request_value in request_values:
+                payload = {"economic_calendar": request_value}
                 try:
                     response = self._request_locked(payload)
-                    events = self._normalise_economic_events(response, start=start, end=end, currencies=currencies)
-                    if events:
-                        break
+                    batch = self._normalise_economic_events(
+                        response,
+                        start=start,
+                        end=end,
+                        currencies=currencies,
+                        impacts=impacts,
+                    )
+                    if batch:
+                        events.extend(batch)
+                    self._economic_calendar_supported = True
+                except DerivUnsupportedRequestError as exc:
+                    self._economic_calendar_supported = False
+                    now = time.monotonic()
+                    if (now - self._econ_disabled_log_at) >= 300:
+                        logger.debug(
+                            "[DerivBridge] Economic calendar unsupported by this Deriv endpoint"
+                        )
+                        self._econ_disabled_log_at = now
+                    logger.debug(f"[DerivBridge] economic calendar unsupported for {payload}: {exc}")
+                    events = []
+                    break
                 except Exception as exc:
                     logger.debug(f"[DerivBridge] economic calendar request failed for {payload}: {exc}")
 
+            if events:
+                deduped: Dict[str, Dict[str, Any]] = {}
+                for item in events:
+                    key = "|".join(
+                        [
+                            str(item.get("date", "")),
+                            str(item.get("currency", "")),
+                            str(item.get("event", "")),
+                        ]
+                    )
+                    deduped[key] = item
+                events = sorted(deduped.values(), key=lambda item: item.get("date", ""))
+
             self._economic_calendar_cache[cache_key] = (time.monotonic(), list(events))
             return events
+
+    def get_high_impact_events(
+        self,
+        days: int = 3,
+        currencies: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        start = datetime.now(timezone.utc)
+        end = start + timedelta(days=max(1, days))
+        return self.get_economic_events(
+            start_time=start,
+            end_time=end,
+            currencies=currencies,
+            impacts=["HIGH", "MEDIUM"],
+        )
 
     def _ensure_session_locked(self) -> bool:
         if not self._enabled:
@@ -541,7 +643,7 @@ class DerivBridge:
             return True
 
         try:
-            self._request_locked({"ping": 1})
+            self._request_locked({"ping": 1}, request_timeout=_PING_TIMEOUT_SEC, max_retries=0)
             return True
         except Exception:
             self._close_locked()
@@ -558,8 +660,13 @@ class DerivBridge:
             from websocket import create_connection
 
             headers = [f"Deriv-App-ID: {self._app_id}"]
-            self._ws = create_connection(self._url, timeout=10, enable_multithread=True, header=headers or None)
-            self._ws.settimeout(10)
+            self._ws = create_connection(
+                self._url,
+                timeout=_WS_CONNECT_TIMEOUT_SEC,
+                enable_multithread=True,
+                header=headers or None,
+            )
+            self._ws.settimeout(_WS_REQUEST_TIMEOUT_SEC)
             self._last_io = time.monotonic()
             self._next_connect_attempt_at = 0.0
             self._last_connect_error_message = ""
@@ -602,31 +709,123 @@ class DerivBridge:
         self._req_id += 1
         return self._req_id
 
-    def _request_locked(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if self._ws is None and not self._connect_locked():
-            raise RuntimeError("Deriv WebSocket unavailable")
+    @staticmethod
+    def _payload_name(payload: Dict[str, Any]) -> str:
+        for key in (
+            "ticks_history",
+            "ticks",
+            "active_symbols",
+            "trading_times",
+            "economic_calendar",
+            "forget",
+            "ping",
+        ):
+            if key in payload:
+                return key
+        for key in payload:
+            if key != "req_id":
+                return str(key)
+        return "request"
 
-        req_id = self._next_req_id_locked()
-        message = dict(payload)
-        message["req_id"] = req_id
+    @staticmethod
+    def _response_matches_request(response: Dict[str, Any], message: Dict[str, Any], req_id: int) -> bool:
+        response_req_id = response.get("req_id")
+        if response_req_id is not None:
+            return response_req_id == req_id
 
-        try:
-            self._ws.send(json.dumps(message))
-            self._last_io = time.monotonic()
-            while True:
-                raw = self._ws.recv()
+        if "ping" in message:
+            return "ping" in response or str(response.get("msg_type") or "").lower() == "ping"
+        if "ticks" in message:
+            return "tick" in response or str(response.get("msg_type") or "").lower() == "tick"
+        if "ticks_history" in message:
+            msg_type = str(response.get("msg_type") or "").lower()
+            return "candles" in response or "history" in response or msg_type in {"candles", "history"}
+        if "active_symbols" in message:
+            return "active_symbols" in response or str(response.get("msg_type") or "").lower() == "active_symbols"
+        if "trading_times" in message:
+            return "trading_times" in response or str(response.get("msg_type") or "").lower() == "trading_times"
+        if "economic_calendar" in message:
+            msg_type = str(response.get("msg_type") or "").lower()
+            return "events" in response or "economic_calendar" in response or msg_type == "economic_calendar"
+        if "forget" in message:
+            msg_type = str(response.get("msg_type") or "").lower()
+            return "forget" in response or msg_type == "forget"
+        return False
+
+    def _log_request_error(self, message: str) -> None:
+        now = time.monotonic()
+        if message != self._last_request_error_message or (now - self._last_request_error_log) >= 60:
+            logger.warning(message)
+            self._last_request_error_log = now
+            self._last_request_error_message = message
+        else:
+            logger.debug(message)
+
+    def _request_locked(
+        self,
+        payload: Dict[str, Any],
+        *,
+        request_timeout: Optional[float] = None,
+        max_retries: int = _REQUEST_RETRIES,
+    ) -> Dict[str, Any]:
+        last_exc: Optional[Exception] = None
+        total_attempts = max(1, int(max_retries) + 1)
+        op_name = self._payload_name(payload)
+
+        for attempt in range(1, total_attempts + 1):
+            if self._ws is None and not self._connect_locked():
+                raise RuntimeError("Deriv WebSocket unavailable")
+
+            req_id = self._next_req_id_locked()
+            message = dict(payload)
+            message["req_id"] = req_id
+
+            try:
+                if request_timeout is not None and hasattr(self._ws, "settimeout"):
+                    self._ws.settimeout(request_timeout)
+                self._ws.send(json.dumps(message))
                 self._last_io = time.monotonic()
-                response = json.loads(raw)
-                if response.get("req_id") not in (None, req_id):
+                while True:
+                    raw = self._ws.recv()
+                    self._last_io = time.monotonic()
+                    response = json.loads(raw)
+                    if not self._response_matches_request(response, message, req_id):
+                        continue
+                    error = response.get("error")
+                    if error:
+                        code = error.get("code", "Error")
+                        message_text = str(error.get("message", "unknown Deriv error"))
+                        detail = f"{code}: {message_text}"
+                        if str(code).lower() == "unrecognisedrequest" or "unrecognised request" in message_text.lower():
+                            raise DerivUnsupportedRequestError(detail)
+                        raise DerivRequestError(detail)
+                    return response
+            except Exception as exc:
+                last_exc = exc
+                detail = f"[DerivBridge] {op_name} request failed on attempt {attempt}/{total_attempts}: {exc}"
+                if isinstance(exc, DerivRequestError):
+                    if attempt < total_attempts:
+                        logger.debug(detail)
+                    else:
+                        self._log_request_error(detail)
+                    break
+                if attempt < total_attempts:
+                    logger.debug(detail)
+                else:
+                    self._log_request_error(detail)
+                self._close_locked()
+                if attempt < total_attempts:
                     continue
-                error = response.get("error")
-                if error:
-                    code = error.get("code", "Error")
-                    raise RuntimeError(f"{code}: {error.get('message', 'unknown Deriv error')}")
-                return response
-        except Exception:
-            self._close_locked()
-            raise
+            finally:
+                if self._ws is not None and hasattr(self._ws, "settimeout"):
+                    try:
+                        self._ws.settimeout(_WS_REQUEST_TIMEOUT_SEC)
+                    except Exception:
+                        pass
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"Deriv {op_name} request failed")
 
     def _load_active_symbols_locked(self) -> List[Dict[str, Any]]:
         if self._active_symbols and (time.monotonic() - self._active_symbols_loaded_at) < _ACTIVE_SYMBOLS_TTL_SEC:
@@ -869,8 +1068,10 @@ class DerivBridge:
         start: datetime,
         end: datetime,
         currencies: Optional[List[str]] = None,
+        impacts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         currency_filter = {c.upper() for c in currencies or [] if c}
+        impact_filter = {_impact_label(i) for i in impacts or ["HIGH", "MEDIUM"]}
         raw_events = (
             response.get("economic_calendar")
             or response.get("events")
@@ -886,7 +1087,8 @@ class DerivBridge:
                 continue
 
             event_dt = (
-                _try_parse_datetime(event.get("event_date"))
+                _try_parse_datetime(event.get("epoch"))
+                or _try_parse_datetime(event.get("event_date"))
                 or _try_parse_datetime(event.get("release_date"))
                 or _try_parse_datetime(event.get("date"))
                 or _try_parse_datetime(event.get("datetime"))
@@ -900,7 +1102,7 @@ class DerivBridge:
                 continue
 
             impact = _impact_label(event.get("impact") or event.get("importance") or event.get("market_impact"))
-            if impact not in {"HIGH", "MEDIUM"}:
+            if impact not in impact_filter:
                 continue
 
             items.append({

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 import pandas as pd
@@ -108,16 +109,21 @@ def backtest_existing(
     -------
     BacktestResult with full metrics and trade log
     """
-    from data.fetcher import DataFetcher
+    from data.fetcher import get_shared_fetcher
     from strategy_lab.backtest_engine_v2 import BacktestEngineV2
 
-    fetcher = DataFetcher()
+    fetcher = get_shared_fetcher()
     df      = fetcher.get_ohlcv(asset, category, interval, periods)
     if df is None or df.empty:
         raise ValueError(f"No OHLCV data for {asset} ({category})")
 
     adapter = StrategyAdapter(strategy, asset=asset, category=category)
-    engine  = BacktestEngineV2(strategy=adapter, initial_balance=initial_balance)
+    engine  = BacktestEngineV2(
+        strategy=adapter,
+        initial_balance=initial_balance,
+        asset=asset,
+        category=category,
+    )
     result  = engine.run(df)
 
     logger.info(
@@ -170,8 +176,12 @@ def compare_all_strategies(
     for label, strategy in strategy_classes:
         try:
             adapter = StrategyAdapter(strategy, asset=asset, category=category)
-            engine  = BacktestEngineV2(strategy=adapter,
-                                       initial_balance=initial_balance)
+            engine  = BacktestEngineV2(
+                strategy=adapter,
+                initial_balance=initial_balance,
+                asset=asset,
+                category=category,
+            )
             result  = engine.run(df)
             results.append((label, result))
             logger.info(f"[StrategyAdapter] {label}: {result.summary()}")
@@ -190,7 +200,8 @@ def compare_all_strategies_from_asset(
     asset:           str   = "BTC-USD",
     category:        str   = "crypto",
     initial_balance: float = 10_000.0,
-    periods:         int   = 500,
+    periods:         int | None = None,
+    end_time=None,
 ) -> List[Dict]:
     """
     Same as compare_all_strategies but fetches data automatically.
@@ -203,17 +214,25 @@ def compare_all_strategies_from_asset(
         for r in results:
             print(r)
     """
-    try:
-        import core.engine as _eng_mod
-        fetcher = getattr(getattr(_eng_mod, "_CORE_INSTANCE", None), "fetcher", None)
-    except Exception:
-        fetcher = None
+    eng_mod = sys.modules.get("core.engine")
+    fetcher = getattr(getattr(eng_mod, "_CORE_INSTANCE", None), "fetcher", None) if eng_mod is not None else None
     if fetcher is None:
-        from data.fetcher import DataFetcher
-        fetcher = DataFetcher()
+        from data.fetcher import get_shared_fetcher
+
+        fetcher = get_shared_fetcher()
     from config.config import get_trading_timeframe
+    from strategy_lab import resolve_backtest_end_time, resolve_backtest_periods
     _TF = get_trading_timeframe(category)
-    df = fetcher.get_ohlcv(asset, category, _TF, periods)
+    resolved_periods = resolve_backtest_periods(category, periods)
+    resolved_end_time = resolve_backtest_end_time(category, end_time)
+    df = fetcher.get_ohlcv(
+        asset,
+        category,
+        _TF,
+        resolved_periods,
+        end_time=resolved_end_time,
+        closed_only=True,
+    )
     if df is None or df.empty:
         raise ValueError(f"No OHLCV data for {asset} ({category})")
     return compare_all_strategies(df, asset=asset, category=category,

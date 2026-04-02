@@ -153,9 +153,9 @@ RECOMMENDED_ENV_OVERRIDES = {
     "MAX_POSITIONS": "6",
     
     # Current live bot risk posture
-    "DAILY_LOSS_LIMIT_PERCENT": "50.0",
-    "DRAWDOWN_HALT_PERCENT": "25.0",
-    "DRAWDOWN_REDUCE_PERCENT": "12.0",
+    "DAILY_LOSS_LIMIT_PERCENT": "35.0",
+    "DRAWDOWN_HALT_PERCENT": "40.0",
+    "DRAWDOWN_REDUCE_PERCENT": "20.0",
     
     # Risk per trade
     "DEFAULT_RISK_PER_TRADE": "1.2",    # 1.2% vs default 1.5%

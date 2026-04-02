@@ -429,7 +429,7 @@ class RobbieExplainer:
         else:
             parts.append(f"\n⚖️ *{asset}* — no clear edge right now.")
 
-        # ── Confidence line ──────────────────────────────────────────────────
+        # ── Signal score line ────────────────────────────────────────────────
         parts.append(_confidence_line(confidence, mood))
 
         # ── Technical reasons from indicators ────────────────────────────────
@@ -717,7 +717,7 @@ class RobbieExplainer:
         if signal and signal.get("direction", "HOLD") != "HOLD":
             d    = signal["direction"]
             conf = float(signal.get("confidence", 0.5)) * 100
-            lines.append(f"My current read: *{d}* at {conf:.0f}% confidence.")
+            lines.append(f"My current read: *{d}* with a signal score of {conf:.0f}/100.")
 
         # Mood-flavoured closing
         if mood in ("euphoric", "on_fire"):
@@ -822,16 +822,16 @@ def _conf_emoji(confidence: float) -> str:
 
 def _confidence_line(confidence: float, mood: str) -> str:
     if mood in ("euphoric", "on_fire") and confidence > 75:
-        return f"And I'm *very* confident about this one — {confidence:.0f}%. 🔥"
+        return f"And the signal score is elevated here — {confidence:.0f}/100. 🔥"
     if mood in ("cautious", "shaken") and confidence < 75:
-        return f"Confidence is {confidence:.0f}% — I'd keep the size small given how this week has gone."
+        return f"Signal score is {confidence:.0f}/100 — I'd keep the size small given how this week has gone."
     if confidence > 80:
-        return f"I'm *pretty damn confident* about this ({confidence:.0f}% sure)."
+        return f"This is one of the stronger reads on the board ({confidence:.0f}/100)."
     if confidence > 65:
-        return f"Decent signal here ({confidence:.0f}% confidence)."
+        return f"Decent signal score here ({confidence:.0f}/100)."
     if confidence > 52:
-        return f"Not super confident ({confidence:.0f}%) but worth watching."
-    return f"Honestly a bit unsure ({confidence:.0f}%) — market's being weird."
+        return f"Not a top-tier score ({confidence:.0f}/100), but worth watching."
+    return f"Honestly a weak read ({confidence:.0f}/100) — market's being weird."
 
 
 def _mood_greeting(mood: str, name: str) -> str:

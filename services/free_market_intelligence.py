@@ -5,7 +5,7 @@ import threading
 import time
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -111,18 +111,20 @@ class FreeMarketIntelligence:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "Robbie-TradingBot/1.0"})
 
-    def get_asset_context(self, asset: str, category: str) -> Dict[str, Any]:
+    def get_asset_context(self, asset: str, category: str, as_of: Any = None) -> Dict[str, Any]:
         if not FREE_INTEL_ENABLED:
             return self._empty(asset, category)
 
-        cache_key = f"{asset}:{category}"
+        as_of_dt = self._normalize_as_of(as_of)
+        as_of_key = as_of_dt.isoformat() if as_of_dt is not None else "latest"
+        cache_key = f"{asset}:{category}:{as_of_key}"
         now = time.time()
         with self._lock:
             hit = self._cache.get(cache_key)
             if hit and now < hit.expires_at:
                 return dict(hit.payload)
 
-        payload = self._build_asset_context(asset, category)
+        payload = self._build_asset_context(asset, category, as_of=as_of_dt)
         with self._lock:
             self._cache[cache_key] = _CacheEntry(
                 payload=dict(payload),
@@ -130,25 +132,34 @@ class FreeMarketIntelligence:
             )
         return payload
 
-    def _build_asset_context(self, asset: str, category: str) -> Dict[str, Any]:
+    def _build_asset_context(self, asset: str, category: str, as_of: Optional[datetime] = None) -> Dict[str, Any]:
         components: Dict[str, float] = {}
         details: Dict[str, Any] = {}
         sources: List[str] = []
 
-        macro = self._macro_context(asset, category)
+        try:
+            macro = self._macro_context(asset, category, as_of=as_of)
+        except TypeError:
+            macro = self._macro_context(asset, category)
         if macro:
             components.update(macro.get("components", {}))
             details["macro"] = macro.get("details", {})
             sources.extend(macro.get("sources", []))
 
-        cot = self._cftc_context(asset)
+        try:
+            cot = self._cftc_context(asset, as_of=as_of)
+        except TypeError:
+            cot = self._cftc_context(asset)
         if cot:
             components["cftc_positioning"] = cot["score"]
             details["cftc"] = cot
             sources.append("cftc")
 
         if asset in {"WTI", "WTI/USD", "CL=F"}:
-            eia = self._eia_context()
+            try:
+                eia = self._eia_context(as_of=as_of)
+            except TypeError:
+                eia = self._eia_context()
             if eia:
                 components["eia_inventory"] = eia["score"]
                 details["eia"] = eia
@@ -166,6 +177,7 @@ class FreeMarketIntelligence:
             "sources": sorted(set(sources)),
             "details": details,
             "timestamp": datetime.utcnow().isoformat(),
+            "as_of": as_of.isoformat() if as_of is not None else None,
         }
         return payload
 
@@ -181,12 +193,12 @@ class FreeMarketIntelligence:
             "timestamp": datetime.utcnow().isoformat(),
         }
 
-    def _macro_context(self, asset: str, category: str) -> Dict[str, Any]:
-        usd_broad = self._fred_latest_change(FRED_USD_BROAD_SERIES)
-        us2y = self._fred_latest_change(FRED_US_2Y_SERIES)
-        us10y = self._fred_latest_change(FRED_US_10Y_SERIES)
-        real10y = self._fred_latest_change(FRED_US_REAL_10Y_SERIES)
-        vix = self._fred_latest_change(FRED_VIX_SERIES)
+    def _macro_context(self, asset: str, category: str, as_of: Optional[datetime] = None) -> Dict[str, Any]:
+        usd_broad = self._fred_latest_change(FRED_USD_BROAD_SERIES, as_of=as_of)
+        us2y = self._fred_latest_change(FRED_US_2Y_SERIES, as_of=as_of)
+        us10y = self._fred_latest_change(FRED_US_10Y_SERIES, as_of=as_of)
+        real10y = self._fred_latest_change(FRED_US_REAL_10Y_SERIES, as_of=as_of)
+        vix = self._fred_latest_change(FRED_VIX_SERIES, as_of=as_of)
 
         details = {
             "usd_broad": usd_broad,
@@ -237,10 +249,11 @@ class FreeMarketIntelligence:
             "sources": ["fred"],
         }
 
-    def _fred_latest_change(self, series_id: str) -> Optional[Dict[str, float]]:
+    def _fred_latest_change(self, series_id: str, as_of: Optional[datetime] = None) -> Optional[Dict[str, float]]:
         if not FRED_API_KEY or not series_id:
             return None
         try:
+            observation_end = (as_of or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
             response = self._session.get(
                 _FRED_URL,
                 params={
@@ -249,6 +262,7 @@ class FreeMarketIntelligence:
                     "file_type": "json",
                     "sort_order": "desc",
                     "limit": 8,
+                    "observation_end": observation_end,
                 },
                 timeout=12,
             )
@@ -280,7 +294,7 @@ class FreeMarketIntelligence:
             logger.debug(f"[FreeIntel] FRED {series_id}: {exc}")
             return None
 
-    def _eia_context(self) -> Optional[Dict[str, Any]]:
+    def _eia_context(self, as_of: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
         if not EIA_API_KEY:
             return None
         try:
@@ -291,6 +305,18 @@ class FreeMarketIntelligence:
             )
             response.raise_for_status()
             rows = (((response.json() or {}).get("response") or {}).get("data") or [])
+            if as_of is not None:
+                filtered = []
+                for item in rows:
+                    period = str(item.get("period", "") or "").strip()
+                    try:
+                        period_ts = pd.Timestamp(period)
+                        period_ts = period_ts.tz_localize("UTC") if period_ts.tzinfo is None else period_ts.tz_convert("UTC")
+                        if period_ts <= as_of:
+                            filtered.append(item)
+                    except Exception:
+                        filtered.append(item)
+                rows = filtered
             values: List[float] = []
             periods: List[str] = []
             for item in rows:
@@ -322,7 +348,7 @@ class FreeMarketIntelligence:
             logger.debug(f"[FreeIntel] EIA {EIA_CRUDE_STOCKS_SERIES}: {exc}")
             return None
 
-    def _cftc_context(self, asset: str) -> Optional[Dict[str, Any]]:
+    def _cftc_context(self, asset: str, as_of: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
         if not CFTC_ENABLED:
             return None
 
@@ -337,8 +363,8 @@ class FreeMarketIntelligence:
                 return None
 
             if asset == "GBP/JPY":
-                gbp = self._financial_position(matches, "BRITISH POUND - CHICAGO MERCANTILE EXCHANGE")
-                jpy = self._financial_position(matches, "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE")
+                gbp = self._financial_position(matches, "BRITISH POUND - CHICAGO MERCANTILE EXCHANGE", as_of=as_of)
+                jpy = self._financial_position(matches, "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE", as_of=as_of)
                 if gbp is None or jpy is None:
                     return None
                 score = _clamp(gbp["score"] - jpy["score"])
@@ -350,7 +376,7 @@ class FreeMarketIntelligence:
                 }
 
             row_name = patterns[0]
-            return self._financial_position(matches, row_name, asset=asset)
+            return self._financial_position(matches, row_name, asset=asset, as_of=as_of)
 
         if asset in _DISAGG_PATTERNS:
             report_type = "disaggregated"
@@ -361,7 +387,9 @@ class FreeMarketIntelligence:
             matches = frame[frame["Market_and_Exchange_Names"].isin(patterns)]
             if matches.empty:
                 return None
-            row = matches.sort_values("Report_Date_as_YYYY-MM-DD", ascending=False).iloc[0]
+            row = self._latest_cftc_row(matches, as_of=as_of)
+            if row is None:
+                return None
             open_interest = float(row.get("Open_Interest_All", 0) or 0)
             if open_interest <= 0:
                 return None
@@ -385,11 +413,14 @@ class FreeMarketIntelligence:
         frame: pd.DataFrame,
         market_name: str,
         asset: str = "",
+        as_of: Optional[datetime] = None,
     ) -> Optional[Dict[str, Any]]:
         match = frame[frame["Market_and_Exchange_Names"] == market_name]
         if match.empty:
             return None
-        row = match.sort_values("Report_Date_as_YYYY-MM-DD", ascending=False).iloc[0]
+        row = self._latest_cftc_row(match, as_of=as_of)
+        if row is None:
+            return None
         open_interest = float(row.get("Open_Interest_All", 0) or 0)
         if open_interest <= 0:
             return None
@@ -416,6 +447,35 @@ class FreeMarketIntelligence:
             "leveraged_money_net": round(lev_money_net, 2),
             "open_interest": round(open_interest, 2),
         }
+
+    @staticmethod
+    def _normalize_as_of(as_of: Any) -> Optional[datetime]:
+        if as_of in (None, ""):
+            return None
+        try:
+            if isinstance(as_of, datetime):
+                return as_of.astimezone(timezone.utc) if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
+            parsed = pd.Timestamp(as_of)
+            if parsed.tzinfo is None:
+                parsed = parsed.tz_localize("UTC")
+            else:
+                parsed = parsed.tz_convert("UTC")
+            return parsed.to_pydatetime()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _latest_cftc_row(frame: pd.DataFrame, as_of: Optional[datetime] = None):
+        if frame is None or frame.empty:
+            return None
+        ordered = frame.copy()
+        if as_of is not None and "Report_Date_as_YYYY-MM-DD" in ordered.columns:
+            report_dates = pd.to_datetime(ordered["Report_Date_as_YYYY-MM-DD"], utc=True, errors="coerce")
+            ordered = ordered.loc[report_dates <= as_of]
+            if ordered.empty:
+                return None
+        ordered = ordered.sort_values("Report_Date_as_YYYY-MM-DD", ascending=False)
+        return ordered.iloc[0]
 
     def _load_cftc_frame(self, url_template: str) -> Optional[pd.DataFrame]:
         year = datetime.utcnow().year

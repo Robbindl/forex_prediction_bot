@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from core.confidence import clamp_confidence, squash_confidence
 from utils.logger import get_logger
 from ml.registry import registry
 from ml.features import build_features
@@ -85,7 +86,13 @@ def build_agent_features(df: pd.DataFrame, context: Dict[str, Any]) -> np.ndarra
         _float_val(metadata, "orderflow_imbalance"),
         _float_val(metadata, "liquidity_proxy"),
         _float_val(metadata, "spread_penalty"),
-        _float_val(metadata, "confidence"),
+        _float_val(metadata, "seed_candidate_score", _float_val(metadata, "ml_confidence")),
+        _float_val(metadata, "memory_score") / 100.0,
+        _float_val(metadata, "memory_edge"),
+        _float_val(metadata, "memory_win_rate"),
+        _float_val(metadata, "memory_similarity"),
+        min(1.0, _float_val(metadata, "memory_sample_count") / 50.0),
+        _float_val(metadata, "opportunity_score"),
     ], dtype=np.float32)
 
     return np.concatenate([features, extra])
@@ -97,27 +104,51 @@ class TradingAgent:
     def __init__(self):
         self._lock = threading.Lock()
 
-    def score(self, asset: str, category: str, df: pd.DataFrame, context: Dict[str, Any]) -> Tuple[float, float]:
+    def _predict_policy(
+        self,
+        asset: str,
+        category: str,
+        df: pd.DataFrame,
+        context: Dict[str, Any],
+    ) -> Tuple[float, float, str]:
         state = build_agent_features(df, context)
         if state is None:
-            return 0.5, 0.0
+            return 0.5, 0.0, "features_unavailable"
 
         model_key = f"{category}_policy"
         model = registry.get(model_key)
         if model is None:
             logger.debug(f"[TradingAgent] No policy model found for {category}")
-            return 0.5, 0.0
+            return 0.5, 0.0, "model_unavailable"
 
         try:
+            expected_features = getattr(model, "n_features_in_", None)
+            if isinstance(expected_features, (int, np.integer)) and expected_features > 0 and expected_features != len(state):
+                if expected_features < len(state):
+                    logger.warning(
+                        f"[TradingAgent] Policy model feature mismatch for {asset} ({model_key}): "
+                        f"model expects {expected_features}, runtime built {len(state)} — policy gate bypassed pending retrain"
+                    )
+                    return 0.5, 0.0, "feature_mismatch"
+                logger.warning(
+                    f"[TradingAgent] Policy model feature mismatch for {asset} ({model_key}): "
+                    f"model expects {expected_features}, runtime built {len(state)} — policy gate bypassed"
+                )
+                return 0.5, 0.0, "feature_mismatch"
+
             with self._lock:
                 proba = model.predict_proba(state.reshape(1, -1))
             up_prob = float(proba[0][1]) if proba.shape[1] > 1 else float(proba[0][0])
-            confidence = min(0.95, abs(up_prob - 0.5) * 2)
+            confidence = squash_confidence(abs(up_prob - 0.5) * 2)
             logger.log_ml(model_key, asset, up_prob, confidence)
-            return up_prob, confidence
+            return up_prob, confidence, "ok"
         except Exception as e:
-            logger.debug(f"[TradingAgent] score failed for {asset}: {e}")
-            return 0.5, 0.0
+            logger.warning(f"[TradingAgent] Policy scoring failed for {asset} ({model_key}): {e}")
+            return 0.5, 0.0, "predict_failed"
+
+    def score(self, asset: str, category: str, df: pd.DataFrame, context: Dict[str, Any]) -> Tuple[float, float]:
+        up_prob, confidence, _status = self._predict_policy(asset, category, df, context)
+        return up_prob, confidence
 
     def generate_signal(
         self,
@@ -133,7 +164,7 @@ class TradingAgent:
         if "signal_metadata" not in context:
             context["signal_metadata"] = {
                 "ml_prediction_real": False,
-                "confidence": 0.0,
+                "seed_candidate_score": 0.0,
                 "sentiment_score": context.get("sentiment_score", 0.0),
                 "regime": context.get("regime", "unknown"),
             }
@@ -162,7 +193,7 @@ class TradingAgent:
             logger.debug(f"[TradingAgent] generate_signal failed for {asset}: {e}")
             return None
 
-        confidence = min(0.95, abs(up_prob - 0.5) * 2)
+        confidence = squash_confidence(abs(up_prob - 0.5) * 2)
         if up_prob >= 0.55:
             direction = "BUY"
         elif up_prob <= 0.45:
@@ -191,7 +222,7 @@ class TradingAgent:
             canonical_asset=canonical,
             category=category,
             direction=direction,
-            confidence=round(min(1.0, max(0.0, confidence)), 4),
+            confidence=round(clamp_confidence(confidence), 4),
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
@@ -222,10 +253,16 @@ class TradingAgent:
             **merged_metadata,
         }
 
-        prob, conf = self.score(signal.asset, signal.category, ctx.get("price_data"), ctx)
+        prob, conf, status = self._predict_policy(signal.asset, signal.category, ctx.get("price_data"), ctx)
         signal.metadata["policy_model"] = model_key
         signal.metadata["agent_score"] = prob
         signal.metadata["agent_confidence"] = conf
+        signal.metadata["agent_policy_status"] = status
+
+        if status != "ok":
+            signal.metadata["agent_recommended_score"] = round(signal.confidence, 4)
+            signal.metadata["agent_policy_advisory"] = f"policy gate bypassed ({status})"
+            return signal
 
         if signal.direction == "BUY":
             directional_edge = prob
@@ -248,9 +285,8 @@ class TradingAgent:
             logger.debug(f"[TradingAgent] Rejected {signal.asset} {signal.direction} by {reject_reason}")
             return None
 
-        agent_floor = 0.5 + abs(prob - 0.5)
-        signal.confidence = min(0.95, max(signal.confidence, agent_floor))
-        signal.metadata["agent_adjusted_confidence"] = round(signal.confidence, 4)
+        agent_floor = 0.55 + abs(prob - 0.5) * 0.40
+        signal.metadata["agent_recommended_score"] = round(clamp_confidence(agent_floor), 4)
         return signal
 
 

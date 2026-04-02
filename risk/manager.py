@@ -143,11 +143,33 @@ class RiskManager:
 
     def get_stop_loss(self, entry: float, direction: str, category: str, atr: float = 0.0) -> float:
         """Calculate SL using ATR when available, otherwise category fallback."""
+        distance_multiplier = 1.0
+        return self.get_stop_loss_scaled(
+            entry,
+            direction,
+            category,
+            atr=atr,
+            distance_multiplier=distance_multiplier,
+        )
+
+    def get_stop_loss_scaled(
+        self,
+        entry: float,
+        direction: str,
+        category: str,
+        atr: float = 0.0,
+        distance_multiplier: float = 1.0,
+    ) -> float:
+        scale = max(0.75, min(1.25, float(distance_multiplier or 1.0)))
         if atr and atr > 0:
-            dist = _clamp_stop_distance(entry, category, atr * _stop_atr_multiplier(category))
+            dist = _clamp_stop_distance(entry, category, atr * _stop_atr_multiplier(category) * scale)
         else:
-            dist = entry * _STOP_FALLBACK_PCT.get((category or "").lower(), 0.0060)
+            dist = entry * _STOP_FALLBACK_PCT.get((category or "").lower(), 0.0060) * scale
         return entry - dist if direction == "BUY" else entry + dist
+
+    def get_target_rr(self, category: str = "", rr_multiplier: float = 1.0) -> float:
+        multiplier = max(0.70, min(1.30, float(rr_multiplier or 1.0)))
+        return max(1.0, _default_risk_reward(category) * multiplier)
 
     def get_take_profit(
         self,
@@ -156,9 +178,10 @@ class RiskManager:
         direction: str,
         category: str = "",
         rr: Optional[float] = None,
+        rr_multiplier: float = 1.0,
     ) -> float:
         dist = abs(entry - stop_loss)
-        ratio = float(rr) if rr and rr > 0 else _default_risk_reward(category)
+        ratio = float(rr) if rr and rr > 0 else self.get_target_rr(category, rr_multiplier=rr_multiplier)
         if dist <= 0:
             return entry
         return entry + dist * ratio if direction == "BUY" else entry - dist * ratio

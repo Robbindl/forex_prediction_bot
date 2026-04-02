@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
 from config.config import (
+    GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY,
+    GOVERNANCE_BOOTSTRAP_MIN_LIVE_SAMPLES,
     GOVERNANCE_ENABLE_FOREX_FILTER,
+    GOVERNANCE_EXPECTANCY_MAX_PREMATURE_STOP_RATE,
+    GOVERNANCE_EXPECTANCY_MIN_AVG_R,
+    GOVERNANCE_EXPECTANCY_MIN_QUALITY_SCORE,
+    GOVERNANCE_EXPECTANCY_MIN_SAMPLES,
+    GOVERNANCE_EXPECTANCY_MIN_TARGET_HIT_RATE,
     GOVERNANCE_MIN_LIVE_ACCURACY,
     GOVERNANCE_MIN_LIVE_SAMPLES,
     GOVERNANCE_MIN_ML_CONFIDENCE,
+    GOVERNANCE_PORTFOLIO_MIN_LIVE_ACCURACY,
+    GOVERNANCE_PORTFOLIO_MIN_LIVE_SAMPLES,
     GOVERNANCE_MIN_REAL_SOURCES,
     GOVERNANCE_MIN_RISK_REWARD,
     GOVERNANCE_REQUIRE_MODEL_RESEARCH,
@@ -14,6 +24,8 @@ from config.config import (
     GOVERNANCE_REQUIRE_NON_DELAYED_PRICE,
     GOVERNANCE_VALIDATION_DAYS,
     GOVERNANCE_VALIDATION_HORIZON,
+    LIVE_APPROVED_REGISTRY_ONLY,
+    LIVE_REQUIRE_ASSET_APPROVAL,
 )
 from ml.registry import registry
 from risk.forex_filter import ForexFilter
@@ -50,6 +62,8 @@ class SignalGovernance:
         price_meta = market_data.get("price") or {}
         ohlcv_meta = market_data.get("ohlcv") or {}
         live_validation = self._get_live_validation(asset)
+        registry_validation = self._get_registry_validation(asset, signal.category)
+        expectancy_validation = self._get_expectancy_validation(asset, signal.category)
 
         violations = []
         warnings = []
@@ -107,14 +121,26 @@ class SignalGovernance:
             elif crypto_price_note:
                 warnings.append(crypto_price_note)
 
+        registry_violation, registry_warning = self._assess_registry_validation(registry_validation)
+        if registry_violation:
+            violations.append(registry_violation)
+        elif registry_warning:
+            warnings.append(registry_warning)
+
         live_violation, live_warning = self._assess_live_validation(live_validation)
         if live_violation:
             violations.append(live_violation)
         elif live_warning:
             warnings.append(live_warning)
 
+        expectancy_violation, expectancy_warning = self._assess_expectancy_validation(expectancy_validation)
+        if expectancy_violation:
+            violations.append(expectancy_violation)
+        elif expectancy_warning:
+            warnings.append(expectancy_warning)
+
         if signal.category == "forex" and GOVERNANCE_ENABLE_FOREX_FILTER:
-            passed, reason = self._run_forex_filter(signal, context)
+            passed, reason = self._run_forex_filter(signal, {**context, "live_validation": live_validation})
             if not passed:
                 violations.append(f"forex quality: {reason}")
 
@@ -130,9 +156,19 @@ class SignalGovernance:
             score += 6
         elif float(model_meta.get("holdout_accuracy", 0.0) or 0.0) >= 0.52:
             score += 4
+        if registry_validation.get("exact_match"):
+            score += 12
+        elif registry_validation.get("matched"):
+            score += 6
         if live_total >= max(1, GOVERNANCE_MIN_LIVE_SAMPLES):
             score += max(-12, min(12, live_accuracy - 50.0))
         elif live_total > 0:
+            score += 2
+        expectancy_samples = int(expectancy_validation.get("sample_count", 0) or 0)
+        expectancy_avg_r = float(expectancy_validation.get("avg_rr_realized", 0.0) or 0.0)
+        if expectancy_samples >= max(1, GOVERNANCE_EXPECTANCY_MIN_SAMPLES):
+            score += max(-10, min(10, expectancy_avg_r * 14.0))
+        elif expectancy_samples > 0:
             score += 2
         score += min(8, valid_sources * 2)
         score += min(10, ml_conf * 20)
@@ -160,6 +196,8 @@ class SignalGovernance:
             "model_key": model_key,
             "model_research": model_meta,
             "live_validation": live_validation,
+            "registry_validation": registry_validation,
+            "expectancy_validation": expectancy_validation,
             "market_data": {
                 "price": price_meta,
                 "ohlcv": ohlcv_meta,
@@ -243,14 +281,96 @@ class SignalGovernance:
         return score
 
     @staticmethod
+    def _assess_registry_validation(registry_validation: Dict[str, Any]) -> tuple[str, str]:
+        required = bool(registry_validation.get("required"))
+        asset_required = bool(registry_validation.get("asset_required"))
+        asset = str(registry_validation.get("asset") or "")
+        category = str(registry_validation.get("category") or "")
+        matched = bool(registry_validation.get("matched"))
+        exact_match = bool(registry_validation.get("exact_match"))
+        match_scope = str(registry_validation.get("match_scope") or "none")
+        names = list(registry_validation.get("names") or [])
+
+        if not required:
+            if matched and match_scope != "asset":
+                return "", f"using {match_scope} live strategy approval for {asset or category}"
+            return "", ""
+
+        if not matched:
+            return f"no approved live strategy for {asset} ({category}) in live registry", ""
+        if asset_required and not exact_match:
+            return (
+                f"no asset-specific approved live strategy for {asset} ({category}) — only {match_scope} registry matches found",
+                "",
+            )
+        if match_scope != "asset":
+            joined = ", ".join([name for name in names if name][:3])
+            note = f"using {match_scope} live strategy approval"
+            if joined:
+                note = f"{note}: {joined}"
+            return "", note
+        return "", ""
+
+    @staticmethod
     def _assess_live_validation(live_validation: Dict[str, Any]) -> tuple[str, str]:
         live_total = int(live_validation.get("total", 0) or 0)
         live_accuracy = float(live_validation.get("accuracy_pct", 0.0) or 0.0)
         scope = live_validation.get("scope", "fallback")
 
+        if scope == "unavailable":
+            return "", "live validation unavailable"
+        if scope == "bootstrap":
+            return "", "live validation bootstrap: no evaluated samples yet"
+        if scope == "portfolio_context":
+            portfolio_total = int(live_validation.get("portfolio_total", 0) or 0)
+            portfolio_accuracy = float(live_validation.get("portfolio_accuracy_pct", 0.0) or 0.0)
+            if portfolio_total <= 0:
+                return "", "live validation bootstrap: no evaluated samples yet"
+            if portfolio_total < GOVERNANCE_PORTFOLIO_MIN_LIVE_SAMPLES:
+                return "", (
+                    f"asset live validation bootstrap: no asset samples yet; "
+                    f"portfolio context {portfolio_total}/{GOVERNANCE_PORTFOLIO_MIN_LIVE_SAMPLES} evaluated samples"
+                )
+            if portfolio_accuracy < GOVERNANCE_PORTFOLIO_MIN_LIVE_ACCURACY:
+                return "", (
+                    f"asset live validation bootstrap: no asset samples yet; "
+                    f"portfolio context weak at {portfolio_accuracy:.1f}%"
+                )
+            return "", (
+                f"asset live validation bootstrap: no asset samples yet; "
+                f"portfolio context {portfolio_accuracy:.1f}% across {portfolio_total} samples"
+            )
         if live_total <= 0:
             return "", "live validation bootstrap: no evaluated samples yet"
+        if scope == "portfolio":
+            if live_total < GOVERNANCE_PORTFOLIO_MIN_LIVE_SAMPLES:
+                return "", (
+                    f"live portfolio bootstrap: {live_total}/{GOVERNANCE_PORTFOLIO_MIN_LIVE_SAMPLES} "
+                    f"evaluated samples"
+                )
+            if live_accuracy < GOVERNANCE_PORTFOLIO_MIN_LIVE_ACCURACY:
+                return (
+                    f"live portfolio accuracy {live_accuracy:.1f}% "
+                    f"below minimum {GOVERNANCE_PORTFOLIO_MIN_LIVE_ACCURACY:.1f}%",
+                    "",
+                )
+            if live_accuracy < GOVERNANCE_MIN_LIVE_ACCURACY:
+                return "", (
+                    f"live portfolio accuracy {live_accuracy:.1f}% "
+                    f"below preferred {GOVERNANCE_MIN_LIVE_ACCURACY:.1f}%"
+                )
+            return "", ""
         if live_total < GOVERNANCE_MIN_LIVE_SAMPLES:
+            if (
+                live_total >= GOVERNANCE_BOOTSTRAP_MIN_LIVE_SAMPLES
+                and live_accuracy < GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY
+            ):
+                return (
+                    f"live {scope} bootstrap accuracy {live_accuracy:.1f}% "
+                    f"below minimum {GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY:.1f}% "
+                    f"after {live_total} samples",
+                    "",
+                )
             return "", (
                 f"live validation bootstrap: {live_total}/{GOVERNANCE_MIN_LIVE_SAMPLES} "
                 f"evaluated samples"
@@ -260,6 +380,51 @@ class SignalGovernance:
                 f"live {scope} accuracy {live_accuracy:.1f}% "
                 f"below minimum {GOVERNANCE_MIN_LIVE_ACCURACY:.1f}%",
                 "",
+            )
+        return "", ""
+
+    @staticmethod
+    def _assess_expectancy_validation(expectancy_validation: Dict[str, Any]) -> tuple[str, str]:
+        scope = str(expectancy_validation.get("scope") or "bootstrap")
+        sample_count = int(expectancy_validation.get("sample_count", 0) or 0)
+        avg_rr_realized = float(expectancy_validation.get("avg_rr_realized", 0.0) or 0.0)
+        target_hit_rate = float(expectancy_validation.get("target_hit_rate", 0.0) or 0.0)
+        premature_stop_rate = float(expectancy_validation.get("premature_stop_rate", 0.0) or 0.0)
+        avg_quality_score = float(expectancy_validation.get("avg_quality_score", 0.0) or 0.0)
+
+        if scope == "unavailable":
+            return "", "execution expectancy unavailable"
+        if scope == "bootstrap":
+            return "", "execution expectancy bootstrap: no closed-trade history yet"
+        if scope == "category_context":
+            return "", (
+                f"execution expectancy bootstrap: no asset trade history yet; "
+                f"category context sample_count={sample_count}"
+            )
+        if sample_count < GOVERNANCE_EXPECTANCY_MIN_SAMPLES:
+            return "", (
+                f"execution expectancy bootstrap: {sample_count}/{GOVERNANCE_EXPECTANCY_MIN_SAMPLES} "
+                f"closed trades"
+            )
+        if avg_rr_realized < GOVERNANCE_EXPECTANCY_MIN_AVG_R:
+            return (
+                f"live asset expectancy {avg_rr_realized:.2f}R below minimum "
+                f"{GOVERNANCE_EXPECTANCY_MIN_AVG_R:.2f}R",
+                "",
+            )
+        if (
+            target_hit_rate < GOVERNANCE_EXPECTANCY_MIN_TARGET_HIT_RATE
+            and premature_stop_rate > GOVERNANCE_EXPECTANCY_MAX_PREMATURE_STOP_RATE
+        ):
+            return (
+                f"live asset execution quality weak: target_hit_rate {target_hit_rate * 100:.1f}% "
+                f"and premature_stop_rate {premature_stop_rate * 100:.1f}%",
+                "",
+            )
+        if avg_quality_score < GOVERNANCE_EXPECTANCY_MIN_QUALITY_SCORE:
+            return "", (
+                f"live asset execution quality {avg_quality_score:.1f} below preferred "
+                f"{GOVERNANCE_EXPECTANCY_MIN_QUALITY_SCORE:.1f}"
             )
         return "", ""
 
@@ -298,6 +463,7 @@ class SignalGovernance:
             df=df,
             atr=atr,
             current_spread_bps=spread_bps,
+            live_validation_scope=str((context.get("live_validation") or {}).get("scope", "asset") or "asset"),
         )
 
     @staticmethod
@@ -318,7 +484,71 @@ class SignalGovernance:
 
         by_horizon = stats.get("by_horizon") or {}
         global_stats = by_horizon.get(label, {})
-        return {"scope": "portfolio", **global_stats}
+        if int(global_stats.get("total", 0) or 0) > 0:
+            return {
+                "scope": "portfolio_context",
+                "total": 0,
+                "accuracy_pct": 0.0,
+                "portfolio_total": int(global_stats.get("total", 0) or 0),
+                "portfolio_accuracy_pct": float(global_stats.get("accuracy_pct", 0.0) or 0.0),
+            }
+        return {"scope": "bootstrap", "total": 0, "accuracy_pct": 0.0}
+
+    @staticmethod
+    def _get_registry_validation(asset: str, category: str) -> Dict[str, Any]:
+        try:
+            from strategy_lab.live_bridge import find_live_registry_matches
+
+            matches = find_live_registry_matches(asset, category)
+        except Exception as exc:
+            logger.debug(f"[SignalGovernance] Live strategy registry unavailable: {exc}")
+            matches = {
+                "asset": asset,
+                "category": category,
+                "matched": False,
+                "exact_match": False,
+                "match_scope": "unavailable",
+                "strategies": [],
+                "names": [],
+            }
+        return {
+            "required": LIVE_APPROVED_REGISTRY_ONLY and os.getenv("BOT_LIVE_RUNTIME", "0") == "1",
+            "asset_required": (
+                LIVE_APPROVED_REGISTRY_ONLY
+                and LIVE_REQUIRE_ASSET_APPROVAL
+                and os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
+            ),
+            **matches,
+        }
+
+    @staticmethod
+    def _get_expectancy_validation(asset: str, category: str) -> Dict[str, Any]:
+        try:
+            from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+            service = get_execution_feedback_service()
+            lookback_days = max(90, GOVERNANCE_VALIDATION_DAYS * 4)
+            asset_summary = service.summarize_history(
+                asset=asset,
+                category=category,
+                days_back=lookback_days,
+                limit=220,
+            )
+            if int(asset_summary.get("sample_count", 0) or 0) > 0:
+                return {"scope": "asset", **asset_summary}
+
+            category_summary = service.summarize_history(
+                asset="",
+                category=category,
+                days_back=lookback_days,
+                limit=500,
+            )
+            if int(category_summary.get("sample_count", 0) or 0) > 0:
+                return {"scope": "category_context", **category_summary}
+            return {"scope": "bootstrap", "sample_count": 0}
+        except Exception as exc:
+            logger.debug(f"[SignalGovernance] Execution expectancy unavailable: {exc}")
+            return {"scope": "unavailable", "sample_count": 0}
 
 
 signal_governance = SignalGovernance()

@@ -124,6 +124,24 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .close-all{border-color:rgba(255,69,96,.6);background:rgba(255,69,96,.15);color:var(--rd);font-weight:700}
 .close-all:hover{background:rgba(255,69,96,.35)}
 .spinner{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
+.action-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.action-btn{padding:5px 10px;border-radius:7px;border:1px solid var(--bd2);background:var(--s2);color:var(--tx);cursor:pointer;font-size:11px;font-weight:600;transition:.18s}
+.action-btn:hover{background:var(--s3);border-color:var(--bl);color:#fff}
+.action-btn.primary{border-color:rgba(41,121,255,.45);color:var(--bl)}
+.action-btn.warn{border-color:rgba(255,165,0,.4);color:var(--am)}
+.action-status{display:none;margin:0 0 10px;padding:10px 12px;border-radius:9px;border:1px solid var(--bd2);font-size:12px;line-height:1.45}
+.action-status.show{display:block}
+.action-status.info{background:rgba(41,121,255,.08);color:var(--tx)}
+.action-status.success{background:rgba(0,208,132,.10);border-color:rgba(0,208,132,.25);color:var(--gr)}
+.action-status.warn{background:rgba(255,165,0,.10);border-color:rgba(255,165,0,.25);color:var(--am)}
+.action-status.error{background:rgba(255,69,96,.10);border-color:rgba(255,69,96,.25);color:var(--rd)}
+.topops-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:12px}
+.topop-card{background:var(--s2);border:1px solid rgba(41,121,255,.15);border-radius:10px;padding:10px 12px;min-height:92px}
+.topop-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.topop-rank{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
+.topop-asset{font-size:13px;font-weight:700}
+.topop-meta{font-size:10px;color:var(--tx3);margin-top:5px;line-height:1.35}
+.topop-score{font-size:18px;font-weight:700;color:var(--cy)}
 
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .metric-card,.panel{animation:fadeUp .3s ease both}
@@ -230,11 +248,19 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <!-- Row 2: signals + positions + sentiment + whale -->
       <div class="panel panel-wide" style="animation-delay:.25s">
-        <div class="panel-header">
-          <span class="panel-title">⚡ Active Signals</span>
-          <span class="panel-badge" id="sigCount">0</span>
+        <div class="panel-header" style="justify-content:space-between">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="panel-title">⚡ Active Signals</span>
+            <span class="panel-badge" id="sigCount">0</span>
+          </div>
+          <div class="action-toolbar">
+            <button class="action-btn primary" onclick="loadTopOpportunities(true)">Top Setups</button>
+          </div>
         </div>
-        <div class="panel-body" id="signalsPanel" style="flex:1;overflow-y:auto;min-height:120px"><div class="spinner">Loading…</div></div>
+        <div class="panel-body" style="flex:1;min-height:120px">
+          <div id="topOpsPanel" class="topops-strip"><div class="spinner">Loading…</div></div>
+          <div id="signalsPanel" style="overflow-y:auto;min-height:120px"><div class="spinner">Loading…</div></div>
+        </div>
       </div>
 
       <div class="panel" style="animation-delay:.3s">
@@ -269,6 +295,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           </div>
           <!-- Always visible — same style as Trade History dropdowns -->
           <div style="display:flex;align-items:center;gap:8px">
+            <button class="action-btn primary" onclick="runWeakReprice()">Reprice Weak</button>
+            <button class="action-btn warn" onclick="runWeakReduction()">Reduce Weak</button>
             <select id="posFilter" onchange="filterPositions()" style="background:var(--s2);border:1px solid var(--bd);color:var(--tx);padding:3px 8px;border-radius:6px;font-size:11px">
               <option value="all">All</option>
               <option value="forex">Forex</option>
@@ -291,6 +319,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           </div>
         </div>
         <div class="panel-body">
+          <div id="positionActionStatus" class="action-status"></div>
           <div class="pos-table-wrap" style="flex:1;overflow-x:auto;overflow-y:auto;max-height:300px">
             <table class="pos-table" id="posTable">
               <thead><tr>
@@ -375,6 +404,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   </div>
 </div>
 
+<script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
 // Clock
 setInterval(()=>{document.getElementById('clock').textContent=new Date(Date.now()+3*3600000).toUTCString().substring(17,25)+' EAT';},1000);
@@ -383,13 +413,76 @@ function fmtNum(n,dec=2){return n==null?'—':(n>=0?'+':'')+Number(n).toFixed(de
 function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
 function colorClass(n){return n>=0?'gn':'rd'}
 
+function setActionStatus(message,type='info'){
+  const el=document.getElementById('positionActionStatus');
+  if(!el)return;
+  if(!message){
+    el.className='action-status';
+    el.textContent='';
+    return;
+  }
+  el.className='action-status show '+type;
+  el.textContent=message;
+}
+
+function renderTopOpportunities(items){
+  const panel=document.getElementById('topOpsPanel');
+  if(!panel)return;
+  if(!items||!items.length){
+    panel.innerHTML='<div class="empty" style="grid-column:1/-1;padding:14px 0">No ranked opportunities yet</div>';
+    return;
+  }
+  panel.innerHTML=items.slice(0,5).map((item,idx)=>{
+    const rank=Number(item.opportunity_rank||idx+1);
+    const opp=Number(item.opportunity_score||0);
+    const conf=Number(item.confidence||0);
+    const mem=Number(item.memory_score||0);
+    const execQ=Number(item.execution_quality_score||0);
+    const dir=(item.direction||'').toUpperCase();
+    const dirCol=dir==='BUY'?'var(--gr)':'var(--rd)';
+    const source=item.source==='position'?'Open position':'Live signal';
+    return `<div class="topop-card">
+      <div class="topop-head">
+        <div>
+          <div class="topop-rank">Rank ${rank}</div>
+          <div class="topop-asset">${item.asset||'?'}</div>
+        </div>
+        <div class="topop-score">${opp.toFixed(3)}</div>
+      </div>
+      <div style="font-size:11px;color:${dirCol};font-weight:700">${dir||'—'} · ${(conf*100).toFixed(0)}%</div>
+      <div class="topop-meta">Memory ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'}</div>
+      <div class="topop-meta">${source}${item.timeframe?` · ${item.timeframe}`:''}</div>
+    </div>`;
+  }).join('');
+}
+
 let _commandCenterCache = null;
+function setCommandCenterUnavailable(message){
+  const msg = message || 'Command center data unavailable';
+  document.getElementById('signalsPanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('topOpsPanel').innerHTML = `<div class="empty" style="grid-column:1/-1;padding:14px 0">${msg}</div>`;
+  document.getElementById('whalePanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('sentLabel').textContent = 'Unavailable';
+  document.getElementById('pulseChips').innerHTML = '<span class="mini-chip bad">API timeout</span>';
+}
 async function fetchCommandCenterOverview(){
   const now = Date.now();
   if(_commandCenterCache && now - _commandCenterCache.fetched < 10000){
     return _commandCenterCache.data;
   }
-  const page = await fetch('/api/page-overview?page=command_center').then(r=>r.json()).catch(()=>({success:false}));
+  let page = await window.dashboardFetchJson('/api/page-overview?page=command_center', {timeoutMs: 15000});
+  if(!page.success){
+    const commandCenter = await window.dashboardFetchJson('/api/command-center', {timeoutMs: 12000});
+    const whale = await window.dashboardFetchJson('/api/whale/summary', {timeoutMs: 12000});
+    if(commandCenter.success || whale.success){
+      page = {
+        success: true,
+        command_center: commandCenter.success ? commandCenter : {success:false},
+        whale: whale.success ? whale : {success:false},
+        partial: true,
+      };
+    }
+  }
   if(page.success){
     _commandCenterCache = {fetched: now, data: page};
     return page;
@@ -404,9 +497,13 @@ async function loadMain(){
     if(page.success){
       d = page.command_center || {};
     } else {
+      setCommandCenterUnavailable('Command center timed out');
       return;
     }
-    if(!d||!d.success) return;
+    if(!d||!d.success){
+      setCommandCenterUnavailable('Command center data unavailable');
+      return;
+    }
   }catch(e){console.error('[CC] fetch:',e);return;}
 
   // ── Metrics + engine status ──────────────────────────────────────────────
@@ -435,6 +532,8 @@ async function loadMain(){
   // ── Active signals ───────────────────────────────────────────────────────
   try{
     const sigs=(d.latest_signals||[]).filter(s=>(s.signal||s.direction||'HOLD')!=='HOLD');
+    const signalQuality=d.signal_quality||{};
+    renderTopOpportunities(d.top_opportunities||[]);
     document.getElementById('sigCount').textContent=sigs.length;
     const sEl=document.getElementById('signalsPanel');
     if(!sigs.length){sEl.innerHTML='<div class="empty">No active signals</div>';}
@@ -444,11 +543,15 @@ async function loadMain(){
         const c=Number(s.confidence||0);
         const cp=(c*100).toFixed(0);
         const barCol=c>=0.75?'var(--gr)':c>=0.62?'var(--am)':'var(--rd)';
+        const mem=Number(s.memory_score||0);
+        const execQ=Number(s.execution_quality_score||0);
+        const opp=Number(s.opportunity_score||0);
+        const detail=`Mem ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'} · Opp ${opp?opp.toFixed(3):'—'}`;
         return`<div class="sig-row">
           <span class="sig-dir ${dir==='BUY'?'sig-buy':'sig-sell'}">${dir}</span>
           <div style="flex:1">
             <div class="sig-asset">${s.asset||'?'}</div>
-            <div class="sig-meta">${s.category||''}</div>
+            <div class="sig-meta">${s.category||''} · ${detail}</div>
           </div>
           <div style="text-align:right">
             <div class="sig-conf" style="color:${barCol}">${cp}%</div>
@@ -462,6 +565,7 @@ async function loadMain(){
   // ── Sentiment ────────────────────────────────────────────────────────────
   try{
     const ss=Number(d.sentiment_score||0);
+    const signalQuality=d.signal_quality||{};
     const ssLabel=ss>0.2?'Bullish':ss<-0.2?'Bearish':'Neutral';
     const ssColor=ss>0.2?'var(--gr)':ss<-0.2?'var(--rd)':'var(--am)';
     document.getElementById('sentScore').textContent=(ss>=0?'+':'')+ss.toFixed(3);
@@ -472,7 +576,10 @@ async function loadMain(){
     const chips = [
       {label:`Whales ${d.alert_count_24h||0}`, cls:(d.alert_count_24h||0)?'warn':'ok'},
       {label:d.engine_ready?'Ready':'Warming', cls:d.engine_ready?'ok':'warn'},
-      {label:`Positions ${d.open_positions||0}`, cls:(d.open_positions||0)?'ok':''},
+      {label:`Memory ${Number(signalQuality.avg_memory_score||0).toFixed(0)}`, cls:Number(signalQuality.avg_memory_score||0)>=60?'ok':'warn'},
+      {label:`Exec ${Number(signalQuality.avg_execution_quality||0).toFixed(0)}`, cls:Number(signalQuality.avg_execution_quality||0)>=60?'ok':'warn'},
+      {label:`Opp ${Number(signalQuality.avg_opportunity_score||0).toFixed(3)}`, cls:Number(signalQuality.avg_opportunity_score||0)>=0.7?'ok':''},
+      {label:signalQuality.top_signal_asset?`Top ${signalQuality.top_signal_asset}`:`Positions ${d.open_positions||0}`, cls:(d.open_positions||0)?'ok':''},
     ];
     document.getElementById('pulseChips').innerHTML = chips.map(c=>`<span class="mini-chip ${c.cls||''}">${c.label}</span>`).join('');
   }catch(e){console.error('[CC] sentiment:',e);}
@@ -490,9 +597,15 @@ async function loadMain(){
 async function loadWhales(){
   try{
     const page = await fetchCommandCenterOverview();
-    if(!page.success) return;
+    if(!page.success){
+      document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';
+      return;
+    }
     const d = page.whale || {};
-    if(!d||!d.success) return;
+    if(!d||!d.success){
+      document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';
+      return;
+    }
     document.getElementById('whaleCount').textContent=d.alert_count_24h||0;
     const wEl=document.getElementById('whalePanel');
     const alerts=d.recent||[];
@@ -509,42 +622,38 @@ async function loadWhales(){
   }catch(e){}
 }
 
-loadWhales();loadHistory();loadPnlChart();
-
-// ── API Authentication ────────────────────────────────────────────────────
-let _apiToken = null;
-
-async function initAuth(){
-  try{
-    const r = await fetch('/api/login', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({})
-    }).then(r => r.json()).catch(e => {
-      console.warn('[AUTH] Login request failed', e);
-      return {success: false};
-    });
-    
-    if(r.success && r.token){
-      _apiToken = r.token;
-      sessionStorage.setItem('api_token', _apiToken);
-      console.log('[AUTH] Token acquired', r.mode);
-    } else {
-      console.warn('[AUTH] Login response error:', r.error);
-    }
-  }catch(e){
-    console.warn('[AUTH] Login error', e);
-  }
-}
-
 function apiHeaders(){
-  const h = {'Content-Type': 'application/json'};
-  if(_apiToken) h['Authorization'] = `Bearer ${_apiToken}`;
-  return h;
+  return {'Content-Type': 'application/json'};
 }
 
-// Initialize auth BEFORE loading data
-initAuth().then(() => loadMain());
+async function fetchProtectedJson(url, options = {}){
+  return window.dashboardFetchJson(url, {
+    timeoutMs: options.timeoutMs || 12000,
+    init: {
+      method: options.method || 'GET',
+      headers: Object.assign({}, apiHeaders(), options.headers || {}),
+      body: options.body,
+      cache: options.cache || 'no-store',
+    }
+  });
+}
+
+async function bootCommandCenter(){
+  try{
+    if(window.dashboardAuthReady){
+      await window.dashboardAuthReady;
+    }
+  }catch(_){}
+  await Promise.allSettled([
+    loadMain(),
+    loadHistory(),
+    loadPnlChart(),
+    loadTopOpportunities(false),
+    loadWhales(),
+  ]);
+}
+
+bootCommandCenter();
 
 setInterval(loadMain,15000);setInterval(loadWhales,30000);setInterval(loadHistory,60000);
 
@@ -553,8 +662,11 @@ setInterval(loadMain,15000);setInterval(loadWhales,30000);setInterval(loadHistor
 async function loadHistory(){
   try{
     const filter=document.getElementById('historyFilter')?.value||'all';
-    const d=await fetch(`/api/trade-history?limit=50&no_cache=1&_=${Date.now()}`, {headers: apiHeaders(), cache:'no-store'}).then(r=>r.json());
-    if(!d.success)return;
+    const d=await fetchProtectedJson(`/api/trade-history?limit=50&no_cache=1&_=${Date.now()}`, {timeoutMs: 12000});
+    if(!d.success){
+      document.getElementById('historyBody').innerHTML='<tr><td colspan="10" class="empty">Trade history unavailable</td></tr>';
+      return;
+    }
     let trades=d.trades||[];
 
     // Apply filter
@@ -590,13 +702,13 @@ async function loadHistory(){
       if(m<1440)return Math.floor(m/60)+'h '+m%60+'m';
       return Math.floor(m/1440)+'d '+Math.floor((m%1440)/60)+'h';
     };
-    const reasonEmoji=r=>{
+    const reasonLabel=r=>{
       if(!r)return'—';
-      if(r.includes('Take Profit'))return'🎯 '+r;
-      if(r.includes('Stop Loss'))return'🛑 '+r;
-      if(r.includes('Trail'))return'📈 '+r;
-      if(r.includes('Manual'))return'👆 '+r;
-      if(r.includes('Break'))return'⚖️ '+r;
+      if(r.includes('Take Profit'))return'Take Profit';
+      if(r.includes('Stop Loss'))return r.includes('offline') ? 'Stop Loss (Offline)' : 'Stop Loss';
+      if(r.includes('Trail'))return'Trailing Exit';
+      if(r.includes('Manual'))return'Manual Close';
+      if(r.includes('Break'))return'Break-Even Exit';
       return r;
     };
     const sm=p=>p>0&&p<10;
@@ -607,9 +719,20 @@ async function loadHistory(){
       const dir=(t.direction||'BUY').toUpperCase();
       const ep=Number(t.entry_price||0);
       const xp=Number(t.exit_price||0);
+      const execQ=Number(t.execution_quality_score||0);
+      const rrRealized=Number(t.rr_realized||0);
       const fmt=n=>n>0?(sm(n)?n.toFixed(5):n.toFixed(2)):'—';
       const dur=t.duration_str||'—';  // pre-calculated server-side in UTC
       const catEmoji={forex:'💱',crypto:'₿',commodities:'🥇',indices:'📈'}[t.category]||'📊';
+      const execTags=[];
+      if(execQ>0) execTags.push(`Exec ${execQ.toFixed(0)}`);
+      if(rrRealized!==0) execTags.push(`R ${rrRealized>0?'+':''}${rrRealized.toFixed(2)}`);
+      if(t.premature_stop) execTags.push('Premature stop');
+      if(t.target_miss) execTags.push('Target missed');
+      if(t.late_entry) execTags.push('Late entry');
+      const reasonMeta=execTags.length
+        ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${execTags.slice(0,3).join(' · ')}</div>`
+        : '';
       return`<tr style="opacity:0.9">
         <td>
           <strong>${t.asset||'?'}</strong>
@@ -622,7 +745,7 @@ async function loadHistory(){
         <td style="font-size:11px;color:var(--tx3)">${fmtTime(t.exit_time)}</td>
         <td style="font-size:11px;color:var(--am)">${dur}</td>
         <td style="font-weight:700;color:${pnlCol}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-        <td style="font-size:10px;color:var(--tx3)">${reasonEmoji(t.exit_reason)}</td>
+        <td style="font-size:10px;color:var(--tx3)">${reasonLabel(t.exit_reason)}${reasonMeta}</td>
         <td style="font-size:11px">${t.confidence?Math.round(t.confidence*100)+'%':'—'}</td>
       </tr>`;
     }).join('');
@@ -632,11 +755,10 @@ async function loadHistory(){
 async function clearTradeHistory(){
   if(!confirm('Clear all closed trade history? This cannot be undone.')) return;
   try{
-    const res = await fetch('/api/trade-history/clear', {
+    const json = await fetchProtectedJson('/api/trade-history/clear', {
       method: 'POST',
-      headers: apiHeaders(),
+      timeoutMs: 12000,
     });
-    const json = await res.json();
     if(!json.success){
       alert('Failed to clear trade history: '+(json.error||'unknown'));
       return;
@@ -655,8 +777,11 @@ let _pnlChart = null;
 
 async function loadPnlChart(){
   try{
-    const d=await fetch(`/api/trade-history?limit=200&no_cache=1&_=${Date.now()}`, {headers: apiHeaders(), cache:'no-store'}).then(r=>r.json());
-    if(!d.success || !d.trades)return;
+    const d=await fetchProtectedJson(`/api/trade-history?limit=200&no_cache=1&_=${Date.now()}`, {timeoutMs: 12000});
+    if(!d.success || !d.trades){
+      document.getElementById('pnlStats').textContent = 'P&L history unavailable';
+      return;
+    }
     
     const trades = (d.trades || []).sort((a,b) => {
       const ta = new Date(a.exit_time || a.entry_time || 0);
@@ -754,6 +879,15 @@ function renderPositions(pos){
     const sl=Number(p.stop_loss||0);
     const tp=Number(p.take_profit||0);
     const cur=Number(p.current_price||0);
+    const execQ=Number(p.execution_quality_score||0);
+    const execSamples=Number(p.execution_feedback_sample_count||0);
+    const rrMult=Number(p.target_rr_multiplier||1);
+    const stopMult=Number(p.stop_buffer_multiplier||1);
+    const execNotes=Array.isArray(p.execution_notes)?p.execution_notes:[];
+    const memoryScore=Number(p.memory_score||0);
+    const memorySamples=Number(p.memory_sample_count||0);
+    const oppScore=Number(p.opportunity_score||0);
+    const oppRank=Number(p.opportunity_rank||0);
     const sm=e>0&&e<10;
     const fmt=n=>n>0?(sm?n.toFixed(5):n.toFixed(2)):'—';
     const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
@@ -782,19 +916,95 @@ function renderPositions(pos){
       progress=tpDist>0?Math.max(0,Math.min(100,(curDist/tpDist*100))):0;
     }
     const pBar=`<div style="height:3px;background:var(--bd);border-radius:2px;margin-top:2px"><div style="height:3px;width:${progress.toFixed(0)}%;background:${progress>80?'var(--gr)':progress>50?'var(--am)':'var(--bl)'};border-radius:2px;transition:width .5s"></div></div>`;
+    const execMeta=execSamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Exec ${execQ.toFixed(0)} · n${execSamples}</div>`:'';
+    const memoryMeta=memorySamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Memory ${memoryScore.toFixed(0)} · n${memorySamples}</div>`:'';
+    const postureMeta=(rrMult!==1||stopMult!==1)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">RR x${rrMult.toFixed(2)} · SL x${stopMult.toFixed(2)}</div>`:'';
+    const rankMeta=oppScore?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Opp ${oppScore.toFixed(3)}${oppRank?` · #${oppRank}`:''}</div>`:'';
+    const noteMeta=execNotes.length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${execNotes.slice(0,2).join(' · ')}</div>`:'';
     return`<tr>
-      <td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${pBar}</td>
+      <td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${pBar}</td>
       <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
       <td style="font-family:monospace">${fmt(e)}</td>
       <td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td>
       <td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td>
-      <td style="font-family:monospace;color:var(--gr)">${fmt(tp)}</td>
+      <td style="font-family:monospace;color:var(--gr)">${fmt(tp)}${postureMeta}</td>
       <td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-      <td>${(Number(p.confidence||0)*100).toFixed(0)}%</td>
+      <td>${(Number(p.confidence||0)*100).toFixed(0)}%${rankMeta}${noteMeta}</td>
       <td style="font-size:11px;white-space:nowrap">${openStr}</td>
       <td><button onclick="confirmClose('${tid}','${p.asset||'?'}')" style="padding:4px 10px;border-radius:6px;border:none;background:rgba(255,69,96,.15);color:var(--rd);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap" onmouseover="this.style.background='var(--rd)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,69,96,.15)';this.style.color='var(--rd)'">✕ Close</button></td>
     </tr>`;
   }).join('');
+}
+
+async function loadTopOpportunities(forceRefresh=false){
+  const panel=document.getElementById('topOpsPanel');
+  if(panel) panel.innerHTML='<div class="spinner" style="grid-column:1/-1;padding:18px 0">Refreshing ranked setups…</div>';
+  try{
+    const qs=new URLSearchParams({limit:'5'});
+    if(forceRefresh) qs.set('refresh','1');
+    const r=await fetchProtectedJson('/api/opportunities/top?'+qs.toString(), {timeoutMs: 12000});
+    if(!r.success){
+      renderTopOpportunities([]);
+      return;
+    }
+    renderTopOpportunities(r.opportunities||[]);
+  }catch(e){
+    console.error('[TopOpportunities]',e);
+    renderTopOpportunities([]);
+  }
+}
+
+async function runWeakReprice(){
+  setActionStatus('Repricing weak exits…','info');
+  try{
+    const r=await fetchProtectedJson('/api/positions/reprice-weak',{
+      method:'POST',
+      timeoutMs: 15000,
+      body:JSON.stringify({limit:3,tighten_only:true})
+    });
+    if(!r.success){
+      setActionStatus(r.error||'Weak exit repricing failed.','error');
+      return;
+    }
+    if(!r.repriced){
+      setActionStatus('No weak exits needed repricing right now.','warn');
+      return;
+    }
+    const first=(r.updates||[])[0]||{};
+    _commandCenterCache=null;
+    setActionStatus(`Repriced ${r.repriced} weak position(s). ${first.asset||''} ${first.new_stop_loss?'SL updated':''}`.trim(),'success');
+    await Promise.all([loadMain(), loadHistory()]);
+  }catch(e){
+    console.error('[WeakReprice]',e);
+    setActionStatus('Weak exit repricing failed.','error');
+  }
+}
+
+async function runWeakReduction(){
+  setActionStatus('Reducing weak positions…','info');
+  try{
+    const r=await fetchProtectedJson('/api/positions/reduce-weak',{
+      method:'POST',
+      timeoutMs: 15000,
+      body:JSON.stringify({limit:3,reduction_fraction:0.35})
+    });
+    if(!r.success){
+      setActionStatus(r.error||'Weak position reduction failed.','error');
+      return;
+    }
+    const reduced=Number(r.reduced||0);
+    if(!reduced){
+      setActionStatus('No weak positions qualified for reduction right now.','warn');
+      return;
+    }
+    const first=(r.actions||[]).find(a=>a.success)||{};
+    _commandCenterCache=null;
+    setActionStatus(`Reduced ${reduced} weak position(s). ${first.asset||''} realised ${first.realized_pnl!=null?fmtMoney(first.realized_pnl):''}`.trim(),'success');
+    await Promise.all([loadMain(), loadHistory(), loadTopOpportunities(false)]);
+  }catch(e){
+    console.error('[WeakReduction]',e);
+    setActionStatus('Weak position reduction failed.','error');
+  }
 }
 
 function filterPositions(){
@@ -841,11 +1051,11 @@ async function executeClose(){
   try{
     let r;
     if(mode==='single'){
-      r=await fetch('/api/position/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trade_id:tid})}).then(r=>r.json());
+      r=await fetchProtectedJson('/api/position/close',{method:'POST',timeoutMs:15000,body:JSON.stringify({trade_id:tid})});
     } else {
       const payload={mode:mode==='category'?'category':mode==='filter'?filter:'all'};
       if(mode==='category')payload.category=cat;
-      r=await fetch('/api/position/close-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(r=>r.json());
+      r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify(payload)});
     }
     const ok=r.success||(r.closed>0);
     showToast(ok?`✅ ${r.closed!=null?r.closed+' position(s) closed':r.message||'Closed'}`:`❌ ${r.error||'Failed'}`,ok?'success':'error');
