@@ -52,8 +52,9 @@ class SignalGovernance:
     def evaluate(self, signal, context: Dict[str, Any] | None = None) -> Dict[str, Any]:
         context = context or {}
         asset = signal.canonical_asset or signal.asset
+        policy_status = str(signal.metadata.get("agent_policy_status", "ok") or "ok").strip().lower()
         model_key = (
-            signal.metadata.get("policy_model")
+            signal.metadata.get("policy_model") if policy_status == "ok" else ""
             or signal.metadata.get("seed_model")
             or f"{signal.category}_classifier"
         )
@@ -64,6 +65,8 @@ class SignalGovernance:
         live_validation = self._get_live_validation(asset)
         registry_validation = self._get_registry_validation(asset, signal.category)
         expectancy_validation = self._get_expectancy_validation(asset, signal.category)
+        adaptive_policy = context.get("adaptive_policy") or signal.metadata.get("adaptive_policy") or {}
+        min_risk_reward = self._effective_min_risk_reward(adaptive_policy)
 
         violations = []
         warnings = []
@@ -88,9 +91,9 @@ class SignalGovernance:
                 f"ml_confidence={ml_conf:.3f} below minimum {GOVERNANCE_MIN_ML_CONFIDENCE:.3f}"
             )
 
-        if float(signal.risk_reward or 0.0) < GOVERNANCE_MIN_RISK_REWARD:
+        if float(signal.risk_reward or 0.0) < min_risk_reward:
             violations.append(
-                f"risk_reward={float(signal.risk_reward or 0.0):.2f} below minimum {GOVERNANCE_MIN_RISK_REWARD:.2f}"
+                f"risk_reward={float(signal.risk_reward or 0.0):.2f} below minimum {min_risk_reward:.2f}"
             )
 
         if GOVERNANCE_REQUIRE_MODEL_RESEARCH and not research_ok:
@@ -202,7 +205,18 @@ class SignalGovernance:
                 "price": price_meta,
                 "ohlcv": ohlcv_meta,
             },
+            "min_risk_reward": round(min_risk_reward, 2),
         }
+
+    @staticmethod
+    def _effective_min_risk_reward(adaptive_policy: Dict[str, Any]) -> float:
+        try:
+            adaptive_min_rr = float((adaptive_policy or {}).get("min_rr", 0.0) or 0.0)
+        except Exception:
+            adaptive_min_rr = 0.0
+        if adaptive_min_rr > 0.0:
+            return max(1.0, adaptive_min_rr)
+        return max(1.0, float(GOVERNANCE_MIN_RISK_REWARD))
 
     @staticmethod
     def _assess_model_research(model_key: str, model_meta: Dict[str, Any]) -> tuple[bool, str]:
@@ -284,12 +298,19 @@ class SignalGovernance:
     def _assess_registry_validation(registry_validation: Dict[str, Any]) -> tuple[str, str]:
         required = bool(registry_validation.get("required"))
         asset_required = bool(registry_validation.get("asset_required"))
+        bootstrap_mode = bool(registry_validation.get("bootstrap_mode"))
         asset = str(registry_validation.get("asset") or "")
         category = str(registry_validation.get("category") or "")
         matched = bool(registry_validation.get("matched"))
         exact_match = bool(registry_validation.get("exact_match"))
         match_scope = str(registry_validation.get("match_scope") or "none")
         names = list(registry_validation.get("names") or [])
+
+        if bootstrap_mode:
+            return "", (
+                "live strategy registry empty during live runtime — "
+                "bootstrap mode active until at least one strategy is promoted"
+            )
 
         if not required:
             if matched and match_scope != "asset":
@@ -496,9 +517,17 @@ class SignalGovernance:
 
     @staticmethod
     def _get_registry_validation(asset: str, category: str) -> Dict[str, Any]:
-        try:
-            from strategy_lab.live_bridge import find_live_registry_matches
+        runtime_live = os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
+        required = LIVE_APPROVED_REGISTRY_ONLY and runtime_live
+        asset_required = required and LIVE_REQUIRE_ASSET_APPROVAL
+        registry_count = 0
+        empty_registry = False
 
+        try:
+            from strategy_lab.live_bridge import find_live_registry_matches, load_registry_entries
+
+            registry_count = len(load_registry_entries())
+            empty_registry = registry_count == 0
             matches = find_live_registry_matches(asset, category)
         except Exception as exc:
             logger.debug(f"[SignalGovernance] Live strategy registry unavailable: {exc}")
@@ -511,13 +540,14 @@ class SignalGovernance:
                 "strategies": [],
                 "names": [],
             }
+            registry_count = 0
+            empty_registry = False
         return {
-            "required": LIVE_APPROVED_REGISTRY_ONLY and os.getenv("BOT_LIVE_RUNTIME", "0") == "1",
-            "asset_required": (
-                LIVE_APPROVED_REGISTRY_ONLY
-                and LIVE_REQUIRE_ASSET_APPROVAL
-                and os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
-            ),
+            "required": required,
+            "asset_required": asset_required,
+            "bootstrap_mode": required and empty_registry,
+            "empty_registry": empty_registry,
+            "registry_count": registry_count,
             **matches,
         }
 

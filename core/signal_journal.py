@@ -23,6 +23,19 @@ _EMOJI = {
     INFO:    "📊",
 }
 
+_NARRATIVE_LABELS = {
+    "AI_TOKENS": "AI-related crypto narrative",
+    "ETF_NEWS": "ETF news flow",
+    "MACRO_SHOCK": "macro shock theme",
+    "DEFI_TREND": "DeFi trend",
+    "REGULATION": "regulation theme",
+    "LAYER2_TREND": "layer-2 trend",
+    "BTC_DOMINANCE": "Bitcoin dominance theme",
+    "EXCHANGE_NEWS": "exchange news flow",
+    "STABLECOIN_NEWS": "stablecoin theme",
+    "HALVING_BUZZ": "halving narrative",
+}
+
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     try:
@@ -574,6 +587,261 @@ class SignalJournal:
                     .replace("[", "\\[")
                     .replace("]", "\\]"))
 
+    @staticmethod
+    def _humanize_token(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = text.replace("_", " ").replace("-", " ")
+        return " ".join(text.split()).lower()
+
+    @staticmethod
+    def _humanize_reason(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = text.replace("_", " ").replace("—", "-")
+        return " ".join(text.split())
+
+    @staticmethod
+    def _sentence(text: str) -> str:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return ""
+        cleaned = cleaned.rstrip(".")
+        return cleaned[0].upper() + cleaned[1:]
+
+    @staticmethod
+    def _join_clauses(parts: List[str]) -> str:
+        cleaned = [str(part).strip() for part in parts if str(part or "").strip()]
+        if not cleaned:
+            return ""
+        if len(cleaned) == 1:
+            return cleaned[0]
+        if len(cleaned) == 2:
+            return f"{cleaned[0]} and {cleaned[1]}"
+        return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
+
+    @staticmethod
+    def _describe_sentiment(score: Any) -> str:
+        value = _safe_float(score, 0.0) or 0.0
+        magnitude = abs(value)
+        if magnitude < 0.05:
+            return "neutral"
+        direction = "bullish" if value > 0 else "bearish"
+        if magnitude < 0.20:
+            return f"slightly {direction}"
+        if magnitude < 0.50:
+            return direction
+        return f"strongly {direction}"
+
+    @staticmethod
+    def _format_pct(value: Any, digits: int = 0) -> str:
+        num = _safe_float(value, None)
+        if num is None:
+            return ""
+        return f"{num * 100:.{digits}f}%"
+
+    @staticmethod
+    def _format_price(value: Any) -> str:
+        num = _safe_float(value, None)
+        if num is None:
+            return ""
+        return f"{num:,.5f}".rstrip("0").rstrip(".")
+
+    @staticmethod
+    def _factor_label(name: str) -> str:
+        labels = {
+            "market_structure": "market structure",
+            "ml": "model conviction",
+            "sentiment": "sentiment",
+            "whales": "whale activity",
+            "order_flow": "order flow",
+            "memory": "historical setup memory",
+            "policy": "policy review",
+            "governance": "governance checks",
+            "risk": "execution quality",
+        }
+        key = str(name or "").strip()
+        return labels.get(key, SignalJournal._humanize_token(key))
+
+    @staticmethod
+    def _narrative_label(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        return _NARRATIVE_LABELS.get(raw, SignalJournal._humanize_token(raw).title())
+
+    def _telegram_plain_stage_line(self, entry: JournalEntry, signal=None, summary: Optional[Dict[str, Any]] = None) -> str:
+        summary = summary or {}
+        data = entry.data if isinstance(entry.data, dict) else {}
+        name = str(entry.name or "").lower()
+        direction_word = str(self.direction or "").lower()
+
+        if name == "market":
+            clauses: List[str] = []
+            regime = self._humanize_token(data.get("regime") or summary.get("regime"))
+            if regime:
+                clauses.append(f"trend is {regime}")
+            ml_direction = str(data.get("ml_direction") or "").upper()
+            if ml_direction:
+                clauses.append(f"the model also points {ml_direction.lower()}")
+            rr = _safe_float(data.get("rr"), None)
+            if rr is not None and rr > 0:
+                clauses.append(f"reward to risk is {rr:.2f}:1")
+            session = self._humanize_token(data.get("session"))
+            if session:
+                clauses.append(f"the setup showed up during the {session.title()} session")
+            news_state = self._humanize_token(data.get("news_state"))
+            if news_state:
+                if news_state == "clear":
+                    clauses.append("there is no major news pressure right now")
+                else:
+                    clauses.append(f"news is {news_state}")
+            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "market conditions look tradable"
+            return f"- Market view: {self._sentence(sentence)}."
+
+        if name == "intelligence":
+            clauses = []
+            sentiment_desc = self._describe_sentiment(data.get("sentiment_score"))
+            if sentiment_desc == "neutral":
+                clauses.append("sentiment is broadly neutral")
+            else:
+                clauses.append(f"sentiment is {sentiment_desc}")
+            whale_dominant = str(data.get("whale_dominant") or "").upper()
+            if whale_dominant in {"BUY", "SELL"}:
+                clauses.append(f"whale flow leans {whale_dominant.lower()}")
+            source_count = len(data.get("sentiment_sources") or [])
+            if source_count:
+                clauses.append(f"this view is backed by {source_count} sources")
+            narrative = self._narrative_label(data.get("narrative"))
+            if narrative:
+                clauses.append(f"the main narrative is {narrative}")
+            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "intelligence checks were supportive"
+            return f"- Flow and sentiment: {self._sentence(sentence)}."
+
+        if name == "memory":
+            clauses = []
+            win_rate = _safe_float(data.get("memory_win_rate"), None)
+            sample_count = _safe_int(data.get("memory_sample_count"), None)
+            if win_rate is not None and sample_count:
+                clauses.append(f"similar setups won {win_rate * 100:.1f}% of the time across {sample_count} examples")
+            else:
+                memory_score = _safe_float(data.get("memory_score"), None)
+                if memory_score is not None:
+                    clauses.append(f"similar setup memory scored {memory_score:.1f} out of 100")
+            memory_edge = _safe_float(data.get("memory_edge"), None)
+            if memory_edge is not None:
+                if memory_edge > 0.05:
+                    clauses.append("historical edge is positive")
+                elif memory_edge < -0.05:
+                    clauses.append("historical edge is negative")
+            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "historical memory was supportive"
+            return f"- Historical context: {self._sentence(sentence)}."
+
+        if name == "meta_ai":
+            clauses = []
+            regime = self._humanize_token(data.get("regime") or summary.get("regime"))
+            if regime:
+                clauses.append(f"the broader regime is {regime}")
+            ensemble = _safe_float(data.get("ensemble"), None)
+            if ensemble is not None:
+                if ensemble >= 0.67:
+                    clauses.append("the ensemble view supports the trade")
+                elif ensemble <= 0.33:
+                    clauses.append("the ensemble view leans against the trade")
+                else:
+                    clauses.append("the ensemble view is neutral")
+            reason = self._humanize_reason(entry.reason).lower()
+            if "no adjustment" in reason:
+                clauses.append("it did not change conviction")
+            elif "support" in reason:
+                clauses.append("it added a small supportive bias")
+            elif "conflict" in reason:
+                clauses.append("it flagged some conflict")
+            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "meta model review was neutral"
+            return f"- Broader AI view: {self._sentence(sentence)}."
+
+        if name == "policy":
+            clauses = []
+            policy_status = self._humanize_token(data.get("agent_policy_status") or "ok")
+            if entry.decision == PASS:
+                if policy_status == "ok":
+                    clauses.append(f"the policy model approved the {direction_word} setup")
+                else:
+                    clauses.append(f"the policy model was treated as advisory ({policy_status})")
+            elif entry.decision == KILLED:
+                clauses.append(f"the policy model rejected the {direction_word} setup")
+            directional_edge = _safe_float(data.get("agent_directional_edge"), None)
+            if directional_edge is not None:
+                if directional_edge >= 0.65:
+                    clauses.append("directional edge was strong")
+                elif directional_edge <= 0.35:
+                    clauses.append("directional edge was weak")
+            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "policy review completed"
+            return f"- Policy check: {self._sentence(sentence)}."
+
+        if name == "governance":
+            clauses = ["data quality and live checks passed" if entry.decision == PASS else "governance checks blocked the setup"]
+            grade = str(data.get("grade") or summary.get("governance_grade") or "").strip()
+            if grade:
+                clauses.append(f"grade {grade}")
+            valid_sources = _safe_int(data.get("valid_sources"), None)
+            min_required = _safe_int(data.get("min_required"), None)
+            if valid_sources is not None and min_required is not None:
+                clauses.append(f"{valid_sources} sources cleared the minimum of {min_required}")
+            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "governance review completed"
+            return f"- Safety checks: {self._sentence(sentence)}."
+
+        if name == "execution":
+            clauses = []
+            if entry.decision == PASS:
+                clauses.append("the setup stayed above the live execution floor")
+            else:
+                clauses.append(self._humanize_reason(entry.reason) or "execution rules blocked the trade")
+            position_size = _safe_float(data.get("position_size"), _safe_float(getattr(signal, "position_size", 0.0), None))
+            if position_size is not None and position_size > 0:
+                clauses.append(f"position size is {position_size:.4f}")
+            tp_levels = len(getattr(signal, "take_profit_levels", []) or [])
+            if tp_levels:
+                clauses.append(f"{tp_levels} take profit levels are set")
+            notes = [self._humanize_token(note) for note in (data.get("notes") or [])]
+            if "balance drawdown" in notes:
+                clauses.append("sizing was kept conservative because the account is in drawdown")
+            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "execution review completed"
+            return f"- Execution posture: {self._sentence(sentence)}."
+
+        if name == "research_validation":
+            clauses = []
+            research_approved = data.get("research_approved")
+            if research_approved is True:
+                clauses.append("the active model is approved for live use")
+            elif research_approved is False:
+                clauses.append("the active model is not yet approved for full live use")
+            model_key = self._humanize_token(data.get("model_key"))
+            if model_key:
+                clauses.append(f"it is using the {model_key} model")
+            metrics: List[str] = []
+            walk_forward = _safe_float(data.get("walk_forward_accuracy"), None)
+            if walk_forward is not None:
+                metrics.append(f"walk forward {walk_forward * 100:.1f}%")
+            holdout = _safe_float(data.get("holdout_accuracy"), None)
+            if holdout is not None:
+                metrics.append(f"holdout {holdout * 100:.1f}%")
+            live_accuracy = _safe_float(data.get("live_validation_accuracy_pct"), None)
+            if live_accuracy is not None and live_accuracy > 0:
+                metrics.append(f"live {live_accuracy:.1f}%")
+            if metrics:
+                clauses.append("validation reads " + self._join_clauses(metrics))
+            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "research validation is available"
+            return f"- Research backing: {self._sentence(sentence)}."
+
+        reason = self._humanize_reason(entry.reason)
+        if not reason:
+            return ""
+        label = self._sentence(self._humanize_token(entry.name) or "review")
+        return f"- {label}: {self._sentence(reason)}."
+
     def to_telegram(self, signal=None) -> str:
         """
         Format the full journal as a Telegram Markdown message.
@@ -705,86 +973,70 @@ class SignalJournal:
         This avoids Markdown entity failures in long journal messages.
         """
         survived = self.final_decision() == "SURVIVED"
-        header = (
-            f"NEW SIGNAL - {self.asset} {self.direction}"
-            if survived else
-            f"SIGNAL KILLED - {self.asset} {self.direction}"
-        )
         summary = self.summary(signal)
-        lines = [header, "------------------------------"]
+        side = "BUY" if str(self.direction or "").upper() == "BUY" else "SELL"
+        header = f"{self.asset} {side} setup"
+        direction_word = side.lower()
+        lines = [header]
 
-        if not survived and summary.get("kill_reason"):
-            lines.append(f"Reason: {summary['kill_reason']}")
+        confidence = summary.get("final_confidence")
+        if survived:
+            entry_p = self._format_price(getattr(signal, "entry_price", 0.0) if signal else 0.0)
+            intro = f"The bot is preparing a {direction_word} trade on {self.asset}"
+            if entry_p:
+                intro += f" near {entry_p}"
+            intro += "."
+            lines.append(intro)
+            if confidence is not None:
+                lines.append(f"Overall confidence is {self._format_pct(confidence)}, and the setup passed all live checks.")
+            else:
+                lines.append("The setup passed all live checks and is ready to execute.")
+        else:
+            lines.append("The bot reviewed this setup, but it was blocked before execution.")
+            if confidence is not None:
+                lines.append(f"Final reviewed confidence was {self._format_pct(confidence)}.")
 
-        if summary.get("final_policy_decision"):
-            line = f"Final Gate: {summary['final_policy_decision']}"
-            if summary.get("final_policy_score") is not None:
-                line += f" score {float(summary['final_policy_score']):.3f}"
-            lines.append(line)
-
-        if summary.get("opportunity_score") is not None:
-            line = f"Opportunity: {float(summary['opportunity_score']):.3f}"
-            if summary.get("opportunity_rank") is not None:
-                line += f" rank #{int(summary['opportunity_rank'])}"
-            lines.append(line)
-
-        if summary.get("setup_quality") is not None or summary.get("alignment_score") is not None:
-            lines.append(
-                "Structure: "
-                f"{str(summary.get('structure_bias') or 'neutral')}  "
-                f"align {float(summary.get('alignment_score') or 0.0):.2f}  "
-                f"quality {float(summary.get('setup_quality') or 0.0):.2f}"
-            )
-
-        if summary.get("memory_score") is not None:
-            lines.append(
-                "Memory: "
-                f"score {float(summary.get('memory_score') or 0.0):.1f}  "
-                f"edge {float(summary.get('memory_edge') or 0.0):+.2f}  "
-                f"samples {int(summary.get('memory_sample_count') or 0)}"
-            )
-
-        if not survived and summary.get("killed_by"):
-            lines.append(f"Killed By: {str(summary['killed_by']).upper()}")
-
-        positive_factor = summary.get("top_positive_factor") or ""
-        negative_factor = summary.get("top_negative_factor") or ""
-        factor_parts: List[str] = []
+        factor_notes: List[str] = []
+        positive_factor = str(summary.get("top_positive_factor") or "").strip()
+        negative_factor = str(summary.get("top_negative_factor") or "").strip()
         if positive_factor:
-            factor_parts.append(
-                f"+{positive_factor} {float(summary.get('top_positive_factor_value') or 0.0):+.2f}"
-            )
+            factor_notes.append(f"the strongest support came from {self._factor_label(positive_factor)}")
         if negative_factor:
-            factor_parts.append(
-                f"{negative_factor} {float(summary.get('top_negative_factor_value') or 0.0):+.2f}"
-            )
-        if factor_parts:
-            lines.append("Factors: " + "  ".join(factor_parts))
+            factor_notes.append(f"the main caution came from {self._factor_label(negative_factor)}")
+        if factor_notes:
+            lines.append(f"{self._sentence(self._join_clauses(factor_notes))}.")
+
+        context_lines: List[str] = []
+        trust_lines: List[str] = []
+        execution_lines: List[str] = []
+        other_lines: List[str] = []
 
         for entry in self.entries:
-            if entry.conf_delta > 0:
-                conf_str = f"conf {entry.conf_before:.2f} -> {entry.conf_after:.2f} up"
-            elif entry.conf_delta < 0:
-                conf_str = f"conf {entry.conf_before:.2f} -> {entry.conf_after:.2f} down"
-            else:
-                conf_str = f"conf {entry.conf_before:.2f}"
+            stage_line = self._telegram_plain_stage_line(entry, signal=signal, summary=summary)
+            if stage_line:
+                name = str(entry.name or "").lower()
+                if name in {"market", "intelligence", "memory", "meta_ai"}:
+                    context_lines.append(stage_line)
+                elif name in {"policy", "governance", "research_validation"}:
+                    trust_lines.append(stage_line)
+                elif name in {"execution"}:
+                    execution_lines.append(stage_line)
+                else:
+                    other_lines.append(stage_line)
 
-            line = f"{entry.emoji()} {entry.name.upper().replace('_', ' ')}   {conf_str}"
-            if entry.reason:
-                line += f"  {entry.reason}"
-            lines.append(line)
-
-            if entry.data:
-                data_parts = []
-                for k, v in entry.data.items():
-                    if isinstance(v, float):
-                        data_parts.append(f"{k}={v:.3f}")
-                    elif v is not None:
-                        data_parts.append(f"{k}={v}")
-                if data_parts:
-                    lines.append("   " + "  ".join(data_parts[:4]))
-
-        lines.append("------------------------------")
+        if survived:
+            if context_lines:
+                lines.extend(["", "What the bot is seeing right now:"])
+                lines.extend(context_lines)
+            if trust_lines:
+                lines.extend(["", "Why the bot trusts this setup:"])
+                lines.extend(trust_lines)
+        else:
+            lines.extend(["", "Why it was blocked:"])
+            if summary.get("kill_reason"):
+                lines.append(f"- Main reason: {self._sentence(self._humanize_reason(summary['kill_reason']))}.")
+            if context_lines or trust_lines or other_lines:
+                lines.extend(context_lines + trust_lines + other_lines)
 
         if survived and signal:
             entry_p = float(getattr(signal, "entry_price", 0))
@@ -795,16 +1047,23 @@ class SignalJournal:
             rr      = float(getattr(signal, "risk_reward",  0))
 
             lines.extend([
-                "EXECUTING",
-                f"Entry: {entry_p:.5f}",
-                f"SL:    {sl:.5f}",
-                f"TP:    {tp:.5f}",
-                f"R:R:   {rr:.1f}:1",
-                f"Conf:  {conf:.0%}",
-                f"Size:  {size:.4f}",
+                "",
+                "How the trade will be managed:",
+            ])
+            lines.extend(execution_lines)
+            lines.extend([
+                f"- Planned entry: {self._format_price(entry_p)}",
+                f"- Protective stop: {self._format_price(sl)}",
+                f"- First main target: {self._format_price(tp)}",
+                f"- Reward to risk: {rr:.1f}:1",
+                f"- Position size: {size:.4f}",
+                f"- Confidence at execution: {conf:.0%}",
             ])
 
-        lines.append(f"Decision engine: {self.total_elapsed_ms():.0f}ms")
+        lines.extend([
+            "",
+            f"Review time: {self.total_elapsed_ms() / 1000.0:.1f}s",
+        ])
         return "\n".join(lines)
 
     def to_dict(self, signal=None) -> Dict[str, Any]:

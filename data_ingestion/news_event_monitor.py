@@ -174,6 +174,13 @@ class NewsEventMonitor:
             self._events = sorted(upcoming, key=lambda item: item["time"])
             self._recent = sorted(recent, key=lambda item: item["time"], reverse=True)
 
+        try:
+            from monitoring.system_health_service import monitor
+
+            monitor.ping_source("news")
+        except Exception:
+            pass
+
         for ev in upcoming:
             if ev["impact"] == "HIGH":
                 mins_until = (ev["time"] - now).total_seconds() / 60

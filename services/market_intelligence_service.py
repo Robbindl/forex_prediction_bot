@@ -79,6 +79,15 @@ def _normalize_direction(value: Any, fallback_sentiment: float = 0.0) -> str:
     return "BUY" if float(fallback_sentiment or 0.0) >= 0.0 else "SELL"
 
 
+def _ping_health(source: str) -> None:
+    try:
+        from monitoring.system_health_service import monitor
+
+        monitor.ping_source(str(source or ""))
+    except Exception:
+        return None
+
+
 class MarketIntelligenceService:
     """Assembles one intelligence snapshot per asset for the engine."""
 
@@ -308,6 +317,7 @@ class MarketIntelligenceService:
             "signature": signature,
         }
         self._append_event(event, _WHALE_EVENT_TTL, signature)
+        _ping_health("whale")
         return event
 
     def record_onchain_event(self, event: Dict[str, Any], external_id: str = "") -> Dict[str, Any]:

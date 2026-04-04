@@ -16,6 +16,16 @@ from core.signal import Signal
 
 logger = get_logger()
 
+_POLICY_REVERSAL_MIN_EDGE = 0.68
+_POLICY_REVERSAL_MIN_ADVANTAGE = 0.18
+_POLICY_REVERSAL_BASE_RR = {
+    "forex": 1.5,
+    "crypto": 1.7,
+    "commodities": 1.6,
+    "indices": 1.65,
+    "stocks": 1.6,
+}
+
 
 def _parse_metadata(raw: Any) -> Dict[str, Any]:
     if raw is None:
@@ -103,6 +113,160 @@ class TradingAgent:
 
     def __init__(self):
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _policy_research_state(model_key: str) -> tuple[bool, str]:
+        meta = registry.get_metadata(model_key) if model_key else {}
+        if bool(meta.get("research_approved")):
+            return True, "approved"
+
+        research_state = str(
+            meta.get("research_status")
+            or meta.get("research_grade")
+            or "unapproved"
+        ).strip().lower() or "unapproved"
+        return False, research_state
+
+    @staticmethod
+    def _signal_model_key(signal: Signal, category: str) -> str:
+        return str(
+            signal.metadata.get("seed_model")
+            or signal.metadata.get("model_key")
+            or f"{category}_classifier"
+        )
+
+    @staticmethod
+    def _default_reversal_rr(category: str) -> float:
+        return float(_POLICY_REVERSAL_BASE_RR.get(str(category or "").lower(), 1.5))
+
+    @staticmethod
+    def _build_take_profit_levels(entry: float, take_profit: float, direction: str) -> list[float]:
+        try:
+            dist = abs(float(take_profit) - float(entry))
+            if dist <= 0.0:
+                return []
+            if str(direction or "").upper() == "BUY":
+                return [
+                    round(entry + dist * 0.5, 6),
+                    round(entry + dist, 6),
+                    round(entry + dist * 1.5, 6),
+                ]
+            return [
+                round(entry - dist * 0.5, 6),
+                round(entry - dist, 6),
+                round(entry - dist * 1.5, 6),
+            ]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _reprice_for_direction(signal: Signal, direction: str, context: Dict[str, Any]) -> None:
+        try:
+            entry = float(signal.entry_price or 0.0)
+        except Exception:
+            entry = 0.0
+        if entry <= 0.0:
+            return
+
+        risk_manager = context.get("risk_manager")
+        if risk_manager is None:
+            engine = context.get("engine")
+            risk_manager = getattr(engine, "_risk_manager", None) if engine is not None else None
+
+        try:
+            atr = float(signal.metadata.get("atr", 0.0) or 0.0)
+        except Exception:
+            atr = 0.0
+
+        rr = 0.0
+        try:
+            rr = float(signal.risk_reward or 0.0)
+        except Exception:
+            rr = 0.0
+
+        baseline_rr = TradingAgent._default_reversal_rr(signal.category)
+
+        if risk_manager is not None:
+            try:
+                stop_loss = risk_manager.get_stop_loss(entry, direction, signal.category, atr=atr)
+                target_rr = max(rr, float(risk_manager.get_target_rr(signal.category) or baseline_rr)) if rr > 0 else float(risk_manager.get_target_rr(signal.category) or baseline_rr)
+                take_profit = risk_manager.get_take_profit(
+                    entry,
+                    stop_loss,
+                    direction,
+                    signal.category,
+                    rr=target_rr,
+                )
+                signal.stop_loss = stop_loss
+                signal.take_profit = take_profit
+                signal.risk_reward = round(float(target_rr or 0.0), 2)
+                signal.take_profit_levels = TradingAgent._build_take_profit_levels(entry, take_profit, direction)
+                return
+            except Exception as exc:
+                logger.debug(f"[TradingAgent] Policy reversal repricing fallback for {signal.asset}: {exc}")
+
+        risk_dist = abs(float(signal.stop_loss or 0.0) - entry)
+        if risk_dist <= 0.0:
+            risk_dist = entry * 0.015
+        target_rr = max(rr, baseline_rr) if rr > 0 else baseline_rr
+        if direction == "BUY":
+            signal.stop_loss = entry - risk_dist
+            signal.take_profit = entry + risk_dist * target_rr
+        else:
+            signal.stop_loss = entry + risk_dist
+            signal.take_profit = entry - risk_dist * target_rr
+        signal.risk_reward = round(float(target_rr or 0.0), 2)
+        signal.take_profit_levels = TradingAgent._build_take_profit_levels(entry, float(signal.take_profit or 0.0), direction)
+
+    def _maybe_reverse_signal(
+        self,
+        signal: Signal,
+        *,
+        prob: float,
+        directional_edge: float,
+        model_key: str,
+        context: Dict[str, Any],
+    ) -> bool:
+        research_approved, _research_state = self._policy_research_state(model_key)
+        if not research_approved:
+            return False
+
+        seed_model_key = self._signal_model_key(signal, signal.category)
+        seed_meta = registry.get_metadata(seed_model_key) if seed_model_key else {}
+        if bool(seed_meta.get("research_approved")):
+            return False
+
+        current_direction = str(signal.direction or "").upper()
+        if current_direction == "BUY":
+            opposite_direction = "SELL"
+            opposite_edge = 1.0 - prob
+        elif current_direction == "SELL":
+            opposite_direction = "BUY"
+            opposite_edge = prob
+        else:
+            return False
+
+        if opposite_edge < _POLICY_REVERSAL_MIN_EDGE:
+            return False
+        if (opposite_edge - directional_edge) < _POLICY_REVERSAL_MIN_ADVANTAGE:
+            return False
+
+        signal.direction = opposite_direction
+        if getattr(signal, "journal", None) is not None:
+            signal.journal.direction = opposite_direction
+        self._reprice_for_direction(signal, opposite_direction, context)
+        signal.metadata["agent_policy_status"] = "reversed"
+        signal.metadata["agent_policy_reversal_from"] = current_direction
+        signal.metadata["agent_policy_reversal_to"] = opposite_direction
+        signal.metadata["agent_policy_advisory"] = (
+            f"policy reversed seed direction ({current_direction}->{opposite_direction}) "
+            f"because approved policy outranked provisional seed"
+        )
+        signal.metadata["agent_recommended_score"] = round(
+            clamp_confidence(0.55 + abs(prob - 0.5) * 0.40),
+            4,
+        )
+        return True
 
     def _predict_policy(
         self,
@@ -264,6 +428,16 @@ class TradingAgent:
             signal.metadata["agent_policy_advisory"] = f"policy gate bypassed ({status})"
             return signal
 
+        research_approved, research_state = self._policy_research_state(model_key)
+        if not research_approved:
+            bypass_status = "research_unapproved"
+            signal.metadata["agent_policy_status"] = bypass_status
+            signal.metadata["agent_recommended_score"] = round(signal.confidence, 4)
+            signal.metadata["agent_policy_advisory"] = (
+                f"policy gate bypassed (model research {research_state})"
+            )
+            return signal
+
         if signal.direction == "BUY":
             directional_edge = prob
             passed = prob >= 0.55
@@ -281,6 +455,14 @@ class TradingAgent:
 
         # Final layer decides whether this signal has enough learned edge.
         if not passed:
+            if self._maybe_reverse_signal(
+                signal,
+                prob=prob,
+                directional_edge=directional_edge,
+                model_key=model_key,
+                context=ctx,
+            ):
+                return signal
             signal.metadata["agent_rejection_reason"] = reject_reason
             logger.debug(f"[TradingAgent] Rejected {signal.asset} {signal.direction} by {reject_reason}")
             return None

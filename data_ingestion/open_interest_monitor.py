@@ -115,6 +115,12 @@ class OpenInterestMonitor:
         return None
 
     def _analyse(self, symbol: str, oi: float) -> None:
+        try:
+            from monitoring.system_health_service import monitor
+
+            monitor.ping_source("open_interest")
+        except Exception:
+            pass
         prev = self._prev_oi.get(symbol)
         if prev is None:
             self._prev_oi[symbol] = oi

@@ -114,6 +114,12 @@ class FundingRateMonitor:
         return None
 
     def _analyse(self, symbol: str, rate: float) -> None:
+        try:
+            from monitoring.system_health_service import monitor
+
+            monitor.ping_source("funding_rate")
+        except Exception:
+            pass
         hist = self._history.setdefault(symbol, [])
         hist.append({"rate": rate, "ts": int(time.time() * 1000)})
         if len(hist) > 200:

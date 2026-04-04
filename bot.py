@@ -84,6 +84,8 @@ except Exception as e:
 _gateway_proc: subprocess.Popen | None = None
 _auto_research_scheduler = None
 _auto_research_worker_proc: subprocess.Popen | None = None
+_shutdown_started = threading.Event()
+_shutdown_lock = threading.Lock()
 _GATEWAY_DIR  = Path(__file__).parent / "gateway"
 _GATEWAY_PORT = 8081
 
@@ -223,6 +225,29 @@ def stop_auto_research() -> None:
             _auto_research_worker_proc = None
     except Exception as e:
         logger.debug(f"[bot] Auto research shutdown skipped: {e}")
+
+
+def _perform_shutdown(engine, *, reason: str = "signal", exit_code: int = 0) -> None:
+    with _shutdown_lock:
+        logger.info(f"[bot] Shutdown sequence started — reason={reason}")
+        try:
+            stop_auto_research()
+        except Exception as e:
+            logger.debug(f"[bot] Auto research stop during shutdown failed: {e}")
+        try:
+            stop_telegram()
+        except Exception as e:
+            logger.debug(f"[bot] Telegram stop during shutdown failed: {e}")
+        try:
+            stop_gateway()
+        except Exception as e:
+            logger.debug(f"[bot] Gateway stop during shutdown failed: {e}")
+        try:
+            engine.stop(reason)
+        except Exception as e:
+            logger.debug(f"[bot] Engine stop during shutdown failed: {e}")
+        logger.info("[bot] Shutdown complete")
+    os._exit(exit_code)
 
 
 def start_auto_research_worker() -> subprocess.Popen | None:
@@ -368,12 +393,27 @@ def main() -> None:
 
     # ── Graceful shutdown ─────────────────────────────────────────────────
     def _shutdown(signum, frame):
-        logger.info("[bot] Shutdown signal received")
-        stop_auto_research()
-        stop_telegram()
-        stop_gateway()
-        engine.stop("signal")
-        sys.exit(0)
+        if _shutdown_started.is_set():
+            logger.warning("[bot] Forced shutdown requested — exiting immediately")
+            os._exit(130)
+        _shutdown_started.set()
+        signal_name = "manual"
+        try:
+            if signum is not None:
+                signal_name = signal.Signals(signum).name
+        except Exception:
+            signal_name = str(signum) if signum is not None else "manual"
+        logger.info(
+            f"[bot] Shutdown signal received ({signal_name}) — stopping services. "
+            "Press Ctrl+C again to force exit."
+        )
+        threading.Thread(
+            target=_perform_shutdown,
+            args=(engine,),
+            kwargs={"reason": signal_name.lower(), "exit_code": 0 if signum is None else 128 + int(signum)},
+            name="BotShutdown",
+            daemon=True,
+        ).start()
 
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
@@ -476,8 +516,8 @@ def main() -> None:
             logger.info("[bot] Live strategy bridge ready — no lab strategies configured yet")
             if LIVE_APPROVED_REGISTRY_ONLY:
                 logger.warning(
-                    "[bot] No approved live strategies in registry — live governance will block new trades "
-                    "until the registry is populated"
+                    "[bot] No approved live strategies in registry — governance will run in bootstrap mode "
+                    "until at least one strategy is promoted"
                 )
     except Exception as e:
         logger.warning(f"[bot] Live strategy bridge failed to load: {e}")
@@ -734,6 +774,14 @@ def main() -> None:
 
         def _on_whale_alert(alert: dict) -> None:
             try:
+                source_name = str(alert.get("source", "") or "").lower()
+                if (
+                    source_name.startswith("telegram/")
+                    or source_name.startswith("twitter")
+                    or source_name.startswith("reddit")
+                ):
+                    return  # social watcher already persisted this event upstream
+
                 symbol = str(alert.get("symbol", alert.get("asset", ""))).upper().strip()
                 asset  = canonical_crypto_asset(symbol)
                 if not asset or not is_crypto(asset):

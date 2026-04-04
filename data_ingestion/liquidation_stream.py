@@ -105,6 +105,12 @@ class LiquidationStream:
                     time.sleep(10)
 
     def _process(self, event: dict) -> None:
+        try:
+            from monitoring.system_health_service import monitor
+
+            monitor.ping_source("liquidations")
+        except Exception:
+            pass
         asset    = event.get("asset", "UNKNOWN")
         # FIX S4: Bybit v5 API sends "qty" not "size" for liquidation quantity.
         # Previously size=event.get("size",0) always returned 0 for Bybit events

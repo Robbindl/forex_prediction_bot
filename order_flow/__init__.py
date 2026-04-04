@@ -46,6 +46,12 @@ def _on_orderbook_update(event: dict) -> None:
     Central handler called for every ORDER_BOOK_UPDATE event.
     Runs all four detectors in sequence for the affected asset.
     """
+    try:
+        from monitoring.system_health_service import monitor
+
+        monitor.ping_source("order_book")
+    except Exception:
+        pass
     asset = event.get("asset", "")
     bids  = event.get("bids", [])
     asks  = event.get("asks", [])

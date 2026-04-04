@@ -237,7 +237,7 @@ class DataFetcher:
                     meta = self._attach_provider_symbol(asset, category, meta)
                     self._ohlcv_meta[meta_key] = meta
                     cache.set(cache_key, (df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
-                    self._ping_health("market_data")
+                    self._ping_health("technicals")
                     return df
             except Exception as exc:
                 logger.debug(f"[DataFetcher] Deriv OHLCV {asset}: {exc}")
@@ -272,7 +272,7 @@ class DataFetcher:
                     meta = self._attach_provider_symbol(asset, category, meta)
                     self._ohlcv_meta[meta_key] = meta
                     cache.set(cache_key, (df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
-                    self._ping_health("market_data")
+                    self._ping_health("technicals")
                     return df
             except Exception as exc:
                 logger.debug(f"[DataFetcher] Binance OHLCV {asset}: {exc}")
@@ -297,6 +297,7 @@ class DataFetcher:
             if live_price is not None:
                 meta = self._stream_metadata(asset, category, str(live_source or "DerivStream"))
                 self._rt_meta[meta_key] = meta
+                self._ping_health("trades")
                 return float(live_price), 0.0
         except Exception as exc:
             logger.debug(f"[DataFetcher] live stream cache {asset}: {exc}")
@@ -317,7 +318,7 @@ class DataFetcher:
                         (float(price), float(spread or 0.0), meta),
                         ttl=MARKET_DATA_QUOTE_CACHE_TTL,
                     )
-                    self._ping_health("market_data")
+                    self._ping_health("trades")
                     return float(price), float(spread or 0.0)
             except Exception as exc:
                 logger.debug(f"[DataFetcher] Deriv quote {asset}: {exc}")
@@ -340,7 +341,7 @@ class DataFetcher:
                         (float(price), float(spread or 0.0), meta),
                         ttl=MARKET_DATA_QUOTE_CACHE_TTL,
                     )
-                    self._ping_health("market_data")
+                    self._ping_health("trades")
                     return float(price), float(spread or 0.0)
             except Exception as exc:
                 logger.debug(f"[DataFetcher] Binance quote {asset}: {exc}")
@@ -428,4 +429,9 @@ class DataFetcher:
 
     @staticmethod
     def _ping_health(source: str) -> None:
-        return None
+        try:
+            from monitoring.system_health_service import monitor
+
+            monitor.ping_source(str(source or ""))
+        except Exception:
+            return None

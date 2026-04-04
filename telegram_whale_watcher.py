@@ -12,6 +12,9 @@ from config.config import (
     TELEGRAM_API_ID,
     TELEGRAM_PHONE,
     TELEGRAM_SESSION,
+    WHALE_ALLOWED_ASSETS,
+    WHALE_TELEGRAM_CHANNELS,
+    WHALE_TELEGRAM_MIN_VALUE_USD,
     WHALE_TELEGRAM_TOKEN,
 )
 from services.intelligence_event_utils import record_whale_alert_event
@@ -29,17 +32,18 @@ _PHONE       = TELEGRAM_PHONE
 _SESSION     = TELEGRAM_SESSION
 
 # ── Whale alert channels to monitor ──────────────────────────────────────────
-# Add or remove channel usernames as needed
-WHALE_CHANNELS = [
-    "WhaleSniper",
-    "whalecointalk",
-    "whalebotalerts",
-    "whale_alert_io",
-    "lookonchain"
-]
+# One primary Telegram fallback channel is preferred when the paid API is absent.
+WHALE_CHANNELS = list(WHALE_TELEGRAM_CHANNELS or ["Whale Liquidations"])
+_ALLOWED_SYMBOLS = {
+    asset.split("-")[0].replace("/", "").upper()
+    for asset in (WHALE_ALLOWED_ASSETS or [])
+    if str(asset or "").strip()
+}
+if not _ALLOWED_SYMBOLS:
+    _ALLOWED_SYMBOLS = {"BTC", "ETH", "BNB", "SOL", "XRP"}
 
 # Minimum USD value to consider a whale alert
-MIN_VALUE_USD = 1_000_000
+MIN_VALUE_USD = float(WHALE_TELEGRAM_MIN_VALUE_USD or 1_000_000)
 
 # Regex patterns to extract transaction data from messages
 _VALUE_PATTERNS = [
@@ -47,11 +51,21 @@ _VALUE_PATTERNS = [
     re.compile(r'([\d,]+(?:\.\d+)?)\s*([MBK])\s*USD', re.IGNORECASE),
     re.compile(r'USD\s*([\d,]+(?:\.\d+)?)', re.IGNORECASE),
     re.compile(r'([\d,]+(?:\.\d+)?)\s*(?:million|billion)', re.IGNORECASE),
+    re.compile(r'\(\s*\$\s*([\d,]+(?:\.\d+)?)\s*\)', re.IGNORECASE),
+    re.compile(r'\$\s*([\d,]+(?:\.\d+)?)(?!\s*[MBK])\b', re.IGNORECASE),
 ]
 
 _SYMBOL_PATTERN = re.compile(
     r'\b(BTC|ETH|BNB|XRP|ADA|SOL|DOGE|DOT|AVAX|LINK|LTC|'
     r'MATIC|UNI|ATOM|XLM|TRX|ALGO|VET|FIL|THETA)\b',
+    re.IGNORECASE,
+)
+_LIQUIDATION_EVENT_PATTERN = re.compile(
+    r'#?(?P<symbol>[A-Z0-9]{2,10})\s+Liquidated\s+\$?(?P<value>[\d,]+(?:\.\d+)?)\s*(?P<suffix>[KMB])?\s+in\s+(?P<side>Long|Short)\b',
+    re.IGNORECASE,
+)
+_LIQUIDATION_TOTAL_PATTERN = re.compile(
+    r'24h\s+Liquidation\s+for\s+\$?#?(?P<symbol>[A-Z0-9]{2,10})\s*:\s*\$?(?P<value>[\d,]+(?:\.\d+)?)\s*(?P<suffix>[KMB])?',
     re.IGNORECASE,
 )
 
@@ -112,10 +126,77 @@ def _parse_value_usd(text: str) -> float:
     return 0.0
 
 
+def _scale_value(amount_text: str, suffix: str = "") -> float:
+    try:
+        amount = float(str(amount_text or "0").replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+    factor = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}.get(str(suffix or "").upper(), 1.0)
+    return amount * factor
+
+
 def _parse_symbol(text: str) -> str:
     """Extract crypto symbol from message text."""
     match = _SYMBOL_PATTERN.search(text)
     return match.group(0).upper() if match else "UNKNOWN"
+
+
+def _parse_liquidation_alert(text: str) -> Optional[Dict]:
+    event_match = _LIQUIDATION_EVENT_PATTERN.search(text or "")
+    total_match = _LIQUIDATION_TOTAL_PATTERN.search(text or "")
+    if not event_match and not total_match:
+        return None
+
+    symbol = (
+        str((event_match.group("symbol") if event_match else total_match.group("symbol")) or "")
+        .upper()
+        .strip("#$")
+    )
+    if not symbol or symbol not in _ALLOWED_SYMBOLS:
+        return None
+
+    event_value = _scale_value(
+        event_match.group("value") if event_match else "0",
+        event_match.group("suffix") if event_match else "",
+    )
+    total_24h_value = _scale_value(
+        total_match.group("value") if total_match else "0",
+        total_match.group("suffix") if total_match else "",
+    )
+    resolved_value = max(event_value, total_24h_value)
+    if resolved_value < MIN_VALUE_USD:
+        return None
+
+    side = str(event_match.group("side") if event_match else "").upper()
+    if side == "SHORT":
+        direction = "BUY"
+        sentiment = 0.45
+        pressure = "short-squeeze pressure"
+    elif side == "LONG":
+        direction = "SELL"
+        sentiment = -0.45
+        pressure = "long-liquidation pressure"
+    else:
+        direction = "BUY"
+        sentiment = 0.1
+        pressure = "liquidation pressure"
+
+    if total_24h_value >= 10_000_000:
+        sentiment = 0.60 if direction == "BUY" else -0.60
+    elif total_24h_value >= 3_000_000:
+        sentiment = 0.52 if direction == "BUY" else -0.52
+
+    return {
+        "symbol": symbol,
+        "value_usd": resolved_value,
+        "direction": direction,
+        "sentiment": round(sentiment, 3),
+        "title": f"🐋 {symbol} {pressure} ${resolved_value / 1_000_000:.1f}M",
+        "event_kind": "liquidation",
+        "liquidation_side": side or "",
+        "event_value_usd": round(event_value, 2),
+        "total_24h_value_usd": round(total_24h_value, 2),
+    }
 
 
 def _parse_alert(text: str, source: str, date: datetime) -> Optional[Dict]:
@@ -123,6 +204,26 @@ def _parse_alert(text: str, source: str, date: datetime) -> Optional[Dict]:
     Parse a raw Telegram message into a whale alert dict.
     Returns None if the message is not a qualifying whale alert.
     """
+    liquidation = _parse_liquidation_alert(text)
+    if liquidation:
+        symbol = liquidation["symbol"]
+        value_usd = float(liquidation["value_usd"] or 0.0)
+        return {
+            "title": f"{liquidation['title']} — {source}",
+            "value_usd": value_usd,
+            "symbol": symbol,
+            "date": date.isoformat(),
+            "source": f"Telegram/{source}",
+            "sentiment": float(liquidation["sentiment"] or 0.0),
+            "direction": liquidation["direction"],
+            "event_kind": liquidation["event_kind"],
+            "liquidation_side": liquidation["liquidation_side"],
+            "event_value_usd": liquidation["event_value_usd"],
+            "total_24h_value_usd": liquidation["total_24h_value_usd"],
+            "raw_text": text[:200],
+            "external_id": f"telegram:{source}:{date.isoformat()}:{symbol}:{int(value_usd)}",
+        }
+
     lower = text.lower()
     if not any(kw in lower for kw in ['whale', 'transfer', 'moved', 'million', 'billion', '$']):
         return None
@@ -132,6 +233,8 @@ def _parse_alert(text: str, source: str, date: datetime) -> Optional[Dict]:
         return None
 
     symbol  = _parse_symbol(text)
+    if symbol not in _ALLOWED_SYMBOLS:
+        return None
     value_m = value_usd / 1_000_000
     title   = f"🐋 {symbol} ${value_m:.1f}M — {source}"
 
@@ -145,6 +248,8 @@ def _parse_alert(text: str, source: str, date: datetime) -> Optional[Dict]:
         "date":      date.isoformat(),
         "source":    f"Telegram/{source}",
         "sentiment": sentiment,
+        "direction": "BUY" if sentiment >= 0 else "SELL",
+        "event_kind": "whale",
         "raw_text":  text[:200],
         "external_id": f"telegram:{source}:{date.isoformat()}:{symbol}:{int(value_usd)}",
     }
@@ -229,6 +334,38 @@ class TelegramWhaleWatcher:
                 if a.get("value_usd", 0) >= min_value_usd
             ]
 
+    async def _resolve_watch_entities(self, client) -> List:
+        resolved = []
+        dialog_lookup: Dict[str, object] = {}
+        try:
+            async for dialog in client.iter_dialogs():
+                entity = getattr(dialog, "entity", None)
+                if entity is None:
+                    continue
+                title = str(getattr(dialog, "name", "") or "").strip()
+                if title:
+                    dialog_lookup[title.casefold()] = entity
+                username = str(getattr(entity, "username", "") or "").strip().lstrip("@")
+                if username:
+                    dialog_lookup[username.casefold()] = entity
+        except Exception as e:
+            logger.debug(f"[TelegramWhaleWatcher] Dialog discovery failed: {e}")
+
+        for channel in WHALE_CHANNELS:
+            spec = str(channel or "").strip()
+            if not spec:
+                continue
+            entity = None
+            try:
+                entity = await client.get_entity(spec)
+            except Exception:
+                entity = dialog_lookup.get(spec.casefold()) or dialog_lookup.get(spec.lstrip("@").casefold())
+            if entity is not None:
+                resolved.append(entity)
+            else:
+                logger.warning(f"[TelegramWhaleWatcher] Could not resolve configured channel '{spec}'")
+        return resolved
+
     # ── Internal Telethon listener ────────────────────────────────────────
 
     def _run_listener(self) -> None:
@@ -271,27 +408,36 @@ class TelegramWhaleWatcher:
             logger.error(f"[TelegramWhaleWatcher] Connect failed: {e}")
             return
 
+        resolved_channels = await self._resolve_watch_entities(client)
+        if not resolved_channels:
+            logger.error("[TelegramWhaleWatcher] No Telegram whale channels could be resolved")
+            return
+
         # ── Fetch recent history from each channel ──────────────────────
-        for channel in WHALE_CHANNELS:
+        for entity in resolved_channels:
             if not self._is_running:
                 break
             try:
-                entity = await client.get_entity(channel)
                 async for msg in client.iter_messages(entity, limit=50):
                     if msg.text:
-                        alert = _parse_alert(msg.text, channel, msg.date or datetime.utcnow())
+                        channel_name = str(getattr(entity, "title", "") or getattr(entity, "username", "") or "telegram")
+                        alert = _parse_alert(msg.text, channel_name, msg.date or datetime.utcnow())
                         if alert:
                             self._add_alert(alert)
-                logger.debug(f"[TelegramWhaleWatcher] Fetched history from {channel}")
+                logger.debug(f"[TelegramWhaleWatcher] Fetched history from {getattr(entity, 'title', getattr(entity, 'username', entity))}")
             except Exception as e:
-                logger.debug(f"[TelegramWhaleWatcher] Could not read {channel}: {e}")
+                logger.debug(f"[TelegramWhaleWatcher] Could not read {getattr(entity, 'title', getattr(entity, 'username', entity))}: {e}")
 
         # ── Real-time listener for new messages ─────────────────────────
-        @client.on(events.NewMessage(chats=WHALE_CHANNELS))
+        @client.on(events.NewMessage(chats=resolved_channels))
         async def _on_message(event):
             if not event.text:
                 return
-            channel_name = getattr(event.chat, "username", str(event.chat_id))
+            channel_name = str(
+                getattr(event.chat, "title", "")
+                or getattr(event.chat, "username", "")
+                or event.chat_id
+            )
             alert = _parse_alert(event.text, channel_name, datetime.utcnow())
             if alert:
                 self._add_alert(alert)
@@ -307,7 +453,7 @@ class TelegramWhaleWatcher:
                         pass
 
         logger.info(
-            f"[TelegramWhaleWatcher] Listening to {len(WHALE_CHANNELS)} channels"
+            f"[TelegramWhaleWatcher] Listening to {len(resolved_channels)} channels"
         )
 
         # Keep running until stopped
@@ -334,6 +480,12 @@ class TelegramWhaleWatcher:
                 raw_text=alert.get("raw_text", alert.get("title", "")),
                 sentiment=float(alert.get("sentiment", 0.1) or 0.1),
                 timestamp=alert.get("date"),
-                metadata={"title": alert.get("title", "")},
+                metadata={
+                    "title": alert.get("title", ""),
+                    "event_kind": alert.get("event_kind", "whale"),
+                    "liquidation_side": alert.get("liquidation_side", ""),
+                    "event_value_usd": alert.get("event_value_usd", 0.0),
+                    "total_24h_value_usd": alert.get("total_24h_value_usd", 0.0),
+                },
                 external_id=str(alert.get("external_id", "")),
             )

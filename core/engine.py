@@ -356,6 +356,43 @@ class TradingCore:
                     direction,
                     category=category,
                 )
+            structure = {}
+            pos_meta = pos.get("metadata")
+            if isinstance(pos_meta, dict):
+                structure = pos_meta.get("market_structure") or {}
+            align_tp_fn = getattr(self._risk_manager, "align_take_profit_to_structure", None)
+            if callable(align_tp_fn):
+                try:
+                    base_effective_tp = float(effective_tp)
+                    aligned_tp = align_tp_fn(
+                        entry,
+                        effective_tp,
+                        direction,
+                        category=category,
+                        structure=structure if isinstance(structure, dict) else {},
+                        atr=atr,
+                        confidence=float(pos.get("confidence", 0.0) or 0.0),
+                    )
+                    if isinstance(aligned_tp, (int, float)) and aligned_tp > 0:
+                        effective_tp = float(aligned_tp)
+                        if abs(effective_tp - base_effective_tp) > 1e-9:
+                            structure = structure if isinstance(structure, dict) else {}
+                            structure_target_alignment = {
+                                "applied": True,
+                                "base_take_profit": round(base_effective_tp, 6),
+                                "aligned_take_profit": round(effective_tp, 6),
+                                "regime": str(structure.get("regime") or ""),
+                                "structure_bias": str(structure.get("structure_bias") or ""),
+                            }
+                        else:
+                            structure_target_alignment = {}
+                    else:
+                        structure_target_alignment = {}
+                except Exception as exc:
+                    structure_target_alignment = {}
+                    logger.debug(f"[TradingCore] Structure target alignment unavailable for {asset}: {exc}")
+            else:
+                structure_target_alignment = {}
             tp_levels = self._build_take_profit_levels(entry, effective_tp, direction)
 
             snapshot = dict(pos)
@@ -378,6 +415,7 @@ class TradingCore:
                 "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
                 "target_rr_multiplier": round(target_rr_multiplier, 4),
                 "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
+                "structure_target_alignment": structure_target_alignment,
             }
 
             sl_changed = abs(snapshot["stop_loss"] - current_sl) > 1e-9
@@ -806,6 +844,38 @@ class TradingCore:
         except Exception:
             ram = cpu = 0.0
         issues = [] if self._engine_ready.is_set() else ["Engine initialising"]
+        source_health: Dict[str, Any] = {}
+        stale_sources: List[str] = []
+        never_seen_sources: List[str] = []
+        recent_error_count = 0
+        recent_errors: List[Dict[str, Any]] = []
+        try:
+            from monitoring.system_health_service import monitor as _mon
+
+            monitor_snapshot = _mon.get_snapshot()
+            source_health = dict(monitor_snapshot.get("source_health") or {})
+            stale_sources = sorted(
+                [
+                    name
+                    for name, health in source_health.items()
+                    if isinstance(health, dict) and str(health.get("status") or "") == "stale"
+                ]
+            )
+            never_seen_sources = sorted(
+                [
+                    name
+                    for name, health in source_health.items()
+                    if isinstance(health, dict) and str(health.get("status") or "") == "never_seen"
+                ]
+            )
+            recent_error_count = int(monitor_snapshot.get("recent_error_count", 0) or 0)
+            recent_errors = list(monitor_snapshot.get("recent_errors") or [])[-5:]
+        except Exception:
+            pass
+        if stale_sources:
+            issues.append(f"Stale data sources: {', '.join(stale_sources[:4])}")
+        if recent_error_count > 0:
+            issues.append(f"Recent monitor errors: {recent_error_count}")
         return {
             "is_running":       self._is_running,
             "engine_ready":     self._engine_ready.is_set(),
@@ -817,6 +887,13 @@ class TradingCore:
             "active_cooldowns": len(self.state.get_all_cooldowns()),
             "ram_pct":          ram,
             "cpu_pct":          cpu,
+            "source_health":    source_health,
+            "stale_sources":    stale_sources,
+            "stale_source_count": len(stale_sources),
+            "never_seen_sources": never_seen_sources,
+            "never_seen_source_count": len(never_seen_sources),
+            "recent_error_count": recent_error_count,
+            "recent_errors":    recent_errors,
             "issues":           issues,
             "status":           "healthy" if not issues else "degraded",
         }
@@ -1657,6 +1734,7 @@ class TradingCore:
             return None
 
         atr = self._estimate_atr(price_data)
+        structure_target_alignment: Dict[str, Any] = {}
         execution_feedback_policy: Dict[str, Any] = {}
         try:
             from services.execution_feedback_service import get_service as get_execution_feedback_service
@@ -1713,6 +1791,31 @@ class TradingCore:
                     direction,
                     category=category,
                 )
+            align_tp_fn = getattr(self._risk_manager, "align_take_profit_to_structure", None)
+            if callable(align_tp_fn):
+                try:
+                    aligned_take_profit = align_tp_fn(
+                        entry_price,
+                        take_profit,
+                        direction,
+                        category=category,
+                        structure=structure if isinstance(structure, dict) else {},
+                        atr=atr,
+                        confidence=seed_confidence,
+                    )
+                    if isinstance(aligned_take_profit, (int, float)) and aligned_take_profit > 0:
+                        aligned_take_profit = float(aligned_take_profit)
+                        if abs(aligned_take_profit - float(take_profit)) > 1e-9:
+                            structure_target_alignment = {
+                                "applied": True,
+                                "base_take_profit": round(float(take_profit), 6),
+                                "aligned_take_profit": round(aligned_take_profit, 6),
+                                "regime": str((structure or {}).get("regime") or ""),
+                                "structure_bias": str((structure or {}).get("structure_bias") or ""),
+                            }
+                        take_profit = aligned_take_profit
+                except Exception as exc:
+                    logger.debug(f"[TradingCore] Structure target alignment unavailable for {asset}: {exc}")
         else:
             dist = (atr * 1.5 if atr > 0 else entry_price * 0.006) * max(0.75, min(1.25, stop_buffer_multiplier))
             stop_loss = entry_price - dist if direction == "BUY" else entry_price + dist
@@ -1755,6 +1858,7 @@ class TradingCore:
             "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
             "target_rr_multiplier": round(target_rr_multiplier, 4),
             "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
+            "structure_target_alignment": structure_target_alignment,
         })
         context["execution_feedback_policy"] = execution_feedback_policy
         context["signal_metadata"] = {
@@ -1763,6 +1867,7 @@ class TradingCore:
             "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
             "target_rr_multiplier": round(target_rr_multiplier, 4),
             "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
+            "structure_target_alignment": structure_target_alignment,
         }
         context["seed_decision"]["status"] = "signal"
         context["seed_decision"]["direction"] = direction

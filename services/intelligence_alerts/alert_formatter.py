@@ -6,6 +6,19 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
+_NARRATIVE_LABELS = {
+    "AI_TOKENS": "AI-related crypto narrative",
+    "ETF_NEWS": "ETF news flow",
+    "MACRO_SHOCK": "macro shock theme",
+    "DEFI_TREND": "DeFi trend",
+    "REGULATION": "regulation theme",
+    "LAYER2_TREND": "layer-2 trend",
+    "BTC_DOMINANCE": "Bitcoin dominance theme",
+    "EXCHANGE_NEWS": "exchange news flow",
+    "STABLECOIN_NEWS": "stablecoin theme",
+    "HALVING_BUZZ": "halving narrative",
+}
+
 # ── Priority emoji headers ────────────────────────────────────────────────────
 _PRIORITY_HEADER = {
     "CRITICAL": "🚨 *CRITICAL ALERT*",
@@ -26,6 +39,15 @@ def _fmt_price(price: float) -> str:
     if price >= 0.1:
         return f"{price:.4f}"
     return f"{price:.5f}"
+
+
+def _narrative_label(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "Unknown"
+    if raw in _NARRATIVE_LABELS:
+        return _NARRATIVE_LABELS[raw]
+    return " ".join(raw.replace("_", " ").replace("-", " ").split()).title()
 
 
 class AlertFormatter:
@@ -243,7 +265,7 @@ class AlertFormatter:
     # ── Phase 4 formatters ────────────────────────────────────────────────────
 
     def _format_NARRATIVE_TREND_DETECTED(self, e: dict) -> str:
-        narrative = e.get("narrative", "UNKNOWN")
+        narrative = _narrative_label(e.get("narrative", "UNKNOWN"))
         velocity  = float(e.get("velocity",  0))
         strength  = e.get("strength",  "MILD")
         count     = int(e.get("count",    0))
@@ -260,7 +282,7 @@ class AlertFormatter:
 
     def _format_REDDIT_TOPIC_SPIKE(self, e: dict) -> str:
         subreddit  = e.get("subreddit",  "?")
-        narrative  = e.get("narrative",  "?")
+        narrative  = _narrative_label(e.get("narrative",  "?"))
         post_count = int(e.get("post_count", 0))
         samples    = e.get("sample_titles", [])
         icon       = "🤖"
@@ -272,7 +294,7 @@ class AlertFormatter:
         )
 
     def _format_TWITTER_TOPIC_SPIKE(self, e: dict) -> str:
-        narrative  = e.get("narrative",   "?")
+        narrative  = _narrative_label(e.get("narrative",   "?"))
         tweet_count = int(e.get("tweet_count", 0))
         icon        = "🐦"
         return (

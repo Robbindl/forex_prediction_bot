@@ -328,6 +328,85 @@ class TelegramCommander:
         return f"{price:.5f}"
 
     @staticmethod
+    def _trade_review(trade: Dict[str, Any]) -> Dict[str, Any]:
+        meta = trade.get("metadata", trade.get("trade_metadata", {})) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        review = meta.get("post_trade_review")
+        if isinstance(review, dict) and review:
+            return review
+        try:
+            from services.post_trade_review_service import get_service as get_post_trade_review_service
+
+            return get_post_trade_review_service().build_review(
+                {
+                    **trade,
+                    "metadata": meta,
+                }
+            )
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _review_items(items: Any, limit: int = 2) -> str:
+        if not isinstance(items, list):
+            return ""
+        lines = [str(item).strip() for item in items if str(item).strip()]
+        if not lines:
+            return ""
+        return "\n".join(f"• {line}" for line in lines[: max(1, int(limit or 2))])
+
+    @classmethod
+    def _format_trade_review_block(cls, trade: Dict[str, Any]) -> str:
+        review = cls._trade_review(trade)
+        if not isinstance(review, dict) or not review:
+            return ""
+
+        outcome = str(review.get("outcome") or "").lower()
+        summary = str(review.get("summary") or "").strip()
+        lesson = str(review.get("lesson") or "").strip()
+        next_focus = str(review.get("next_focus") or "").strip()
+        keep = cls._review_items(review.get("keep"))
+        avoid = cls._review_items(review.get("avoid"))
+        what_right = cls._review_items(review.get("what_went_right"))
+        what_wrong = cls._review_items(review.get("what_went_wrong"))
+
+        parts = ["", "🧠 *Trade Review*"]
+        if summary:
+            parts.append(summary)
+
+        if outcome in {"win", "partial_win"}:
+            if what_right:
+                parts.append("")
+                parts.append("*What was right:*")
+                parts.append(what_right)
+            if lesson:
+                parts.append("")
+                parts.append(f"*What I learned:* {lesson}")
+            if keep:
+                parts.append("")
+                parts.append("*What I'll keep:*")
+                parts.append(keep)
+        else:
+            if what_wrong:
+                parts.append("")
+                parts.append("*What went wrong:*")
+                parts.append(what_wrong)
+            if lesson:
+                parts.append("")
+                parts.append(f"*What I learned:* {lesson}")
+            if avoid:
+                parts.append("")
+                parts.append("*What I'll avoid:*")
+                parts.append(avoid)
+
+        if next_focus:
+            parts.append("")
+            parts.append(f"*Next focus:* {next_focus}")
+
+        return "\n".join(part for part in parts if part is not None)
+
+    @staticmethod
     def _sanitise_markdown(text: str) -> str:
         """
         Fix common Markdown issues that cause Telegram parse errors.
@@ -475,13 +554,25 @@ class TelegramCommander:
             tp    = float(trade.get("take_profit", 0))
             rr    = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
             _a    = trade.get('asset', '?')
-            now   = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
+            open_raw = trade.get("open_time") or trade.get("entry_time")
+            if open_raw:
+                try:
+                    open_dt = _dt.fromisoformat(str(open_raw).replace("Z", "+00:00"))
+                    if open_dt.tzinfo is None:
+                        open_dt = open_dt.replace(tzinfo=_tz.utc)
+                    else:
+                        open_dt = open_dt.astimezone(_tz.utc)
+                    opened_at = open_dt.strftime("%d %b %Y %H:%M:%S UTC")
+                except Exception:
+                    opened_at = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
+            else:
+                opened_at = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
             self.send_message(
                 f"{emoji} *TRADE OPENED*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📌 Asset:    *{_a}*\n"
                 f"📍 Direction: *{d}*\n"
-                f"🕐 Opened:   `{now}`\n"
+                f"🕐 Opened:   `{opened_at}`\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"Entry:    `{self._fmt_price(entry, _a)}`\n"
                 f"Stop:     `{self._fmt_price(sl, _a)}`\n"
@@ -510,18 +601,41 @@ class TelegramCommander:
             # Times
             now_str = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
             open_str = "—"
+            close_str = now_str
             dur_str  = "—"
             try:
                 open_t = trade.get("open_time") or trade.get("entry_time")
+                exit_t = trade.get("exit_time")
+                close_dt = None
+                if exit_t:
+                    close_dt = _dt.fromisoformat(str(exit_t).replace("Z","+00:00"))
+                    if close_dt.tzinfo is None:
+                        close_dt = close_dt.replace(tzinfo=_tz.utc)
+                    else:
+                        close_dt = close_dt.astimezone(_tz.utc)
+                    close_str = close_dt.strftime("%d %b %Y %H:%M:%S UTC")
                 if open_t:
                     ot = _dt.fromisoformat(str(open_t).replace("Z","+00:00"))
+                    if ot.tzinfo is None:
+                        ot = ot.replace(tzinfo=_tz.utc)
+                    else:
+                        ot = ot.astimezone(_tz.utc)
                     open_str = ot.strftime("%d %b %Y %H:%M:%S UTC")
-                    mins = int((_dt.now(_tz.utc) - ot.replace(tzinfo=_tz.utc) if ot.tzinfo is None else _dt.now(_tz.utc) - ot).total_seconds() / 60)
-                    if mins < 60:    dur_str = f"{mins}m"
-                    elif mins < 1440: dur_str = f"{mins//60}h {mins%60}m"
-                    else:             dur_str = f"{mins//1440}d {(mins%1440)//60}h"
+                    duration_minutes = trade.get("duration_minutes")
+                    if duration_minutes is not None:
+                        mins = max(0, int(float(duration_minutes)))
+                    else:
+                        ref_close = close_dt or _dt.now(_tz.utc)
+                        mins = max(0, int((ref_close - ot).total_seconds() / 60))
+                    if mins < 60:
+                        dur_str = f"{mins}m"
+                    elif mins < 1440:
+                        dur_str = f"{mins//60}h {mins%60}m"
+                    else:
+                        dur_str = f"{mins//1440}d {(mins%1440)//60}h"
             except Exception:
                 pass
+            review_block = self._format_trade_review_block(trade)
             self.send_message(
                 f"{icon} *TRADE CLOSED*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
@@ -529,12 +643,13 @@ class TelegramCommander:
                 f"{r_em} Reason:   *{reason}*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"🕐 Opened:   `{open_str}`\n"
-                f"🕑 Closed:   `{now_str}`\n"
+                f"🕑 Closed:   `{close_str}`\n"
                 f"⏱ Duration: `{dur_str}`\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"Entry:  `{self._fmt_price(_en, _a2)}`\n"
                 f"Exit:   `{self._fmt_price(_ex, _a2)}`\n"
                 f"P&L:    `{sign}${pnl:.2f}`"
+                f"{review_block}"
             )
         except Exception as e:
             logger.error(f"[Telegram] alert_trade_closed: {e}")
@@ -1166,6 +1281,12 @@ class TelegramCommander:
         """Render last 10 closed trades with open/close times and P&L."""
         try:
             from services.db_pool import get_db
+
+            def _trade_get(trade, key: str, default=None):
+                if isinstance(trade, dict):
+                    return trade.get(key, default)
+                return getattr(trade, key, default)
+
             category_filter = filter_cat if filter_cat in ("forex", "crypto", "commodities", "indices") else ""
             pnl_filter = filter_cat if filter_cat in ("won", "lost") else "all"
             trades = get_db().get_recent_trades(
@@ -1195,21 +1316,21 @@ class TelegramCommander:
             }
 
             lines = [f"📋 *TRADE HISTORY* ({filter_cat.upper()})\n"]
-            total_pnl = sum(float(t.pnl or 0) for t in trades[:10])
-            won  = sum(1 for t in trades[:10] if (t.pnl or 0) > 0)
-            lost = sum(1 for t in trades[:10] if (t.pnl or 0) < 0)
+            total_pnl = sum(float(_trade_get(t, "pnl", 0) or 0) for t in trades[:10])
+            won  = sum(1 for t in trades[:10] if float(_trade_get(t, "pnl", 0) or 0) > 0)
+            lost = sum(1 for t in trades[:10] if float(_trade_get(t, "pnl", 0) or 0) < 0)
             lines.append(f"Last {min(10,len(trades))} trades | 🟢 {won} won | 🔴 {lost} lost | Net: ${total_pnl:+.2f}\n")
 
             for t in trades[:10]:
-                pnl  = float(t.get("pnl", 0) or 0)
-                category = str(t.get("category", "") or "")
+                pnl  = float(_trade_get(t, "pnl", 0) or 0)
+                category = str(_trade_get(t, "category", "") or "")
                 em   = cat_emojis.get(category, "📊")
                 pnl_em = "🟢" if pnl >= 0 else "🔴"
-                dir_  = str(t.get("direction") or "BUY").upper()
+                dir_  = str(_trade_get(t, "direction", "BUY") or "BUY").upper()
 
                 # Times and duration
-                open_t_raw = t.get("entry_time")
-                close_t_raw = t.get("exit_time")
+                open_t_raw = _trade_get(t, "entry_time")
+                close_t_raw = _trade_get(t, "exit_time")
                 open_t = None
                 close_t = None
                 try:
@@ -1231,11 +1352,11 @@ class TelegramCommander:
                 close_str = close_t.strftime("%d %b %H:%M") if close_t else "—"
 
                 # Exit reason emoji
-                reason = str(t.get("exit_reason") or "")
+                reason = str(_trade_get(t, "exit_reason", "") or "")
                 r_em = next((v for k, v in reason_emojis.items() if k in reason), "📌")
 
                 lines.append(
-                    f"{em} *{t.get('asset', 'UNKNOWN')}* {dir_}\n"
+                    f"{em} *{_trade_get(t, 'asset', 'UNKNOWN')}* {dir_}\n"
                     f"  🕐 {open_str} → {close_str} ({dur_str})\n"
                     f"  {r_em} {reason or '—'} | {pnl_em} ${pnl:+.2f}\n"
                 )

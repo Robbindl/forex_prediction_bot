@@ -77,6 +77,9 @@ class ExecutionFeedbackService:
         feedback_policy = metadata.get("execution_feedback_policy") or {}
         if not isinstance(feedback_policy, dict):
             feedback_policy = {}
+        paper_execution = metadata.get("paper_execution") or {}
+        if not isinstance(paper_execution, dict):
+            paper_execution = {}
 
         asset = str(trade.get("canonical_asset") or trade.get("asset") or "")
         category = str(trade.get("category") or "")
@@ -163,6 +166,28 @@ class ExecutionFeedbackService:
         if exit_family == "partial_tp":
             notes.append("partial_take_profit")
 
+        requested_entry_price = _safe_float(paper_execution.get("requested_entry_price"), entry_price)
+        requested_exit_price = _safe_float(paper_execution.get("requested_exit_price"), exit_price)
+        entry_fill_delta_pct = (
+            abs(entry_price - requested_entry_price) / requested_entry_price
+            if requested_entry_price > 0
+            else 0.0
+        )
+        exit_fill_delta_pct = (
+            abs(exit_price - requested_exit_price) / requested_exit_price
+            if requested_exit_price > 0
+            else 0.0
+        )
+        entry_commission = _safe_float(paper_execution.get("entry_commission"), 0.0)
+        exit_commission = _safe_float(paper_execution.get("exit_commission"), 0.0)
+        total_commission = _safe_float(
+            paper_execution.get("total_commission"),
+            entry_commission + exit_commission,
+        )
+        execution_drag_rr = total_commission / initial_risk if initial_risk > 0 else 0.0
+        if execution_drag_rr > 0.08:
+            notes.append("execution_drag_high")
+
         quality_score = 50.0
         quality_score += rr_realized * 14.0
         quality_score += target_capture * 10.0
@@ -235,6 +260,12 @@ class ExecutionFeedbackService:
             "target_rr_multiplier": round(_safe_float(feedback_policy.get("target_rr_multiplier"), 1.0), 4),
             "stop_buffer_multiplier": round(_safe_float(feedback_policy.get("stop_buffer_multiplier"), 1.0), 4),
             "sample_count": _safe_int(feedback_policy.get("sample_count"), 0),
+            "entry_fill_delta_pct": round(entry_fill_delta_pct, 6),
+            "exit_fill_delta_pct": round(exit_fill_delta_pct, 6),
+            "entry_commission": round(entry_commission, 6),
+            "exit_commission": round(exit_commission, 6),
+            "total_commission": round(total_commission, 6),
+            "execution_drag_rr": round(execution_drag_rr, 6),
             "notes": notes,
         }
 

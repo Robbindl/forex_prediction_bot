@@ -70,9 +70,33 @@ class PersonalityDatabase:
         with self._lock:
             try:
                 meta = trade_data.get("metadata", trade_data.get("trade_metadata", {})) or {}
+                if not isinstance(meta, dict):
+                    meta = {}
                 regime = str(meta.get("regime", "unknown")).lower()
                 rsi = float(meta.get("rsi", 0) or 0)
                 setup_type = _classify_setup(regime, rsi, trade_data.get("exit_reason", ""))
+                review = meta.get("post_trade_review")
+                if not isinstance(review, dict) or not review:
+                    try:
+                        from services.post_trade_review_service import get_service as get_post_trade_review_service
+
+                        review = get_post_trade_review_service().build_review(
+                            {
+                                **trade_data,
+                                "metadata": meta,
+                            }
+                        )
+                        if isinstance(review, dict) and review:
+                            meta["post_trade_review"] = review
+                    except Exception:
+                        review = {}
+
+                execution_feedback = meta.get("execution_feedback")
+                if not isinstance(execution_feedback, dict):
+                    execution_feedback = {}
+                setup_memory = meta.get("setup_memory")
+                if not isinstance(setup_memory, dict):
+                    setup_memory = {}
 
                 with self._get_session() as session:
                     entry = TradingDiary(
@@ -90,6 +114,13 @@ class PersonalityDatabase:
                             "strategy_id": trade_data.get("strategy_id", ""),
                             "category":    trade_data.get("category", ""),
                             "direction":   trade_data.get("direction", trade_data.get("signal", "")),
+                            "post_trade_review": review,
+                            "execution_feedback": execution_feedback,
+                            "setup_memory": {
+                                "memory_score": meta.get("memory_score", setup_memory.get("memory_score")),
+                                "memory_edge": meta.get("memory_edge", setup_memory.get("memory_edge")),
+                                "sample_count": meta.get("memory_sample_count", setup_memory.get("sample_count")),
+                            },
                         },
                     )
                     session.add(entry)

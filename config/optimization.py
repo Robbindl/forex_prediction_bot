@@ -89,6 +89,7 @@ ASSET_CLASS_TUNING = {
         "news_pre_event_mins": 10,
         "stop_loss_atr": 1.2,
         "take_profit_atr": 1.8,  # Crypto moves bigger
+        "target_rr": 1.7,
     },
     "forex": {
         # EUR/USD/GBP: Lower volatility, news-sensitive, tight spreads
@@ -96,6 +97,7 @@ ASSET_CLASS_TUNING = {
         "news_pre_event_mins": 15,  # ← LONGER for forex (respects data releases)
         "stop_loss_atr": 1.5,       # ← WIDER SL (forex less predictable)
         "take_profit_atr": 1.5,
+        "target_rr": 1.5,
     },
     "commodities": {
         # Oil/Gold/Silver: Trend-driven, geopolitical surprises
@@ -103,6 +105,7 @@ ASSET_CLASS_TUNING = {
         "news_pre_event_mins": 12,
         "stop_loss_atr": 1.4,
         "take_profit_atr": 1.6,
+        "target_rr": 1.6,
     },
     "indices": {
         # SPX/DJIA/NDX: Correlated, earnings-driven, large moves
@@ -110,6 +113,7 @@ ASSET_CLASS_TUNING = {
         "news_pre_event_mins": 15,
         "stop_loss_atr": 1.3,
         "take_profit_atr": 1.7,
+        "target_rr": 1.65,
     },
 }
 

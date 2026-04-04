@@ -11,6 +11,10 @@ import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Callable
 
+from config.config import (
+    WHALE_REDDIT_WHALE_ENABLED,
+    WHALE_TWITTER_WHALE_ENABLED,
+)
 from utils.logger import logger
 
 try:
@@ -219,8 +223,9 @@ class WhaleAlertDB:
 
 class WhaleAlertManager:
     """
-    Aggregates whale alerts from API, Twitter, Telegram, Reddit.
-    Singleton. No fake data. Thread-safe.
+    Aggregates whale alerts from the paid API and Telegram fallback.
+    Social sources can still be used elsewhere for sentiment, but are disabled
+    here by default so whale pressure is not mixed with noisy crowd chatter.
     """
 
     _instance: Optional["WhaleAlertManager"] = None
@@ -267,11 +272,13 @@ class WhaleAlertManager:
             )
 
         # ── Twitter watcher ───────────────────────────────────────────────
-        if TwitterWhaleWatcher:
+        if WHALE_TWITTER_WHALE_ENABLED and TwitterWhaleWatcher:
             try:
                 self.twitter_watcher = TwitterWhaleWatcher()
             except Exception as e:
                 logger.warning(f"[WhaleManager] TwitterWhaleWatcher init failed: {e}")
+        elif not WHALE_TWITTER_WHALE_ENABLED:
+            logger.info("[WhaleManager] Twitter whale source disabled — Twitter can remain sentiment-only")
 
         # ── Telegram watcher ──────────────────────────────────────────────
         if TelegramWhaleWatcher:
@@ -281,14 +288,15 @@ class WhaleAlertManager:
                 logger.warning(f"[WhaleManager] TelegramWhaleWatcher init failed: {e}")
 
         # ── Reddit watcher ────────────────────────────────────────────────
-        if RedditWatcher:
+        if WHALE_REDDIT_WHALE_ENABLED and RedditWatcher:
             try:
                 rw = RedditWatcher()
-                # New RedditWatcher uses public JSON — always enabled, no credentials needed
                 self.reddit = rw
-                logger.info("[WhaleManager] Reddit: enabled (public JSON, no auth required)")
+                logger.info("[WhaleManager] Reddit whale source enabled")
             except Exception as e:
                 logger.warning(f"[WhaleManager] RedditWatcher init failed: {e}")
+        elif not WHALE_REDDIT_WHALE_ENABLED:
+            logger.info("[WhaleManager] Reddit whale source disabled — Reddit remains available for sentiment")
 
         logger.info(
             f"[WhaleManager] "

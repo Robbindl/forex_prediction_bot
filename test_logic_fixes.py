@@ -291,6 +291,78 @@ def test_paper_trader_partial_tp_emits_partial_close_and_keeps_remainder() -> No
     assert partials[0]["trade_id"] == "abc123-PT1"
 
 
+def test_paper_trader_applies_realistic_entry_and_exit_costs() -> None:
+    trader = PaperTrader(account_balance=10_000.0)
+
+    trade = trader.execute_signal(
+        {
+            "asset": "BTC-USD",
+            "category": "crypto",
+            "direction": "BUY",
+            "confidence": 0.72,
+            "entry_price": 100.0,
+            "stop_loss": 90.0,
+            "take_profit": 120.0,
+            "position_size": 2.0,
+            "metadata": {
+                "paper_execution_profile": {
+                    "commission": 0.001,
+                    "slippage": 0.002,
+                    "spread_pct": 0.01,
+                }
+            },
+        }
+    )
+
+    assert trade is not None
+    assert round(trade["entry_price"], 4) == 100.7
+    assert trade["metadata"]["paper_execution"]["fill_mode"] == "paper_realistic"
+
+    closed = trader._check_exit(trade, 120.0)
+
+    assert closed is not None
+    assert closed["exit_reason"] == "Take Profit"
+    assert round(closed["exit_price"], 4) == 119.232
+    assert closed["metadata"]["paper_execution"]["total_commission"] > 0.0
+    assert closed["pnl"] < closed["gross_pnl"]
+
+
+def test_paper_trader_stop_loss_uses_harsher_adverse_fill() -> None:
+    trader = PaperTrader(account_balance=10_000.0)
+
+    trade = trader.execute_signal(
+        {
+            "asset": "BTC-USD",
+            "category": "crypto",
+            "direction": "BUY",
+            "confidence": 0.70,
+            "entry_price": 100.0,
+            "stop_loss": 90.0,
+            "take_profit": 120.0,
+            "position_size": 1.0,
+            "metadata": {
+                "paper_execution_profile": {
+                    "commission": 0.001,
+                    "slippage": 0.002,
+                    "spread_pct": 0.01,
+                }
+            },
+        }
+    )
+
+    assert trade is not None
+
+    closed = trader._check_exit(trade, 89.0)
+
+    assert closed is not None
+    assert closed["exit_reason"] == "Stop Loss"
+    assert closed["exit_price"] < 89.0
+    assert (
+        closed["metadata"]["paper_execution"]["exit_slippage_pct"]
+        > closed["metadata"]["paper_execution"]["entry_slippage_pct"]
+    )
+
+
 def test_state_record_partial_close_keeps_parent_open_and_zero_trade_count(monkeypatch, tmp_path: Path) -> None:
     class FakeDB:
         def __init__(self) -> None:
@@ -794,6 +866,89 @@ def test_signal_governance_rejects_live_runtime_asset_without_registry_approval(
     assert any("no approved live strategy for ETH-USD" in item for item in verdict["violations"])
 
 
+def test_signal_governance_bootstraps_empty_live_registry_in_live_runtime(monkeypatch) -> None:
+    governance_mod = importlib.import_module("services.signal_governance")
+    live_bridge_mod = importlib.import_module("strategy_lab.live_bridge")
+    governance = governance_mod.SignalGovernance()
+
+    monkeypatch.setenv("BOT_LIVE_RUNTIME", "1")
+    monkeypatch.setattr(governance_mod, "LIVE_APPROVED_REGISTRY_ONLY", True, raising=False)
+    monkeypatch.setattr(governance_mod, "LIVE_REQUIRE_ASSET_APPROVAL", True, raising=False)
+    monkeypatch.setattr(live_bridge_mod, "load_registry_entries", lambda registry_path=None: [], raising=False)
+    monkeypatch.setattr(
+        live_bridge_mod,
+        "find_live_registry_matches",
+        lambda asset, category, registry_path=None: {
+            "asset": asset,
+            "category": category,
+            "matched": False,
+            "exact_match": False,
+            "match_scope": "none",
+            "strategies": [],
+            "names": [],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_live_validation",
+        staticmethod(lambda asset: {"scope": "asset", "total": 42, "accuracy_pct": 61.9}),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_expectancy_validation",
+        staticmethod(
+            lambda asset, category: {
+                "scope": "asset",
+                "sample_count": 14,
+                "avg_rr_realized": 0.22,
+                "target_hit_rate": 0.41,
+                "premature_stop_rate": 0.11,
+                "avg_quality_score": 58.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_run_forex_filter",
+        staticmethod(lambda signal, context: (True, "ok")),
+    )
+    monkeypatch.setattr(
+        governance_mod.registry,
+        "get_metadata",
+        lambda name: {"research_approved": True, "walk_forward_accuracy": 0.58},
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="USD/JPY",
+        canonical_asset="USD/JPY",
+        category="forex",
+        direction="BUY",
+        confidence=0.82,
+        entry_price=100.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        risk_reward=2.0,
+    )
+    signal.metadata.update({
+        "valid_sources_count": 4,
+        "ml_confidence": 0.29,
+        "policy_model": "forex_policy",
+    })
+
+    verdict = governance.evaluate(signal, {
+        "market_data": {
+            "price": {"source": "DerivStream", "source_class": "stream", "delayed": False},
+            "ohlcv": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+        }
+    })
+
+    assert verdict["approved"] is True
+    assert verdict["registry_validation"]["bootstrap_mode"] is True
+    assert any("registry empty" in item for item in verdict["warnings"])
+
+
 def test_signal_governance_rejects_negative_expectancy_asset(monkeypatch) -> None:
     governance_mod = importlib.import_module("services.signal_governance")
     governance = governance_mod.SignalGovernance()
@@ -1176,6 +1331,238 @@ def test_trading_agent_bypasses_policy_when_model_shape_is_incompatible(monkeypa
     assert signal.metadata["agent_policy_advisory"] == "policy gate bypassed (feature_mismatch)"
 
 
+def test_trading_agent_bypasses_policy_when_model_research_is_unapproved(monkeypatch) -> None:
+    agent_mod = importlib.import_module("ml.agent")
+    trading_agent = agent_mod.TradingAgent()
+
+    class _Model:
+        n_features_in_ = 28
+
+        def predict_proba(self, X):
+            return np.array([[0.20, 0.80]], dtype=np.float32)
+
+    monkeypatch.setattr(agent_mod.registry, "get", lambda name: _Model(), raising=False)
+    monkeypatch.setattr(
+        agent_mod.registry,
+        "get_metadata",
+        lambda name: {
+            "research_approved": False,
+            "research_status": "provisional",
+            "research_grade": "provisional",
+        },
+        raising=False,
+    )
+
+    price_data = pd.DataFrame(
+        {
+            "open": np.linspace(1.0, 2.0, 40),
+            "high": np.linspace(1.01, 2.01, 40),
+            "low": np.linspace(0.99, 1.99, 40),
+            "close": np.linspace(1.0, 2.0, 40),
+            "volume": np.linspace(100.0, 200.0, 40),
+        }
+    )
+    signal = Signal(
+        asset="EUR/USD",
+        canonical_asset="EUR/USD",
+        category="forex",
+        direction="BUY",
+        confidence=0.78,
+    )
+    signal.metadata.update({"ml_confidence": 0.88, "regime": "trending_up"})
+
+    result = trading_agent.decide(signal, {"price_data": price_data})
+
+    assert result is signal
+    assert signal.metadata["agent_policy_status"] == "research_unapproved"
+    assert signal.metadata["agent_policy_advisory"] == "policy gate bypassed (model research provisional)"
+
+
+def test_trading_agent_reverses_direction_when_approved_policy_outranks_provisional_seed(monkeypatch) -> None:
+    agent_mod = importlib.import_module("ml.agent")
+    risk_mod = importlib.import_module("risk.manager")
+    trading_agent = agent_mod.TradingAgent()
+
+    class _Model:
+        def predict_proba(self, X):
+            return np.array([[0.20, 0.80]], dtype=np.float32)
+
+    monkeypatch.setattr(agent_mod.registry, "get", lambda name: _Model(), raising=False)
+    monkeypatch.setattr(
+        agent_mod.registry,
+        "get_metadata",
+        lambda name: (
+            {
+                "research_approved": True,
+                "research_status": "approved",
+                "research_grade": "institutional",
+            }
+            if name == "crypto_policy"
+            else {
+                "research_approved": False,
+                "research_status": "provisional",
+                "research_grade": "provisional",
+            }
+        ),
+        raising=False,
+    )
+
+    price_data = pd.DataFrame(
+        {
+            "open": np.linspace(100.0, 108.0, 40),
+            "high": np.linspace(100.5, 108.5, 40),
+            "low": np.linspace(99.5, 107.5, 40),
+            "close": np.linspace(100.0, 108.0, 40),
+            "volume": np.linspace(1000.0, 1800.0, 40),
+        }
+    )
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.74,
+        entry_price=108.0,
+        stop_loss=109.2,
+        take_profit=105.6,
+        risk_reward=2.0,
+    )
+    signal.metadata.update({"seed_model": "crypto_classifier", "ml_confidence": 0.74, "regime": "trending_down"})
+
+    result = trading_agent.decide(
+        signal,
+        {
+            "price_data": price_data,
+            "risk_manager": risk_mod.RiskManager(),
+        },
+    )
+
+    assert result is signal
+    assert signal.direction == "BUY"
+    assert signal.metadata["agent_policy_status"] == "reversed"
+    assert signal.metadata["agent_policy_reversal_from"] == "SELL"
+    assert signal.metadata["agent_policy_reversal_to"] == "BUY"
+    assert "approved policy outranked provisional seed" in signal.metadata["agent_policy_advisory"]
+    assert signal.stop_loss < signal.entry_price < signal.take_profit
+
+
+def test_trading_agent_reversal_reprices_from_category_baseline_and_rebuilds_tp_levels(monkeypatch) -> None:
+    agent_mod = importlib.import_module("ml.agent")
+    risk_mod = importlib.import_module("risk.manager")
+    trading_agent = agent_mod.TradingAgent()
+
+    class _Model:
+        def predict_proba(self, X):
+            return np.array([[0.12, 0.88]], dtype=np.float32)
+
+    monkeypatch.setattr(agent_mod.registry, "get", lambda name: _Model(), raising=False)
+    monkeypatch.setattr(
+        agent_mod.registry,
+        "get_metadata",
+        lambda name: (
+            {
+                "research_approved": True,
+                "research_status": "approved",
+                "research_grade": "institutional",
+            }
+            if name == "crypto_policy"
+            else {
+                "research_approved": False,
+                "research_status": "provisional",
+                "research_grade": "provisional",
+            }
+        ),
+        raising=False,
+    )
+
+    price_data = pd.DataFrame(
+        {
+            "open": np.linspace(100.0, 108.0, 40),
+            "high": np.linspace(100.5, 108.5, 40),
+            "low": np.linspace(99.5, 107.5, 40),
+            "close": np.linspace(100.0, 108.0, 40),
+            "volume": np.linspace(1000.0, 1800.0, 40),
+        }
+    )
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.74,
+        entry_price=108.0,
+        stop_loss=109.2,
+        take_profit=107.7,
+        take_profit_levels=[107.85, 107.7, 107.55],
+        risk_reward=0.25,
+    )
+    signal.metadata.update({"seed_model": "crypto_classifier", "ml_confidence": 0.74, "regime": "trending_down"})
+
+    result = trading_agent.decide(
+        signal,
+        {
+            "price_data": price_data,
+            "risk_manager": risk_mod.RiskManager(),
+        },
+    )
+
+    assert result is signal
+    assert signal.direction == "BUY"
+    assert signal.journal.direction == "BUY"
+    assert signal.risk_reward >= risk_mod.RiskManager().get_target_rr("crypto")
+    assert len(signal.take_profit_levels) == 3
+    assert all(level > signal.entry_price for level in signal.take_profit_levels)
+    assert abs(float(signal.take_profit_levels[1]) - float(signal.take_profit)) <= 1e-6
+
+
+def test_trading_agent_does_not_reverse_when_seed_model_is_already_approved(monkeypatch) -> None:
+    agent_mod = importlib.import_module("ml.agent")
+    trading_agent = agent_mod.TradingAgent()
+
+    class _Model:
+        def predict_proba(self, X):
+            return np.array([[0.20, 0.80]], dtype=np.float32)
+
+    monkeypatch.setattr(agent_mod.registry, "get", lambda name: _Model(), raising=False)
+    monkeypatch.setattr(
+        agent_mod.registry,
+        "get_metadata",
+        lambda name: {
+            "research_approved": True,
+            "research_status": "approved",
+            "research_grade": "institutional",
+        },
+        raising=False,
+    )
+
+    price_data = pd.DataFrame(
+        {
+            "open": np.linspace(100.0, 108.0, 40),
+            "high": np.linspace(100.5, 108.5, 40),
+            "low": np.linspace(99.5, 107.5, 40),
+            "close": np.linspace(100.0, 108.0, 40),
+            "volume": np.linspace(1000.0, 1800.0, 40),
+        }
+    )
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.74,
+        entry_price=108.0,
+        stop_loss=109.2,
+        take_profit=105.6,
+        risk_reward=2.0,
+    )
+    signal.metadata.update({"seed_model": "crypto_classifier", "ml_confidence": 0.74, "regime": "trending_down"})
+
+    result = trading_agent.decide(signal, {"price_data": price_data})
+
+    assert result is None
+    assert signal.metadata["agent_rejection_reason"] == "policy score 0.800 above SELL threshold 0.45"
+
+
 def test_signal_governance_rejects_delayed_ohlcv_for_indices(monkeypatch) -> None:
     governance_mod = importlib.import_module("services.signal_governance")
     governance = governance_mod.SignalGovernance()
@@ -1269,6 +1656,77 @@ def test_signal_governance_rejects_delayed_ohlcv_even_on_slow_timeframes(monkeyp
     assert any("ohlcv source DelayedFeed is delayed" in item for item in verdict["violations"])
 
 
+def test_signal_governance_uses_adaptive_min_rr_preview(monkeypatch) -> None:
+    governance_mod = importlib.import_module("services.signal_governance")
+    governance = governance_mod.SignalGovernance()
+
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_live_validation",
+        staticmethod(lambda asset: {"scope": "asset", "total": 30, "accuracy_pct": 55.0}),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_registry_validation",
+        staticmethod(
+            lambda asset, category: {
+                "required": False,
+                "asset_required": False,
+                "bootstrap_mode": False,
+                "asset": asset,
+                "category": category,
+                "matched": True,
+                "exact_match": True,
+                "match_scope": "asset",
+                "strategies": [{"name": "approved_index"}],
+                "names": ["approved_index"],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_expectancy_validation",
+        staticmethod(lambda asset, category: {"scope": "bootstrap", "sample_count": 0}),
+    )
+    monkeypatch.setattr(
+        governance_mod.registry,
+        "get_metadata",
+        lambda name: {"research_approved": True, "walk_forward_accuracy": 0.58},
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="US500",
+        canonical_asset="US500",
+        category="indices",
+        direction="BUY",
+        confidence=0.82,
+        entry_price=5000.0,
+        stop_loss=4950.0,
+        take_profit=5072.5,
+        risk_reward=1.45,
+    )
+    signal.metadata.update({
+        "valid_sources_count": 3,
+        "ml_confidence": 0.82,
+        "policy_model": "indices_policy",
+    })
+
+    verdict = governance.evaluate(
+        signal,
+        {
+            "adaptive_policy": {"min_rr": 1.42},
+            "market_data": {
+                "price": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+                "ohlcv": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+            },
+        },
+    )
+
+    assert verdict["approved"] is True
+    assert verdict["min_risk_reward"] == 1.42
+
+
 def test_signal_governance_applies_forex_filter(monkeypatch) -> None:
     governance_mod = importlib.import_module("services.signal_governance")
     governance = governance_mod.SignalGovernance()
@@ -1317,6 +1775,105 @@ def test_signal_governance_applies_forex_filter(monkeypatch) -> None:
     assert verdict["mode"] == "deriv"
     assert verdict["approved"] is False
     assert any("forex quality: spread too wide" in item for item in verdict["violations"])
+
+
+def test_signal_governance_uses_seed_model_when_policy_is_bypassed(monkeypatch) -> None:
+    governance_mod = importlib.import_module("services.signal_governance")
+    governance = governance_mod.SignalGovernance()
+
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_registry_validation",
+        staticmethod(
+            lambda asset, category: {
+                "required": False,
+                "asset_required": False,
+                "bootstrap_mode": False,
+                "asset": asset,
+                "category": category,
+                "matched": True,
+                "exact_match": True,
+                "match_scope": "asset",
+                "strategies": [{"name": "approved_fx"}],
+                "names": ["approved_fx"],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_live_validation",
+        staticmethod(lambda asset: {"scope": "asset", "total": 42, "accuracy_pct": 61.9}),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_expectancy_validation",
+        staticmethod(
+            lambda asset, category: {
+                "scope": "asset",
+                "sample_count": 14,
+                "avg_rr_realized": 0.22,
+                "target_hit_rate": 0.41,
+                "premature_stop_rate": 0.11,
+                "avg_quality_score": 58.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_run_forex_filter",
+        staticmethod(lambda signal, context: (True, "ok")),
+    )
+    monkeypatch.setattr(
+        governance_mod.registry,
+        "get_metadata",
+        lambda name: (
+            {
+                "research_approved": False,
+                "research_status": "unapproved",
+                "walk_forward_accuracy": 0.40,
+                "walk_forward_samples": 20,
+                "holdout_accuracy": 0.49,
+            }
+            if name == "forex_policy"
+            else {
+                "research_approved": True,
+                "research_status": "approved",
+                "walk_forward_accuracy": 0.58,
+                "walk_forward_samples": 480,
+                "holdout_accuracy": 0.56,
+            }
+        ),
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="EUR/USD",
+        canonical_asset="EUR/USD",
+        category="forex",
+        direction="BUY",
+        confidence=0.82,
+        entry_price=1.10,
+        stop_loss=1.09,
+        take_profit=1.13,
+        risk_reward=2.0,
+    )
+    signal.metadata.update({
+        "valid_sources_count": 4,
+        "ml_confidence": 0.29,
+        "policy_model": "forex_policy",
+        "seed_model": "forex_classifier",
+        "agent_policy_status": "research_unapproved",
+    })
+
+    verdict = governance.evaluate(signal, {
+        "market_data": {
+            "price": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+            "ohlcv": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+        }
+    })
+
+    assert verdict["approved"] is True
+    assert verdict["model_key"] == "forex_classifier"
 
 
 def test_asset_profiles_disable_reddit_for_non_crypto() -> None:
@@ -2488,6 +3045,98 @@ def test_reddit_watcher_unknown_asset_fallback_is_not_equity_only() -> None:
     ]
 
 
+def test_telegram_whale_watcher_uses_liquidation_24h_total_for_allowed_asset(monkeypatch) -> None:
+    telegram_mod = importlib.import_module("telegram_whale_watcher")
+
+    monkeypatch.setattr(telegram_mod, "_ALLOWED_SYMBOLS", {"BTC", "ETH", "BNB", "SOL", "XRP"}, raising=False)
+    monkeypatch.setattr(telegram_mod, "MIN_VALUE_USD", 1_000_000, raising=False)
+
+    alert = telegram_mod._parse_alert(
+        "🟢 #BTC Liquidated $59.0K in Short - at $67068\n☠️ 24h Liquidation for $BTC: $15.28M",
+        "Whale Liquidations",
+        datetime(2026, 4, 3, 0, 11, 0),
+    )
+
+    assert alert is not None
+    assert alert["symbol"] == "BTC"
+    assert alert["event_kind"] == "liquidation"
+    assert alert["direction"] == "BUY"
+    assert alert["liquidation_side"] == "SHORT"
+    assert alert["value_usd"] == 15_280_000
+
+
+def test_telegram_whale_watcher_filters_out_mixed_channel_assets(monkeypatch) -> None:
+    telegram_mod = importlib.import_module("telegram_whale_watcher")
+
+    monkeypatch.setattr(telegram_mod, "_ALLOWED_SYMBOLS", {"BTC", "ETH", "BNB", "SOL", "XRP"}, raising=False)
+    monkeypatch.setattr(telegram_mod, "MIN_VALUE_USD", 1_000_000, raising=False)
+
+    alert = telegram_mod._parse_alert(
+        "🔴 #DOGE Liquidated $3.4M in Long - at $0.15\n☠️ 24h Liquidation for $DOGE: $11.20M",
+        "Whale Liquidations",
+        datetime(2026, 4, 3, 0, 12, 0),
+    )
+
+    assert alert is None
+
+
+def test_telegram_whale_watcher_parses_whalebotalerts_parenthesized_usd_value(monkeypatch) -> None:
+    telegram_mod = importlib.import_module("telegram_whale_watcher")
+
+    monkeypatch.setattr(telegram_mod, "_ALLOWED_SYMBOLS", {"BTC", "ETH", "BNB", "SOL", "XRP"}, raising=False)
+    monkeypatch.setattr(telegram_mod, "MIN_VALUE_USD", 1_000_000, raising=False)
+
+    alert = telegram_mod._parse_alert(
+        "🚨🚨🚨 501 BTC ($33,618,476) transferred from Gemini to Unknown",
+        "whalebotalerts",
+        datetime(2026, 4, 4, 1, 9, 0),
+    )
+
+    assert alert is not None
+    assert alert["symbol"] == "BTC"
+    assert alert["event_kind"] == "whale"
+    assert alert["value_usd"] == 33_618_476
+
+
+def test_whale_alert_manager_uses_telegram_only_when_social_whale_sources_disabled(monkeypatch) -> None:
+    manager_mod = importlib.import_module("whale_alert_manager")
+    original_instance = manager_mod.WhaleAlertManager._instance
+    manager_mod.WhaleAlertManager._instance = None
+
+    class _FakeTelegramWatcher:
+        def __init__(self):
+            self.bot_token = "configured"
+
+    class _UnexpectedTwitterWatcher:
+        def __init__(self):
+            raise AssertionError("Twitter whale watcher should stay disabled")
+
+    class _UnexpectedRedditWatcher:
+        def __init__(self):
+            raise AssertionError("Reddit whale watcher should stay disabled")
+
+    monkeypatch.setattr(manager_mod, "WHALE_TWITTER_WHALE_ENABLED", False, raising=False)
+    monkeypatch.setattr(manager_mod, "WHALE_REDDIT_WHALE_ENABLED", False, raising=False)
+    monkeypatch.setattr(manager_mod, "TelegramWhaleWatcher", _FakeTelegramWatcher, raising=False)
+    monkeypatch.setattr(manager_mod, "TwitterWhaleWatcher", _UnexpectedTwitterWatcher, raising=False)
+    monkeypatch.setattr(manager_mod, "RedditWatcher", _UnexpectedRedditWatcher, raising=False)
+    monkeypatch.setattr(manager_mod, "WhaleAlertDB", lambda: SimpleNamespace(enabled=False), raising=False)
+    monkeypatch.setattr(
+        manager_mod.os,
+        "getenv",
+        lambda key, default="": "" if key == "WHALE_ALERT_KEY" else default,
+        raising=False,
+    )
+
+    try:
+        manager = manager_mod.WhaleAlertManager()
+        assert manager.telegram_watcher is not None
+        assert manager.twitter_watcher is None
+        assert manager.reddit is None
+    finally:
+        manager_mod.WhaleAlertManager._instance = original_instance
+
+
 def test_system_health_service_collect_loop_degrades_cleanly_on_redis_publish_failure(
     monkeypatch,
 ) -> None:
@@ -2641,6 +3290,301 @@ def test_news_event_monitor_prunes_stale_cache_when_fetch_returns_none(monkeypat
         assert [ev["name"] for ev in monitor._recent] == ["valid recent"]
 
 
+def test_data_fetcher_ping_health_forwards_to_monitor(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    fetcher_mod.DataFetcher._ping_health("technicals")
+    fetcher_mod.DataFetcher._ping_health("trades")
+
+    assert seen == ["technicals", "trades"]
+
+
+def test_funding_rate_monitor_analyse_pings_health(monkeypatch) -> None:
+    funding_mod = importlib.import_module("data_ingestion.funding_rate_monitor")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    service = funding_mod.FundingRateMonitor()
+    service._analyse("BTCUSDT", 0.006)
+
+    assert seen == ["funding_rate"]
+
+
+def test_open_interest_monitor_analyse_pings_health(monkeypatch) -> None:
+    oi_mod = importlib.import_module("data_ingestion.open_interest_monitor")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    service = oi_mod.OpenInterestMonitor()
+    service._analyse("BTCUSDT", 12345.0)
+
+    assert seen == ["open_interest"]
+
+
+def test_liquidation_stream_process_pings_health(monkeypatch) -> None:
+    liq_mod = importlib.import_module("data_ingestion.liquidation_stream")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    service = liq_mod.LiquidationStream()
+    service._process({"asset": "BTCUSDT", "qty": 1.0, "price": 50000.0, "ts": int(time.time() * 1000)})
+
+    assert seen == ["liquidations"]
+
+
+def test_news_event_monitor_update_pings_health(monkeypatch) -> None:
+    news_mod = importlib.import_module("data_ingestion.news_event_monitor")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        news_mod.news_monitor,
+        "_fetch_deriv",
+        lambda: [
+            {
+                "name": "US CPI",
+                "impact": "HIGH",
+                "time": now + timedelta(minutes=5),
+                "affects": {"forex", "indices"},
+            }
+        ],
+        raising=False,
+    )
+
+    news_mod.news_monitor._fetch_and_update()
+
+    assert seen == ["news"]
+
+
+def test_order_flow_update_pings_health(monkeypatch) -> None:
+    order_flow_mod = importlib.import_module("order_flow")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    class _Proc:
+        def update(self, bids, asks):
+            return {"top_bids": bids, "top_asks": asks, "mid": 100.0, "ts": int(time.time() * 1000)}
+
+    class _Walls:
+        def scan(self, bids, asks):
+            return []
+
+    class _Imbalance:
+        def analyse(self, snapshot):
+            return None
+
+    class _StopHunt:
+        def update_walls(self, walls):
+            return None
+
+        def ingest_price(self, mid, ts):
+            return None
+
+    monkeypatch.setattr(order_flow_mod, "_get_or_create", lambda asset: (_Proc(), _Walls(), _Imbalance(), _StopHunt()), raising=False)
+
+    order_flow_mod._on_orderbook_update({"asset": "BTCUSDT", "bids": [[100, 1]], "asks": [[101, 1]]})
+
+    assert seen == ["order_book"]
+
+
+def test_market_intelligence_record_whale_alert_pings_health_once_per_new_event(monkeypatch) -> None:
+    market_mod = importlib.import_module("services.market_intelligence_service")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    service = market_mod.MarketIntelligenceService()
+    timestamp = "2026-04-04T12:00:00+00:00"
+
+    service.record_whale_alert(
+        asset="BTC-USD",
+        direction="BUY",
+        size_usd=1_500_000,
+        source="Telegram/whalebotalerts",
+        sentiment=0.25,
+        timestamp=timestamp,
+        raw_text="Large BTC transfer spotted",
+        external_id="whale-1",
+    )
+    service.record_whale_alert(
+        asset="BTC-USD",
+        direction="BUY",
+        size_usd=1_500_000,
+        source="Telegram/whalebotalerts",
+        sentiment=0.25,
+        timestamp=timestamp,
+        raw_text="Large BTC transfer spotted",
+        external_id="whale-1",
+    )
+
+    assert seen == ["whale"]
+
+
+def test_sentiment_price_momentum_get_pings_health_only_on_recompute(monkeypatch) -> None:
+    sentiment_mod = importlib.import_module("services.sentiment_sources")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+    monkeypatch.setattr(sentiment_mod._PriceMomentum, "_compute", lambda asset: 0.21, raising=False)
+    sentiment_mod._PriceMomentum._cache.clear()
+
+    assert sentiment_mod._PriceMomentum.get("BTC-USD") == 0.21
+    assert sentiment_mod._PriceMomentum.get("BTC-USD") == 0.21
+    assert seen == ["sentiment"]
+
+
+def test_sentiment_news_get_pings_health_only_on_recompute(monkeypatch) -> None:
+    sentiment_mod = importlib.import_module("services.sentiment_sources")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_compute", lambda asset: -0.18, raising=False)
+    sentiment_mod._NewsSentiment._cache.clear()
+
+    assert sentiment_mod._NewsSentiment.get("EUR/USD") == -0.18
+    assert sentiment_mod._NewsSentiment.get("EUR/USD") == -0.18
+    assert seen == ["sentiment"]
+
+
+def test_macro_data_collector_process_pings_health_even_without_threshold_break(monkeypatch) -> None:
+    macro_mod = importlib.import_module("data_ingestion.macro_data_collector")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    collector = macro_mod.MacroDataCollector()
+    collector._process("FEDFUNDS", "Fed Funds Rate", 5.0)
+    collector._process("FEDFUNDS", "Fed Funds Rate", 5.0)
+
+    assert seen == ["macro", "macro"]
+
+
+def test_exchange_stream_manager_market_data_event_pings_trades_health(monkeypatch) -> None:
+    stream_mod = importlib.import_module("data_ingestion.exchange_stream_manager")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    manager = stream_mod.ExchangeStreamManager()
+    manager._pub = None
+    manager._handlers = []
+
+    manager._on_event(
+        {
+            "type": "MARKET_DATA_UPDATE",
+            "exchange": "binance",
+            "asset": "BTCUSDT",
+            "price": 68000.0,
+            "ts": int(time.time() * 1000),
+        }
+    )
+
+    assert seen == ["trades"]
+
+
+def test_exchange_stream_manager_bybit_market_data_event_keeps_liquidations_fresh(monkeypatch) -> None:
+    stream_mod = importlib.import_module("data_ingestion.exchange_stream_manager")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    seen = []
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(ping_source=lambda source: seen.append(source)),
+        raising=False,
+    )
+
+    manager = stream_mod.ExchangeStreamManager()
+    manager._pub = None
+    manager._handlers = []
+
+    manager._on_event(
+        {
+            "type": "MARKET_DATA_UPDATE",
+            "exchange": "bybit",
+            "asset": "BTCUSDT",
+            "price": 68000.0,
+            "ts": int(time.time() * 1000),
+        }
+    )
+
+    assert seen == ["trades", "liquidations"]
+
+
 def test_telegram_send_message_timeout_is_handled_cleanly(monkeypatch) -> None:
     import threading
     from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -2677,6 +3621,52 @@ def test_telegram_send_message_timeout_is_handled_cleanly(monkeypatch) -> None:
     assert commander.send_message("timeout test") is False
     assert fake_future.cancelled is True
     assert warnings == ["[Telegram] send timed out"]
+
+
+def test_telegram_alert_trade_closed_includes_post_trade_review() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    captured = {}
+    commander.send_message = lambda text, parse_mode=tg_mod.ParseMode.MARKDOWN, reply_markup=None: captured.setdefault("text", text) or True
+
+    commander.alert_trade_closed(
+        {
+            "asset": "BTC-USD",
+            "entry_price": 66345.677,
+            "exit_price": 66611.0597,
+            "pnl": -48.23,
+            "exit_reason": "Stop Loss",
+            "open_time": "2026-04-04T10:00:00+00:00",
+            "exit_time": "2026-04-04T10:37:00+00:00",
+            "duration_minutes": 37,
+            "metadata": {
+                "post_trade_review": {
+                    "outcome": "loss",
+                    "summary": "The entry arrived late and the stop was too tight for the volatility.",
+                    "lesson": "Do not chase extended entries; wait for fresher structure or better price location.",
+                    "next_focus": "Avoid chasing entries after the move is already mature.",
+                    "what_went_wrong": [
+                        "The entry arrived late, so the trade took heat before it had enough room to work.",
+                        "The stop appears to have been too tight for the amount of normal market noise.",
+                    ],
+                    "avoid": [
+                        "Avoid chasing entries after the move is already mature.",
+                        "Avoid cramped stops when volatility is still noisy around entry.",
+                    ],
+                }
+            },
+        }
+    )
+
+    message = captured["text"]
+    assert "Trade Review" in message
+    assert "What went wrong" in message
+    assert "What I'll avoid" in message
+    assert "Do not chase extended entries" in message
+    assert "04 Apr 2026 10:00:00 UTC" in message
+    assert "04 Apr 2026 10:37:00 UTC" in message
+    assert "37m" in message
 
 
 def test_websocket_manager_repeated_deriv_disconnects_are_downgraded(monkeypatch) -> None:
@@ -3160,6 +4150,49 @@ def test_page_overview_normalizes_cached_response_objects(monkeypatch) -> None:
     assert payload["whale"]["alert_count_24h"] == 4
 
 
+def test_page_overview_command_center_reuses_embedded_whale_summary(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    class _FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def get_json(self):
+            return self._payload
+
+    def _fake_call_view(fn):
+        name = getattr(fn, "__name__", "")
+        if name == "api_command_center":
+            return _FakeResponse({
+                "success": True,
+                "balance": 123.0,
+                "recent": [{"asset": "BTC-USD", "value_usd": 1_250_000}],
+                "alert_count_24h": 3,
+                "whale_alerts_24h": 3,
+            })
+        if name == "api_whale_summary":
+            raise AssertionError("api_whale_summary should not be called for command_center overview")
+        raise AssertionError(f"Unexpected view {name}")
+
+    monkeypatch.setattr(dashboard_mod, "_call_view", _fake_call_view, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/page-overview?page=command_center"):
+        response = dashboard_mod.api_page_overview()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["command_center"]["balance"] == 123.0
+    assert payload["whale"]["success"] is True
+    assert payload["whale"]["alert_count_24h"] == 3
+    assert payload["whale"]["recent"][0]["asset"] == "BTC-USD"
+
+
 def test_sentiment_dashboard_exposes_macro_news_context(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -3366,6 +4399,69 @@ def test_command_center_includes_top_opportunities_and_weak_positions(monkeypatc
     assert payload["success"] is True
     assert payload["top_opportunities"][0]["asset"] == "BTC-USD"
     assert payload["weak_positions"][0]["asset"] == "ETH-USD"
+
+
+def test_command_center_survives_ranking_extras_wait_timeout(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    futures_mod = importlib.import_module("concurrent.futures")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+
+    class _FakeCore:
+        is_running = True
+        is_ready = True
+
+        def get_performance(self):
+            return {"balance": 1000.0, "total_pnl": 10.0, "win_rate": 55.0, "total_trades": 4}
+
+        def get_daily_stats(self):
+            return {"daily_pnl": 2.0, "daily_trades": 1}
+
+        def get_positions(self):
+            return []
+
+        def health_report(self):
+            return {"is_running": True, "engine_ready": True}
+
+        def get_top_ranked_opportunities(self, limit=5):
+            return [{"asset": "BTC-USD"}]
+
+        def get_weak_positions(self, limit=5):
+            return [{"asset": "ETH-USD"}]
+
+    class _FakeFuture:
+        def cancel(self):
+            return True
+
+        def result(self):
+            return []
+
+    class _FakePool:
+        def __init__(self, max_workers=1):
+            self.futures = []
+
+        def submit(self, fn, *args, **kwargs):
+            fut = _FakeFuture()
+            self.futures.append(fut)
+            return fut
+
+    monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
+    monkeypatch.setattr(futures_mod, "ThreadPoolExecutor", _FakePool, raising=False)
+    monkeypatch.setattr(futures_mod, "wait", lambda fs, timeout=None: (set(), set(fs)), raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/command-center"):
+        response = dashboard_mod.api_command_center()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["top_opportunities"] == []
+    assert payload["weak_positions"] == []
 
 
 def test_operator_action_endpoints_call_core_methods(monkeypatch) -> None:
@@ -4689,6 +5785,141 @@ def test_system_monitor_overview_includes_snapshot_payload(monkeypatch) -> None:
     assert payload["snapshot"]["total_signals"] == 12
 
 
+def test_health_report_includes_monitor_source_health(monkeypatch) -> None:
+    core_mod = importlib.import_module("core.engine")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+
+    core = object.__new__(core_mod.TradingCore)
+    ready = threading.Event()
+    ready.set()
+    core._engine_ready = ready
+    core._is_running = True
+    core.strategy_mode = "policy"
+    core.state = SimpleNamespace(
+        balance=1250.0,
+        open_position_count=lambda: 2,
+        daily_trades=3,
+        daily_pnl=-12.5,
+        get_all_cooldowns=lambda: {"BTC-USD": 7},
+    )
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(
+            get_snapshot=lambda: {
+                "source_health": {
+                    "technicals": {"fresh": True, "status": "fresh"},
+                    "order_book": {"fresh": False, "status": "stale", "age_secs": 18.0, "threshold": 10},
+                },
+                "recent_error_count": 2,
+                "recent_errors": [{"module": "redis", "message": "timeout"}],
+            }
+        ),
+        raising=False,
+    )
+
+    report = core.health_report()
+
+    assert report["status"] == "degraded"
+    assert report["source_health"]["technicals"]["fresh"] is True
+    assert report["stale_sources"] == ["order_book"]
+    assert report["stale_source_count"] == 1
+    assert report["recent_error_count"] == 2
+    assert any("order_book" in issue for issue in report["issues"])
+
+
+def test_health_report_does_not_degrade_for_never_seen_sources_only(monkeypatch) -> None:
+    core_mod = importlib.import_module("core.engine")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+
+    core = object.__new__(core_mod.TradingCore)
+    ready = threading.Event()
+    ready.set()
+    core._engine_ready = ready
+    core._is_running = True
+    core.strategy_mode = "policy"
+    core.state = SimpleNamespace(
+        balance=1250.0,
+        open_position_count=lambda: 0,
+        daily_trades=0,
+        daily_pnl=0.0,
+        get_all_cooldowns=lambda: {},
+    )
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(
+            get_snapshot=lambda: {
+                "source_health": {
+                    "whale": {"fresh": False, "status": "never_seen"},
+                    "macro": {"fresh": False, "status": "never_seen"},
+                },
+                "recent_error_count": 0,
+                "recent_errors": [],
+            }
+        ),
+        raising=False,
+    )
+
+    report = core.health_report()
+
+    assert report["status"] == "healthy"
+    assert report["stale_sources"] == []
+    assert report["never_seen_sources"] == ["macro", "whale"]
+    assert report["issues"] == []
+
+
+def test_api_system_health_includes_source_health(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_redis_broker", SimpleNamespace(is_connected=lambda: True), raising=False)
+    monkeypatch.setattr(dashboard_mod, "telegram_manager", SimpleNamespace(is_running=True), raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_CORE",
+        SimpleNamespace(
+            is_running=True,
+            is_ready=True,
+            health_report=lambda: {
+                "is_running": True,
+                "engine_ready": True,
+                "strategy_mode": "policy",
+                "balance": 1111.0,
+                "open_positions": 1,
+                "active_cooldowns": 2,
+                "issues": ["Stale data sources: order_book"],
+                "source_health": {"order_book": {"fresh": False, "status": "stale"}},
+                "stale_sources": ["order_book"],
+                "stale_source_count": 1,
+                "recent_error_count": 3,
+                "recent_errors": [{"module": "redis", "message": "timeout"}],
+            },
+        ),
+        raising=False,
+    )
+
+    class _FakeDB:
+        def ping(self):
+            return True
+
+    monkeypatch.setitem(sys.modules, "services.db_pool", SimpleNamespace(get_db=lambda: _FakeDB()))
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/system/health")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["source_health"]["order_book"]["fresh"] is False
+    assert payload["stale_sources"] == ["order_book"]
+    assert payload["stale_source_count"] == 1
+    assert payload["recent_error_count"] == 3
+
+
 def test_monitoring_snapshot_uses_get_snapshot(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
     monitor_mod = importlib.import_module("monitoring.system_health_service")
@@ -4899,7 +6130,56 @@ def test_risk_manager_uses_atr_based_levels_for_commodities() -> None:
     reward = round(entry - take_profit, 2)
 
     assert risk == 33.60
-    assert reward == 50.40
+    assert reward == 53.76
+
+
+def test_risk_manager_aligns_take_profit_to_structure() -> None:
+    risk_mod = importlib.import_module("risk.manager")
+    manager = risk_mod.RiskManager(account_balance=10_000.0)
+
+    entry = 100.0
+    stop_loss = 95.0
+    base_take_profit = manager.get_take_profit(entry, stop_loss, "BUY", category="crypto")
+
+    neutral_take_profit = manager.align_take_profit_to_structure(
+        entry,
+        base_take_profit,
+        "BUY",
+        category="crypto",
+        structure={
+            "resistance": 104.0,
+            "regime": "ranging",
+            "structure_bias": "buy",
+            "alignment_score": 0.60,
+            "setup_quality": 0.55,
+            "breakout_score": 0.10,
+            "volatility_state": "normal",
+        },
+        atr=2.0,
+        confidence=0.65,
+    )
+    strong_breakout_take_profit = manager.align_take_profit_to_structure(
+        entry,
+        base_take_profit,
+        "BUY",
+        category="crypto",
+        structure={
+            "resistance": 104.0,
+            "regime": "trending_up",
+            "structure_bias": "buy",
+            "alignment_score": 0.82,
+            "setup_quality": 0.80,
+            "breakout_score": 0.92,
+            "volatility_state": "expansion",
+        },
+        atr=2.0,
+        confidence=0.82,
+    )
+
+    assert neutral_take_profit < base_take_profit
+    assert neutral_take_profit < 104.0
+    assert strong_breakout_take_profit > neutral_take_profit
+    assert strong_breakout_take_profit <= base_take_profit
 
 
 def test_generate_seed_signal_passes_estimated_atr_to_risk_manager() -> None:
@@ -5519,6 +6799,47 @@ def test_telegram_history_uses_database_side_filters(monkeypatch) -> None:
     }
 
 
+def test_telegram_history_renders_dict_trade_rows(monkeypatch) -> None:
+    import asyncio
+
+    tg_mod = importlib.import_module("telegram_commander")
+    captured: Dict[str, Any] = {}
+
+    class _FakeDB:
+        def get_recent_trades(self, limit=50, category="", pnl_filter="all"):
+            return [
+                {
+                    "asset": "BTC-USD",
+                    "category": "crypto",
+                    "direction": "SELL",
+                    "entry_time": "2026-04-02T10:00:00+00:00",
+                    "exit_time": "2026-04-02T10:45:00+00:00",
+                    "exit_reason": "Take Profit 1",
+                    "pnl": 12.5,
+                }
+            ]
+
+    async def _fake_send(text, **kwargs):
+        captured["text"] = text
+        captured["kwargs"] = kwargs
+        return None
+
+    _patch_db(monkeypatch, _FakeDB())
+    asyncio.run(
+        tg_mod.TelegramCommander._show_history(
+            SimpleNamespace(),
+            _fake_send,
+            filter_cat="all",
+        )
+    )
+
+    assert "TRADE HISTORY" in captured["text"]
+    assert "BTC-USD" in captured["text"]
+    assert "🟢 1 won" in captured["text"]
+    assert "Net: $+12.50" in captured["text"]
+    assert "$+12.50" in captured["text"]
+
+
 def test_state_rebuild_stats_uses_shared_db_rollups(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(state_mod, "_STATE_FILE", tmp_path / "system_state.json")
 
@@ -6091,6 +7412,197 @@ def test_signal_journal_summary_supports_current_policy_and_governance_entry_nam
     assert summary["governance_grade"] == "B"
 
 
+def test_signal_journal_telegram_plain_is_human_readable_for_live_signal() -> None:
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.626,
+        entry_price=66345.677,
+        stop_loss=66611.05971,
+        take_profit=65947.60294,
+        position_size=0.175,
+        risk_reward=1.5,
+    )
+    signal.take_profit_levels = [66146.63997, 65947.60294, 65748.56591]
+    signal.metadata.update({
+        "regime": "trending_down",
+        "sentiment_score": -0.137,
+        "whale_dominant": "SELL",
+        "memory_score": 63.1,
+        "memory_edge": 0.311,
+        "memory_sample_count": 37,
+        "memory_win_rate": 0.707,
+        "governance_validation": {
+            "model_key": "crypto_policy",
+            "model_research": {
+                "research_grade": "institutional",
+                "research_approved": True,
+                "walk_forward_accuracy": 0.659,
+                "holdout_accuracy": 0.725,
+            },
+            "live_validation": {
+                "accuracy_pct": 66.7,
+            },
+        },
+    })
+    signal.journal.record(
+        layer=1,
+        name="market",
+        decision="PASS",
+        reason="ml=0.539 rr=1.50 regime=trending_down session=europe news=clear",
+        conf_before=0.61,
+        conf_after=0.61,
+        data={
+            "ml_direction": "SELL",
+            "rr": 1.5,
+            "regime": "trending_down",
+            "session": "europe",
+            "news_state": "clear",
+        },
+    )
+    signal.journal.record(
+        layer=2,
+        name="intelligence",
+        decision="PASS",
+        reason="sentiment=-0.137 whale=SELL sources=3",
+        conf_before=0.61,
+        conf_after=0.61,
+        data={
+            "sentiment_score": -0.137,
+            "sentiment_sources": ["comprehensive_sentiment", "reddit", "narrative_ai"],
+            "narrative": "AI_TOKENS",
+            "whale_dominant": "SELL",
+            "whale_ratio": 1.0,
+        },
+    )
+    signal.journal.record(
+        layer=0,
+        name="memory",
+        decision="INFO",
+        reason="memory score=63.1 edge=+0.311 samples=37",
+        conf_before=0.61,
+        conf_after=0.61,
+        data={
+            "memory_score": 63.1,
+            "memory_edge": 0.311,
+            "memory_win_rate": 0.707,
+            "memory_sample_count": 37,
+        },
+    )
+    signal.journal.record(
+        layer=3,
+        name="meta_ai",
+        decision="PASS",
+        reason="ensemble neutral - no adjustment",
+        conf_before=0.61,
+        conf_after=0.61,
+        data={
+            "regime": "trending_bear",
+            "ensemble": 0.598,
+        },
+    )
+    signal.journal.record(
+        layer=4,
+        name="policy",
+        decision="PASS",
+        reason="policy accepted SELL (score=0.205)",
+        conf_before=0.61,
+        conf_after=0.61,
+        data={
+            "agent_score": 0.205,
+            "agent_confidence": 0.267,
+            "agent_directional_edge": 0.795,
+            "agent_policy_status": "ok",
+            "final_confidence": 0.626,
+        },
+    )
+    signal.journal.record(
+        layer=5,
+        name="governance",
+        decision="PASS",
+        reason="grade=A score=100",
+        conf_before=0.61,
+        conf_after=0.626,
+        data={
+            "valid_sources": 6,
+            "min_required": 2,
+            "score": 100,
+            "grade": "A",
+        },
+    )
+    signal.journal.record(
+        layer=6,
+        name="execution",
+        decision="PASS",
+        reason="final_score=0.626 size=0.1750 tp_levels=3",
+        conf_before=0.626,
+        conf_after=0.626,
+        data={
+            "position_size": 0.175,
+            "notes": ["compressed_volatility", "balance_drawdown"],
+        },
+    )
+    signal.journal.record(
+        layer=0,
+        name="research_validation",
+        decision="INFO",
+        reason="wf=0.659 holdout=0.725 live=66.7%",
+        conf_before=0.626,
+        conf_after=0.626,
+        data={
+            "model_key": "crypto_policy",
+            "research_grade": "institutional",
+            "research_approved": True,
+            "walk_forward_accuracy": 0.659,
+            "holdout_accuracy": 0.725,
+            "live_validation_accuracy_pct": 66.7,
+        },
+    )
+
+    message = signal.journal.to_telegram_plain(signal)
+
+    assert "BTC-USD SELL setup" in message
+    assert "The bot is preparing a sell trade on BTC-USD near 66,345.677" in message
+    assert "What the bot is seeing right now:" in message
+    assert "- Market view: Trend is trending down" in message
+    assert "reward to risk is 1.50:1" in message
+    assert "Why the bot trusts this setup:" in message
+    assert "- Flow and sentiment: Sentiment is slightly bearish" in message
+    assert "whale flow leans sell" in message
+    assert "the main narrative is AI-related crypto narrative" in message
+    assert "Similar setups won 70.7% of the time across 37 examples" in message
+    assert "The policy model approved the sell setup" in message
+    assert "How the trade will be managed:" in message
+    assert "- Execution posture: The setup stayed above the live execution floor" in message
+    assert "Review time:" in message
+    assert "sentiment_score=" not in message
+    assert "adaptive_policy={" not in message
+    assert "scorecard_preview={" not in message
+
+
+def test_alert_formatter_humanizes_internal_narrative_labels() -> None:
+    formatter_mod = importlib.import_module("services.intelligence_alerts.alert_formatter")
+    formatter = formatter_mod.AlertFormatter()
+
+    message = formatter.format(
+        "NARRATIVE_TREND_DETECTED",
+        {
+            "narrative": "AI_TOKENS",
+            "velocity": 2.4,
+            "strength": "STRONG",
+            "count": 7,
+            "keywords_matched": ["ai", "gpt", "agent"],
+        },
+        "MEDIUM",
+    )
+
+    assert message is not None
+    assert "AI-related crypto narrative" in message
+    assert "AI_TOKENS" not in message
+
+
 def test_adaptive_policy_service_adjusts_thresholds_by_setup_quality() -> None:
     adaptive_mod = importlib.import_module("services.adaptive_policy_service")
     service = adaptive_mod.get_service()
@@ -6214,6 +7726,279 @@ def test_adaptive_policy_service_lowers_floor_for_cleared_bootstrap_signal() -> 
     assert "governance_cleared" in boosted["notes"]
 
 
+def test_recent_pattern_learning_service_blocks_repeated_late_entry_failures() -> None:
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    memory_mod = importlib.import_module("services.setup_memory_service")
+
+    service = learning_mod.RecentPatternLearningService()
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.71,
+        risk_reward=1.6,
+    )
+    signal.metadata.update(
+        {
+            "regime": "trending_down",
+            "session": "europe",
+            "structure_bias": "sell",
+            "alignment_score": 0.73,
+            "setup_quality": 0.69,
+            "pullback_score": -0.44,
+            "breakout_score": -0.51,
+            "volatility_state": "expansion",
+            "sentiment_score": -0.24,
+            "whale_dominant": "SELL",
+            "whale_bear_weight": 0.71,
+            "orderflow_imbalance": -0.36,
+            "opportunity_score": 0.79,
+        }
+    )
+
+    fp = memory_mod.get_service().build_fingerprint(signal, {"timeframe": "15m"})
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for _ in range(6):
+        rows.append(
+            {
+                "asset": "BTC-USD",
+                "canonical_asset": "BTC-USD",
+                "category": "crypto",
+                "direction": "SELL",
+                "entry_time": now,
+                "exit_time": now,
+                "metadata": {
+                    "setup_memory_fingerprint": fp,
+                    "execution_feedback": {
+                        "exit_family": "stop_loss",
+                        "late_entry": True,
+                        "premature_stop": False,
+                        "target_miss": False,
+                        "stop_too_tight": False,
+                        "stop_too_wide": False,
+                        "rr_realized": -1.0,
+                        "quality_score": 30.0,
+                    },
+                },
+            }
+        )
+
+    service._fetch_rows = lambda asset, category, days_back, limit: rows
+    profile = service.get_profile("BTC-USD", "crypto", signal, {"timeframe": "15m"})
+
+    assert profile["sample_count"] == 6
+    assert profile["late_entry_rate"] >= 0.9
+    assert profile["block_new_entries"] is True
+    assert "late entries" in profile["block_reason"]
+
+
+def test_recent_pattern_learning_service_boosts_clean_winner_clusters() -> None:
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    memory_mod = importlib.import_module("services.setup_memory_service")
+
+    service = learning_mod.RecentPatternLearningService()
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.74,
+        risk_reward=1.7,
+    )
+    signal.metadata.update(
+        {
+            "regime": "trending_up",
+            "session": "us",
+            "structure_bias": "buy",
+            "alignment_score": 0.81,
+            "setup_quality": 0.78,
+            "pullback_score": 0.42,
+            "breakout_score": 0.55,
+            "volatility_state": "expansion",
+            "sentiment_score": 0.26,
+            "whale_dominant": "BUY",
+            "whale_bull_weight": 0.74,
+            "orderflow_imbalance": 0.39,
+            "opportunity_score": 0.83,
+        }
+    )
+
+    fp = memory_mod.get_service().build_fingerprint(signal, {"timeframe": "15m"})
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for _ in range(6):
+        rows.append(
+            {
+                "asset": "BTC-USD",
+                "canonical_asset": "BTC-USD",
+                "category": "crypto",
+                "direction": "BUY",
+                "entry_time": now,
+                "exit_time": now,
+                "metadata": {
+                    "setup_memory_fingerprint": fp,
+                    "execution_feedback": {
+                        "exit_family": "take_profit",
+                        "late_entry": False,
+                        "premature_stop": False,
+                        "target_miss": False,
+                        "stop_too_tight": False,
+                        "stop_too_wide": False,
+                        "full_target": True,
+                        "target_capture": 1.0,
+                        "giveback_ratio": 0.14,
+                        "rr_realized": 1.42,
+                        "quality_score": 74.0,
+                    },
+                },
+            }
+        )
+
+    service._fetch_rows = lambda asset, category, days_back, limit: rows
+    profile = service.get_profile("BTC-USD", "crypto", signal, {"timeframe": "15m"})
+
+    assert profile["sample_count"] == 6
+    assert profile["win_rate"] >= 0.9
+    assert profile["bonus_confidence"] > 0
+    assert profile["bonus_risk"] > 0
+    assert profile["target_rr_multiplier"] > 1.0
+    assert "recent_pattern_targets_extend" in profile["notes"]
+
+
+def test_adaptive_policy_service_applies_recent_pattern_penalties(monkeypatch) -> None:
+    adaptive_mod = importlib.import_module("services.adaptive_policy_service")
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    service = adaptive_mod.get_service()
+
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.74,
+    )
+    signal.metadata.update(
+        {
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.76,
+                "setup_quality": 0.71,
+                "pullback_score": 0.43,
+                "breakout_score": 0.52,
+                "regime": "trending_up",
+                "volatility_state": "expansion",
+            },
+            "structure_bias": "buy",
+            "alignment_score": 0.76,
+            "setup_quality": 0.71,
+            "pullback_score": 0.43,
+            "breakout_score": 0.52,
+            "opportunity_score": 0.81,
+        }
+    )
+
+    base = service.get_thresholds("BTC-USD", "crypto", {"market_structure": signal.metadata["market_structure"]}, signal)
+
+    monkeypatch.setattr(
+        learning_mod.get_service(),
+        "get_profile",
+        lambda asset, category, signal, context=None, days_back=45, limit=240: {
+            "sample_count": 7,
+            "penalty_confidence": 0.03,
+            "penalty_risk": 0.10,
+            "penalty_rr": 0.12,
+            "cooldown_delta": 6,
+            "block_new_entries": False,
+            "block_reason": "",
+            "notes": ["recent_pattern_late_entry", "recent_pattern_hard_losses"],
+            "late_entry_rate": 0.67,
+            "hard_loss_rate": 0.51,
+            "avg_quality_score": 33.0,
+            "avg_rr_realized": -0.72,
+        },
+        raising=False,
+    )
+
+    policy = service.get_thresholds("BTC-USD", "crypto", {"market_structure": signal.metadata["market_structure"]}, signal)
+
+    assert policy["recent_review_profile"]["sample_count"] == 7
+    assert "recent_pattern_late_entry" in policy["notes"]
+    assert policy["risk_multiplier"] < base["risk_multiplier"]
+    assert policy["min_rr"] > base["min_rr"]
+    assert policy["cooldown_minutes"] > base["cooldown_minutes"]
+    assert policy["min_final_confidence"] > base["min_final_confidence"]
+
+
+def test_adaptive_policy_service_applies_recent_winner_boosts(monkeypatch) -> None:
+    adaptive_mod = importlib.import_module("services.adaptive_policy_service")
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    service = adaptive_mod.get_service()
+
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.74,
+    )
+    signal.metadata.update(
+        {
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.76,
+                "setup_quality": 0.73,
+                "pullback_score": 0.43,
+                "breakout_score": 0.52,
+                "regime": "trending_up",
+                "volatility_state": "expansion",
+            },
+            "structure_bias": "buy",
+            "alignment_score": 0.76,
+            "setup_quality": 0.73,
+            "pullback_score": 0.43,
+            "breakout_score": 0.52,
+            "opportunity_score": 0.84,
+        }
+    )
+
+    base = service.get_thresholds("BTC-USD", "crypto", {"market_structure": signal.metadata["market_structure"]}, signal)
+
+    monkeypatch.setattr(
+        learning_mod.get_service(),
+        "get_profile",
+        lambda asset, category, signal, context=None, days_back=45, limit=240: {
+            "sample_count": 8,
+            "penalty_confidence": 0.0,
+            "penalty_risk": 0.0,
+            "penalty_rr": 0.0,
+            "bonus_confidence": 0.02,
+            "bonus_risk": 0.08,
+            "bonus_rr_relief": 0.06,
+            "cooldown_delta": -2,
+            "target_rr_multiplier": 1.12,
+            "block_new_entries": False,
+            "block_reason": "",
+            "notes": ["recent_pattern_winners", "recent_pattern_targets_extend"],
+            "win_rate": 0.72,
+            "full_target_rate": 0.56,
+            "avg_quality_score": 69.0,
+            "avg_rr_realized": 1.18,
+        },
+        raising=False,
+    )
+
+    boosted = service.get_thresholds("BTC-USD", "crypto", {"market_structure": signal.metadata["market_structure"]}, signal)
+
+    assert boosted["recent_review_profile"]["sample_count"] == 8
+    assert boosted["min_final_confidence"] < base["min_final_confidence"]
+    assert boosted["risk_multiplier"] > base["risk_multiplier"]
+    assert boosted["min_rr"] < base["min_rr"]
+    assert boosted["target_rr_multiplier"] > 1.0
+    assert "recent_pattern_winners" in boosted["notes"]
+
+
 def test_execution_review_uses_adaptive_policy_thresholds() -> None:
     decision_mod = importlib.import_module("core.decision_engine")
     engine = decision_mod.SignalDecisionEngine()
@@ -6272,6 +8057,126 @@ def test_execution_review_uses_adaptive_policy_thresholds() -> None:
     assert signal.alive is True
     assert signal.metadata["adaptive_policy"]["max_spread"] > 0.002
     assert signal.journal.entries[-1].data["adaptive_policy"]["max_spread"] > 0.002
+
+
+def test_execution_review_extends_take_profit_for_recent_winner_pattern(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    adaptive_mod = importlib.import_module("services.adaptive_policy_service")
+    scorecard_mod = importlib.import_module("services.signal_scorecard")
+    engine = decision_mod.SignalDecisionEngine()
+
+    monkeypatch.setattr(
+        adaptive_mod.get_service(),
+        "get_thresholds",
+        lambda asset, category, context=None, signal=None, state=None: {
+            "min_final_confidence": 0.55,
+            "max_spread": 0.003,
+            "risk_multiplier": 1.08,
+            "cooldown_minutes": 12,
+            "min_rr": 1.45,
+            "target_rr_multiplier": 1.12,
+            "block_new_entries": False,
+            "block_reason": "",
+            "recent_review_profile": {
+                "sample_count": 7,
+                "win_rate": 0.71,
+                "full_target_rate": 0.55,
+            },
+            "notes": ["recent_pattern_winners", "recent_pattern_targets_extend"],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scorecard_mod.get_service(),
+        "score",
+        lambda signal, context=None: {
+            "final_score": 0.71,
+            "raw_score": 0.71,
+            "reliability": 0.82,
+            "breakdown": {},
+            "notes": [],
+            "live_validation": {},
+        },
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.69,
+        entry_price=100.0,
+        stop_loss=99.0,
+        take_profit=101.5,
+        risk_reward=1.5,
+    )
+
+    approved = engine._apply_execution_review(signal, {"category": "crypto", "spread": 0.1, "price_data": _build_trend_frame(100.0, 0.2)})
+
+    assert approved is True
+    assert signal.alive is True
+    assert signal.take_profit > 101.5
+    assert signal.risk_reward > 1.5
+    assert signal.metadata["adaptive_target_rr_multiplier"] == 1.12
+    assert signal.journal.entries[-1].data["adaptive_policy"]["target_rr_multiplier"] == 1.12
+
+
+def test_execution_review_blocks_signal_when_recent_pattern_learning_flags_setup(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    adaptive_mod = importlib.import_module("services.adaptive_policy_service")
+    engine = decision_mod.SignalDecisionEngine()
+
+    monkeypatch.setattr(
+        adaptive_mod.get_service(),
+        "get_thresholds",
+        lambda asset, category, context=None, signal=None, state=None: {
+            "min_final_confidence": 0.55,
+            "max_spread": 0.003,
+            "risk_multiplier": 1.0,
+            "cooldown_minutes": 15,
+            "min_rr": 1.5,
+            "block_new_entries": True,
+            "block_reason": "recent similar setups keep failing from late entries",
+            "recent_review_profile": {
+                "sample_count": 6,
+                "late_entry_rate": 0.66,
+                "hard_loss_rate": 0.51,
+            },
+            "notes": ["recent_pattern_late_entry", "recent_pattern_hard_losses"],
+        },
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.67,
+        entry_price=100.0,
+        stop_loss=101.0,
+        take_profit=98.0,
+        risk_reward=2.0,
+    )
+
+    approved = engine._apply_execution_review(signal, {"category": "crypto", "spread": 0.1, "price_data": _build_trend_frame(100.0, -0.2)})
+
+    assert approved is False
+    assert signal.alive is False
+    assert "late entries" in signal.kill_reason.lower()
+    assert signal.journal.entries[-1].decision == "KILLED"
+    assert signal.journal.entries[-1].data["adaptive_policy"]["block_new_entries"] is True
+
+
+def test_risk_manager_uses_asset_class_target_rr_overrides() -> None:
+    risk_mod = importlib.import_module("risk.manager")
+    manager = risk_mod.RiskManager(account_balance=10_000.0)
+
+    assert manager.get_target_rr("crypto") == 1.7
+    assert manager.get_target_rr("forex") == 1.5
+    assert manager.get_target_rr("commodities") == 1.6
+    assert manager.get_target_rr("indices") == 1.65
 
 
 def test_setup_memory_service_scores_similar_historical_winners() -> None:
@@ -6505,6 +8410,191 @@ def test_state_close_position_attaches_execution_feedback(monkeypatch) -> None:
     assert fake_db.saved["metadata"]["execution_feedback"]["exit_family"] == "stop_loss"
 
 
+def test_state_close_position_attaches_post_trade_review(monkeypatch) -> None:
+    state_mod = importlib.import_module("core.state")
+
+    class _FakeDB:
+        def __init__(self):
+            self.saved = None
+
+        def save_trade(self, trade_data):
+            self.saved = trade_data
+
+        def delete_open_position(self, trade_id):
+            return None
+
+        def upsert_daily_stats(self, *args, **kwargs):
+            return None
+
+    fake_db = _FakeDB()
+    monkeypatch.setitem(sys.modules, "services.db_pool", SimpleNamespace(get_db=lambda: fake_db))
+
+    system = state_mod.SystemState()
+    monkeypatch.setattr(system, "_persist_json", lambda: None)
+    system._open_positions["trade-2"] = {
+        "trade_id": "trade-2",
+        "asset": "BTC-USD",
+        "canonical_asset": "BTC-USD",
+        "category": "crypto",
+        "direction": "SELL",
+        "entry_price": 100.0,
+        "stop_loss": 105.0,
+        "original_sl": 105.0,
+        "take_profit": 90.0,
+        "position_size": 1.0,
+        "highest_price": 106.0,
+        "lowest_price": 91.0,
+        "open_time": datetime.utcnow().isoformat(),
+        "metadata": {"timeframe": "15m", "setup_quality": 0.66, "memory_score": 39.0, "memory_edge": -0.16, "memory_sample_count": 11},
+    }
+
+    closed = system.close_position("trade-2", 105.0, "Stop Loss", -50.0)
+
+    assert closed is not None
+    review = closed["metadata"]["post_trade_review"]
+    assert review["outcome"] == "loss"
+    assert review["what_went_wrong"]
+    assert review["lesson"]
+    assert review["avoid"]
+    assert fake_db.saved["metadata"]["post_trade_review"]["outcome"] == "loss"
+
+
+def test_personality_record_trade_persists_post_trade_review_in_diary_notes(monkeypatch) -> None:
+    personality_mod = importlib.import_module("services.personality_service")
+
+    class _DiaryEntry:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+            self.id = None
+
+    monkeypatch.setattr(personality_mod, "TradingDiary", _DiaryEntry, raising=False)
+
+    db = object.__new__(personality_mod.PersonalityDatabase)
+    db._lock = threading.Lock()
+    db._update_mood_from_trade = lambda trade: None
+    db._check_memorable = lambda trade, setup: None
+
+    class _FakeSession:
+        def __init__(self):
+            self.added = None
+
+        def add(self, entry):
+            self.added = entry
+
+        def flush(self):
+            if self.added is not None:
+                self.added.id = 17
+
+    fake_session = _FakeSession()
+
+    class _Ctx:
+        def __enter__(self_inner):
+            return fake_session
+
+        def __exit__(self_inner, exc_type, exc, tb):
+            return False
+
+    db._get_session = lambda: _Ctx()
+
+    entry_id = db.record_trade(
+        {
+            "asset": "BTC-USD",
+            "trade_id": "trade-77",
+            "category": "crypto",
+            "direction": "SELL",
+            "entry_price": 100.0,
+            "exit_price": 105.0,
+            "confidence": 0.63,
+            "exit_reason": "Stop Loss",
+            "pnl": -50.0,
+            "metadata": {
+                "regime": "trending_down",
+                "post_trade_review": {
+                    "outcome": "loss",
+                    "lesson": "Do not chase extended entries; wait for fresher structure or better price location.",
+                    "avoid": ["Avoid chasing entries after the move is already mature."],
+                },
+                "execution_feedback": {"exit_family": "stop_loss", "late_entry": True},
+                "setup_memory": {"memory_score": 41.0, "memory_edge": -0.14, "sample_count": 9},
+                "memory_score": 41.0,
+                "memory_edge": -0.14,
+                "memory_sample_count": 9,
+            },
+        }
+    )
+
+    assert entry_id == 17
+    assert fake_session.added.notes["post_trade_review"]["outcome"] == "loss"
+    assert fake_session.added.notes["execution_feedback"]["exit_family"] == "stop_loss"
+    assert fake_session.added.notes["setup_memory"]["memory_score"] == 41.0
+
+
+def test_post_trade_review_service_explains_stop_loss_and_take_profit() -> None:
+    review_mod = importlib.import_module("services.post_trade_review_service")
+    service = review_mod.get_service()
+
+    loss_review = service.build_review(
+        {
+            "asset": "BTC-USD",
+            "direction": "SELL",
+            "pnl": -55.0,
+            "metadata": {
+                "memory_score": 39.0,
+                "memory_edge": -0.18,
+                "memory_sample_count": 12,
+                "execution_feedback": {
+                    "exit_family": "stop_loss",
+                    "rr_realized": -1.0,
+                    "target_capture": 0.0,
+                    "giveback_ratio": 0.9,
+                    "late_entry": True,
+                    "premature_stop": True,
+                    "target_miss": True,
+                    "stop_too_tight": True,
+                    "stop_too_wide": False,
+                    "quality_score": 31.0,
+                    "regime": "trending_down",
+                    "structure_bias": "sell",
+                },
+            },
+        }
+    )
+    win_review = service.build_review(
+        {
+            "asset": "BTC-USD",
+            "direction": "SELL",
+            "pnl": 82.0,
+            "metadata": {
+                "memory_score": 71.0,
+                "memory_edge": 0.24,
+                "memory_sample_count": 16,
+                "setup_quality": 0.71,
+                "alignment_score": 0.74,
+                "opportunity_score": 0.81,
+                "execution_feedback": {
+                    "exit_family": "take_profit",
+                    "rr_realized": 1.5,
+                    "target_capture": 1.0,
+                    "giveback_ratio": 0.11,
+                    "quality_score": 77.0,
+                    "regime": "trending_down",
+                    "structure_bias": "sell",
+                },
+            },
+        }
+    )
+
+    assert loss_review["outcome"] == "loss"
+    assert loss_review["what_went_wrong"]
+    assert loss_review["avoid"]
+    assert "Do not chase extended entries" in loss_review["lesson"]
+    assert win_review["outcome"] == "win"
+    assert win_review["what_went_right"]
+    assert win_review["keep"]
+    assert "Keep" in win_review["next_focus"]
+
+
 def test_generate_seed_signal_uses_execution_feedback_policy(monkeypatch) -> None:
     engine = TradingCore(balance=10_000.0)
     engine._predictor = SimpleNamespace(predict=lambda canonical, category, df: (0.20, 0.85))
@@ -6557,6 +8647,47 @@ def test_generate_seed_signal_uses_execution_feedback_policy(monkeypatch) -> Non
     assert round(seen["target_rr_multiplier"], 2) == 0.86
     assert signal.metadata["execution_feedback_policy"]["sample_count"] == 14
     assert signal.metadata["target_rr_multiplier"] == 0.86
+
+
+def test_generate_seed_signal_aligns_take_profit_to_structure() -> None:
+    engine = TradingCore(balance=10_000.0)
+    engine._predictor = SimpleNamespace(predict=lambda canonical, category, df: (0.80, 0.88))
+    engine._risk_manager = importlib.import_module("risk.manager").RiskManager(account_balance=10_000.0)
+
+    price_data = pd.DataFrame(
+        {
+            "high": [100.2, 100.5, 100.8, 101.0, 101.3, 101.5, 101.8, 102.0, 102.2, 102.3, 102.5, 102.7, 102.8, 103.0, 103.1, 103.2],
+            "low": [99.7, 99.9, 100.1, 100.3, 100.5, 100.8, 101.0, 101.2, 101.4, 101.5, 101.7, 101.9, 102.1, 102.2, 102.4, 102.5],
+            "close": [100.0, 100.2, 100.5, 100.7, 101.0, 101.2, 101.5, 101.7, 101.9, 102.0, 102.2, 102.4, 102.6, 102.7, 102.9, 103.0],
+        }
+    )
+    context = {
+        "market_data": {},
+        "timeframe": "15m",
+        "market_structure": {
+            "resistance": 104.0,
+            "support": 101.6,
+            "regime": "ranging",
+            "structure_bias": "buy",
+            "alignment_score": 0.62,
+            "setup_quality": 0.58,
+            "breakout_score": 0.10,
+            "volatility_state": "normal",
+        },
+    }
+
+    signal = engine._generate_seed_signal("BTC-USD", "BTC-USD", "crypto", price_data, context)
+
+    assert signal is not None
+    base_take_profit = engine._risk_manager.get_take_profit(
+        signal.entry_price,
+        signal.stop_loss,
+        "BUY",
+        category="crypto",
+        rr_multiplier=signal.metadata["target_rr_multiplier"],
+    )
+    assert signal.take_profit < base_take_profit
+    assert signal.metadata["structure_target_alignment"]["applied"] is True
 
 
 def test_live_bridge_promote_strategy_persists_registry_and_merges_manual(monkeypatch, tmp_path) -> None:

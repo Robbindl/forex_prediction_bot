@@ -34,6 +34,19 @@ def _attach_execution_feedback(snapshot: Dict[str, Any]) -> None:
         if isinstance(feedback, dict) and feedback:
             metadata = _merge_trade_metadata(snapshot.get("metadata"), None)
             metadata["execution_feedback"] = feedback
+            try:
+                from services.post_trade_review_service import get_service as get_post_trade_review_service
+
+                review = get_post_trade_review_service().build_review(
+                    {
+                        **snapshot,
+                        "metadata": metadata,
+                    }
+                )
+                if isinstance(review, dict) and review:
+                    metadata["post_trade_review"] = review
+            except Exception as review_exc:
+                logger.debug(f"[State] Post-trade review attach skipped: {review_exc}")
             snapshot["metadata"] = metadata
     except Exception as e:
         logger.debug(f"[State] Execution feedback attach skipped: {e}")

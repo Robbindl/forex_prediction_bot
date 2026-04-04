@@ -1378,34 +1378,52 @@ def api_command_center():
             ),
         }
         top_opportunities = _cache_get("cc_top_opportunities")
-        if top_opportunities is None:
-            top_opportunities = (
-                _run_with_timeout(
-                    core.get_top_ranked_opportunities,
-                    limit=5,
-                    timeout=2.5,
-                    default=[],
-                    label="command-center top opportunities",
-                )
-                if core and hasattr(core, "get_top_ranked_opportunities")
-                else []
-            )
-            _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
-
         weak_positions = _cache_get("cc_weak_positions")
+        if core and (top_opportunities is None or weak_positions is None):
+            pool = None
+            try:
+                from concurrent.futures import ThreadPoolExecutor, wait
+
+                pool = ThreadPoolExecutor(max_workers=2)
+                futures = {}
+                if top_opportunities is None and hasattr(core, "get_top_ranked_opportunities"):
+                    futures[pool.submit(core.get_top_ranked_opportunities, limit=5)] = "top_opportunities"
+                if weak_positions is None and hasattr(core, "get_weak_positions"):
+                    futures[pool.submit(core.get_weak_positions, limit=5)] = "weak_positions"
+
+                if futures:
+                    done, not_done = wait(tuple(futures.keys()), timeout=2.5)
+                    for future in done:
+                        kind = futures[future]
+                        try:
+                            payload = future.result() or []
+                        except Exception as exc:
+                            logger.debug(f"[dashboard] command-center {kind} error: {exc}")
+                            payload = []
+                        if kind == "top_opportunities":
+                            top_opportunities = payload
+                        else:
+                            weak_positions = payload
+                    for future in not_done:
+                        future.cancel()
+                    if not_done:
+                        logger.warning(f"[dashboard] command-center ranking extras timed out for {len(not_done)} task(s)")
+            except Exception as exc:
+                logger.debug(f"[dashboard] command-center ranking extras setup failed: {exc}")
+            finally:
+                if pool is not None:
+                    try:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
+
+        if top_opportunities is None:
+            top_opportunities = []
         if weak_positions is None:
-            weak_positions = (
-                _run_with_timeout(
-                    core.get_weak_positions,
-                    limit=5,
-                    timeout=2.5,
-                    default=[],
-                    label="command-center weak positions",
-                )
-                if core and hasattr(core, "get_weak_positions")
-                else []
-            )
-            _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
+            weak_positions = []
+
+        _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
+        _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
 
         return jsonify({
             "success":          True,
@@ -3439,6 +3457,13 @@ def api_system_health():
             "phase_health":     phase_health,
             "open_positions":   health.get("open_positions", 0),
             "active_cooldowns": health.get("active_cooldowns", 0),
+            "source_health":    dict(health.get("source_health") or {}),
+            "stale_sources":    list(health.get("stale_sources") or []),
+            "stale_source_count": int(health.get("stale_source_count", 0) or 0),
+            "never_seen_sources": list(health.get("never_seen_sources") or []),
+            "never_seen_source_count": int(health.get("never_seen_source_count", 0) or 0),
+            "recent_error_count": int(health.get("recent_error_count", 0) or 0),
+            "recent_errors":    list(health.get("recent_errors") or []),
             "issues":           health.get("issues", []),
             "strategy_mode":    health.get("strategy_mode", "—"),
             "balance":          health.get("balance", _args.balance),
@@ -3588,10 +3613,16 @@ def api_page_overview():
         }
         ttl = 20
     elif page == "command_center":
+        command_center = _response_to_dict(_call_view(api_command_center))
         payload = {
             "success": True,
-            "command_center": _response_to_dict(_call_view(api_command_center)),
-            "whale": _response_to_dict(_call_view(api_whale_summary)),
+            "command_center": command_center,
+            "whale": {
+                "success": bool(command_center.get("success", False)),
+                "recent": list(command_center.get("recent", []) or []),
+                "alert_count_24h": int(command_center.get("alert_count_24h", 0) or 0),
+                "whale_alerts_24h": int(command_center.get("whale_alerts_24h", 0) or 0),
+            },
         }
         ttl = 15
     elif page == "market_intelligence":

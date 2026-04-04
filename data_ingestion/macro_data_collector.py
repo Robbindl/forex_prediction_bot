@@ -13,6 +13,15 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
+
+def _ping_health(source: str) -> None:
+    try:
+        from monitoring.system_health_service import monitor
+
+        monitor.ping_source(str(source or ""))
+    except Exception:
+        return None
+
 # ── Series to track ────────────────────────────────────────────────────────────
 HIGH_IMPACT_SERIES: Dict[str, str] = {
     "FEDFUNDS": "Fed Funds Rate",
@@ -121,6 +130,7 @@ class MacroDataCollector:
 
     def _process(self, series_id: str, label: str, value: float) -> None:
         """Compare to cached value; publish event if meaningfully changed."""
+        _ping_health("macro")
         prev = self._cache.get(series_id)
         if prev is None:
             # First fetch — just cache, don't alert

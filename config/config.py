@@ -92,6 +92,22 @@ TELEGRAM_API_ID      = os.getenv("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH    = os.getenv("TELEGRAM_API_HASH", "")
 TELEGRAM_PHONE       = os.getenv("TELEGRAM_PHONE", "")
 TELEGRAM_SESSION     = os.getenv("TELEGRAM_SESSION", "whale_session")
+WHALE_TELEGRAM_CHANNELS = [
+    item.strip()
+    for item in os.getenv("WHALE_TELEGRAM_CHANNELS", "whalebotalerts").split(",")
+    if item.strip()
+]
+WHALE_ALLOWED_ASSETS = [
+    item.strip().upper()
+    for item in os.getenv(
+        "WHALE_ALLOWED_ASSETS",
+        "BTC-USD,ETH-USD,BNB-USD,SOL-USD,XRP-USD",
+    ).split(",")
+    if item.strip()
+]
+WHALE_TELEGRAM_MIN_VALUE_USD = float(os.getenv("WHALE_TELEGRAM_MIN_VALUE_USD", "1000000"))
+WHALE_TWITTER_WHALE_ENABLED = os.getenv("WHALE_TWITTER_WHALE_ENABLED", "false").lower() == "true"
+WHALE_REDDIT_WHALE_ENABLED = os.getenv("WHALE_REDDIT_WHALE_ENABLED", "false").lower() == "true"
 BNB_RPC_URL          = os.getenv("BNB_RPC_URL", "https://bsc-dataseed1.binance.org").strip()
 SOLANA_RPC_URL       = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
 XRPL_RPC_URL         = os.getenv("XRPL_RPC_URL", "https://s1.ripple.com:51234").strip()

@@ -529,6 +529,9 @@ class SignalDecisionEngine:
         min_final_conf = float(adaptive_policy.get("min_final_confidence", MIN_FINAL_CONFIDENCE) or MIN_FINAL_CONFIDENCE)
         adaptive_risk_multiplier = float(adaptive_policy.get("risk_multiplier", 1.0) or 1.0)
         adaptive_min_rr = float(adaptive_policy.get("min_rr", 0.0) or 0.0)
+        adaptive_target_rr_multiplier = float(adaptive_policy.get("target_rr_multiplier", 1.0) or 1.0)
+        adaptive_block = bool(adaptive_policy.get("block_new_entries"))
+        adaptive_block_reason = str(adaptive_policy.get("block_reason") or "").strip()
         if adaptive_policy:
             signal.metadata["adaptive_policy"] = dict(adaptive_policy)
             data["adaptive_policy"] = {
@@ -537,8 +540,48 @@ class SignalDecisionEngine:
                 "risk_multiplier": round(adaptive_risk_multiplier, 4),
                 "cooldown_minutes": int(adaptive_policy.get("cooldown_minutes", 0) or 0),
                 "min_rr": round(adaptive_min_rr, 2),
+                "target_rr_multiplier": round(adaptive_target_rr_multiplier, 4),
+                "block_new_entries": adaptive_block,
+                "block_reason": adaptive_block_reason,
+                "recent_review_profile": dict(adaptive_policy.get("recent_review_profile") or {}),
                 "notes": list(adaptive_policy.get("notes") or []),
             }
+
+        if adaptive_block:
+            reason = adaptive_block_reason or "recent similar setups are blocked by post-trade learning"
+            signal.kill(reason, STEP_EXECUTION)
+            signal.journal.record(
+                layer=STEP_EXECUTION,
+                name="execution",
+                decision=KILLED,
+                reason=reason,
+                conf_before=conf_before,
+                conf_after=signal.confidence,
+                data=data,
+            )
+            return False
+
+        if signal.entry_price and signal.stop_loss and signal.take_profit and abs(adaptive_target_rr_multiplier - 1.0) > 1e-6:
+            try:
+                risk = abs(float(signal.entry_price) - float(signal.stop_loss))
+                current_reward = abs(float(signal.take_profit) - float(signal.entry_price))
+                if risk > 0 and current_reward > 0:
+                    current_rr = current_reward / risk
+                    adjusted_rr = max(1.0, current_rr * adaptive_target_rr_multiplier)
+                    adjusted_reward = risk * adjusted_rr
+                    if signal.direction == "BUY":
+                        signal.take_profit = round(float(signal.entry_price) + adjusted_reward, 6)
+                    else:
+                        signal.take_profit = round(float(signal.entry_price) - adjusted_reward, 6)
+                    signal.risk_reward = round(adjusted_rr, 2)
+                    signal.metadata["adaptive_target_rr_multiplier"] = round(adaptive_target_rr_multiplier, 4)
+                    data["adaptive_target_rr_applied"] = {
+                        "previous_rr": round(current_rr, 4),
+                        "target_rr_multiplier": round(adaptive_target_rr_multiplier, 4),
+                        "adjusted_rr": round(adjusted_rr, 4),
+                    }
+            except Exception as exc:
+                logger.debug(f"[DecisionEngine] Adaptive target RR adjustment failed for {signal.asset}: {exc}")
 
         df = context.get("price_data")
         if df is not None and len(df) >= 20:
@@ -573,6 +616,44 @@ class SignalDecisionEngine:
                             notes.append("sell_near_resistance")
             except Exception as exc:
                 logger.debug(f"[DecisionEngine] Entry quality check failed for {signal.asset}: {exc}")
+
+        structure = context.get("market_structure") or signal.metadata.get("market_structure") or {}
+        align_tp_fn = getattr(getattr(engine, "_risk_manager", None), "align_take_profit_to_structure", None) if engine else None
+        if (
+            callable(align_tp_fn)
+            and signal.entry_price
+            and signal.stop_loss
+            and signal.take_profit
+        ):
+            try:
+                aligned_tp = align_tp_fn(
+                    float(signal.entry_price),
+                    float(signal.take_profit),
+                    signal.direction,
+                    category=category,
+                    structure=structure if isinstance(structure, dict) else {},
+                    atr=float(signal.metadata.get("atr", 0.0) or 0.0),
+                    confidence=float(signal.confidence or 0.0),
+                )
+                if isinstance(aligned_tp, (int, float)) and aligned_tp > 0:
+                    aligned_tp = float(aligned_tp)
+                    previous_tp = float(signal.take_profit)
+                    if abs(aligned_tp - previous_tp) > 1e-9:
+                        risk = abs(float(signal.entry_price) - float(signal.stop_loss))
+                        adjusted_rr = abs(aligned_tp - float(signal.entry_price)) / risk if risk > 0 else float(signal.risk_reward or 0.0)
+                        signal.take_profit = round(aligned_tp, 6)
+                        signal.risk_reward = round(adjusted_rr, 2)
+                        structure_alignment = {
+                            "base_take_profit": round(previous_tp, 6),
+                            "aligned_take_profit": round(aligned_tp, 6),
+                            "adjusted_rr": round(adjusted_rr, 4),
+                            "regime": str((structure or {}).get("regime") or ""),
+                            "structure_bias": str((structure or {}).get("structure_bias") or ""),
+                        }
+                        signal.metadata["structure_target_alignment"] = structure_alignment
+                        data["structure_target_alignment"] = structure_alignment
+            except Exception as exc:
+                logger.debug(f"[DecisionEngine] Structure target alignment failed for {signal.asset}: {exc}")
 
         if spread and price and price > 0:
             try:
@@ -779,6 +860,10 @@ class SignalDecisionEngine:
             signal.step_reached = STEP_POLICY
             if policy_status == "ok":
                 reason = f"policy accepted {signal.direction} (score={float(signal.metadata.get('agent_score', 0.0)):.3f})"
+            elif policy_status == "reversed":
+                from_dir = str(signal.metadata.get("agent_policy_reversal_from") or "").upper() or "UNKNOWN"
+                to_dir = str(signal.metadata.get("agent_policy_reversal_to") or signal.direction or "").upper()
+                reason = f"policy reversed seed {from_dir}->{to_dir} (score={float(signal.metadata.get('agent_score', 0.0)):.3f})"
             else:
                 reason = f"policy bypassed ({policy_status})"
             signal.journal.record(
@@ -818,6 +903,28 @@ class SignalDecisionEngine:
         signal.metadata["valid_sources_count"] = valid_sources
         signal.metadata["min_sources_required"] = min_required
         data = {"valid_sources": valid_sources, "min_required": min_required, "category": signal.category}
+
+        adaptive_policy_preview: Dict[str, Any] = {}
+        try:
+            from services.adaptive_policy_service import get_service as get_adaptive_policy_service
+
+            adaptive_policy_preview = get_adaptive_policy_service().get_thresholds(
+                asset=signal.asset,
+                category=signal.category,
+                context=context,
+                signal=signal,
+                state=getattr(context.get("engine"), "state", None) if context.get("engine") else None,
+            )
+            if adaptive_policy_preview:
+                context["adaptive_policy"] = dict(adaptive_policy_preview)
+                signal.metadata["adaptive_policy"] = dict(adaptive_policy_preview)
+                data["adaptive_policy_preview"] = {
+                    "min_rr": round(float(adaptive_policy_preview.get("min_rr", 0.0) or 0.0), 2),
+                    "min_final_confidence": round(float(adaptive_policy_preview.get("min_final_confidence", 0.0) or 0.0), 4),
+                    "block_new_entries": bool(adaptive_policy_preview.get("block_new_entries")),
+                }
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Adaptive policy preview unavailable for {signal.asset}: {exc}")
 
         if valid_sources < min_required:
             reason = f"Insufficient real data: {valid_sources}/{min_required} sources for {signal.asset} ({signal.category})"

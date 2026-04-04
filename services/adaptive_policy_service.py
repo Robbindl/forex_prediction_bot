@@ -109,7 +109,11 @@ class AdaptivePolicyService:
         risk_multiplier = 1.0
         cooldown_minutes = base_cooldown
         min_rr = base_rr
+        target_rr_multiplier = 1.0
         notes = []
+        recent_review_profile: Dict[str, Any] = {}
+        block_new_entries = False
+        block_reason = ""
 
         aligned_structure = False
         if structure_bias in {"buy", "sell"}:
@@ -215,6 +219,31 @@ class AdaptivePolicyService:
                 cooldown_minutes += 4
                 notes.append("memory_negative_edge")
 
+        if signal is not None:
+            try:
+                from services.recent_pattern_learning_service import get_service as get_recent_pattern_learning_service
+
+                recent_review_profile = get_recent_pattern_learning_service().get_profile(
+                    asset=asset,
+                    category=category_key,
+                    signal=signal,
+                    context=context,
+                )
+                if int(recent_review_profile.get("sample_count", 0) or 0) >= 4:
+                    min_final_confidence += _safe_float(recent_review_profile.get("penalty_confidence"), 0.0)
+                    min_final_confidence -= _safe_float(recent_review_profile.get("bonus_confidence"), 0.0)
+                    risk_multiplier -= _safe_float(recent_review_profile.get("penalty_risk"), 0.0)
+                    risk_multiplier += _safe_float(recent_review_profile.get("bonus_risk"), 0.0)
+                    min_rr += _safe_float(recent_review_profile.get("penalty_rr"), 0.0)
+                    min_rr -= _safe_float(recent_review_profile.get("bonus_rr_relief"), 0.0)
+                    cooldown_minutes += int(recent_review_profile.get("cooldown_delta", 0) or 0)
+                    target_rr_multiplier *= _safe_float(recent_review_profile.get("target_rr_multiplier"), 1.0)
+                    notes.extend(list(recent_review_profile.get("notes") or []))
+                    block_new_entries = bool(recent_review_profile.get("block_new_entries"))
+                    block_reason = str(recent_review_profile.get("block_reason") or "")
+            except Exception:
+                recent_review_profile = {}
+
         if live_scope in {"portfolio", "bootstrap", "unavailable"}:
             min_final_confidence -= 0.012
             max_spread *= 1.04
@@ -253,6 +282,7 @@ class AdaptivePolicyService:
         risk_multiplier = round(_clip(risk_multiplier, 0.60, 1.35), 4)
         cooldown_minutes = int(round(_clip(cooldown_minutes, 5, max(base_cooldown + 20, 20))))
         min_rr = round(_clip(min_rr, 1.2, 2.2), 2)
+        target_rr_multiplier = round(_clip(target_rr_multiplier, 0.88, 1.18), 4)
 
         return {
             "asset": asset,
@@ -264,6 +294,10 @@ class AdaptivePolicyService:
             "risk_multiplier": risk_multiplier,
             "cooldown_minutes": cooldown_minutes,
             "min_rr": min_rr,
+            "target_rr_multiplier": target_rr_multiplier,
+            "recent_review_profile": recent_review_profile,
+            "block_new_entries": block_new_entries,
+            "block_reason": block_reason,
             "notes": notes,
         }
 

@@ -10,6 +10,15 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
+
+def _ping_health(source: str) -> None:
+    try:
+        from monitoring.system_health_service import monitor
+
+        monitor.ping_source(str(source or ""))
+    except Exception:
+        return None
+
 # ── Exchange WebSocket endpoints ───────────────────────────────────────────────
 EXCHANGE_WS_URLS: Dict[str, str] = {
     "binance": "wss://stream.binance.com:9443/stream",
@@ -475,6 +484,20 @@ class ExchangeStreamManager:
 
     def _on_event(self, event: dict) -> None:
         """Called for every normalised event from any exchange."""
+        event_type = str(event.get("type", "") or "").upper()
+        exchange = str(event.get("exchange", "") or "").lower()
+
+        if event_type in {"MARKET_DATA_UPDATE", "TRADE_UPDATE"}:
+            _ping_health("trades")
+
+        # Bybit carries liquidation subscriptions on the same live public socket
+        # as ticker/order book updates, so socket activity is a practical
+        # heartbeat even when no liquidation prints occur for a short period.
+        if event_type == "LIQUIDATION_EVENT" or (
+            exchange == "bybit" and event_type in {"MARKET_DATA_UPDATE", "ORDER_BOOK_UPDATE"}
+        ):
+            _ping_health("liquidations")
+
         # 1. Publish to Redis
         if self._pub:
             if not self._redis_ok:

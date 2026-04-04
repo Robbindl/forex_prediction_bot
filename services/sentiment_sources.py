@@ -13,6 +13,15 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
+
+def _ping_health(source: str) -> None:
+    try:
+        from monitoring.system_health_service import monitor
+
+        monitor.ping_source(str(source or ""))
+    except Exception:
+        return None
+
 # ── API key imports ───────────────────────────────────────────────────────────
 try:
     from config.config import (
@@ -196,6 +205,7 @@ class _MarketInstruments:
         if result is not None:
             with cls._lock:
                 cls._cache[key] = (result, time.time() + cls._TTL)
+            _ping_health("sentiment")
         return result
 
     # ── CNN / Alternative.me Fear & Greed ────────────────────────────────────
@@ -303,6 +313,7 @@ class _PriceMomentum:
         if score is not None:
             with cls._lock:
                 cls._cache[asset] = (score, time.time() + cls._TTL)
+            _ping_health("sentiment")
         return score
 
     @classmethod
@@ -458,6 +469,7 @@ class _NewsSentiment:
         if score is not None:
             with cls._lock:
                 cls._cache[asset] = (score, time.time() + cls._TTL)
+            _ping_health("sentiment")
         return score
 
     @classmethod
@@ -1045,6 +1057,7 @@ class _CryptoSignals:
         if result is not None:
             with cls._lock:
                 cls._cache[key] = (result, time.time() + cls._TTL)
+            _ping_health("sentiment")
         return result
 
     @classmethod
