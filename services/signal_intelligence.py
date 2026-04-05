@@ -112,6 +112,9 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     signal.metadata["sentiment_weights"] = {
         str(k): round(float(v), 3) for k, v in weights.items()
     }
+    ig_client_sentiment = sentiment_details.get("ig_client_sentiment")
+    if isinstance(ig_client_sentiment, dict) and ig_client_sentiment:
+        signal.metadata["ig_client_sentiment"] = dict(ig_client_sentiment)
     if market_intelligence_score is not None:
         try:
             signal.metadata["market_intelligence_score"] = round(float(market_intelligence_score), 3)
@@ -128,6 +131,8 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     adjustments: List[str] = []
     if abs(score) > 0.01:
         sources_used.append("comprehensive_sentiment")
+    if isinstance(ig_client_sentiment, dict) and ig_client_sentiment:
+        sources_used.append("ig_client_sentiment")
     if "macro_event" in signal.metadata["sentiment_components"]:
         sources_used.append("macro_event")
     for src in market_intelligence_sources:
@@ -275,4 +280,82 @@ def apply_whale_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
         "weighted_bear": round(weighted_bear, 3),
         "adjustments": adjustments,
         "phase2": snapshot.get("phase2", "unavailable"),
+    }
+
+
+def apply_cross_asset_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot = context.get("cross_asset_context")
+    if not isinstance(snapshot, dict) or not snapshot:
+        try:
+            fetcher = context.get("fetcher")
+            if fetcher is not None:
+                from services.cross_asset_spillover_service import get_service as get_cross_asset_spillover_service
+
+                snapshot = get_cross_asset_spillover_service().build_snapshot(
+                    asset=signal.asset,
+                    category=signal.category,
+                    fetcher=fetcher,
+                    timeframe=str(context.get("timeframe") or "15m"),
+                )
+            else:
+                snapshot = {}
+        except Exception as exc:
+            logger.debug(f"[SignalIntelligence] Cross-asset fetch failed for {signal.asset}: {exc}")
+            snapshot = {}
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        signal.metadata["cross_asset_score"] = 0.0
+        signal.metadata["cross_asset_alignment"] = 0.0
+        signal.metadata["cross_asset_confidence"] = 0.0
+        return {"applicable": False, "score": 0.0, "alignment": 0.0, "peers": []}
+
+    raw_score = float(snapshot.get("score", 0.0) or 0.0)
+    confidence = float(snapshot.get("confidence", 0.0) or 0.0)
+    aligned = raw_score if signal.direction == "BUY" else -raw_score
+
+    signal.metadata["cross_asset_context"] = dict(snapshot)
+    signal.metadata["cross_asset_score"] = round(raw_score, 4)
+    signal.metadata["cross_asset_alignment"] = round(aligned, 4)
+    signal.metadata["cross_asset_confidence"] = round(confidence, 4)
+    signal.metadata["cross_asset_state"] = str(snapshot.get("state", "") or "")
+    signal.metadata["cross_asset_supportive_direction"] = str(snapshot.get("supportive_direction", "") or "")
+    signal.metadata["cross_asset_primary_peer"] = str(snapshot.get("dominant_peer", "") or "")
+    signal.metadata["cross_asset_primary_relation"] = str(snapshot.get("dominant_relation", "") or "")
+    signal.metadata["cross_asset_peer_count"] = int(len(snapshot.get("peers") or []))
+
+    peers: List[Dict[str, Any]] = []
+    for peer in list(snapshot.get("peers") or [])[:3]:
+        if not isinstance(peer, dict):
+            continue
+        peers.append(
+            {
+                "peer_asset": str(peer.get("peer_asset", "") or ""),
+                "relation_label": str(peer.get("relation_label", "") or ""),
+                "supportive_direction": str(peer.get("supportive_direction", "") or ""),
+                "peer_direction": str(peer.get("peer_direction", "") or ""),
+                "buy_bias": round(float(peer.get("buy_bias", 0.0) or 0.0), 4),
+                "weight": round(float(peer.get("weight", 0.0) or 0.0), 4),
+                "state": str(peer.get("state", "") or ""),
+            }
+        )
+
+    adjustments: List[str] = []
+    if aligned >= 0.20:
+        adjustments.append("cross_asset_support")
+    elif aligned <= -0.20:
+        adjustments.append("cross_asset_conflict")
+    if confidence >= 0.70:
+        adjustments.append("cross_asset_high_confidence")
+
+    return {
+        "applicable": True,
+        "score": round(raw_score, 4),
+        "alignment": round(aligned, 4),
+        "confidence": round(confidence, 4),
+        "state": str(snapshot.get("state", "") or ""),
+        "supportive_direction": str(snapshot.get("supportive_direction", "") or ""),
+        "dominant_peer": str(snapshot.get("dominant_peer", "") or ""),
+        "dominant_relation": str(snapshot.get("dominant_relation", "") or ""),
+        "peers": peers,
+        "adjustments": adjustments,
     }

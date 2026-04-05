@@ -4,6 +4,7 @@ import sys
 from datetime import datetime, timezone
 import numpy as np
 
+from core.assets import registry
 from strategy_lab.strategy_builder    import StrategyBuilder, DynamicStrategy
 from strategy_lab.backtest_engine_v2  import BacktestEngineV2, BacktestResult
 from strategy_lab.parameter_optimizer import ParameterOptimizer
@@ -38,12 +39,14 @@ RESEARCH_DEPTH_PRESETS = {
     },
 }
 
-_CATEGORY_ASSETS = {
-    "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "BNB-USD"],
-    "forex": ["EUR/USD", "EUR/JPY", "GBP/USD", "GBP/JPY", "USD/JPY", "AUD/USD", "USD/CAD"],
-    "commodities": ["XAU/USD", "XAG/USD"],
-    "indices": ["US30", "US100", "US500", "UK100"],
-}
+def _build_category_assets() -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for asset, category in registry.all_assets():
+        grouped.setdefault(str(category), []).append(str(asset))
+    return grouped
+
+
+_CATEGORY_ASSETS = _build_category_assets()
 
 _INTERVAL_SECONDS = {
     "1m": 60,

@@ -188,10 +188,7 @@ class DatabaseService:
             if existing:
                 # Update exit fields on existing record
                 existing.exit_price  = _np(trade_data.get("exit_price"))
-                existing.exit_time   = (
-                    datetime.fromisoformat(trade_data["exit_time"].replace('Z','').replace('+00:00',''))
-                    if trade_data.get("exit_time") else datetime.utcnow()
-                )
+                existing.exit_time   = _coerce_datetime(trade_data.get("exit_time")) or datetime.utcnow()
                 existing.exit_reason = str(_np(trade_data.get("exit_reason", "")))
                 existing.pnl         = _np(trade_data.get("pnl"))
                 existing.pnl_percent = _np(trade_data.get("pnl_percent"))
@@ -212,14 +209,8 @@ class DatabaseService:
                 take_profit     = _np(trade_data.get("take_profit")),
                 pnl             = _np(trade_data.get("pnl")),
                 pnl_percent     = _np(trade_data.get("pnl_percent")),
-                exit_time       = (
-                    datetime.fromisoformat(trade_data["exit_time"].replace('Z','').replace('+00:00',''))
-                    if trade_data.get("exit_time") else None
-                ),
-                entry_time      = (
-                    datetime.fromisoformat(trade_data["open_time"].replace('Z','').replace('+00:00',''))
-                    if trade_data.get("open_time") else datetime.utcnow()
-                ),
+                exit_time       = _coerce_datetime(trade_data.get("exit_time")),
+                entry_time      = _coerce_datetime(trade_data.get("open_time")) or datetime.utcnow(),
                 exit_reason     = str(_np(trade_data.get("exit_reason", ""))) if trade_data.get("exit_reason") else None,
                 strategy_id     = str(_np(trade_data.get("strategy_id", "UNKNOWN"))),
                 confidence      = _np(trade_data.get("confidence", 0)),

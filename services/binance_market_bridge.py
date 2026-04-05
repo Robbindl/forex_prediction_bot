@@ -95,6 +95,19 @@ class BinanceMarketBridge:
                 price = ask if ask > 0 else bid
                 spread = 0.0
 
+            try:
+                from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+                get_live_microstructure_service().record_quote(
+                    "binance",
+                    asset,
+                    bid=bid if bid > 0 else None,
+                    ask=ask if ask > 0 else None,
+                    price=price,
+                    timestamp=datetime.now(timezone.utc),
+                )
+            except Exception:
+                pass
             return float(price), float(spread), self._metadata(symbol, realtime=True)
         except Exception as exc:
             logger.debug(f"[BinanceBridge] quote {asset}: {exc}")
@@ -176,6 +189,20 @@ class BinanceMarketBridge:
         price, spread, meta = self.get_quote(asset, category=category)
         if price is None:
             return {}
+        try:
+            from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+            snapshot = get_live_microstructure_service().get_snapshot(
+                "binance",
+                asset,
+                price=price,
+                spread=spread,
+                meta=meta,
+            )
+            if snapshot:
+                return {**meta, **snapshot}
+        except Exception:
+            pass
         spread_bps = round((float(spread or 0.0) / float(price)) * 10000, 3) if price else 0.0
         return {
             **meta,

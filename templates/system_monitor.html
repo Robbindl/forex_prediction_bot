@@ -67,6 +67,13 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.mu{color:var(--tx2)}
 .empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
+.train-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:12px 16px}
+.train-card{background:var(--s2);border:1px solid rgba(30,38,53,.7);border-radius:10px;padding:12px}
+.train-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.train-name{font-size:13px;font-weight:700}
+.train-state{margin-left:auto;font-size:11px;font-weight:700;text-transform:uppercase}
+.train-meta{font-size:11px;color:var(--tx2);line-height:1.5}
+.train-issue{margin-top:8px;font-size:11px;color:var(--tx3)}
 
 /* Uptime counter */
 .uptime-big{font-size:32px;font-weight:700;font-family:var(--mono);text-align:center;padding:16px;color:var(--gr)}
@@ -185,6 +192,15 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div id="serviceList"><div class="empty">Loading…</div></div>
       </div>
 
+      <!-- Model training -->
+      <div class="panel panel-full">
+        <div class="panel-header">
+          <span class="panel-title">🧠 Model Training</span>
+          <span class="panel-badge" id="trainBadge">—</span>
+        </div>
+        <div id="trainingPanel"><div class="empty">Loading…</div></div>
+      </div>
+
       <!-- Source freshness -->
       <div class="panel panel-full">
         <div class="panel-header">
@@ -209,6 +225,15 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       <div class="panel panel-wide">
         <div class="panel-header"><span class="panel-title">🌐 Connections</span></div>
         <div id="connPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <!-- IG broker snapshot -->
+      <div class="panel panel-wide">
+        <div class="panel-header">
+          <span class="panel-title">🏦 IG Broker Data</span>
+          <span class="panel-badge" id="igBadge">—</span>
+        </div>
+        <div class="panel-body" id="igPanel"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Decision latency -->
@@ -385,6 +410,59 @@ async function load(){
       }).join('');
     }
 
+    // Model training
+    const training = d.training_health || {};
+    const trainingSummary = d.training_summary || {};
+    const trainingNames = {
+      crypto: 'Crypto',
+      forex: 'Forex',
+      commodities: 'Commodities',
+      indices: 'Indices',
+    };
+    const trainingPanel = document.getElementById('trainingPanel');
+    const trainingBadge = document.getElementById('trainBadge');
+    const categories = Object.keys(trainingNames);
+    const healthyCount = trainingSummary.healthy || 0;
+    const mixedCount = trainingSummary.mixed || 0;
+    const degradedCount = trainingSummary.degraded || 0;
+    trainingBadge.textContent = `${healthyCount} healthy / ${mixedCount} mixed / ${degradedCount} degraded`;
+    if(trainingPanel){
+      if(!categories.some((key)=>training[key])){
+        trainingPanel.innerHTML = '<div class="empty">Training status unavailable</div>';
+      }else{
+        trainingPanel.innerHTML = `<div class="train-grid">${categories.map((key)=>{
+          const item = training[key] || {};
+          const classifier = item.classifier || {};
+          const policy = item.policy || {};
+          const state = item.status || 'unknown';
+          const ok = state === 'healthy';
+          const warm = state === 'mixed';
+          const dotClass = ok ? 'proc-dot-on' : warm ? 'proc-dot-off' : 'proc-dot-off';
+          const stateColor = ok ? 'var(--gr)' : warm ? 'var(--am)' : 'var(--rd)';
+          const classifierFresh = classifier.stale === false ? 'fresh' : 'stale';
+          const policyFresh = policy.stale === false ? 'fresh' : 'stale';
+          const classifierRun = (classifier.last_run || {});
+          const policyRun = (policy.last_run || {});
+          const classifierNote = classifierRun.note ? ` | last ${classifierRun.note.replaceAll('_',' ')}` : '';
+          const policyNote = policyRun.note ? ` | last ${policyRun.note.replaceAll('_',' ')}` : '';
+          const issue = (item.issues || [])[0] || '';
+          return `<div class="train-card">
+            <div class="train-top">
+              <div class="proc-dot ${dotClass}" style="${warm ? 'background:var(--am);box-shadow:0 0 6px var(--am)' : ''}"></div>
+              <div class="train-name">${trainingNames[key]}</div>
+              <div class="train-state" style="color:${stateColor}">${state}</div>
+            </div>
+            <div class="train-meta">
+              Classifier: ${classifierFresh}${classifierNote}<br>
+              Policy: ${policyFresh}${policyNote}<br>
+              Research: ${policy.research_status || 'unknown'} policy / ${classifier.research_status || 'unknown'} classifier
+            </div>
+            <div class="train-issue">${issue || 'No immediate training issue recorded'}</div>
+          </div>`;
+        }).join('')}</div>`;
+      }
+    }
+
     // Data freshness
     const freshness = snapshot.source_health || {};
     const freshnessNames = {
@@ -421,11 +499,18 @@ async function load(){
 
     // Connections
     const connEl=document.getElementById('connPanel');
+    const igBroker=d.ig_broker||{};
+    const feedConnections=d.feed_connections||{};
+    const derivFeed=feedConnections.deriv||{};
+    const binanceFeed=feedConnections.binance||{};
+    const igFeed=feedConnections.ig||{};
     const connItems=[
       {name:'Trading Engine',ok:procs['TradingCore']},
       {name:'Web Dashboard',ok:procs['Web dashboard']},
-      {name:'Deriv Stream',ok:procs['WebSocket streams']},
+      {name:'Deriv Stream',ok:!!derivFeed.connected, meta:derivFeed.symbol_count?`${derivFeed.symbol_count} symbols`:derivFeed.assets||''},
+      {name:'Binance Fallback',ok:!!binanceFeed.connected, meta:binanceFeed.symbol_count?`${binanceFeed.symbol_count} symbols`:binanceFeed.assets||''},
       {name:'Exchange Feeds',ok:services['phase1_data_feeds']},
+      {name:'IG Commodities',ok:!!igFeed.connected, meta:igFeed.symbol_count?`${igFeed.symbol_count} assets`:igFeed.assets||''},
       {name:'PostgreSQL',ok:procs['PostgreSQL']},
       {name:'Redis',ok:procs['Redis']},
       {name:'Command Bot',ok:procs['Telegram']},
@@ -435,9 +520,41 @@ async function load(){
     connEl.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px">'+
       connItems.map(c=>`<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--s2);border-radius:7px">
         <div style="width:8px;height:8px;border-radius:50%;background:${c.ok?'var(--gr)':'var(--rd)'}"></div>
-        <span style="font-size:12px">${c.name}</span>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span style="font-size:12px">${c.name}</span>
+          ${c.meta ? `<span style="font-size:10px;color:var(--tx3)">${c.meta}</span>` : ''}
+        </div>
         <span style="margin-left:auto;font-size:11px;color:${c.ok?'var(--gr)':'var(--rd)'};font-weight:600">${c.ok?'OK':'Down'}</span>
       </div>`).join('')+'</div>';
+
+    // IG broker panel
+    const igPanel=document.getElementById('igPanel');
+    const igBadge=document.getElementById('igBadge');
+    if(!igBroker.enabled){
+      igBadge.textContent='disabled';
+      igPanel.innerHTML='<div class="empty">IG routing is disabled</div>';
+    }else if(!igBroker.authenticated){
+      igBadge.textContent='offline';
+      igBadge.style.color='var(--rd)';
+      igPanel.innerHTML=`<div class="empty">IG auth/data unavailable: ${igBroker.error_message||igBroker.error_code||'unknown error'}</div>`;
+    }else{
+      igBadge.textContent=(igBroker.environment||'').toUpperCase()||'ready';
+      igBadge.style.color='var(--gr)';
+      const watchlists=(igBroker.watchlists||[]).map(w=>w.name).filter(Boolean);
+      const activities=(igBroker.recent_activities||[]);
+      igPanel.innerHTML=`
+        <div class="stat-mini-grid">
+          <div class="sm"><div class="sm-val bl">${(igBroker.environment||'').toUpperCase()||'—'}</div><div class="sm-lbl">Environment</div></div>
+          <div class="sm"><div class="sm-val">${igBroker.account_id||'—'}</div><div class="sm-lbl">Account</div></div>
+          <div class="sm"><div class="sm-val gn">${igBroker.balance==null?'—':'$'+Number(igBroker.balance).toFixed(2)}</div><div class="sm-lbl">IG Balance</div></div>
+          <div class="sm"><div class="sm-val cy">${igBroker.available==null?'—':'$'+Number(igBroker.available).toFixed(2)}</div><div class="sm-lbl">Available</div></div>
+        </div>
+        <div style="padding:0 16px 12px;font-size:12px;color:var(--tx2);line-height:1.6">
+          Routed assets: ${(igBroker.routed_assets||[]).join(', ') || '—'}<br>
+          Watchlists: ${watchlists.length ? watchlists.join(', ') : 'none'}<br>
+          Recent account activity: ${activities.length||0}
+        </div>`;
+    }
 
   }catch(e){console.error(e);}
 }

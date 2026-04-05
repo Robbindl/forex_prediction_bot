@@ -5,7 +5,7 @@ import os
 import tempfile
 import threading
 from collections import defaultdict
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -111,7 +111,7 @@ class SystemState:
                 return None
 
             # Calculate duration from open_time to exit_time (in minutes)
-            exit_time = datetime.utcnow().isoformat()
+            exit_time = datetime.now(timezone.utc).isoformat()
             duration_minutes = 0
             try:
                 from datetime import datetime as dt_class

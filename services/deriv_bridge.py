@@ -353,6 +353,20 @@ class DerivBridge:
                 if price is None:
                     return self._history_quote_fallback(resolved)
 
+                try:
+                    from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+                    get_live_microstructure_service().record_quote(
+                        "deriv",
+                        str(asset or ""),
+                        bid=bid,
+                        ask=ask,
+                        price=price,
+                        timestamp=time.time(),
+                    )
+                except Exception:
+                    pass
+
                 return float(price), float(spread or 0.0), self._metadata(resolved, source_class="primary_api", realtime=True)
             except Exception as exc:
                 logger.debug(f"[DerivBridge] quote {asset}: {exc}")
@@ -468,6 +482,20 @@ class DerivBridge:
         price, spread, meta = self.get_quote(asset, category=category)
         if price is None:
             return {}
+        try:
+            from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+            snapshot = get_live_microstructure_service().get_snapshot(
+                "deriv",
+                str(asset or ""),
+                price=price,
+                spread=spread,
+                meta=meta,
+            )
+            if snapshot:
+                return {**meta, **snapshot}
+        except Exception:
+            pass
         spread_bps = 0.0
         try:
             spread_bps = round(float(spread or 0.0) / float(price) * 10000, 3) if float(price) > 0 else 0.0
@@ -977,6 +1005,17 @@ class DerivBridge:
 
         meta = self._metadata(resolved, source_class="primary_api", realtime=not delayed, delayed=delayed)
         meta["market_open"] = bool(market_open) if market_open is not None else False
+        try:
+            from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+            get_live_microstructure_service().record_quote(
+                "deriv",
+                str(resolved.get("display_name") or resolved.get("display_name_long") or resolved.get("symbol") or ""),
+                price=price,
+                timestamp=time.time(),
+            )
+        except Exception:
+            pass
         return float(price), spread, meta
 
     def _get_trading_times_locked(self, day) -> Dict[str, Any]:

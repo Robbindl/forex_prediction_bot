@@ -149,7 +149,37 @@ class TradingCore:
     def get_daily_stats(self) -> Dict:
         return {"daily_trades": self.state.daily_trades, "daily_pnl": self.state.daily_pnl}
 
-    def _extract_position_action_metrics(self, pos: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _market_hours_status_fallback(category: str) -> Tuple[bool, str]:
+        now_utc = datetime.now(tz=timezone.utc)
+        wd = now_utc.weekday()
+        hour = now_utc.hour
+
+        if category == "crypto":
+            return True, "crypto_24x7"
+
+        if wd >= 5:
+            if wd == 6 and hour >= 22 and category in ("forex", "commodities"):
+                return True, "sunday_reopen"
+            return False, "weekend_closed"
+
+        if category == "forex" and wd == 4 and hour >= 22:
+            return False, "forex_friday_close"
+
+        if category in ("stocks", "indices") and not (13 <= hour < 21):
+            return False, "indices_out_of_session"
+
+        if category == "commodities" and hour == 21:
+            return False, "commodities_settlement"
+
+        return True, "open"
+
+    def _extract_position_action_metrics(
+        self,
+        pos: Dict[str, Any],
+        *,
+        include_market_status: bool = True,
+    ) -> Dict[str, Any]:
         meta = dict(pos.get("metadata") or {})
         memory = meta.get("setup_memory") if isinstance(meta.get("setup_memory"), dict) else {}
         execution = meta.get("execution_feedback") if isinstance(meta.get("execution_feedback"), dict) else {}
@@ -196,7 +226,10 @@ class TradingCore:
         confidence_component = max(0.0, min(1.0, confidence)) if confidence > 0 else 0.5
         rr_component = max(0.0, min(1.0, (risk_reward - 1.0) / 1.5)) if risk_reward > 0 else 0.5
         pnl_component = 0.40 if pnl < 0 else (0.58 if abs(pnl) < 1e-9 else 0.72)
-        market_open, market_reason = self._market_hours_status(asset, category)
+        if include_market_status:
+            market_open, market_reason = self._market_hours_status(asset, category)
+        else:
+            market_open, market_reason = self._market_hours_status_fallback(category)
 
         quality_ratio = max(
             0.0,
@@ -254,10 +287,15 @@ class TradingCore:
         self,
         limit: int = 5,
         score_threshold: float = 0.58,
+        *,
+        include_market_status: bool = True,
     ) -> List[Dict[str, Any]]:
         candidates = []
         for pos in self.state.get_open_positions():
-            metrics = self._extract_position_action_metrics(pos)
+            metrics = self._extract_position_action_metrics(
+                pos,
+                include_market_status=include_market_status,
+            )
             if metrics["quality_ratio"] <= float(score_threshold or 0.58) or len(metrics["weak_reasons"]) >= 2:
                 candidates.append(metrics)
         candidates.sort(
@@ -642,6 +680,19 @@ class TradingCore:
         self._last_ranked_at_utc = datetime.utcnow().isoformat()
         for signal, context in ranked_pairs[:10]:
             item = signal.to_dict()
+            metadata = dict(signal.metadata or {})
+            broker = metadata.get("broker_quality") if isinstance(metadata.get("broker_quality"), dict) else {}
+            micro = metadata.get("market_microstructure") if isinstance(metadata.get("market_microstructure"), dict) else {}
+            cross_asset = metadata.get("cross_asset_context") if isinstance(metadata.get("cross_asset_context"), dict) else {}
+            adaptive_policy = metadata.get("adaptive_policy") if isinstance(metadata.get("adaptive_policy"), dict) else {}
+            recent_review = adaptive_policy.get("recent_review_profile") if isinstance(adaptive_policy.get("recent_review_profile"), dict) else {}
+            breakdown = metadata.get("opportunity_breakdown") if isinstance(metadata.get("opportunity_breakdown"), dict) else {}
+            broker_quality_score = broker.get("score", metadata.get("broker_quality_score", breakdown.get("broker_quality", 0.0)))
+            microstructure_score = metadata.get(
+                "microstructure_score",
+                micro.get("score", breakdown.get("microstructure", 0.0)),
+            )
+            cross_asset_score = metadata.get("cross_asset_score", cross_asset.get("score", breakdown.get("cross_asset", 0.0)))
             item.update(
                 {
                     "source": "signal",
@@ -654,6 +705,43 @@ class TradingCore:
                     "opportunity_rank": int(signal.metadata.get("opportunity_rank", 0) or 0),
                     "regime": str(signal.metadata.get("regime", "") or ""),
                     "setup_quality": float(signal.metadata.get("setup_quality", 0.0) or 0.0),
+                    "opportunity_breakdown": dict(breakdown),
+                    "broker_quality_score": float(broker_quality_score or 0.0),
+                    "broker_primary_provider": str(broker.get("primary_provider", "") or ""),
+                    "broker_comparison_provider": str(broker.get("comparison_provider", "") or ""),
+                    "broker_agreement_state": str(
+                        metadata.get("broker_agreement_state", broker.get("quote_agreement_state", "")) or ""
+                    ),
+                    "broker_quote_quality_state": str(
+                        metadata.get("broker_quote_quality_state", broker.get("quote_quality_state", "")) or ""
+                    ),
+                    "broker_spread_regime": str(
+                        metadata.get("broker_spread_regime", broker.get("spread_regime", "")) or ""
+                    ),
+                    "microstructure_score": float(microstructure_score or 0.0),
+                    "microstructure_pressure": str(
+                        micro.get("pressure_direction", metadata.get("micro_pressure_direction", "")) or ""
+                    ),
+                    "depth_available": bool(metadata.get("depth_available", micro.get("depth_available"))),
+                    "synthetic_depth_available": bool(
+                        metadata.get("synthetic_depth_available", micro.get("synthetic_depth_available"))
+                    ),
+                    "microstructure_source": str(
+                        metadata.get("microstructure_source", micro.get("microstructure_source", "")) or ""
+                    ),
+                    "cross_asset_score": float(cross_asset_score or 0.0),
+                    "cross_asset_alignment": float(metadata.get("cross_asset_alignment", 0.0) or 0.0),
+                    "cross_asset_confidence": float(metadata.get("cross_asset_confidence", 0.0) or 0.0),
+                    "cross_asset_state": str(metadata.get("cross_asset_state", cross_asset.get("state", "")) or ""),
+                    "cross_asset_primary_peer": str(
+                        metadata.get("cross_asset_primary_peer", cross_asset.get("dominant_peer", "")) or ""
+                    ),
+                    "cross_asset_primary_relation": str(
+                        metadata.get("cross_asset_primary_relation", cross_asset.get("dominant_relation", "")) or ""
+                    ),
+                    "recent_pattern_block_new_entries": bool(recent_review.get("block_new_entries")),
+                    "recent_pattern_notes": [str(n) for n in list(recent_review.get("notes") or [])[:4]],
+                    "recent_pattern_sample_count": int(recent_review.get("sample_count", 0) or 0),
                 }
             )
             self._last_ranked_opportunities.append(item)
@@ -676,8 +764,13 @@ class TradingCore:
         limit: int = 5,
         refresh: bool = False,
         include_positions: bool = True,
+        allow_refresh_when_empty: bool = True,
     ) -> List[Dict[str, Any]]:
-        if refresh or (not self._last_ranked_opportunities and self.is_ready):
+        if refresh or (
+            allow_refresh_when_empty
+            and not self._last_ranked_opportunities
+            and self.is_ready
+        ):
             try:
                 self.scan_top_ranked_opportunities(limit=max(limit, 5))
             except Exception as exc:
@@ -700,6 +793,27 @@ class TradingCore:
                     "setup_quality": float(item.get("setup_quality", 0.0) or 0.0),
                     "timeframe": item.get("timeframe", ""),
                     "strategy_id": item.get("strategy_id", ""),
+                    "opportunity_breakdown": dict(item.get("opportunity_breakdown") or {}),
+                    "broker_quality_score": float(item.get("broker_quality_score", 0.0) or 0.0),
+                    "broker_primary_provider": str(item.get("broker_primary_provider", "") or ""),
+                    "broker_comparison_provider": str(item.get("broker_comparison_provider", "") or ""),
+                    "broker_agreement_state": str(item.get("broker_agreement_state", "") or ""),
+                    "broker_quote_quality_state": str(item.get("broker_quote_quality_state", "") or ""),
+                    "broker_spread_regime": str(item.get("broker_spread_regime", "") or ""),
+                    "microstructure_score": float(item.get("microstructure_score", 0.0) or 0.0),
+                    "microstructure_pressure": str(item.get("microstructure_pressure", "") or ""),
+                    "depth_available": bool(item.get("depth_available")),
+                    "synthetic_depth_available": bool(item.get("synthetic_depth_available")),
+                    "microstructure_source": str(item.get("microstructure_source", "") or ""),
+                    "cross_asset_score": float(item.get("cross_asset_score", 0.0) or 0.0),
+                    "cross_asset_alignment": float(item.get("cross_asset_alignment", 0.0) or 0.0),
+                    "cross_asset_confidence": float(item.get("cross_asset_confidence", 0.0) or 0.0),
+                    "cross_asset_state": str(item.get("cross_asset_state", "") or ""),
+                    "cross_asset_primary_peer": str(item.get("cross_asset_primary_peer", "") or ""),
+                    "cross_asset_primary_relation": str(item.get("cross_asset_primary_relation", "") or ""),
+                    "recent_pattern_block_new_entries": bool(item.get("recent_pattern_block_new_entries")),
+                    "recent_pattern_notes": [str(n) for n in list(item.get("recent_pattern_notes") or [])[:4]],
+                    "recent_pattern_sample_count": int(item.get("recent_pattern_sample_count", 0) or 0),
                     "recorded_at_utc": self._last_ranked_at_utc,
                 }
             )
@@ -707,6 +821,13 @@ class TradingCore:
         if include_positions:
             for pos in self.state.get_open_positions():
                 metrics = self._extract_position_action_metrics(pos)
+                meta = dict(pos.get("metadata") or {})
+                broker = meta.get("broker_quality") if isinstance(meta.get("broker_quality"), dict) else {}
+                micro = meta.get("market_microstructure") if isinstance(meta.get("market_microstructure"), dict) else {}
+                cross_asset = meta.get("cross_asset_context") if isinstance(meta.get("cross_asset_context"), dict) else {}
+                adaptive_policy = meta.get("adaptive_policy") if isinstance(meta.get("adaptive_policy"), dict) else {}
+                recent_review = adaptive_policy.get("recent_review_profile") if isinstance(adaptive_policy.get("recent_review_profile"), dict) else {}
+                breakdown = meta.get("opportunity_breakdown") if isinstance(meta.get("opportunity_breakdown"), dict) else {}
                 candidates.append(
                     {
                         "source": "position",
@@ -725,6 +846,49 @@ class TradingCore:
                         ),
                         "quality_score": float(metrics.get("quality_score", 0.0) or 0.0),
                         "pnl": float(pos.get("pnl", 0.0) or 0.0),
+                        "opportunity_breakdown": dict(breakdown),
+                        "broker_quality_score": float(
+                            meta.get("broker_quality_score", broker.get("score", breakdown.get("broker_quality", 0.0))) or 0.0
+                        ),
+                        "broker_primary_provider": str(broker.get("primary_provider", "") or ""),
+                        "broker_comparison_provider": str(broker.get("comparison_provider", "") or ""),
+                        "broker_agreement_state": str(
+                            meta.get("broker_agreement_state", broker.get("quote_agreement_state", "")) or ""
+                        ),
+                        "broker_quote_quality_state": str(
+                            meta.get("broker_quote_quality_state", broker.get("quote_quality_state", "")) or ""
+                        ),
+                        "broker_spread_regime": str(
+                            meta.get("broker_spread_regime", broker.get("spread_regime", "")) or ""
+                        ),
+                        "microstructure_score": float(
+                            meta.get("microstructure_score", micro.get("score", breakdown.get("microstructure", 0.0))) or 0.0
+                        ),
+                        "microstructure_pressure": str(
+                            micro.get("pressure_direction", meta.get("micro_pressure_direction", "")) or ""
+                        ),
+                        "depth_available": bool(meta.get("depth_available", micro.get("depth_available"))),
+                        "synthetic_depth_available": bool(
+                            meta.get("synthetic_depth_available", micro.get("synthetic_depth_available"))
+                        ),
+                        "microstructure_source": str(
+                            meta.get("microstructure_source", micro.get("microstructure_source", "")) or ""
+                        ),
+                        "cross_asset_score": float(
+                            meta.get("cross_asset_score", cross_asset.get("score", breakdown.get("cross_asset", 0.0))) or 0.0
+                        ),
+                        "cross_asset_alignment": float(meta.get("cross_asset_alignment", 0.0) or 0.0),
+                        "cross_asset_confidence": float(meta.get("cross_asset_confidence", 0.0) or 0.0),
+                        "cross_asset_state": str(meta.get("cross_asset_state", cross_asset.get("state", "")) or ""),
+                        "cross_asset_primary_peer": str(
+                            meta.get("cross_asset_primary_peer", cross_asset.get("dominant_peer", "")) or ""
+                        ),
+                        "cross_asset_primary_relation": str(
+                            meta.get("cross_asset_primary_relation", cross_asset.get("dominant_relation", "")) or ""
+                        ),
+                        "recent_pattern_block_new_entries": bool(recent_review.get("block_new_entries")),
+                        "recent_pattern_notes": [str(n) for n in list(recent_review.get("notes") or [])[:4]],
+                        "recent_pattern_sample_count": int(recent_review.get("sample_count", 0) or 0),
                         "recorded_at_utc": self._last_ranked_at_utc,
                     }
                 )
@@ -797,6 +961,20 @@ class TradingCore:
                         ctx["market_data"] = {"price": price_meta, "ohlcv": ohlcv_meta}
                         ctx["risk_manager"] = self._risk_manager
                         self._attach_market_structure_context(ctx, canonical, category, price_data)
+                        self._attach_broker_quality_context(
+                            ctx,
+                            canonical,
+                            category,
+                            price=price,
+                            spread=spread,
+                            price_meta=price_meta,
+                        )
+                        self._attach_cross_asset_context(
+                            ctx,
+                            canonical,
+                            category,
+                            timeframe=timeframe,
+                        )
                         try:
                             ctx["market_microstructure"] = self.fetcher.get_market_microstructure(
                                 canonical, category
@@ -849,6 +1027,10 @@ class TradingCore:
         never_seen_sources: List[str] = []
         recent_error_count = 0
         recent_errors: List[Dict[str, Any]] = []
+        training_health: Dict[str, Any] = {}
+        training_summary: Dict[str, Any] = {}
+        ig_broker: Dict[str, Any] = {}
+        signal_diagnostics: Dict[str, Any] = {}
         try:
             from monitoring.system_health_service import monitor as _mon
 
@@ -872,10 +1054,102 @@ class TradingCore:
             recent_errors = list(monitor_snapshot.get("recent_errors") or [])[-5:]
         except Exception:
             pass
+        try:
+            from ml.trainer import get_training_health_snapshot
+
+            training_snapshot = get_training_health_snapshot(getattr(self, "_trainer", None))
+            training_health = dict(training_snapshot.get("categories") or {})
+            training_summary = dict(training_snapshot.get("summary") or {})
+        except Exception:
+            pass
+        try:
+            from services.market_data_router import get_broker_account_summary
+
+            ig_broker = dict(get_broker_account_summary() or {})
+        except Exception:
+            ig_broker = {}
+        try:
+            positions = list(self.get_positions() or [])
+            total = 0
+            broker_fragile = 0
+            broker_supportive = 0
+            true_depth = 0
+            synthetic_depth = 0
+            cross_conflict = 0
+            cross_support = 0
+            recent_pattern_blocks = 0
+            for position in positions:
+                meta = dict(position.get("metadata") or {})
+                broker = meta.get("broker_quality") if isinstance(meta.get("broker_quality"), dict) else {}
+                micro = meta.get("market_microstructure") if isinstance(meta.get("market_microstructure"), dict) else {}
+                cross = meta.get("cross_asset_context") if isinstance(meta.get("cross_asset_context"), dict) else {}
+                adaptive = meta.get("adaptive_policy") if isinstance(meta.get("adaptive_policy"), dict) else {}
+                recent_review = adaptive.get("recent_review_profile") if isinstance(adaptive.get("recent_review_profile"), dict) else {}
+                total += 1
+
+                agreement_state = str(broker.get("quote_agreement_state") or "").lower()
+                spread_regime = str(broker.get("spread_regime") or "").lower()
+                quote_quality_state = str(broker.get("quote_quality_state") or "").lower()
+                broker_score = float(meta.get("broker_quality_score", broker.get("score", 0.0)) or 0.0)
+                transition_risk = float(broker.get("market_transition_risk", 0.0) or 0.0)
+                if (
+                    agreement_state in {"divergent", "severe_divergence"}
+                    or spread_regime in {"stressed", "extreme", "wide"}
+                    or quote_quality_state in {"stale", "delayed"}
+                    or transition_risk >= 0.65
+                    or bool(broker.get("market_state_changed"))
+                ):
+                    broker_fragile += 1
+                elif (
+                    broker_score >= 0.65
+                    and agreement_state in {"strong", "aligned"}
+                    and spread_regime in {"tight", "normal"}
+                    and quote_quality_state in {"fresh", "aging"}
+                ):
+                    broker_supportive += 1
+
+                if bool(micro.get("depth_available")):
+                    true_depth += 1
+                elif bool(micro.get("synthetic_depth_available")):
+                    synthetic_depth += 1
+
+                cross_alignment = float(meta.get("cross_asset_alignment", cross.get("alignment", cross.get("score", 0.0))) or 0.0)
+                cross_confidence = float(meta.get("cross_asset_confidence", cross.get("confidence", 0.0)) or 0.0)
+                if cross_confidence >= 0.20 and cross_alignment <= -0.20:
+                    cross_conflict += 1
+                elif cross_confidence >= 0.20 and cross_alignment >= 0.20:
+                    cross_support += 1
+
+                if bool(recent_review.get("block_new_entries")):
+                    recent_pattern_blocks += 1
+
+            summary_parts = [
+                f"Fragile {broker_fragile}" if broker_fragile else "",
+                f"True depth {true_depth}" if true_depth else "",
+                f"Synthetic {synthetic_depth}" if synthetic_depth else "",
+                f"Cross conflicts {cross_conflict}" if cross_conflict else "",
+                f"Pattern blocks {recent_pattern_blocks}" if recent_pattern_blocks else "",
+            ]
+            signal_diagnostics = {
+                "count": total,
+                "broker_fragile_count": broker_fragile,
+                "broker_supportive_count": broker_supportive,
+                "true_depth_count": true_depth,
+                "synthetic_depth_count": synthetic_depth,
+                "cross_conflict_count": cross_conflict,
+                "cross_support_count": cross_support,
+                "recent_pattern_block_count": recent_pattern_blocks,
+                "summary_label": " · ".join([part for part in summary_parts if part]) or "No active diagnostics",
+            }
+        except Exception:
+            signal_diagnostics = {}
         if stale_sources:
             issues.append(f"Stale data sources: {', '.join(stale_sources[:4])}")
         if recent_error_count > 0:
             issues.append(f"Recent monitor errors: {recent_error_count}")
+        if ig_broker.get("enabled") and not ig_broker.get("authenticated", False):
+            error_message = str(ig_broker.get("error_message") or ig_broker.get("error_code") or "unavailable")
+            issues.append(f"IG broker data unavailable: {error_message}")
         return {
             "is_running":       self._is_running,
             "engine_ready":     self._engine_ready.is_set(),
@@ -894,6 +1168,10 @@ class TradingCore:
             "never_seen_source_count": len(never_seen_sources),
             "recent_error_count": recent_error_count,
             "recent_errors":    recent_errors,
+            "training_health":  training_health,
+            "training_summary": training_summary,
+            "ig_broker":        ig_broker,
+            "signal_diagnostics": signal_diagnostics,
             "issues":           issues,
             "status":           "healthy" if not issues else "degraded",
         }
@@ -901,36 +1179,14 @@ class TradingCore:
     @staticmethod
     def _market_hours_status(asset: str, category: str) -> Tuple[bool, str]:
         try:
-            from services.deriv_bridge import deriv_bridge
+            from services.market_data_router import get_market_status
 
-            status = deriv_bridge.get_market_status(asset, category=category)
+            status = get_market_status(asset, category=category)
             if status and "market_open" in status:
-                return bool(status["market_open"]), str(status.get("reason", "Deriv market status"))
+                return bool(status["market_open"]), str(status.get("reason", "market status"))
         except Exception:
             pass
-
-        now_utc = datetime.now(tz=timezone.utc)
-        wd = now_utc.weekday()
-        hour = now_utc.hour
-
-        if category == "crypto":
-            return True, "crypto_24x7"
-
-        if wd >= 5:
-            if wd == 6 and hour >= 22 and category in ("forex", "commodities"):
-                return True, "sunday_reopen"
-            return False, "weekend_closed"
-
-        if category == "forex" and wd == 4 and hour >= 22:
-            return False, "forex_friday_close"
-
-        if category in ("stocks", "indices") and not (13 <= hour < 21):
-            return False, "indices_out_of_session"
-
-        if category == "commodities" and hour == 21:
-            return False, "commodities_settlement"
-
-        return True, "open"
+        return TradingCore._market_hours_status_fallback(category)
 
     # ── Internal — init ───────────────────────────────────────────────────────
 
@@ -1331,6 +1587,20 @@ class TradingCore:
                     ctx["timeframe"] = timeframe
                     ctx["risk_manager"] = self._risk_manager
                     self._attach_market_structure_context(ctx, canonical, category, price_data)
+                    self._attach_broker_quality_context(
+                        ctx,
+                        canonical,
+                        category,
+                        price=price,
+                        spread=spread,
+                        price_meta=price_meta,
+                    )
+                    self._attach_cross_asset_context(
+                        ctx,
+                        canonical,
+                        category,
+                        timeframe=timeframe,
+                    )
                     try:
                         ctx["market_microstructure"] = self.fetcher.get_market_microstructure(
                             canonical, category
@@ -2060,6 +2330,8 @@ class TradingCore:
             "news_event":        _get_news_event(category),  # news event state
             "market_data":       {},
             "market_structure":  {},
+            "broker_quality":    {},
+            "cross_asset_context": {},
             "market_microstructure": {},
             # FIX: wire macro_impact from MacroDataCollector so crisis regime
             # can trigger in MarketConditionClassifier.classify().
@@ -2072,6 +2344,59 @@ class TradingCore:
             "narrative_strength": float(intelligence_snapshot.get("narrative_strength", self._get_narrative_strength_static(asset)) or 0.0),
             "dominant_narrative": intelligence_snapshot.get("dominant_narrative", ""),
         }
+
+    def _attach_broker_quality_context(
+        self,
+        ctx: Dict[str, Any],
+        asset: str,
+        category: str,
+        *,
+        price: float,
+        spread: float,
+        price_meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.fetcher:
+            ctx["broker_quality"] = {}
+            return
+        try:
+            from services.broker_quality_service import get_service as get_broker_quality_service
+
+            ctx["broker_quality"] = get_broker_quality_service().build_snapshot(
+                asset=asset,
+                category=category,
+                fetcher=self.fetcher,
+                primary_price=price,
+                primary_spread=spread,
+                primary_meta=price_meta or self.fetcher.get_last_price_metadata(asset),
+                market_status=ctx.get("market_status"),
+            )
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Broker quality context unavailable for {asset}: {exc}")
+            ctx["broker_quality"] = {}
+
+    def _attach_cross_asset_context(
+        self,
+        ctx: Dict[str, Any],
+        asset: str,
+        category: str,
+        *,
+        timeframe: str = "",
+    ) -> None:
+        if not self.fetcher:
+            ctx["cross_asset_context"] = {}
+            return
+        try:
+            from services.cross_asset_spillover_service import get_service as get_cross_asset_spillover_service
+
+            ctx["cross_asset_context"] = get_cross_asset_spillover_service().build_snapshot(
+                asset=asset,
+                category=category,
+                fetcher=self.fetcher,
+                timeframe=str(timeframe or get_trading_timeframe(category) or "15m"),
+            )
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Cross-asset context unavailable for {asset}: {exc}")
+            ctx["cross_asset_context"] = {}
 
     def _notify_telegram_open(self, trade: Dict) -> None:
         if not self.telegram:

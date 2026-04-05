@@ -21,16 +21,19 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;flex-shrink:0}
 .page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
 .page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--am)}
-.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:grid;grid-template-columns:repeat(3,minmax(320px,1fr));grid-auto-rows:auto;gap:14px;align-content:start;align-items:start;min-height:0}
+.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:flex;flex-direction:column;gap:14px;min-height:0}
+.metric-grid{display:grid;grid-template-columns:repeat(3,minmax(320px,1fr));gap:14px}
+.sentiment-insight-grid,.sentiment-feed-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:14px}
 .panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow:hidden;min-height:0;display:flex;flex-direction:column;flex-shrink:0;align-self:start}
 .panel-full{grid-column:1 / -1}.panel-wide{grid-column:span 2}
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-shrink:0}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
-.panel-body{padding:14px 16px;flex:1;overflow-y:auto;min-height:0}
+.panel-body{padding:14px 16px;flex:1;min-height:0}
 .metric-panel{min-height:236px}
 .regime-panel{min-height:252px}
 .leader-panel{min-height:252px}
-.heatmap-panel{min-height:460px}
+.translation-panel{min-height:0}
+.heatmap-panel{min-height:420px}
 .news-panel{min-height:380px}
 .events-panel{min-height:340px}
 
@@ -81,11 +84,20 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .leader-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.6)}
 .leader-row:last-child{border:none}
 .leader-asset{flex:1;font-size:12px;font-weight:600}
+.leader-meta{flex:1;font-size:11px;line-height:1.4;color:var(--tx3)}
 .leader-score{font-size:12px;font-weight:700}
 .leader-tag{font-size:10px;padding:2px 6px;border-radius:999px;text-transform:uppercase;letter-spacing:.4px}
 .event-risk{background:var(--s2);border-radius:8px;padding:10px 12px;margin-bottom:10px}
 .event-risk-title{font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
 .event-risk-body{font-size:12px;line-height:1.4}
+.translation-body{padding:16px}
+.translation-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.translation-card{background:var(--s2);border:1px solid rgba(30,38,53,.8);border-radius:10px;padding:14px;min-height:114px;display:flex;flex-direction:column;justify-content:space-between;gap:10px}
+.translation-label{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.6px}
+.translation-value{font-size:24px;font-weight:700;line-height:1.15}
+.translation-value.compact{font-size:16px;line-height:1.35}
+.translation-note{font-size:12px;color:var(--tx2);line-height:1.45}
+.translation-sub{font-size:11px;color:var(--tx3)}
 
 .empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}
@@ -97,13 +109,14 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 #distPanel{min-height:172px;max-height:none;overflow-y:auto}
 
 @media(max-width:1400px){
-  .content{grid-template-columns:repeat(2,minmax(320px,1fr))}
-  .panel-full{grid-column:span 2}
+  .metric-grid{grid-template-columns:repeat(2,minmax(320px,1fr))}
+  .translation-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 @media(max-width:1080px){
-  .content{grid-template-columns:minmax(0,1fr)}
-  .panel-full,.panel-wide{grid-column:span 1}
+  .metric-grid,.sentiment-insight-grid,.sentiment-feed-grid{grid-template-columns:minmax(0,1fr)}
+  .translation-grid{grid-template-columns:minmax(0,1fr)}
+  .asset-sent-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 
 /* Scrollbar styling */
@@ -137,8 +150,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   html,body{overflow:auto!important}
   .layout{height:auto;min-height:100vh;flex-direction:column}
   .main{overflow:visible!important;height:auto}
-  .content{overflow:visible!important;height:auto;display:block}
-  .content>*{margin-bottom:10px}
+  .content{overflow:visible!important;height:auto;display:flex;flex-direction:column}
+  .asset-sent-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 </style>
 </head>
@@ -167,67 +180,70 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <div class="topbar">
       <button class="hamburger" id="menuBtn" aria-label="Menu" onclick="toggleSidebar()"><span></span><span></span><span></span></button><div class="page-title"><div class="dot"></div>Sentiment Intelligence</div></div>
     <div class="content">
-      <!-- Composite score -->
-      <div class="panel metric-panel">
-        <div class="panel-header"><span class="panel-title">🌐 Macro Composite</span></div>
-        <div class="score-center">
-          <div class="score-num" id="compScore">—</div>
-          <div class="score-lbl" id="compLabel">Loading…</div>
-          <div class="score-note" id="compExplain">Waiting for sentiment inputs…</div>
-          <div class="score-bar"><div class="score-bar-fill" id="compBar" style="width:50%"></div></div>
-          <div class="score-range"><span>-1.0 Bearish</span><span>+1.0 Bullish</span></div>
+      <div class="metric-grid">
+        <div class="panel metric-panel">
+          <div class="panel-header"><span class="panel-title">🌐 Macro Composite</span></div>
+          <div class="score-center">
+            <div class="score-num" id="compScore">—</div>
+            <div class="score-lbl" id="compLabel">Loading…</div>
+            <div class="score-note" id="compExplain">Waiting for sentiment inputs…</div>
+            <div class="score-bar"><div class="score-bar-fill" id="compBar" style="width:50%"></div></div>
+            <div class="score-range"><span>-1.0 Bearish</span><span>+1.0 Bullish</span></div>
+          </div>
+        </div>
+
+        <div class="panel metric-panel">
+          <div class="panel-header"><span class="panel-title">😱 Fear & Greed Input</span></div>
+          <div class="fg-wrap">
+            <div class="fg-num" id="fgNum">—</div>
+            <div class="fg-lbl" id="fgLbl">—</div>
+            <div class="fg-bar"><div class="fg-pointer" id="fgPtr" style="left:50%"></div></div>
+            <div class="fg-note" id="fgNote">This is one macro input, not the full sentiment verdict.</div>
+          </div>
+        </div>
+
+        <div class="panel metric-panel">
+          <div class="panel-header"><span class="panel-title">📊 News Tone Distribution</span></div>
+          <div class="panel-body" id="distPanel"><div class="empty">Loading…</div></div>
         </div>
       </div>
 
-      <!-- Fear/Greed -->
-      <div class="panel metric-panel">
-        <div class="panel-header"><span class="panel-title">😱 Fear & Greed Input</span></div>
-        <div class="fg-wrap">
-          <div class="fg-num" id="fgNum">—</div>
-          <div class="fg-lbl" id="fgLbl">—</div>
-          <div class="fg-bar"><div class="fg-pointer" id="fgPtr" style="left:50%"></div></div>
-          <div class="fg-note" id="fgNote">This is one macro input, not the full sentiment verdict.</div>
+      <div class="panel translation-panel">
+        <div class="panel-header"><span class="panel-title">🧩 Signal Translation</span></div>
+        <div class="panel-body translation-body" id="signalLinkPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="sentiment-insight-grid">
+        <div class="panel regime-panel">
+          <div class="panel-header"><span class="panel-title">📡 Market Regime Inputs</span></div>
+          <div class="panel-body">
+            <div class="regime-grid" id="regimePanel"><div class="empty" style="grid-column:span 2">Loading…</div></div>
+          </div>
+        </div>
+
+        <div class="panel leader-panel">
+          <div class="panel-header"><span class="panel-title">🏁 Snapshot Leaders</span></div>
+          <div class="panel-body" id="leaderPanel"><div class="empty">Loading…</div></div>
         </div>
       </div>
 
-      <!-- Distribution -->
-      <div class="panel metric-panel">
-        <div class="panel-header"><span class="panel-title">📊 News Tone Distribution</span></div>
-        <div class="panel-body" id="distPanel"><div class="empty">Loading…</div></div>
-      </div>
+      <div class="sentiment-feed-grid">
+        <div class="panel news-panel">
+          <div class="panel-header"><span class="panel-title">📰 News Sentiment Feed</span></div>
+          <div class="panel-body" id="newsPanel"><div class="empty">Loading…</div></div>
+        </div>
 
-      <!-- Real regime inputs -->
-      <div class="panel panel-wide regime-panel">
-        <div class="panel-header"><span class="panel-title">📡 Market Regime Inputs</span></div>
-        <div class="panel-body">
-          <div class="regime-grid" id="regimePanel"><div class="empty" style="grid-column:span 2">Loading…</div></div>
+        <div class="panel events-panel">
+          <div class="panel-header"><span class="panel-title">📅 Event Risk</span></div>
+          <div class="panel-body" id="eventsPanel"><div class="empty">Loading…</div></div>
         </div>
       </div>
 
-      <!-- Top conviction assets -->
-      <div class="panel leader-panel">
-        <div class="panel-header"><span class="panel-title">🏁 Snapshot Leaders</span></div>
-        <div class="panel-body" id="leaderPanel"><div class="empty">Loading…</div></div>
-      </div>
-
-      <!-- Per-asset sentiment heatmap -->
-      <div class="panel panel-full heatmap-panel">
+      <div class="panel heatmap-panel">
         <div class="panel-header"><span class="panel-title">🔥 Per-Asset Snapshot Sentiment</span></div>
         <div class="panel-body heatmap-body">
           <div class="asset-sent-grid" id="assetGrid"><div class="empty" style="grid-column:span 5">Loading…</div></div>
         </div>
-      </div>
-
-      <!-- News feed -->
-      <div class="panel panel-wide news-panel">
-        <div class="panel-header"><span class="panel-title">📰 News Sentiment Feed</span></div>
-        <div class="panel-body" id="newsPanel"><div class="empty">Loading…</div></div>
-      </div>
-
-      <!-- Market events -->
-      <div class="panel events-panel">
-        <div class="panel-header"><span class="panel-title">📅 Event Risk</span></div>
-        <div class="panel-body" id="eventsPanel"><div class="empty">Loading…</div></div>
       </div>
     </div>
   </div>
@@ -252,6 +268,7 @@ function renderSentimentUnavailable(message){
   document.getElementById('distPanel').innerHTML = '<div class="empty">'+msg+'</div>';
   document.getElementById('regimePanel').innerHTML = '<div class="empty" style="grid-column:span 2">'+msg+'</div>';
   document.getElementById('leaderPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('signalLinkPanel').innerHTML = '<div class="empty">'+msg+'</div>';
   document.getElementById('assetGrid').innerHTML = '<div class="empty" style="grid-column:span 5">'+msg+'</div>';
   document.getElementById('newsPanel').innerHTML = '<div class="empty">'+msg+'</div>';
   document.getElementById('eventsPanel').innerHTML = '<div class="empty">'+msg+'</div>';
@@ -294,6 +311,9 @@ async function load(){
     const d = page.sentiment || {};
     const da = page.by_asset || {assets:[]};
     const ev = page.events || {};
+    const status = page.status || {};
+    const routing = status.provider_routing || {};
+    const diagnostics = status.signal_diagnostics || {};
     const market = d.market_composite || {
       score: d.score || 0,
       interpretation: d.overall_sentiment || 'Neutral',
@@ -409,6 +429,51 @@ async function load(){
         </div>`;
       }).join('');
     }
+
+    const signalLinkEl=document.getElementById('signalLinkPanel');
+    const trueDepth=Number(diagnostics.true_depth_count || 0);
+    const syntheticDepth=Number(diagnostics.synthetic_depth_count || 0);
+    const fragileCount=Number(diagnostics.broker_fragile_count || 0);
+    const supportiveCount=Number(diagnostics.broker_supportive_count || 0);
+    const conflictCount=Number(diagnostics.cross_conflict_count || 0);
+    const blockCount=Number(diagnostics.recent_pattern_block_count || 0);
+    signalLinkEl.innerHTML = '<div class="translation-grid">' + [
+      {
+        label: 'Runtime feed spine',
+        score: routing.summary_label || 'Unavailable',
+        note: routing.fallback_label ? `Fallback ${routing.fallback_label}` : 'No fallback mix published',
+        color: 'var(--cy)',
+        sub: 'How the live broker stack is feeding sentiment-aware decisions',
+      },
+      {
+        label: 'Broker posture',
+        score: `${supportiveCount}/${fragileCount}`,
+        note: diagnostics.summary_label || 'No active signal diagnostics yet',
+        color: fragileCount ? 'var(--am)' : supportiveCount ? 'var(--gr)' : 'var(--tx2)',
+        sub: 'Supportive versus fragile live broker conditions',
+      },
+      {
+        label: 'Depth footprint',
+        score: `${trueDepth}/${syntheticDepth}`,
+        note: trueDepth ? 'True depth is supporting some live decisions' : syntheticDepth ? 'Synthetic depth is carrying the live book' : 'No depth-linked live positions yet',
+        color: trueDepth ? 'var(--gr)' : syntheticDepth ? 'var(--am)' : 'var(--tx2)',
+        sub: 'Whether sentiment is being reinforced by true or synthetic depth',
+      },
+      {
+        label: 'Spillover pressure',
+        score: `${highImpactCount}/${conflictCount}`,
+        note: blockCount ? `${blockCount} recent pattern blocks` : `${highImpactCount} macro events queued`,
+        color: conflictCount || blockCount ? 'var(--rd)' : 'var(--gr)',
+        sub: 'Macro events and cross-asset conflicts affecting trade confidence',
+      },
+    ].map(item => `
+      <div class="translation-card">
+        <div class="translation-label">${item.label}</div>
+        <div class="translation-value ${String(item.score).length > 16 ? 'compact' : ''}" style="color:${item.color}">${item.score}</div>
+        <div class="translation-note">${item.note}</div>
+        <div class="translation-sub">${item.sub}</div>
+      </div>
+    `).join('') + '</div>';
 
     // Per-asset heatmap
     const grid=document.getElementById('assetGrid');

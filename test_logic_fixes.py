@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import importlib
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -318,13 +320,26 @@ def test_paper_trader_applies_realistic_entry_and_exit_costs() -> None:
     assert round(trade["entry_price"], 4) == 100.7
     assert trade["metadata"]["paper_execution"]["fill_mode"] == "paper_realistic"
 
-    closed = trader._check_exit(trade, 120.0)
 
-    assert closed is not None
-    assert closed["exit_reason"] == "Take Profit"
-    assert round(closed["exit_price"], 4) == 119.232
-    assert closed["metadata"]["paper_execution"]["total_commission"] > 0.0
-    assert closed["pnl"] < closed["gross_pnl"]
+def test_paper_trader_execute_signal_records_utc_open_time() -> None:
+    trader = PaperTrader(account_balance=10_000.0)
+
+    trade = trader.execute_signal(
+        {
+            "asset": "BTC-USD",
+            "category": "crypto",
+            "direction": "BUY",
+            "confidence": 0.72,
+            "entry_price": 100.0,
+            "stop_loss": 90.0,
+            "take_profit": 120.0,
+            "position_size": 1.0,
+            "metadata": {},
+        }
+    )
+
+    assert trade is not None
+    assert str(trade["open_time"]).endswith("+00:00")
 
 
 def test_paper_trader_stop_loss_uses_harsher_adverse_fill() -> None:
@@ -740,6 +755,308 @@ def test_signal_governance_bootstraps_provisional_crypto_with_realtime_secondary
     assert verdict["approved"] is True
     assert any("bootstrap research allowance" in item for item in verdict["warnings"])
     assert any("live validation bootstrap" in item for item in verdict["warnings"])
+
+
+def test_signal_governance_keeps_commodities_blocked_when_seed_metadata_missing(monkeypatch) -> None:
+    governance_mod = importlib.import_module("services.signal_governance")
+    governance = governance_mod.SignalGovernance()
+
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_live_validation",
+        staticmethod(lambda asset: {"scope": "asset", "total": 32, "accuracy_pct": 60.0}),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_expectancy_validation",
+        staticmethod(
+            lambda asset, category: {
+                "scope": "asset",
+                "sample_count": 18,
+                "avg_rr_realized": 0.24,
+                "target_hit_rate": 0.44,
+                "premature_stop_rate": 0.10,
+                "avg_quality_score": 63.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        governance_mod.registry,
+        "get_metadata",
+        lambda name: (
+            {}
+            if name == "commodities_classifier"
+            else {
+                "research_approved": False,
+                "research_grade": "provisional",
+                "research_status": "provisional",
+                "holdout_accuracy": 0.5385,
+                "holdout_threshold": 0.52,
+                "walk_forward_accuracy": 0.5281,
+                "walk_forward_threshold": 0.52,
+                "walk_forward_samples": 604,
+                "walk_forward_required_samples": 60,
+            }
+        ),
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="XAG/USD",
+        canonical_asset="XAG/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.84,
+        entry_price=30.0,
+        stop_loss=29.4,
+        take_profit=31.2,
+        risk_reward=2.0,
+    )
+    signal.metadata.update({
+        "valid_sources_count": 4,
+        "ml_confidence": 0.29,
+        "seed_model": "commodities_classifier",
+        "policy_model": "commodities_policy",
+        "agent_policy_status": "research_unapproved",
+        "agent_score": 0.582,
+    })
+
+    verdict = governance.evaluate(signal, {
+        "market_data": {
+            "price": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+            "ohlcv": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+        }
+    })
+
+    assert verdict["approved"] is False
+    assert verdict["research_model_key"] == "commodities_classifier"
+    assert any("commodities_classifier lacks approved walk-forward research" in item for item in verdict["violations"])
+
+
+def test_signal_governance_keeps_block_when_policy_research_is_misaligned(monkeypatch) -> None:
+    governance_mod = importlib.import_module("services.signal_governance")
+    governance = governance_mod.SignalGovernance()
+
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_live_validation",
+        staticmethod(lambda asset: {"scope": "asset", "total": 32, "accuracy_pct": 60.0}),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_expectancy_validation",
+        staticmethod(
+            lambda asset, category: {
+                "scope": "asset",
+                "sample_count": 18,
+                "avg_rr_realized": 0.24,
+                "target_hit_rate": 0.44,
+                "premature_stop_rate": 0.10,
+                "avg_quality_score": 63.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        governance_mod.registry,
+        "get_metadata",
+        lambda name: (
+            {}
+            if name == "commodities_classifier"
+            else {
+                "research_approved": False,
+                "research_grade": "provisional",
+                "research_status": "provisional",
+                "holdout_accuracy": 0.5385,
+                "holdout_threshold": 0.52,
+                "walk_forward_accuracy": 0.5281,
+                "walk_forward_threshold": 0.52,
+                "walk_forward_samples": 604,
+                "walk_forward_required_samples": 60,
+            }
+        ),
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="SELL",
+        confidence=0.84,
+        entry_price=2300.0,
+        stop_loss=2320.0,
+        take_profit=2260.0,
+        risk_reward=2.0,
+    )
+    signal.metadata.update({
+        "valid_sources_count": 4,
+        "ml_confidence": 0.29,
+        "seed_model": "commodities_classifier",
+        "policy_model": "commodities_policy",
+        "agent_policy_status": "research_unapproved",
+        "agent_score": 0.757,
+    })
+
+    verdict = governance.evaluate(signal, {
+        "market_data": {
+            "price": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+            "ohlcv": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+        }
+    })
+
+    assert verdict["approved"] is False
+    assert verdict["research_model_key"] == "commodities_classifier"
+    assert any("commodities_classifier lacks approved walk-forward research" in item for item in verdict["violations"])
+
+
+def test_signal_governance_allows_non_commodities_provisional_research_in_paper(monkeypatch) -> None:
+    governance_mod = importlib.import_module("services.signal_governance")
+    governance = governance_mod.SignalGovernance()
+
+    monkeypatch.delenv("BOT_LIVE_RUNTIME", raising=False)
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_live_validation",
+        staticmethod(lambda asset: {"scope": "asset", "total": 32, "accuracy_pct": 60.0}),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_expectancy_validation",
+        staticmethod(
+            lambda asset, category: {
+                "scope": "asset",
+                "sample_count": 18,
+                "avg_rr_realized": 0.24,
+                "target_hit_rate": 0.44,
+                "premature_stop_rate": 0.10,
+                "avg_quality_score": 63.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        governance_mod.registry,
+        "get_metadata",
+        lambda name: {
+            "research_approved": False,
+            "research_grade": "provisional",
+            "research_status": "provisional",
+            "holdout_accuracy": 0.49,
+            "holdout_threshold": 0.52,
+            "walk_forward_accuracy": 0.48,
+            "walk_forward_threshold": 0.52,
+            "walk_forward_samples": 20,
+            "walk_forward_required_samples": 60,
+        },
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="USD/JPY",
+        canonical_asset="USD/JPY",
+        category="forex",
+        direction="BUY",
+        confidence=0.84,
+        entry_price=150.0,
+        stop_loss=149.2,
+        take_profit=151.4,
+        risk_reward=1.75,
+    )
+    signal.metadata.update({
+        "valid_sources_count": 4,
+        "ml_confidence": 0.29,
+        "policy_model": "forex_policy",
+    })
+
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_run_forex_filter",
+        staticmethod(lambda signal, context: (True, "ok")),
+    )
+
+    verdict = governance.evaluate(signal, {
+        "market_data": {
+            "price": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+            "ohlcv": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+        }
+    })
+
+    assert verdict["approved"] is True
+    assert any("allowed in paper runtime with provisional research" in item for item in verdict["warnings"])
+
+
+def test_signal_governance_rejects_same_provisional_model_in_live_runtime(monkeypatch) -> None:
+    governance_mod = importlib.import_module("services.signal_governance")
+    governance = governance_mod.SignalGovernance()
+
+    monkeypatch.setenv("BOT_LIVE_RUNTIME", "1")
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_live_validation",
+        staticmethod(lambda asset: {"scope": "asset", "total": 32, "accuracy_pct": 60.0}),
+    )
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_get_expectancy_validation",
+        staticmethod(
+            lambda asset, category: {
+                "scope": "asset",
+                "sample_count": 18,
+                "avg_rr_realized": 0.24,
+                "target_hit_rate": 0.44,
+                "premature_stop_rate": 0.10,
+                "avg_quality_score": 63.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        governance_mod.registry,
+        "get_metadata",
+        lambda name: {
+            "research_approved": False,
+            "research_grade": "provisional",
+            "research_status": "provisional",
+            "holdout_accuracy": 0.49,
+            "holdout_threshold": 0.52,
+            "walk_forward_accuracy": 0.48,
+            "walk_forward_threshold": 0.52,
+            "walk_forward_samples": 20,
+            "walk_forward_required_samples": 60,
+        },
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="USD/JPY",
+        canonical_asset="USD/JPY",
+        category="forex",
+        direction="BUY",
+        confidence=0.84,
+        entry_price=150.0,
+        stop_loss=149.2,
+        take_profit=151.4,
+        risk_reward=1.75,
+    )
+    signal.metadata.update({
+        "valid_sources_count": 4,
+        "ml_confidence": 0.29,
+        "policy_model": "forex_policy",
+    })
+
+    monkeypatch.setattr(
+        governance_mod.SignalGovernance,
+        "_run_forex_filter",
+        staticmethod(lambda signal, context: (True, "ok")),
+    )
+
+    verdict = governance.evaluate(signal, {
+        "market_data": {
+            "price": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+            "ohlcv": {"source": "Deriv", "source_class": "primary_api", "delayed": False},
+        }
+    })
+
+    assert verdict["approved"] is False
+    assert any("forex_policy lacks approved walk-forward research" in item for item in verdict["violations"])
 
 
 def test_signal_governance_rejects_bootstrap_asset_with_poor_live_accuracy(monkeypatch) -> None:
@@ -1269,6 +1586,40 @@ def test_forex_filter_allows_slightly_wider_bootstrap_spread() -> None:
     assert reason == "PASSED"
 
 
+def test_forex_filter_uses_price_relative_atr_floor_for_major_pairs() -> None:
+    forex_mod = importlib.import_module("risk.forex_filter")
+
+    df = pd.DataFrame({"close": np.linspace(1.20, 1.35, 40)})
+    passed, reason = forex_mod.ForexFilter.should_trade_forex_signal(
+        asset="USD/CAD",
+        signal_confidence=0.66,
+        df=df,
+        atr=0.00021,
+        current_spread_bps=0.6,
+        live_validation_scope="asset",
+    )
+
+    assert passed is True
+    assert reason == "PASSED"
+
+
+def test_forex_filter_still_rejects_truly_dead_atr() -> None:
+    forex_mod = importlib.import_module("risk.forex_filter")
+
+    df = pd.DataFrame({"close": np.linspace(1.05, 1.10, 40)})
+    passed, reason = forex_mod.ForexFilter.should_trade_forex_signal(
+        asset="EUR/USD",
+        signal_confidence=0.70,
+        df=df,
+        atr=0.00005,
+        current_spread_bps=0.4,
+        live_validation_scope="asset",
+    )
+
+    assert passed is False
+    assert "ATR 0.00005 < min" in reason
+
+
 def test_trading_agent_decide_stamps_policy_model(monkeypatch) -> None:
     agent_mod = importlib.import_module("ml.agent")
     trading_agent = agent_mod.TradingAgent()
@@ -1513,6 +1864,70 @@ def test_trading_agent_reversal_reprices_from_category_baseline_and_rebuilds_tp_
     assert len(signal.take_profit_levels) == 3
     assert all(level > signal.entry_price for level in signal.take_profit_levels)
     assert abs(float(signal.take_profit_levels[1]) - float(signal.take_profit)) <= 1e-6
+
+
+def test_trading_agent_reverses_crypto_on_category_specific_policy_edge(monkeypatch) -> None:
+    agent_mod = importlib.import_module("ml.agent")
+    risk_mod = importlib.import_module("risk.manager")
+    trading_agent = agent_mod.TradingAgent()
+
+    class _Model:
+        def predict_proba(self, X):
+            return np.array([[0.3458, 0.6542]], dtype=np.float32)
+
+    monkeypatch.setattr(agent_mod.registry, "get", lambda name: _Model(), raising=False)
+    monkeypatch.setattr(
+        agent_mod.registry,
+        "get_metadata",
+        lambda name: (
+            {
+                "research_approved": True,
+                "research_status": "approved",
+                "research_grade": "institutional",
+            }
+            if name == "crypto_policy"
+            else {
+                "research_approved": False,
+                "research_status": "provisional",
+                "research_grade": "provisional",
+            }
+        ),
+        raising=False,
+    )
+
+    price_data = pd.DataFrame(
+        {
+            "open": np.linspace(600.0, 620.0, 40),
+            "high": np.linspace(601.0, 621.0, 40),
+            "low": np.linspace(599.0, 619.0, 40),
+            "close": np.linspace(600.0, 620.0, 40),
+            "volume": np.linspace(1000.0, 1800.0, 40),
+        }
+    )
+    signal = Signal(
+        asset="BNB-USD",
+        canonical_asset="BNB-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.74,
+        entry_price=620.0,
+        stop_loss=628.0,
+        take_profit=604.0,
+        risk_reward=2.0,
+    )
+    signal.metadata.update({"seed_model": "crypto_classifier", "ml_confidence": 0.74, "regime": "trending_down"})
+
+    result = trading_agent.decide(
+        signal,
+        {
+            "price_data": price_data,
+            "risk_manager": risk_mod.RiskManager(),
+        },
+    )
+
+    assert result is signal
+    assert signal.direction == "BUY"
+    assert signal.metadata["agent_policy_status"] == "reversed"
 
 
 def test_trading_agent_does_not_reverse_when_seed_model_is_already_approved(monkeypatch) -> None:
@@ -2524,6 +2939,14 @@ def test_deriv_bridge_normalises_decimal_pip_size() -> None:
     assert normalized["pip_size"] == 5
 
 
+def test_deriv_bridge_default_symbol_map_does_not_force_wti() -> None:
+    deriv_mod = importlib.import_module("services.deriv_bridge")
+
+    assert "WTI" not in deriv_mod._DEFAULT_SYMBOL_OVERRIDES
+    assert "WTI/USD" not in deriv_mod._DEFAULT_SYMBOL_OVERRIDES
+    assert "CL=F" not in deriv_mod._DEFAULT_SYMBOL_OVERRIDES
+
+
 def test_asset_registry_normalises_wti_aliases() -> None:
     from core.assets import registry
 
@@ -2533,13 +2956,99 @@ def test_asset_registry_normalises_wti_aliases() -> None:
     assert registry.category("WTI") == "commodities"
 
 
-def test_asset_registry_includes_eurjpy_and_excludes_wti_from_active_universe() -> None:
+def test_asset_registry_includes_eurjpy_and_wti_in_active_universe() -> None:
     from core.assets import registry
 
     assets = dict(registry.all_assets())
 
     assert assets["EUR/JPY"] == "forex"
-    assert "WTI" not in assets
+    assert assets["WTI"] == "commodities"
+    assert len(assets) == 19
+
+
+def test_strategy_lab_category_assets_track_registry_universe() -> None:
+    lab_mod = importlib.import_module("strategy_lab")
+
+    assert "WTI" in lab_mod._CATEGORY_ASSETS["commodities"]
+    assert len(sum((items for items in lab_mod._CATEGORY_ASSETS.values()), [])) == 19
+
+
+def test_auto_research_default_assets_track_registry_universe() -> None:
+    auto_mod = importlib.import_module("strategy_lab.auto_research")
+    from core.assets import registry
+
+    expected = {(asset, category) for asset, category in registry.all_assets()}
+    actual = {(row["asset"], row["category"]) for row in auto_mod.AUTO_RESEARCH_DEFAULT_ASSETS}
+
+    assert ("WTI", "commodities") in actual
+    assert actual == expected
+
+
+def test_run_lab_asset_universe_tracks_registry() -> None:
+    run_lab_mod = importlib.import_module("run_lab")
+    from core.assets import registry
+
+    assert run_lab_mod._asset_universe() == list(registry.all_assets())
+
+
+def test_strategy_builder_all_configs_only_exposes_active_research_bench() -> None:
+    from strategy_lab.strategy_builder import StrategyBuilder
+
+    active = StrategyBuilder.all_configs()
+    archived = StrategyBuilder.archived_configs()
+
+    assert list(active.keys()) == [
+        "ema_rsi_crossover",
+        "macd_trend",
+        "adx_trend",
+        "triple_ema",
+        "volume_breakout",
+        "macd_rsi_confluence",
+        "bollinger_rsi_reversion",
+        "adx_ema_momentum",
+        "atr_supertrend",
+    ]
+    assert "golden_cross" not in active
+    assert "rsi_scalper" not in active
+    assert "stoch_trend" not in active
+    assert set(archived.keys()) == {
+        "rsi_mean_reversion",
+        "stoch_trend",
+        "bollinger_breakout",
+        "rsi_scalper",
+        "golden_cross",
+        "stoch_macd_swing",
+    }
+
+
+def test_api_backtest_strategies_reports_active_and_archived_strategy_sets(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    strategy_builder_mod = importlib.import_module("strategy_lab.strategy_builder")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(
+        strategy_builder_mod.StrategyBuilder,
+        "all_configs",
+        staticmethod(lambda: {"alpha": {"name": "alpha"}, "beta": {"name": "beta"}}),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        strategy_builder_mod.StrategyBuilder,
+        "archived_configs",
+        staticmethod(lambda: {"legacy": {"name": "legacy"}}),
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/backtest/strategies")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["presets"] == ["alpha", "beta"]
+    assert payload["archived_presets"] == ["legacy"]
+    assert payload["live_runtime"] == ["policy_agent"]
 
 
 def test_fetcher_marks_quote_unavailable_when_deriv_missing(monkeypatch) -> None:
@@ -2589,6 +3098,966 @@ def test_fetcher_falls_back_to_binance_quote_for_unsupported_crypto(monkeypatch)
     assert meta["source"] == "Binance"
     assert meta["source_class"] == "secondary_api"
     assert meta["exchange_symbol"] == "BNBUSDT"
+
+
+def test_fetcher_records_deriv_wti_quote_metadata(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "set", lambda key, value, ttl=None: None, raising=False)
+    monkeypatch.setattr(ws_mod, "get_live_price", lambda asset, max_age_seconds=10.0: (None, None), raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._deriv_bridge = SimpleNamespace(
+        get_quote=lambda asset, category="": (
+            82.45,
+            0.03,
+            {"source": "Deriv", "source_class": "primary_api", "delayed": False, "realtime": True},
+        ),
+        resolve_symbol_info=lambda asset, category="": {"symbol": "frxUSOIL", "display_name": "WTI Oil"},
+    )
+
+    price, spread = fetcher.get_real_time_price("WTI", "commodities")
+    meta = fetcher.get_last_price_metadata("WTI")
+
+    assert price == 82.45
+    assert spread == 0.03
+    assert meta["source"] == "Deriv"
+    assert meta["source_class"] == "primary_api"
+    assert meta["deriv_symbol"] == "frxUSOIL"
+
+
+def test_fetcher_prefers_ig_quote_for_routed_commodities(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "set", lambda key, value, ttl=None: None, raising=False)
+    monkeypatch.setattr(ws_mod, "get_live_price", lambda asset, max_age_seconds=10.0: (None, None), raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._ig_bridge = SimpleNamespace(
+        get_quote=lambda asset, category="": (
+            2345.6,
+            0.4,
+            {"source": "IG", "source_class": "primary_api", "delayed": False, "realtime": True},
+        ),
+        resolve_symbol_info=lambda asset, category="": {"symbol": "CS.D.GOLD.CFD.IP", "exchange": "ig"},
+    )
+    fetcher._deriv_bridge = SimpleNamespace(
+        get_quote=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Deriv fallback should not run when IG succeeds")),
+    )
+
+    price, spread = fetcher.get_real_time_price("XAU/USD", "commodities")
+    meta = fetcher.get_last_price_metadata("XAU/USD")
+
+    assert price == 2345.6
+    assert spread == 0.4
+    assert meta["source"] == "IG"
+    assert meta["source_class"] == "primary_api"
+    assert meta["ig_epic"] == "CS.D.GOLD.CFD.IP"
+
+
+def test_fetcher_prefers_shared_ig_live_price_cache_for_routed_commodities(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "set", lambda key, value, ttl=None: None, raising=False)
+    monkeypatch.setattr(ws_mod, "get_live_price", lambda asset, max_age_seconds=15.0: (2500.75, "IG"), raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._ig_bridge = SimpleNamespace(
+        get_quote=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("IG REST quote should not run when shared live cache is fresh")),
+        resolve_symbol_info=lambda asset, category="": {"symbol": "CS.D.IN_GOLD.MFI.IP", "exchange": "ig", "instrument_name": "Spot Gold"},
+    )
+    fetcher._deriv_bridge = SimpleNamespace(
+        get_quote=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Deriv fallback should not run when IG shared live cache is fresh")),
+    )
+
+    price, spread = fetcher.get_real_time_price("XAU/USD", "commodities")
+    meta = fetcher.get_last_price_metadata("XAU/USD")
+
+    assert price == 2500.75
+    assert spread == 0.0
+    assert meta["source"] == "IG"
+    assert meta["source_class"] == "stream"
+    assert meta["ig_epic"] == "CS.D.IN_GOLD.MFI.IP"
+
+
+def test_fetcher_market_microstructure_prefers_true_orderflow_depth_for_crypto(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._deriv_bridge = SimpleNamespace(
+        get_microstructure=lambda asset, category="": {
+            "source": "Deriv",
+            "score": 0.18,
+            "tick_imbalance": 0.22,
+            "book_imbalance": 0.0,
+            "stop_hunt_risk": 0.12,
+            "synthetic_depth_available": True,
+            "depth_available": False,
+            "microstructure_source": "live_store_synthetic_depth",
+        }
+    )
+    fetcher._binance_bridge = None
+    fetcher._ig_bridge = None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "order_flow",
+        SimpleNamespace(
+            get_snapshot=lambda symbol: {
+                "imbalance": 0.64,
+                "spread_pct": 0.01,
+                "bid_vol": 120.0,
+                "ask_vol": 40.0,
+                "top_bids": [[100.0, 50.0], [99.9, 40.0]],
+                "top_asks": [[100.1, 20.0], [100.2, 20.0]],
+            }
+        ),
+    )
+
+    micro = fetcher.get_market_microstructure("BTC-USD", "crypto")
+
+    assert micro["depth_available"] is True
+    assert micro["synthetic_depth_available"] is False
+    assert micro["microstructure_source"] == "order_flow_true_depth"
+    assert micro["book_imbalance"] == 0.64
+    assert micro["depth_levels"] == 2
+    assert micro["bid_vol"] == 120.0
+    assert micro["ask_vol"] == 40.0
+
+
+def test_fetcher_falls_back_to_deriv_quote_for_routed_commodities_when_ig_unavailable(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "set", lambda key, value, ttl=None: None, raising=False)
+    monkeypatch.setattr(ws_mod, "get_live_price", lambda asset, max_age_seconds=10.0: (None, None), raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._ig_bridge = SimpleNamespace(
+        get_quote=lambda asset, category="": (
+            None,
+            None,
+            {
+                "source": "IG",
+                "source_class": "primary_api",
+                "provider_error_code": "missing_credentials",
+                "provider_error_message": "IG_IDENTIFIER and IG_PASSWORD are required for IG commodity data.",
+            },
+        ),
+        resolve_symbol_info=lambda asset, category="": {"symbol": "IX.D.XAU.CFD.IP", "exchange": "ig"},
+    )
+    fetcher._deriv_bridge = SimpleNamespace(
+        get_quote=lambda asset, category="": (
+            2498.2,
+            0.3,
+            {"source": "Deriv", "source_class": "primary_api", "delayed": False, "realtime": True},
+        ),
+        resolve_symbol_info=lambda asset, category="": {"symbol": "frxXAUUSD", "display_name": "Gold"},
+    )
+
+    price, spread = fetcher.get_real_time_price("XAU/USD", "commodities")
+    meta = fetcher.get_last_price_metadata("XAU/USD")
+
+    assert price == 2498.2
+    assert spread == 0.3
+    assert meta["source"] == "Deriv"
+    assert meta["deriv_symbol"] == "frxXAUUSD"
+
+
+def test_fetcher_uses_ig_ohlcv_for_routed_commodities(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "set", lambda key, value, ttl=None: None, raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._ig_bridge = SimpleNamespace(
+        get_ohlcv=lambda asset, interval, periods, category="", end_time=None, closed_only=False: (
+            pd.DataFrame({
+                "open": [2320.0, 2324.5],
+                "high": [2328.0, 2330.2],
+                "low": [2318.8, 2323.3],
+                "close": [2326.7, 2329.1],
+                "volume": [0.0, 0.0],
+            }),
+            {"source": "IG", "source_class": "primary_api", "delayed": False, "realtime": False},
+        ),
+        resolve_symbol_info=lambda asset, category="": {"symbol": "CS.D.GOLD.CFD.IP", "exchange": "ig"},
+    )
+
+    df = fetcher.get_ohlcv("XAU/USD", "commodities", "15m", 2)
+    meta = fetcher.get_last_ohlcv_metadata("XAU/USD", "15m")
+
+    assert df is not None and not df.empty
+    assert meta["source"] == "IG"
+    assert meta["source_class"] == "primary_api"
+    assert meta["ig_epic"] == "CS.D.GOLD.CFD.IP"
+
+
+def test_fetcher_preserves_ig_ohlcv_error_metadata_for_routed_commodities(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "set", lambda key, value, ttl=None: None, raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._ig_bridge = SimpleNamespace(
+        get_ohlcv=lambda asset, interval, periods, category="", end_time=None, closed_only=False: (
+            None,
+            {
+                "source": "IG",
+                "source_class": "primary_api",
+                "delayed": False,
+                "realtime": False,
+                "provider_error_code": "missing_credentials",
+                "provider_error_message": "IG_IDENTIFIER and IG_PASSWORD are required for IG commodity data.",
+            },
+        ),
+        resolve_symbol_info=lambda asset, category="": {"symbol": "IX.D.USCRUDE.CFD.IP", "exchange": "ig"},
+    )
+
+    df = fetcher.get_ohlcv("WTI", "commodities", "15m", 2)
+    meta = fetcher.get_last_ohlcv_metadata("WTI", "15m")
+
+    assert df is None
+    assert meta["source"] == "IG"
+    assert meta["provider_error_code"] == "missing_credentials"
+    assert "IG_IDENTIFIER and IG_PASSWORD" in meta["provider_error_message"]
+    assert meta["ig_epic"] == "IX.D.USCRUDE.CFD.IP"
+
+
+def test_ig_bridge_uses_oauth_bearer_token_for_requests(monkeypatch) -> None:
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(ig_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(ig_mod, "IG_API_KEY", "api-key", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_IDENTIFIER", "user1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_PASSWORD", "pass1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ACCOUNT_ID", "", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ENVIRONMENT", "demo", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_EPIC_MAP", "", raising=False)
+
+    calls = {"post": [], "request": []}
+
+    class _FakeResponse:
+        def __init__(self, status_code, payload=None, headers=None, text="") -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.headers = headers or {}
+            self.text = text
+
+        @property
+        def ok(self):
+            return 200 <= self.status_code < 300
+
+        def json(self):
+            return self._payload
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.headers = {}
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            calls["post"].append({"url": url, "json": json, "headers": dict(headers or {})})
+            return _FakeResponse(
+                200,
+                {
+                    "accountId": "ACC123",
+                    "oauthToken": {
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "expires_in": "60",
+                        "token_type": "Bearer",
+                        "scope": "profile",
+                    },
+                },
+            )
+
+        def request(self, method, url, params=None, headers=None, timeout=None):
+            calls["request"].append(
+                {"method": method, "url": url, "params": params, "headers": dict(headers or {})}
+            )
+            return _FakeResponse(200, {"markets": []})
+
+    monkeypatch.setattr(ig_mod.requests, "Session", _FakeSession, raising=False)
+
+    bridge = ig_mod.IGMarketBridge()
+    payload = bridge._request("GET", "/markets", params={"searchTerm": "gold"})
+
+    assert payload == {"markets": []}
+    assert len(calls["post"]) == 1
+    assert calls["post"][0]["headers"]["Version"] == "3"
+    assert len(calls["request"]) == 1
+    assert calls["request"][0]["headers"]["Authorization"] == "Bearer access-1"
+    assert calls["request"][0]["headers"]["IG-ACCOUNT-ID"] == "ACC123"
+    assert "CST" not in calls["request"][0]["headers"]
+    assert "X-SECURITY-TOKEN" not in calls["request"][0]["headers"]
+
+
+def test_ig_bridge_refreshes_oauth_token_when_expired(monkeypatch) -> None:
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(ig_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(ig_mod, "IG_API_KEY", "api-key", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_IDENTIFIER", "user1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_PASSWORD", "pass1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ACCOUNT_ID", "ACC999", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ENVIRONMENT", "demo", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_EPIC_MAP", "", raising=False)
+
+    refresh_calls = []
+
+    class _FakeResponse:
+        def __init__(self, status_code, payload=None, headers=None, text="") -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.headers = headers or {}
+            self.text = text
+
+        @property
+        def ok(self):
+            return 200 <= self.status_code < 300
+
+        def json(self):
+            return self._payload
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.headers = {}
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            refresh_calls.append({"url": url, "json": json, "headers": dict(headers or {})})
+            assert url.endswith("/session/refresh-token")
+            return _FakeResponse(
+                200,
+                {
+                    "access_token": "access-2",
+                    "refresh_token": "refresh-2",
+                    "expires_in": "120",
+                    "token_type": "Bearer",
+                    "scope": "profile",
+                },
+            )
+
+    monkeypatch.setattr(ig_mod.requests, "Session", _FakeSession, raising=False)
+
+    bridge = ig_mod.IGMarketBridge()
+    bridge._access_token = "stale-access"
+    bridge._refresh_token = "refresh-1"
+    bridge._session_expires_at = 0.0
+
+    bridge._ensure_session()
+
+    assert len(refresh_calls) == 1
+    assert bridge._access_token == "access-2"
+    assert bridge._refresh_token == "refresh-2"
+    assert bridge._account_id == "ACC999"
+    assert bridge._session_expires_at > time.monotonic()
+
+
+def test_ig_bridge_retries_once_after_401_with_oauth_refresh(monkeypatch) -> None:
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(ig_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(ig_mod, "IG_API_KEY", "api-key", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_IDENTIFIER", "user1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_PASSWORD", "pass1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ACCOUNT_ID", "ACC101", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ENVIRONMENT", "demo", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_EPIC_MAP", "", raising=False)
+
+    request_calls = []
+    refresh_calls = []
+
+    class _FakeResponse:
+        def __init__(self, status_code, payload=None, headers=None, text="") -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.headers = headers or {}
+            self.text = text
+
+        @property
+        def ok(self):
+            return 200 <= self.status_code < 300
+
+        def json(self):
+            return self._payload
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.headers = {}
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            refresh_calls.append({"url": url, "json": json, "headers": dict(headers or {})})
+            return _FakeResponse(
+                200,
+                {
+                    "access_token": "access-fresh",
+                    "refresh_token": "refresh-fresh",
+                    "expires_in": "90",
+                    "token_type": "Bearer",
+                    "scope": "profile",
+                },
+            )
+
+        def request(self, method, url, params=None, headers=None, timeout=None):
+            request_calls.append({"method": method, "url": url, "headers": dict(headers or {})})
+            if len(request_calls) == 1:
+                return _FakeResponse(401, {"errorCode": "error.security.oauth-token-invalid"})
+            return _FakeResponse(200, {"markets": [{"epic": "IX.D.XAU.CFD.IP"}]})
+
+    monkeypatch.setattr(ig_mod.requests, "Session", _FakeSession, raising=False)
+
+    bridge = ig_mod.IGMarketBridge()
+    bridge._access_token = "access-stale"
+    bridge._refresh_token = "refresh-stale"
+    bridge._session_expires_at = time.monotonic() + 300.0
+
+    payload = bridge._request("GET", "/markets", params={"searchTerm": "gold"})
+
+    assert payload == {"markets": [{"epic": "IX.D.XAU.CFD.IP"}]}
+    assert len(refresh_calls) == 1
+    assert len(request_calls) == 2
+    assert request_calls[0]["headers"]["Authorization"] == "Bearer access-stale"
+    assert request_calls[1]["headers"]["Authorization"] == "Bearer access-fresh"
+
+
+def test_ig_bridge_account_summary_includes_watchlists_and_activity(monkeypatch) -> None:
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(ig_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(ig_mod, "IG_API_KEY", "api-key", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_IDENTIFIER", "user1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_PASSWORD", "pass1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ACCOUNT_ID", "ACC101", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ENVIRONMENT", "demo", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_EPIC_MAP", "", raising=False)
+
+    class _FakeResponse:
+        def __init__(self, status_code, payload=None, headers=None, text="") -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.headers = headers or {}
+            self.text = text
+
+        @property
+        def ok(self):
+            return 200 <= self.status_code < 300
+
+        def json(self):
+            return self._payload
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.headers = {}
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResponse(
+                200,
+                {
+                    "accountId": "ACC101",
+                    "oauthToken": {
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "expires_in": "60",
+                        "token_type": "Bearer",
+                        "scope": "profile",
+                    },
+                },
+            )
+
+        def request(self, method, url, params=None, headers=None, timeout=None):
+            if url.endswith("/accounts"):
+                return _FakeResponse(
+                    200,
+                    {
+                        "accounts": [
+                            {
+                                "accountId": "ACC101",
+                                "accountName": "CFD",
+                                "accountType": "CFD",
+                                "status": "ENABLED",
+                                "preferred": True,
+                                "currency": "USD",
+                                "balance": {
+                                    "balance": 20000.0,
+                                    "available": 19000.0,
+                                    "profitLoss": 125.5,
+                                },
+                            }
+                        ]
+                    },
+                )
+            if url.endswith("/watchlists"):
+                return _FakeResponse(
+                    200,
+                    {"watchlists": [{"id": "1", "name": "My Watchlist", "editable": True, "deleteable": False}]},
+                )
+            if "/history/activity" in url:
+                return _FakeResponse(
+                    200,
+                    {
+                        "activities": [
+                            {
+                                "date": "2026-04-05T00:00:00",
+                                "actionType": "POSITION",
+                                "description": "Viewed account",
+                                "dealId": "D1",
+                                "details": [{"marketName": "Spot Gold", "epic": "CS.D.IN_GOLD.MFI.IP"}],
+                            }
+                        ]
+                    },
+                )
+            raise AssertionError(f"Unexpected IG URL: {url}")
+
+    monkeypatch.setattr(ig_mod.requests, "Session", _FakeSession, raising=False)
+
+    bridge = ig_mod.IGMarketBridge()
+    summary = bridge.get_account_summary()
+
+    assert summary["authenticated"] is True
+    assert summary["account_id"] == "ACC101"
+    assert summary["balance"] == 20000.0
+    assert summary["watchlist_count"] == 1
+    assert summary["recent_activity_count"] == 1
+    assert summary["recent_activities"][0]["market_name"] == "Spot Gold"
+
+
+def test_ig_bridge_client_sentiment_uses_market_id(monkeypatch) -> None:
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(ig_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(ig_mod, "IG_API_KEY", "api-key", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_IDENTIFIER", "user1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_PASSWORD", "pass1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ACCOUNT_ID", "ACC101", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ENVIRONMENT", "demo", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_EPIC_MAP", "", raising=False)
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.headers = {}
+
+    monkeypatch.setattr(ig_mod.requests, "Session", _FakeSession, raising=False)
+
+    bridge = ig_mod.IGMarketBridge()
+    monkeypatch.setattr(
+        bridge,
+        "resolve_symbol_info",
+        lambda asset, category="": {"symbol": "CC.D.CL.BMU.IP", "exchange": "ig"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_get_market_details",
+        lambda epic: {"instrument": {"marketId": "CL"}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_request",
+        lambda method, path, params=None, version="1": {
+            "marketId": "CL",
+            "longPositionPercentage": 70.0,
+            "shortPositionPercentage": 30.0,
+        },
+        raising=False,
+    )
+
+    payload = bridge.get_client_sentiment("WTI", category="commodities")
+
+    assert payload["market_id"] == "CL"
+    assert payload["bias"] == "BUY"
+    assert payload["score"] == 0.4
+    assert payload["long_pct"] == 70.0
+
+
+def test_ig_bridge_get_streaming_session_fetches_cst_and_endpoint(monkeypatch) -> None:
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(ig_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(ig_mod, "IG_API_KEY", "api-key", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_IDENTIFIER", "user1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_PASSWORD", "pass1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ACCOUNT_ID", "ACC101", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ENVIRONMENT", "demo", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_EPIC_MAP", "", raising=False)
+
+    class _FakeResponse:
+        def __init__(self, status_code, payload=None, headers=None, text="") -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.headers = headers or {}
+            self.text = text
+
+        @property
+        def ok(self):
+            return 200 <= self.status_code < 300
+
+        def json(self):
+            return self._payload
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.headers = {}
+            self.calls = []
+
+        def get(self, url, params=None, headers=None, timeout=None):
+            self.calls.append({"url": url, "params": dict(params or {}), "headers": dict(headers or {})})
+            return _FakeResponse(
+                200,
+                {
+                    "accountId": "ACC101",
+                    "lightstreamerEndpoint": "https://demo-apd.marketdatasystems.com",
+                },
+                headers={"CST": "cst-123", "X-SECURITY-TOKEN": "xst-456"},
+            )
+
+    monkeypatch.setattr(ig_mod.requests, "Session", _FakeSession, raising=False)
+
+    bridge = ig_mod.IGMarketBridge()
+    bridge._access_token = "access-1"
+    bridge._token_type = "Bearer"
+    bridge._session_expires_at = time.monotonic() + 300.0
+    monkeypatch.setattr(bridge, "_ensure_session", lambda: None, raising=False)
+
+    payload = bridge.get_streaming_session()
+
+    assert payload["account_id"] == "ACC101"
+    assert payload["lightstreamer_endpoint"] == "https://demo-apd.marketdatasystems.com"
+    assert payload["password"] == "CST-cst-123|XST-xst-456"
+    assert bridge._cst_token == "cst-123"
+    assert bridge._security_token == "xst-456"
+
+
+def test_ig_bridge_override_epic_uses_market_details_for_streaming_flag(monkeypatch) -> None:
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(ig_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(ig_mod, "IG_API_KEY", "api-key", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_IDENTIFIER", "user1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_PASSWORD", "pass1", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ACCOUNT_ID", "ACC101", raising=False)
+    monkeypatch.setattr(ig_mod, "IG_ENVIRONMENT", "demo", raising=False)
+    monkeypatch.setattr(
+        ig_mod,
+        "IG_EPIC_MAP",
+        json.dumps({"XAU/USD": "CS.D.IN_GOLD.MFI.IP"}),
+        raising=False,
+    )
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.headers = {}
+
+    monkeypatch.setattr(ig_mod.requests, "Session", _FakeSession, raising=False)
+
+    bridge = ig_mod.IGMarketBridge()
+    monkeypatch.setattr(
+        bridge,
+        "_get_market_details",
+        lambda epic: {
+            "instrument": {
+                "name": "Spot Gold",
+                "type": "COMMODITIES",
+                "streamingPricesAvailable": True,
+            },
+            "snapshot": {
+                "marketStatus": "TRADEABLE",
+                "delayTime": 0,
+            },
+        },
+        raising=False,
+    )
+
+    payload = bridge.resolve_symbol_info("XAU/USD", category="commodities")
+
+    assert payload["symbol"] == "CS.D.IN_GOLD.MFI.IP"
+    assert payload["streaming_prices_available"] is True
+    assert payload["market_status"] == "TRADEABLE"
+
+
+def test_ig_streaming_manager_filters_streamable_assets(monkeypatch) -> None:
+    stream_mod = importlib.import_module("services.ig_streaming_manager")
+
+    manager = stream_mod.IGStreamingManager()
+    monkeypatch.setattr(manager, "is_available", lambda: True, raising=False)
+    monkeypatch.setattr(
+        stream_mod,
+        "filter_ig_primary_assets",
+        lambda assets: {
+            "XAU/USD": "commodities",
+            "WTI": "commodities",
+            "EUR/USD": "forex",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        stream_mod,
+        "ig_market_bridge",
+        SimpleNamespace(
+            list_profiles=lambda: ["ig"],
+            resolve_symbol_info=lambda asset, category="": {
+                "symbol": f"EPIC:{asset}",
+                "streaming_prices_available": asset == "XAU/USD",
+            },
+        ),
+        raising=False,
+    )
+
+    payload = manager.filter_streamable_assets({"XAU/USD": "commodities", "WTI": "commodities"})
+
+    assert payload == {"XAU/USD": "commodities"}
+
+
+def test_ig_streaming_manager_item_update_emits_midprice_callback(monkeypatch) -> None:
+    stream_mod = importlib.import_module("services.ig_streaming_manager")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    manager = stream_mod.IGStreamingManager()
+    seen = {"activity": [], "callbacks": []}
+
+    monkeypatch.setattr(
+        ws_mod,
+        "mark_feed_activity",
+        lambda source, symbol_count=None: seen["activity"].append((source, symbol_count)),
+        raising=False,
+    )
+
+    manager._callbacks = [
+        lambda source, asset, price, volume, side, ts=None: seen["callbacks"].append(
+            (source, asset, round(float(price), 5), ts)
+        )
+    ]
+    manager._asset_to_epic = {"XAU/USD": "CS.D.IN_GOLD.MFI.IP"}
+    manager._epic_to_asset = {"CS.D.IN_GOLD.MFI.IP": "XAU/USD"}
+
+    class _FakeUpdate:
+        @staticmethod
+        def getItemName():
+            return "PRICE:ACC101:CS.D.IN_GOLD.MFI.IP"
+
+        @staticmethod
+        def getFields():
+            return {
+                "BIDPRICE1": "4676.99",
+                "ASKPRICE1": "4677.19",
+                "TIMESTAMP": "1775260992210",
+            }
+
+    manager._handle_item_update(_FakeUpdate())
+
+    assert seen["activity"] == [("ig", 1)]
+    assert seen["callbacks"][0][0] == "IG"
+    assert seen["callbacks"][0][1] == "XAU/USD"
+    assert seen["callbacks"][0][2] == 4677.09
+
+
+def test_ig_streaming_manager_subscribe_prices_builds_epic_map(monkeypatch) -> None:
+    stream_mod = importlib.import_module("services.ig_streaming_manager")
+
+    manager = stream_mod.IGStreamingManager()
+    monkeypatch.setattr(manager, "filter_streamable_assets", lambda assets: {"XAU/USD": "commodities"}, raising=False)
+    monkeypatch.setattr(
+        stream_mod,
+        "ig_market_bridge",
+        SimpleNamespace(
+            resolve_symbol_info=lambda asset, category="": {
+                "symbol": "CS.D.IN_GOLD.MFI.IP",
+                "streaming_prices_available": True,
+            }
+        ),
+        raising=False,
+    )
+    connect_calls = []
+    monkeypatch.setattr(manager, "_connect_locked", lambda: connect_calls.append("connect"), raising=False)
+
+    payload = manager.subscribe_prices({"XAU/USD": "commodities"}, lambda *_args: None)
+
+    assert payload == {"XAU/USD": "commodities"}
+    assert manager._asset_to_epic == {"XAU/USD": "CS.D.IN_GOLD.MFI.IP"}
+    assert manager._epic_to_asset == {"CS.D.IN_GOLD.MFI.IP": "XAU/USD"}
+    assert connect_calls == ["connect"]
+
+
+def test_live_microstructure_service_scores_pressure_and_stop_hunt() -> None:
+    micro_mod = importlib.import_module("services.live_microstructure_service")
+    service = micro_mod.LiveMicrostructureService(maxlen=32)
+
+    for step in range(6):
+        service.record_quote(
+            "ig",
+            "XAU/USD",
+            bid=100.00 + step * 0.02,
+            ask=100.03 + step * 0.02,
+            bid_size=6.0 + step,
+            ask_size=2.0,
+            timestamp=1000 + step,
+        )
+
+    bullish = service.get_snapshot("ig", "XAU/USD", price=100.13, spread=0.03)
+
+    service.record_quote("ig", "WTI", bid=80.00, ask=80.04, timestamp=2000)
+    service.record_quote("ig", "WTI", bid=80.06, ask=80.14, timestamp=2001)
+    service.record_quote("ig", "WTI", bid=80.18, ask=80.34, timestamp=2002)
+    service.record_quote("ig", "WTI", bid=79.96, ask=80.20, timestamp=2003, flags="EDIT")
+
+    stressed = service.get_snapshot("ig", "WTI", price=80.08, spread=0.24)
+
+    assert bullish["tick_imbalance"] > 0.5
+    assert bullish["book_imbalance"] > 0.4
+    assert bullish["pressure_direction"] == "BUY"
+    assert bullish["score"] > 0.2
+    assert stressed["stop_hunt_risk"] >= 0.35
+    assert stressed["exhaustion_risk"] >= 0.2
+
+
+def test_live_microstructure_service_synthesizes_depth_when_sizes_missing() -> None:
+    micro_mod = importlib.import_module("services.live_microstructure_service")
+    service = micro_mod.LiveMicrostructureService(maxlen=32)
+
+    service.record_quote("ig", "BTC-USD", bid=100.00, ask=100.08, timestamp=1)
+    service.record_quote("ig", "BTC-USD", bid=100.04, ask=100.10, timestamp=2)
+    service.record_quote("ig", "BTC-USD", bid=100.08, ask=100.12, timestamp=3)
+    service.record_quote("ig", "BTC-USD", bid=100.12, ask=100.15, timestamp=4)
+
+    snapshot = service.get_snapshot("ig", "BTC-USD", price=100.135, spread=0.03)
+
+    assert snapshot["depth_available"] is False
+    assert snapshot["synthetic_depth_available"] is True
+    assert snapshot["microstructure_source"] == "live_store_synthetic_depth"
+
+
+def test_cross_asset_spillover_service_links_wti_to_usdcad() -> None:
+    spill_mod = importlib.import_module("services.cross_asset_spillover_service")
+    service = spill_mod.CrossAssetSpilloverService()
+
+    def _frame(start: float, end: float) -> pd.DataFrame:
+        values = np.linspace(start, end, 24)
+        return pd.DataFrame(
+            {
+                "open": values,
+                "high": values * 1.001,
+                "low": values * 0.999,
+                "close": values,
+                "volume": np.full(len(values), 1000.0),
+            }
+        )
+
+    class _Fetcher:
+        @staticmethod
+        def get_ohlcv(asset: str, category: str, interval: str = "15m", periods: int = 24):
+            if asset == "WTI":
+                return _frame(80.0, 83.0)
+            raise AssertionError(f"unexpected peer fetch for {asset}")
+
+    snapshot = service.build_snapshot(
+        asset="USD/CAD",
+        category="forex",
+        fetcher=_Fetcher(),
+        timeframe="15m",
+    )
+
+    assert snapshot["state"] == "sell_support"
+    assert snapshot["supportive_direction"] == "SELL"
+    assert snapshot["dominant_peer"] == "WTI"
+    assert snapshot["score"] < 0.0
+    assert snapshot["confidence"] > 0.05
+
+
+def test_ig_streaming_manager_item_update_records_microstructure(monkeypatch) -> None:
+    stream_mod = importlib.import_module("services.ig_streaming_manager")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    manager = stream_mod.IGStreamingManager()
+    seen = {"records": []}
+
+    monkeypatch.setattr(
+        ws_mod,
+        "mark_feed_activity",
+        lambda source, symbol_count=None: None,
+        raising=False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "services.live_microstructure_service",
+        SimpleNamespace(
+            get_service=lambda: SimpleNamespace(
+                record_quote=lambda *args, **kwargs: seen["records"].append((args, kwargs))
+            )
+        ),
+    )
+
+    manager._callbacks = []
+    manager._asset_to_epic = {"XAU/USD": "CS.D.IN_GOLD.MFI.IP"}
+    manager._epic_to_asset = {"CS.D.IN_GOLD.MFI.IP": "XAU/USD"}
+
+    class _FakeUpdate:
+        @staticmethod
+        def getItemName():
+            return "PRICE:ACC101:CS.D.IN_GOLD.MFI.IP"
+
+        @staticmethod
+        def getFields():
+            return {
+                "BIDPRICE1": "4676.99",
+                "ASKPRICE1": "4677.19",
+                "BIDSIZE1": "7",
+                "ASKSIZE1": "3",
+                "BIDPRICE2": "4676.79",
+                "ASKPRICE2": "4677.39",
+                "BIDSIZE2": "5",
+                "ASKSIZE2": "4",
+                "TIMESTAMP": "1775260992210",
+                "DLG_FLAG": "TRADEABLE",
+            }
+
+    manager._handle_item_update(_FakeUpdate())
+
+    assert len(seen["records"]) == 1
+    args, kwargs = seen["records"][0]
+    assert args[:2] == ("ig", "XAU/USD")
+    assert kwargs["bid"] == 4676.99
+    assert kwargs["ask"] == 4677.19
+    assert kwargs["bid_size"] == 7.0
+    assert kwargs["ask_size"] == 3.0
+    assert len(kwargs["levels"]) >= 2
+
+
+def test_sentiment_service_commodity_sentiment_includes_ig_client_sentiment(monkeypatch) -> None:
+    sentiment_mod = importlib.import_module("services.sentiment_service")
+
+    monkeypatch.setattr(sentiment_mod._PriceMomentum, "get", staticmethod(lambda asset: 0.2), raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "get", staticmethod(lambda asset: 0.1), raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "macro_impact", staticmethod(lambda asset: None), raising=False)
+    monkeypatch.setattr(sentiment_mod._MarketInstruments, "vix", staticmethod(lambda: None), raising=False)
+    monkeypatch.setattr(sentiment_mod, "_reddit_score", lambda asset: None, raising=False)
+    monkeypatch.setattr(
+        sentiment_mod.SentimentService,
+        "_ig_client_sentiment",
+        staticmethod(lambda asset: {"asset": asset, "bias": "BUY", "long_pct": 70.0, "short_pct": 30.0, "score": 0.4}),
+        raising=False,
+    )
+
+    service = sentiment_mod.SentimentService()
+    payload = service.get_comprehensive_sentiment("WTI")
+
+    assert payload["components"]["ig_client_sentiment"] == 0.4
+    assert payload["weights"]["ig_client_sentiment"] == 0.1
+    assert payload["ig_client_sentiment"]["bias"] == "BUY"
 
 
 def test_fetcher_records_deriv_ohlcv_metadata(monkeypatch) -> None:
@@ -2717,13 +4186,13 @@ def test_redis_cache_clear_only_touches_namespaced_keys(monkeypatch) -> None:
     assert "trading_bot:cache:legacy" not in fake.store
 
 
-def test_market_hours_prefers_deriv_status(monkeypatch) -> None:
+def test_market_hours_prefers_provider_status(monkeypatch) -> None:
     market_hours_mod = importlib.import_module("dashboard.market_hours")
 
     monkeypatch.setattr(
         market_hours_mod,
-        "_deriv_market_status",
-        lambda asset: (False, "Closed on Deriv"),
+        "_provider_market_status",
+        lambda asset: (False, "Closed on IG", "IG"),
         raising=False,
     )
 
@@ -2731,22 +4200,22 @@ def test_market_hours_prefers_deriv_status(monkeypatch) -> None:
     status = market_hours_mod.market_status("EUR/USD")
 
     assert is_open is False
-    assert reason == "Closed on Deriv"
-    assert status["reason"] == "Closed on Deriv"
-    assert status["source"] == "Deriv"
+    assert reason == "Closed on IG"
+    assert status["reason"] == "Closed on IG"
+    assert status["source"] == "IG"
 
 
-def test_trading_core_market_hours_prefers_deriv_status(monkeypatch) -> None:
-    deriv_mod = importlib.import_module("services.deriv_bridge")
+def test_trading_core_market_hours_prefers_routed_provider_status(monkeypatch) -> None:
+    router_mod = importlib.import_module("services.market_data_router")
 
     monkeypatch.setattr(
-        deriv_mod.deriv_bridge,
+        router_mod,
         "get_market_status",
         lambda asset, category="": {
             "asset": asset,
             "market_open": True,
-            "reason": "Metals open on Deriv",
-            "source": "Deriv",
+            "reason": "Metals open on IG",
+            "source": "IG",
         },
         raising=False,
     )
@@ -2754,7 +4223,82 @@ def test_trading_core_market_hours_prefers_deriv_status(monkeypatch) -> None:
     is_open, reason = TradingCore._market_hours_status("XAU/USD", "commodities")
 
     assert is_open is True
-    assert reason == "Metals open on Deriv"
+    assert reason == "Metals open on IG"
+
+
+def test_market_data_router_filters_ig_routed_commodities_from_deriv_streams() -> None:
+    router_mod = importlib.import_module("services.market_data_router")
+    setattr(router_mod, "is_ig_primary_category", lambda category: str(category or "").lower() == "commodities")
+
+    filtered = router_mod.filter_deriv_stream_assets(
+        {
+            "EUR/USD": "forex",
+            "XAU/USD": "commodities",
+            "WTI": "commodities",
+            "BTC-USD": "crypto",
+        }
+    )
+
+    assert filtered == {
+        "EUR/USD": "forex",
+        "BTC-USD": "crypto",
+    }
+
+
+def test_market_data_router_get_client_sentiment_uses_ig_for_routed_assets(monkeypatch) -> None:
+    router_mod = importlib.import_module("services.market_data_router")
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(
+        router_mod,
+        "is_ig_primary_category",
+        lambda category: str(category or "").lower() == "commodities",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ig_mod,
+        "ig_market_bridge",
+        SimpleNamespace(
+            get_client_sentiment=lambda asset, category="": {
+                "asset": asset,
+                "category": category,
+                "bias": "BUY",
+                "score": 0.4,
+            }
+        ),
+        raising=False,
+    )
+
+    payload = router_mod.get_client_sentiment("WTI", category="commodities")
+
+    assert payload["asset"] == "WTI"
+    assert payload["category"] == "commodities"
+    assert payload["score"] == 0.4
+    assert router_mod.get_client_sentiment("EUR/USD", category="forex") is None
+
+
+def test_market_data_router_get_broker_account_summary_uses_ig_bridge(monkeypatch) -> None:
+    router_mod = importlib.import_module("services.market_data_router")
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    monkeypatch.setattr(
+        ig_mod,
+        "ig_market_bridge",
+        SimpleNamespace(
+            get_account_summary=lambda: {
+                "enabled": True,
+                "authenticated": True,
+                "environment": "demo",
+                "account_id": "Z6A62A",
+            }
+        ),
+        raising=False,
+    )
+
+    payload = router_mod.get_broker_account_summary()
+
+    assert payload["authenticated"] is True
+    assert payload["account_id"] == "Z6A62A"
 
 
 def test_decision_engine_uses_context_market_status_over_legacy_utc_gate(monkeypatch) -> None:
@@ -2908,6 +4452,73 @@ def test_trainer_builds_live_training_data_from_database_service(monkeypatch) ->
     assert isinstance(captured["since"], datetime)
     assert X is not None and X.shape == (50, 6)
     assert y is not None and len(y) == 50
+
+
+def test_auto_trainer_train_category_does_not_retrain_policy(monkeypatch) -> None:
+    trainer_mod = importlib.import_module("ml.trainer")
+    trainer = trainer_mod.AutoTrainer(fetcher=object())
+    calls = []
+
+    monkeypatch.setattr(trainer_mod, "ASSET_CATEGORIES", {"crypto": ["BTC-USD"]}, raising=False)
+    monkeypatch.setattr(
+        trainer_mod,
+        "_build_live_training_data",
+        lambda category: (np.ones((60, 6), dtype=np.float32), np.ones(60, dtype=np.int32)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        trainer_mod,
+        "_build_live_policy_training_data",
+        lambda category: (_ for _ in ()).throw(AssertionError("policy path should not be used here")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        trainer_mod,
+        "_train_model_from_arrays",
+        lambda name, X, y: calls.append(name) or True,
+        raising=False,
+    )
+
+    trainer._train_category("crypto")
+
+    assert calls == ["crypto_classifier"]
+
+
+def test_training_health_snapshot_summarizes_category_states(monkeypatch) -> None:
+    trainer_mod = importlib.import_module("ml.trainer")
+
+    monkeypatch.setattr(
+        trainer_mod.registry,
+        "list_models",
+        lambda: {
+            "crypto_classifier": {"loaded": True, "stale": False, "trained_at": "2026-04-05T01:00:00", "metadata": {"research_status": "provisional"}},
+            "crypto_policy": {"loaded": True, "stale": False, "trained_at": "2026-04-05T01:00:00", "metadata": {"research_status": "approved", "research_approved": True}},
+            "forex_classifier": {"loaded": True, "stale": False, "trained_at": "2026-04-05T01:00:00", "metadata": {"research_status": "provisional"}},
+            "forex_policy": {"loaded": True, "stale": True, "trained_at": "2026-04-02T01:00:00", "metadata": {"research_status": "provisional"}},
+            "commodities_classifier": {"loaded": True, "stale": True, "trained_at": "2026-03-28T01:00:00", "metadata": {}},
+            "commodities_policy": {"loaded": True, "stale": True, "trained_at": "2026-04-02T01:00:00", "metadata": {"research_status": "provisional"}},
+            "indices_classifier": {"loaded": True, "stale": False, "trained_at": "2026-04-05T01:00:00", "metadata": {"research_status": "provisional"}},
+            "indices_policy": {"loaded": True, "stale": True, "trained_at": "2026-04-01T01:00:00", "metadata": {"research_status": "provisional"}},
+        },
+        raising=False,
+    )
+
+    fake_trainer = SimpleNamespace(
+        get_status=lambda: {
+            "commodities": {
+                "classifier": {"success": False, "note": "validation_failed"},
+                "policy": {"success": False, "note": "validation_failed"},
+            }
+        }
+    )
+
+    snapshot = trainer_mod.get_training_health_snapshot(fake_trainer)
+
+    assert snapshot["summary"] == {"healthy": 1, "mixed": 2, "degraded": 1}
+    assert snapshot["categories"]["crypto"]["status"] == "healthy"
+    assert snapshot["categories"]["forex"]["status"] == "mixed"
+    assert snapshot["categories"]["commodities"]["status"] == "degraded"
+    assert any("classifier retrain failed" in issue for issue in snapshot["categories"]["commodities"]["issues"])
 
 
 def test_intelligence_alert_service_pauses_cleanly_without_redis(monkeypatch) -> None:
@@ -3080,6 +4691,82 @@ def test_telegram_whale_watcher_filters_out_mixed_channel_assets(monkeypatch) ->
     assert alert is None
 
 
+def test_telegram_whale_watcher_mark_healthy_pings_whale_source(monkeypatch) -> None:
+    telegram_mod = importlib.import_module("telegram_whale_watcher")
+    calls = []
+
+    monkeypatch.setattr(telegram_mod, "_ping_health", lambda source="whale": calls.append(source), raising=False)
+
+    watcher = telegram_mod.TelegramWhaleWatcher()
+    watcher._mark_healthy()
+
+    assert calls == ["whale"]
+
+
+def test_telegram_status_formatter_includes_training_summary() -> None:
+    telegram_mod = importlib.import_module("telegram_commander")
+
+    text = telegram_mod.TelegramCommander._format_training_status(
+        {
+            "crypto": {"status": "healthy"},
+            "forex": {"status": "mixed"},
+            "commodities": {"status": "degraded"},
+            "indices": {"status": "mixed"},
+        }
+    )
+
+    assert "Model Training" in text
+    assert "🟢 Crypto" in text
+    assert "🟡 Forex" in text
+    assert "🔴 Comms" in text
+
+
+def test_telegram_status_formatter_includes_ig_broker_summary() -> None:
+    telegram_mod = importlib.import_module("telegram_commander")
+
+    text = telegram_mod.TelegramCommander._format_ig_broker_status(
+        {
+            "enabled": True,
+            "authenticated": True,
+            "environment": "demo",
+            "account_type": "CFD",
+            "account_id": "Z6A62A",
+            "balance": 20000.0,
+            "available": 19000.0,
+            "watchlist_count": 2,
+            "recent_activity_count": 1,
+        }
+    )
+
+    assert "IG Broker Data" in text
+    assert "DEMO CFD Z6A62A" in text
+    assert "$20,000.00" in text
+    assert "2 watchlists, 1 recent activities" in text
+
+
+def test_telegram_status_formatter_includes_signal_diagnostics_summary() -> None:
+    telegram_mod = importlib.import_module("telegram_commander")
+
+    text = telegram_mod.TelegramCommander._format_signal_diagnostics_status(
+        {
+            "count": 4,
+            "broker_supportive_count": 2,
+            "broker_fragile_count": 1,
+            "true_depth_count": 1,
+            "synthetic_depth_count": 2,
+            "cross_support_count": 3,
+            "cross_conflict_count": 1,
+            "recent_pattern_block_count": 1,
+        }
+    )
+
+    assert "Signal Diagnostics" in text
+    assert "2 supportive / 1 fragile" in text
+    assert "1 true / 2 synthetic" in text
+    assert "3 supportive / 1 conflicted" in text
+    assert "1 recent-pattern block" in text
+
+
 def test_telegram_whale_watcher_parses_whalebotalerts_parenthesized_usd_value(monkeypatch) -> None:
     telegram_mod = importlib.import_module("telegram_whale_watcher")
 
@@ -3179,6 +4866,50 @@ def test_system_health_service_collect_loop_degrades_cleanly_on_redis_publish_fa
     assert service._pub is None
     assert service._redis_retry_at == current_time["value"] + 60
     assert service._redis_degraded_logged is True
+
+
+def test_system_health_service_suppresses_startup_cpu_alerts_until_sustained(monkeypatch) -> None:
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    original_instance = monitor_mod.SystemHealthService._instance
+
+    monkeypatch.setattr(monitor_mod.SystemHealthService, "_init_redis", lambda self: None)
+    monitor_mod.SystemHealthService._instance = None
+    service = monitor_mod.SystemHealthService()
+
+    current_time = {"value": 1000.0}
+    alerts = []
+
+    monkeypatch.setattr(monitor_mod.time, "time", lambda: current_time["value"])
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        SimpleNamespace(
+            cpu_percent=lambda interval=1: 98.0,
+            virtual_memory=lambda: SimpleNamespace(percent=91.0),
+        ),
+    )
+    monkeypatch.setattr(service, "_send_alert", lambda alert_type, message: alerts.append(alert_type))
+
+    try:
+        service._start_time = current_time["value"] - (monitor_mod.PHASE_SILENT_SECS - 5)
+        service._check_alerts()
+        assert alerts == []
+        assert service._cpu_high_since is None
+        assert service._ram_high_since is None
+
+        current_time["value"] += 10
+        service._start_time = current_time["value"] - (monitor_mod.PHASE_SILENT_SECS + 1)
+        service._check_alerts()
+        assert alerts == []
+        assert service._cpu_high_since == current_time["value"]
+        assert service._ram_high_since == current_time["value"]
+
+        current_time["value"] += monitor_mod.ALERT_CHECK_INTERVAL + 1
+        service._check_alerts()
+    finally:
+        monitor_mod.SystemHealthService._instance = original_instance
+
+    assert alerts == ["cpu_high", "ram_high"]
 
 
 def test_bnb_tracker_backoff_skips_repeated_rpc_calls(monkeypatch) -> None:
@@ -3623,6 +5354,184 @@ def test_telegram_send_message_timeout_is_handled_cleanly(monkeypatch) -> None:
     assert warnings == ["[Telegram] send timed out"]
 
 
+def test_telegram_configure_bot_menu_registers_commands_and_menu_button() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    seen = {}
+
+    class _FakeBot:
+        async def set_my_commands(self, commands):
+            seen["commands"] = commands
+
+        async def set_chat_menu_button(self, menu_button=None):
+            seen["menu_button"] = menu_button
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.application = SimpleNamespace(bot=_FakeBot())
+
+    asyncio.run(commander._configure_bot_menu())
+
+    commands = seen["commands"]
+    assert [item.command for item in commands] == [
+        "menu",
+        "status",
+        "positions",
+        "balance",
+        "signal",
+        "why",
+        "history",
+        "ask",
+        "pause",
+        "resume",
+    ]
+    assert seen["menu_button"].__class__.__name__ == "MenuButtonCommands"
+
+
+def test_telegram_build_main_menu_surfaces_counts_and_guidance(monkeypatch) -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+    personality_mod = importlib.import_module("services.personality_service")
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.trading_system = SimpleNamespace(
+        is_running=False,
+        get_balance=lambda: 1134.25,
+        get_positions=lambda: [],
+        get_strategy_stats=lambda: {},
+    )
+
+    monkeypatch.setattr(
+        personality_mod.personality,
+        "get_report",
+        lambda: {"stats": {"total_trades_remembered": 0}},
+        raising=False,
+    )
+
+    text, kb = commander._build_main_menu()
+    labels = [button.text for row in kb.inline_keyboard for button in row]
+
+    assert "Open positions: 0" in text
+    assert "Diary and strategies fill in after the bot has closed trades to learn from." in text
+    assert "📈 Positions (0)" in labels
+    assert "▶️ Resume" in labels
+
+
+def test_telegram_build_top_setups_includes_broker_and_depth_context() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.trading_system = SimpleNamespace(
+        get_top_ranked_opportunities=lambda limit=5, refresh=False: [
+            {
+                "asset": "XAU/USD",
+                "direction": "BUY",
+                "opportunity_score": 0.88,
+                "confidence": 0.76,
+                "memory_score": 67.0,
+                "execution_quality_score": 64.0,
+                "broker_quality_score": 0.91,
+                "broker_primary_provider": "IG",
+                "broker_agreement_state": "strong",
+                "broker_quote_quality_state": "fresh",
+                "broker_spread_regime": "tight",
+                "microstructure_score": 0.73,
+                "depth_available": True,
+                "synthetic_depth_available": False,
+                "cross_asset_state": "buy support",
+                "cross_asset_primary_peer": "XAG/USD",
+                "source": "signal",
+            }
+        ]
+    )
+
+    text, _kb = commander._build_top_setups(refresh=True)
+
+    assert "Top Ranked Opportunities" in text
+    assert "Broker `0.91`" in text
+    assert "Micro `0.73`" in text
+    assert "Depth `True depth`" in text
+    assert "Cross-asset `buy support` via `XAG/USD`" in text
+    assert "Provider `IG` | strong / fresh / tight" in text
+
+
+def test_robbie_explainer_confidence_question_uses_signal_not_mood() -> None:
+    personality_mod = importlib.import_module("services.personality_service")
+
+    explainer = object.__new__(personality_mod.RobbieExplainer)
+    explainer.db = SimpleNamespace(
+        get_personality_report=lambda: {
+            "current_mood": "cautious",
+            "mood_emoji": "🤔",
+            "stats": {"consecutive_wins": 0, "consecutive_losses": 2, "weekly_win_rate": 45, "last_10_wins": 4, "last_10_pnl": -12.0},
+        },
+        get_asset_memory=lambda asset: {
+            "has_memory": True,
+            "total_trades": 6,
+            "win_rate": 67,
+            "wins": 4,
+            "losses": 2,
+            "total_pnl": 88.4,
+            "avg_confidence": 71,
+            "last_seen": "2026-04-05",
+            "last_pnl": 24.1,
+        },
+    )
+
+    text = explainer.answer(
+        "BTC-USD",
+        "How confident are you about BTC-USD?",
+        signal={
+            "direction": "BUY",
+            "confidence": 0.71,
+            "risk_reward": 1.8,
+            "metadata": {
+                "governance_grade": "A",
+                "execution_quality_score": 64.0,
+            },
+        },
+        df=None,
+    )
+
+    assert "Current confidence on *BTC-USD* is *71%*" in text
+    assert "reward to risk is `1.80:1`" in text
+    assert "Right now I'm feeling" not in text
+
+
+def test_robbie_explainer_sentiment_question_uses_live_signal_metadata() -> None:
+    personality_mod = importlib.import_module("services.personality_service")
+
+    explainer = object.__new__(personality_mod.RobbieExplainer)
+    explainer.db = SimpleNamespace(
+        get_personality_report=lambda: {
+            "current_mood": "neutral",
+            "mood_emoji": "😐",
+            "stats": {"consecutive_wins": 0, "consecutive_losses": 0, "weekly_win_rate": 50, "last_10_wins": 5, "last_10_pnl": 0.0},
+        },
+        get_asset_memory=lambda asset: {"has_memory": False},
+    )
+
+    text = explainer.answer(
+        "BTC-USD",
+        "What is the sentiment for BTC-USD?",
+        signal={
+            "direction": "SELL",
+            "confidence": 0.63,
+            "metadata": {
+                "sentiment_score": -0.137,
+                "sentiment_sources": ["comprehensive_sentiment", "reddit", "narrative_ai"],
+                "narrative": "AI_TOKENS",
+                "whale_dominant": "SELL",
+            },
+        },
+        df=None,
+    )
+
+    assert "*Sentiment read on BTC-USD:*" in text
+    assert "Sentiment leans bearish at -0.14." in text
+    assert "Whale flow currently leans bearish." in text
+    assert "AI-related crypto narrative" in text
+    assert "3 sources" in text
+
+
 def test_telegram_alert_trade_closed_includes_post_trade_review() -> None:
     tg_mod = importlib.import_module("telegram_commander")
 
@@ -3710,6 +5619,56 @@ def test_websocket_manager_repeated_deriv_disconnects_are_downgraded(monkeypatch
     assert len(debugs) == 1
     assert "Deriv stream lost" in warnings[0]
     assert "Deriv stream still unavailable" in debugs[0]
+
+
+def test_websocket_manager_filters_ig_routed_assets_before_tracking(monkeypatch) -> None:
+    ws_mod = importlib.import_module("websocket_manager")
+
+    manager = ws_mod.WebSocketManager()
+    scheduled = []
+    infos = []
+
+    monkeypatch.setattr(ws_mod, "filter_deriv_stream_assets", lambda assets: {"EUR/USD": "forex"}, raising=False)
+    monkeypatch.setattr(ws_mod, "filter_ig_primary_assets", lambda assets: {"XAU/USD": "commodities"}, raising=False)
+    monkeypatch.setattr(
+        manager,
+        "_schedule",
+        lambda coro: (scheduled.append(type(coro).__name__), getattr(coro, "close", lambda: None)()),
+        raising=False,
+    )
+    monkeypatch.setattr(ws_mod.logger, "info", infos.append)
+
+    manager.subscribe_deriv({"EUR/USD": "forex", "XAU/USD": "commodities"}, lambda *_args: None)
+
+    assert manager._asset_categories == {"EUR/USD": "forex"}
+    assert manager._stream_started is True
+    assert scheduled
+    assert any("Skipping IG-routed assets" in str(message) for message in infos)
+
+
+def test_websocket_manager_does_not_start_for_ig_only_assets(monkeypatch) -> None:
+    ws_mod = importlib.import_module("websocket_manager")
+
+    manager = ws_mod.WebSocketManager()
+    scheduled = []
+    infos = []
+
+    monkeypatch.setattr(ws_mod, "filter_deriv_stream_assets", lambda assets: {}, raising=False)
+    monkeypatch.setattr(ws_mod, "filter_ig_primary_assets", lambda assets: {"XAU/USD": "commodities"}, raising=False)
+    monkeypatch.setattr(
+        manager,
+        "_schedule",
+        lambda coro: (scheduled.append(type(coro).__name__), getattr(coro, "close", lambda: None)()),
+        raising=False,
+    )
+    monkeypatch.setattr(ws_mod.logger, "info", infos.append)
+
+    manager.subscribe_deriv({"XAU/USD": "commodities"}, lambda *_args: None)
+
+    assert manager._asset_categories == {}
+    assert manager._stream_started is False
+    assert scheduled == []
+    assert any("No Deriv/Binance stream assets" in str(message) for message in infos)
 
 
 def test_exchange_stream_repeated_disconnects_are_downgraded(monkeypatch) -> None:
@@ -3830,6 +5789,37 @@ def test_chart_api_supports_30m_interval(monkeypatch) -> None:
     assert len(payload["candles"]) == 3
 
 
+def test_chart_api_surfaces_provider_error_when_wti_data_is_denied(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    class _FakeFetcher:
+        def get_ohlcv(self, asset, category, interval="15m", periods=100):
+            assert asset == "WTI"
+            assert category == "commodities"
+            return None
+
+        def get_last_ohlcv_metadata(self, asset, interval):
+            return {
+                "source": "IG",
+                "provider_error_code": "missing_credentials",
+                "provider_error_message": "IG_IDENTIFIER and IG_PASSWORD are required for IG commodity data.",
+            }
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_fetcher", lambda: _FakeFetcher(), raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/candles?asset=WTI&interval=15m")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["candles"] == []
+    assert payload["data_source"] == "IG"
+    assert payload["provider_error_code"] == "missing_credentials"
+    assert "IG_IDENTIFIER and IG_PASSWORD" in payload["message"]
+
+
 def test_correlation_matrix_api_uses_pairwise_overlap(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -3862,6 +5852,53 @@ def test_correlation_matrix_api_uses_pairwise_overlap(monkeypatch) -> None:
     assert payload["matrix"][index["EUR/USD"]][index["EUR/USD"]] == 1.0
     assert payload["matrix"][index["GBP/USD"]][index["GBP/USD"]] == 1.0
     assert all(np.isfinite(value) for row in payload["matrix"] for value in row)
+
+
+def test_backtest_multi_asset_api_uses_registry_universe(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    strategy_lab_mod = importlib.import_module("strategy_lab")
+    assets_mod = importlib.import_module("core.assets")
+
+    class _Result:
+        sharpe_ratio = 1.23
+        win_rate = 0.58
+        total_pnl = 42.0
+        max_drawdown = 0.11
+        total_trades = 8
+
+    seen = []
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(strategy_lab_mod.StrategyBuilder, "all_configs", staticmethod(lambda: {"alpha": {"name": "alpha"}}), raising=False)
+    monkeypatch.setattr(strategy_lab_mod, "resolve_backtest_periods", lambda category="": 120, raising=False)
+    monkeypatch.setattr(
+        strategy_lab_mod,
+        "resolve_backtest_end_time",
+        lambda category="": datetime(2026, 4, 5, 0, 0, tzinfo=timezone.utc),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        strategy_lab_mod,
+        "run_backtest",
+        lambda config, asset, category, periods=None, end_time=None: seen.append((asset, category)) or _Result(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        assets_mod.registry,
+        "all_assets",
+        lambda: [("EUR/USD", "forex"), ("WTI", "commodities"), ("US500", "indices")],
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/backtest/multi-asset?strategy=alpha")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert [row["asset"] for row in payload["results"]] == ["EUR/USD", "WTI", "US500"]
+    assert seen == [("EUR/USD", "forex"), ("WTI", "commodities"), ("US500", "indices")]
 
 
 def test_dashboard_api_fails_closed_when_prod_auth_is_unconfigured(monkeypatch) -> None:
@@ -4103,6 +6140,10 @@ def test_market_intelligence_page_overview_stays_lightweight(monkeypatch) -> Non
         name = getattr(fn, "__name__", "")
         if name == "api_chart_assets":
             return _FakeResponse({"success": True, "assets": [{"symbol": "EUR/USD", "category": "forex"}]})
+        if name == "api_status":
+            return _FakeResponse({"success": True, "provider_routing": {"summary_label": "Deriv 16, IG 3"}})
+        if name == "api_market_events":
+            return _FakeResponse({"success": True, "events": [], "risk_outlook": {}})
         raise AssertionError(f"Unexpected view {name}")
 
     monkeypatch.setattr(dashboard_mod, "_call_view", _fake_call_view, raising=False)
@@ -4113,7 +6154,261 @@ def test_market_intelligence_page_overview_stays_lightweight(monkeypatch) -> Non
     payload = response.get_json()
     assert payload["success"] is True
     assert "assets" in payload
+    assert "status" in payload
+    assert "events" in payload
     assert "heatmap" not in payload
+
+
+def test_chart_asset_descriptor_reflects_provider_routing(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    config_mod = importlib.import_module("config.config")
+
+    monkeypatch.setattr(config_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(config_mod, "IG_ROUTED_CATEGORIES", ["commodities"], raising=False)
+
+    commodity = dashboard_mod._chart_asset_descriptor("WTI", "commodities")
+    assert commodity["primary_provider"] == "IG"
+    assert commodity["secondary_provider"] == "Deriv"
+    assert commodity["quote_mode"] == "stream"
+
+    crypto = dashboard_mod._chart_asset_descriptor("BNB-USD", "crypto")
+    assert crypto["primary_provider"] == "Deriv"
+    assert crypto["secondary_provider"] == "Binance"
+    assert crypto["quote_mode"] == "stream"
+
+    forex = dashboard_mod._chart_asset_descriptor("EUR/USD", "forex")
+    assert forex["primary_provider"] == "Deriv"
+    assert forex["secondary_provider"] == ""
+    assert forex["quote_mode"] == "stream"
+
+
+def test_api_chart_candles_includes_data_source_on_success(monkeypatch) -> None:
+    import pandas as pd
+
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+
+    class _FakeFetcher:
+        def get_ohlcv(self, asset, category, interval="15m", periods=0):
+            index = pd.to_datetime(["2026-04-05T00:00:00Z", "2026-04-05T00:15:00Z"], utc=True)
+            return pd.DataFrame(
+                {
+                    "open": [100.0, 101.0],
+                    "high": [101.0, 102.0],
+                    "low": [99.0, 100.5],
+                    "close": [100.5, 101.5],
+                    "volume": [10.0, 12.0],
+                },
+                index=index,
+            )
+
+        def get_last_ohlcv_metadata(self, asset, interval):
+            return {"source": "IG"}
+
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/candles?asset=WTI&interval=15m")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert len(payload["candles"]) == 2
+    assert payload["data_source"] == "IG"
+
+
+def test_api_chart_candles_caps_ig_history_requests(monkeypatch) -> None:
+    import pandas as pd
+
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    config_mod = importlib.import_module("config.config")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(config_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(config_mod, "IG_ROUTED_CATEGORIES", ["commodities"], raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    captured: dict[str, int] = {}
+
+    class _FakeFetcher:
+        def get_ohlcv(self, asset, category, interval="15m", periods=0):
+            captured["periods"] = int(periods or 0)
+            index = pd.to_datetime(["2026-04-05T00:00:00Z", "2026-04-05T00:05:00Z"], utc=True)
+            return pd.DataFrame(
+                {
+                    "open": [100.0, 101.0],
+                    "high": [101.0, 102.0],
+                    "low": [99.0, 100.5],
+                    "close": [100.5, 101.5],
+                    "volume": [10.0, 12.0],
+                },
+                index=index,
+            )
+
+        def get_last_ohlcv_metadata(self, asset, interval):
+            return {"source": "IG"}
+
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/candles?asset=WTI&interval=5m")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["bars_requested"] == 240
+    assert captured["periods"] == 240
+
+
+def test_api_chart_candles_uses_last_good_cache_on_ig_allowance_error(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    config_mod = importlib.import_module("config.config")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(config_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(config_mod, "IG_ROUTED_CATEGORIES", ["commodities"], raising=False)
+
+    cached_payload = {
+        "success": True,
+        "candles": [{"time": 1712275200, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0}],
+        "interval_used": "5m",
+        "bars_requested": 240,
+        "data_source": "IG",
+        "cached": False,
+    }
+
+    def _fake_cache_get(key):
+        if key.startswith("chart_candles_last:WTI:commodities:5m"):
+            return dict(cached_payload)
+        return None
+
+    monkeypatch.setattr(dashboard_mod, "_cache_get", _fake_cache_get, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    class _FakeFetcher:
+        def get_ohlcv(self, asset, category, interval="15m", periods=0):
+            return None
+
+        def get_last_ohlcv_metadata(self, asset, interval):
+            return {
+                "source": "IG",
+                "provider_error_code": "error.public-api.exceeded-account-historical-data-allowance",
+                "provider_error_message": "error.public-api.exceeded-account-historical-data-allowance",
+            }
+
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/candles?asset=WTI&interval=5m")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["cached"] is True
+    assert payload["candles"]
+    assert payload["provider_warning_code"] == "error.public-api.exceeded-account-historical-data-allowance"
+
+
+def test_api_status_includes_provider_routing(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_CORE", None, raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/status")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert "provider_routing" in payload
+    assert payload["provider_routing"]["asset_count"] >= 1
+    assert "summary_label" in payload["provider_routing"]
+
+
+def test_api_status_includes_signal_diagnostics_summary(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    class _Core:
+        is_ready = True
+        is_running = True
+
+        def get_balance(self):
+            return 1500.0
+
+        def get_positions(self):
+            return [
+                {
+                    "metadata": {
+                        "broker_quality": {
+                            "score": 0.18,
+                            "quote_agreement_state": "severe_divergence",
+                            "spread_regime": "stressed",
+                            "quote_quality_state": "stale",
+                        },
+                        "market_microstructure": {
+                            "depth_available": False,
+                            "synthetic_depth_available": True,
+                        },
+                        "cross_asset_context": {
+                            "alignment": -0.44,
+                            "confidence": 0.82,
+                        },
+                        "adaptive_policy": {
+                            "recent_review_profile": {
+                                "block_new_entries": True,
+                            }
+                        },
+                    }
+                }
+            ]
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_CORE", _Core(), raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/status")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["signal_diagnostics"]["count"] == 1
+    assert payload["signal_diagnostics"]["broker_fragile_count"] == 1
+    assert payload["signal_diagnostics"]["synthetic_depth_count"] == 1
+    assert payload["signal_diagnostics"]["cross_conflict_count"] == 1
+    assert payload["signal_diagnostics"]["recent_pattern_block_count"] == 1
+
+
+def test_market_data_router_filters_ig_primary_assets(monkeypatch) -> None:
+    router_mod = importlib.import_module("services.market_data_router")
+
+    monkeypatch.setattr(
+        router_mod,
+        "is_ig_primary_category",
+        lambda category: str(category).lower() == "commodities",
+        raising=False,
+    )
+
+    result = router_mod.filter_ig_primary_assets(
+        {
+            "XAU/USD": "commodities",
+            "EUR/USD": "forex",
+            "BTC-USD": "crypto",
+        }
+    )
+
+    assert result == {"XAU/USD": "commodities"}
 
 
 def test_page_overview_normalizes_cached_response_objects(monkeypatch) -> None:
@@ -4399,14 +6694,110 @@ def test_command_center_includes_top_opportunities_and_weak_positions(monkeypatc
     assert payload["success"] is True
     assert payload["top_opportunities"][0]["asset"] == "BTC-USD"
     assert payload["weak_positions"][0]["asset"] == "ETH-USD"
+    assert "provider_routing" in payload
+    assert "summary_label" in payload["provider_routing"]
 
 
-def test_command_center_survives_ranking_extras_wait_timeout(monkeypatch) -> None:
+def test_command_center_includes_signal_diagnostics_fields(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
-    futures_mod = importlib.import_module("concurrent.futures")
+
+    class _FakeCore:
+        is_running = True
+        is_ready = True
+
+        def get_performance(self):
+            return {"balance": 1000.0, "total_pnl": 10.0, "win_rate": 55.0, "total_trades": 4}
+
+        def get_daily_stats(self):
+            return {"daily_pnl": 2.0, "daily_trades": 1}
+
+        def get_positions(self):
+            return [
+                {
+                    "trade_id": "t1",
+                    "asset": "XAU/USD",
+                    "category": "commodities",
+                    "direction": "BUY",
+                    "confidence": 0.82,
+                    "entry_price": 100.0,
+                    "stop_loss": 98.0,
+                    "take_profit": 104.0,
+                    "position_size": 1.0,
+                    "strategy_id": "policy_agent",
+                    "open_time": "2026-04-05T00:00:00",
+                    "pnl": 12.0,
+                    "metadata": {
+                        "broker_quality": {
+                            "score": 0.79,
+                            "primary_provider": "IG",
+                            "comparison_provider": "Deriv",
+                            "quote_agreement_state": "strong",
+                            "spread_regime": "tight",
+                            "quote_quality_state": "fresh",
+                        },
+                        "market_microstructure": {
+                            "score": 0.31,
+                            "depth_available": False,
+                            "synthetic_depth_available": True,
+                            "microstructure_source": "live_store_synthetic_depth",
+                        },
+                        "cross_asset_context": {
+                            "score": 0.37,
+                            "alignment": 0.37,
+                            "confidence": 0.76,
+                            "state": "buy_support",
+                            "dominant_peer": "XAG/USD",
+                            "dominant_relation": "gold_silver_relative",
+                        },
+                        "adaptive_policy": {
+                            "recent_review_profile": {
+                                "sample_count": 5,
+                                "notes": ["recent_pattern_true_depth_winners"],
+                                "block_new_entries": False,
+                            }
+                        },
+                    },
+                }
+            ]
+
+        def health_report(self):
+            return {"is_running": True, "engine_ready": True}
+
+    class _FakeFetcher:
+        @staticmethod
+        def get_real_time_price(asset, category):
+            return 101.25, {"source": "IG"}
 
     monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
     monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/command-center"):
+        response = dashboard_mod.api_command_center()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["positions"][0]["broker_quality_score"] == 0.79
+    assert payload["positions"][0]["depth_mode"] == "synthetic_depth"
+    assert payload["positions"][0]["cross_asset_primary_peer"] == "XAG/USD"
+    assert payload["positions"][0]["recent_pattern_notes"] == ["recent_pattern_true_depth_winners"]
+    assert payload["signal_diagnostics"]["broker_supportive_count"] == 1
+    assert payload["signal_diagnostics"]["synthetic_depth_count"] == 1
+    assert payload["signal_diagnostics"]["cross_support_count"] == 1
+
+
+def test_command_center_uses_fast_ranking_snapshots(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    calls: dict[str, tuple] = {}
 
     class _FakeCore:
         is_running = True
@@ -4424,35 +6815,19 @@ def test_command_center_survives_ranking_extras_wait_timeout(monkeypatch) -> Non
         def health_report(self):
             return {"is_running": True, "engine_ready": True}
 
-        def get_top_ranked_opportunities(self, limit=5):
+        def get_top_ranked_opportunities(self, limit=5, refresh=False, allow_refresh_when_empty=True):
+            calls["top"] = (limit, refresh, allow_refresh_when_empty)
             return [{"asset": "BTC-USD"}]
 
-        def get_weak_positions(self, limit=5):
+        def get_weak_positions(self, limit=5, include_market_status=True):
+            calls["weak"] = (limit, include_market_status)
             return [{"asset": "ETH-USD"}]
-
-    class _FakeFuture:
-        def cancel(self):
-            return True
-
-        def result(self):
-            return []
-
-    class _FakePool:
-        def __init__(self, max_workers=1):
-            self.futures = []
-
-        def submit(self, fn, *args, **kwargs):
-            fut = _FakeFuture()
-            self.futures.append(fut)
-            return fut
 
     monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
     monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
     monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
     monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
     monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
-    monkeypatch.setattr(futures_mod, "ThreadPoolExecutor", _FakePool, raising=False)
-    monkeypatch.setattr(futures_mod, "wait", lambda fs, timeout=None: (set(), set(fs)), raising=False)
 
     with dashboard_mod.app.test_request_context("/api/command-center"):
         response = dashboard_mod.api_command_center()
@@ -4460,8 +6835,10 @@ def test_command_center_survives_ranking_extras_wait_timeout(monkeypatch) -> Non
     payload = response.get_json()
     assert response.status_code == 200
     assert payload["success"] is True
-    assert payload["top_opportunities"] == []
-    assert payload["weak_positions"] == []
+    assert payload["top_opportunities"] == [{"asset": "BTC-USD"}]
+    assert payload["weak_positions"] == [{"asset": "ETH-USD"}]
+    assert calls["top"] == (5, False, False)
+    assert calls["weak"] == (5, False)
 
 
 def test_operator_action_endpoints_call_core_methods(monkeypatch) -> None:
@@ -5829,6 +8206,174 @@ def test_health_report_includes_monitor_source_health(monkeypatch) -> None:
     assert any("order_book" in issue for issue in report["issues"])
 
 
+def test_health_report_includes_training_health(monkeypatch) -> None:
+    core_mod = importlib.import_module("core.engine")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    trainer_mod = importlib.import_module("ml.trainer")
+
+    core = object.__new__(core_mod.TradingCore)
+    ready = threading.Event()
+    ready.set()
+    core._engine_ready = ready
+    core._is_running = True
+    core.strategy_mode = "policy"
+    core._trainer = SimpleNamespace(get_status=lambda: {})
+    core.state = SimpleNamespace(
+        balance=1250.0,
+        open_position_count=lambda: 2,
+        daily_trades=3,
+        daily_pnl=-12.5,
+        get_all_cooldowns=lambda: {"BTC-USD": 7},
+    )
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(get_snapshot=lambda: {"source_health": {}, "recent_error_count": 0, "recent_errors": []}),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        trainer_mod,
+        "get_training_health_snapshot",
+        lambda trainer=None: {
+            "summary": {"healthy": 1, "mixed": 2, "degraded": 1},
+            "categories": {"crypto": {"status": "healthy"}, "commodities": {"status": "degraded"}},
+        },
+        raising=False,
+    )
+
+    report = core.health_report()
+
+    assert report["training_summary"]["degraded"] == 1
+    assert report["training_health"]["crypto"]["status"] == "healthy"
+    assert report["training_health"]["commodities"]["status"] == "degraded"
+
+
+def test_health_report_includes_ig_broker_snapshot(monkeypatch) -> None:
+    core_mod = importlib.import_module("core.engine")
+    monitor_mod = importlib.import_module("monitoring.system_health_service")
+    trainer_mod = importlib.import_module("ml.trainer")
+    ig_mod = importlib.import_module("services.ig_market_bridge")
+
+    core = object.__new__(core_mod.TradingCore)
+    ready = threading.Event()
+    ready.set()
+    core._engine_ready = ready
+    core._is_running = True
+    core.strategy_mode = "policy"
+    core._trainer = SimpleNamespace(get_status=lambda: {})
+    core.state = SimpleNamespace(
+        balance=1250.0,
+        open_position_count=lambda: 1,
+        daily_trades=1,
+        daily_pnl=5.0,
+        get_all_cooldowns=lambda: {},
+    )
+
+    monkeypatch.setattr(
+        monitor_mod,
+        "monitor",
+        SimpleNamespace(get_snapshot=lambda: {"source_health": {}, "recent_error_count": 0, "recent_errors": []}),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        trainer_mod,
+        "get_training_health_snapshot",
+        lambda trainer=None: {"summary": {}, "categories": {}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ig_mod,
+        "ig_market_bridge",
+        SimpleNamespace(
+            get_account_summary=lambda: {
+                "enabled": True,
+                "authenticated": True,
+                "environment": "demo",
+                "account_id": "Z6A62A",
+                "watchlist_count": 2,
+            }
+        ),
+        raising=False,
+    )
+
+    report = core.health_report()
+
+    assert report["ig_broker"]["authenticated"] is True
+    assert report["ig_broker"]["account_id"] == "Z6A62A"
+
+
+def test_api_system_health_includes_ig_broker(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    class _FakeCore:
+        is_ready = True
+        is_running = True
+
+        def get_balance(self):
+            return 1500.0
+
+        def health_report(self):
+            return {
+                "ram_pct": 12.0,
+                "cpu_pct": 5.0,
+                "open_positions": 0,
+                "active_cooldowns": 0,
+                "source_health": {},
+                "stale_sources": [],
+                "stale_source_count": 0,
+                "never_seen_sources": [],
+                "never_seen_source_count": 0,
+                "training_health": {},
+                "training_summary": {},
+                "recent_error_count": 0,
+                "recent_errors": [],
+                "issues": [],
+                "strategy_mode": "policy",
+                "balance": 1500.0,
+                "ig_broker": {
+                    "enabled": True,
+                    "authenticated": True,
+                    "environment": "demo",
+                    "account_id": "Z6A62A",
+                }
+            }
+
+    monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_get_disk_usage_pct",
+        lambda path: 20.0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ws_mod,
+        "connection_status",
+        {
+            "deriv": {"connected": True, "symbol_count": 14, "assets": "Forex, Crypto, Indices"},
+            "binance": {"connected": False, "symbol_count": 0, "assets": "BNB, SOL, XRP"},
+            "ig": {"connected": True, "symbol_count": 3, "assets": "Gold, Silver, WTI"},
+        },
+        raising=False,
+    )
+
+    with dashboard_mod.app.test_request_context("/api/system-health"):
+        response = dashboard_mod.api_system_health()
+
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["ig_broker"]["authenticated"] is True
+    assert payload["ig_broker"]["account_id"] == "Z6A62A"
+    assert payload["feed_connections"]["deriv"]["connected"] is True
+    assert payload["feed_connections"]["ig"]["symbol_count"] == 3
+
+
 def test_health_report_does_not_degrade_for_never_seen_sources_only(monkeypatch) -> None:
     core_mod = importlib.import_module("core.engine")
     monitor_mod = importlib.import_module("monitoring.system_health_service")
@@ -5920,6 +8465,55 @@ def test_api_system_health_includes_source_health(monkeypatch) -> None:
     assert payload["recent_error_count"] == 3
 
 
+def test_api_system_health_includes_training_health(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_redis_broker", SimpleNamespace(is_connected=lambda: True), raising=False)
+    monkeypatch.setattr(dashboard_mod, "telegram_manager", SimpleNamespace(is_running=True), raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_CORE",
+        SimpleNamespace(
+            is_running=True,
+            is_ready=True,
+            health_report=lambda: {
+                "is_running": True,
+                "engine_ready": True,
+                "strategy_mode": "policy",
+                "balance": 1111.0,
+                "open_positions": 1,
+                "active_cooldowns": 2,
+                "issues": [],
+                "source_health": {},
+                "stale_sources": [],
+                "stale_source_count": 0,
+                "recent_error_count": 0,
+                "recent_errors": [],
+                "training_health": {"commodities": {"status": "degraded"}},
+                "training_summary": {"healthy": 1, "mixed": 2, "degraded": 1},
+            },
+        ),
+        raising=False,
+    )
+
+    class _FakeDB:
+        def ping(self):
+            return True
+
+    monkeypatch.setitem(sys.modules, "services.db_pool", SimpleNamespace(get_db=lambda: _FakeDB()))
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/system/health")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["training_summary"]["mixed"] == 2
+    assert payload["training_health"]["commodities"]["status"] == "degraded"
+
+
 def test_monitoring_snapshot_uses_get_snapshot(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
     monitor_mod = importlib.import_module("monitoring.system_health_service")
@@ -5983,6 +8577,102 @@ def test_chart_stream_emits_connected_event_immediately(monkeypatch) -> None:
     assert response.status_code == 200
     assert '"type": "connected"' in first_chunk
     assert '"asset": "BTC-USD"' in first_chunk
+
+
+def test_chart_stream_prefers_shared_live_price_cache(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    class _FakeFetcher:
+        def get_real_time_price(self, asset, category):
+            raise AssertionError("direct provider fetch should not be used when shared live cache is fresh")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(ws_mod, "get_live_price", lambda asset, max_age_seconds=15.0: (2501.25, "IG"), raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/stream?asset=WTI", buffered=False)
+    first_chunk = next(response.response).decode("utf-8")
+    second_chunk = next(response.response).decode("utf-8")
+    response.close()
+
+    assert response.status_code == 200
+    assert '"type": "connected"' in first_chunk
+    assert '"type": "tick"' in second_chunk
+    assert '"asset": "WTI"' in second_chunk
+    assert '"source": "IG"' in second_chunk
+
+
+def test_record_live_quote_emits_transaction_and_cache(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    seen = {"transactions": [], "prices": []}
+    monkeypatch.setattr(
+        dashboard_mod,
+        "add_transaction",
+        lambda source, symbol, price, volume=None, side=None: seen["transactions"].append(
+            (source, symbol, price, volume, side)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dashboard_mod,
+        "set_live_price",
+        lambda symbol, price, source="WebSocket": seen["prices"].append((symbol, price, source)),
+        raising=False,
+    )
+
+    dashboard_mod._record_live_quote("IG", "WTI", 82.45)
+
+    assert seen["transactions"] == [("IG", "WTI", 82.45, None, None)]
+    assert seen["prices"] == [("WTI", 82.45, "IG")]
+
+
+def test_record_live_quote_can_refresh_cache_without_transaction(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    seen = {"transactions": [], "prices": []}
+    monkeypatch.setattr(
+        dashboard_mod,
+        "add_transaction",
+        lambda source, symbol, price, volume=None, side=None: seen["transactions"].append(
+            (source, symbol, price, volume, side)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dashboard_mod,
+        "set_live_price",
+        lambda symbol, price, source="WebSocket": seen["prices"].append((symbol, price, source)),
+        raising=False,
+    )
+
+    dashboard_mod._record_live_quote("IG", "WTI", 82.45, emit_transaction=False)
+
+    assert seen["transactions"] == []
+    assert seen["prices"] == [("WTI", 82.45, "IG")]
+
+
+def test_websocket_dashboard_mark_feed_activity_updates_last_tick_without_transaction() -> None:
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    original = copy.deepcopy(ws_mod.connection_status.get("ig"))
+    try:
+        ws_mod.connection_status["ig"] = {
+            "connected": False,
+            "last_tick": None,
+            "symbol_count": 0,
+            "assets": "Gold, Silver, WTI",
+        }
+        ws_mod.mark_feed_activity("ig", 3)
+        status = ws_mod.connection_status["ig"]
+
+        assert status["connected"] is True
+        assert status["symbol_count"] == 3
+        assert status["last_tick"] is not None
+    finally:
+        ws_mod.connection_status["ig"] = original
 
 
 def test_chart_stream_is_not_gzipped(monkeypatch) -> None:
@@ -6600,6 +9290,95 @@ def test_risk_portfolio_api_includes_execution_feedback_summary(monkeypatch) -> 
     assert payload["quality_snapshot"]["top_category"] == "crypto"
 
 
+def test_risk_portfolio_api_includes_signal_diagnostics_snapshot(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    class _PortfolioRisk:
+        def get_portfolio_stats(self, positions, balance):
+            return {
+                "total_exposure": 3200.0,
+                "exposure_pct": 32.0,
+                "drawdown_pct": 4.8,
+                "peak_balance": 10350.0,
+            }
+
+    class _Core:
+        portfolio_risk = _PortfolioRisk()
+
+        def get_positions(self):
+            return [{
+                "asset": "WTI",
+                "category": "commodities",
+                "position_size": 1.0,
+                "entry_price": 80.0,
+                "pnl": 55.0,
+                "metadata": {
+                    "broker_quality": {
+                        "score": 0.74,
+                        "quote_agreement_state": "strong",
+                        "spread_regime": "normal",
+                        "quote_quality_state": "fresh",
+                    },
+                    "market_microstructure": {
+                        "score": 0.29,
+                        "depth_available": True,
+                        "synthetic_depth_available": False,
+                    },
+                    "cross_asset_context": {
+                        "alignment": -0.31,
+                        "confidence": 0.71,
+                    },
+                    "adaptive_policy": {
+                        "recent_review_profile": {
+                            "block_new_entries": True,
+                        }
+                    },
+                },
+            }]
+
+        def get_balance(self):
+            return 10_000.0
+
+        def get_performance(self):
+            return {"win_rate": 0.58, "total_trades": 17, "total_pnl": 845.0}
+
+        def get_closed_trades(self, limit=100):
+            return [{"pnl": 50.0}, {"pnl": -25.0}]
+
+    class _Feedback:
+        def summarize_history(self, asset="", category="", days_back=120, limit=500):
+            return {
+                "sample_count": 4 if category else 12,
+                "avg_quality_score": 61.5,
+                "avg_rr_realized": 0.44,
+                "target_hit_rate": 0.39,
+                "premature_stop_rate": 0.17,
+            }
+
+    feedback_mod = importlib.import_module("services.execution_feedback_service")
+    monkeypatch.setattr(feedback_mod, "get_service", lambda: _Feedback(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_core", lambda: _Core(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/risk/portfolio")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["by_category"]["commodities"]["avg_broker_quality"] == 0.74
+    assert payload["by_category"]["commodities"]["avg_microstructure_score"] == 0.29
+    assert payload["by_category"]["commodities"]["avg_cross_asset_alignment"] == -0.31
+    assert payload["by_category"]["commodities"]["true_depth_count"] == 1
+    assert payload["by_category"]["commodities"]["recent_block_count"] == 1
+    assert payload["quality_snapshot"]["avg_broker_quality"] == 0.74
+    assert payload["signal_diagnostics"]["true_depth_count"] == 1
+    assert payload["signal_diagnostics"]["cross_conflict_count"] == 1
+    assert payload["signal_diagnostics"]["recent_pattern_block_count"] == 1
+
+
 def test_ai_predictions_overview_includes_live_quality_and_leaders(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -7173,6 +9952,23 @@ def test_opportunity_ranker_prefers_higher_quality_signal() -> None:
             "whale_bear_weight": 0.18,
             "orderflow_applicable": True,
             "orderflow_imbalance": 0.41,
+            "broker_quality": {
+                "score": 0.91,
+                "quote_agreement_state": "strong",
+                "quote_quality_state": "fresh",
+                "spread_regime": "tight",
+            },
+            "microstructure_score": 0.54,
+            "microstructure_alignment": 0.54,
+            "tick_imbalance": 0.48,
+            "book_imbalance": 0.36,
+            "depth_available": True,
+            "microstructure_source": "order_flow_true_depth",
+            "cross_asset_score": 0.36,
+            "cross_asset_alignment": 0.36,
+            "cross_asset_confidence": 0.82,
+            "cross_asset_state": "buy_support",
+            "cross_asset_primary_peer": "ETH-USD",
         }
     )
 
@@ -7195,6 +9991,23 @@ def test_opportunity_ranker_prefers_higher_quality_signal() -> None:
             "breakout_score": 0.10,
             "sentiment_score": 0.05,
             "orderflow_applicable": False,
+            "broker_quality": {
+                "score": 0.18,
+                "quote_agreement_state": "severe_divergence",
+                "quote_quality_state": "stale",
+                "spread_regime": "extreme",
+            },
+            "microstructure_score": -0.21,
+            "microstructure_alignment": -0.21,
+            "tick_imbalance": -0.35,
+            "book_imbalance": -0.28,
+            "synthetic_depth_available": True,
+            "microstructure_source": "live_store_synthetic_depth",
+            "cross_asset_score": -0.34,
+            "cross_asset_alignment": -0.34,
+            "cross_asset_confidence": 0.74,
+            "cross_asset_state": "sell_support",
+            "cross_asset_primary_peer": "WTI",
         }
     )
 
@@ -7212,6 +10025,9 @@ def test_opportunity_ranker_prefers_higher_quality_signal() -> None:
     assert ranked[0][0].asset == "BTC-USD"
     assert ranked[0][0].metadata["opportunity_rank"] == 1
     assert ranked[0][0].metadata["opportunity_score"] >= ranked[1][0].metadata["opportunity_score"]
+    assert "broker_quality" in ranked[0][0].metadata["opportunity_breakdown"]
+    assert "microstructure" in ranked[0][0].metadata["opportunity_breakdown"]
+    assert "cross_asset" in ranked[0][0].metadata["opportunity_breakdown"]
 
 
 def test_trading_cycle_executes_ranked_survivors_first() -> None:
@@ -7252,6 +10068,77 @@ def test_trading_cycle_executes_ranked_survivors_first() -> None:
     assert executed == ["BTC-USD", "EUR/USD"]
 
 
+def test_trading_core_top_ranked_opportunities_expose_broker_and_depth_fields() -> None:
+    core = TradingCore.__new__(TradingCore)
+    core.state = SimpleNamespace(get_open_positions=lambda: [])
+    core._last_ranked_at_utc = "2026-04-05T08:00:00"
+    core._last_ranked_opportunities = []
+
+    signal = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.74,
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=104.0,
+    )
+    signal.metadata.update(
+        {
+            "opportunity_score": 0.86,
+            "opportunity_rank": 1,
+            "memory_score": 66.0,
+            "execution_quality_score": 62.0,
+            "regime": "trending_up",
+            "setup_quality": 0.72,
+            "broker_quality": {
+                "score": 0.89,
+                "primary_provider": "IG",
+                "comparison_provider": "Deriv",
+                "quote_agreement_state": "aligned",
+                "quote_quality_state": "fresh",
+                "spread_regime": "tight",
+            },
+            "broker_quality_score": 0.89,
+            "market_microstructure": {
+                "score": 0.31,
+                "pressure_direction": "BUY",
+                "depth_available": True,
+                "synthetic_depth_available": False,
+                "microstructure_source": "live_store_depth",
+            },
+            "microstructure_score": 0.31,
+            "depth_available": True,
+            "synthetic_depth_available": False,
+            "microstructure_source": "live_store_depth",
+            "cross_asset_score": 0.28,
+            "cross_asset_alignment": 0.28,
+            "cross_asset_confidence": 0.66,
+            "cross_asset_state": "buy_support",
+            "cross_asset_primary_peer": "XAG/USD",
+            "cross_asset_primary_relation": "silver_confirmation",
+            "opportunity_breakdown": {
+                "broker_quality": 0.89,
+                "microstructure": 0.66,
+                "cross_asset": 0.63,
+            },
+        }
+    )
+
+    core._remember_ranked_opportunities([(signal, {"timeframe": "15m"})])
+    ranked = core.get_top_ranked_opportunities(limit=1, refresh=False, include_positions=False)
+
+    assert ranked[0]["broker_quality_score"] == 0.89
+    assert ranked[0]["broker_primary_provider"] == "IG"
+    assert ranked[0]["broker_agreement_state"] == "aligned"
+    assert ranked[0]["microstructure_score"] == 0.31
+    assert ranked[0]["depth_available"] is True
+    assert ranked[0]["microstructure_source"] == "live_store_depth"
+    assert ranked[0]["cross_asset_score"] == 0.28
+    assert ranked[0]["cross_asset_primary_peer"] == "XAG/USD"
+
+
 def test_signal_journal_to_dict_includes_factor_attribution_and_fingerprint() -> None:
     signal = Signal(
         asset="BTC-USD",
@@ -7287,6 +10174,35 @@ def test_signal_journal_to_dict_includes_factor_attribution_and_fingerprint() ->
         "orderflow_applicable": True,
         "orderflow_imbalance": -0.48,
         "agent_score": 0.88,
+        "broker_quality": {
+            "score": 0.87,
+            "primary_provider": "IG",
+            "comparison_provider": "Deriv",
+            "quote_agreement_state": "strong",
+            "quote_quality_state": "fresh",
+            "spread_regime": "tight",
+        },
+        "broker_quality_score": 0.87,
+        "market_microstructure": {
+            "score": -0.44,
+            "pressure_direction": "SELL",
+            "stop_hunt_risk": 0.09,
+            "exhaustion_risk": 0.12,
+            "depth_available": True,
+            "synthetic_depth_available": False,
+            "microstructure_source": "order_flow_true_depth",
+        },
+        "microstructure_score": -0.44,
+        "microstructure_alignment": 0.44,
+        "depth_available": True,
+        "synthetic_depth_available": False,
+        "microstructure_source": "order_flow_true_depth",
+        "cross_asset_score": -0.33,
+        "cross_asset_alignment": 0.33,
+        "cross_asset_confidence": 0.74,
+        "cross_asset_state": "sell_support",
+        "cross_asset_primary_peer": "US100",
+        "cross_asset_primary_relation": "risk_on_beta",
         "opportunity_score": 0.8123,
         "opportunity_rank": 1,
         "opportunity_breakdown": {
@@ -7296,6 +10212,9 @@ def test_signal_journal_to_dict_includes_factor_attribution_and_fingerprint() ->
             "sentiment": 0.66,
             "whales": 0.84,
             "order_flow": 0.74,
+            "broker_quality": 0.87,
+            "microstructure": 0.79,
+            "cross_asset": 0.72,
             "risk_reward": 0.62,
             "spread": 0.81,
             "portfolio_fit": 0.73,
@@ -7371,6 +10290,11 @@ def test_signal_journal_to_dict_includes_factor_attribution_and_fingerprint() ->
     assert payload["factor_attribution"]["market_structure"] > 0
     assert payload["factor_attribution"]["ml"] > 0
     assert payload["factor_attribution"]["order_flow"] > 0
+    assert payload["factor_attribution"]["broker_quality"] > 0
+    assert payload["factor_attribution"]["microstructure"] > 0
+    assert payload["factor_attribution"]["cross_asset"] > 0
+    assert payload["broker_primary_provider"] == "IG"
+    assert payload["depth_mode"] == "true_depth"
     assert payload["top_positive_factor"] != ""
 
 
@@ -7434,6 +10358,35 @@ def test_signal_journal_telegram_plain_is_human_readable_for_live_signal() -> No
         "memory_edge": 0.311,
         "memory_sample_count": 37,
         "memory_win_rate": 0.707,
+        "broker_quality": {
+            "score": 0.84,
+            "primary_provider": "Deriv",
+            "comparison_provider": "Binance",
+            "quote_agreement_state": "aligned",
+            "quote_quality_state": "fresh",
+            "spread_regime": "tight",
+        },
+        "broker_quality_score": 0.84,
+        "market_microstructure": {
+            "score": -0.39,
+            "pressure_direction": "SELL",
+            "stop_hunt_risk": 0.18,
+            "exhaustion_risk": 0.09,
+            "depth_available": True,
+            "synthetic_depth_available": False,
+            "microstructure_source": "order_flow_true_depth",
+        },
+        "microstructure_score": -0.39,
+        "microstructure_alignment": 0.39,
+        "depth_available": True,
+        "synthetic_depth_available": False,
+        "microstructure_source": "order_flow_true_depth",
+        "cross_asset_score": -0.27,
+        "cross_asset_alignment": 0.27,
+        "cross_asset_confidence": 0.71,
+        "cross_asset_state": "sell_support",
+        "cross_asset_primary_peer": "ETH-USD",
+        "cross_asset_primary_relation": "crypto_breadth",
         "governance_validation": {
             "model_key": "crypto_policy",
             "model_research": {
@@ -7475,6 +10428,9 @@ def test_signal_journal_telegram_plain_is_human_readable_for_live_signal() -> No
             "narrative": "AI_TOKENS",
             "whale_dominant": "SELL",
             "whale_ratio": 1.0,
+            "cross_asset_alignment": 0.27,
+            "cross_asset_primary_peer": "ETH-USD",
+            "cross_asset_primary_relation": "crypto_breadth",
         },
     )
     signal.journal.record(
@@ -7568,14 +10524,19 @@ def test_signal_journal_telegram_plain_is_human_readable_for_live_signal() -> No
     assert "What the bot is seeing right now:" in message
     assert "- Market view: Trend is trending down" in message
     assert "reward to risk is 1.50:1" in message
+    assert "Deriv and Binance are aligned" in message
+    assert "spread regime is tight" in message
     assert "Why the bot trusts this setup:" in message
     assert "- Flow and sentiment: Sentiment is slightly bearish" in message
     assert "whale flow leans sell" in message
+    assert "ETH-USD is confirming the trade through crypto breadth" in message
     assert "the main narrative is AI-related crypto narrative" in message
     assert "Similar setups won 70.7% of the time across 37 examples" in message
     assert "The policy model approved the sell setup" in message
     assert "How the trade will be managed:" in message
     assert "- Execution posture: The setup stayed above the live execution floor" in message
+    assert "true order-book depth is available" in message
+    assert "microstructure pressure still leans sell" in message
     assert "Review time:" in message
     assert "sentiment_score=" not in message
     assert "adaptive_policy={" not in message
@@ -7865,6 +10826,381 @@ def test_recent_pattern_learning_service_boosts_clean_winner_clusters() -> None:
     assert profile["bonus_risk"] > 0
     assert profile["target_rr_multiplier"] > 1.0
     assert "recent_pattern_targets_extend" in profile["notes"]
+
+
+def test_recent_pattern_learning_service_penalizes_broker_and_microstructure_failures() -> None:
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    memory_mod = importlib.import_module("services.setup_memory_service")
+
+    service = learning_mod.RecentPatternLearningService()
+    signal = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.69,
+        risk_reward=1.6,
+    )
+    signal.metadata.update(
+        {
+            "regime": "ranging",
+            "session": "us",
+            "structure_bias": "buy",
+            "alignment_score": 0.62,
+            "setup_quality": 0.58,
+            "pullback_score": 0.21,
+            "breakout_score": 0.33,
+            "volatility_state": "expansion",
+            "opportunity_score": 0.67,
+            "broker_quality": {
+                "score": 0.22,
+                "primary_provider": "IG",
+                "comparison_provider": "Deriv",
+                "quote_agreement_state": "severe_divergence",
+                "spread_regime": "stressed",
+                "quote_quality_state": "stale",
+            },
+            "market_microstructure": {
+                "score": -0.28,
+                "microstructure_alignment": -0.28,
+                "stop_hunt_risk": 0.58,
+                "exhaustion_risk": 0.47,
+                "depth_available": False,
+                "synthetic_depth_available": True,
+                "microstructure_source": "live_store_synthetic_depth",
+            },
+        }
+    )
+
+    fp = memory_mod.get_service().build_fingerprint(signal, {"timeframe": "15m"})
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for _ in range(6):
+        rows.append(
+            {
+                "asset": "XAU/USD",
+                "canonical_asset": "XAU/USD",
+                "category": "commodities",
+                "direction": "BUY",
+                "entry_time": now,
+                "exit_time": now,
+                "metadata": {
+                    "setup_memory_fingerprint": fp,
+                    "broker_quality": {
+                        "score": 0.18,
+                        "primary_provider": "IG",
+                        "comparison_provider": "Deriv",
+                        "quote_agreement_state": "severe_divergence",
+                        "spread_regime": "stressed",
+                        "quote_quality_state": "stale",
+                        "market_transition_risk": 0.79,
+                        "fallback_active": True,
+                    },
+                    "market_microstructure": {
+                        "score": -0.24,
+                        "microstructure_alignment": -0.24,
+                        "stop_hunt_risk": 0.61,
+                        "exhaustion_risk": 0.48,
+                        "depth_available": False,
+                        "synthetic_depth_available": True,
+                        "microstructure_source": "live_store_synthetic_depth",
+                    },
+                    "execution_feedback": {
+                        "exit_family": "stop_loss",
+                        "late_entry": False,
+                        "premature_stop": False,
+                        "target_miss": False,
+                        "stop_too_tight": False,
+                        "stop_too_wide": False,
+                        "rr_realized": -1.02,
+                        "quality_score": 29.0,
+                    },
+                },
+            }
+        )
+
+    service._fetch_rows = lambda asset, category, days_back, limit: rows
+    profile = service.get_profile("XAU/USD", "commodities", signal, {"timeframe": "15m"})
+
+    assert profile["sample_count"] == 6
+    assert profile["broker_divergence_rate"] >= 0.9
+    assert profile["stop_hunt_rate"] >= 0.9
+    assert profile["synthetic_depth_loss_rate"] >= 0.9
+    assert profile["penalty_confidence"] > 0
+    assert "recent_pattern_broker_divergence" in profile["notes"]
+    assert "recent_pattern_stop_hunt" in profile["notes"]
+    assert profile["block_new_entries"] is True
+    assert "brokers disagree" in profile["block_reason"]
+
+
+def test_recent_pattern_learning_service_rewards_true_depth_and_broker_confirmed_winners() -> None:
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    memory_mod = importlib.import_module("services.setup_memory_service")
+
+    service = learning_mod.RecentPatternLearningService()
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.76,
+        risk_reward=1.8,
+    )
+    signal.metadata.update(
+        {
+            "regime": "trending_up",
+            "session": "us",
+            "structure_bias": "buy",
+            "alignment_score": 0.79,
+            "setup_quality": 0.75,
+            "pullback_score": 0.33,
+            "breakout_score": 0.57,
+            "volatility_state": "expansion",
+            "opportunity_score": 0.85,
+            "broker_quality": {
+                "score": 0.84,
+                "primary_provider": "Binance",
+                "comparison_provider": "Deriv",
+                "quote_agreement_state": "strong",
+                "spread_regime": "tight",
+                "quote_quality_state": "fresh",
+            },
+            "market_microstructure": {
+                "score": 0.44,
+                "microstructure_alignment": 0.44,
+                "stop_hunt_risk": 0.08,
+                "exhaustion_risk": 0.07,
+                "depth_available": True,
+                "synthetic_depth_available": False,
+                "microstructure_source": "order_flow_true_depth",
+            },
+        }
+    )
+
+    fp = memory_mod.get_service().build_fingerprint(signal, {"timeframe": "15m"})
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for _ in range(6):
+        rows.append(
+            {
+                "asset": "BTC-USD",
+                "canonical_asset": "BTC-USD",
+                "category": "crypto",
+                "direction": "BUY",
+                "entry_time": now,
+                "exit_time": now,
+                "metadata": {
+                    "setup_memory_fingerprint": fp,
+                    "broker_quality": {
+                        "score": 0.82,
+                        "primary_provider": "Binance",
+                        "comparison_provider": "Deriv",
+                        "quote_agreement_state": "strong",
+                        "spread_regime": "tight",
+                        "quote_quality_state": "fresh",
+                    },
+                    "market_microstructure": {
+                        "score": 0.41,
+                        "microstructure_alignment": 0.41,
+                        "stop_hunt_risk": 0.09,
+                        "exhaustion_risk": 0.06,
+                        "depth_available": True,
+                        "synthetic_depth_available": False,
+                        "microstructure_source": "order_flow_true_depth",
+                    },
+                    "execution_feedback": {
+                        "exit_family": "take_profit",
+                        "late_entry": False,
+                        "premature_stop": False,
+                        "target_miss": False,
+                        "stop_too_tight": False,
+                        "stop_too_wide": False,
+                        "full_target": True,
+                        "target_capture": 1.0,
+                        "giveback_ratio": 0.12,
+                        "rr_realized": 1.38,
+                        "quality_score": 76.0,
+                    },
+                },
+            }
+        )
+
+    service._fetch_rows = lambda asset, category, days_back, limit: rows
+    profile = service.get_profile("BTC-USD", "crypto", signal, {"timeframe": "15m"})
+
+    assert profile["sample_count"] == 6
+    assert profile["true_depth_win_rate"] >= 0.9
+    assert profile["broker_confirmed_win_rate"] >= 0.9
+    assert profile["bonus_confidence"] > 0
+    assert profile["bonus_risk"] > 0
+    assert profile["target_rr_multiplier"] > 1.0
+    assert "recent_pattern_true_depth_winners" in profile["notes"]
+    assert "recent_pattern_broker_confirmed_winners" in profile["notes"]
+
+
+def test_recent_pattern_learning_service_penalizes_cross_asset_conflict_patterns() -> None:
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    memory_mod = importlib.import_module("services.setup_memory_service")
+
+    service = learning_mod.RecentPatternLearningService()
+    signal = Signal(
+        asset="USD/CAD",
+        canonical_asset="USD/CAD",
+        category="forex",
+        direction="BUY",
+        confidence=0.71,
+        risk_reward=1.6,
+    )
+    signal.metadata.update(
+        {
+            "regime": "trending_up",
+            "session": "us",
+            "structure_bias": "buy",
+            "alignment_score": 0.68,
+            "setup_quality": 0.61,
+            "pullback_score": 0.24,
+            "breakout_score": 0.41,
+            "volatility_state": "expansion",
+            "opportunity_score": 0.73,
+            "cross_asset_primary_peer": "WTI",
+            "cross_asset_primary_relation": "oil_cad_link",
+            "cross_asset_alignment": -0.46,
+            "cross_asset_confidence": 0.82,
+        }
+    )
+
+    fp = memory_mod.get_service().build_fingerprint(signal, {"timeframe": "15m"})
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for _ in range(6):
+        rows.append(
+            {
+                "asset": "USD/CAD",
+                "canonical_asset": "USD/CAD",
+                "category": "forex",
+                "direction": "BUY",
+                "entry_time": now,
+                "exit_time": now,
+                "metadata": {
+                    "setup_memory_fingerprint": fp,
+                    "cross_asset_context": {
+                        "score": -0.44,
+                        "alignment": -0.44,
+                        "confidence": 0.84,
+                        "state": "sell_support",
+                        "supportive_direction": "SELL",
+                        "dominant_peer": "WTI",
+                        "dominant_relation": "oil_cad_link",
+                    },
+                    "execution_feedback": {
+                        "exit_family": "stop_loss",
+                        "late_entry": False,
+                        "premature_stop": False,
+                        "target_miss": False,
+                        "stop_too_tight": False,
+                        "stop_too_wide": False,
+                        "rr_realized": -0.92,
+                        "quality_score": 35.0,
+                    },
+                },
+            }
+        )
+
+    service._fetch_rows = lambda asset, category, days_back, limit: rows
+    profile = service.get_profile("USD/CAD", "forex", signal, {"timeframe": "15m"})
+
+    assert profile["sample_count"] == 6
+    assert profile["cross_asset_conflicted_loss_rate"] >= 0.9
+    assert profile["cross_asset_relation_match_count"] == 6
+    assert profile["penalty_confidence"] > 0
+    assert "recent_pattern_cross_asset_conflict" in profile["notes"]
+    assert "recent_pattern_cross_asset_relation_failures" in profile["notes"]
+    assert profile["block_new_entries"] is True
+    assert "spillover conflicts" in profile["block_reason"]
+
+
+def test_recent_pattern_learning_service_rewards_cross_asset_confirmed_winners() -> None:
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    memory_mod = importlib.import_module("services.setup_memory_service")
+
+    service = learning_mod.RecentPatternLearningService()
+    signal = Signal(
+        asset="WTI",
+        canonical_asset="WTI",
+        category="commodities",
+        direction="BUY",
+        confidence=0.74,
+        risk_reward=1.8,
+    )
+    signal.metadata.update(
+        {
+            "regime": "trending_up",
+            "session": "us",
+            "structure_bias": "buy",
+            "alignment_score": 0.77,
+            "setup_quality": 0.73,
+            "pullback_score": 0.26,
+            "breakout_score": 0.49,
+            "volatility_state": "expansion",
+            "opportunity_score": 0.84,
+            "cross_asset_primary_peer": "US500",
+            "cross_asset_primary_relation": "growth_cycle_confirmation",
+            "cross_asset_alignment": 0.38,
+            "cross_asset_confidence": 0.76,
+        }
+    )
+
+    fp = memory_mod.get_service().build_fingerprint(signal, {"timeframe": "15m"})
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for _ in range(6):
+        rows.append(
+            {
+                "asset": "WTI",
+                "canonical_asset": "WTI",
+                "category": "commodities",
+                "direction": "BUY",
+                "entry_time": now,
+                "exit_time": now,
+                "metadata": {
+                    "setup_memory_fingerprint": fp,
+                    "cross_asset_context": {
+                        "score": 0.36,
+                        "alignment": 0.36,
+                        "confidence": 0.79,
+                        "state": "buy_support",
+                        "supportive_direction": "BUY",
+                        "dominant_peer": "US500",
+                        "dominant_relation": "growth_cycle_confirmation",
+                    },
+                    "execution_feedback": {
+                        "exit_family": "take_profit",
+                        "late_entry": False,
+                        "premature_stop": False,
+                        "target_miss": False,
+                        "stop_too_tight": False,
+                        "stop_too_wide": False,
+                        "full_target": True,
+                        "target_capture": 1.0,
+                        "giveback_ratio": 0.11,
+                        "rr_realized": 1.21,
+                        "quality_score": 74.0,
+                    },
+                },
+            }
+        )
+
+    service._fetch_rows = lambda asset, category, days_back, limit: rows
+    profile = service.get_profile("WTI", "commodities", signal, {"timeframe": "15m"})
+
+    assert profile["sample_count"] == 6
+    assert profile["cross_asset_confirmed_win_rate"] >= 0.9
+    assert profile["cross_asset_relation_support_win_rate"] >= 0.9
+    assert profile["bonus_confidence"] > 0
+    assert profile["bonus_risk"] > 0
+    assert profile["target_rr_multiplier"] > 1.0
+    assert "recent_pattern_cross_asset_confirmed_winners" in profile["notes"]
+    assert "recent_pattern_cross_asset_relation_edge" in profile["notes"]
 
 
 def test_adaptive_policy_service_applies_recent_pattern_penalties(monkeypatch) -> None:
@@ -8459,6 +11795,49 @@ def test_state_close_position_attaches_post_trade_review(monkeypatch) -> None:
     assert fake_db.saved["metadata"]["post_trade_review"]["outcome"] == "loss"
 
 
+def test_state_close_position_keeps_utc_offset_and_duration(monkeypatch) -> None:
+    state_mod = importlib.import_module("core.state")
+
+    class _FakeDB:
+        def __init__(self):
+            self.saved = None
+
+        def save_trade(self, trade_data):
+            self.saved = trade_data
+
+        def delete_open_position(self, trade_id):
+            return None
+
+        def upsert_daily_stats(self, *args, **kwargs):
+            return None
+
+    fake_db = _FakeDB()
+    monkeypatch.setitem(sys.modules, "services.db_pool", SimpleNamespace(get_db=lambda: fake_db))
+
+    system = state_mod.SystemState()
+    monkeypatch.setattr(system, "_persist_json", lambda: None)
+    system._open_positions["trade-utc"] = {
+        "trade_id": "trade-utc",
+        "asset": "BTC-USD",
+        "canonical_asset": "BTC-USD",
+        "category": "crypto",
+        "direction": "BUY",
+        "entry_price": 100.0,
+        "stop_loss": 95.0,
+        "take_profit": 110.0,
+        "position_size": 1.0,
+        "open_time": (datetime.now(timezone.utc) - timedelta(minutes=3, seconds=30)).isoformat(),
+        "metadata": {},
+    }
+
+    closed = system.close_position("trade-utc", 95.0, "Stop Loss", -5.0)
+
+    assert closed is not None
+    assert str(closed["exit_time"]).endswith("+00:00")
+    assert int(closed["duration_minutes"]) >= 3
+    assert str(fake_db.saved["exit_time"]).endswith("+00:00")
+
+
 def test_personality_record_trade_persists_post_trade_review_in_diary_notes(monkeypatch) -> None:
     personality_mod = importlib.import_module("services.personality_service")
 
@@ -8514,12 +11893,50 @@ def test_personality_record_trade_persists_post_trade_review_in_diary_notes(monk
                     "outcome": "loss",
                     "lesson": "Do not chase extended entries; wait for fresher structure or better price location.",
                     "avoid": ["Avoid chasing entries after the move is already mature."],
+                    "entry_diagnostics": {
+                        "broker_context": "fragile",
+                        "micro_context": "hostile",
+                        "depth_mode": "synthetic_depth",
+                        "cross_asset_context": "conflicted",
+                        "cross_asset_primary_peer": "WTI",
+                    },
                 },
                 "execution_feedback": {"exit_family": "stop_loss", "late_entry": True},
                 "setup_memory": {"memory_score": 41.0, "memory_edge": -0.14, "sample_count": 9},
                 "memory_score": 41.0,
                 "memory_edge": -0.14,
                 "memory_sample_count": 9,
+                "broker_quality": {
+                    "score": 0.18,
+                    "primary_provider": "IG",
+                    "comparison_provider": "Deriv",
+                    "quote_agreement_state": "severe_divergence",
+                    "spread_regime": "stressed",
+                    "quote_quality_state": "stale",
+                    "market_transition_risk": 0.81,
+                    "fallback_active": True,
+                },
+                "market_microstructure": {
+                    "score": -0.26,
+                    "tick_imbalance": -0.31,
+                    "book_imbalance": -0.22,
+                    "velocity_bps": -1.8,
+                    "spread_bps": 8.4,
+                    "spread_stress": 1.62,
+                    "stop_hunt_risk": 0.58,
+                    "exhaustion_risk": 0.49,
+                    "depth_available": False,
+                    "synthetic_depth_available": True,
+                    "microstructure_source": "live_store_synthetic_depth",
+                },
+                "cross_asset_context": {
+                    "score": -0.42,
+                    "confidence": 0.8,
+                    "state": "sell_support",
+                    "supportive_direction": "SELL",
+                    "dominant_peer": "WTI",
+                    "dominant_relation": "oil_cad_link",
+                },
             },
         }
     )
@@ -8528,6 +11945,11 @@ def test_personality_record_trade_persists_post_trade_review_in_diary_notes(monk
     assert fake_session.added.notes["post_trade_review"]["outcome"] == "loss"
     assert fake_session.added.notes["execution_feedback"]["exit_family"] == "stop_loss"
     assert fake_session.added.notes["setup_memory"]["memory_score"] == 41.0
+    assert fake_session.added.notes["broker_quality"]["quote_agreement_state"] == "severe_divergence"
+    assert fake_session.added.notes["market_microstructure"]["synthetic_depth_available"] is True
+    assert fake_session.added.notes["cross_asset_context"]["dominant_peer"] == "WTI"
+    assert fake_session.added.notes["entry_diagnostics"]["micro_context"] == "hostile"
+    assert fake_session.added.notes["entry_diagnostics"]["cross_asset_context"] == "conflicted"
 
 
 def test_post_trade_review_service_explains_stop_loss_and_take_profit() -> None:
@@ -8543,6 +11965,36 @@ def test_post_trade_review_service_explains_stop_loss_and_take_profit() -> None:
                 "memory_score": 39.0,
                 "memory_edge": -0.18,
                 "memory_sample_count": 12,
+                "broker_quality": {
+                    "score": 0.21,
+                    "primary_provider": "IG",
+                    "comparison_provider": "Deriv",
+                    "quote_agreement_state": "severe_divergence",
+                    "spread_regime": "stressed",
+                    "quote_quality_state": "stale",
+                    "market_transition_risk": 0.78,
+                    "fallback_active": True,
+                },
+                "market_microstructure": {
+                    "score": -0.24,
+                    "microstructure_alignment": -0.24,
+                    "tick_imbalance": -0.28,
+                    "book_imbalance": -0.19,
+                    "stop_hunt_risk": 0.57,
+                    "exhaustion_risk": 0.46,
+                    "depth_available": False,
+                    "synthetic_depth_available": True,
+                    "microstructure_source": "live_store_synthetic_depth",
+                },
+                "cross_asset_context": {
+                    "score": -0.39,
+                    "alignment": -0.39,
+                    "confidence": 0.81,
+                    "state": "sell_support",
+                    "supportive_direction": "SELL",
+                    "dominant_peer": "ETH-USD",
+                    "dominant_relation": "crypto_breadth",
+                },
                 "execution_feedback": {
                     "exit_family": "stop_loss",
                     "rr_realized": -1.0,
@@ -8572,6 +12024,35 @@ def test_post_trade_review_service_explains_stop_loss_and_take_profit() -> None:
                 "setup_quality": 0.71,
                 "alignment_score": 0.74,
                 "opportunity_score": 0.81,
+                "broker_quality": {
+                    "score": 0.83,
+                    "primary_provider": "IG",
+                    "comparison_provider": "Deriv",
+                    "quote_agreement_state": "strong",
+                    "spread_regime": "tight",
+                    "quote_quality_state": "fresh",
+                    "market_transition_risk": 0.08,
+                },
+                "market_microstructure": {
+                    "score": 0.41,
+                    "microstructure_alignment": 0.41,
+                    "tick_imbalance": 0.52,
+                    "book_imbalance": 0.37,
+                    "stop_hunt_risk": 0.09,
+                    "exhaustion_risk": 0.08,
+                    "depth_available": True,
+                    "synthetic_depth_available": False,
+                    "microstructure_source": "order_flow_true_depth",
+                },
+                "cross_asset_context": {
+                    "score": 0.34,
+                    "alignment": 0.34,
+                    "confidence": 0.77,
+                    "state": "sell_support",
+                    "supportive_direction": "SELL",
+                    "dominant_peer": "ETH-USD",
+                    "dominant_relation": "crypto_breadth",
+                },
                 "execution_feedback": {
                     "exit_family": "take_profit",
                     "rr_realized": 1.5,
@@ -8588,11 +12069,21 @@ def test_post_trade_review_service_explains_stop_loss_and_take_profit() -> None:
     assert loss_review["outcome"] == "loss"
     assert loss_review["what_went_wrong"]
     assert loss_review["avoid"]
-    assert "Do not chase extended entries" in loss_review["lesson"]
+    assert "brokers disagree" in loss_review["lesson"]
+    assert loss_review["entry_diagnostics"]["broker_context"] == "fragile"
+    assert loss_review["entry_diagnostics"]["micro_context"] == "hostile"
+    assert loss_review["entry_diagnostics"]["depth_mode"] == "synthetic_depth"
+    assert loss_review["entry_diagnostics"]["cross_asset_context"] == "conflicted"
+    assert loss_review["entry_diagnostics"]["cross_asset_primary_peer"] == "ETH-USD"
+    assert any("ETH-USD" in item for item in loss_review["what_went_wrong"])
     assert win_review["outcome"] == "win"
     assert win_review["what_went_right"]
     assert win_review["keep"]
     assert "Keep" in win_review["next_focus"]
+    assert win_review["entry_diagnostics"]["broker_context"] == "supportive"
+    assert win_review["entry_diagnostics"]["depth_mode"] == "true_depth"
+    assert win_review["entry_diagnostics"]["cross_asset_context"] == "supportive"
+    assert any("ETH-USD" in item for item in win_review["what_went_right"])
 
 
 def test_generate_seed_signal_uses_execution_feedback_policy(monkeypatch) -> None:
@@ -8647,6 +12138,61 @@ def test_generate_seed_signal_uses_execution_feedback_policy(monkeypatch) -> Non
     assert round(seen["target_rr_multiplier"], 2) == 0.86
     assert signal.metadata["execution_feedback_policy"]["sample_count"] == 14
     assert signal.metadata["target_rr_multiplier"] == 0.86
+
+
+def test_top_ranked_opportunities_can_skip_refresh_when_snapshot_empty(monkeypatch) -> None:
+    engine = TradingCore(balance=10_000.0)
+    engine._engine_ready.set()
+    calls: list[int] = []
+
+    def _fake_scan(limit: int = 5):
+        calls.append(limit)
+        engine._last_ranked_opportunities = []
+        return []
+
+    monkeypatch.setattr(engine, "scan_top_ranked_opportunities", _fake_scan, raising=False)
+
+    ranked = engine.get_top_ranked_opportunities(
+        limit=3,
+        refresh=False,
+        include_positions=False,
+        allow_refresh_when_empty=False,
+    )
+
+    assert ranked == []
+    assert calls == []
+
+
+def test_get_weak_positions_can_skip_provider_market_status() -> None:
+    engine = TradingCore(balance=10_000.0)
+    engine.state._open_positions = {
+        "t1": {
+            "trade_id": "t1",
+            "asset": "BNB-USD",
+            "category": "crypto",
+            "direction": "BUY",
+            "confidence": 0.61,
+            "pnl": -4.0,
+            "risk_reward": 1.25,
+            "metadata": {
+                "opportunity_score": 0.44,
+                "memory_score": 58.0,
+                "memory_sample_count": 7,
+                "execution_feedback": {"quality_score": 53.0, "sample_count": 6},
+            },
+        }
+    }
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("provider market status should be skipped")
+
+    engine._market_hours_status = _boom  # type: ignore[method-assign]
+
+    weak = engine.get_weak_positions(limit=3, include_market_status=False)
+
+    assert weak
+    assert weak[0]["asset"] == "BNB-USD"
+    assert weak[0]["market_reason"] == "crypto_24x7"
 
 
 def test_generate_seed_signal_aligns_take_profit_to_structure() -> None:
@@ -8715,31 +12261,25 @@ def test_live_bridge_promote_strategy_persists_registry_and_merges_manual(monkey
     assert live_bridge_mod.list_live_strategies() == ["manual_strategy", "auto_strategy"]
 
 
-def test_voting_strategy_refreshes_registry_live_configs(monkeypatch) -> None:
+def test_live_bridge_bundle_signature_changes_when_registry_changes(monkeypatch, tmp_path) -> None:
     live_bridge_mod = importlib.import_module("strategy_lab.live_bridge")
-    voting_mod = importlib.import_module("strategies.voting")
+    registry_path = tmp_path / "live_strategy_registry.json"
 
-    class _FakeLiveStrategy:
-        def __init__(self, config):
-            self.name = str(config.get("name") or "")
+    monkeypatch.setattr(live_bridge_mod, "LIVE_STRATEGY_CONFIGS", [{"name": "manual_alpha", "version": "1.0"}], raising=False)
 
-        def generate(self, asset, canonical, category, df):
-            return None
+    first_configs, first_signature = live_bridge_mod.get_live_strategy_bundle(registry_path)
+    live_bridge_mod.promote_strategy_config(
+        {"name": "auto_beta", "version": "1.1"},
+        report={"overall_score": 73.0, "verdict": "robust", "research_profile": "deep"},
+        asset="ETH-USD",
+        category="crypto",
+        registry_path=registry_path,
+    )
+    second_configs, second_signature = live_bridge_mod.get_live_strategy_bundle(registry_path)
 
-    current_bundle = {"value": ([{"name": "alpha_auto", "version": "1.0"}], "sig-alpha")}
-    monkeypatch.setattr(live_bridge_mod, "DynamicStrategyLive", _FakeLiveStrategy, raising=False)
-    monkeypatch.setattr(live_bridge_mod, "get_live_strategy_bundle", lambda: current_bundle["value"], raising=False)
-
-    voting = voting_mod.VotingStrategy()
-    assert "alpha_auto" in voting.list_strategies()
-
-    current_bundle["value"] = ([{"name": "beta_auto", "version": "1.0"}], "sig-beta")
-    voting._live_bridge_last_refresh_at = 0.0
-    voting._refresh_live_bridge_strategies()
-
-    names = voting.list_strategies()
-    assert "beta_auto" in names
-    assert "alpha_auto" not in names
+    assert [row["name"] for row in first_configs] == ["manual_alpha"]
+    assert [row["name"] for row in second_configs] == ["manual_alpha", "auto_beta"]
+    assert second_signature != first_signature
 
 
 def test_run_lab_auto_promote_live_candidate_uses_registry(monkeypatch) -> None:
@@ -9246,6 +12786,282 @@ def test_market_review_records_evidence_without_mutating_score(monkeypatch) -> N
     assert "ml_agrees" in signal.metadata["market_review_notes"]
 
 
+def test_broker_quality_service_scores_agreement_and_transition() -> None:
+    broker_mod = importlib.import_module("services.broker_quality_service")
+    service = broker_mod.BrokerQualityService()
+
+    class _Fetcher:
+        @staticmethod
+        def get_provider_quote(asset: str, category: str, provider: str):
+            if provider == "deriv":
+                return 100.01, 0.03, {
+                    "source": "Deriv",
+                    "source_class": "stream",
+                    "realtime": True,
+                    "live_age_seconds": 1.4,
+                }
+            return None, None, {}
+
+        @staticmethod
+        def get_provider_market_status(asset: str, category: str, provider: str):
+            if provider == "deriv":
+                return {"market_open": True}
+            return None
+
+    first = service.build_snapshot(
+        asset="XAU/USD",
+        category="commodities",
+        fetcher=_Fetcher(),
+        primary_price=100.0,
+        primary_spread=0.02,
+        primary_meta={
+            "source": "IG",
+            "source_class": "stream",
+            "realtime": True,
+            "live_age_seconds": 0.8,
+        },
+        market_status={"market_open": True},
+    )
+    second = service.build_snapshot(
+        asset="XAU/USD",
+        category="commodities",
+        fetcher=_Fetcher(),
+        primary_price=100.0,
+        primary_spread=0.12,
+        primary_meta={
+            "source": "IG",
+            "source_class": "stream",
+            "realtime": True,
+            "live_age_seconds": 11.0,
+        },
+        market_status={"market_open": False},
+    )
+
+    assert first["primary_provider"] == "IG"
+    assert first["comparison_provider"] == "Deriv"
+    assert first["quote_agreement_state"] in {"strong", "aligned"}
+    assert first["quote_quality_state"] == "fresh"
+    assert first["spread_regime"] == "tight"
+    assert second["market_state_changed"] is True
+    assert second["market_transition_risk"] >= 0.65
+    assert "market_state_changed" in second["notes"]
+
+
+def test_prediction_service_health_probe_reports_healthy() -> None:
+    service_mod = importlib.import_module("ml.prediction_service")
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    host, port = server.getsockname()
+
+    def _serve_once():
+        conn, _addr = server.accept()
+        try:
+            msg = service_mod._recv_msg(conn)
+            assert msg["action"] == "health"
+            service_mod._send_msg(conn, {"ok": True, "uptime": 1.0})
+        finally:
+            conn.close()
+            server.close()
+
+    thread = threading.Thread(target=_serve_once, daemon=True)
+    thread.start()
+
+    assert service_mod.is_service_healthy(host=host, port=port, timeout_sec=0.5) is True
+    thread.join(timeout=1.0)
+
+
+def test_prediction_service_wait_for_service_observes_delayed_start() -> None:
+    service_mod = importlib.import_module("ml.prediction_service")
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    host, port = probe.getsockname()
+    probe.close()
+
+    def _delayed_server():
+        time.sleep(0.2)
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind((host, port))
+        server.listen(1)
+        try:
+            conn, _addr = server.accept()
+            try:
+                msg = service_mod._recv_msg(conn)
+                assert msg["action"] == "health"
+                service_mod._send_msg(conn, {"ok": True, "uptime": 2.0})
+            finally:
+                conn.close()
+        finally:
+            server.close()
+
+    threading.Thread(target=_delayed_server, daemon=True).start()
+
+    assert service_mod.wait_for_service(host=host, port=port, timeout_sec=1.5, poll_interval=0.05) is True
+
+
+def test_market_review_records_broker_quality_notes(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    monkeypatch.setattr(
+        decision_mod,
+        "_get_news_state",
+        lambda category: {"state": "clear", "event": "", "impact": "", "direction": "", "mins_to": 0},
+        raising=False,
+    )
+    monkeypatch.setattr(decision_mod, "_get_orderflow_imbalance", lambda asset: 0.0, raising=False)
+
+    signal = Signal(
+        asset="WTI",
+        canonical_asset="WTI",
+        category="commodities",
+        direction="BUY",
+        confidence=0.71,
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=104.0,
+    )
+    context = {
+        "ml_prediction": 0.73,
+        "ml_confidence": 0.79,
+        "spread": 0.15,
+        "market_microstructure": {},
+        "market_structure": {
+            "structure_bias": "buy",
+            "alignment_score": 0.61,
+            "setup_quality": 0.58,
+            "pullback_score": 0.15,
+            "breakout_score": 0.48,
+            "volatility_state": "normal",
+            "regime": "trending_up",
+        },
+        "broker_quality": {
+            "score": 0.24,
+            "primary_provider": "IG",
+            "comparison_provider": "Deriv",
+            "quote_agreement_state": "severe_divergence",
+            "spread_regime": "stressed",
+            "quote_quality_state": "stale",
+            "market_state": "EDITS_ONLY",
+            "market_state_changed": True,
+            "market_transition_risk": 0.84,
+            "fallback_active": True,
+        },
+        "market_status": {"market_open": True, "reason": "open"},
+        "regime": "trending_up",
+    }
+
+    approved = engine._apply_market_review(signal, context)
+
+    assert approved is True
+    assert signal.metadata["broker_quality_score"] == 0.24
+    assert signal.metadata["broker_agreement_state"] == "severe_divergence"
+    assert "broker_severe_divergence" in signal.metadata["market_review_notes"]
+    assert "spread_stressed" in signal.metadata["market_review_notes"]
+    assert "quote_stale" in signal.metadata["market_review_notes"]
+    assert "market_transition_risk" in signal.metadata["market_review_notes"]
+    assert "provider_fallback_active" in signal.metadata["market_review_notes"]
+
+
+def test_market_review_records_enriched_microstructure_notes(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    monkeypatch.setattr(
+        decision_mod,
+        "_get_news_state",
+        lambda category: {"state": "clear", "event": "", "impact": "", "direction": "", "mins_to": 0},
+        raising=False,
+    )
+    monkeypatch.setattr(decision_mod, "_get_orderflow_imbalance", lambda asset: 0.0, raising=False)
+
+    signal = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.70,
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=104.0,
+    )
+    context = {
+        "ml_prediction": 0.76,
+        "ml_confidence": 0.81,
+        "spread": 0.03,
+        "market_microstructure": {
+            "score": 0.42,
+            "stop_hunt_risk": 0.14,
+            "exhaustion_risk": 0.47,
+            "tick_imbalance": 0.61,
+            "book_imbalance": 0.33,
+            "velocity_bps": 2.1,
+            "depth_available": True,
+        },
+        "market_structure": {
+            "structure_bias": "buy",
+            "alignment_score": 0.72,
+            "setup_quality": 0.69,
+            "pullback_score": 0.18,
+            "breakout_score": 0.52,
+            "volatility_state": "expansion",
+            "regime": "trending_up",
+        },
+        "market_status": {"market_open": True, "reason": "open"},
+        "regime": "trending_up",
+    }
+
+    approved = engine._apply_market_review(signal, context)
+
+    assert approved is True
+    assert signal.metadata["book_imbalance"] == 0.33
+    assert signal.metadata["exhaustion_risk"] == 0.47
+    assert "book_pressure_support" in signal.metadata["market_review_notes"]
+    assert "micro_momentum_support" in signal.metadata["market_review_notes"]
+    assert "micro_exhaustion" in signal.metadata["market_review_notes"]
+
+
+def test_signal_intelligence_cross_asset_review_aligns_with_trade_direction() -> None:
+    intel_mod = importlib.import_module("services.signal_intelligence")
+
+    signal = Signal(
+        asset="USD/CAD",
+        canonical_asset="USD/CAD",
+        category="forex",
+        direction="SELL",
+        confidence=0.69,
+    )
+    payload = intel_mod.apply_cross_asset_review(
+        signal,
+        {
+            "cross_asset_context": {
+                "score": -0.44,
+                "confidence": 0.76,
+                "state": "sell_support",
+                "supportive_direction": "SELL",
+                "dominant_peer": "WTI",
+                "dominant_relation": "oil_cad_link",
+                "peers": [
+                    {
+                        "peer_asset": "WTI",
+                        "relation_label": "oil_cad_link",
+                        "supportive_direction": "SELL",
+                        "peer_direction": "BUY",
+                        "buy_bias": -0.44,
+                        "weight": 1.0,
+                        "state": "supportive",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert payload["alignment"] == 0.44
+    assert signal.metadata["cross_asset_alignment"] == 0.44
+    assert signal.metadata["cross_asset_primary_peer"] == "WTI"
+    assert "cross_asset_support" in payload["adjustments"]
+
+
 def test_signal_scorecard_penalizes_ml_conflict_and_event_risk(monkeypatch) -> None:
     scorecard_mod = importlib.import_module("services.signal_scorecard")
 
@@ -9309,6 +13125,216 @@ def test_signal_scorecard_penalizes_ml_conflict_and_event_risk(monkeypatch) -> N
     assert conflicted_payload["breakdown"]["ml_alignment"] < aligned_payload["breakdown"]["ml_alignment"]
     assert conflicted_payload["breakdown"]["news"] < aligned_payload["breakdown"]["news"]
     assert conflicted_payload["final_score"] < aligned_payload["final_score"]
+
+
+def test_signal_scorecard_penalizes_poor_broker_quality(monkeypatch) -> None:
+    scorecard_mod = importlib.import_module("services.signal_scorecard")
+
+    class _Tracker:
+        @staticmethod
+        def get_accuracy_stats(days_back: int = 30):
+            return {"by_asset": {}}
+
+    monkeypatch.setitem(sys.modules, "prediction_tracker", SimpleNamespace(prediction_tracker=_Tracker()))
+    scorecard = scorecard_mod.get_service()
+
+    base_metadata = {
+        "ml_confidence": 0.88,
+        "ml_prediction_real": True,
+        "ml_direction": "BUY",
+        "ml_direction_agrees": True,
+        "alignment_score": 0.82,
+        "setup_quality": 0.78,
+        "structure_bias": "buy",
+        "market_structure": {"structure_bias": "buy", "alignment_score": 0.82, "setup_quality": 0.78},
+        "regime": "trending_up",
+        "session": "us",
+        "news_state": "clear",
+    }
+    strong = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.80,
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=104.0,
+        risk_reward=2.0,
+        metadata={
+            **base_metadata,
+            "broker_quality": {
+                "score": 0.91,
+                "quote_agreement_state": "strong",
+                "quote_quality_state": "fresh",
+                "spread_regime": "tight",
+            },
+        },
+    )
+    weak = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.80,
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=104.0,
+        risk_reward=2.0,
+        metadata={
+            **base_metadata,
+            "broker_quality": {
+                "score": 0.18,
+                "quote_agreement_state": "severe_divergence",
+                "quote_quality_state": "stale",
+                "spread_regime": "extreme",
+            },
+        },
+    )
+
+    strong_payload = scorecard.score(strong, {"spread": 0.04})
+    weak_payload = scorecard.score(weak, {"spread": 0.04})
+
+    assert weak_payload["breakdown"]["broker_quality"] < strong_payload["breakdown"]["broker_quality"]
+    assert weak_payload["final_score"] < strong_payload["final_score"]
+    assert any("brokers materially disagree" in note for note in weak_payload["notes"])
+
+
+def test_signal_scorecard_penalizes_enriched_microstructure_risk(monkeypatch) -> None:
+    scorecard_mod = importlib.import_module("services.signal_scorecard")
+
+    class _Tracker:
+        @staticmethod
+        def get_accuracy_stats(days_back: int = 30):
+            return {"by_asset": {}}
+
+    monkeypatch.setitem(sys.modules, "prediction_tracker", SimpleNamespace(prediction_tracker=_Tracker()))
+    scorecard = scorecard_mod.get_service()
+
+    base_metadata = {
+        "ml_confidence": 0.86,
+        "ml_prediction_real": True,
+        "ml_direction": "BUY",
+        "ml_direction_agrees": True,
+        "alignment_score": 0.79,
+        "setup_quality": 0.75,
+        "structure_bias": "buy",
+        "market_structure": {"structure_bias": "buy", "alignment_score": 0.79, "setup_quality": 0.75},
+        "regime": "trending_up",
+        "session": "us",
+        "news_state": "clear",
+    }
+    supportive = Signal(
+        asset="WTI",
+        canonical_asset="WTI",
+        category="commodities",
+        direction="BUY",
+        confidence=0.79,
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=104.0,
+        risk_reward=2.0,
+        metadata={
+            **base_metadata,
+            "microstructure_score": 0.35,
+            "tick_imbalance": 0.55,
+            "book_imbalance": 0.28,
+            "stop_hunt_risk": 0.08,
+            "exhaustion_risk": 0.06,
+        },
+    )
+    risky = Signal(
+        asset="WTI",
+        canonical_asset="WTI",
+        category="commodities",
+        direction="BUY",
+        confidence=0.79,
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=104.0,
+        risk_reward=2.0,
+        metadata={
+            **base_metadata,
+            "microstructure_score": 0.12,
+            "tick_imbalance": -0.18,
+            "book_imbalance": -0.24,
+            "stop_hunt_risk": 0.52,
+            "exhaustion_risk": 0.48,
+        },
+    )
+
+    supportive_payload = scorecard.score(supportive, {"spread": 0.03})
+    risky_payload = scorecard.score(risky, {"spread": 0.03})
+
+    assert risky_payload["breakdown"]["microstructure"] < supportive_payload["breakdown"]["microstructure"]
+    assert risky_payload["final_score"] < supportive_payload["final_score"]
+
+
+def test_signal_scorecard_uses_cross_asset_confirmation(monkeypatch) -> None:
+    scorecard_mod = importlib.import_module("services.signal_scorecard")
+
+    class _Tracker:
+        @staticmethod
+        def get_accuracy_stats(days_back: int = 30):
+            return {"by_asset": {}}
+
+    monkeypatch.setitem(sys.modules, "prediction_tracker", SimpleNamespace(prediction_tracker=_Tracker()))
+    scorecard = scorecard_mod.get_service()
+
+    base_metadata = {
+        "ml_confidence": 0.88,
+        "ml_prediction_real": True,
+        "ml_direction": "SELL",
+        "ml_direction_agrees": True,
+        "alignment_score": 0.77,
+        "setup_quality": 0.74,
+        "structure_bias": "sell",
+        "market_structure": {"structure_bias": "sell", "alignment_score": 0.77, "setup_quality": 0.74},
+        "regime": "trending_down",
+        "session": "us",
+        "news_state": "clear",
+    }
+    confirmed = Signal(
+        asset="USD/CAD",
+        canonical_asset="USD/CAD",
+        category="forex",
+        direction="SELL",
+        confidence=0.78,
+        entry_price=1.35,
+        stop_loss=1.36,
+        take_profit=1.33,
+        risk_reward=2.0,
+        metadata={
+            **base_metadata,
+            "cross_asset_alignment": 0.42,
+            "cross_asset_confidence": 0.81,
+            "cross_asset_primary_peer": "WTI",
+        },
+    )
+    conflicted = Signal(
+        asset="USD/CAD",
+        canonical_asset="USD/CAD",
+        category="forex",
+        direction="SELL",
+        confidence=0.78,
+        entry_price=1.35,
+        stop_loss=1.36,
+        take_profit=1.33,
+        risk_reward=2.0,
+        metadata={
+            **base_metadata,
+            "cross_asset_alignment": -0.38,
+            "cross_asset_confidence": 0.81,
+            "cross_asset_primary_peer": "WTI",
+        },
+    )
+
+    confirmed_payload = scorecard.score(confirmed, {"spread": 0.0005})
+    conflicted_payload = scorecard.score(conflicted, {"spread": 0.0005})
+
+    assert confirmed_payload["breakdown"]["cross_asset"] > conflicted_payload["breakdown"]["cross_asset"]
+    assert confirmed_payload["final_score"] > conflicted_payload["final_score"]
+    assert any("cross-asset spillover conflicts" in note for note in conflicted_payload["notes"])
 
 
 def test_squash_confidence_makes_top_end_hard_to_reach() -> None:

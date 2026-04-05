@@ -16,9 +16,19 @@ live_prices_lock = threading.Lock()
 
 # ─── Per-exchange connection status ───────────────────────────────────────────
 connection_status: dict = {
-    'deriv': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Forex, Crypto, Commodities, Indices'},
+    'deriv': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Forex, Crypto, Indices'},
     'binance': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'BNB, SOL, XRP'},
+    'ig': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Gold, Silver, WTI'},
 }
+
+
+def mark_feed_activity(source: str, symbol_count: int = None) -> None:
+    src = source.lower()
+    if src in connection_status:
+        connection_status[src]['connected'] = True
+        if symbol_count is not None:
+            connection_status[src]['symbol_count'] = symbol_count
+        connection_status[src]['last_tick'] = datetime.now().strftime('%H:%M:%S')
 
 
 def add_transaction(source: str, symbol: str, price: float,
@@ -36,9 +46,7 @@ def add_transaction(source: str, symbol: str, price: float,
         'timestamp':  datetime.now().timestamp()
     }
     recent_transactions.append(tx)
-    if src in connection_status:
-        connection_status[src]['connected'] = True
-        connection_status[src]['last_tick'] = datetime.now().strftime('%H:%M:%S')
+    mark_feed_activity(src)
     return tx
 
 
@@ -73,3 +81,20 @@ def get_live_price(asset: str, max_age_seconds: float = 10.0) -> tuple:
         if age <= max_age_seconds:
             return (price, source)
     return (None, None)
+
+
+def get_live_price_snapshot(asset: str, max_age_seconds: float | None = None) -> dict | None:
+    """Return live-price details including age, optionally requiring freshness."""
+    with live_prices_lock:
+        if asset not in live_prices:
+            return None
+        price, ts, source = live_prices[asset]
+        age = max(0.0, datetime.now().timestamp() - float(ts or 0.0))
+        if max_age_seconds is not None and age > float(max_age_seconds):
+            return None
+        return {
+            "price": float(price),
+            "timestamp": float(ts),
+            "source": str(source),
+            "age_seconds": age,
+        }

@@ -243,6 +243,21 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
+      <div class="panel panel-wide" style="animation-delay:.29s">
+        <div class="panel-header">
+          <span>🛰️</span>
+          <span class="panel-title">Review Friction</span>
+          <span class="panel-badge" id="frictionBadge">—</span>
+        </div>
+        <div class="panel-body">
+          <div class="outcome-grid" id="frictionGrid">
+            <div class="outcome-card"><div class="outcome-kicker">Broker</div><div class="outcome-value">—</div><div class="outcome-note">Loading…</div></div>
+            <div class="outcome-card"><div class="outcome-kicker">Depth</div><div class="outcome-value">—</div><div class="outcome-note">Loading…</div></div>
+            <div class="outcome-card"><div class="outcome-kicker">Pattern</div><div class="outcome-value">—</div><div class="outcome-note">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Signal decision journal -->
       <div class="panel panel-wide" style="animation-delay:.3s">
         <div class="panel-header">
@@ -359,6 +374,8 @@ async function loadJournal() {
   try {
     const overview = await fetchIntelligenceOverview();
     const journals = overview.journals || [];
+    const status = overview.status || {};
+    const diagnostics = status.signal_diagnostics || {};
     document.getElementById('journalBadge').textContent = journals.length + ' signals';
     const executed = journals.filter(j => j.decision === 'SURVIVED').length;
     const rejected = Math.max(0, journals.length - executed);
@@ -370,6 +387,38 @@ async function loadJournal() {
     document.getElementById('oRejected').textContent = rejected;
     document.getElementById('oSources').textContent = avgSources === '—' ? '—' : avgSources;
     document.getElementById('outcomeBadge').textContent = journals.length ? `${executed} live / ${rejected} rejected` : 'No recent signals';
+    const fragileCount = Number(diagnostics.broker_fragile_count || 0);
+    const trueDepthCount = Number(diagnostics.true_depth_count || 0);
+    const syntheticDepthCount = Number(diagnostics.synthetic_depth_count || 0);
+    const conflictCount = Number(diagnostics.cross_conflict_count || 0);
+    const blockCount = Number(diagnostics.recent_pattern_block_count || 0);
+    document.getElementById('frictionBadge').textContent = diagnostics.count ? diagnostics.summary_label || 'Active' : 'Idle';
+    document.getElementById('frictionGrid').innerHTML = [
+      {
+        kicker: 'Broker',
+        value: `${Number(diagnostics.broker_supportive_count || 0)}/${fragileCount}`,
+        note: fragileCount ? 'Fragile broker context is currently one of the active review drags' : 'Broker agreement is not a major blocker right now',
+        klass: fragileCount ? 'am' : 'gn',
+      },
+      {
+        kicker: 'Depth',
+        value: `${trueDepthCount}/${syntheticDepthCount}`,
+        note: syntheticDepthCount ? 'Synthetic depth is still carrying part of the review stack' : 'Depth-linked review is mostly true or top-of-book only',
+        klass: trueDepthCount ? 'gn' : syntheticDepthCount ? 'am' : 'cy',
+      },
+      {
+        kicker: 'Pattern',
+        value: `${conflictCount}/${blockCount}`,
+        note: blockCount ? 'Recent pattern learning is actively blocking repeated weak setups' : 'Pattern memory is observing, not blocking',
+        klass: conflictCount || blockCount ? 'rd' : 'gn',
+      },
+    ].map(item => `
+      <div class="outcome-card">
+        <div class="outcome-kicker">${item.kicker}</div>
+        <div class="outcome-value ${item.klass}">${item.value}</div>
+        <div class="outcome-note">${item.note}</div>
+      </div>
+    `).join('');
     if (!journals.length) { document.getElementById('journalFeed').innerHTML = '<div class="empty">No signal journal data</div>'; return; }
 
     const stepClass = dec => dec === 'PASS' ? 'jl-pass' : dec === 'KILLED' ? 'jl-kill' : 'jl-skip';
@@ -420,7 +469,10 @@ async function loadJournal() {
       </div>`;
     }).join('');
     document.getElementById('journalFeed').innerHTML = html;
-  } catch(e) {}
+  } catch(e) {
+    document.getElementById('frictionBadge').textContent = 'Unavailable';
+    document.getElementById('frictionGrid').innerHTML = '<div class="empty" style="grid-column:span 3">Review friction unavailable</div>';
+  }
 }
 
 function refresh() { loadAlerts(); loadJournal(); }

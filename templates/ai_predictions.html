@@ -178,6 +178,16 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🛰️ Broker & Depth Context</span></div>
+        <div class="summary-grid" id="diagnosticGrid">
+          <div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div>
+          <div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div>
+          <div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div>
+          <div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div>
+        </div>
+      </div>
+
       <!-- Accuracy rings -->
       <div class="panel">
         <div class="panel-header"><span class="panel-title">🎯 Forecast Accuracy</span></div>
@@ -239,6 +249,7 @@ let _aiPredictionsCache = null;
 function renderAiUnavailable(message){
   const msg = message || 'AI prediction data unavailable';
   document.getElementById('summaryGrid').innerHTML = '<div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">'+msg+'</div></div>';
+  document.getElementById('diagnosticGrid').innerHTML = '<div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">'+msg+'</div></div>';
   document.getElementById('ringGrid').innerHTML = '<div class="ring-item"><div class="empty">'+msg+'</div></div>';
   document.getElementById('recentBody').innerHTML = '<tr><td colspan="8" class="empty">'+msg+'</td></tr>';
   document.getElementById('leaderGrid').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
@@ -274,6 +285,7 @@ async function loadAcc(days,el){
     const byAsset=accuracy.by_asset||{};
 
     renderPredictionSummary(overview);
+    renderDiagnosticsSummary(overview);
     renderAccuracyLeaders(byAsset, overview);
 
     // Rings
@@ -391,6 +403,66 @@ function renderPredictionSummary(overview){
         label: 'Avg Opportunity Score',
         sub: signals.length ? 'ranked active decisions' : 'no ranked decisions',
         color: avgOpp >= 0.72 ? 'var(--cy)' : avgOpp >= 0.58 ? 'var(--bl)' : 'var(--tx2)',
+      },
+    ].map(item => `
+      <div class="summary-card">
+        <div class="summary-val" style="color:${item.color}">${item.value}</div>
+        <div class="summary-lbl">${item.label}</div>
+        <div class="summary-sub">${item.sub}</div>
+      </div>
+    `).join('');
+  }catch(e){}
+}
+
+function renderDiagnosticsSummary(overview){
+  try{
+    const status = overview.status || {};
+    const routing = status.provider_routing || {};
+    const diagnostics = status.signal_diagnostics || {};
+    const signals = overview.signals || [];
+    const brokerScores = signals.map(item => Number(item.broker_quality_score || 0)).filter(Number.isFinite);
+    const microScores = signals.map(item => Number(item.microstructure_score || 0)).filter(Number.isFinite);
+    const crossScores = signals.map(item => Number(item.cross_asset_alignment || 0)).filter(Number.isFinite);
+    const avgBroker = brokerScores.length ? (brokerScores.reduce((sum, value) => sum + value, 0) / brokerScores.length) : 0;
+    const avgMicro = microScores.length ? (microScores.reduce((sum, value) => sum + value, 0) / microScores.length) : 0;
+    const avgCross = crossScores.length ? (crossScores.reduce((sum, value) => sum + value, 0) / crossScores.length) : 0;
+    const trueDepth = Number(diagnostics.true_depth_count || 0);
+    const syntheticDepth = Number(diagnostics.synthetic_depth_count || 0);
+    const fragile = Number(diagnostics.broker_fragile_count || 0);
+    const supportive = Number(diagnostics.broker_supportive_count || 0);
+    const conflicts = Number(diagnostics.cross_conflict_count || 0);
+    const blocks = Number(diagnostics.recent_pattern_block_count || 0);
+
+    document.getElementById('diagnosticGrid').innerHTML = [
+      {
+        value: routing.summary_label || 'Unavailable',
+        label: 'Provider Spine',
+        sub: routing.fallback_label ? `fallback ${routing.fallback_label}` : 'no fallback split published',
+        color: 'var(--cy)',
+      },
+      {
+        value: `${supportive}/${fragile}`,
+        label: 'Broker Support / Fragile',
+        sub: diagnostics.summary_label || 'no active diagnostics',
+        color: fragile ? 'var(--am)' : supportive ? 'var(--gr)' : 'var(--tx2)',
+      },
+      {
+        value: `${trueDepth}/${syntheticDepth}`,
+        label: 'True / Synthetic Depth',
+        sub: signals.length ? `${signals.length} live decisions tracked` : 'no active decisions',
+        color: trueDepth ? 'var(--gr)' : syntheticDepth ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
+        value: avgBroker ? avgBroker.toFixed(2) : '—',
+        label: 'Avg Broker Quality',
+        sub: brokerScores.length ? `micro ${avgMicro.toFixed(2)} · cross ${avgCross >= 0 ? '+' : ''}${avgCross.toFixed(2)}` : 'quality not attached yet',
+        color: avgBroker >= 0.7 ? 'var(--gr)' : avgBroker >= 0.5 ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
+        value: conflicts,
+        label: 'Cross Conflicts',
+        sub: blocks ? `${blocks} recent pattern blocks` : 'no active block pressure',
+        color: conflicts ? 'var(--rd)' : 'var(--gr)',
       },
     ].map(item => `
       <div class="summary-card">

@@ -177,14 +177,41 @@ class SignalScorecard:
     def _microstructure_quality(signal) -> Optional[float]:
         micro_score = signal.metadata.get("microstructure_score")
         stop_hunt_risk = _clip(_maybe_float(signal.metadata.get("stop_hunt_risk"), 0.0))
-        if micro_score is None and stop_hunt_risk <= 0.0:
+        exhaustion_risk = _clip(_maybe_float(signal.metadata.get("exhaustion_risk"), 0.0))
+        tick_imbalance = signal.metadata.get("tick_imbalance")
+        book_imbalance = signal.metadata.get("book_imbalance")
+        if micro_score is None and stop_hunt_risk <= 0.0 and exhaustion_risk <= 0.0 and tick_imbalance is None and book_imbalance is None:
             return None
-        base = (
-            _aligned_score(_maybe_float(micro_score, 0.0), signal.direction)
-            if micro_score is not None
-            else 0.55
-        )
-        return _clip(base - stop_hunt_risk * 0.35)
+        components = []
+        if micro_score is not None:
+            components.append(_aligned_score(_maybe_float(micro_score, 0.0), signal.direction))
+        if tick_imbalance is not None:
+            components.append(_aligned_score(_maybe_float(tick_imbalance, 0.0), signal.direction))
+        if book_imbalance is not None:
+            components.append(_aligned_score(_maybe_float(book_imbalance, 0.0), signal.direction))
+        base = sum(components) / len(components) if components else 0.55
+        penalty = stop_hunt_risk * 0.28 + exhaustion_risk * 0.22
+        return _clip(base - penalty)
+
+    @staticmethod
+    def _cross_asset_quality(signal) -> Optional[float]:
+        alignment = signal.metadata.get("cross_asset_alignment")
+        if alignment is None:
+            return None
+        confidence = _clip(_maybe_float(signal.metadata.get("cross_asset_confidence"), 0.0))
+        base = _clip((_maybe_float(alignment, 0.0) + 1.0) / 2.0)
+        strength = _clip(0.45 + confidence * 0.55, 0.45, 1.0)
+        return _clip(0.5 + (base - 0.5) * strength)
+
+    @staticmethod
+    def _broker_quality(signal) -> Optional[float]:
+        broker = signal.metadata.get("broker_quality") or {}
+        if not isinstance(broker, dict) or not broker:
+            return None
+        score = broker.get("score")
+        if score is None:
+            return None
+        return _clip(_maybe_float(score, 0.0))
 
     @staticmethod
     def _news_quality(signal) -> Optional[float]:
@@ -352,7 +379,9 @@ class SignalScorecard:
 
         optional_components = {
             "ml_alignment": (self._ml_alignment_quality(signal, context), 0.07),
+            "broker_quality": (self._broker_quality(signal), 0.07),
             "microstructure": (self._microstructure_quality(signal), 0.05),
+            "cross_asset": (self._cross_asset_quality(signal), 0.04),
             "news": (self._news_quality(signal), 0.04),
             "session": (self._session_quality(signal), 0.03),
             "entry": (self._entry_quality(signal), 0.05),
@@ -406,6 +435,31 @@ class SignalScorecard:
         rr_gap = max(0.0, _maybe_float(signal.metadata.get("adaptive_rr_gap"), 0.0))
         if rr_gap > 0.0:
             notes.append(f"risk/reward is {rr_gap:.2f} below adaptive minimum")
+        broker = signal.metadata.get("broker_quality") or {}
+        if isinstance(broker, dict) and broker:
+            agreement_state = str(broker.get("quote_agreement_state", "") or "")
+            quote_quality_state = str(broker.get("quote_quality_state", "") or "")
+            spread_regime = str(broker.get("spread_regime", "") or "")
+            if agreement_state == "severe_divergence":
+                notes.append("brokers materially disagree on price")
+            elif agreement_state == "divergent":
+                notes.append("brokers are showing mild price divergence")
+            if quote_quality_state in {"stale", "delayed"}:
+                notes.append(f"quote quality is {quote_quality_state}")
+            if spread_regime in {"stressed", "extreme"}:
+                notes.append(f"spread regime is {spread_regime}")
+        cross_alignment = _maybe_float(signal.metadata.get("cross_asset_alignment"), None)
+        cross_peer = str(signal.metadata.get("cross_asset_primary_peer", "") or "")
+        cross_relation = str(signal.metadata.get("cross_asset_primary_relation", "") or "")
+        if cross_alignment is not None:
+            if cross_alignment >= 0.25:
+                notes.append(
+                    f"cross-asset spillover supports the trade"
+                    f"{f' via {cross_peer}' if cross_peer else ''}"
+                )
+            elif cross_alignment <= -0.25:
+                detail = cross_peer or cross_relation or "related markets"
+                notes.append(f"cross-asset spillover conflicts with direction ({detail})")
 
         return {
             "raw_score": round(raw_score, 4),

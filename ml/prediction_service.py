@@ -49,6 +49,35 @@ def _recv_exact(sock, n: int) -> Optional[bytes]:
     return buf
 
 
+def is_service_healthy(
+    host: str = _HOST,
+    port: int = _PORT,
+    timeout_sec: float = _TIMEOUT_SEC,
+) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_sec) as conn:
+            conn.settimeout(timeout_sec)
+            _send_msg(conn, {"action": "health"})
+            resp = _recv_msg(conn)
+            return bool(resp and resp.get("ok"))
+    except Exception:
+        return False
+
+
+def wait_for_service(
+    host: str = _HOST,
+    port: int = _PORT,
+    timeout_sec: float = 5.0,
+    poll_interval: float = 0.2,
+) -> bool:
+    deadline = time.time() + max(timeout_sec, 0.0)
+    while time.time() < deadline:
+        if is_service_healthy(host=host, port=port, timeout_sec=min(_TIMEOUT_SEC, max(poll_interval, 0.1))):
+            return True
+        time.sleep(max(poll_interval, 0.05))
+    return is_service_healthy(host=host, port=port, timeout_sec=min(_TIMEOUT_SEC, 0.5))
+
+
 # ── Server (runs in its own process) ──────────────────────────────────────────
 
 class PredictionServer:

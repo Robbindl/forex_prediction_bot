@@ -6,6 +6,7 @@ from typing import Any, Dict
 from config.config import (
     GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY,
     GOVERNANCE_BOOTSTRAP_MIN_LIVE_SAMPLES,
+    GOVERNANCE_ALLOW_PROVISIONAL_MODEL_RESEARCH_IN_PAPER,
     GOVERNANCE_ENABLE_FOREX_FILTER,
     GOVERNANCE_EXPECTANCY_MAX_PREMATURE_STOP_RATE,
     GOVERNANCE_EXPECTANCY_MIN_AVG_R,
@@ -58,7 +59,7 @@ class SignalGovernance:
             or signal.metadata.get("seed_model")
             or f"{signal.category}_classifier"
         )
-        model_meta = registry.get_metadata(model_key) if model_key else {}
+        research_model_key, model_meta, research_warning = self._resolve_research_model(signal, model_key)
         market_data = context.get("market_data") or signal.metadata.get("market_data") or {}
         price_meta = market_data.get("price") or {}
         ohlcv_meta = market_data.get("ohlcv") or {}
@@ -70,6 +71,8 @@ class SignalGovernance:
 
         violations = []
         warnings = []
+        if research_warning:
+            warnings.append(research_warning)
 
         valid_sources = int(signal.metadata.get("valid_sources_count", 0) or 0)
         market_intel_score = float(signal.metadata.get("market_intelligence_score", 0.0) or 0.0)
@@ -81,7 +84,11 @@ class SignalGovernance:
         ohlcv_score = self._source_score(ohlcv_meta)
         data_quality_score = round(price_score * 0.6 + ohlcv_score * 0.4, 1)
         delayed_data = bool(price_meta.get("delayed", False)) or bool(ohlcv_meta.get("delayed", False))
-        research_ok, research_note = self._assess_model_research(model_key, model_meta)
+        research_ok, research_note = self._assess_model_research(
+            research_model_key,
+            model_meta,
+            category=signal.category,
+        )
 
         if valid_sources < GOVERNANCE_MIN_REAL_SOURCES:
             violations.append(f"real_sources={valid_sources} below minimum {GOVERNANCE_MIN_REAL_SOURCES}")
@@ -197,6 +204,7 @@ class SignalGovernance:
             "violations": violations,
             "warnings": warnings,
             "model_key": model_key,
+            "research_model_key": research_model_key,
             "model_research": model_meta,
             "live_validation": live_validation,
             "registry_validation": registry_validation,
@@ -219,7 +227,72 @@ class SignalGovernance:
         return max(1.0, float(GOVERNANCE_MIN_RISK_REWARD))
 
     @staticmethod
-    def _assess_model_research(model_key: str, model_meta: Dict[str, Any]) -> tuple[bool, str]:
+    def _has_research_metadata(model_meta: Dict[str, Any]) -> bool:
+        if not model_meta:
+            return False
+        return any(
+            key in model_meta
+            for key in (
+                "research_approved",
+                "research_status",
+                "research_grade",
+                "holdout_accuracy",
+                "walk_forward_accuracy",
+            )
+        )
+
+    @staticmethod
+    def _policy_supports_signal_direction(signal) -> bool:
+        direction = str(getattr(signal, "direction", "") or "").upper()
+        try:
+            policy_score = float(signal.metadata.get("agent_score", 0.5) or 0.5)
+        except Exception:
+            policy_score = 0.5
+        if direction == "BUY":
+            return policy_score >= 0.55
+        if direction == "SELL":
+            return policy_score <= 0.45
+        return False
+
+    @classmethod
+    def _resolve_research_model(cls, signal, decision_model_key: str) -> tuple[str, Dict[str, Any], str]:
+        decision_model_key = str(decision_model_key or "").strip()
+        decision_meta = registry.get_metadata(decision_model_key) if decision_model_key else {}
+        if cls._has_research_metadata(decision_meta):
+            return decision_model_key, decision_meta, ""
+
+        policy_model_key = str(signal.metadata.get("policy_model") or f"{signal.category}_policy").strip()
+        if not policy_model_key or policy_model_key == decision_model_key:
+            return decision_model_key, decision_meta, ""
+
+        policy_meta = registry.get_metadata(policy_model_key) if policy_model_key else {}
+        if not cls._has_research_metadata(policy_meta):
+            return decision_model_key, decision_meta, ""
+        if not cls._policy_supports_signal_direction(signal):
+            return decision_model_key, decision_meta, ""
+
+        research_ok, _research_note = cls._assess_model_research(
+            policy_model_key,
+            policy_meta,
+            category=signal.category,
+        )
+        if not research_ok:
+            return decision_model_key, decision_meta, ""
+
+        missing_name = decision_model_key or "seed model"
+        return (
+            policy_model_key,
+            policy_meta,
+            f"using aligned {policy_model_key} research metadata because {missing_name} metadata is unavailable",
+        )
+
+    @staticmethod
+    def _assess_model_research(
+        model_key: str,
+        model_meta: Dict[str, Any],
+        *,
+        category: str = "",
+    ) -> tuple[bool, str]:
         if bool(model_meta.get("research_approved")):
             return True, ""
 
@@ -234,6 +307,11 @@ class SignalGovernance:
             or model_meta.get("research_grade")
             or ""
         ).strip().lower()
+        category_name = str(category or "").strip().lower()
+        runtime_live = os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
+
+        if category_name == "commodities":
+            return False, f"model {model_key or 'unknown'} lacks approved walk-forward research"
 
         provisional_ok = (
             research_state == "provisional"
@@ -243,6 +321,16 @@ class SignalGovernance:
         )
         if provisional_ok:
             return True, f"model {model_key or 'unknown'} using bootstrap research allowance ({research_state})"
+
+        paper_provisional_ok = (
+            not runtime_live
+            and GOVERNANCE_ALLOW_PROVISIONAL_MODEL_RESEARCH_IN_PAPER
+            and research_state == "provisional"
+        )
+        if paper_provisional_ok:
+            return True, (
+                f"model {model_key or 'unknown'} allowed in paper runtime with provisional research"
+            )
 
         return False, f"model {model_key or 'unknown'} lacks approved walk-forward research"
 

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+from core.assets import registry
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -18,24 +19,8 @@ AUTO_RESEARCH_STATUS_PATH = Path("config/auto_strategy_research_status.json")
 AUTO_RESEARCH_SOURCE = "bot_auto_research"
 _AUTO_RESEARCH_RUN_LOCK = threading.Lock()
 AUTO_RESEARCH_DEFAULT_ASSETS = [
-    {"asset": "BTC-USD", "category": "crypto"},
-    {"asset": "ETH-USD", "category": "crypto"},
-    {"asset": "SOL-USD", "category": "crypto"},
-    {"asset": "XRP-USD", "category": "crypto"},
-    {"asset": "BNB-USD", "category": "crypto"},
-    {"asset": "EUR/USD", "category": "forex"},
-    {"asset": "EUR/JPY", "category": "forex"},
-    {"asset": "GBP/USD", "category": "forex"},
-    {"asset": "GBP/JPY", "category": "forex"},
-    {"asset": "USD/JPY", "category": "forex"},
-    {"asset": "AUD/USD", "category": "forex"},
-    {"asset": "USD/CAD", "category": "forex"},
-    {"asset": "XAU/USD", "category": "commodities"},
-    {"asset": "XAG/USD", "category": "commodities"},
-    {"asset": "US30", "category": "indices"},
-    {"asset": "US100", "category": "indices"},
-    {"asset": "US500", "category": "indices"},
-    {"asset": "UK100", "category": "indices"},
+    {"asset": asset, "category": category}
+    for asset, category in registry.all_assets()
 ]
 AUTO_RESEARCH_DEFAULTS = {
     "enabled": False,

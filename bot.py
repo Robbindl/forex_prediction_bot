@@ -344,26 +344,43 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ssl-key",  type=str,   default=None, help="Path to TLS private key for HTTPS / HTTP/2 (default: generated key.pem)")
     p.add_argument("--backtest",     type=str,   default=None)
     p.add_argument("--backtest-cat", type=str,   default="crypto")
+    p.add_argument("--backtest-strategy", type=str, default="ema_rsi_crossover")
     return p.parse_args()
 
 
-def run_backtest(asset: str, category: str) -> None:
-    logger.info(f"[bot] Running backtest: {asset} ({category})")
+def run_backtest(asset: str, category: str, strategy_name: str = "ema_rsi_crossover") -> None:
+    logger.info(f"[bot] Running lab backtest: {asset} ({category}) via {strategy_name}")
     try:
-        from data.fetcher    import DataFetcher
-        from backtest.engine import BacktestEngine
-        from config.config   import get_timeframe_periods, get_trading_timeframe
-        fetcher  = DataFetcher()
-        timeframe = get_trading_timeframe(category)
-        _periods = get_timeframe_periods(timeframe)
-        df       = fetcher.get_ohlcv(asset, category, timeframe, _periods)
-        if df is None or df.empty:
-            logger.error(f"[bot] No data for {asset}")
+        from strategy_lab import (
+            StrategyBuilder,
+            resolve_backtest_end_time,
+            resolve_backtest_periods,
+            run_backtest as run_lab_backtest,
+        )
+
+        configs = StrategyBuilder.all_configs()
+        if strategy_name not in configs:
+            logger.error(
+                f"[bot] Unknown backtest strategy '{strategy_name}'. "
+                f"Available active presets: {sorted(configs.keys())}"
+            )
             return
-        engine = BacktestEngine(initial_balance=10000.0)
-        result = engine.run(asset, category, df)
+
+        periods = resolve_backtest_periods(category)
+        snapshot_end = resolve_backtest_end_time(category)
+        result = run_lab_backtest(
+            configs[strategy_name],
+            asset,
+            category,
+            initial_balance=10000.0,
+            periods=periods,
+            end_time=snapshot_end,
+        )
         import json
-        print(json.dumps(result.to_dict(), indent=2))
+        payload = result.to_dict()
+        payload["strategy"] = strategy_name
+        payload["snapshot_end_utc"] = snapshot_end.isoformat()
+        print(json.dumps(payload, indent=2))
     except Exception as e:
         logger.error(f"[bot] Backtest failed: {e}", exc_info=True)
 
@@ -372,7 +389,7 @@ def main() -> None:
     args = parse_args()
 
     if args.backtest:
-        run_backtest(args.backtest, args.backtest_cat)
+        run_backtest(args.backtest, args.backtest_cat, args.backtest_strategy)
         return
 
     os.environ["BOT_LIVE_RUNTIME"] = "1"
@@ -591,29 +608,39 @@ def main() -> None:
                 max_bytes=ML_SERVICE_LOG_MAX_BYTES,
                 backup_count=LOG_BACKUP_COUNT,
             )
-            ml_proc = subprocess.Popen(
-                [sys.executable, "-m", "ml.prediction_service"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
-            threading.Thread(
-                target=_relay_ml_output,
-                args=(ml_proc.stdout,),
-                daemon=True,
-            ).start()
-            atexit.register(lambda: ml_proc.terminate())
-            time.sleep(2)
-            from ml.prediction_service import PredictionClient
+            from ml.prediction_service import PredictionClient, is_service_healthy, wait_for_service
+
+            if is_service_healthy():
+                ml_proc = None
+                logger.info("[bot] ML prediction service already running — reusing existing local daemon")
+            else:
+                ml_proc = subprocess.Popen(
+                    [sys.executable, "-m", "ml.prediction_service"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+                threading.Thread(
+                    target=_relay_ml_output,
+                    args=(ml_proc.stdout,),
+                    daemon=True,
+                ).start()
+                atexit.register(lambda: ml_proc.terminate())
+                if not wait_for_service(timeout_sec=15.0):
+                    raise RuntimeError("prediction service did not become healthy")
+
             # FIX S23: engine._predictor is the attribute TradingCore reads in
             # _generate_signals(). Previously bot.py wrote to engine.predictor
             # (no underscore) which TradingCore never reads — the subprocess
             # started successfully but was never queried.
             if hasattr(engine, '_predictor'):
                 engine._predictor = PredictionClient()
-            logger.info("[bot] ML prediction service started")
+            if ml_proc is None:
+                logger.info("[bot] ML prediction client attached to existing local daemon")
+            else:
+                logger.info("[bot] ML prediction service started")
         except Exception as e:
             logger.warning(f"[bot] ML service failed to start ({e}) — using in-process predictor")
     else:
@@ -732,6 +759,8 @@ def main() -> None:
     try:
         from ml.trainer import AutoTrainer
         trainer = AutoTrainer(fetcher=engine.fetcher)
+        engine._trainer = trainer
+        engine.trainer = trainer
         trainer.start()
         logger.info("[bot] AutoTrainer started")
     except Exception as e:

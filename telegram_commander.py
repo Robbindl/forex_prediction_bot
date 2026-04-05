@@ -8,8 +8,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from telegram import (
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    MenuButtonCommands,
     Update,
 )
 from telegram.constants import ParseMode
@@ -37,7 +39,7 @@ _DISPLAY = {
     "XRP-USD": "XRP",    "SOL-USD": "SOL",
     "EUR/USD": "EUR/USD","EUR/JPY": "EUR/JPY",  "GBP/USD": "GBP/USD",  "USD/JPY": "USD/JPY",
     "AUD/USD": "AUD/USD","USD/CAD": "USD/CAD",  "GBP/JPY": "GBP/JPY",
-    "XAU/USD": "Gold",   "XAG/USD": "Silver",
+    "XAU/USD": "Gold",   "XAG/USD": "Silver",    "WTI": "WTI Oil",
     "US500":   "S&P 500","US30":  "Dow Jones",  "US100": "Nasdaq",
     "UK100":   "FTSE100",
 }
@@ -74,13 +76,25 @@ def _kb(*rows) -> InlineKeyboardMarkup:
         for row in rows
     ])
 
-def _main_menu_keyboard() -> InlineKeyboardMarkup:
+def _main_menu_keyboard(summary: Optional[Dict[str, Any]] = None) -> InlineKeyboardMarkup:
+    summary = summary or {}
+    open_positions = max(0, int(summary.get("open_positions", 0) or 0))
+    diary_trades = max(0, int(summary.get("diary_trades", 0) or 0))
+    strategy_count = max(0, int(summary.get("strategy_count", 0) or 0))
+    is_running = bool(summary.get("is_running", False))
+
+    positions_label = f"📈 Positions ({open_positions})"
+    diary_label = f"📔 Diary ({diary_trades})" if diary_trades > 0 else "📔 Diary"
+    strategies_label = f"🧩 Strategies ({strategy_count})" if strategy_count > 0 else "🧩 Strategies"
+    run_label = "⏸ Pause" if is_running else "▶️ Resume"
+    run_action = "pause" if is_running else "resume"
+
     return _kb(
-        [("📊 Status",    "status"),   ("📈 Positions", "positions")],
-        [("💰 Balance",   "balance"),  ("🎯 Signals",   "signals")],
-        [("🧠 Ask Robbie","ask"),       ("📔 Diary",     "diary")],
+        [("📊 Status",    "status"),   (positions_label, "positions")],
+        [("💰 Balance",   "balance"),  ("🎯 Signals",    "signals")],
+        [("🧠 Ask Robbie","ask"),      (diary_label,     "diary")],
         [("😶 Mood",      "mood"),      ("📡 Market",    "market")],
-        [("🧩 Strategies","strategies"),("⏸ Pause",     "pause")],
+        [(strategies_label,"strategies"),(run_label,     run_action)],
     )
 
 def _back_button(dest: str = "menu") -> List:
@@ -151,6 +165,21 @@ def _ask_question_keyboard(asset: str) -> InlineKeyboardMarkup:
     return _kb(*rows)
 
 
+def _bot_menu_commands() -> List[BotCommand]:
+    return [
+        BotCommand("menu", "Open the control panel"),
+        BotCommand("status", "Show system status"),
+        BotCommand("positions", "Show open positions"),
+        BotCommand("balance", "Show account balance"),
+        BotCommand("signal", "Review a signal for an asset"),
+        BotCommand("why", "Explain the current signal for an asset"),
+        BotCommand("history", "Show recent trade history"),
+        BotCommand("ask", "Ask Robbie about an asset"),
+        BotCommand("pause", "Pause the bot"),
+        BotCommand("resume", "Resume the bot"),
+    ]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TelegramCommander
 # ══════════════════════════════════════════════════════════════════════════════
@@ -202,7 +231,7 @@ class TelegramCommander:
 
             logger.info("✅ TelegramCommander started")
             self.send_message(
-                "🤖 *Robbie is online*\n\nUse /menu to open the control panel.",
+                "🤖 *Robbie is online*\n\nUse Menu or /menu to open the control panel.",
             )
         except Exception as e:
             logger.error(f"[Telegram] start error: {e}", exc_info=True)
@@ -232,6 +261,7 @@ class TelegramCommander:
             try:
                 async with self.application:
                     await self.application.start()
+                    await self._configure_bot_menu()
                     await self.application.updater.start_polling(
                         allowed_updates=Update.ALL_TYPES,
                         drop_pending_updates=True,
@@ -252,6 +282,18 @@ class TelegramCommander:
                 continue
             else:
                 break
+
+    async def _configure_bot_menu(self) -> None:
+        if not self.application:
+            return
+        try:
+            await self.application.bot.set_my_commands(_bot_menu_commands())
+        except Exception as exc:
+            logger.warning(f"[Telegram] failed to register bot commands: {exc}")
+        try:
+            await self.application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        except Exception as exc:
+            logger.warning(f"[Telegram] failed to register chat menu button: {exc}")
 
     def _handle_polling_error(self, error: Exception) -> None:
         msg = str(error or "")
@@ -281,6 +323,7 @@ class TelegramCommander:
         app.add_handler(CommandHandler("positions",  self._cmd_positions_direct))
         app.add_handler(CommandHandler("balance",    self._cmd_balance_direct))
         app.add_handler(CommandHandler("signal",     self._cmd_signal_direct))
+        app.add_handler(CommandHandler("why",        self._cmd_why_direct))
         app.add_handler(CommandHandler("close",      self._cmd_close_direct))
         app.add_handler(CommandHandler("history",    self._cmd_history))
         app.add_handler(CommandHandler("pause",      self._cmd_pause_direct))
@@ -667,18 +710,11 @@ class TelegramCommander:
     # ══════════════════════════════════════════════════════════════════════════
 
     async def _cmd_menu(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        core   = self.trading_system
-        status = "🟢 Running" if (core and core.is_running) else "🔴 Stopped"
-        bal    = f"${core.get_balance():.2f}" if core else "—"
-        text   = (
-            f"🤖 *Robbie Control Panel*\n\n"
-            f"Status: {status}\n"
-            f"Balance: {bal}\n"
-            f"_{datetime.now().strftime('%H:%M:%S')}_"
-        )
+        text, kb = self._build_main_menu()
         await update.message.reply_text(
-            text, parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_main_menu_keyboard(),
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb,
         )
 
     async def _cmd_status_direct(self, update, ctx):
@@ -702,6 +738,29 @@ class TelegramCommander:
             text = "🎯 *Pick a category to scan:*"
             kb   = _category_keyboard()
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _cmd_why_direct(self, update, ctx):
+        if not ctx.args:
+            await update.message.reply_text(
+                "Usage: `/why <asset>`\nExample: `/why BTC`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        raw = " ".join(ctx.args).upper()
+        asset = _resolve_alias(raw)
+        await update.message.reply_text(
+            f"🧠 Robbie is explaining {asset}…",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        text = await self._build_why(asset)
+        for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+            await update.message.reply_text(
+                chunk,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_kb(
+                    [(f"🎯 Signal", f"sig:{asset}"), ("🏠 Menu", "menu")],
+                ),
+            )
 
     async def _cmd_close_direct(self, update, ctx):
         if not ctx.args:
@@ -751,8 +810,11 @@ class TelegramCommander:
             return ConversationHandler.END
 
         await update.message.reply_text(
-            "🧠 *Ask Robbie*\n\nWhich asset do you want to ask about?\n"
-            "_(type the ticker or name, e.g. BTC or GOLD)_",
+            "🧠 *Ask Robbie*\n\n"
+            "Ask about one asset at a time.\n"
+            "Good prompts: `should I trade?`, `explain`, `risk`, `sentiment`, `confidence`, `what do you remember?`\n\n"
+            "Which asset do you want to ask about?\n"
+            "_Type the ticker or name, e.g. BTC, EURUSD, GOLD_",
             parse_mode=ParseMode.MARKDOWN,
         )
         return WAITING_ASK_ASSET
@@ -897,16 +959,11 @@ class TelegramCommander:
     # ── Button implementations ────────────────────────────────────────────────
 
     async def _btn_menu(self, query) -> None:
-        core   = self.trading_system
-        status = "🟢 Running" if (core and core.is_running) else "🔴 Stopped"
-        bal    = f"${core.get_balance():.2f}" if core else "—"
+        text, kb = self._build_main_menu()
         await query.edit_message_text(
-            f"🤖 *Robbie Control Panel*\n\n"
-            f"Status: {status}\n"
-            f"Balance: {bal}\n"
-            f"_{datetime.now().strftime('%H:%M:%S')}_",
+            text,
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_main_menu_keyboard(),
+            reply_markup=kb,
         )
 
     async def _btn_status(self, query) -> None:
@@ -995,7 +1052,8 @@ class TelegramCommander:
         """Entry point — show category picker."""
         await query.edit_message_text(
             "🧠 *Ask Robbie*\n\n"
-            "Pick a market category:",
+            "Pick a market category, then an asset, then the kind of answer you want.\n"
+            "This explains the existing setup and memory for that asset; it does not run a second trading engine.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_ask_category_keyboard(),
         )
@@ -1135,6 +1193,9 @@ class TelegramCommander:
         open_pos  = health.get("open_positions", 0)
         daily_pnl = daily.get("daily_pnl", 0)
         pnl_icon  = "📈" if daily_pnl >= 0 else "📉"
+        training_text = self._format_training_status(health.get("training_health") or {})
+        ig_text = self._format_ig_broker_status(health.get("ig_broker") or {})
+        diagnostics_text = self._format_signal_diagnostics_status(health.get("signal_diagnostics") or {})
 
         text = (
             f"📊 *System Status*\n"
@@ -1155,6 +1216,9 @@ class TelegramCommander:
             f"RAM:       {health.get('ram_pct', 0):.0f}%\n"
             f"CPU:       {health.get('cpu_pct', 0):.0f}%\n"
             f"Cooldowns: {health.get('active_cooldowns', 0)}\n"
+            f"{training_text}"
+            f"{ig_text}"
+            f"{diagnostics_text}"
             f"_Updated: {datetime.now().strftime('%H:%M:%S')}_"
         )
         kb = _kb(
@@ -1162,6 +1226,147 @@ class TelegramCommander:
             [("💰 Balance",  "balance"),  ("🏠 Menu",      "menu")],
         )
         return text, kb
+
+    @staticmethod
+    def _format_training_status(training_health: Dict[str, Any]) -> str:
+        if not isinstance(training_health, dict) or not training_health:
+            return "\n"
+
+        labels = {
+            "crypto": "Crypto",
+            "forex": "Forex",
+            "commodities": "Comms",
+            "indices": "Indices",
+        }
+        icons = {"healthy": "🟢", "mixed": "🟡", "degraded": "🔴"}
+        parts = []
+        for key in ("crypto", "forex", "commodities", "indices"):
+            item = training_health.get(key) or {}
+            status = str(item.get("status") or "unknown").lower()
+            parts.append(f"{icons.get(status, '⚪')} {labels[key]}")
+
+        return (
+            f"\n"
+            f"🧠 *Model Training*\n"
+            f"{' | '.join(parts)}\n"
+        )
+
+    @staticmethod
+    def _format_ig_broker_status(ig_broker: Dict[str, Any]) -> str:
+        if not isinstance(ig_broker, dict) or not ig_broker.get("enabled"):
+            return ""
+        if not ig_broker.get("authenticated", False):
+            error_message = str(ig_broker.get("error_message") or ig_broker.get("error_code") or "unavailable")
+            return (
+                f"\n"
+                f"🏦 *IG Broker Data*\n"
+                f"IG data is not ready: {error_message}\n"
+            )
+
+        environment = str(ig_broker.get("environment") or "").upper()
+        account_type = str(ig_broker.get("account_type") or "")
+        account_id = str(ig_broker.get("account_id") or "")
+        balance = ig_broker.get("balance")
+        available = ig_broker.get("available")
+        watchlist_count = int(ig_broker.get("watchlist_count", 0) or 0)
+        recent_activity_count = int(ig_broker.get("recent_activity_count", 0) or 0)
+        balance_text = f"${float(balance):,.2f}" if balance is not None else "—"
+        available_text = f"${float(available):,.2f}" if available is not None else "—"
+
+        return (
+            f"\n"
+            f"🏦 *IG Broker Data*\n"
+            f"Account:   {environment} {account_type} {account_id}\n"
+            f"IG Bal:    {balance_text}\n"
+            f"Available: {available_text}\n"
+            f"Lists/Act: {watchlist_count} watchlists, {recent_activity_count} recent activities\n"
+        )
+
+    @staticmethod
+    def _format_signal_diagnostics_status(signal_diagnostics: Dict[str, Any]) -> str:
+        if not isinstance(signal_diagnostics, dict) or int(signal_diagnostics.get("count", 0) or 0) <= 0:
+            return ""
+
+        return (
+            f"\n"
+            f"🧪 *Signal Diagnostics*\n"
+            f"Broker:    {int(signal_diagnostics.get('broker_supportive_count', 0) or 0)} supportive"
+            f" / {int(signal_diagnostics.get('broker_fragile_count', 0) or 0)} fragile\n"
+            f"Depth:     {int(signal_diagnostics.get('true_depth_count', 0) or 0)} true"
+            f" / {int(signal_diagnostics.get('synthetic_depth_count', 0) or 0)} synthetic\n"
+            f"Spillover: {int(signal_diagnostics.get('cross_support_count', 0) or 0)} supportive"
+            f" / {int(signal_diagnostics.get('cross_conflict_count', 0) or 0)} conflicted\n"
+            f"Blocks:    {int(signal_diagnostics.get('recent_pattern_block_count', 0) or 0)} recent-pattern block(s)\n"
+        )
+
+    def _main_menu_snapshot(self) -> Dict[str, Any]:
+        core = self.trading_system
+        open_positions = 0
+        balance = "—"
+        is_running = False
+        strategy_count = 0
+
+        if core:
+            try:
+                open_positions = len(core.get_positions() or [])
+            except Exception:
+                open_positions = 0
+            try:
+                balance = f"${core.get_balance():.2f}"
+            except Exception:
+                balance = "—"
+            is_running = bool(getattr(core, "is_running", False))
+            try:
+                strategy_count = len(core.get_strategy_stats() or {})
+            except Exception:
+                strategy_count = 0
+
+        diary_trades = 0
+        try:
+            from services.personality_service import personality as _personality
+
+            report = _personality.get_report() or {}
+            diary_trades = int(((report.get("stats") or {}).get("total_trades_remembered", 0)) or 0)
+        except Exception:
+            diary_trades = 0
+
+        return {
+            "open_positions": open_positions,
+            "balance": balance,
+            "is_running": is_running,
+            "strategy_count": strategy_count,
+            "diary_trades": diary_trades,
+        }
+
+    def _build_main_menu(self) -> tuple[str, InlineKeyboardMarkup]:
+        summary = self._main_menu_snapshot()
+        status = "🟢 Running" if summary["is_running"] else "🔴 Stopped"
+        balance = summary["balance"]
+        open_positions = int(summary["open_positions"])
+        diary_trades = int(summary["diary_trades"])
+        strategy_count = int(summary["strategy_count"])
+
+        if diary_trades > 0 or strategy_count > 0:
+            history_line = (
+                f"History is live: diary has {diary_trades} closed trade"
+                f"{'s' if diary_trades != 1 else ''}, strategies tracked: {strategy_count}."
+            )
+        else:
+            history_line = "Diary and strategies fill in after the bot has closed trades to learn from."
+
+        text = (
+            f"🤖 *Robbie Control Panel*\n\n"
+            f"Status: {status}\n"
+            f"Balance: {balance}\n"
+            f"Open positions: {open_positions}\n\n"
+            f"*Quick guide*\n"
+            f"• `Signals` scans the live decision engine for current setups.\n"
+            f"• `Ask Robbie` explains one asset in plain English.\n"
+            f"• `Positions` manages active trades.\n"
+            f"• {history_line}\n\n"
+            f"_{datetime.now().strftime('%H:%M:%S')}_"
+        )
+        return text, _main_menu_keyboard(summary)
 
     async def _build_positions(self):
         core = self.trading_system
@@ -1785,6 +1990,7 @@ class TelegramCommander:
             return "❌ Diary unavailable."
 
         moments = report.get("memorable_moments", [])
+        total = report.get("stats", {}).get("total_trades_remembered", 0)
         text    = "📔 *Trading Diary*\n\n"
 
         if moments:
@@ -1794,10 +2000,17 @@ class TelegramCommander:
                 pnl   = m.get("pnl", 0)
                 ps    = f"+${pnl:.0f}" if pnl >= 0 else f"-${abs(pnl):.0f}"
                 text += f"{icon} {m.get('title', '—')} — {ps} _{m.get('date', '')}_\n"
+        elif total > 0:
+            text += (
+                "You've got closed trades in memory, but none have been promoted into memorable diary moments yet.\n"
+                "As more trades close, the diary will start surfacing the standout wins, losses, and lessons.\n"
+            )
         else:
-            text += "_No memorable moments yet — go make some trades! 💪_\n"
+            text += (
+                "The diary is still empty because it feeds on *closed trades*.\n"
+                "Once the bot has a trade history, this page will store the memorable wins, losses, and lessons.\n"
+            )
 
-        total = report.get("stats", {}).get("total_trades_remembered", 0)
         text += f"\n_Total trades in memory: {total}_"
         return text
 
@@ -1808,7 +2021,11 @@ class TelegramCommander:
         try:
             stats = core.get_strategy_stats()
             if not stats:
-                return "📊 *Strategy Stats*\n\n_No completed trades yet._"
+                return (
+                    "📊 *Strategy Stats*\n\n"
+                    "No completed strategy history yet.\n"
+                    "This page becomes useful after trades close and the bot can compare strategy win rate and P&L."
+                )
 
             lines = ["🧩 *Strategy Performance*\n"]
             for strat, s in sorted(
@@ -1987,7 +2204,8 @@ class TelegramCommander:
             setups = core.get_top_ranked_opportunities(limit=5, refresh=refresh)
             if not setups:
                 return (
-                    "No ranked opportunities available yet.",
+                    "No ranked opportunities available yet.\n"
+                    "That usually means there are no strong current candidates, or the ranking view has not filled yet.",
                     _kb([("🎯 Signals", "signals"), ("🏠 Menu", "menu")]),
                 )
 
@@ -1997,11 +2215,44 @@ class TelegramCommander:
                 conf = float(item.get("confidence", 0.0) or 0.0)
                 mem = float(item.get("memory_score", 0.0) or 0.0)
                 exec_q = float(item.get("execution_quality_score", 0.0) or 0.0)
+                broker_q = float(item.get("broker_quality_score", 0.0) or 0.0)
+                micro_q = float(item.get("microstructure_score", 0.0) or 0.0)
+                broker_state_parts = [
+                    str(item.get("broker_agreement_state", "") or "").replace("_", " "),
+                    str(item.get("broker_quote_quality_state", "") or "").replace("_", " "),
+                    str(item.get("broker_spread_regime", "") or "").replace("_", " "),
+                ]
+                broker_state = " / ".join([part for part in broker_state_parts if part])
+                depth_mode = "Top-book"
+                if bool(item.get("depth_available")):
+                    depth_mode = "True depth"
+                elif bool(item.get("synthetic_depth_available")):
+                    depth_mode = "Synthetic depth"
+                provider = str(item.get("broker_primary_provider", "") or "")
+                cross_asset_peer = str(item.get("cross_asset_primary_peer", "") or "")
+                cross_asset_state = str(item.get("cross_asset_state", "") or "").replace("_", " ")
+                if cross_asset_peer and cross_asset_state:
+                    cross_line = f"\n  Cross-asset `{cross_asset_state}` via `{cross_asset_peer}`"
+                elif cross_asset_peer:
+                    cross_line = f"\n  Cross-asset via `{cross_asset_peer}`"
+                else:
+                    cross_line = ""
+                if provider and broker_state:
+                    provider_line = f"\n  Provider `{provider}` | {broker_state}"
+                elif provider:
+                    provider_line = f"\n  Provider `{provider}`"
+                elif broker_state:
+                    provider_line = f"\n  Broker state `{broker_state}`"
+                else:
+                    provider_line = ""
                 source = "live signal" if item.get("source") == "signal" else "open position"
                 lines.append(
                     f"`#{idx}` *{item.get('asset','?')}* {str(item.get('direction','')).upper()}"
                     f"\n  Opportunity `{opp:.3f}` | Confidence `{conf:.0%}`"
-                    f"\n  Memory `{mem:.0f}` | Execution `{exec_q:.0f}` | {source}\n"
+                    f"\n  Memory `{mem:.0f}` | Execution `{exec_q:.0f}` | Broker `{broker_q:.2f}`"
+                    f"\n  Micro `{micro_q:.2f}` | Depth `{depth_mode}` | {source}"
+                    f"{cross_line}"
+                    f"{provider_line}\n"
                 )
             return "\n".join(lines), _kb(
                 [("⚙️ Reprice Weak", "reprice_weak"), ("📉 Reduce Weak", "reduce_weak")],

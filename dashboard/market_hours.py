@@ -130,14 +130,18 @@ def _commodity_open(asset: str) -> Tuple[bool, str]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def _deriv_market_status(asset: str) -> Optional[Tuple[bool, str]]:
+def _provider_market_status(asset: str) -> Optional[Tuple[bool, str, str]]:
     try:
-        from services.deriv_bridge import deriv_bridge
+        from services.market_data_router import get_market_status
 
         profile = get_profile(asset)
-        status = deriv_bridge.get_market_status(asset, category=profile.category)
+        status = get_market_status(asset, category=profile.category)
         if status and "market_open" in status:
-            return bool(status["market_open"]), str(status.get("reason", "Deriv market status"))
+            return (
+                bool(status["market_open"]),
+                str(status.get("reason", "market status unavailable")),
+                str(status.get("source", "")),
+            )
     except Exception:
         pass
     return None
@@ -148,9 +152,10 @@ def is_market_open_for_asset(asset: str) -> Tuple[bool, str]:
     Return (is_open: bool, reason: str) for any canonical asset ID.
     Never returns hardcoded True — always computes from current UTC time.
     """
-    deriv_status = _deriv_market_status(asset)
-    if deriv_status is not None:
-        return deriv_status
+    provider_status = _provider_market_status(asset)
+    if provider_status is not None:
+        open_, reason, _source = provider_status
+        return open_, reason
     if is_crypto(asset):
         return _crypto_open()
     if is_forex(asset):
@@ -169,9 +174,9 @@ def market_status(asset: str) -> Dict:
     """
     Return a full status dict suitable for the dashboard API response.
     """
-    deriv_status = _deriv_market_status(asset)
-    if deriv_status is not None:
-        open_, reason = deriv_status
+    provider_status = _provider_market_status(asset)
+    if provider_status is not None:
+        open_, reason, source = provider_status
     else:
         if is_crypto(asset):
             open_, reason = _crypto_open()
@@ -191,12 +196,12 @@ def market_status(asset: str) -> Dict:
         "reason":      reason,
         "utc_now":     _utc_now().strftime("%Y-%m-%d %H:%M UTC"),
     }
-    if deriv_status is not None:
-        payload["source"] = "Deriv"
+    if provider_status is not None:
+        payload["source"] = source or "market_data_router"
     return payload
 
 
 def all_market_statuses() -> Dict[str, Dict]:
-    """Return market status for all 18 assets."""
+    """Return market status for all tracked assets."""
     from core.asset_profiles import ALL_ASSETS
     return {asset: market_status(asset) for asset in sorted(ALL_ASSETS)}

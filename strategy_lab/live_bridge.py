@@ -24,7 +24,7 @@ LIVE_STRATEGY_REGISTRY_VERSION = 1
 class DynamicStrategyLive(BaseStrategy):
     """
     Wraps a strategy_lab DynamicStrategy config as a BaseStrategy.
-    Drop-in replacement for RSIStrategy, MACDStrategy, etc.
+    Compatible with the legacy strategy interface used by runtime injectors.
     """
 
     def __init__(
@@ -385,47 +385,6 @@ def clear_promoted_strategies(registry_path: Path | None = None) -> int:
     return removed
 
 
-def add_to_voting(
-    strategy: DynamicStrategyLive,
-    voting_instance=None,
-) -> bool:
-    """
-    Add a DynamicStrategyLive to a VotingStrategy instance at runtime.
-    """
-    try:
-        if voting_instance is None:
-            import core.engine as _eng
-
-            for attr in dir(_eng):
-                obj = getattr(_eng, attr, None)
-                if hasattr(obj, "_strategies"):
-                    voting_instance = obj
-                    break
-
-        if voting_instance is None:
-            logger.warning("[LiveBridge] Could not find VotingStrategy instance")
-            return False
-
-        if not hasattr(voting_instance, "_strategies"):
-            logger.warning("[LiveBridge] Target is not a VotingStrategy")
-            return False
-
-        existing_names = [s.name for s in voting_instance._strategies]
-        if strategy.name in existing_names:
-            logger.info(f"[LiveBridge] {strategy.name} already in voting")
-            return True
-
-        voting_instance._strategies.append(strategy)
-        logger.info(
-            f"[LiveBridge] Added '{strategy.name}' to VotingStrategy "
-            f"(now {len(voting_instance._strategies)} strategies)"
-        )
-        return True
-    except Exception as e:
-        logger.warning(f"[LiveBridge] add_to_voting failed: {e}")
-        return False
-
-
 # Edit this list only if you want hardcoded live strategies in source control.
 # Registry-managed strategies are stored separately in LIVE_STRATEGY_REGISTRY_PATH.
 LIVE_STRATEGY_CONFIGS: List[Dict[str, Any]] = [
@@ -437,35 +396,6 @@ LIVE_STRATEGY_CONFIGS: List[Dict[str, Any]] = [
 ]
 
 
-def register_best_strategies(voting_instance=None) -> int:
-    """
-    Registers every effective live strategy into the VotingStrategy.
-
-    Effective strategies include the hardcoded list plus registry-managed
-    deployable strategies written by the lab.
-    """
-    configs = get_live_strategy_configs()
-    if not configs:
-        logger.info(
-            "[LiveBridge] No live strategies configured. "
-            f"Registry path: {LIVE_STRATEGY_REGISTRY_PATH}"
-        )
-        return 0
-
-    added = 0
-    for config in configs:
-        try:
-            live_strat = DynamicStrategyLive(config)
-            if add_to_voting(live_strat, voting_instance):
-                added += 1
-        except Exception as e:
-            name = str((config or {}).get("name") or "unknown")
-            logger.warning(f"[LiveBridge] Failed to register '{name}': {e}")
-
-    logger.info(f"[LiveBridge] Registered {added} live strategies")
-    return added
-
-
 def list_live_strategies() -> List[str]:
     return [c.get("name", "unknown") for c in get_live_strategy_configs()]
 
@@ -474,7 +404,6 @@ __all__ = [
     "DynamicStrategyLive",
     "LIVE_STRATEGY_CONFIGS",
     "LIVE_STRATEGY_REGISTRY_PATH",
-    "add_to_voting",
     "clear_promoted_strategies",
     "find_live_registry_matches",
     "get_live_strategy_bundle",
@@ -483,7 +412,6 @@ __all__ = [
     "list_live_strategies",
     "load_registry_entries",
     "promote_strategy_config",
-    "register_best_strategies",
     "remove_promoted_strategy",
     "sync_promoted_strategies",
 ]

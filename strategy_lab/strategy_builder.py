@@ -1548,13 +1548,66 @@ class StrategyBuilder:
             "filters": StrategyBuilder._trend_filters(htf="1h", atr_pct_min=0.0008, atr_pct_max=0.03),
         }
 
-    # ── All presets registry ──────────────────────────────────────────────────
+    # ── Preset registries ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def research_configs() -> Dict[str, Dict]:
+        """
+        Returns the active research bench.
+
+        These are the only Strategy Lab presets that remain in the main
+        backtest, optimisation, multi-asset, and auto-research flows.
+        We keep the bench intentionally small so weak or redundant presets do
+        not keep getting equal runtime and operator attention.
+        """
+        sb = StrategyBuilder
+        return {
+            "ema_rsi_crossover":        sb.example_config(),
+            "macd_trend":               sb.macd_trend_config(),
+            "adx_trend":                sb.adx_trend_config(),
+            "triple_ema":               sb.triple_ema_config(),
+            "volume_breakout":          sb.volume_breakout_config(),
+            "macd_rsi_confluence":      sb.macd_rsi_confluence_config(),
+            "bollinger_rsi_reversion":  sb.bollinger_rsi_reversion_config(),
+            "adx_ema_momentum":         sb.adx_ema_momentum_config(),
+            "atr_supertrend":           sb.atr_supertrend_config(),
+        }
+
+    @staticmethod
+    def archived_configs() -> Dict[str, Dict]:
+        """
+        Returns presets that are retained for reference only.
+
+        They are not part of the active research bench because they are either
+        weak, too redundant, or a poor fit for the current bot/runtime model.
+        """
+        sb = StrategyBuilder
+        return {
+            "rsi_mean_reversion": sb.rsi_mean_reversion_config(),
+            "stoch_trend": sb.stoch_trend_config(),
+            "bollinger_breakout": sb.bollinger_breakout_config(),
+            "rsi_scalper": sb.rsi_scalper_config(),
+            "golden_cross": sb.golden_cross_config(),
+            "stoch_macd_swing": sb.stoch_macd_swing_config(),
+        }
+
+    @staticmethod
+    def catalog() -> Dict[str, Dict[str, Any]]:
+        """
+        Returns the full preset catalog with an explicit status label.
+        """
+        rows: Dict[str, Dict[str, Any]] = {}
+        for name, config in StrategyBuilder.research_configs().items():
+            rows[name] = {"status": "research", "config": config}
+        for name, config in StrategyBuilder.archived_configs().items():
+            rows[name] = {"status": "archived", "config": config}
+        return rows
 
     @staticmethod
     def all_configs() -> Dict[str, Dict]:
         """
-        Returns all preset strategy configs as a dict keyed by name.
-        Use this to batch-backtest or compare every preset at once.
+        Returns the active research bench as a dict keyed by name.
+        Use this to batch-backtest or compare every current preset at once.
 
         Example
         -------
@@ -1564,21 +1617,4 @@ class StrategyBuilder:
                 result = run_backtest(config, "BTC-USD", "crypto")
                 print(f"{name:30} {result.summary()}")
         """
-        sb = StrategyBuilder
-        return {
-            "ema_rsi_crossover":        sb.example_config(),
-            "rsi_mean_reversion":       sb.rsi_mean_reversion_config(),
-            "macd_trend":               sb.macd_trend_config(),
-            "stoch_trend":              sb.stoch_trend_config(),
-            "adx_trend":                sb.adx_trend_config(),
-            "bollinger_breakout":       sb.bollinger_breakout_config(),
-            "triple_ema":               sb.triple_ema_config(),
-            "rsi_scalper":              sb.rsi_scalper_config(),
-            "volume_breakout":          sb.volume_breakout_config(),
-            "golden_cross":             sb.golden_cross_config(),
-            "macd_rsi_confluence":      sb.macd_rsi_confluence_config(),
-            "bollinger_rsi_reversion":  sb.bollinger_rsi_reversion_config(),
-            "stoch_macd_swing":         sb.stoch_macd_swing_config(),
-            "adx_ema_momentum":         sb.adx_ema_momentum_config(),
-            "atr_supertrend":           sb.atr_supertrend_config(),
-        }
+        return StrategyBuilder.research_configs()

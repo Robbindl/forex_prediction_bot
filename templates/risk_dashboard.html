@@ -131,6 +131,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
     <div class="sb-bottom">
       <div class="status-row"><div class="pulse" id="engineDot"></div><span id="engineStatus">Connecting…</span></div>
+      <div class="status-row"><span>Feeds</span><span id="providerStatus" style="margin-left:auto;color:var(--tx)">—</span></div>
       <div class="status-row"><span>Book</span><span id="riskStatus" style="margin-left:auto;color:var(--tx)">—</span></div>
     </div>
   </nav>
@@ -206,6 +207,21 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
               <div class="state-value" id="statePosture">—</div>
               <div class="state-note">Exposure + drawdown blend</div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">🛰️ Signal Pressure</span>
+          <span class="panel-badge" id="pressureBadge">Loading…</span>
+        </div>
+        <div class="panel-body">
+          <div class="state-grid" id="pressureGrid">
+            <div class="state-card"><div class="state-kicker">Broker</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
+            <div class="state-card"><div class="state-kicker">Depth</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
+            <div class="state-card"><div class="state-kicker">Spillover</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
+            <div class="state-card"><div class="state-kicker">Pattern</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
           </div>
         </div>
       </div>
@@ -318,6 +334,8 @@ function setRiskUnavailable(message){
   document.getElementById('exposurePanel').innerHTML = `<div class="empty">${msg}</div>`;
   document.getElementById('catPanel').innerHTML = `<div class="empty">${msg}</div>`;
   document.getElementById('statsPanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('pressureGrid').innerHTML = `<div class="empty" style="grid-column:span 4">${msg}</div>`;
+  document.getElementById('pressureBadge').textContent = 'Unavailable';
   document.getElementById('ddStats').textContent = msg;
   document.getElementById('riskModeBadge').textContent = 'Unavailable';
   document.getElementById('riskStatus').textContent = 'Unavailable';
@@ -344,10 +362,20 @@ async function load(){
 
   const status = overview.status || {};
   const d = overview.risk || {};
+  const providerRouting = status.provider_routing || {};
+  const signalDiagnostics = d.signal_diagnostics || {};
+  const qualitySnapshot=d.quality_snapshot||{};
+  const metricText = (value, digits = 1) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '—';
+  const signedMetricText = (value, digits = 2) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return '—';
+    return (num >= 0 ? '+' : '') + num.toFixed(digits);
+  };
 
   var dot=document.getElementById('engineDot'),st=document.getElementById('engineStatus');
   if(status.engine_running){dot.classList.remove('off');st.textContent='Engine Ready';}
   else{dot.classList.add('off');st.textContent='Engine Off';}
+  document.getElementById('providerStatus').textContent = providerRouting.summary_label || 'Unavailable';
 
   document.getElementById('mcBalance').textContent  = '$'+fmt(d.balance);
   document.getElementById('mcExposure').textContent = '$'+fmt(d.total_exposure);
@@ -398,7 +426,46 @@ async function load(){
   postureEl.textContent=posture;
   postureEl.className='state-value '+postureClass;
   document.getElementById('riskModeBadge').textContent=posture;
-  document.getElementById('riskStatus').textContent=posCount?posture:'No positions';
+  document.getElementById('riskStatus').textContent=signalDiagnostics.count?signalDiagnostics.summary_label:(posCount?posture:'No positions');
+  const fragileCount=Number(signalDiagnostics.broker_fragile_count||0);
+  const supportiveCount=Number(signalDiagnostics.broker_supportive_count||0);
+  const trueDepthCount=Number(signalDiagnostics.true_depth_count||0);
+  const syntheticDepthCount=Number(signalDiagnostics.synthetic_depth_count||0);
+  const crossConflictCount=Number(signalDiagnostics.cross_conflict_count||0);
+  const crossSupportCount=Number(signalDiagnostics.cross_support_count||0);
+  const recentBlockCount=Number(signalDiagnostics.recent_pattern_block_count||0);
+  const pressureBadge = document.getElementById('pressureBadge');
+  const pressureState = fragileCount || crossConflictCount || recentBlockCount ? 'Guarded' : signalDiagnostics.count ? 'Supportive' : 'Idle';
+  pressureBadge.textContent = pressureState;
+  pressureBadge.style.color = fragileCount || crossConflictCount || recentBlockCount ? 'var(--am)' : signalDiagnostics.count ? 'var(--gr)' : 'var(--tx2)';
+  document.getElementById('pressureGrid').innerHTML = [
+    {
+      kicker: 'Broker',
+      value: `${supportiveCount}/${fragileCount}`,
+      note: signalDiagnostics.count ? `${signalDiagnostics.summary_label || 'supportive book'} ` : 'No active broker diagnostics yet',
+      klass: fragileCount ? 'am' : supportiveCount ? 'gn' : 'bl',
+    },
+    {
+      kicker: 'Depth',
+      value: `${trueDepthCount}/${syntheticDepthCount}`,
+      note: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : 'Depth mix appears once positions are live',
+      klass: trueDepthCount ? 'gn' : syntheticDepthCount ? 'am' : 'cy',
+    },
+    {
+      kicker: 'Spillover',
+      value: `${crossSupportCount}/${crossConflictCount}`,
+      note: posCount ? `Open spillover ${signedMetricText(qualitySnapshot.avg_cross_asset_alignment||0,2)}` : 'No open spillover exposure yet',
+      klass: crossConflictCount ? 'rd' : crossSupportCount ? 'gn' : 'cy',
+    },
+    {
+      kicker: 'Pattern',
+      value: `${recentBlockCount}`,
+      note: recentBlockCount ? 'Recent pattern learning is actively blocking weak repeats' : 'No active pattern blocks',
+      klass: recentBlockCount ? 'rd' : 'gn',
+    },
+  ].map(function(item){
+    return '<div class="state-card"><div class="state-kicker">'+item.kicker+'</div><div class="state-value '+item.klass+'">'+item.value+'</div><div class="state-note">'+item.note+'</div></div>';
+  }).join('');
 
   // Category table
   var cp=document.getElementById('catPanel');
@@ -407,14 +474,15 @@ async function load(){
     var rows='';
     Object.entries(bycat).forEach(function([cat,info]){
       var pnl=info.pnl||0;
-      rows+='<div class="cat-row"><div style="flex:1"><span class="cat-name">'+cat+'</span><span class="cat-count">'+info.count+' pos</span><div style="font-size:10px;color:var(--tx3);margin-top:3px">Mem '+Number(info.avg_memory_score||0).toFixed(0)+' · Exec '+Number(info.avg_execution_quality||0).toFixed(0)+' · Opp '+Number(info.avg_opportunity_score||0).toFixed(3)+'</div></div><span class="cat-pnl '+(pnl>=0?'gn':'rd')+'">'+(pnl>=0?'+':'')+fmt(pnl)+'</span><span class="cat-exp">$'+fmt(info.exposure)+'</span></div>';
+      var diagLine='Broker '+Number(info.avg_broker_quality||0).toFixed(2)+' · Micro '+signedMetricText(info.avg_microstructure_score||0,2)+' · Cross '+signedMetricText(info.avg_cross_asset_alignment||0,2);
+      var depthLine='Depth T'+Number(info.true_depth_count||0)+' / S'+Number(info.synthetic_depth_count||0)+' · Conflicts '+Number(info.cross_conflict_count||0)+' · Blocks '+Number(info.recent_block_count||0);
+      rows+='<div class="cat-row"><div style="flex:1"><span class="cat-name">'+cat+'</span><span class="cat-count">'+info.count+' pos</span><div style="font-size:10px;color:var(--tx3);margin-top:3px">Mem '+Number(info.avg_memory_score||0).toFixed(0)+' · Exec '+Number(info.avg_execution_quality||0).toFixed(0)+' · Opp '+Number(info.avg_opportunity_score||0).toFixed(3)+'</div><div style="font-size:10px;color:var(--tx3);margin-top:3px">'+diagLine+'</div><div style="font-size:10px;color:var(--tx3);margin-top:3px">'+depthLine+'</div></div><span class="cat-pnl '+(pnl>=0?'gn':'rd')+'">'+(pnl>=0?'+':'')+fmt(pnl)+'</span><span class="cat-exp">$'+fmt(info.exposure)+'</span></div>';
     });
     cp.innerHTML=rows;
   }
 
   // Stats
   const exec=d.execution_feedback||{};
-  const qualitySnapshot=d.quality_snapshot||{};
   const pct=v=>Number.isFinite(Number(v))?(Number(v)*100).toFixed(0)+'%':'—';
   const quality=Number(exec.avg_quality_score||0);
   const realizedR=Number(exec.avg_rr_realized||0);
@@ -430,7 +498,15 @@ async function load(){
     ['Open Memory Score', qualitySnapshot.avg_memory_score ? Number(qualitySnapshot.avg_memory_score).toFixed(1) : '—'],
     ['Open Execution Score', qualitySnapshot.avg_execution_quality ? Number(qualitySnapshot.avg_execution_quality).toFixed(1) : '—'],
     ['Open Opportunity', qualitySnapshot.avg_opportunity_score ? Number(qualitySnapshot.avg_opportunity_score).toFixed(3) : '—'],
+    ['Open Broker Quality', posCount ? metricText(qualitySnapshot.avg_broker_quality, 3) : '—'],
+    ['Open Micro Score', posCount ? signedMetricText(qualitySnapshot.avg_microstructure_score, 3) : '—'],
+    ['Open Spillover', posCount ? signedMetricText(qualitySnapshot.avg_cross_asset_alignment, 3) : '—'],
+    ['Broker Support / Fragile', (signalDiagnostics.count||0) ? (Number(signalDiagnostics.broker_supportive_count||0)+' / '+Number(signalDiagnostics.broker_fragile_count||0)) : '—'],
+    ['True Depth / Synthetic', (signalDiagnostics.count||0) ? (Number(signalDiagnostics.true_depth_count||0)+' / '+Number(signalDiagnostics.synthetic_depth_count||0)) : '—'],
+    ['Cross Support / Conflict', (signalDiagnostics.count||0) ? (Number(signalDiagnostics.cross_support_count||0)+' / '+Number(signalDiagnostics.cross_conflict_count||0)) : '—'],
+    ['Recent Pattern Blocks', (signalDiagnostics.count||0) ? Number(signalDiagnostics.recent_pattern_block_count||0) : '—'],
     ['Top Ranked Category', qualitySnapshot.top_category || '—'],
+    ['Diagnostics Summary', signalDiagnostics.summary_label || '—'],
     ['Feedback Sample', exec.sample_count||0],
     ['Total Trades', d.total_trades||0],
     ['Peak Balance', '$'+fmt(d.peak_balance)],

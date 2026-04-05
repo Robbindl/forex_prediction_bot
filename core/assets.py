@@ -10,6 +10,7 @@ class AssetRegistry:
         # ── Commodities ──────────────────────────────────────────
         "XAU/USD": "commodities",  # Gold
         "XAG/USD": "commodities",  # Silver
+        "WTI": "commodities",      # WTI Crude Oil
 
         # ── Forex ─────────────────────────────────────────────────
         "EUR/USD": "forex",

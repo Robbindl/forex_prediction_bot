@@ -92,6 +92,18 @@ def validate_apis() -> None:
         warnings.append(
             "BINANCE_PUBLIC_DATA_ENABLED is false.  BNB/SOL/XRP market data will be unavailable when Deriv has no symbol."
         )
+    ig_enabled = os.getenv("IG_ENABLED", "false").strip().lower() == "true"
+    ig_api_key = os.getenv("IG_API_KEY", "")
+    ig_identifier = os.getenv("IG_IDENTIFIER", "")
+    ig_password = os.getenv("IG_PASSWORD", "")
+    if ig_enabled and _is_placeholder(ig_api_key):
+        warnings.append(
+            "IG_API_KEY not set.  IG-routed commodities will fall back to Deriv when IG market data is unavailable."
+        )
+    if ig_enabled and (_is_placeholder(ig_identifier) or _is_placeholder(ig_password)):
+        warnings.append(
+            "IG_IDENTIFIER / IG_PASSWORD not set.  IG commodity routing is configured, but IG market data cannot authenticate yet."
+        )
 
     # ── Report ────────────────────────────────────────────────────────────
     for w in warnings:

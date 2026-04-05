@@ -410,6 +410,84 @@ def _train_model(name: str, df: pd.DataFrame) -> bool:
     return _train_model_from_arrays(name, X, y)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def get_training_health_snapshot(trainer: Any | None = None) -> Dict[str, Any]:
+    manifest = registry.list_models()
+    trainer_status = trainer.get_status() if trainer is not None and hasattr(trainer, "get_status") else {}
+
+    categories: Dict[str, Any] = {}
+    summary = {"healthy": 0, "mixed": 0, "degraded": 0}
+
+    for category in ASSET_CATEGORIES:
+        policy_key = f"{category}_policy"
+        classifier_key = f"{category}_classifier"
+        category_status = trainer_status.get(category) if isinstance(trainer_status, dict) else {}
+
+        def _model_snapshot(model_key: str, kind: str) -> Dict[str, Any]:
+            info = manifest.get(model_key, {}) if isinstance(manifest, dict) else {}
+            meta = dict(info.get("metadata") or {})
+            last_run = dict(category_status.get(kind) or {}) if isinstance(category_status, dict) else {}
+            research_status = str(
+                meta.get("research_status")
+                or meta.get("research_grade")
+                or ("missing" if not meta else "unknown")
+            ).strip().lower() or "unknown"
+            return {
+                "name": model_key,
+                "loaded": bool(info.get("loaded", False)),
+                "stale": bool(info.get("stale", True)),
+                "trained_at": info.get("trained_at"),
+                "research_approved": bool(meta.get("research_approved", False)),
+                "research_status": research_status,
+                "holdout_accuracy": round(_safe_float(meta.get("holdout_accuracy"), 0.0), 4),
+                "walk_forward_accuracy": round(_safe_float(meta.get("walk_forward_accuracy"), 0.0), 4),
+                "walk_forward_samples": int(meta.get("walk_forward_samples", 0) or 0),
+                "sample_count": int(meta.get("sample_count", 0) or 0),
+                "last_run": last_run,
+            }
+
+        classifier = _model_snapshot(classifier_key, "classifier")
+        policy = _model_snapshot(policy_key, "policy")
+        stale_count = int(classifier["stale"]) + int(policy["stale"])
+
+        if stale_count == 0:
+            category_label = "healthy"
+        elif stale_count == 2:
+            category_label = "degraded"
+        else:
+            category_label = "mixed"
+
+        issues = []
+        if classifier["stale"]:
+            issues.append("classifier stale")
+        if policy["stale"]:
+            issues.append("policy stale")
+        if classifier["research_status"] == "missing":
+            issues.append("classifier metadata missing")
+        if policy["research_status"] == "missing":
+            issues.append("policy metadata missing")
+        if classifier["last_run"] and classifier["last_run"].get("success") is False:
+            issues.append(f"classifier retrain failed ({classifier['last_run'].get('note') or 'validation failed'})")
+        if policy["last_run"] and policy["last_run"].get("success") is False:
+            issues.append(f"policy retrain failed ({policy['last_run'].get('note') or 'validation failed'})")
+
+        summary[category_label] += 1
+        categories[category] = {
+            "status": category_label,
+            "classifier": classifier,
+            "policy": policy,
+            "issues": issues,
+        }
+
+    return {"summary": summary, "categories": categories}
+
+
 class AutoTrainer:
     """
     Background trainer that checks model staleness every hour
@@ -439,6 +517,27 @@ class AutoTrainer:
     def get_status(self) -> Dict:
         with self._lock:
             return dict(self._status)
+
+    def _record_status(
+        self,
+        category: str,
+        model_kind: str,
+        *,
+        success: bool,
+        samples: int = 0,
+        note: str = "",
+        source: str = "",
+    ) -> None:
+        with self._lock:
+            category_status = dict(self._status.get(category) or {})
+            category_status[model_kind] = {
+                "last_run": datetime.utcnow().isoformat(),
+                "success": bool(success),
+                "samples": int(samples or 0),
+                "note": str(note or ""),
+                "source": str(source or ""),
+            }
+            self._status[category] = category_status
 
     def train_now(self, category: str = "all") -> None:
         """Force immediate training (blocking). Used for on-demand retraining."""
@@ -490,6 +589,7 @@ class AutoTrainer:
     def _train_policy_category(self, category: str) -> None:
         assets = ASSET_CATEGORIES.get(category, [])
         if not assets:
+            self._record_status(category, "policy", success=False, note="no_assets")
             return
 
         _fetcher = _resolve_engine_fetcher()
@@ -497,6 +597,7 @@ class AutoTrainer:
             _fetcher = self._fetcher
         if _fetcher is None:
             logger.warning(f"[AutoTrainer] No fetcher available for {category} — skipping policy training")
+            self._record_status(category, "policy", success=False, note="no_fetcher")
             return
 
         policy_key = f"{category}_policy"
@@ -504,6 +605,14 @@ class AutoTrainer:
         if policy_X is not None:
             logger.info(f"[AutoTrainer] Training {policy_key} from live prediction outcomes")
             if _train_model_from_arrays(policy_key, policy_X, policy_y):
+                self._record_status(
+                    category,
+                    "policy",
+                    success=True,
+                    samples=len(policy_X),
+                    note="live_outcomes",
+                    source="live_outcomes",
+                )
                 return
             logger.info(f"[AutoTrainer] Live policy training failed for {category}, falling back to historical data")
 
@@ -528,6 +637,7 @@ class AutoTrainer:
 
         if not all_dfs:
             logger.warning(f"[AutoTrainer] No data available for policy training in {category}")
+            self._record_status(category, "policy", success=False, note="no_ohlcv_data")
             return
 
         stacked_X, stacked_y = _stack_historical_policy_data(all_dfs)
@@ -537,6 +647,14 @@ class AutoTrainer:
                 f"({len(stacked_y)} samples across {len(all_dfs)} assets)"
             )
             if _train_model_from_arrays(policy_key, stacked_X, stacked_y):
+                self._record_status(
+                    category,
+                    "policy",
+                    success=True,
+                    samples=len(stacked_y),
+                    note="historical_stacked",
+                    source="historical_stacked",
+                )
                 return
             logger.info(
                 f"[AutoTrainer] Stacked historical policy training failed for {category}; "
@@ -544,10 +662,19 @@ class AutoTrainer:
             )
 
         if len(all_dfs) == 1:
-            _train_policy_model(policy_key, all_dfs[0])
+            success = _train_policy_model(policy_key, all_dfs[0])
+            self._record_status(
+                category,
+                "policy",
+                success=success,
+                samples=len(all_dfs[0]),
+                note="historical_single_asset" if success else "historical_single_asset_failed",
+                source="historical_single_asset",
+            )
             return
 
         best_acc = -1.0
+        success = False
         for asset_df in all_dfs:
             tmp_key = f"_tmp_{policy_key}"
             if _train_policy_model(tmp_key, asset_df):
@@ -562,9 +689,18 @@ class AutoTrainer:
                     if acc > best_acc:
                         best_acc = acc
                         registry.save(policy_key, candidate, metadata=meta)
+                        success = True
         logger.info(
             f"[AutoTrainer] {policy_key} best_acc={best_acc:.3f} "
             f"(trained on {len(all_dfs)} assets individually)"
+        )
+        self._record_status(
+            category,
+            "policy",
+            success=success,
+            samples=sum(len(df) for df in all_dfs),
+            note="best_candidate_saved" if success else "validation_failed",
+            source="historical_per_asset",
         )
 
     def _get_ohlcv_with_fallback(
@@ -607,6 +743,7 @@ class AutoTrainer:
     def _train_category(self, category: str) -> None:
         assets = ASSET_CATEGORIES.get(category, [])
         if not assets:
+            self._record_status(category, "classifier", success=False, note="no_assets")
             return
 
         # Try engine singleton fetcher first, fall back to self._fetcher
@@ -615,25 +752,25 @@ class AutoTrainer:
             _fetcher = self._fetcher
         if _fetcher is None:
             logger.warning(f"[AutoTrainer] No fetcher available for {category} — skipping")
+            self._record_status(category, "classifier", success=False, note="no_fetcher")
             return
-
-        # Train a live policy model if we have enough evaluated outcome data.
-        policy_key = f"{category}_policy"
-        policy_X, policy_y = _build_live_policy_training_data(category)
-        if policy_X is not None:
-            logger.info(f"[AutoTrainer] Training {policy_key} from live prediction outcomes")
-            _train_model_from_arrays(policy_key, policy_X, policy_y)
 
         model_key = f"{category}_classifier"
         live_X, live_y = _build_live_training_data(category)
         if live_X is not None:
             logger.info(f"[AutoTrainer] Training {model_key} from live prediction outcomes")
             if _train_model_from_arrays(model_key, live_X, live_y):
+                self._record_status(
+                    category,
+                    "classifier",
+                    success=True,
+                    samples=len(live_X),
+                    note="live_outcomes",
+                    source="live_outcomes",
+                )
                 with self._lock:
                     self._status[category] = {
-                        "last_trained": datetime.utcnow().isoformat(),
-                        "success":      True,
-                        "samples":      len(live_X),
+                        **dict(self._status.get(category) or {}),
                     }
                 return
             logger.info(
@@ -651,6 +788,7 @@ class AutoTrainer:
 
         if not all_dfs:
             logger.warning(f"[AutoTrainer] No data available for {category}")
+            self._record_status(category, "classifier", success=False, note="no_ohlcv_data")
             return
 
         # FIX: Train on each asset separately then pick the best model, rather
@@ -662,6 +800,14 @@ class AutoTrainer:
         model_key = f"{category}_classifier"
         if len(all_dfs) == 1:
             success = _train_model(model_key, all_dfs[0])
+            self._record_status(
+                category,
+                "classifier",
+                success=success,
+                samples=len(all_dfs[0]),
+                note="historical_single_asset" if success else "historical_single_asset_failed",
+                source="historical_single_asset",
+            )
         else:
             # Train per asset, register the best one
             best_acc = -1.0
@@ -685,11 +831,19 @@ class AutoTrainer:
                 f"[AutoTrainer] {model_key} best_acc={best_acc:.3f} "
                 f"(trained on {len(all_dfs)} assets individually)"
             )
+            self._record_status(
+                category,
+                "classifier",
+                success=success,
+                samples=sum(len(df) for df in all_dfs),
+                note="best_candidate_saved" if success else "validation_failed",
+                source="historical_per_asset",
+            )
 
         with self._lock:
             total_samples = sum(len(df) for df in all_dfs) if all_dfs else 0
-            self._status[category] = {
-                "last_trained": datetime.utcnow().isoformat(),
-                "success":      success,
-                "samples":      total_samples,
-            }
+            current = dict(self._status.get(category) or {})
+            current["last_trained"] = datetime.utcnow().isoformat()
+            current["success"] = bool(success)
+            current["samples"] = int(total_samples)
+            self._status[category] = current

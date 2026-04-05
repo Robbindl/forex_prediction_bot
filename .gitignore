@@ -47,7 +47,13 @@ pip-delete-this-directory.txt
 htmlcov/
 *.cover
 .tox/
+.nox/
 .mypy_cache/
+.ruff_cache/
+.hypothesis/
+.pyre/
+.ipynb_checkpoints/
+.python-version
 .dmypy.json
 dmypy.json
 .cache
@@ -140,12 +146,18 @@ models/*.pth
 # ------------------------------------------------
 logs/
 logs/**/*.log
+logs/**/*.json
+logs/**/*.txt
+logs/**/*.csv
+logs/**/*.jsonl
 training_logs/
 test_logs/
 *.log
 *.log.*
 *.err
 *.out
+*.trace
+*.trace.json
 master_controller.log
 health_log.txt
 health_log.json
@@ -153,6 +165,11 @@ logs/exchange_router.log
 logs/portfolio_risk.log
 logs/circuit_breaker.log
 logs/ml_service.log
+logs/*smoke*
+logs/*latency*
+logs/*reuse*
+logs/*manual_service*
+logs/tmp_bg*
 
 # IDE
 # ------------------------------------------------

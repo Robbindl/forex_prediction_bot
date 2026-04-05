@@ -203,6 +203,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <div class="sb-bottom">
       <div class="status-row"><span id="engineDot" class="pulse off"></span><span id="engineStatus">Engine syncing</span></div>
       <div class="status-row"><span id="readyDot" class="pulse off"></span><span id="readyStatus">Decision stack warming</span></div>
+      <div class="status-row"><span>Feeds</span><span id="providerStatus" style="margin-left:auto;color:var(--tx)">—</span></div>
     </div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
@@ -412,6 +413,19 @@ setInterval(()=>{document.getElementById('clock').textContent=new Date(Date.now(
 function fmtNum(n,dec=2){return n==null?'—':(n>=0?'+':'')+Number(n).toFixed(dec)}
 function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
 function colorClass(n){return n>=0?'gn':'rd'}
+function humanToken(v){return String(v||'').replace(/_/g,' ')}
+function depthLabel(item){
+  if(item.depth_mode)return humanToken(item.depth_mode)
+  if(item.depth_available)return 'true depth';
+  if(item.synthetic_depth_available)return 'synthetic depth';
+  return 'top of book';
+}
+function recentPatternLine(item){
+  const notes=Array.isArray(item.recent_pattern_notes)?item.recent_pattern_notes:[];
+  if(item.recent_pattern_block_new_entries)return 'Pattern blocked';
+  if(notes.length)return humanToken(notes[0]);
+  return '';
+}
 
 function setActionStatus(message,type='info'){
   const el=document.getElementById('positionActionStatus');
@@ -429,18 +443,28 @@ function renderTopOpportunities(items){
   const panel=document.getElementById('topOpsPanel');
   if(!panel)return;
   if(!items||!items.length){
-    panel.innerHTML='<div class="empty" style="grid-column:1/-1;padding:14px 0">No ranked opportunities yet</div>';
+    panel.innerHTML='';
+    panel.style.display='none';
     return;
   }
+  panel.style.display='grid';
   panel.innerHTML=items.slice(0,5).map((item,idx)=>{
     const rank=Number(item.opportunity_rank||idx+1);
     const opp=Number(item.opportunity_score||0);
     const conf=Number(item.confidence||0);
     const mem=Number(item.memory_score||0);
     const execQ=Number(item.execution_quality_score||0);
+    const brokerQ=Number(item.broker_quality_score||0);
+    const microQ=Number(item.microstructure_score||0);
     const dir=(item.direction||'').toUpperCase();
     const dirCol=dir==='BUY'?'var(--gr)':'var(--rd)';
     const source=item.source==='position'?'Open position':'Live signal';
+    const brokerState=humanToken(item.broker_agreement_state||item.broker_context||'');
+    const crossPeer=item.cross_asset_primary_peer||'';
+    const crossRelation=humanToken(item.cross_asset_primary_relation||'');
+    const crossAlign=Number(item.cross_asset_alignment||0);
+    const crossLine=crossPeer?`Cross ${crossAlign>=0?'support':'conflict'} via ${crossPeer}${crossRelation?` · ${crossRelation}`:''}`:'';
+    const patternLine=recentPatternLine(item);
     return `<div class="topop-card">
       <div class="topop-head">
         <div>
@@ -450,7 +474,10 @@ function renderTopOpportunities(items){
         <div class="topop-score">${opp.toFixed(3)}</div>
       </div>
       <div style="font-size:11px;color:${dirCol};font-weight:700">${dir||'—'} · ${(conf*100).toFixed(0)}%</div>
-      <div class="topop-meta">Memory ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'}</div>
+      <div class="topop-meta">Memory ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'} · Broker ${brokerQ.toFixed(2)}</div>
+      <div class="topop-meta">Micro ${microQ.toFixed(2)} · Depth ${depthLabel(item)}${brokerState?` · ${brokerState}`:''}</div>
+      ${crossLine?`<div class="topop-meta">${crossLine}</div>`:''}
+      ${patternLine?`<div class="topop-meta">${patternLine}</div>`:''}
       <div class="topop-meta">${source}${item.timeframe?` · ${item.timeframe}`:''}</div>
     </div>`;
   }).join('');
@@ -460,6 +487,7 @@ let _commandCenterCache = null;
 function setCommandCenterUnavailable(message){
   const msg = message || 'Command center data unavailable';
   document.getElementById('signalsPanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('topOpsPanel').style.display = 'grid';
   document.getElementById('topOpsPanel').innerHTML = `<div class="empty" style="grid-column:1/-1;padding:14px 0">${msg}</div>`;
   document.getElementById('whalePanel').innerHTML = `<div class="empty">${msg}</div>`;
   document.getElementById('sentLabel').textContent = 'Unavailable';
@@ -506,6 +534,10 @@ async function loadMain(){
     }
   }catch(e){console.error('[CC] fetch:',e);return;}
 
+  const providerRouting=d.provider_routing||{};
+  const signalQuality=d.signal_quality||{};
+  const signalDiagnostics=d.signal_diagnostics||{};
+
   // ── Metrics + engine status ──────────────────────────────────────────────
   try{
     document.getElementById('mBal').textContent=fmtMoney(d.balance);
@@ -525,6 +557,8 @@ async function loadMain(){
     document.getElementById('engineStatus').textContent=running?'Engine running':'Engine stopped';
     document.getElementById('readyDot').className='pulse'+(ready?'':' off');
     document.getElementById('readyStatus').textContent=ready?'Decision stack ready':'Decision stack warming';
+    const providerLabel=providerRouting.summary_label||'Unavailable';
+    document.getElementById('providerStatus').textContent=providerLabel;
     document.getElementById('engineBadge').textContent=running?'Live':'Offline';
     document.getElementById('engineBadge').className='tb-badge '+(running?'badge-live':'badge-off');
   }catch(e){console.error('[CC] metrics:',e);}
@@ -532,7 +566,6 @@ async function loadMain(){
   // ── Active signals ───────────────────────────────────────────────────────
   try{
     const sigs=(d.latest_signals||[]).filter(s=>(s.signal||s.direction||'HOLD')!=='HOLD');
-    const signalQuality=d.signal_quality||{};
     renderTopOpportunities(d.top_opportunities||[]);
     document.getElementById('sigCount').textContent=sigs.length;
     const sEl=document.getElementById('signalsPanel');
@@ -546,12 +579,23 @@ async function loadMain(){
         const mem=Number(s.memory_score||0);
         const execQ=Number(s.execution_quality_score||0);
         const opp=Number(s.opportunity_score||0);
+        const brokerQ=Number(s.broker_quality_score||0);
+        const microQ=Number(s.microstructure_score||0);
         const detail=`Mem ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'} · Opp ${opp?opp.toFixed(3):'—'}`;
+        const brokerState=humanToken(s.broker_agreement_state||s.broker_context||'');
+        const crossPeer=s.cross_asset_primary_peer||'';
+        const crossRelation=humanToken(s.cross_asset_primary_relation||'');
+        const crossAlign=Number(s.cross_asset_alignment||0);
+        const crossLine=crossPeer?`${crossAlign>=0?'Cross support':'Cross conflict'} via ${crossPeer}${crossRelation?` · ${crossRelation}`:''}`:'';
+        const patternLine=recentPatternLine(s);
         return`<div class="sig-row">
           <span class="sig-dir ${dir==='BUY'?'sig-buy':'sig-sell'}">${dir}</span>
           <div style="flex:1">
             <div class="sig-asset">${s.asset||'?'}</div>
             <div class="sig-meta">${s.category||''} · ${detail}</div>
+            <div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>
+            ${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}
+            ${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}
           </div>
           <div style="text-align:right">
             <div class="sig-conf" style="color:${barCol}">${cp}%</div>
@@ -565,7 +609,6 @@ async function loadMain(){
   // ── Sentiment ────────────────────────────────────────────────────────────
   try{
     const ss=Number(d.sentiment_score||0);
-    const signalQuality=d.signal_quality||{};
     const ssLabel=ss>0.2?'Bullish':ss<-0.2?'Bearish':'Neutral';
     const ssColor=ss>0.2?'var(--gr)':ss<-0.2?'var(--rd)':'var(--am)';
     document.getElementById('sentScore').textContent=(ss>=0?'+':'')+ss.toFixed(3);
@@ -576,9 +619,11 @@ async function loadMain(){
     const chips = [
       {label:`Whales ${d.alert_count_24h||0}`, cls:(d.alert_count_24h||0)?'warn':'ok'},
       {label:d.engine_ready?'Ready':'Warming', cls:d.engine_ready?'ok':'warn'},
+      {label:`Feeds ${providerRouting.summary_label||'—'}`, cls:(providerRouting.primary_counts||{}).IG?'ok':''},
       {label:`Memory ${Number(signalQuality.avg_memory_score||0).toFixed(0)}`, cls:Number(signalQuality.avg_memory_score||0)>=60?'ok':'warn'},
       {label:`Exec ${Number(signalQuality.avg_execution_quality||0).toFixed(0)}`, cls:Number(signalQuality.avg_execution_quality||0)>=60?'ok':'warn'},
       {label:`Opp ${Number(signalQuality.avg_opportunity_score||0).toFixed(3)}`, cls:Number(signalQuality.avg_opportunity_score||0)>=0.7?'ok':''},
+      {label:`Diag ${signalDiagnostics.summary_label||'—'}`, cls:Number(signalDiagnostics.broker_fragile_count||0)?'warn':'ok'},
       {label:signalQuality.top_signal_asset?`Top ${signalQuality.top_signal_asset}`:`Positions ${d.open_positions||0}`, cls:(d.open_positions||0)?'ok':''},
     ];
     document.getElementById('pulseChips').innerHTML = chips.map(c=>`<span class="mini-chip ${c.cls||''}">${c.label}</span>`).join('');
@@ -888,6 +933,12 @@ function renderPositions(pos){
     const memorySamples=Number(p.memory_sample_count||0);
     const oppScore=Number(p.opportunity_score||0);
     const oppRank=Number(p.opportunity_rank||0);
+    const brokerQ=Number(p.broker_quality_score||0);
+    const microQ=Number(p.microstructure_score||0);
+    const brokerState=humanToken(p.broker_agreement_state||p.broker_context||'');
+    const crossPeer=p.cross_asset_primary_peer||'';
+    const crossAlign=Number(p.cross_asset_alignment||0);
+    const patternLine=recentPatternLine(p);
     const sm=e>0&&e<10;
     const fmt=n=>n>0?(sm?n.toFixed(5):n.toFixed(2)):'—';
     const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
@@ -918,11 +969,15 @@ function renderPositions(pos){
     const pBar=`<div style="height:3px;background:var(--bd);border-radius:2px;margin-top:2px"><div style="height:3px;width:${progress.toFixed(0)}%;background:${progress>80?'var(--gr)':progress>50?'var(--am)':'var(--bl)'};border-radius:2px;transition:width .5s"></div></div>`;
     const execMeta=execSamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Exec ${execQ.toFixed(0)} · n${execSamples}</div>`:'';
     const memoryMeta=memorySamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Memory ${memoryScore.toFixed(0)} · n${memorySamples}</div>`:'';
+    const brokerMeta=(brokerQ||brokerState)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''}</div>`:'';
+    const microMeta=`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Micro ${microQ.toFixed(2)} · ${depthLabel(p)}</div>`;
     const postureMeta=(rrMult!==1||stopMult!==1)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">RR x${rrMult.toFixed(2)} · SL x${stopMult.toFixed(2)}</div>`:'';
     const rankMeta=oppScore?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Opp ${oppScore.toFixed(3)}${oppRank?` · #${oppRank}`:''}</div>`:'';
     const noteMeta=execNotes.length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${execNotes.slice(0,2).join(' · ')}</div>`:'';
+    const crossMeta=crossPeer?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${crossAlign>=0?'Cross support':'Cross conflict'} via ${crossPeer}</div>`:'';
+    const patternMeta=patternLine?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${patternLine}</div>`:'';
     return`<tr>
-      <td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${pBar}</td>
+      <td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${brokerMeta}${microMeta}${crossMeta}${patternMeta}${pBar}</td>
       <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
       <td style="font-family:monospace">${fmt(e)}</td>
       <td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td>

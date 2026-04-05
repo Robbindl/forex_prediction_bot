@@ -11,8 +11,9 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
-# Forex-specific thresholds (optimized for EUR/USD, GBP/USD, etc on 15m)
-FOREX_MIN_ATR = 0.0008           # ~8 pips minimum (EUR/USD scale)
+# Forex-specific thresholds (optimized for 15m majors)
+FOREX_MIN_ATR = 0.00015          # absolute floor for very low-priced majors
+FOREX_MIN_ATR_RATIO = 0.00015    # price-relative floor so one hard EUR/USD number does not block every pair
 FOREX_MAX_SPREAD_BPS = 1.5       # 1.5 basis points (tight, but achievable)
 FOREX_MIN_BARS_SINCE_MA_CROSS = 3  # Don't enter right at MA — wait for confirmation
 FOREX_SESSION_SENSITIVITY = {
@@ -43,6 +44,12 @@ class ForexFilter:
         Returns: (should_trade: bool, rejection_reason: str)
         If should_trade=True, rejection_reason="PASSED" for logging.
         """
+
+        latest_price = 0.0
+        try:
+            latest_price = float(df["close"].astype(float).iloc[-1])
+        except Exception:
+            latest_price = 0.0
         
         # Filter 1: Keep forex selective, but do not require the full asset-grade floor
         # while the pair is still relying on portfolio/bootstrap live validation.
@@ -55,8 +62,9 @@ class ForexFilter:
             return False, f"confidence {signal_confidence:.2f} < {min_confidence:.2f}"
         
         # Filter 2: Adequate ATR (price needs to move)
-        if atr < FOREX_MIN_ATR:
-            return False, f"ATR {atr:.5f} < min {FOREX_MIN_ATR}"
+        min_atr = max(FOREX_MIN_ATR, latest_price * FOREX_MIN_ATR_RATIO) if latest_price > 0 else FOREX_MIN_ATR
+        if atr < min_atr:
+            return False, f"ATR {atr:.5f} < min {min_atr:.5f}"
         
         # Filter 3: Reject if spread too wide
         max_spread_bps = (

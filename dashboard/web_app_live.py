@@ -52,17 +52,33 @@ except Exception:
     _redis_broker = None
 
 try:
-    from websocket_dashboard import add_transaction, get_feed
+    from websocket_dashboard import add_transaction, get_feed, set_live_price
     _ws_ok = True
 except Exception:
     _ws_ok = False
     def add_transaction(*a, **kw): pass
     def get_feed(**kw): return []
+    def set_live_price(*a, **kw): pass
 
 try:
     from telegram_manager import telegram_manager
 except Exception:
     telegram_manager = None
+
+
+def _record_live_quote(
+    source: str,
+    symbol: str,
+    price: float,
+    volume: Optional[float] = None,
+    side: Optional[str] = None,
+    *,
+    emit_transaction: bool = True,
+) -> None:
+    if emit_transaction:
+        add_transaction(source, symbol, price, volume, side)
+    # Store price for live P&L updates and shared dashboard cache freshness.
+    set_live_price(symbol, price, source)
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(
@@ -520,6 +536,45 @@ def _response_to_dict(resp: Any) -> Any:
     return resp
 
 
+def _get_command_center_top_opportunities(core: Any, limit: int = 5) -> List[Dict[str, Any]]:
+    getter = getattr(core, "get_top_ranked_opportunities", None)
+    if not callable(getter):
+        return []
+    try:
+        return list(
+            getter(
+                limit=limit,
+                refresh=False,
+                allow_refresh_when_empty=False,
+            )
+            or []
+        )
+    except TypeError:
+        try:
+            return list(getter(limit=limit, refresh=False) or [])
+        except TypeError:
+            return list(getter(limit=limit) or [])
+
+
+def _get_command_center_weak_positions(core: Any, limit: int = 5) -> List[Dict[str, Any]]:
+    getter = getattr(core, "get_weak_positions", None)
+    if not callable(getter):
+        return []
+    try:
+        return list(
+            getter(
+                limit=limit,
+                include_market_status=False,
+            )
+            or []
+        )
+    except TypeError:
+        try:
+            return list(getter(limit=limit) or [])
+        except TypeError:
+            return list(getter() or [])
+
+
 def _run_with_timeout(
     func,
     *args,
@@ -946,6 +1001,170 @@ def _extract_opportunity_fields(metadata: Any) -> Dict[str, Any]:
         "opportunity_breakdown": {str(k): float(v or 0.0) for k, v in breakdown.items()},
     }
 
+
+def _depth_mode_from_meta(micro: Dict[str, Any]) -> str:
+    if bool(micro.get("depth_available")):
+        return "true_depth"
+    if bool(micro.get("synthetic_depth_available")):
+        return "synthetic_depth"
+    return "top_of_book"
+
+
+def _broker_context_state(broker: Dict[str, Any]) -> str:
+    agreement_state = str(broker.get("quote_agreement_state") or "").lower()
+    spread_regime = str(broker.get("spread_regime") or "").lower()
+    quote_quality_state = str(broker.get("quote_quality_state") or "").lower()
+    score = float(broker.get("score", 0.0) or 0.0)
+    transition_risk = float(broker.get("market_transition_risk", 0.0) or 0.0)
+    if (
+        agreement_state in {"divergent", "severe_divergence"}
+        or spread_regime in {"stressed", "extreme", "wide"}
+        or quote_quality_state in {"stale", "delayed"}
+        or transition_risk >= 0.65
+        or bool(broker.get("market_state_changed"))
+    ):
+        return "fragile"
+    if (
+        score >= 0.65
+        and agreement_state in {"strong", "aligned"}
+        and spread_regime in {"tight", "normal"}
+        and quote_quality_state in {"fresh", "aging"}
+    ):
+        return "supportive"
+    return "mixed"
+
+
+def _cross_asset_context_state(cross: Dict[str, Any]) -> str:
+    alignment = float(cross.get("alignment", cross.get("score", 0.0)) or 0.0)
+    confidence = float(cross.get("confidence", 0.0) or 0.0)
+    if confidence < 0.20:
+        return "mixed"
+    if alignment >= 0.20:
+        return "supportive"
+    if alignment <= -0.20:
+        return "conflicted"
+    return "mixed"
+
+
+def _extract_signal_intelligence_fields(metadata: Any) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    broker = meta.get("broker_quality") if isinstance(meta.get("broker_quality"), dict) else {}
+    micro = meta.get("market_microstructure") if isinstance(meta.get("market_microstructure"), dict) else {}
+    cross = meta.get("cross_asset_context") if isinstance(meta.get("cross_asset_context"), dict) else {}
+    adaptive = meta.get("adaptive_policy") if isinstance(meta.get("adaptive_policy"), dict) else {}
+    recent = adaptive.get("recent_review_profile") if isinstance(adaptive.get("recent_review_profile"), dict) else {}
+    recent_notes = recent.get("notes") if isinstance(recent.get("notes"), list) else []
+    if not recent_notes:
+        adaptive_notes = adaptive.get("notes") if isinstance(adaptive.get("notes"), list) else []
+        recent_notes = adaptive_notes
+
+    broker_score = float(meta.get("broker_quality_score", broker.get("score", 0.0)) or 0.0)
+    micro_score = float(meta.get("microstructure_score", micro.get("score", 0.0)) or 0.0)
+    cross_score = float(meta.get("cross_asset_score", cross.get("score", 0.0)) or 0.0)
+    cross_alignment = float(meta.get("cross_asset_alignment", cross.get("alignment", cross.get("score", 0.0))) or 0.0)
+    cross_confidence = float(meta.get("cross_asset_confidence", cross.get("confidence", 0.0)) or 0.0)
+    depth_mode = _depth_mode_from_meta(micro)
+    broker_context = _broker_context_state(broker)
+    cross_context = _cross_asset_context_state(
+        {
+            "alignment": cross_alignment,
+            "score": cross_score,
+            "confidence": cross_confidence,
+        }
+    )
+
+    return {
+        "broker_quality": broker,
+        "broker_quality_score": broker_score,
+        "broker_primary_provider": str(broker.get("primary_provider") or ""),
+        "broker_comparison_provider": str(broker.get("comparison_provider") or ""),
+        "broker_agreement_state": str(broker.get("quote_agreement_state") or ""),
+        "broker_quote_quality_state": str(broker.get("quote_quality_state") or ""),
+        "broker_spread_regime": str(broker.get("spread_regime") or ""),
+        "broker_market_transition_risk": float(broker.get("market_transition_risk", 0.0) or 0.0),
+        "broker_context": broker_context,
+        "market_microstructure": micro,
+        "microstructure_score": micro_score,
+        "micro_pressure_direction": str(micro.get("pressure_direction") or ""),
+        "stop_hunt_risk": float(micro.get("stop_hunt_risk", 0.0) or 0.0),
+        "exhaustion_risk": float(micro.get("exhaustion_risk", 0.0) or 0.0),
+        "depth_available": bool(micro.get("depth_available")),
+        "synthetic_depth_available": bool(micro.get("synthetic_depth_available")),
+        "depth_mode": depth_mode,
+        "microstructure_source": str(micro.get("microstructure_source") or ""),
+        "cross_asset_context": cross,
+        "cross_asset_score": cross_score,
+        "cross_asset_alignment": cross_alignment,
+        "cross_asset_confidence": cross_confidence,
+        "cross_asset_state": str(meta.get("cross_asset_state", cross.get("state", "")) or ""),
+        "cross_asset_primary_peer": str(meta.get("cross_asset_primary_peer", cross.get("dominant_peer", "")) or ""),
+        "cross_asset_primary_relation": str(meta.get("cross_asset_primary_relation", cross.get("dominant_relation", "")) or ""),
+        "cross_asset_context_state": cross_context,
+        "recent_review_profile": recent,
+        "recent_pattern_sample_count": int(recent.get("sample_count", 0) or 0),
+        "recent_pattern_notes": [str(n) for n in recent_notes[:4]],
+        "recent_pattern_block_new_entries": bool(recent.get("block_new_entries")),
+        "recent_pattern_target_rr_multiplier": float(recent.get("target_rr_multiplier", 1.0) or 1.0),
+    }
+
+
+def _summarize_signal_diagnostics(rows: Any) -> Dict[str, Any]:
+    items = list(rows or [])
+    total = 0
+    broker_supportive = 0
+    broker_fragile = 0
+    true_depth = 0
+    synthetic_depth = 0
+    cross_support = 0
+    cross_conflict = 0
+    recent_pattern_blocks = 0
+
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        total += 1
+        broker_context = str(row.get("broker_context") or "").lower()
+        if broker_context == "supportive":
+            broker_supportive += 1
+        elif broker_context == "fragile":
+            broker_fragile += 1
+
+        depth_mode = str(row.get("depth_mode") or "").lower()
+        if depth_mode == "true_depth":
+            true_depth += 1
+        elif depth_mode == "synthetic_depth":
+            synthetic_depth += 1
+
+        cross_context = str(row.get("cross_asset_context_state") or row.get("cross_asset_context") or "").lower()
+        if cross_context == "supportive":
+            cross_support += 1
+        elif cross_context == "conflicted":
+            cross_conflict += 1
+
+        if bool(row.get("recent_pattern_block_new_entries")):
+            recent_pattern_blocks += 1
+
+    summary_parts = [
+        f"Fragile {broker_fragile}" if broker_fragile else "",
+        f"True depth {true_depth}" if true_depth else "",
+        f"Synthetic {synthetic_depth}" if synthetic_depth else "",
+        f"Cross conflicts {cross_conflict}" if cross_conflict else "",
+        f"Pattern blocks {recent_pattern_blocks}" if recent_pattern_blocks else "",
+    ]
+    summary_label = " · ".join([part for part in summary_parts if part]) or "No active diagnostics"
+
+    return {
+        "count": total,
+        "broker_supportive_count": broker_supportive,
+        "broker_fragile_count": broker_fragile,
+        "true_depth_count": true_depth,
+        "synthetic_depth_count": synthetic_depth,
+        "cross_support_count": cross_support,
+        "cross_conflict_count": cross_conflict,
+        "recent_pattern_block_count": recent_pattern_blocks,
+        "summary_label": summary_label,
+    }
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1103,7 +1322,14 @@ def api_status():
         return jsonify(cached)
     try:
         core = _core()
+        diagnostic_summary = _summarize_signal_diagnostics([])
         if core:
+            positions = list(core.get_positions() or [])
+            diagnostic_rows = []
+            for position in positions:
+                meta = dict(position.get("metadata") or {})
+                diagnostic_rows.append(_extract_signal_intelligence_fields(meta))
+            diagnostic_summary = _summarize_signal_diagnostics(diagnostic_rows)
             payload = {
                 "success": True,
                 "bot_ready": core.is_ready,
@@ -1111,6 +1337,8 @@ def api_status():
                 "architecture": "TradingCore",
                 "balance": core.get_balance(),
                 "assets_cached": len(_sig_store),
+                "provider_routing": _provider_routing_summary(),
+                "signal_diagnostics": diagnostic_summary,
             }
         else:
             payload = {
@@ -1120,6 +1348,8 @@ def api_status():
                 "architecture": "TradingCore",
                 "balance": _args.balance,
                 "assets_cached": len(_sig_store),
+                "provider_routing": _provider_routing_summary(),
+                "signal_diagnostics": diagnostic_summary,
             }
         _cache_set("status", payload, ttl=5)
         return jsonify(payload)
@@ -1289,6 +1519,7 @@ def api_command_center():
             _exec = _extract_execution_feedback_fields(_meta)
             _memory = _extract_memory_fields(_meta)
             _opportunity = _extract_opportunity_fields(_meta)
+            _intel = _extract_signal_intelligence_fields(_meta)
             signals.append({
                 "asset":         p.get("asset", ""),
                 "signal":        p.get("direction", p.get("signal", "BUY")),
@@ -1305,6 +1536,7 @@ def api_command_center():
                 **_exec,
                 **_memory,
                 **_opportunity,
+                **_intel,
             })
 
         # Build enriched positions list (Open Positions table)
@@ -1330,6 +1562,7 @@ def api_command_center():
             _exec = _extract_execution_feedback_fields(_meta)
             _memory = _extract_memory_fields(_meta)
             _opportunity = _extract_opportunity_fields(_meta)
+            _intel = _extract_signal_intelligence_fields(_meta)
             enriched_positions.append({
                 "trade_id":      p.get("trade_id", ""),
                 "asset":         _asset,
@@ -1349,6 +1582,7 @@ def api_command_center():
                 **_exec,
                 **_memory,
                 **_opportunity,
+                **_intel,
             })
 
         signal_quality = {
@@ -1377,45 +1611,22 @@ def api_command_center():
                 if signals else ""
             ),
         }
+        signal_diagnostics = _summarize_signal_diagnostics(enriched_positions)
         top_opportunities = _cache_get("cc_top_opportunities")
         weak_positions = _cache_get("cc_weak_positions")
         if core and (top_opportunities is None or weak_positions is None):
-            pool = None
-            try:
-                from concurrent.futures import ThreadPoolExecutor, wait
-
-                pool = ThreadPoolExecutor(max_workers=2)
-                futures = {}
-                if top_opportunities is None and hasattr(core, "get_top_ranked_opportunities"):
-                    futures[pool.submit(core.get_top_ranked_opportunities, limit=5)] = "top_opportunities"
-                if weak_positions is None and hasattr(core, "get_weak_positions"):
-                    futures[pool.submit(core.get_weak_positions, limit=5)] = "weak_positions"
-
-                if futures:
-                    done, not_done = wait(tuple(futures.keys()), timeout=2.5)
-                    for future in done:
-                        kind = futures[future]
-                        try:
-                            payload = future.result() or []
-                        except Exception as exc:
-                            logger.debug(f"[dashboard] command-center {kind} error: {exc}")
-                            payload = []
-                        if kind == "top_opportunities":
-                            top_opportunities = payload
-                        else:
-                            weak_positions = payload
-                    for future in not_done:
-                        future.cancel()
-                    if not_done:
-                        logger.warning(f"[dashboard] command-center ranking extras timed out for {len(not_done)} task(s)")
-            except Exception as exc:
-                logger.debug(f"[dashboard] command-center ranking extras setup failed: {exc}")
-            finally:
-                if pool is not None:
-                    try:
-                        pool.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
+            if top_opportunities is None:
+                try:
+                    top_opportunities = _get_command_center_top_opportunities(core, limit=5)
+                except Exception as exc:
+                    logger.debug(f"[dashboard] command-center top_opportunities error: {exc}")
+                    top_opportunities = []
+            if weak_positions is None:
+                try:
+                    weak_positions = _get_command_center_weak_positions(core, limit=5)
+                except Exception as exc:
+                    logger.debug(f"[dashboard] command-center weak_positions error: {exc}")
+                    weak_positions = []
 
         if top_opportunities is None:
             top_opportunities = []
@@ -1445,6 +1656,8 @@ def api_command_center():
             "top_opportunities": top_opportunities,
             "weak_positions":   weak_positions,
             "positions":        enriched_positions,
+            "provider_routing": _provider_routing_summary(),
+            "signal_diagnostics": signal_diagnostics,
             "timestamp":        datetime.now().isoformat(),
         })
     except APIError as e:
@@ -1506,6 +1719,7 @@ def api_signals_live():
                     **_exec,
                     **_memory,
                     **_opportunity,
+                    **_extract_signal_intelligence_fields(_meta),
                 })
         else:
             with _sig_lock:
@@ -1523,6 +1737,7 @@ def api_signals_live():
                     **_extract_execution_feedback_fields(_meta),
                     **_extract_memory_fields(_meta),
                     **_extract_opportunity_fields(_meta),
+                    **_extract_signal_intelligence_fields(_meta),
                 })
 
         buys     = sum(1 for s in signals if s.get("signal") == "BUY")
@@ -1542,13 +1757,134 @@ def api_signals_live():
 # API — MARKET INTELLIGENCE (Chart + Heatmap + Correlation)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _chart_asset_descriptor(asset: str, category: str) -> Dict[str, Any]:
+    normalized_asset = str(asset or "").strip()
+    normalized_category = str(category or "").strip().lower()
+    primary_provider = "Deriv"
+    secondary_provider = ""
+    quote_mode = "stream"
+    routing_label = "deriv_primary"
+
+    try:
+        from config.config import IG_ENABLED, IG_ROUTED_CATEGORIES
+
+        ig_primary = bool(IG_ENABLED) and normalized_category in set(IG_ROUTED_CATEGORIES or [])
+    except Exception:
+        ig_primary = False
+
+    if ig_primary:
+        primary_provider = "IG"
+        secondary_provider = "Deriv"
+        quote_mode = "stream"
+        routing_label = "ig_primary_stream_deriv_fallback"
+    else:
+        try:
+            from services.binance_market_bridge import binance_market_bridge
+
+            if normalized_category == "crypto" and binance_market_bridge.supports(
+                normalized_asset,
+                category=normalized_category,
+            ):
+                secondary_provider = "Binance"
+                routing_label = "deriv_primary_binance_fallback"
+        except Exception:
+            pass
+
+    return {
+        "symbol": normalized_asset,
+        "category": normalized_category,
+        "primary_provider": primary_provider,
+        "secondary_provider": secondary_provider,
+        "quote_mode": quote_mode,
+        "routing_label": routing_label,
+    }
+
+
+def _provider_routing_summary() -> Dict[str, Any]:
+    assets = [_chart_asset_descriptor(asset, category) for asset, category in ALL_ASSETS]
+    primary_counts: Dict[str, int] = {}
+    secondary_counts: Dict[str, int] = {}
+    quote_mode_counts: Dict[str, int] = {}
+    category_primary: Dict[str, str] = {}
+
+    for item in assets:
+        primary = str(item.get("primary_provider") or "")
+        secondary = str(item.get("secondary_provider") or "")
+        quote_mode = str(item.get("quote_mode") or "")
+        category = str(item.get("category") or "")
+        if primary:
+            primary_counts[primary] = primary_counts.get(primary, 0) + 1
+            category_primary.setdefault(category, primary)
+        if secondary:
+            secondary_counts[secondary] = secondary_counts.get(secondary, 0) + 1
+        if quote_mode:
+            quote_mode_counts[quote_mode] = quote_mode_counts.get(quote_mode, 0) + 1
+
+    primary_summary = ", ".join(
+        f"{provider} {count}"
+        for provider, count in sorted(primary_counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+    fallback_summary = ", ".join(
+        f"{provider} {count}"
+        for provider, count in sorted(secondary_counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+
+    return {
+        "asset_count": len(assets),
+        "primary_counts": primary_counts,
+        "secondary_counts": secondary_counts,
+        "quote_mode_counts": quote_mode_counts,
+        "category_primary": category_primary,
+        "summary_label": primary_summary or "Unavailable",
+        "fallback_label": fallback_summary or "None",
+    }
+
+
+def _chart_period_limit(asset: str, category: str, interval: str, requested: int) -> int:
+    descriptor = _chart_asset_descriptor(asset, category)
+    if str(descriptor.get("primary_provider") or "").upper() != "IG":
+        return int(requested)
+
+    capped = {
+        "1m": 180,
+        "5m": 240,
+        "15m": 240,
+        "30m": 240,
+        "1h": 300,
+        "4h": 300,
+        "1d": 365,
+    }.get(str(interval or "").lower(), min(int(requested), 240))
+    return max(60, min(int(requested), int(capped)))
+
+
+def _chart_history_cache_ttl(asset: str, category: str, interval: str) -> int:
+    descriptor = _chart_asset_descriptor(asset, category)
+    if str(descriptor.get("primary_provider") or "").upper() == "IG":
+        if str(interval or "").lower() in {"1h", "4h", "1d"}:
+            return 900
+        return 600
+    if str(interval or "").lower() in {"4h", "1d"}:
+        return 300
+    return 120
+
+
+def _is_historical_allowance_error(meta: Dict[str, Any]) -> bool:
+    code = str(meta.get("provider_error_code") or "").lower()
+    message = str(meta.get("provider_error_message") or meta.get("message") or "").lower()
+    return "historical-data-allowance" in code or "historical data allowance" in message
+
+
 @app.route("/api/chart/assets")
 @_check_api_auth
 @_check_rate_limit
 def api_chart_assets():
     try:
-        return jsonify({"success": True,
-                        "assets": [{"symbol": a, "category": c} for a, c in ALL_ASSETS]})
+        return jsonify(
+            {
+                "success": True,
+                "assets": [_chart_asset_descriptor(a, c) for a, c in ALL_ASSETS],
+            }
+        )
     except Exception as e:
         return handle_api_error(e, "/api/chart/assets", 500)
 
@@ -1561,8 +1897,14 @@ def api_chart_candles():
         from config.config import get_chart_timeframe_periods
         asset    = request.args.get("asset", "EUR/USD")
         interval = request.args.get("interval", "15m")
-        periods  = int(get_chart_timeframe_periods(interval))
         cat      = _cat(asset)
+        requested_periods = int(get_chart_timeframe_periods(interval))
+        periods = _chart_period_limit(asset, cat, interval, requested_periods)
+        cache_key = f"chart_candles:{asset}:{cat}:{interval}:{periods}"
+        last_good_key = f"chart_candles_last:{asset}:{cat}:{interval}"
+        cached_payload = _cache_get(cache_key)
+        if cached_payload:
+            return jsonify(cached_payload)
 
         # Try requested interval then fall back for forex/indices intraday gaps
         fallbacks = {
@@ -1578,15 +1920,35 @@ def api_chart_candles():
         allow_fallback = cat in ("forex", "indices")
         if (df is None or df.empty) and allow_fallback and interval in fallbacks:
             for fb in fallbacks[interval]:
-                df = _fetcher.get_ohlcv(asset, cat, interval=fb,
-                                        periods=int(get_chart_timeframe_periods(fb)))
+                fb_periods = _chart_period_limit(asset, cat, fb, int(get_chart_timeframe_periods(fb)))
+                df = _fetcher.get_ohlcv(asset, cat, interval=fb, periods=fb_periods)
                 if df is not None and not df.empty:
                     used = fb
+                    periods = fb_periods
                     break
 
         if df is None or df.empty:
+            meta = {}
+            try:
+                meta = _fetcher.get_last_ohlcv_metadata(asset, interval)
+            except Exception:
+                meta = {}
+            last_good_payload = _cache_get(last_good_key)
+            if _is_historical_allowance_error(meta) and last_good_payload:
+                fallback_payload = dict(last_good_payload)
+                fallback_payload["cached"] = True
+                fallback_payload["provider_warning_code"] = str(meta.get("provider_error_code") or "")
+                fallback_payload["provider_warning_message"] = str(meta.get("provider_error_message") or meta.get("message") or "")
+                fallback_payload["message"] = "Using cached candles due to provider historical allowance."
+                return jsonify(fallback_payload)
+            message = str(meta.get("provider_error_message") or f"No data for {asset}")
             return jsonify({"success": True, "candles": [],
-                            "message": f"No data for {asset}", "interval_used": interval, "bars_requested": periods})
+                            "message": message,
+                            "interval_used": interval,
+                            "bars_requested": periods,
+                            "data_source": meta.get("source"),
+                            "provider_error_code": meta.get("provider_error_code"),
+                            "provider_error_message": meta.get("provider_error_message")})
 
         df.columns = [c.lower() for c in df.columns]
         timestamps = []
@@ -1614,12 +1976,22 @@ def api_chart_candles():
                 "volume": float(row.get("volume", 0)),
             })
         candles.sort(key=lambda x: x["time"])
-        return jsonify({
+        meta = {}
+        try:
+            meta = _fetcher.get_last_ohlcv_metadata(asset, used)
+        except Exception:
+            meta = {}
+        payload = {
             "success": True,
             "candles": candles,
             "interval_used": used,
             "bars_requested": periods,
-        })
+            "data_source": meta.get("source"),
+            "cached": False,
+        }
+        _cache_set(cache_key, payload, ttl=_chart_history_cache_ttl(asset, cat, used))
+        _cache_set(last_good_key, payload, ttl=max(_chart_history_cache_ttl(asset, cat, used), 3600))
+        return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/chart/candles", e.status_code)
     except Exception as e:
@@ -1638,9 +2010,23 @@ def api_chart_stream():
         yield f"data: {json.dumps({'type': 'connected', 'asset': asset, 'ts': int(time.time())})}\n\n"
         while True:
             try:
-                price, _ = _fetcher.get_real_time_price(asset, cat)
+                price = None
+                source = None
+                try:
+                    from websocket_dashboard import get_live_price
+
+                    price, source = get_live_price(asset, max_age_seconds=15.0)
+                except Exception:
+                    price, source = None, None
+
+                if price is None:
+                    price, _ = _fetcher.get_real_time_price(asset, cat)
+                    try:
+                        source = str((_fetcher.get_last_price_metadata(asset) or {}).get("source") or source or "")
+                    except Exception:
+                        source = source or ""
                 if price:
-                    yield f"data: {json.dumps({'type': 'tick', 'price': price, 'asset': asset, 'ts': int(time.time())})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tick', 'price': price, 'asset': asset, 'source': source, 'ts': int(time.time())})}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'heartbeat', 'asset': asset, 'ts': int(time.time())})}\n\n"
             except Exception:
@@ -1742,7 +2128,7 @@ def api_correlation_matrix():
         import numpy as np
         from concurrent.futures import ThreadPoolExecutor, wait
         from config.config import get_trading_timeframe
-        assets = [a for a, _ in ALL_ASSETS]  # all 18 tradeable assets
+        assets = [a for a, _ in ALL_ASSETS]  # all 19 tradeable assets
 
         def _fetch_close(a):
             cat = _cat(a)
@@ -2275,7 +2661,11 @@ def api_sentiment_by_asset():
                             "asset": asset, "category": _cat(asset),
                             "score": 0.0, "label": "Neutral",
                         })
-                logger.warning(f"[Sentiment] by-asset timeout — returning {len(results)}/{len(watch)} assets")
+                message = f"[Sentiment] by-asset timeout — returning {len(results)}/{len(watch)} assets"
+                if len(results) < len(watch):
+                    logger.warning(message)
+                else:
+                    logger.info(message)
         finally:
             try:
                 pool.shutdown(wait=False, cancel_futures=True)
@@ -2354,6 +2744,7 @@ def api_risk_portfolio():
             memory = _extract_memory_fields(meta)
             execution = _extract_execution_feedback_fields(meta)
             opportunity = _extract_opportunity_fields(meta)
+            intelligence = _extract_signal_intelligence_fields(meta)
             by_cat.setdefault(cat, {
                 "count": 0,
                 "pnl": 0.0,
@@ -2361,6 +2752,13 @@ def api_risk_portfolio():
                 "memory_scores": [],
                 "execution_scores": [],
                 "opportunity_scores": [],
+                "broker_scores": [],
+                "micro_scores": [],
+                "cross_alignments": [],
+                "true_depth_count": 0,
+                "synthetic_depth_count": 0,
+                "cross_conflict_count": 0,
+                "recent_block_count": 0,
             })
             by_cat[cat]["count"]    += 1
             by_cat[cat]["pnl"]      += float(p.get("pnl") or 0)
@@ -2371,14 +2769,34 @@ def api_risk_portfolio():
                 by_cat[cat]["execution_scores"].append(float(execution.get("execution_quality_score", 0.0) or 0.0))
             if float(opportunity.get("opportunity_score", 0.0) or 0.0) > 0:
                 by_cat[cat]["opportunity_scores"].append(float(opportunity.get("opportunity_score", 0.0) or 0.0))
+            if float(intelligence.get("broker_quality_score", 0.0) or 0.0) > 0:
+                by_cat[cat]["broker_scores"].append(float(intelligence.get("broker_quality_score", 0.0) or 0.0))
+            if abs(float(intelligence.get("microstructure_score", 0.0) or 0.0)) > 1e-9:
+                by_cat[cat]["micro_scores"].append(float(intelligence.get("microstructure_score", 0.0) or 0.0))
+            if abs(float(intelligence.get("cross_asset_alignment", 0.0) or 0.0)) > 1e-9:
+                by_cat[cat]["cross_alignments"].append(float(intelligence.get("cross_asset_alignment", 0.0) or 0.0))
+            if str(intelligence.get("depth_mode") or "") == "true_depth":
+                by_cat[cat]["true_depth_count"] += 1
+            elif str(intelligence.get("depth_mode") or "") == "synthetic_depth":
+                by_cat[cat]["synthetic_depth_count"] += 1
+            if str(intelligence.get("cross_asset_context_state") or "") == "conflicted":
+                by_cat[cat]["cross_conflict_count"] += 1
+            if bool(intelligence.get("recent_pattern_block_new_entries")):
+                by_cat[cat]["recent_block_count"] += 1
 
         for cat, info in by_cat.items():
             memory_scores = info.pop("memory_scores", [])
             execution_scores = info.pop("execution_scores", [])
             opportunity_scores = info.pop("opportunity_scores", [])
+            broker_scores = info.pop("broker_scores", [])
+            micro_scores = info.pop("micro_scores", [])
+            cross_alignments = info.pop("cross_alignments", [])
             info["avg_memory_score"] = round(sum(memory_scores) / len(memory_scores), 1) if memory_scores else 0.0
             info["avg_execution_quality"] = round(sum(execution_scores) / len(execution_scores), 1) if execution_scores else 0.0
             info["avg_opportunity_score"] = round(sum(opportunity_scores) / len(opportunity_scores), 3) if opportunity_scores else 0.0
+            info["avg_broker_quality"] = round(sum(broker_scores) / len(broker_scores), 3) if broker_scores else 0.0
+            info["avg_microstructure_score"] = round(sum(micro_scores) / len(micro_scores), 3) if micro_scores else 0.0
+            info["avg_cross_asset_alignment"] = round(sum(cross_alignments) / len(cross_alignments), 3) if cross_alignments else 0.0
 
         closed  = core.get_closed_trades(limit=100)
         wins    = [t for t in closed if float(t.get("pnl") or 0) > 0]
@@ -2432,6 +2850,18 @@ def api_risk_portfolio():
                     sum(float(item.get("avg_opportunity_score", 0.0) or 0.0) for item in by_cat.values()) / len(by_cat),
                     3,
                 ) if by_cat else 0.0,
+                "avg_broker_quality": round(
+                    sum(float(item.get("avg_broker_quality", 0.0) or 0.0) for item in by_cat.values()) / len(by_cat),
+                    3,
+                ) if by_cat else 0.0,
+                "avg_microstructure_score": round(
+                    sum(float(item.get("avg_microstructure_score", 0.0) or 0.0) for item in by_cat.values()) / len(by_cat),
+                    3,
+                ) if by_cat else 0.0,
+                "avg_cross_asset_alignment": round(
+                    sum(float(item.get("avg_cross_asset_alignment", 0.0) or 0.0) for item in by_cat.values()) / len(by_cat),
+                    3,
+                ) if by_cat else 0.0,
                 "top_category": (
                     max(
                         by_cat.items(),
@@ -2442,6 +2872,9 @@ def api_risk_portfolio():
             },
             "execution_feedback": execution_summary,
             "execution_by_category": execution_by_category,
+            "signal_diagnostics": _summarize_signal_diagnostics(
+                [_extract_signal_intelligence_fields(dict(p.get("metadata") or {})) for p in positions]
+            ),
         }
         _cache_set("risk_portfolio", payload, ttl=10)
         return jsonify(payload)
@@ -2483,6 +2916,7 @@ def api_strategy_performance():
                 meta = dict(row.get("metadata") or {})
                 row.update(_extract_execution_feedback_fields(meta))
                 row.update(_extract_memory_fields(meta))
+                row.update(_extract_signal_intelligence_fields(meta))
                 strat_trades.append(row)
 
             durs    = [int(t.get("duration_minutes", 0)) for t in strat_trades if t.get("duration_minutes")]
@@ -2515,6 +2949,7 @@ def api_strategy_performance():
             meta = dict(t.get("metadata") or {})
             row.update(_extract_execution_feedback_fields(meta))
             row.update(_extract_memory_fields(meta))
+            row.update(_extract_signal_intelligence_fields(meta))
             timeline.append(row)
         summary = {
             "avg_memory_score": round(sum(summary_memory_scores) / len(summary_memory_scores), 1) if summary_memory_scores else 0.0,
@@ -2536,9 +2971,17 @@ def api_strategy_performance():
 def api_backtest_strategies():
     try:
         from strategy_lab import StrategyBuilder
-        presets  = list(StrategyBuilder.all_configs().keys())
-        existing = ["voting", "rsi", "macd", "bollinger"]
-        return jsonify({"success": True, "presets": presets, "existing": existing})
+        presets = list(StrategyBuilder.all_configs().keys())
+        archived_presets = list(StrategyBuilder.archived_configs().keys())
+        live_runtime = ["policy_agent"]
+        return jsonify(
+            {
+                "success": True,
+                "presets": presets,
+                "archived_presets": archived_presets,
+                "live_runtime": live_runtime,
+            }
+        )
     except APIError as e:
         return handle_api_error(e, "/api/backtest/strategies", e.status_code)
     except Exception as e:
@@ -2883,16 +3326,9 @@ def api_backtest_multi_asset():
         periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods("")
         snapshot_end = resolve_backtest_end_time("")
         chosen_config = configs[strategy]
-        test_assets = [
-            ("BTC-USD",  "crypto"),
-            ("ETH-USD",  "crypto"),
-            ("SOL-USD",  "crypto"),
-            ("EUR/USD",  "forex"),
-            ("GBP/USD",  "forex"),
-            ("USD/JPY",  "forex"),
-            ("XAU/USD",  "commodities"),
-            ("US30",     "indices"),
-        ]
+        from core.assets import registry
+
+        test_assets = list(registry.all_assets())
 
         results = []
         for asset, category in test_assets:
@@ -3152,6 +3588,7 @@ def api_trade_history():
             d.update(_extract_execution_feedback_fields(_meta))
             d.update(_extract_memory_fields(_meta))
             d.update(_extract_opportunity_fields(_meta))
+            d.update(_extract_signal_intelligence_fields(_meta))
             # Convert stored UTC timestamps into the configured dashboard timezone.
             display_offset = _td(hours=TZ_OFFSET_HOURS)
             try:
@@ -3447,6 +3884,14 @@ def api_system_health():
         except Exception:
             phase_health["phase7_intel_alerts"] = False
 
+        feed_connections: Dict[str, Any] = {}
+        try:
+            from websocket_dashboard import connection_status as _connection_status
+
+            feed_connections = copy.deepcopy(dict(_connection_status or {}))
+        except Exception:
+            feed_connections = {}
+
         payload = {
             "success":          True,
             "ram_pct":          round(ram_pct, 1),
@@ -3455,6 +3900,7 @@ def api_system_health():
             "process_mem_mb":   proc_mb,
             "processes":        processes,
             "phase_health":     phase_health,
+            "feed_connections": feed_connections,
             "open_positions":   health.get("open_positions", 0),
             "active_cooldowns": health.get("active_cooldowns", 0),
             "source_health":    dict(health.get("source_health") or {}),
@@ -3462,6 +3908,9 @@ def api_system_health():
             "stale_source_count": int(health.get("stale_source_count", 0) or 0),
             "never_seen_sources": list(health.get("never_seen_sources") or []),
             "never_seen_source_count": int(health.get("never_seen_source_count", 0) or 0),
+            "training_health":  dict(health.get("training_health") or {}),
+            "training_summary": dict(health.get("training_summary") or {}),
+            "ig_broker":       dict(health.get("ig_broker") or {}),
             "recent_error_count": int(health.get("recent_error_count", 0) or 0),
             "recent_errors":    list(health.get("recent_errors") or []),
             "issues":           health.get("issues", []),
@@ -3575,6 +4024,7 @@ def api_page_overview():
         ttl = 10
     elif page == "ai_predictions":
         payload = _response_to_dict(_call_view(api_ai_predictions_overview))
+        payload["status"] = _response_to_dict(_call_view(api_status))
         ttl = 10
     elif page == "intelligence_alerts":
         payload = _response_to_dict(_call_view(api_intelligence_alerts_overview))
@@ -3585,10 +4035,12 @@ def api_page_overview():
         ttl = 10
     elif page == "whale_intelligence":
         payload = _response_to_dict(_call_view(api_whale_summary))
+        payload["status"] = _response_to_dict(_call_view(api_status))
         ttl = 30
     elif page == "sentiment_intelligence":
         payload = {
             "success": True,
+            "status": _response_to_dict(_call_view(api_status)),
             "sentiment": _response_to_dict(_call_view(api_sentiment_dashboard)),
             "by_asset": _response_to_dict(_call_view(api_sentiment_by_asset)),
             "events": _response_to_dict(_call_view(api_market_events)),
@@ -3628,7 +4080,9 @@ def api_page_overview():
     elif page == "market_intelligence":
         payload = {
             "success": True,
+            "status": _response_to_dict(_call_view(api_status)),
             "assets": _response_to_dict(_call_view(api_chart_assets)),
+            "events": _response_to_dict(_call_view(api_market_events)),
         }
         ttl = 30
     else:
@@ -3732,22 +4186,27 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
     _start_p3_listener()
     _start_p7_listener()
 
-    # Optional WebSocket manager — Deriv-first live prices with Binance support
+    # Optional live-price cache — Deriv/Binance streams plus IG streaming/poll fallback
     _ws_global = None  # Reference to WebSocket manager for periodic updates
+    _ig_stream_global = None
     try:
         from websocket_manager import WebSocketManager
-        from websocket_dashboard import set_live_price
+        from websocket_dashboard import set_connected
         from core.asset_profiles import ALL_ASSETS
         from core.assets import registry as _asset_registry
+        from services.market_data_router import filter_deriv_stream_assets, filter_ig_primary_assets
+        try:
+            from services.ig_streaming_manager import ig_streaming_manager as _ig_stream_manager
+        except Exception:
+            _ig_stream_manager = None
 
         def _cb(source, symbol, price, volume, side, ts=None):
-            add_transaction(source, symbol, price, volume, side)
-            # Store price for live P&L updates (real-time, no API calls)
-            set_live_price(symbol, price, source)
+            _record_live_quote(source, symbol, price, volume, side)
         
         ws = WebSocketManager()
         ws.start()
         _ws_global = ws  # Save for periodic updates
+        _ig_stream_global = _ig_stream_manager
         
         # Build dynamic asset list from open positions
         _open_pos = _args.state.get_open_positions() if hasattr(_args, 'state') else []
@@ -3766,13 +4225,40 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
                 for asset in sorted(ALL_ASSETS)
             }
 
+        _ig_primary_assets = filter_ig_primary_assets(_assets_by_category)
+        _ig_stream_assets = {}
+        _ig_poll_assets = dict(_ig_primary_assets)
         if _assets_by_category:
-            ws.subscribe_deriv(_assets_by_category, _cb)
-            logger.info(f"[dashboard] Live stream assets: {sorted(_assets_by_category.keys())}")
+            _deriv_stream_assets = filter_deriv_stream_assets(_assets_by_category)
+            if _deriv_stream_assets:
+                ws.subscribe_deriv(_deriv_stream_assets, _cb)
+                logger.info(f"[dashboard] Live Deriv stream assets: {sorted(_deriv_stream_assets.keys())}")
+            else:
+                logger.info("[dashboard] No Deriv stream assets after market-data routing filter")
+            if _ig_stream_manager is not None:
+                try:
+                    _ig_stream_assets = _ig_stream_manager.subscribe_prices(_ig_primary_assets, _cb)
+                except Exception as stream_exc:
+                    logger.warning(f"[dashboard] IG streaming unavailable; falling back to quote polling: {stream_exc}")
+                    _ig_stream_assets = {}
+            _ig_poll_assets = {
+                asset: category
+                for asset, category in _ig_primary_assets.items()
+                if asset not in _ig_stream_assets
+            }
+            if _ig_stream_assets:
+                logger.info(f"[dashboard] Live IG stream assets: {sorted(_ig_stream_assets.keys())}")
+            if _ig_poll_assets:
+                set_connected("ig", True, len(_ig_poll_assets))
+                logger.info(f"[dashboard] Live IG poll assets: {sorted(_ig_poll_assets.keys())}")
+            elif not _ig_stream_assets:
+                set_connected("ig", False, 0)
         
         logger.info("[dashboard] Live streams started")
     except Exception as e:
         logger.warning(f"[dashboard] WebSocket streams failed (non-fatal): {e}")
+        _ig_poll_assets = {}
+        _ig_stream_assets = {}
 
     # Background thread to periodically update WebSocket subscriptions for new positions
     def _bg_update_ws_subscriptions():
@@ -3798,14 +4284,82 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
 
                 if _asset_map:
                     try:
-                        _ws_global.subscribe_deriv(_asset_map, _cb if '_cb' in locals() else lambda *a, **k: None)
-                        logger.debug(f"[dashboard] Updated live subscriptions: {_asset_map}")
+                        nonlocal _ig_poll_assets, _ig_stream_assets
+
+                        _deriv_stream_assets = filter_deriv_stream_assets(_asset_map)
+                        _ig_primary_assets = filter_ig_primary_assets(_asset_map)
+                        if _deriv_stream_assets:
+                            _ws_global.subscribe_deriv(
+                                _deriv_stream_assets,
+                                _cb if '_cb' in locals() else lambda *a, **k: None,
+                            )
+                            logger.debug(f"[dashboard] Updated live Deriv subscriptions: {_deriv_stream_assets}")
+                        if _ig_stream_global is not None:
+                            try:
+                                _ig_stream_assets = _ig_stream_global.subscribe_prices(
+                                    _ig_primary_assets,
+                                    _cb if '_cb' in locals() else lambda *a, **k: None,
+                                )
+                            except Exception as stream_exc:
+                                logger.debug(f"[dashboard] Updated live IG subscriptions failed: {stream_exc}")
+                                _ig_stream_assets = {}
+                        else:
+                            _ig_stream_assets = {}
+                        _ig_poll_assets = {
+                            asset: category
+                            for asset, category in _ig_primary_assets.items()
+                            if asset not in _ig_stream_assets
+                        }
+                        try:
+                            from websocket_dashboard import set_connected
+
+                            if _ig_poll_assets:
+                                set_connected("ig", True, len(_ig_poll_assets))
+                            elif not _ig_stream_assets:
+                                set_connected("ig", False, 0)
+                        except Exception:
+                            pass
                     except Exception as _ue:
                         logger.debug(f"[dashboard] Update live subs failed: {_ue}")
             except Exception as e:
                 logger.debug(f"[dashboard] bg_update_ws_subscriptions: {e}")
+
+    def _bg_refresh_ig_quotes():
+        """Poll non-streaming IG assets into the shared live-price cache."""
+
+        from websocket_dashboard import mark_feed_activity, set_connected
+
+        last_published_prices: Dict[str, float] = {}
+
+        while True:
+            try:
+                success_count = 0
+                for asset, category in list((_ig_poll_assets or {}).items()):
+                    try:
+                        price, _ = _fetcher.get_real_time_price(asset, category)
+                        if price is None:
+                            continue
+                        meta = _fetcher.get_last_price_metadata(asset)
+                        source = str((meta or {}).get("source") or "IG")
+                        price_value = float(price)
+                        previous_price = last_published_prices.get(asset)
+                        emit_transaction = previous_price is None or abs(previous_price - price_value) > 1e-12
+                        _record_live_quote(source, asset, price_value, emit_transaction=emit_transaction)
+                        mark_feed_activity("ig", len(_ig_poll_assets))
+                        last_published_prices[asset] = price_value
+                        success_count += 1
+                    except Exception as quote_exc:
+                        logger.debug(f"[dashboard] IG quote poll {asset}: {quote_exc}")
+                set_connected("ig", True, len(_ig_poll_assets))
+                if success_count == 0:
+                    logger.debug("[dashboard] IG quote poll completed with no fresh prices")
+            except Exception as e:
+                set_connected("ig", False, len(_ig_poll_assets))
+                logger.debug(f"[dashboard] bg_refresh_ig_quotes: {e}")
+            time.sleep(5)
     
     threading.Thread(target=_bg_update_ws_subscriptions, name="WSSubsUpdate", daemon=True).start()
+    threading.Thread(target=_bg_refresh_ig_quotes, name="IGQuotePoll", daemon=True).start()
 
     scheme = "https" if http2 and ssl_cert and ssl_key else "http"
     logger.info(f"[dashboard] {scheme}://{host}:{port}/command-center")

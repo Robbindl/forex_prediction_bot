@@ -2,7 +2,7 @@ from __future__ import annotations
 import sys
 import uuid
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from risk.manager import RiskManager
 from utils.logger import get_logger
@@ -297,7 +297,7 @@ class PaperTrader:
             "take_profit_levels": tp_levels,
             "position_size":      pos_size,
             "strategy_id":        strategy,
-            "open_time":          datetime.utcnow().isoformat(),
+            "open_time":          datetime.now(timezone.utc).isoformat(),
             "pnl":                0.0,
             "highest_price":      filled_entry,
             "lowest_price":       filled_entry,
@@ -745,14 +745,14 @@ class PaperTrader:
             or 10_000.0   # last-resort fallback
         )
         pnl_pct = (pnl / approx_balance) * 100 if approx_balance else 0.0
-        open_time = pos.get("open_time", datetime.utcnow().isoformat())
-        exit_time = datetime.utcnow().isoformat()
+        open_time = pos.get("open_time", datetime.now(timezone.utc).isoformat())
+        exit_time = datetime.now(timezone.utc).isoformat()
         
         # Calculate duration from open_time to exit_time (in minutes)
         try:
             from datetime import datetime as dt_class
             open_time_str = pos.get("open_time", "")
-            exit_time = datetime.utcnow().isoformat()
+            exit_time = datetime.now(timezone.utc).isoformat()
             if open_time_str:
                 try:
                     open_dt = dt_class.fromisoformat(open_time_str)

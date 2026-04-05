@@ -194,6 +194,14 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
+      <div class="panel panel-wide">
+        <div class="panel-header">
+          <span class="panel-title">🧩 Runtime Link</span>
+          <span class="panel-badge" id="runtimeBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="runtimeLinkPanel"><div class="empty">Loading…</div></div>
+      </div>
+
       <!-- Top assets chart -->
       <div class="panel panel-wide">
         <div class="panel-header"><span class="panel-title">📊 Volume by Asset</span></div>
@@ -275,6 +283,9 @@ async function load(){
   try{
     const page = await fetchWhaleOverview();
     const d = getWhaleOverviewData(page);
+    const status = page.status || {};
+    const routing = status.provider_routing || {};
+    const diagnostics = status.signal_diagnostics || {};
 
     if(!page.success){
       document.getElementById('wTotal').textContent='—';
@@ -289,6 +300,8 @@ async function load(){
       document.getElementById('wSellCount').textContent='—';
       document.getElementById('wBias').textContent='—';
       document.getElementById('wBiasNote').textContent='—';
+      document.getElementById('runtimeBadge').textContent='Unavailable';
+      document.getElementById('runtimeLinkPanel').innerHTML='<div class="empty">Runtime link unavailable</div>';
       document.getElementById('whaleTimeline').innerHTML='<div class="empty">Whale overview unavailable</div>';
       document.getElementById('alertBody').innerHTML='<tr><td colspan="5" class="empty">Whale overview unavailable</td></tr>';
       document.getElementById('whaleDot').classList.add('off');
@@ -359,6 +372,48 @@ async function load(){
     biasEl.textContent = biasLabel;
     biasEl.className = 'bias-value ' + biasClass;
     document.getElementById('wBiasNote').textContent = neutralCount ? (neutralCount + ' neutral / mixed alerts') : 'Directional signals are clean';
+    const runtimeFragile = Number(diagnostics.broker_fragile_count || 0);
+    const runtimeSupportive = Number(diagnostics.broker_supportive_count || 0);
+    const runtimeConflicts = Number(diagnostics.cross_conflict_count || 0);
+    const runtimeBlocks = Number(diagnostics.recent_pattern_block_count || 0);
+    const runtimeTrueDepth = Number(diagnostics.true_depth_count || 0);
+    const runtimeSyntheticDepth = Number(diagnostics.synthetic_depth_count || 0);
+    const runtimeState = runtimeFragile || runtimeConflicts || runtimeBlocks ? 'Guarded' : diagnostics.count ? 'Live-linked' : 'Idle';
+    document.getElementById('runtimeBadge').textContent = runtimeState;
+    document.getElementById('runtimeLinkPanel').innerHTML = [
+      {
+        title: 'Feed spine',
+        value: routing.summary_label || 'Unavailable',
+        note: routing.fallback_label ? `Fallback ${routing.fallback_label}` : 'No fallback split published',
+        color: 'var(--cy)',
+      },
+      {
+        title: 'Broker posture',
+        value: `${runtimeSupportive}/${runtimeFragile}`,
+        note: diagnostics.summary_label || 'No active signal diagnostics yet',
+        color: runtimeFragile ? 'var(--am)' : runtimeSupportive ? 'var(--gr)' : 'var(--tx2)',
+      },
+      {
+        title: 'Depth footprint',
+        value: `${runtimeTrueDepth}/${runtimeSyntheticDepth}`,
+        note: runtimeTrueDepth ? 'True depth currently supports part of the live book' : runtimeSyntheticDepth ? 'Synthetic depth is carrying the current book' : 'No depth-linked live positions yet',
+        color: runtimeTrueDepth ? 'var(--gr)' : runtimeSyntheticDepth ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
+        title: 'Whale-to-book read',
+        value: biasLabel,
+        note: runtimeConflicts || runtimeBlocks
+          ? `${runtimeConflicts} cross conflicts · ${runtimeBlocks} pattern blocks`
+          : `${rawAlerts.length} crypto whale alerts in the last 24h`,
+        color: biasClass === 'gn' ? 'var(--gr)' : biasClass === 'rd' ? 'var(--rd)' : 'var(--cy)',
+      },
+    ].map(item => `
+      <div class="mix-row">
+        <div class="mix-label" style="width:120px">${item.title}</div>
+        <div class="mix-bar-wrap"><div class="mix-bar" style="width:100%;background:${item.color}"></div></div>
+        <div class="mix-meta" style="min-width:180px;text-align:left;color:${item.color}">${item.value} · ${item.note}</div>
+      </div>
+    `).join('');
 
     // Bar chart
     if(barChart)barChart.destroy();

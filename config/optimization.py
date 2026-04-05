@@ -174,9 +174,9 @@ RECOMMENDED_ENV_OVERRIDES = {
 Before going live with 15m all-assets:
 
 [ ] Set TRADING_TIMEFRAME=15m in .env
-[ ] Update strategies.voting VotingStrategy(min_confidence=0.58)
-[ ] Update strategies.rsi RSIStrategy(period=8, oversold=28, overbought=72)
-[ ] Update strategies.macd MACDStrategy(signal=6)
+[ ] Confirm policy_agent remains the only live runtime strategy
+[ ] Keep the Strategy Lab active bench trimmed to the current 9 research presets
+[ ] Leave archived presets out of auto-research until they earn re-entry
 [ ] Update data_ingestion.news_event_monitor PRE_EVENT_MINS=10 (CRITICAL!)
 [ ] Verify .env MAX_POSITIONS=6 (distribute across asset classes)
 [ ] Backtest last 6 months on 15m with new parameters

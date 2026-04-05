@@ -198,6 +198,28 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
         </div>
       </div>
 
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">🧠 Signal Context</span>
+          <span id="signalContextStatus" class="status-tag" style="margin-left:auto">Loading…</span>
+        </div>
+        <div class="dp-grid">
+          <div>
+            <div class="dp-stat-grid" id="signalContextSummary">
+              <div class="dp-stat skeleton" style="height:74px"></div>
+              <div class="dp-stat skeleton" style="height:74px"></div>
+              <div class="dp-stat skeleton" style="height:74px"></div>
+              <div class="dp-stat skeleton" style="height:74px"></div>
+            </div>
+            <div class="dp-sub" id="signalContextDetail">Loading broker and depth diagnostics…</div>
+            <div class="dp-tags" id="signalContextTags"></div>
+          </div>
+          <div id="signalContextNotes">
+            <div class="event-risk-card skeleton" style="height:78px"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- HEATMAP -->
       <div class="panel">
         <div class="panel-header">
@@ -384,8 +406,10 @@ async function loadCandles() {
     _lastTf    = currentTf;
     const usedTf = d.interval_used || currentTf;
     const isFallback = usedTf !== currentTf;
+    const isCached = !!d.cached;
     const requestedBars = Number(d.bars_requested || d.candles.length);
     const returnedBars = d.candles.length;
+    const sourceLabel = d.data_source ? ` · ${d.data_source}` : '';
     const barLabel = returnedBars < requestedBars
       ? `${returnedBars}/${requestedBars} bars`
       : `${returnedBars} bars`;
@@ -414,14 +438,21 @@ async function loadCandles() {
       try { lwChart.timeScale().setVisibleRange(savedRange); } catch(e) {}
     }
 
-    st.textContent = isFallback
-      ? `${barLabel} · requested ${currentTf}, showing ${usedTf}`
-      : `${barLabel} · ${usedTf}`;
-    st.style.background = isFallback ? 'rgba(255,165,0,.15)' : 'rgba(0,208,132,.12)';
-    st.style.color = isFallback ? 'var(--am)' : 'var(--gr)';
+    const statusParts = [
+      isFallback
+        ? `${barLabel} · requested ${currentTf}, showing ${usedTf}${sourceLabel}`
+        : `${barLabel} · ${usedTf}${sourceLabel}`,
+    ];
+    if (isCached) statusParts.push('cached');
+    if (d.provider_warning_message) statusParts.push('provider constrained');
+    st.textContent = statusParts.join(' · ');
+    st.style.background = (isFallback || isCached || d.provider_warning_message) ? 'rgba(255,165,0,.15)' : 'rgba(0,208,132,.12)';
+    st.style.color = (isFallback || isCached || d.provider_warning_message) ? 'var(--am)' : 'var(--gr)';
   } else {
     _chartCandles = [];
-    st.textContent = `No ${currentTf} data`;
+    const rawMessage = String(d?.provider_error_message || d?.message || `No ${currentTf} data`);
+    const compactMessage = rawMessage.length > 72 ? `${rawMessage.slice(0, 69)}…` : rawMessage;
+    st.textContent = d?.data_source ? `${d.data_source}: ${compactMessage}` : compactMessage;
     st.style.background = 'rgba(255,69,96,.12)';
     st.style.color = 'var(--rd)';
   }
@@ -440,6 +471,15 @@ async function fetchMarketIntelligenceOverview(){
     return d;
   }
   return {success:false};
+}
+
+function getAssetDescriptor(assetPayload, symbol){
+  const items = Array.isArray(assetPayload?.assets) ? assetPayload.assets : [];
+  return items.find(a => a.symbol === symbol) || null;
+}
+
+function formatQuoteMode(value){
+  return String(value || '').toLowerCase() === 'polling' ? 'Polling' : 'Stream';
 }
 
 async function loadAssets() {
@@ -474,25 +514,45 @@ async function loadDataPlane() {
   const detailEl = document.getElementById('dataPlaneDetail');
   const tagsEl = document.getElementById('dataPlaneTags');
   const eventEl = document.getElementById('eventRiskPanel');
+  const signalStatusEl = document.getElementById('signalContextStatus');
+  const signalSummaryEl = document.getElementById('signalContextSummary');
+  const signalDetailEl = document.getElementById('signalContextDetail');
+  const signalTagsEl = document.getElementById('signalContextTags');
+  const signalNotesEl = document.getElementById('signalContextNotes');
 
   status.textContent = 'Loading…';
   status.style.background = 'rgba(41,121,255,.15)';
   status.style.color = 'var(--bl)';
+  signalStatusEl.textContent = 'Loading…';
+  signalStatusEl.style.background = 'rgba(41,121,255,.15)';
+  signalStatusEl.style.color = 'var(--bl)';
 
   const page = await fetchMarketIntelligenceOverview();
   const assetPayload = page.success ? (page.assets || {assets:[]}) : await fetchWithTimeout('/api/chart/assets', 8000) || {assets:[]};
-  const eventPayload = await fetchWithTimeout('/api/market/events', 15000) || {success:false, events:[], risk_outlook:{}};
+  const eventPayload = page.success ? (page.events || {success:false, events:[], risk_outlook:{}}) : await fetchWithTimeout('/api/market/events', 15000) || {success:false, events:[], risk_outlook:{}};
+  const runtimeStatus = page.success ? (page.status || {}) : {};
   const assets = assetPayload.assets || [];
+  const selected = getAssetDescriptor(assetPayload, currentAsset) || assets[0] || null;
   const grouped = assets.reduce((acc, item) => {
     acc[item.category] = (acc[item.category] || 0) + 1;
+    return acc;
+  }, {});
+  const primaryFeeds = assets.reduce((acc, item) => {
+    const provider = item.primary_provider || 'Unknown';
+    acc[provider] = (acc[provider] || 0) + 1;
+    return acc;
+  }, {});
+  const secondaryFeeds = assets.reduce((acc, item) => {
+    const provider = item.secondary_provider || '';
+    if (provider) acc[provider] = (acc[provider] || 0) + 1;
     return acc;
   }, {});
 
   summaryEl.innerHTML = [
     {label:'Active Assets', value:String(assets.length), color:'var(--cy)'},
-    {label:'Primary Feed', value:'Deriv', color:'var(--gr)'},
-    {label:'Secondary Feed', value:'Binance', color:'var(--am)'},
-    {label:'Chart Intervals', value:'7', color:'var(--bl)'},
+    {label:'Selected Asset', value:selected ? selected.symbol : '—', color:'var(--tx)'},
+    {label:'Primary Feed', value:selected ? selected.primary_provider : '—', color:'var(--gr)'},
+    {label:'Quote Mode', value:selected ? formatQuoteMode(selected.quote_mode) : '—', color:'var(--bl)'},
   ].map(item => `
     <div class="dp-stat">
       <div class="dp-val" style="color:${item.color}">${item.value}</div>
@@ -500,13 +560,20 @@ async function loadDataPlane() {
     </div>
   `).join('');
 
-  detailEl.textContent = assets.length
-    ? 'Deriv is the primary live market feed. Binance only backfills unsupported alt-crypto symbols.'
+  detailEl.textContent = selected
+    ? `${selected.symbol} (${selected.category}) uses ${selected.primary_provider} as the primary chart feed.${selected.secondary_provider ? ` ${selected.secondary_provider} is kept as fallback.` : ' No secondary fallback is configured for this asset.'} ${formatQuoteMode(selected.quote_mode) === 'Polling' ? 'Live price is refreshed through direct provider polling.' : 'Live price is driven by the dashboard stream cache.'}`
     : 'Asset universe unavailable right now.';
 
-  tagsEl.innerHTML = Object.entries(grouped).map(([category, count]) => `
+  const categoryTags = Object.entries(grouped).map(([category, count]) => `
     <div class="dp-tag">${category} ${count}</div>
-  `).join('');
+  `);
+  const primaryTags = Object.entries(primaryFeeds).map(([provider, count]) => `
+    <div class="dp-tag">${provider} primary ${count}</div>
+  `);
+  const secondaryTags = Object.entries(secondaryFeeds).map(([provider, count]) => `
+    <div class="dp-tag">${provider} fallback ${count}</div>
+  `);
+  tagsEl.innerHTML = [...categoryTags, ...primaryTags, ...secondaryTags].join('');
 
   const risk = eventPayload.risk_outlook || {};
   const events = eventPayload.events || [];
@@ -535,12 +602,78 @@ async function loadDataPlane() {
   status.textContent = assets.length ? `${assets.length} assets` : 'Unavailable';
   status.style.background = assets.length ? 'rgba(0,208,132,.12)' : 'rgba(255,69,96,.12)';
   status.style.color = assets.length ? 'var(--gr)' : 'var(--rd)';
+
+  const providerRouting = runtimeStatus.provider_routing || {};
+  const diagnostics = runtimeStatus.signal_diagnostics || {};
+  const brokerSupportive = Number(diagnostics.broker_supportive_count || 0);
+  const brokerFragile = Number(diagnostics.broker_fragile_count || 0);
+  const trueDepth = Number(diagnostics.true_depth_count || 0);
+  const syntheticDepth = Number(diagnostics.synthetic_depth_count || 0);
+  const crossConflict = Number(diagnostics.cross_conflict_count || 0);
+  const patternBlocks = Number(diagnostics.recent_pattern_block_count || 0);
+  const diagnosticsState = brokerFragile || crossConflict || patternBlocks ? 'Guarded' : diagnostics.count ? 'Supportive' : 'Idle';
+  const diagnosticsColor = brokerFragile || crossConflict || patternBlocks ? 'var(--am)' : diagnostics.count ? 'var(--gr)' : 'var(--tx2)';
+  const selectedPrimary = selected ? (selected.primary_provider || '—') : '—';
+  const selectedMode = selected ? formatQuoteMode(selected.quote_mode) : '—';
+
+  signalSummaryEl.innerHTML = [
+    {label:'Active Signals', value:String(diagnostics.count || 0), color:'var(--cy)'},
+    {label:'Broker Context', value:`${brokerSupportive}/${brokerFragile}`, color:brokerFragile ? 'var(--am)' : 'var(--gr)'},
+    {label:'Depth Mix', value:`${trueDepth}/${syntheticDepth}`, color:trueDepth ? 'var(--gr)' : syntheticDepth ? 'var(--am)' : 'var(--tx2)'},
+    {label:'Selected Route', value:`${selectedPrimary} · ${selectedMode}`, color:'var(--bl)'},
+  ].map(item => `
+    <div class="dp-stat">
+      <div class="dp-val" style="color:${item.color}">${item.value}</div>
+      <div class="dp-lbl">${item.label}</div>
+    </div>
+  `).join('');
+
+  signalDetailEl.textContent = selected
+    ? `${selected.symbol} is routed through ${selectedPrimary} in ${selectedMode.toLowerCase()} mode. The live book is ${diagnosticsState.toLowerCase()} right now: ${diagnostics.summary_label || 'no active diagnostics yet'}.`
+    : `Signal context unavailable. ${diagnostics.summary_label || 'No active diagnostics yet.'}`;
+
+  signalTagsEl.innerHTML = [
+    providerRouting.summary_label ? `<div class="dp-tag">Primary ${providerRouting.summary_label}</div>` : '',
+    providerRouting.fallback_label ? `<div class="dp-tag">Fallback ${providerRouting.fallback_label}</div>` : '',
+    crossConflict ? `<div class="dp-tag">Cross conflicts ${crossConflict}</div>` : '',
+    patternBlocks ? `<div class="dp-tag">Pattern blocks ${patternBlocks}</div>` : '',
+    selected && selected.secondary_provider ? `<div class="dp-tag">${selected.secondary_provider} fallback ready</div>` : '',
+  ].filter(Boolean).join('');
+
+  signalNotesEl.innerHTML = `
+    <div class="event-risk-card">
+      <div class="event-risk-title">Runtime Reading</div>
+      <div class="event-risk-text" style="color:${diagnosticsColor}">
+        ${diagnostics.count
+          ? `${diagnosticsState} book · ${diagnostics.summary_label || 'signals are flowing without notable diagnostics'}`
+          : 'No active positions yet, so broker/depth pressure is being tracked but not attached to a live book.'}
+      </div>
+    </div>
+    <div class="event-item">
+      <div class="event-name">Selected asset</div>
+      <div class="event-meta">${selected ? `${selected.symbol} · ${selected.category} · ${selectedPrimary}` : 'No selected asset'}</div>
+    </div>
+    <div class="event-item">
+      <div class="event-name">Universe routing</div>
+      <div class="event-meta">${providerRouting.summary_label || 'Unavailable'}</div>
+    </div>
+    <div class="event-item">
+      <div class="event-name">Depth footprint</div>
+      <div class="event-meta">${trueDepth} true depth · ${syntheticDepth} synthetic depth · ${brokerSupportive} supportive broker reads</div>
+    </div>
+  `;
+
+  signalStatusEl.textContent = diagnostics.count ? diagnosticsState : 'Idle';
+  signalStatusEl.style.background = diagnostics.count ? 'rgba(0,208,132,.12)' : 'rgba(122,136,153,.15)';
+  signalStatusEl.style.color = diagnostics.count ? diagnosticsColor : 'var(--tx2)';
 }
 
 // ── Live price stream ─────────────────────────────────────────────────────────
 function startStream() {
   if (!_chartBooted) return;
   if (sseSource) sseSource.close();
+  const livePriceEl = document.getElementById('livePrice');
+  if (livePriceEl) livePriceEl.textContent = '—';
   sseSource = new EventSource(`/api/chart/stream?asset=${encodeURIComponent(currentAsset)}`);
   sseSource.onmessage = e => {
     try {
@@ -725,6 +858,7 @@ function changeToAsset(a) {
   for (let i = 0; i < sel.options.length; i++) {
     if (sel.options[i].value === a) { sel.selectedIndex = i; break; }
   }
+  loadDataPlane();
   if (_chartBooted) {
     loadCandles();
     startStream();
@@ -733,6 +867,7 @@ function changeToAsset(a) {
 
 function changeChartAsset() {
   currentAsset = document.getElementById('chartAsset').value;
+  loadDataPlane();
   if (_chartBooted) {
     loadCandles();
     startStream();

@@ -285,6 +285,12 @@ class SignalJournal:
         breakdown = metadata.get("opportunity_breakdown")
         if not isinstance(breakdown, dict):
             breakdown = {}
+        broker_quality = metadata.get("broker_quality")
+        if not isinstance(broker_quality, dict):
+            broker_quality = {}
+        market_microstructure = metadata.get("market_microstructure")
+        if not isinstance(market_microstructure, dict):
+            market_microstructure = {}
         risk_components: List[float] = []
         if breakdown:
             for key in ("risk_reward", "spread", "portfolio_fit"):
@@ -301,6 +307,38 @@ class SignalJournal:
             if liq_penalty is not None:
                 risk_components.append(_clip11(1.0 - min(1.5, liq_penalty / 0.05)))
         risk = round(sum(risk_components) / len(risk_components), 4) if risk_components else 0.0
+
+        broker_factor = 0.0
+        if "broker_quality" in breakdown:
+            broker_factor = _signed_quality(breakdown.get("broker_quality"))
+        else:
+            broker_score = _safe_float(
+                metadata.get("broker_quality_score", broker_quality.get("score")),
+                None,
+            )
+            if broker_score is not None:
+                broker_factor = _signed_quality(broker_score)
+
+        micro_factor = 0.0
+        micro_alignment = _safe_float(metadata.get("microstructure_alignment"), None)
+        if micro_alignment is not None:
+            micro_factor = round(_clip11(micro_alignment), 4)
+        elif "microstructure" in breakdown:
+            micro_factor = _signed_quality(breakdown.get("microstructure"))
+        else:
+            micro_score = _safe_float(
+                metadata.get("microstructure_score", market_microstructure.get("score")),
+                None,
+            )
+            if micro_score is not None:
+                micro_factor = round(_clip11(micro_score * sign), 4)
+
+        cross_asset_factor = 0.0
+        cross_alignment = _safe_float(metadata.get("cross_asset_alignment"), None)
+        if cross_alignment is not None:
+            cross_asset_factor = round(_clip11(cross_alignment), 4)
+        elif "cross_asset" in breakdown:
+            cross_asset_factor = _signed_quality(breakdown.get("cross_asset"))
 
         agent_score = _safe_float(
             metadata.get("agent_score", (policy.data or {}).get("agent_score") if policy else None),
@@ -337,6 +375,9 @@ class SignalJournal:
             "sentiment": round(sentiment, 4),
             "whales": round(whale, 4),
             "order_flow": round(order_flow, 4),
+            "broker_quality": round(broker_factor, 4),
+            "microstructure": round(micro_factor, 4),
+            "cross_asset": round(cross_asset_factor, 4),
             "memory": round(memory_factor, 4),
             "policy": round(policy_factor, 4),
             "governance": round(governance_factor, 4),
@@ -347,6 +388,12 @@ class SignalJournal:
         metadata = dict(getattr(signal, "metadata", {}) or {})
         market = self._latest_entry("market")
         intelligence = self._latest_entry("intelligence")
+        broker_quality = metadata.get("broker_quality")
+        if not isinstance(broker_quality, dict):
+            broker_quality = {}
+        market_microstructure = metadata.get("market_microstructure")
+        if not isinstance(market_microstructure, dict):
+            market_microstructure = {}
 
         structure_data = metadata.get("market_structure")
         if not isinstance(structure_data, dict):
@@ -424,6 +471,12 @@ class SignalJournal:
         if not session and market:
             session = str((market.data or {}).get("session") or "")
 
+        depth_mode = "top_of_book"
+        if bool(metadata.get("depth_available", market_microstructure.get("depth_available"))):
+            depth_mode = "true_depth"
+        elif bool(metadata.get("synthetic_depth_available", market_microstructure.get("synthetic_depth_available"))):
+            depth_mode = "synthetic_depth"
+
         return {
             "regime": regime,
             "structure_bias": str(
@@ -449,6 +502,24 @@ class SignalJournal:
             "whale_bucket": whale_bucket,
             "orderflow_bucket": orderflow_bucket,
             "session": session,
+            "primary_provider": str(broker_quality.get("primary_provider", "") or ""),
+            "comparison_provider": str(broker_quality.get("comparison_provider", "") or ""),
+            "broker_agreement_state": str(
+                metadata.get("broker_agreement_state", broker_quality.get("quote_agreement_state", "")) or ""
+            ),
+            "quote_quality_state": str(
+                metadata.get("broker_quote_quality_state", broker_quality.get("quote_quality_state", "")) or ""
+            ),
+            "spread_regime": str(
+                metadata.get("broker_spread_regime", broker_quality.get("spread_regime", "")) or ""
+            ),
+            "depth_mode": depth_mode,
+            "microstructure_source": str(
+                metadata.get("microstructure_source", market_microstructure.get("microstructure_source", "")) or ""
+            ),
+            "microstructure_pressure": str(
+                market_microstructure.get("pressure_direction", metadata.get("micro_pressure_direction", "")) or ""
+            ).upper(),
         }
 
     @staticmethod
@@ -543,6 +614,28 @@ class SignalJournal:
             metadata.get("memory_sample_count", (memory_entry.data or {}).get("memory_sample_count") if memory_entry else None),
             None,
         )
+        broker_quality = metadata.get("broker_quality")
+        if not isinstance(broker_quality, dict):
+            broker_quality = {}
+        market_microstructure = metadata.get("market_microstructure")
+        if not isinstance(market_microstructure, dict):
+            market_microstructure = {}
+        broker_quality_score = _safe_float(
+            metadata.get("broker_quality_score", broker_quality.get("score")),
+            None,
+        )
+        microstructure_score = _safe_float(
+            metadata.get("microstructure_score", market_microstructure.get("score")),
+            None,
+        )
+        stop_hunt_risk = _safe_float(
+            metadata.get("stop_hunt_risk", market_microstructure.get("stop_hunt_risk")),
+            None,
+        )
+        exhaustion_risk = _safe_float(
+            metadata.get("exhaustion_risk", market_microstructure.get("exhaustion_risk")),
+            None,
+        )
 
         return {
             "final_policy_decision": policy.decision if policy else "",
@@ -564,6 +657,18 @@ class SignalJournal:
             "setup_quality": setup_fingerprint.get("setup_quality"),
             "regime": setup_fingerprint.get("regime", ""),
             "volatility_state": setup_fingerprint.get("volatility_state", ""),
+            "broker_quality_score": round(broker_quality_score, 4) if broker_quality_score is not None else None,
+            "broker_primary_provider": setup_fingerprint.get("primary_provider", ""),
+            "broker_comparison_provider": setup_fingerprint.get("comparison_provider", ""),
+            "broker_agreement_state": setup_fingerprint.get("broker_agreement_state", ""),
+            "broker_quote_quality_state": setup_fingerprint.get("quote_quality_state", ""),
+            "broker_spread_regime": setup_fingerprint.get("spread_regime", ""),
+            "microstructure_score": round(microstructure_score, 4) if microstructure_score is not None else None,
+            "microstructure_pressure": setup_fingerprint.get("microstructure_pressure", ""),
+            "depth_mode": setup_fingerprint.get("depth_mode", "top_of_book"),
+            "microstructure_source": setup_fingerprint.get("microstructure_source", ""),
+            "stop_hunt_risk": round(stop_hunt_risk, 4) if stop_hunt_risk is not None else None,
+            "exhaustion_risk": round(exhaustion_risk, 4) if exhaustion_risk is not None else None,
             "governance_score": governance_score,
             "governance_grade": governance_grade,
             "memory_score": round(memory_score, 1) if memory_score is not None else None,
@@ -657,6 +762,9 @@ class SignalJournal:
             "sentiment": "sentiment",
             "whales": "whale activity",
             "order_flow": "order flow",
+            "broker_quality": "broker quality",
+            "microstructure": "microstructure",
+            "cross_asset": "cross-asset confirmation",
             "memory": "historical setup memory",
             "policy": "policy review",
             "governance": "governance checks",
@@ -698,6 +806,22 @@ class SignalJournal:
                     clauses.append("there is no major news pressure right now")
                 else:
                     clauses.append(f"news is {news_state}")
+            agreement_state = str(summary.get("broker_agreement_state") or "").lower()
+            primary_provider = str(summary.get("broker_primary_provider") or "").strip()
+            comparison_provider = str(summary.get("broker_comparison_provider") or "").strip()
+            if primary_provider and comparison_provider and agreement_state:
+                if agreement_state in {"strong", "aligned"}:
+                    clauses.append(f"{primary_provider} and {comparison_provider} are aligned")
+                elif agreement_state == "divergent":
+                    clauses.append(f"{primary_provider} and {comparison_provider} are showing some price divergence")
+                elif agreement_state == "severe_divergence":
+                    clauses.append(f"{primary_provider} and {comparison_provider} are materially diverging")
+            quote_quality_state = self._humanize_token(summary.get("broker_quote_quality_state"))
+            if quote_quality_state:
+                clauses.append(f"quote quality is {quote_quality_state}")
+            spread_regime = self._humanize_token(summary.get("broker_spread_regime"))
+            if spread_regime:
+                clauses.append(f"spread regime is {spread_regime}")
             sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "market conditions look tradable"
             return f"- Market view: {self._sentence(sentence)}."
 
@@ -708,6 +832,15 @@ class SignalJournal:
                 clauses.append("sentiment is broadly neutral")
             else:
                 clauses.append(f"sentiment is {sentiment_desc}")
+            ig_client_sentiment = data.get("ig_client_sentiment")
+            if isinstance(ig_client_sentiment, dict):
+                bias = str(ig_client_sentiment.get("bias") or "").upper()
+                long_pct = _safe_float(ig_client_sentiment.get("long_pct"), None)
+                short_pct = _safe_float(ig_client_sentiment.get("short_pct"), None)
+                if bias in {"BUY", "SELL"} and long_pct is not None and short_pct is not None:
+                    clauses.append(
+                        f"IG client positioning is {long_pct:.0f}% long versus {short_pct:.0f}% short, leaning {bias.lower()}"
+                    )
             whale_dominant = str(data.get("whale_dominant") or "").upper()
             if whale_dominant in {"BUY", "SELL"}:
                 clauses.append(f"whale flow leans {whale_dominant.lower()}")
@@ -717,6 +850,20 @@ class SignalJournal:
             narrative = self._narrative_label(data.get("narrative"))
             if narrative:
                 clauses.append(f"the main narrative is {narrative}")
+            cross_asset_alignment = _safe_float(data.get("cross_asset_alignment"), None)
+            cross_asset_peer = str(data.get("cross_asset_primary_peer") or "").strip()
+            cross_asset_relation = self._humanize_token(data.get("cross_asset_primary_relation"))
+            if cross_asset_alignment is not None and cross_asset_peer:
+                if cross_asset_alignment >= 0.22:
+                    clauses.append(
+                        f"{cross_asset_peer} is confirming the trade"
+                        f"{f' through {cross_asset_relation}' if cross_asset_relation else ''}"
+                    )
+                elif cross_asset_alignment <= -0.22:
+                    clauses.append(
+                        f"{cross_asset_peer} is conflicting with the trade"
+                        f"{f' through {cross_asset_relation}' if cross_asset_relation else ''}"
+                    )
             sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "intelligence checks were supportive"
             return f"- Flow and sentiment: {self._sentence(sentence)}."
 
@@ -799,6 +946,25 @@ class SignalJournal:
                 clauses.append("the setup stayed above the live execution floor")
             else:
                 clauses.append(self._humanize_reason(entry.reason) or "execution rules blocked the trade")
+            depth_mode = str(summary.get("depth_mode") or "").lower()
+            if depth_mode == "true_depth":
+                clauses.append("true order-book depth is available")
+            elif depth_mode == "synthetic_depth":
+                clauses.append("microstructure is using a synthetic depth proxy")
+            elif summary.get("microstructure_source"):
+                clauses.append("microstructure is running on top-of-book quotes only")
+            pressure = str(summary.get("microstructure_pressure") or "").upper()
+            if pressure in {"BUY", "SELL"}:
+                if pressure == str(self.direction or "").upper():
+                    clauses.append(f"microstructure pressure still leans {pressure.lower()}")
+                else:
+                    clauses.append(f"microstructure pressure leans {pressure.lower()}, so the tape is not fully aligned")
+            stop_hunt_risk = _safe_float(summary.get("stop_hunt_risk"), None)
+            if stop_hunt_risk is not None and stop_hunt_risk >= 0.45:
+                clauses.append("stop-hunt risk is elevated")
+            exhaustion_risk = _safe_float(summary.get("exhaustion_risk"), None)
+            if exhaustion_risk is not None and exhaustion_risk >= 0.42:
+                clauses.append("exhaustion risk is elevated")
             position_size = _safe_float(data.get("position_size"), _safe_float(getattr(signal, "position_size", 0.0), None))
             if position_size is not None and position_size > 0:
                 clauses.append(f"position size is {position_size:.4f}")

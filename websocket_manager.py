@@ -10,6 +10,7 @@ import websockets
 from config.config import DERIV_APP_ID
 from services.binance_market_bridge import binance_market_bridge
 from services.deriv_bridge import deriv_bridge
+from services.market_data_router import filter_deriv_stream_assets, filter_ig_primary_assets
 from utils.logger import logger
 
 _DERIV_PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
@@ -17,10 +18,12 @@ _DERIV_PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 class WebSocketManager:
     """
-    Deriv-first market stream manager with bounded Binance support.
+    Routed market stream manager with Deriv/Binance live streams.
 
-    Deriv remains the live-stream source everywhere it has coverage. Binance is
-    used only for unsupported spot crypto assets such as BNB, SOL, and XRP.
+    Deriv remains the live-stream source for non-IG-routed assets where it has
+    coverage. Binance is used only for unsupported spot crypto assets such as
+    BNB, SOL, and XRP. IG-routed assets are filtered out defensively so this
+    manager cannot silently pull routed commodities back onto Deriv.
     """
 
     def __init__(self):
@@ -71,12 +74,24 @@ class WebSocketManager:
 
         `assets` is a mapping of canonical asset -> category.
         """
+        tracked_assets = filter_deriv_stream_assets(assets or {})
+        skipped_ig_assets = sorted(filter_ig_primary_assets(assets or {}).keys())
+
         with self._lock:
             if callback not in self._callbacks:
                 self._callbacks.append(callback)
-            for asset, category in (assets or {}).items():
+            for asset, category in tracked_assets.items():
                 if asset:
                     self._asset_categories[str(asset)] = str(category or "")
+
+        if skipped_ig_assets:
+            logger.info(
+                f"[WSManager] Skipping IG-routed assets from Deriv stream: {skipped_ig_assets}"
+            )
+
+        if not tracked_assets and not self._asset_categories:
+            logger.info("[WSManager] No Deriv/Binance stream assets to track after routing filters")
+            return
 
         if not self._stream_started:
             self._stream_started = True
@@ -245,6 +260,19 @@ class WebSocketManager:
 
         price = (bid_f + ask_f) / 2.0 if bid_f > 0 and ask_f > 0 else (ask_f if ask_f > 0 else bid_f)
         ts = datetime.now()
+        try:
+            from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+            get_live_microstructure_service().record_quote(
+                "binance",
+                asset,
+                bid=bid_f if bid_f > 0 else None,
+                ask=ask_f if ask_f > 0 else None,
+                price=price,
+                timestamp=ts,
+            )
+        except Exception:
+            pass
         self._binance_degraded_assets[asset] = False
         set_connected("binance", True, len(self._binance_asset_to_symbol))
         for callback in list(self._callbacks):
@@ -294,6 +322,27 @@ class WebSocketManager:
             try:
                 if epoch:
                     ts = datetime.fromtimestamp(float(epoch))
+            except Exception:
+                pass
+
+            try:
+                bid = float(tick.get("bid", 0) or 0)
+                ask = float(tick.get("ask", 0) or 0)
+            except Exception:
+                bid = 0.0
+                ask = 0.0
+
+            try:
+                from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+                get_live_microstructure_service().record_quote(
+                    "deriv",
+                    asset,
+                    bid=bid if bid > 0 else None,
+                    ask=ask if ask > 0 else None,
+                    price=price,
+                    timestamp=ts,
+                )
             except Exception:
                 pass
 

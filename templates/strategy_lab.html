@@ -266,6 +266,22 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
         </div>
       </div>
 
+      <div class="panel" style="animation-delay:.045s;width:100%">
+        <div class="panel-header">
+          <span>🧬</span>
+          <span class="panel-title">Bench Topology</span>
+          <span class="panel-badge" id="benchBadge">Loading…</span>
+        </div>
+        <div class="panel-body">
+          <div class="snapshot-grid" id="benchGrid">
+            <div class="snapshot-card"><div class="snapshot-kicker">Active</div><div class="snapshot-value">—</div><div class="snapshot-note">Loading…</div></div>
+            <div class="snapshot-card"><div class="snapshot-kicker">Archived</div><div class="snapshot-value">—</div><div class="snapshot-note">Loading…</div></div>
+            <div class="snapshot-card"><div class="snapshot-kicker">Runtime</div><div class="snapshot-value">—</div><div class="snapshot-note">Loading…</div></div>
+            <div class="snapshot-card"><div class="snapshot-kicker">Auto Live</div><div class="snapshot-value">—</div><div class="snapshot-note">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Control Panel -->
       <div class="panel control-panel" style="animation-delay:.05s;width:100%">
         <div class="mode-tabs">
@@ -311,13 +327,10 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
               <label class="form-label">Strategy</label>
               <select id="btStrategy">
                 <optgroup label="Lab Presets" id="labOptgroup"></optgroup>
-                <optgroup label="Live Strategies">
-                  <option value="voting">Voting (Your Live)</option>
-                  <option value="rsi">RSI Strategy</option>
-                  <option value="macd">MACD Strategy</option>
-                  <option value="bollinger">Bollinger Strategy</option>
-                </optgroup>
               </select>
+              <div id="btStrategyHint" style="font-size:11px;color:var(--tx3);margin-top:7px">
+                Strategy Lab backtests the active research bench only. Live runtime stays on policy_agent.
+              </div>
             </div>
             <div class="form-group">
               <label class="form-label">Historical Bars</label>
@@ -356,7 +369,7 @@ select:focus,input[type=number]:focus{border-color:var(--bl)}
                 <option value="20000">20000 closed bars</option>
               </select>
             </div>
-            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs every registered lab preset on the selected asset, then research-validates the strongest candidate automatically.</p>
+            <p style="font-size:11px;color:var(--tx3);margin-bottom:12px">Runs every active research preset on the selected asset, then research-validates the strongest candidate automatically.</p>
             <button class="btn btn-primary btn-full" id="cmpBtn" onclick="runCompare()">
               <span>⚖</span> Compare All Strategies
             </button>
@@ -578,6 +591,9 @@ async function loadStrategies() {
     const automation = page.automation || {};
     const perfSummary = performance.summary || {};
     const presets = strategyList.presets || [];
+    const archivedPresets = strategyList.archived_presets || [];
+    const liveRuntime = strategyList.live_runtime || [];
+    const autoEntries = automation.auto_live_entries || [];
     const liveStrategies = performance.strategies || {};
     const liveNames = Object.keys(liveStrategies);
     const labOpt  = document.getElementById('labOptgroup');
@@ -591,13 +607,23 @@ async function loadStrategies() {
 
     document.getElementById('snapPresets').textContent = presets.length || 0;
     document.getElementById('snapLiveStrategies').textContent = liveNames.length || 0;
+    const btStrategyHint = document.getElementById('btStrategyHint');
+    if(btStrategyHint){
+      const runtimeLabel = liveRuntime.length ? liveRuntime.join(', ') : 'policy_agent';
+      btStrategyHint.textContent =
+        `Strategy Lab backtests ${presets.length} active research presets. `
+        + `${archivedPresets.length} archived presets are hidden. `
+        + `Live runtime stays on ${runtimeLabel}.`;
+    }
 
     const liveTradeCount = liveNames.reduce((sum, name) => sum + Number(liveStrategies[name]?.total || 0), 0);
     document.getElementById('snapLiveTrades').textContent = liveTradeCount || 0;
     if(liveTradeCount){
       document.getElementById('labBadge').textContent = `Exec ${Number(perfSummary.avg_execution_quality || 0).toFixed(0)} · ${liveTradeCount} live outcomes`;
     }else{
-      document.getElementById('labBadge').textContent = presets.length ? (presets.length + ' presets loaded') : 'No presets';
+      document.getElementById('labBadge').textContent = presets.length
+        ? `${presets.length} active · ${archivedPresets.length} archived`
+        : 'No presets';
     }
 
     let bestName = '';
@@ -618,6 +644,39 @@ async function loadStrategies() {
     document.getElementById('snapBestNote').textContent = bestName
       ? `Avg trade ${formatCompactUsd(bestScore)} · Mem ${Number(bestStrategy.avg_memory_score || 0).toFixed(0)} · Exec ${Number(bestStrategy.avg_execution_quality || 0).toFixed(0)}`
       : 'Waiting for performance data';
+    document.getElementById('benchBadge').textContent = `${presets.length} active / ${archivedPresets.length} archived`;
+    document.getElementById('benchGrid').innerHTML = [
+      {
+        kicker: 'Active Presets',
+        value: presets.length || 0,
+        note: presets.length ? presets.slice(0, 3).join(', ') + (presets.length > 3 ? '…' : '') : 'No active research presets',
+        klass: 'pu',
+      },
+      {
+        kicker: 'Archived Presets',
+        value: archivedPresets.length || 0,
+        note: archivedPresets.length ? archivedPresets.slice(0, 2).join(', ') + (archivedPresets.length > 2 ? '…' : '') : 'No archived presets',
+        klass: archivedPresets.length ? 'am' : 'cy',
+      },
+      {
+        kicker: 'Live Runtime',
+        value: liveRuntime.length ? liveRuntime.join(', ') : 'policy_agent',
+        note: 'Strategy Lab research does not replace the live runtime engine automatically',
+        klass: 'cy',
+      },
+      {
+        kicker: 'Auto Live Set',
+        value: autoEntries.length || 0,
+        note: autoEntries.length ? autoEntries.map(e => e.name || 'unknown').slice(0, 2).join(', ') + (autoEntries.length > 2 ? '…' : '') : 'No auto-promoted live strategies',
+        klass: autoEntries.length ? 'gn' : 'bl',
+      },
+    ].map(item => `
+      <div class="snapshot-card">
+        <div class="snapshot-kicker">${item.kicker}</div>
+        <div class="snapshot-value ${item.klass}">${item.value}</div>
+        <div class="snapshot-note">${item.note}</div>
+      </div>
+    `).join('');
     renderAutoResearch(automation);
     updateStrategyOptions();
   } catch(e) {}

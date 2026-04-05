@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import sys
 
+from core.assets import registry
+
 SCREENING_RESEARCH_PROFILE = "standard"
 FINAL_RESEARCH_PROFILE = "deep"
 RESEARCH_SHORTLIST = 3
@@ -18,27 +20,12 @@ def _header(title: str) -> None:
     print("=" * 70)
 
 
+def _asset_universe() -> list[tuple[str, str]]:
+    return list(registry.all_assets())
+
+
 def _pick_asset() -> tuple:
-    assets = [
-        ("BTC-USD", "crypto"),
-        ("ETH-USD", "crypto"),
-        ("SOL-USD", "crypto"),
-        ("XRP-USD", "crypto"),
-        ("BNB-USD", "crypto"),
-        ("EUR/USD", "forex"),
-        ("EUR/JPY", "forex"),
-        ("GBP/USD", "forex"),
-        ("GBP/JPY", "forex"),
-        ("USD/JPY", "forex"),
-        ("AUD/USD", "forex"),
-        ("USD/CAD", "forex"),
-        ("XAU/USD", "commodities"),
-        ("XAG/USD", "commodities"),
-        ("US30", "indices"),
-        ("US100", "indices"),
-        ("US500", "indices"),
-        ("UK100", "indices"),
-    ]
+    assets = _asset_universe()
     print()
     for i, (asset, cat) in enumerate(assets, 1):
         print(f"  {i:2}. {asset:12}  ({cat})")
@@ -366,13 +353,12 @@ def run_all_presets() -> None:
         print("  No research-valid winner: shortlisted strategies did not meet the minimum trade evidence requirement.")
 
 
-# ── Option 2 — Lab presets vs existing strategies ─────────────────────────────
+# ── Option 2 — Active research preset comparison ──────────────────────────────
 
 def compare_all() -> None:
     from strategy_lab import run_backtest, StrategyBuilder
-    from strategy_lab.strategy_adapter import compare_all_strategies_from_asset
 
-    _header("LAB PRESETS vs YOUR EXISTING STRATEGIES")
+    _header("ACTIVE LAB RESEARCH PRESETS")
     asset, category = _pick_asset()
     timeframe, periods, snapshot_end = _lab_window(category)
     print(
@@ -380,8 +366,9 @@ def compare_all() -> None:
         f" using {periods} closed {timeframe} bars through {snapshot_end.strftime('%Y-%m-%d %H:%M UTC')} — please wait...\n"
     )
 
-    print("  LAB PRESETS")
+    print("  ACTIVE RESEARCH PRESETS")
     print("  " + "-" * 66)
+    print("  Archived presets and legacy wrapper strategies are excluded from this comparison.\n")
     candidates: list[tuple[str, dict, object]] = []
     for name, config in StrategyBuilder.all_configs().items():
         try:
@@ -399,24 +386,6 @@ def compare_all() -> None:
         end_time=snapshot_end,
         profile=SCREENING_RESEARCH_PROFILE,
     )
-
-    print()
-    print("  YOUR EXISTING STRATEGIES")
-    print("  " + "-" * 66)
-    try:
-        existing = compare_all_strategies_from_asset(asset, category, periods=periods, end_time=snapshot_end)
-        for r in existing:
-            print(
-                f"  {r['label']:35}  "
-                f"Sharpe={r['sharpe']:+6.2f}  "
-                f"WinRate={r['win_rate']:5.1%}  "
-                f"PnL={r['total_pnl']:+8.2f}  "
-                f"MaxDD={r['max_drawdown']:5.1%}  "
-                f"Trades={r['trades']:3}  "
-                f"Research=legacy"
-            )
-    except Exception as e:
-        print(f"  Could not run existing strategies: {e}")
 
     best = _best_by_research(research_rows)
     if best:
@@ -597,16 +566,7 @@ def multi_asset_test() -> None:
     chosen_name = strategies[choice - 1]
     chosen_config = StrategyBuilder.all_configs()[chosen_name]
 
-    test_assets = [
-        ("BTC-USD", "crypto"),
-        ("ETH-USD", "crypto"),
-        ("SOL-USD", "crypto"),
-        ("EUR/USD", "forex"),
-        ("GBP/USD", "forex"),
-        ("USD/JPY", "forex"),
-        ("XAU/USD", "commodities"),
-        ("US30", "indices"),
-    ]
+    test_assets = _asset_universe()
 
     print(f"\n  Testing {chosen_name} across {len(test_assets)} assets with category-aware research windows...\n")
 
@@ -690,17 +650,7 @@ def full_report() -> None:
 
     _header("FULL REPORT — ALL PRESETS ON ALL YOUR ASSETS")
 
-    assets = [
-        ("BTC-USD", "crypto"),
-        ("ETH-USD", "crypto"),
-        ("EUR/JPY", "forex"),
-        ("EUR/USD", "forex"),
-        ("GBP/USD", "forex"),
-        ("GBP/JPY", "forex"),
-        ("XAU/USD", "commodities"),
-        ("US30", "indices"),
-        ("US500", "indices"),
-    ]
+    assets = _asset_universe()
 
     configs = StrategyBuilder.all_configs()
     best_overall = []

@@ -111,6 +111,7 @@ class SentimentService:
     def _commodity_sentiment(self, asset: str) -> Dict:
         components: Dict[str, float] = {}
         weights   : Dict[str, float] = {}
+        ig_client_sentiment: Optional[Dict[str, Any]] = None
 
         # 1. Price momentum — most reliable for commodities
         pm = _PriceMomentum.get(asset)
@@ -146,7 +147,16 @@ class SentimentService:
                 v_score = -v_score * 0.7
             components["vix"] = v_score
             weights["vix"]    = 0.15
-        return self._build_result(components, weights)
+
+        ig_client_sentiment = self._ig_client_sentiment(asset)
+        if ig_client_sentiment:
+            components["ig_client_sentiment"] = float(ig_client_sentiment.get("score", 0.0) or 0.0)
+            weights["ig_client_sentiment"] = 0.10
+
+        result = self._build_result(components, weights)
+        if ig_client_sentiment:
+            result["ig_client_sentiment"] = dict(ig_client_sentiment)
+        return result
 
     def _forex_sentiment(self, asset: str) -> Dict:
         components: Dict[str, float] = {}
@@ -262,6 +272,16 @@ class SentimentService:
         if score is None:
             return None
         return {"score": score, "total_posts": 0, "asset": asset}
+
+    @staticmethod
+    def _ig_client_sentiment(asset: str) -> Optional[Dict[str, Any]]:
+        try:
+            from services.market_data_router import get_client_sentiment
+
+            data = get_client_sentiment(asset, category="commodities")
+            return data if isinstance(data, dict) and data else None
+        except Exception:
+            return None
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

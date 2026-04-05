@@ -17,6 +17,18 @@ DERIV_ENABLED         = os.getenv("DERIV_ENABLED", "true").lower() == "true"
 DERIV_APP_ID          = os.getenv("DERIV_APP_ID", "").strip()
 DERIV_TOKEN           = os.getenv("DERIV_TOKEN", "").strip()
 DERIV_SYMBOL_MAP      = os.getenv("DERIV_SYMBOL_MAP", "")
+IG_ENABLED            = os.getenv("IG_ENABLED", "false").lower() == "true"
+IG_ENVIRONMENT        = os.getenv("IG_ENVIRONMENT", "demo").strip().lower() or "demo"
+IG_API_KEY            = os.getenv("IG_API_KEY", "").strip()
+IG_IDENTIFIER         = os.getenv("IG_IDENTIFIER", "").strip()
+IG_PASSWORD           = os.getenv("IG_PASSWORD", "").strip()
+IG_ACCOUNT_ID         = os.getenv("IG_ACCOUNT_ID", "").strip()
+IG_EPIC_MAP           = os.getenv("IG_EPIC_MAP", "").strip()
+IG_ROUTED_CATEGORIES  = [
+    item.strip().lower()
+    for item in os.getenv("IG_ROUTED_CATEGORIES", "commodities").split(",")
+    if item.strip()
+]
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
 EIA_API_KEY           = os.getenv("EIA_API_KEY", "")
 
@@ -439,6 +451,9 @@ GOVERNANCE_MIN_ML_CONFIDENCE = float(os.getenv("GOVERNANCE_MIN_ML_CONFIDENCE", "
 GOVERNANCE_MIN_RISK_REWARD = float(os.getenv("GOVERNANCE_MIN_RISK_REWARD", "1.5"))
 GOVERNANCE_MIN_REAL_SOURCES = int(os.getenv("GOVERNANCE_MIN_REAL_SOURCES", "3"))
 GOVERNANCE_REQUIRE_MODEL_RESEARCH = os.getenv("GOVERNANCE_REQUIRE_MODEL_RESEARCH", "true").lower() == "true"
+GOVERNANCE_ALLOW_PROVISIONAL_MODEL_RESEARCH_IN_PAPER = (
+    os.getenv("GOVERNANCE_ALLOW_PROVISIONAL_MODEL_RESEARCH_IN_PAPER", "true").lower() == "true"
+)
 GOVERNANCE_REQUIRE_NON_DELAYED_PRICE = os.getenv("GOVERNANCE_REQUIRE_NON_DELAYED_PRICE", "true").lower() == "true"
 GOVERNANCE_REQUIRE_NON_DELAYED_OHLCV = os.getenv("GOVERNANCE_REQUIRE_NON_DELAYED_OHLCV", "true").lower() == "true"
 GOVERNANCE_ENABLE_FOREX_FILTER = os.getenv("GOVERNANCE_ENABLE_FOREX_FILTER", "true").lower() == "true"
@@ -465,7 +480,7 @@ FOREX_FILTER_MAX_SPREAD_BPS = float(os.getenv("FOREX_FILTER_MAX_SPREAD_BPS", "1.
 FOREX_FILTER_BOOTSTRAP_MAX_SPREAD_BPS = float(os.getenv("FOREX_FILTER_BOOTSTRAP_MAX_SPREAD_BPS", "2.0"))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ASSET UNIVERSE — your 18 assets only
+# ASSET UNIVERSE — your 19 assets
 # These lists are used by sentiment, intelligence, and other
 # services that need to know which assets to track.
 # The canonical trading registry lives in core/assets.py
@@ -484,6 +499,7 @@ CRYPTOCURRENCIES: list = [
 COMMODITIES: list = [
     "XAU/USD",  # Gold
     "XAG/USD",  # Silver
+    "WTI",      # WTI Crude Oil
 ]
 
 INDICES: list = [

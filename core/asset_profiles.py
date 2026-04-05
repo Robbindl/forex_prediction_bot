@@ -21,6 +21,7 @@ INDEX_ASSETS: FrozenSet[str] = US_INDEX_ASSETS | UK_INDEX_ASSETS
 COMMODITY_ASSETS: FrozenSet[str] = frozenset({
     "XAU/USD",  # Gold
     "XAG/USD",  # Silver
+    "WTI",      # WTI Crude Oil
 })
 
 CRYPTO_ASSETS: FrozenSet[str] = frozenset({

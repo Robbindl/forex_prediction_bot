@@ -45,6 +45,7 @@ def main():
         all_ok &= check("TRADING_TIMEFRAME=15m" in env_content, "TRADING_TIMEFRAME=15m configured")
         all_ok &= check("deriv_enabled=true" in env_content.lower(), "DERIV_ENABLED=true configured")
         all_ok &= check("DERIV_APP_ID=" in env_content, "DERIV_APP_ID present in .env")
+        all_ok &= check("IG_API_KEY=" in env_content, "IG_API_KEY present in .env")
         all_ok &= check("BINANCE_PUBLIC_DATA_ENABLED=true" in env_content, "BINANCE_PUBLIC_DATA_ENABLED=true configured")
         all_ok &= check("DAILY_LOSS_LIMIT_PERCENT=35.0" in env_content, "DAILY_LOSS_LIMIT_PERCENT=35.0 configured")
         all_ok &= check("DRAWDOWN_HALT_PERCENT=40.0" in env_content, "DRAWDOWN_HALT_PERCENT=40.0 configured")
@@ -53,50 +54,33 @@ def main():
         all_ok &= check("TIMEFRAMES=1m,5m,15m,30m,1h,4h,1d" in env_content, "TIMEFRAMES include 30m and 4h")
         all_ok &= check("TZ_OFFSET_HOURS=3" in env_content, "TZ_OFFSET_HOURS=3 configured")
     
-    # Check 2: Strategy parameters
-    print("\n2. STRATEGY PARAMETERS")
+    # Check 2: Strategy runtime model
+    print("\n2. STRATEGY RUNTIME")
     print("-" * 70)
-    
+
     try:
-        from strategies.rsi import RSIStrategy
-        rsi = RSIStrategy()
-        all_ok &= check(rsi.period == 8, f"RSI period=8 (fast response) [actual: {rsi.period}]")
-        all_ok &= check(rsi.oversold == 28, f"RSI oversold=28 [actual: {rsi.oversold}]")
-        all_ok &= check(rsi.overbought == 72, f"RSI overbought=72 [actual: {rsi.overbought}]")
+        from strategy_lab.strategy_builder import StrategyBuilder
+
+        active = StrategyBuilder.all_configs()
+        archived = StrategyBuilder.archived_configs()
+        all_ok &= check(len(active) == 9, f"Strategy Lab active bench trimmed to 9 presets [actual: {len(active)}]")
+        all_ok &= check("golden_cross" not in active, "Golden Cross removed from active research bench")
+        all_ok &= check("rsi_scalper" not in active, "RSI scalper removed from active research bench")
+        all_ok &= check("stoch_trend" not in active, "Stochastic trend preset removed from active research bench")
+        all_ok &= check(len(archived) == 6, f"Archived preset bench has 6 entries [actual: {len(archived)}]")
     except Exception as e:
-        all_ok &= check(False, f"RSI strategy load failed: {e}")
-    
+        all_ok &= check(False, f"Strategy bench validation failed: {e}")
+
     try:
-        from strategies.macd import MACDStrategy
-        macd = MACDStrategy()
-        all_ok &= check(macd.signal == 6, f"MACD signal=6 (fast crosses) [actual: {macd.signal}]")
-        all_ok &= check(macd.fast == 12, f"MACD fast=12 [actual: {macd.fast}]")
+        engine_content = Path("core/engine.py").read_text(encoding="utf-8")
+        all_ok &= check("strategy_id=\"policy_agent\"" in engine_content, "Live runtime remains policy_agent-based")
     except Exception as e:
-        all_ok &= check(False, f"MACD strategy load failed: {e}")
-    
-    try:
-        from strategies.bollinger import BollingerStrategy
-        bb = BollingerStrategy()
-        all_ok &= check(bb.period == 20, f"BB period=20 (perfect for 15m) [actual: {bb.period}]")
-    except Exception as e:
-        all_ok &= check(False, f"Bollinger strategy load failed: {e}")
-    
-    # Check 3: Voting confidence
-    print("\n3. ENSEMBLE VOTING")
+        all_ok &= check(False, f"Policy agent runtime check failed: {e}")
+
+    # Check 3: News event blocking
+    print("\n3. NEWS EVENT BLOCKING (15m-friendly)")
     print("-" * 70)
-    
-    try:
-        from strategies.voting import VotingStrategy
-        voting = VotingStrategy()
-        all_ok &= check(voting.min_confidence == 0.58, f"Voting min_confidence=0.58 [actual: {voting.min_confidence}]")
-        all_ok &= check(voting.min_votes == 1, f"Voting accepts single strong signal [min_votes: {voting.min_votes}]")
-    except Exception as e:
-        all_ok &= check(False, f"Voting strategy load failed: {e}")
-    
-    # Check 4: News event blocking
-    print("\n4. NEWS EVENT BLOCKING (15m-friendly)")
-    print("-" * 70)
-    
+
     try:
         from data_ingestion.news_event_monitor import PRE_EVENT_MINS, ACTIVE_MINS, POST_EVENT_MINS
         all_ok &= check(PRE_EVENT_MINS == 10, f"PRE_EVENT_MINS=10 (vs 60) allows trading [actual: {PRE_EVENT_MINS}]")
@@ -105,15 +89,15 @@ def main():
     except Exception as e:
         all_ok &= check(False, f"News event monitor load failed: {e}")
     
-    # Check 5: Database and state
-    print("\n5. CORE INFRASTRUCTURE")
+    # Check 4: Database and state
+    print("\n4. CORE INFRASTRUCTURE")
     print("-" * 70)
     
     db_ok = Path("trading_data.db").exists() or Path("data/system_state.json").exists()
     print(f"{YELLOW}{INFO_MARK}{RESET} Database state: {'exists' if db_ok else 'will be created on startup'}")
     
-    # Check 6: Optimal assets
-    print("\n6. ASSET CONFIGURATION")
+    # Check 5: Optimal assets
+    print("\n5. ASSET CONFIGURATION")
     print("-" * 70)
     
     try:
@@ -130,12 +114,12 @@ def main():
         all_ok &= check(assets["commodities"] >= 2, f"Commodities: {assets['commodities']}")
         all_ok &= check(assets["indices"] >= 4, f"Indices: {assets['indices']}")
         
-        print(f"{YELLOW}{INFO_MARK}{RESET} Total assets: {sum(assets.values())} (recommended: 18)")
+        print(f"{YELLOW}{INFO_MARK}{RESET} Total assets: {sum(assets.values())} (expected: 19)")
     except Exception as e:
         all_ok &= check(False, f"Asset config load failed: {e}")
     
-    # Check 7: Key files exist
-    print("\n7. CRITICAL FILES")
+    # Check 6: Key files exist
+    print("\n6. CRITICAL FILES")
     print("-" * 70)
     
     critical_files = [
@@ -155,10 +139,10 @@ def main():
         print(f"{GREEN}{OK_MARK} ALL CHECKS PASSED!{RESET}")
         print("\nYou're ready to run the current market-data stack. Next steps:")
         print("  1. Verify DERIV_APP_ID / DERIV_SYMBOL_MAP in .env")
-        print("  2. Verify BINANCE_PUBLIC_DATA_ENABLED=true for BNB/SOL/XRP fallback")
-        print("  3. Run: python bot.py --no-telegram")
-        print("  4. Monitor paper trades for 3 days")
-        print("  5. Review DEPLOYMENT_GUIDE.md for full guide")
+        print("  2. Verify IG_API_KEY / IG_IDENTIFIER / IG_PASSWORD for commodity routing")
+        print("  3. Verify BINANCE_PUBLIC_DATA_ENABLED=true for BNB/SOL/XRP fallback")
+        print("  4. Run: python bot.py --no-telegram")
+        print("  5. Monitor paper trades for 3 days")
         return 0
     else:
         print(f"{RED}{FAIL_MARK} SOME CHECKS FAILED!{RESET}")

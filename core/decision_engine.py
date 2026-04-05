@@ -17,7 +17,7 @@ from config.config import (
 from core.asset_profiles import get_profile
 from core.signal import Signal
 from core.signal_journal import INFO, KILLED, PASS
-from services.signal_intelligence import apply_sentiment_review, apply_whale_review
+from services.signal_intelligence import apply_cross_asset_review, apply_sentiment_review, apply_whale_review
 from utils.logger import get_logger
 
 try:
@@ -125,11 +125,11 @@ def _market_status_for_signal(signal: Signal, context: Dict[str, Any]) -> tuple[
     asset = str(signal.canonical_asset or signal.asset or "").strip()
     if asset:
         try:
-            from services.deriv_bridge import deriv_bridge
+            from services.market_data_router import get_market_status
 
-            status = deriv_bridge.get_market_status(asset, category=signal.category)
+            status = get_market_status(asset, category=signal.category)
             if status and "market_open" in status:
-                return bool(status["market_open"]), str(status.get("reason", "Deriv market status"))
+                return bool(status["market_open"]), str(status.get("reason", "market status"))
         except Exception:
             pass
 
@@ -266,24 +266,107 @@ class SignalDecisionEngine:
         signal.metadata["observed_spread_pct"] = round(spread_pct, 6)
         data["spread_pct"] = round(spread_pct, 5)
 
+        broker_quality = context.get("broker_quality") or {}
+        if isinstance(broker_quality, dict) and broker_quality:
+            try:
+                broker_score = float(broker_quality.get("score", 0.0) or 0.0)
+                agreement_state = str(broker_quality.get("quote_agreement_state", "unconfirmed") or "unconfirmed")
+                agreement_score = broker_quality.get("quote_agreement_score")
+                spread_regime = str(broker_quality.get("spread_regime", "unknown") or "unknown")
+                quote_quality_state = str(broker_quality.get("quote_quality_state", "unknown") or "unknown")
+                market_state = str(broker_quality.get("market_state", "unknown") or "unknown")
+                transition_risk = float(broker_quality.get("market_transition_risk", 0.0) or 0.0)
+                fallback_active = bool(broker_quality.get("fallback_active"))
+
+                signal.metadata["broker_quality"] = dict(broker_quality)
+                signal.metadata["broker_quality_score"] = round(broker_score, 4)
+                signal.metadata["broker_agreement_state"] = agreement_state
+                signal.metadata["broker_spread_regime"] = spread_regime
+                signal.metadata["broker_quote_quality_state"] = quote_quality_state
+                signal.metadata["broker_market_state"] = market_state
+                data["broker_quality"] = {
+                    "score": round(broker_score, 4),
+                    "primary_provider": broker_quality.get("primary_provider"),
+                    "comparison_provider": broker_quality.get("comparison_provider"),
+                    "agreement_state": agreement_state,
+                    "agreement_score": round(float(agreement_score), 4) if agreement_score is not None else None,
+                    "spread_regime": spread_regime,
+                    "quote_quality_state": quote_quality_state,
+                    "market_state": market_state,
+                    "market_state_transition": broker_quality.get("market_state_transition", ""),
+                    "market_transition_risk": round(transition_risk, 4),
+                    "fallback_active": fallback_active,
+                }
+
+                if agreement_state in {"strong", "aligned"}:
+                    notes.append("broker_confirmed")
+                elif agreement_state == "divergent":
+                    notes.append("broker_divergence")
+                elif agreement_state == "severe_divergence":
+                    notes.append("broker_severe_divergence")
+
+                if spread_regime in {"wide", "stressed", "extreme"}:
+                    notes.append(f"spread_{spread_regime}")
+                if quote_quality_state in {"aging", "stale", "delayed"}:
+                    notes.append(f"quote_{quote_quality_state}")
+                if broker_quality.get("market_state_changed"):
+                    notes.append("market_state_changed")
+                if transition_risk >= 0.65:
+                    notes.append("market_transition_risk")
+                if fallback_active:
+                    notes.append("provider_fallback_active")
+            except Exception:
+                pass
+
         micro = context.get("market_microstructure") or {}
         if isinstance(micro, dict) and micro:
             try:
                 micro_score = float(micro.get("score", 0.0) or 0.0)
                 stop_hunt_risk = float(micro.get("stop_hunt_risk", 0.0) or 0.0)
+                exhaustion_risk = float(micro.get("exhaustion_risk", 0.0) or 0.0)
+                tick_imbalance = float(micro.get("tick_imbalance", 0.0) or 0.0)
+                book_imbalance = float(micro.get("book_imbalance", 0.0) or 0.0)
+                velocity_bps = float(micro.get("velocity_bps", 0.0) or 0.0)
                 aligned_micro = micro_score if signal.direction == "BUY" else -micro_score
+                aligned_book = book_imbalance if signal.direction == "BUY" else -book_imbalance
+                aligned_tick = tick_imbalance if signal.direction == "BUY" else -tick_imbalance
+                aligned_velocity = velocity_bps if signal.direction == "BUY" else -velocity_bps
                 signal.metadata["market_microstructure"] = dict(micro)
                 signal.metadata["microstructure_score"] = round(micro_score, 3)
                 signal.metadata["stop_hunt_risk"] = round(stop_hunt_risk, 3)
+                signal.metadata["exhaustion_risk"] = round(exhaustion_risk, 3)
                 signal.metadata["microstructure_alignment"] = round(aligned_micro, 3)
+                signal.metadata["tick_imbalance"] = round(tick_imbalance, 4)
+                signal.metadata["book_imbalance"] = round(book_imbalance, 4)
+                signal.metadata["velocity_bps"] = round(velocity_bps, 4)
+                signal.metadata["depth_available"] = bool(micro.get("depth_available"))
+                signal.metadata["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
+                signal.metadata["microstructure_source"] = str(micro.get("microstructure_source") or "")
                 data["microstructure_score"] = round(micro_score, 3)
                 data["stop_hunt_risk"] = round(stop_hunt_risk, 3)
+                data["exhaustion_risk"] = round(exhaustion_risk, 3)
+                data["tick_imbalance"] = round(tick_imbalance, 4)
+                data["book_imbalance"] = round(book_imbalance, 4)
+                data["velocity_bps"] = round(velocity_bps, 4)
+                data["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
                 if stop_hunt_risk >= 0.45:
                     notes.append("stop_hunt_penalty")
+                if exhaustion_risk >= 0.42:
+                    notes.append("micro_exhaustion")
+                if micro.get("synthetic_depth_available"):
+                    notes.append("synthetic_depth_proxy")
                 if aligned_micro >= 0.20:
                     notes.append("micro_boost")
                 elif aligned_micro <= -0.20:
                     notes.append("micro_penalty")
+                if aligned_book >= 0.18:
+                    notes.append("book_pressure_support")
+                elif aligned_book <= -0.18:
+                    notes.append("book_pressure_conflict")
+                if aligned_tick >= 0.22 and aligned_velocity > 0:
+                    notes.append("micro_momentum_support")
+                elif aligned_tick <= -0.22 and aligned_velocity < 0:
+                    notes.append("micro_momentum_conflict")
             except Exception:
                 pass
 
@@ -484,12 +567,18 @@ class SignalDecisionEngine:
         conf_before = signal.confidence
         sentiment = apply_sentiment_review(signal, context)
         whale = apply_whale_review(signal, context)
+        cross_asset = apply_cross_asset_review(signal, context)
         signal.step_reached = STEP_INTELLIGENCE
         signal.journal.record(
             layer=STEP_INTELLIGENCE,
             name="intelligence",
             decision=PASS,
-            reason=f"sentiment={float(sentiment.get('score', 0.0)):+.3f} whale={whale.get('dominant', 'n/a')} sources={len(sentiment.get('sources', []))}",
+            reason=(
+                f"sentiment={float(sentiment.get('score', 0.0)):+.3f} "
+                f"whale={whale.get('dominant', 'n/a')} "
+                f"cross={float(cross_asset.get('alignment', 0.0)):+.3f} "
+                f"sources={len(sentiment.get('sources', []))}"
+            ),
             conf_before=conf_before,
             conf_after=signal.confidence,
             data={
@@ -498,6 +587,14 @@ class SignalDecisionEngine:
                 "narrative": sentiment.get("dominant_narrative", ""),
                 "whale_dominant": whale.get("dominant"),
                 "whale_ratio": whale.get("ratio"),
+                "cross_asset_score": cross_asset.get("score"),
+                "cross_asset_alignment": cross_asset.get("alignment"),
+                "cross_asset_confidence": cross_asset.get("confidence"),
+                "cross_asset_state": cross_asset.get("state"),
+                "cross_asset_supportive_direction": cross_asset.get("supportive_direction"),
+                "cross_asset_primary_peer": cross_asset.get("dominant_peer"),
+                "cross_asset_primary_relation": cross_asset.get("dominant_relation"),
+                "cross_asset_peers": cross_asset.get("peers", []),
                 "market_intel_sources": signal.metadata.get("market_intelligence_sources", []),
             },
         )

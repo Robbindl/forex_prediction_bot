@@ -19,6 +19,57 @@ from utils.logger import logger
 # PersonalityDatabase — all DB reads and writes for the personality system
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+def _trim_broker_quality(meta: Dict[str, Any]) -> Dict[str, Any]:
+    raw = meta.get("broker_quality")
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    return {
+        "score": round(float(raw.get("score", 0.0) or 0.0), 4),
+        "primary_provider": str(raw.get("primary_provider") or ""),
+        "comparison_provider": str(raw.get("comparison_provider") or ""),
+        "quote_agreement_state": str(raw.get("quote_agreement_state") or ""),
+        "spread_regime": str(raw.get("spread_regime") or ""),
+        "quote_quality_state": str(raw.get("quote_quality_state") or ""),
+        "market_state": str(raw.get("market_state") or ""),
+        "market_state_transition": str(raw.get("market_state_transition") or ""),
+        "market_transition_risk": round(float(raw.get("market_transition_risk", 0.0) or 0.0), 4),
+        "fallback_active": bool(raw.get("fallback_active")),
+    }
+
+
+def _trim_market_microstructure(meta: Dict[str, Any]) -> Dict[str, Any]:
+    raw = meta.get("market_microstructure")
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    return {
+        "score": round(float(raw.get("score", 0.0) or 0.0), 4),
+        "tick_imbalance": round(float(raw.get("tick_imbalance", 0.0) or 0.0), 4),
+        "book_imbalance": round(float(raw.get("book_imbalance", 0.0) or 0.0), 4),
+        "velocity_bps": round(float(raw.get("velocity_bps", 0.0) or 0.0), 4),
+        "spread_bps": round(float(raw.get("spread_bps", 0.0) or 0.0), 4),
+        "spread_stress": round(float(raw.get("spread_stress", 0.0) or 0.0), 4),
+        "stop_hunt_risk": round(float(raw.get("stop_hunt_risk", 0.0) or 0.0), 4),
+        "exhaustion_risk": round(float(raw.get("exhaustion_risk", 0.0) or 0.0), 4),
+        "depth_available": bool(raw.get("depth_available")),
+        "synthetic_depth_available": bool(raw.get("synthetic_depth_available")),
+        "microstructure_source": str(raw.get("microstructure_source") or ""),
+    }
+
+
+def _trim_cross_asset_context(meta: Dict[str, Any]) -> Dict[str, Any]:
+    raw = meta.get("cross_asset_context")
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    return {
+        "score": round(float(raw.get("score", 0.0) or 0.0), 4),
+        "confidence": round(float(raw.get("confidence", 0.0) or 0.0), 4),
+        "state": str(raw.get("state") or ""),
+        "supportive_direction": str(raw.get("supportive_direction") or ""),
+        "dominant_peer": str(raw.get("dominant_peer") or ""),
+        "dominant_relation": str(raw.get("dominant_relation") or ""),
+    }
+
 class PersonalityDatabase:
     """Thread-safe wrapper around the personality DB tables.
     Uses per-call sessions (context manager pattern) instead of a permanent
@@ -97,6 +148,12 @@ class PersonalityDatabase:
                 setup_memory = meta.get("setup_memory")
                 if not isinstance(setup_memory, dict):
                     setup_memory = {}
+                broker_quality = _trim_broker_quality(meta)
+                market_microstructure = _trim_market_microstructure(meta)
+                cross_asset_context = _trim_cross_asset_context(meta)
+                entry_diagnostics = review.get("entry_diagnostics") if isinstance(review, dict) else {}
+                if not isinstance(entry_diagnostics, dict):
+                    entry_diagnostics = {}
 
                 with self._get_session() as session:
                     entry = TradingDiary(
@@ -121,6 +178,10 @@ class PersonalityDatabase:
                                 "memory_edge": meta.get("memory_edge", setup_memory.get("memory_edge")),
                                 "sample_count": meta.get("memory_sample_count", setup_memory.get("sample_count")),
                             },
+                            "broker_quality": broker_quality,
+                            "market_microstructure": market_microstructure,
+                            "cross_asset_context": cross_asset_context,
+                            "entry_diagnostics": entry_diagnostics,
                         },
                     )
                     session.add(entry)
@@ -557,10 +618,13 @@ class RobbieExplainer:
         if any(w in q_lower for w in ("buy", "sell", "should i", "enter", "trade")):
             return self._answer_trade_question(asset, question, signal, df, mood, memory)
 
+        if any(w in q_lower for w in ("confidence", "confident", "conviction", "sure")):
+            return self._answer_confidence_question(asset, signal, mood, memory)
+
         if any(w in q_lower for w in ("remember", "history", "last time", "before", "previously", "diary")):
             return self._answer_memory_question(asset, mood, memory)
 
-        if any(w in q_lower for w in ("feel", "mood", "confident", "nervous", "worried")):
+        if any(w in q_lower for w in ("feel", "mood", "nervous", "worried")):
             return self._answer_mood_question(asset, mood, report)
 
         if any(w in q_lower for w in ("why", "reason", "explain", "because")):
@@ -572,7 +636,7 @@ class RobbieExplainer:
             return self._answer_risk_question(asset, signal, mood, memory)
 
         if any(w in q_lower for w in ("news", "sentiment", "social", "twitter")):
-            return self._answer_sentiment_question(asset, mood)
+            return self._answer_sentiment_question(asset, signal, mood)
 
         # Default — general take
         return self._answer_general(asset, question, signal, mood, memory)
@@ -723,13 +787,93 @@ class RobbieExplainer:
 
         return "\n".join(lines) if lines else f"No active signal on {asset} to assess risk against."
 
-    def _answer_sentiment_question(self, asset, mood) -> str:
-        return (
-            f"I don't have a live news feed wired into this command right now. "
-            f"For sentiment context, check `/why {asset}` which pulls from the "
-            f"sentiment review inside the decision engine — that's where I factor in "
-            f"news and social signals."
+    def _answer_confidence_question(self, asset, signal, mood, memory) -> str:
+        if not signal or signal.get("direction", "HOLD") == "HOLD":
+            return (
+                f"I don't have an active trade setup on {asset} right now, so there isn't a live confidence score to quote. "
+                f"Run `/signal {asset}` first, then ask again."
+            )
+
+        direction = str(signal.get("direction", "HOLD") or "HOLD").upper()
+        confidence = float(signal.get("confidence", 0.0) or 0.0) * 100
+        rr = float(signal.get("risk_reward", signal.get("rr_ratio", 0.0)) or 0.0)
+        meta = signal.get("metadata", {}) or {}
+        governance = meta.get("governance_validation", {}) or {}
+        grade = str(
+            meta.get("governance_grade")
+            or governance.get("grade")
+            or ""
+        ).strip().upper()
+        exec_quality = float(meta.get("execution_quality_score", 0.0) or 0.0)
+
+        lines = [f"Current confidence on *{asset}* is *{confidence:.0f}%* for a *{direction}* setup."]
+        if confidence >= 80:
+            lines.append("That is one of the stronger reads on the board right now.")
+        elif confidence >= 65:
+            lines.append("That is a workable read, but not the cleanest signal in the universe.")
+        else:
+            lines.append("That is not a strong read, so I would treat it carefully.")
+
+        details = []
+        if rr > 0:
+            details.append(f"reward to risk is `{rr:.2f}:1`")
+        if grade:
+            details.append(f"governance came through at grade `{grade}`")
+        if exec_quality > 0:
+            details.append(f"recent execution quality on similar setups is `{exec_quality:.0f}/100`")
+        if details:
+            lines.append("Right now " + ", ".join(details) + ".")
+
+        if memory.get("has_memory") and memory.get("total_trades", 0) >= 3:
+            lines.append(
+                f"I've traded {asset} {memory['total_trades']} times recently with a {memory['win_rate']}% win rate."
+            )
+
+        if mood in ("cautious", "shaken"):
+            lines.append("Because recent form has been shaky, I would still keep sizing controlled even if the setup is valid.")
+
+        return "\n".join(lines)
+
+    def _answer_sentiment_question(self, asset, signal, mood) -> str:
+        meta = (signal or {}).get("metadata", {}) or {}
+        sentiment_score = meta.get("sentiment_score")
+        market_intel_score = meta.get("market_intelligence_score")
+        score = sentiment_score if sentiment_score is not None else market_intel_score
+        sources = list(
+            meta.get("sentiment_sources")
+            or meta.get("market_intelligence_sources")
+            or []
         )
+        narrative = _narrative_label(meta.get("narrative") or meta.get("dominant_narrative"))
+        whale = str(meta.get("whale_dominant") or "").upper()
+
+        if score is None and not sources and not narrative and whale not in {"BUY", "SELL"}:
+            return (
+                f"I don't have a live sentiment snapshot for {asset} right now. "
+                f"Run `/signal {asset}` or `/why {asset}` after the decision engine has reviewed it."
+            )
+
+        score_value = float(score or 0.0)
+        lines = [f"*Sentiment read on {asset}:*"]
+        lines.append(f"  {_describe_sentiment_score(score_value)}")
+
+        if whale in {"BUY", "SELL"}:
+            flow_word = "bullish" if whale == "BUY" else "bearish"
+            lines.append(f"  Whale flow currently leans {flow_word}.")
+
+        if narrative:
+            lines.append(f"  The main narrative in the background is {narrative}.")
+
+        if sources:
+            lines.append(
+                f"  This read is coming from {len(sources)} source{'s' if len(sources) != 1 else ''}: "
+                f"{', '.join(str(item) for item in sources[:4])}."
+            )
+
+        if mood in ("cautious", "shaken") and score_value < 0.15:
+            lines.append("It is not a decisive sentiment edge, so I would not lean on it too heavily by itself.")
+
+        return "\n".join(lines)
 
     def _answer_general(self, asset, question, signal, mood, memory) -> str:
         lines = []
@@ -863,6 +1007,29 @@ def _confidence_line(confidence: float, mood: str) -> str:
     if confidence > 52:
         return f"Not a top-tier score ({confidence:.0f}/100), but worth watching."
     return f"Honestly a weak read ({confidence:.0f}/100) — market's being weird."
+
+
+def _describe_sentiment_score(score: float) -> str:
+    if score >= 0.35:
+        return f"Sentiment is strongly bullish at {score:+.2f}."
+    if score >= 0.12:
+        return f"Sentiment leans bullish at {score:+.2f}."
+    if score <= -0.35:
+        return f"Sentiment is strongly bearish at {score:+.2f}."
+    if score <= -0.12:
+        return f"Sentiment leans bearish at {score:+.2f}."
+    return f"Sentiment is close to neutral at {score:+.2f}."
+
+
+def _narrative_label(value: Any) -> str:
+    labels = {
+        "AI_TOKENS": "AI-related crypto narrative",
+        "HALVING_BUZZ": "halving narrative",
+    }
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return labels.get(raw, raw.replace("_", " ").lower())
 
 
 def _mood_greeting(mood: str, name: str) -> str:

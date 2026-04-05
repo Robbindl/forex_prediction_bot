@@ -18,7 +18,97 @@ def _direction_sign(direction: str) -> int:
     return 1 if str(direction).upper() == "BUY" else -1
 
 
+def _aligned_score(raw: float, direction: str) -> float:
+    sign = 1.0 if str(direction).upper() == "BUY" else -1.0
+    return _clip((float(raw or 0.0) * sign + 1.0) / 2.0)
+
+
 class OpportunityRanker:
+    @staticmethod
+    def _broker_quality_score(signal) -> float:
+        broker = signal.metadata.get("broker_quality") or {}
+        if not isinstance(broker, dict) or not broker:
+            return 0.55
+
+        score = _clip(float(broker.get("score", 0.55) or 0.55))
+        agreement_state = str(broker.get("quote_agreement_state", "") or "").lower()
+        quote_quality_state = str(broker.get("quote_quality_state", "") or "").lower()
+        spread_regime = str(broker.get("spread_regime", "") or "").lower()
+        transition_risk = _clip(float(broker.get("market_transition_risk", 0.0) or 0.0))
+
+        if agreement_state in {"strong", "aligned"}:
+            score += 0.08
+        elif agreement_state == "divergent":
+            score -= 0.14
+        elif agreement_state == "severe_divergence":
+            score -= 0.24
+
+        if quote_quality_state == "fresh":
+            score += 0.05
+        elif quote_quality_state in {"stale", "delayed"}:
+            score -= 0.10
+
+        if spread_regime == "tight":
+            score += 0.05
+        elif spread_regime == "normal":
+            score += 0.02
+        elif spread_regime == "wide":
+            score -= 0.05
+        elif spread_regime == "stressed":
+            score -= 0.12
+        elif spread_regime == "extreme":
+            score -= 0.18
+
+        score -= transition_risk * 0.16
+        if bool(broker.get("fallback_active")):
+            score -= 0.03
+        return round(_clip(score), 4)
+
+    @staticmethod
+    def _microstructure_score(signal) -> float:
+        metadata = dict(getattr(signal, "metadata", {}) or {})
+        aligned = metadata.get("microstructure_alignment")
+        if aligned is None:
+            aligned = metadata.get("microstructure_score")
+        base = _aligned_score(float(aligned or 0.0), getattr(signal, "direction", "BUY"))
+
+        tick = metadata.get("tick_imbalance")
+        book = metadata.get("book_imbalance")
+        stop_hunt_risk = _clip(float(metadata.get("stop_hunt_risk", 0.0) or 0.0))
+        exhaustion_risk = _clip(float(metadata.get("exhaustion_risk", 0.0) or 0.0))
+
+        components = [base]
+        if tick is not None:
+            components.append(_aligned_score(float(tick or 0.0), getattr(signal, "direction", "BUY")))
+        if book is not None:
+            components.append(_aligned_score(float(book or 0.0), getattr(signal, "direction", "BUY")))
+
+        score = sum(components) / len(components)
+        score -= stop_hunt_risk * 0.24
+        score -= exhaustion_risk * 0.20
+
+        if bool(metadata.get("depth_available")):
+            source = str(metadata.get("microstructure_source", "") or "").lower()
+            if source == "order_flow_true_depth":
+                score += 0.07
+            else:
+                score += 0.04
+        elif bool(metadata.get("synthetic_depth_available")):
+            score -= 0.04
+
+        return round(_clip(score), 4)
+
+    @staticmethod
+    def _cross_asset_score(signal) -> float:
+        metadata = dict(getattr(signal, "metadata", {}) or {})
+        alignment = metadata.get("cross_asset_alignment")
+        if alignment is None:
+            return 0.55
+        confidence = _clip(float(metadata.get("cross_asset_confidence", 0.0) or 0.0))
+        base = _aligned_score(float(alignment or 0.0), "BUY")
+        strength = _clip(0.45 + confidence * 0.55, 0.45, 1.0)
+        return round(_clip(0.5 + (base - 0.5) * strength), 4)
+
     def _score_pair(
         self,
         signal,
@@ -78,6 +168,10 @@ class OpportunityRanker:
             spread_pct = spread / entry
             spread_score = _clip(1.0 - (spread_pct / spread_threshold))
 
+        broker_score = self._broker_quality_score(signal)
+        microstructure_score = self._microstructure_score(signal)
+        cross_asset_score = self._cross_asset_score(signal)
+
         cat_open = sum(1 for p in open_positions if p.get("category") == category)
         same_dir_open = sum(
             1
@@ -111,20 +205,26 @@ class OpportunityRanker:
             "memory": round(memory_score, 4),
             "risk_reward": round(rr_score, 4),
             "spread": round(spread_score, 4),
+            "broker_quality": round(broker_score, 4),
+            "microstructure": round(microstructure_score, 4),
+            "cross_asset": round(cross_asset_score, 4),
             "portfolio_fit": round(portfolio_fit, 4),
         }
 
         score = (
-            confidence_score * 0.29
-            + structure_score * 0.17
-            + setup_score * 0.10
-            + sentiment_score * 0.10
-            + whale_score * 0.07
-            + orderflow_score * 0.06
-            + memory_score * 0.08
+            confidence_score * 0.22
+            + structure_score * 0.14
+            + setup_score * 0.09
+            + sentiment_score * 0.07
+            + whale_score * 0.04
+            + orderflow_score * 0.05
+            + memory_score * 0.06
             + rr_score * 0.06
-            + spread_score * 0.05
-            + portfolio_fit * 0.02
+            + spread_score * 0.04
+            + broker_score * 0.08
+            + microstructure_score * 0.06
+            + cross_asset_score * 0.05
+            + portfolio_fit * 0.04
         )
 
         return round(_clip(score), 4), breakdown

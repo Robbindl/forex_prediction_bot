@@ -126,6 +126,15 @@ def _parse_value_usd(text: str) -> float:
     return 0.0
 
 
+def _ping_health(source: str = "whale") -> None:
+    try:
+        from monitoring.system_health_service import monitor
+
+        monitor.ping_source(source)
+    except Exception:
+        pass
+
+
 def _scale_value(amount_text: str, suffix: str = "") -> float:
     try:
         amount = float(str(amount_text or "0").replace(",", ""))
@@ -334,6 +343,9 @@ class TelegramWhaleWatcher:
                 if a.get("value_usd", 0) >= min_value_usd
             ]
 
+    def _mark_healthy(self) -> None:
+        _ping_health("whale")
+
     async def _resolve_watch_entities(self, client) -> List:
         resolved = []
         dialog_lookup: Dict[str, object] = {}
@@ -398,6 +410,7 @@ class TelegramWhaleWatcher:
         try:
             await client.start(phone=self._phone)
             logger.info("[TelegramWhaleWatcher] Telethon connected")
+            self._mark_healthy()
         except SessionPasswordNeededError:
             logger.error(
                 "[TelegramWhaleWatcher] 2FA enabled — "
@@ -412,6 +425,7 @@ class TelegramWhaleWatcher:
         if not resolved_channels:
             logger.error("[TelegramWhaleWatcher] No Telegram whale channels could be resolved")
             return
+        self._mark_healthy()
 
         # ── Fetch recent history from each channel ──────────────────────
         for entity in resolved_channels:
@@ -458,6 +472,7 @@ class TelegramWhaleWatcher:
 
         # Keep running until stopped
         while self._is_running:
+            self._mark_healthy()
             await asyncio.sleep(5)
 
         await client.disconnect()

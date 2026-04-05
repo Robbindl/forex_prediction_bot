@@ -17,6 +17,9 @@ from core.signal import Signal
 logger = get_logger()
 
 _POLICY_REVERSAL_MIN_EDGE = 0.68
+_POLICY_REVERSAL_MIN_EDGE_BY_CATEGORY = {
+    "crypto": 0.64,
+}
 _POLICY_REVERSAL_MIN_ADVANTAGE = 0.18
 _POLICY_REVERSAL_BASE_RR = {
     "forex": 1.5,
@@ -140,6 +143,15 @@ class TradingAgent:
         return float(_POLICY_REVERSAL_BASE_RR.get(str(category or "").lower(), 1.5))
 
     @staticmethod
+    def _policy_reversal_min_edge(category: str) -> float:
+        return float(
+            _POLICY_REVERSAL_MIN_EDGE_BY_CATEGORY.get(
+                str(category or "").lower(),
+                _POLICY_REVERSAL_MIN_EDGE,
+            )
+        )
+
+    @staticmethod
     def _build_take_profit_levels(entry: float, take_profit: float, direction: str) -> list[float]:
         try:
             dist = abs(float(take_profit) - float(entry))
@@ -246,7 +258,7 @@ class TradingAgent:
         else:
             return False
 
-        if opposite_edge < _POLICY_REVERSAL_MIN_EDGE:
+        if opposite_edge < self._policy_reversal_min_edge(signal.category):
             return False
         if (opposite_edge - directional_edge) < _POLICY_REVERSAL_MIN_ADVANTAGE:
             return False

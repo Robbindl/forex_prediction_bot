@@ -96,6 +96,7 @@ class SystemHealthService:
         # ── Alert state ───────────────────────────────────────────────────
         self._last_alert:      Dict[str, float] = {}
         self._cpu_high_since:  Optional[float]  = None
+        self._ram_high_since:  Optional[float]  = None
 
         self._collect_thread: Optional[threading.Thread] = None
         self._alert_thread:   Optional[threading.Thread] = None
@@ -327,17 +328,35 @@ class SystemHealthService:
             time.sleep(ALERT_CHECK_INTERVAL)
 
     def _check_alerts(self) -> None:
+        now = time.time()
+
         # CPU / RAM
-        try:
-            import psutil
-            cpu = psutil.cpu_percent(interval=1)
-            ram = psutil.virtual_memory().percent
-            if cpu > CPU_ALERT_PCT:
-                self._send_alert("cpu_high", f"CPU usage {cpu:.0f}% (threshold {CPU_ALERT_PCT}%)")
-            if ram > RAM_ALERT_PCT:
-                self._send_alert("ram_high", f"RAM usage {ram:.0f}% (threshold {RAM_ALERT_PCT}%)")
-        except Exception as e:
-            logger.error(f"[Monitor] CPU/RAM check failed: {e}")
+        if (now - self._start_time) >= PHASE_SILENT_SECS:
+            try:
+                import psutil
+
+                cpu = psutil.cpu_percent(interval=1)
+                ram = psutil.virtual_memory().percent
+                if cpu > CPU_ALERT_PCT:
+                    if self._cpu_high_since is None:
+                        self._cpu_high_since = now
+                    elif (now - self._cpu_high_since) >= ALERT_CHECK_INTERVAL:
+                        self._send_alert("cpu_high", f"CPU usage {cpu:.0f}% (threshold {CPU_ALERT_PCT}%)")
+                else:
+                    self._cpu_high_since = None
+
+                if ram > RAM_ALERT_PCT:
+                    if self._ram_high_since is None:
+                        self._ram_high_since = now
+                    elif (now - self._ram_high_since) >= ALERT_CHECK_INTERVAL:
+                        self._send_alert("ram_high", f"RAM usage {ram:.0f}% (threshold {RAM_ALERT_PCT}%)")
+                else:
+                    self._ram_high_since = None
+            except Exception as e:
+                logger.error(f"[Monitor] CPU/RAM check failed: {e}")
+        else:
+            self._cpu_high_since = None
+            self._ram_high_since = None
 
         # Decision latency
         if self._decision_lats:
@@ -349,7 +368,6 @@ class SystemHealthService:
                 )
 
         # Error rate
-        now = time.time()
         recent_errors = sum(1 for t in self._error_times if now - t < 60)
         if recent_errors > ERROR_RATE_PER_MIN:
             self._send_alert("error_rate", f"Error rate {recent_errors}/min")
