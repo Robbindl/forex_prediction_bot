@@ -116,6 +116,20 @@ def _mid_price(payload: Dict[str, Any]) -> Optional[float]:
     return last if last is not None else (bid if bid is not None else ask)
 
 
+def _normalize_ig_commodity_price(asset: str, value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+
+    canonical = _canonical_asset(asset)
+    if canonical in {"XAG/USD", "WTI"} and numeric >= 1000.0:
+        return numeric / 100.0
+    return numeric
+
+
 def _parse_epic_map(raw: str) -> Dict[str, str]:
     if not raw:
         return {}
@@ -313,6 +327,9 @@ class IGMarketBridge:
                 price = (bid + offer) / 2.0
             else:
                 price = _mid_price(snapshot)
+            bid = _normalize_ig_commodity_price(canonical, bid)
+            offer = _normalize_ig_commodity_price(canonical, offer)
+            price = _normalize_ig_commodity_price(canonical, price)
             if price is None:
                 return None, None, self._error_metadata(
                     canonical,
@@ -424,6 +441,10 @@ class IGMarketBridge:
                 high_price = _mid_price(item.get("highPrice") or {})
                 low_price = _mid_price(item.get("lowPrice") or {})
                 close_price = _mid_price(item.get("closePrice") or {})
+                open_price = _normalize_ig_commodity_price(canonical, open_price)
+                high_price = _normalize_ig_commodity_price(canonical, high_price)
+                low_price = _normalize_ig_commodity_price(canonical, low_price)
+                close_price = _normalize_ig_commodity_price(canonical, close_price)
                 if None in (open_price, high_price, low_price, close_price):
                     continue
                 rows.append(
@@ -449,6 +470,10 @@ class IGMarketBridge:
             frame = pd.DataFrame(rows).set_index("timestamp").sort_index()
             if cutoff is not None and not pd.isna(cutoff):
                 cutoff_ts = pd.Timestamp(cutoff)
+                if cutoff_ts.tzinfo is None:
+                    cutoff_ts = cutoff_ts.tz_localize("UTC")
+                else:
+                    cutoff_ts = cutoff_ts.tz_convert("UTC")
                 if closed_only:
                     frame = frame[frame.index < cutoff_ts]
                 else:

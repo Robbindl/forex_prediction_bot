@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 import threading
 from typing import Any, Dict, Optional, Tuple
 
@@ -10,6 +11,7 @@ import pandas as pd
 from config.config import (
     IG_ROUTED_CATEGORIES,
     LOOKBACK_PERIOD,
+    LOCAL_CANDLE_STORE_REQUIRED_COVERAGE,
     MARKET_DATA_OHLCV_CACHE_TTL,
     MARKET_DATA_OHLCV_SLOW_CACHE_TTL,
     MARKET_DATA_QUOTE_CACHE_TTL,
@@ -76,6 +78,9 @@ class DataFetcher:
     def __init__(self) -> None:
         self._ohlcv_meta: Dict[str, Dict[str, Any]] = {}
         self._rt_meta: Dict[str, Dict[str, Any]] = {}
+        self._local_candle_store = None
+        self._dukascopy_bridge = None
+        self._fmp_bridge = None
         self._ig_bridge = None
         self._deriv_bridge = None
         self._binance_bridge = None
@@ -118,6 +123,22 @@ class DataFetcher:
                     payload["exchange"] = str(resolved.get("exchange", "binance"))
             except Exception:
                 pass
+        if "dukascopy" in source and "dukascopy_symbol" not in payload and self._dukascopy_bridge is not None:
+            try:
+                resolved = self._dukascopy_bridge.resolve_symbol_info(asset, category=category)
+                if resolved:
+                    payload["dukascopy_symbol"] = str(resolved.get("symbol", ""))
+                    payload["exchange"] = str(resolved.get("exchange", "dukascopy"))
+            except Exception:
+                pass
+        if "fmp" in source and "fmp_symbol" not in payload and self._fmp_bridge is not None:
+            try:
+                resolved = self._fmp_bridge.resolve_symbol_info(asset, category=category)
+                if resolved:
+                    payload["fmp_symbol"] = str(resolved.get("symbol", ""))
+                    payload["exchange"] = str(resolved.get("exchange", "fmp"))
+            except Exception:
+                pass
         if source.startswith("ig") and "ig_epic" not in payload and self._ig_bridge is not None:
             try:
                 resolved = self._ig_bridge.resolve_symbol_info(asset, category=category)
@@ -130,6 +151,39 @@ class DataFetcher:
         return payload
 
     def _init_clients(self) -> None:
+        try:
+            from services.local_candle_store import local_candle_store as _local_candle_store
+
+            if _local_candle_store.enabled():
+                self._local_candle_store = _local_candle_store
+                if "local_store" not in DataFetcher._announced_clients:
+                    DataFetcher._announced_clients.add("local_store")
+                    logger.info("[DataFetcher] Local candle store configured for restart-safe OHLCV continuity")
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] Local candle store unavailable: {exc}")
+
+        try:
+            from services.dukascopy_history_bridge import dukascopy_history_bridge as _dukascopy_bridge
+
+            if _dukascopy_bridge.list_profiles():
+                self._dukascopy_bridge = _dukascopy_bridge
+                if "dukascopy" not in DataFetcher._announced_clients:
+                    DataFetcher._announced_clients.add("dukascopy")
+                    logger.info("[DataFetcher] Dukascopy bridge configured as the free historical/backfill source for forex, commodities, and indices")
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] Dukascopy bridge unavailable: {exc}")
+
+        try:
+            from services.fmp_history_bridge import fmp_history_bridge as _fmp_bridge
+
+            if _fmp_bridge.list_profiles():
+                self._fmp_bridge = _fmp_bridge
+                if "fmp" not in DataFetcher._announced_clients:
+                    DataFetcher._announced_clients.add("fmp")
+                    logger.info("[DataFetcher] FMP bridge configured as the secondary historical/backfill OHLCV source")
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] FMP bridge unavailable: {exc}")
+
         try:
             from services.ig_market_bridge import ig_market_bridge as _ig_bridge
 
@@ -187,6 +241,13 @@ class DataFetcher:
         if token.startswith("binance"):
             return "binance"
         return token
+
+    @staticmethod
+    def _local_history_satisfies(df: Optional[pd.DataFrame], periods: int) -> bool:
+        if df is None or df.empty:
+            return False
+        required = max(1, int(math.ceil(float(periods) * float(LOCAL_CANDLE_STORE_REQUIRED_COVERAGE))))
+        return len(df) >= required
 
     def get_provider_quote(
         self,
@@ -358,6 +419,123 @@ class DataFetcher:
             return cached_df.copy()
 
         last_error_meta: Optional[Dict[str, Any]] = None
+        local_partial_df: Optional[pd.DataFrame] = None
+        local_partial_meta: Optional[Dict[str, Any]] = None
+
+        if self._local_candle_store is not None:
+            try:
+                local_df, local_meta = self._local_candle_store.get_ohlcv(
+                    asset,
+                    category,
+                    interval,
+                    periods,
+                    end_time=normalized_end,
+                    closed_only=closed_only,
+                )
+                if local_df is not None and not local_df.empty:
+                    local_df = local_df.tail(periods).copy()
+                    meta = self._stamp_metadata(
+                        local_meta,
+                        source="LocalStore",
+                        source_class="local_store",
+                        delayed=False,
+                        realtime=bool((local_meta or {}).get("realtime", False)),
+                    )
+                    meta = self._attach_provider_symbol(asset, category, meta)
+                    if self._local_history_satisfies(local_df, periods):
+                        self._ohlcv_meta[meta_key] = meta
+                        cache.set(cache_key, (local_df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
+                        return local_df
+                    local_partial_df = local_df
+                    local_partial_meta = meta
+            except Exception as exc:
+                logger.debug(f"[DataFetcher] LocalStore OHLCV {asset}: {exc}")
+
+        if self._dukascopy_bridge is not None:
+            try:
+                df, dukascopy_meta = self._dukascopy_bridge.get_ohlcv(
+                    asset,
+                    interval,
+                    periods,
+                    category=category,
+                    end_time=normalized_end,
+                    closed_only=closed_only,
+                )
+                if df is not None and not df.empty:
+                    if normalized_end is not None:
+                        if closed_only:
+                            df = df[df.index < normalized_end]
+                        else:
+                            df = df[df.index <= normalized_end]
+                    df = df.tail(periods).copy()
+                    meta = self._stamp_metadata(
+                        dukascopy_meta,
+                        source="Dukascopy",
+                        source_class="secondary_api",
+                        delayed=False,
+                        realtime=False,
+                    )
+                    meta = self._attach_provider_symbol(asset, category, meta)
+                    if self._local_candle_store is not None:
+                        self._local_candle_store.store_ohlcv(asset, category, interval, df, meta)
+                    self._ohlcv_meta[meta_key] = meta
+                    cache.set(cache_key, (df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
+                    self._ping_health("technicals")
+                    return df
+                if dukascopy_meta:
+                    last_error_meta = self._stamp_metadata(
+                        dukascopy_meta,
+                        source="Dukascopy",
+                        source_class="secondary_api",
+                        delayed=False,
+                        realtime=False,
+                    )
+                    last_error_meta = self._attach_provider_symbol(asset, category, last_error_meta)
+            except Exception as exc:
+                logger.debug(f"[DataFetcher] Dukascopy OHLCV {asset}: {exc}")
+
+        if self._fmp_bridge is not None:
+            try:
+                df, fmp_meta = self._fmp_bridge.get_ohlcv(
+                    asset,
+                    interval,
+                    periods,
+                    category=category,
+                    end_time=normalized_end,
+                    closed_only=closed_only,
+                )
+                if df is not None and not df.empty:
+                    if normalized_end is not None:
+                        if closed_only:
+                            df = df[df.index < normalized_end]
+                        else:
+                            df = df[df.index <= normalized_end]
+                    df = df.tail(periods).copy()
+                    meta = self._stamp_metadata(
+                        fmp_meta,
+                        source="FMP",
+                        source_class="secondary_api",
+                        delayed=False,
+                        realtime=False,
+                    )
+                    meta = self._attach_provider_symbol(asset, category, meta)
+                    if self._local_candle_store is not None:
+                        self._local_candle_store.store_ohlcv(asset, category, interval, df, meta)
+                    self._ohlcv_meta[meta_key] = meta
+                    cache.set(cache_key, (df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
+                    self._ping_health("technicals")
+                    return df
+                if fmp_meta:
+                    last_error_meta = self._stamp_metadata(
+                        fmp_meta,
+                        source="FMP",
+                        source_class="secondary_api",
+                        delayed=False,
+                        realtime=False,
+                    )
+                    last_error_meta = self._attach_provider_symbol(asset, category, last_error_meta)
+            except Exception as exc:
+                logger.debug(f"[DataFetcher] FMP OHLCV {asset}: {exc}")
 
         if self._ig_primary_category(category) and self._ig_bridge is not None:
             try:
@@ -384,6 +562,8 @@ class DataFetcher:
                         realtime=False,
                     )
                     meta = self._attach_provider_symbol(asset, category, meta)
+                    if self._local_candle_store is not None:
+                        self._local_candle_store.store_ohlcv(asset, category, interval, df, meta)
                     self._ohlcv_meta[meta_key] = meta
                     cache.set(cache_key, (df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
                     self._ping_health("technicals")
@@ -428,6 +608,8 @@ class DataFetcher:
                         realtime=False,
                     )
                     meta = self._attach_provider_symbol(asset, category, meta)
+                    if self._local_candle_store is not None:
+                        self._local_candle_store.store_ohlcv(asset, category, interval, df, meta)
                     self._ohlcv_meta[meta_key] = meta
                     cache.set(cache_key, (df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
                     self._ping_health("technicals")
@@ -463,12 +645,24 @@ class DataFetcher:
                         realtime=False,
                     )
                     meta = self._attach_provider_symbol(asset, category, meta)
+                    if self._local_candle_store is not None:
+                        self._local_candle_store.store_ohlcv(asset, category, interval, df, meta)
                     self._ohlcv_meta[meta_key] = meta
                     cache.set(cache_key, (df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
                     self._ping_health("technicals")
                     return df
             except Exception as exc:
                 logger.debug(f"[DataFetcher] Binance OHLCV {asset}: {exc}")
+
+        if local_partial_df is not None and not local_partial_df.empty:
+            partial_meta = self._stamp_metadata(
+                local_partial_meta,
+                provider_constrained=True,
+                local_rows=int(len(local_partial_df)),
+                requested_rows=int(periods),
+            )
+            self._ohlcv_meta[meta_key] = partial_meta
+            return local_partial_df.copy()
 
         self._ohlcv_meta[meta_key] = last_error_meta or self._stamp_metadata(
             {"source": "unavailable", "source_class": "unavailable", "delayed": False}

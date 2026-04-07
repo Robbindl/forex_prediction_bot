@@ -116,7 +116,7 @@ class TelegramManager:
             return False
 
     def is_other_instance_running(self) -> bool:
-        """Public check used by trading_system.py before starting"""
+        """Public check used by bot.py before starting"""
         return self._check_pid_file()
 
     def cleanup(self):

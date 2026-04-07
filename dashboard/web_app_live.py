@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory, stream_with_context
@@ -87,10 +87,11 @@ app = Flask(
     static_folder  =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"),
 )
 try:
-    from config.config import DASHBOARD_CORS_ORIGINS, TRUST_PROXY_COUNT
+    from config.config import DASHBOARD_CORS_ORIGINS, TRUST_PROXY_COUNT, PLAYBOOK_ONLY_RUNTIME
 except Exception:
     DASHBOARD_CORS_ORIGINS = ["http://localhost:5000"]
     TRUST_PROXY_COUNT = 1
+    PLAYBOOK_ONLY_RUNTIME = False
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=TRUST_PROXY_COUNT, x_proto=TRUST_PROXY_COUNT, x_host=TRUST_PROXY_COUNT)
 CORS(app, resources={r"/api/*": {"origins": DASHBOARD_CORS_ORIGINS}})
@@ -409,6 +410,34 @@ def _render_cached_template(template_name: str, ttl: int = 30) -> str:
     html = render_template(template_name)
     _cache_set(cache_key, html, ttl=ttl)
     return html
+
+
+_PLAYBOOK_RUNTIME_BLUEPRINTS = [
+    "breakout_continuation",
+    "breakout_retest",
+    "trend_pullback",
+    "reversal_exhaustion",
+    "failed_break_reclaim",
+    "aggressive_expansion",
+    "opening_drive",
+    "news_impulse",
+    "crypto_orderflow_continuation",
+]
+
+
+def _playbook_only_disabled_response(path: str, feature: str) -> tuple[Response, int]:
+    return (
+        jsonify(
+            {
+                "success": False,
+                "disabled": True,
+                "mode": "playbook_only",
+                "feature": feature,
+                "error": f"{feature} disabled in playbook-only runtime",
+            }
+        ),
+        409,
+    )
 
 
 def _interpret_sentiment_score(score: float) -> str:
@@ -1108,6 +1137,157 @@ def _extract_signal_intelligence_fields(metadata: Any) -> Dict[str, Any]:
     }
 
 
+def _coerce_utc_datetime(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        raw = raw.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(raw)
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _is_partial_close_trade_row(trade: Dict[str, Any]) -> bool:
+    metadata = dict(trade.get("metadata") or {})
+    if bool(metadata.get("is_partial_close")):
+        return True
+    if metadata.get("parent_trade_id") not in (None, ""):
+        return True
+    trade_id = str(trade.get("trade_id") or "")
+    exit_reason = str(trade.get("exit_reason") or "").lower()
+    return ("-PT" in trade_id) or exit_reason.startswith("partial tp")
+
+
+def _playbook_name_from_trade(trade: Dict[str, Any]) -> str:
+    metadata = dict(trade.get("metadata") or {})
+    direct = str(metadata.get("playbook_name") or "").strip()
+    if direct:
+        return direct
+    strategy_id = str(trade.get("strategy_id") or "").strip()
+    if strategy_id.startswith("playbook_"):
+        return strategy_id[len("playbook_") :]
+    if strategy_id == "playbook_runtime":
+        return "playbook_runtime"
+    return ""
+
+
+def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: int = 30) -> Dict[str, Any]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days_back or 30)))
+    playbook_rows: Dict[str, Dict[str, Any]] = {}
+    asset_rows: Dict[str, Dict[str, Any]] = {}
+    trade_count = 0
+    decisive_count = 0
+    win_count = 0
+    gross_win = 0.0
+    gross_loss = 0.0
+    rr_values: List[float] = []
+
+    def _bucket(container: Dict[str, Dict[str, Any]], label: str) -> Dict[str, Any]:
+        return container.setdefault(
+            label,
+            {
+                "label": label,
+                "trade_count": 0,
+                "decisive_count": 0,
+                "win_count": 0,
+                "gross_win": 0.0,
+                "gross_loss": 0.0,
+                "total_pnl": 0.0,
+                "rr_values": [],
+            },
+        )
+
+    for trade in list(trades or []):
+        if not isinstance(trade, dict) or _is_partial_close_trade_row(trade):
+            continue
+        playbook_name = _playbook_name_from_trade(trade)
+        if not playbook_name:
+            continue
+        event_time = _coerce_utc_datetime(trade.get("exit_time") or trade.get("entry_time"))
+        if event_time is not None and event_time < cutoff:
+            continue
+
+        pnl = float(trade.get("pnl") or 0.0)
+        metadata = dict(trade.get("metadata") or {})
+        execution = _extract_execution_feedback_fields(metadata)
+        rr_realized = float(execution.get("rr_realized", 0.0) or 0.0)
+        asset_label = str(trade.get("canonical_asset") or trade.get("asset") or "").strip() or "UNKNOWN"
+        is_win = pnl > 0.0
+        is_loss = pnl < 0.0
+
+        trade_count += 1
+        if is_win or is_loss:
+            decisive_count += 1
+            if is_win:
+                win_count += 1
+                gross_win += pnl
+            else:
+                gross_loss += abs(pnl)
+        if abs(rr_realized) > 1e-9:
+            rr_values.append(rr_realized)
+
+        for container, label in ((playbook_rows, playbook_name), (asset_rows, asset_label)):
+            row = _bucket(container, label)
+            row["trade_count"] += 1
+            row["total_pnl"] += pnl
+            if abs(rr_realized) > 1e-9:
+                row["rr_values"].append(rr_realized)
+            if is_win or is_loss:
+                row["decisive_count"] += 1
+                if is_win:
+                    row["win_count"] += 1
+                    row["gross_win"] += pnl
+                else:
+                    row["gross_loss"] += abs(pnl)
+
+    def _finalize(rows: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        output: List[Dict[str, Any]] = []
+        for item in rows.values():
+            decisive = int(item.pop("decisive_count", 0) or 0)
+            wins = int(item.pop("win_count", 0) or 0)
+            gross_win_local = float(item.pop("gross_win", 0.0) or 0.0)
+            gross_loss_local = float(item.pop("gross_loss", 0.0) or 0.0)
+            rr_local = list(item.pop("rr_values", []) or [])
+            item["win_rate"] = round((wins / decisive) * 100.0, 1) if decisive else 0.0
+            item["profit_factor"] = round(gross_win_local / gross_loss_local, 2) if gross_loss_local else (round(gross_win_local, 2) if gross_win_local else 0.0)
+            item["avg_rr_realized"] = round(sum(rr_local) / len(rr_local), 3) if rr_local else 0.0
+            item["total_pnl"] = round(float(item.get("total_pnl", 0.0) or 0.0), 2)
+            output.append(item)
+        output.sort(
+            key=lambda row: (
+                float(row.get("total_pnl", 0.0) or 0.0),
+                float(row.get("win_rate", 0.0) or 0.0),
+                int(row.get("trade_count", 0) or 0),
+            ),
+            reverse=True,
+        )
+        return output[:5]
+
+    playbooks = _finalize(playbook_rows)
+    assets = _finalize(asset_rows)
+    return {
+        "summary": {
+            "trade_count": trade_count,
+            "decisive_trade_count": decisive_count,
+            "win_rate": round((win_count / decisive_count) * 100.0, 1) if decisive_count else 0.0,
+            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss else (round(gross_win, 2) if gross_win else 0.0),
+            "avg_rr_realized": round(sum(rr_values) / len(rr_values), 3) if rr_values else 0.0,
+            "top_playbook": str(playbooks[0]["label"]) if playbooks else "",
+        },
+        "playbooks": playbooks,
+        "assets": assets,
+    }
+
+
 def _summarize_signal_diagnostics(rows: Any) -> Dict[str, Any]:
     items = list(rows or [])
     total = 0
@@ -1197,10 +1377,6 @@ def pg_sentiment_intelligence():
 def pg_risk_dashboard():
     return _render_cached_template("risk_dashboard.html", ttl=15)
 
-@app.route("/strategy-lab")
-def pg_strategy_lab():
-    return _render_cached_template("strategy_lab.html", ttl=15)
-
 @app.route("/system-monitor")
 def pg_system_monitor():
     return _render_cached_template("system_monitor.html", ttl=15)
@@ -1221,13 +1397,11 @@ def _r_accuracy(): return redirect("/ai-predictions")
 @app.route("/sentiment")
 def _r_sentiment():return redirect("/sentiment-intelligence")
 @app.route("/backtest")
-def _r_backtest(): return redirect("/strategy-lab")
+def _r_backtest(): return redirect("/command-center")
 @app.route("/status")
 def _r_status():   return redirect("/system-monitor")
 @app.route("/websocket-feed")
 def _r_ws():       return redirect("/market-intelligence")
-@app.route("/strategy-lab-v2")
-def _r_lab2():     return redirect("/strategy-lab")
 
 @app.route("/service-worker.js")
 def service_worker():
@@ -1576,7 +1750,7 @@ def api_command_center():
                 "pnl":           round(_live_pnl, 2),
                 "position_size": _size,
                 "strategy_id":   p.get("strategy_id", ""),
-                "open_time":     str(p.get("open_time", ""))[:16],
+                "open_time":     str(p.get("open_time", "") or ""),
                 "risk_reward":   float(p.get("risk_reward", 0) or 0),
                 "metadata":      _meta,
                 **_exec,
@@ -1713,7 +1887,7 @@ def api_signals_live():
                     "strategy_id":   p.get("strategy_id", ""),
                     "pnl":           float(p.get("pnl", 0)),
                     "market_open":   is_market_open_for_asset(p.get("asset", ""))[0],
-                    "generated_at":  str(p.get("open_time", ""))[:16],
+                    "generated_at":  str(p.get("open_time", "") or ""),
                     "metadata":      _meta,
                     "step_reached": p.get("step_reached", 0),
                     **_exec,
@@ -1840,6 +2014,35 @@ def _provider_routing_summary() -> Dict[str, Any]:
     }
 
 
+def _provider_family(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    if token.startswith("IG"):
+        return "IG"
+    if token.startswith("DERIV"):
+        return "DERIV"
+    if token.startswith("BINANCE"):
+        return "BINANCE"
+    if token.startswith("DUKASCOPY"):
+        return "DUKASCOPY"
+    if token.startswith("FMP"):
+        return "FMP"
+    return token
+
+
+def _history_allows_live_overlay(descriptor: Dict[str, Any], meta: Dict[str, Any]) -> bool:
+    source_class = str((meta or {}).get("source_class") or "").strip().lower()
+    if source_class == "stream_cache":
+        return True
+    primary = _provider_family((descriptor or {}).get("primary_provider") or "")
+    if source_class == "local_store":
+        latest_family = _provider_family((meta or {}).get("latest_provider_family") or "")
+        latest_source_class = str((meta or {}).get("latest_source_class") or "").strip().lower()
+        if primary and latest_family == primary and latest_source_class == "stream_cache":
+            return True
+    history = _provider_family((meta or {}).get("provider_family") or (meta or {}).get("source") or "")
+    return bool(primary and history and primary == history)
+
+
 def _chart_period_limit(asset: str, category: str, interval: str, requested: int) -> int:
     descriptor = _chart_asset_descriptor(asset, category)
     if str(descriptor.get("primary_provider") or "").upper() != "IG":
@@ -1858,20 +2061,340 @@ def _chart_period_limit(asset: str, category: str, interval: str, requested: int
 
 
 def _chart_history_cache_ttl(asset: str, category: str, interval: str) -> int:
-    descriptor = _chart_asset_descriptor(asset, category)
-    if str(descriptor.get("primary_provider") or "").upper() == "IG":
-        if str(interval or "").lower() in {"1h", "4h", "1d"}:
-            return 900
-        return 600
-    if str(interval or "").lower() in {"4h", "1d"}:
+    interval_key = str(interval or "").lower()
+    if interval_key == "1m":
+        return 10
+    if interval_key in {"5m", "15m", "30m"}:
+        return 15
+    if interval_key == "1h":
+        return 60
+    if interval_key in {"4h", "1d"}:
         return 300
-    return 120
+    return 60
+
+
+def _chart_allowance_retry_limit(asset: str, category: str, interval: str, requested: int) -> int:
+    descriptor = _chart_asset_descriptor(asset, category)
+    if str(descriptor.get("primary_provider") or "").upper() != "IG":
+        return int(requested)
+
+    capped = {
+        "1m": 60,
+        "5m": 60,
+        "15m": 60,
+        "30m": 60,
+        "1h": 90,
+        "4h": 120,
+        "1d": 180,
+    }.get(str(interval or "").lower(), min(int(requested), 90))
+    return max(30, min(int(requested), int(capped)))
 
 
 def _is_historical_allowance_error(meta: Dict[str, Any]) -> bool:
     code = str(meta.get("provider_error_code") or "").lower()
     message = str(meta.get("provider_error_message") or meta.get("message") or "").lower()
     return "historical-data-allowance" in code or "historical data allowance" in message
+
+
+def _fetch_ohlcv_with_allowance_retry(
+    asset: str,
+    category: str,
+    interval: str,
+    periods: int,
+    *,
+    closed_only: bool = False,
+) -> Tuple[Optional["pd.DataFrame"], Dict[str, Any], int]:
+    import pandas as pd
+
+    fetcher = _get_fetcher()
+    requested = max(2, int(periods or 0))
+    try:
+        df = fetcher.get_ohlcv(asset, category, interval=interval, periods=requested, closed_only=closed_only)
+    except TypeError:
+        df = fetcher.get_ohlcv(asset, category, interval=interval, periods=requested)
+    meta = fetcher.get_last_ohlcv_metadata(asset, interval)
+    used = requested
+
+    if (df is None or df.empty) and _is_historical_allowance_error(meta):
+        retry_periods = _chart_allowance_retry_limit(asset, category, interval, requested)
+        if retry_periods < requested:
+            try:
+                retry_df = fetcher.get_ohlcv(
+                    asset,
+                    category,
+                    interval=interval,
+                    periods=retry_periods,
+                    closed_only=closed_only,
+                )
+            except TypeError:
+                retry_df = fetcher.get_ohlcv(
+                    asset,
+                    category,
+                    interval=interval,
+                    periods=retry_periods,
+                )
+            retry_meta = fetcher.get_last_ohlcv_metadata(asset, interval)
+            if retry_df is not None and not retry_df.empty:
+                return retry_df, retry_meta, retry_periods
+            meta = retry_meta
+            used = retry_periods
+
+    if isinstance(df, pd.DataFrame):
+        df = df.copy()
+    return df, meta, used
+
+
+def _heatmap_item(asset: str, category: str) -> Optional[Dict[str, Any]]:
+    import pandas as pd
+
+    if _is_market_weekend(category):
+        return None
+
+    fetcher = _get_fetcher()
+    descriptor = _chart_asset_descriptor(asset, category)
+    ig_primary = str(descriptor.get("primary_provider") or "").upper() == "IG"
+    live_price, _ = fetcher.get_real_time_price(asset, category)
+    price_meta = fetcher.get_last_price_metadata(asset)
+
+    reference_price: Optional[float] = None
+    current_price: Optional[float] = float(live_price) if live_price is not None else None
+    source = str((price_meta or {}).get("source") or "")
+
+    if reference_price is None or current_price is None:
+        df_daily, daily_meta, _ = _fetch_ohlcv_with_allowance_retry(asset, category, "1d", 2)
+        if df_daily is not None and not df_daily.empty and "close" in df_daily.columns:
+            closes = df_daily["close"].astype(float).dropna()
+            opens = df_daily["open"].astype(float).dropna() if "open" in df_daily.columns else pd.Series(dtype=float)
+            if not closes.empty:
+                if current_price is None:
+                    current_price = float(closes.iloc[-1])
+                if len(closes) >= 2:
+                    reference_price = float(closes.iloc[-2])
+                elif not opens.empty:
+                    reference_price = float(opens.iloc[-1])
+                source = str((daily_meta or {}).get("source") or source or "")
+
+    if reference_price is None or current_price is None:
+        df_intraday, intraday_meta, _ = _fetch_ohlcv_with_allowance_retry(asset, category, "1h", 30)
+        if df_intraday is not None and not df_intraday.empty and "close" in df_intraday.columns:
+            closes = df_intraday["close"].astype(float).dropna()
+            if not closes.empty:
+                if current_price is None:
+                    current_price = float(closes.iloc[-1])
+                if len(closes) >= 2:
+                    target_ts = closes.index.max() - pd.Timedelta(hours=24)
+                    history = closes[closes.index <= target_ts]
+                    reference_price = float(history.iloc[-1] if not history.empty else closes.iloc[0])
+                source = str((intraday_meta or {}).get("source") or source or "")
+
+    if ig_primary and (reference_price is None or current_price is None):
+        stream_df = _stream_candles_from_live_feed(asset, "5m", 288, source_hint="IG")
+        if stream_df is not None and not stream_df.empty and "close" in stream_df.columns:
+            closes = stream_df["close"].astype(float).dropna()
+            if not closes.empty:
+                if current_price is None:
+                    current_price = float(closes.iloc[-1])
+                if reference_price is None and len(closes) >= 2:
+                    target_ts = closes.index.max() - pd.Timedelta(hours=24)
+                    history = closes[closes.index <= target_ts]
+                    reference_price = float(history.iloc[-1] if not history.empty else closes.iloc[0])
+                source = source or "IG Stream"
+
+    if current_price is None:
+        return None
+
+    change_pct = None
+    if reference_price is not None and float(reference_price) > 0:
+        change_pct = round((float(current_price) - float(reference_price)) / float(reference_price) * 100.0, 3)
+    return {
+        "asset": asset,
+        "category": category,
+        "change_pct": change_pct,
+        "price": round(float(current_price), 5),
+        "source": source or "unknown",
+    }
+
+
+def _normalize_correlation_series(series: "pd.Series", interval: str) -> "pd.Series":
+    import pandas as pd
+
+    ts = pd.to_datetime(series.index, utc=True, errors="coerce")
+    normalized = pd.Series(series.astype(float).values, index=ts)
+    normalized = normalized[~normalized.index.isna()].sort_index()
+    if normalized.empty:
+        return normalized
+
+    freq = {"1d": "1D", "4h": "4h", "1h": "1h", "30m": "30min"}.get(str(interval or "").lower())
+    if freq:
+        normalized = normalized.groupby(normalized.index.floor(freq)).last()
+    else:
+        normalized = normalized.groupby(normalized.index).last()
+    return normalized.dropna()
+
+
+def _stream_candles_from_live_feed(
+    asset: str,
+    interval: str,
+    periods: int,
+    *,
+    source_hint: str = "IG",
+) -> Optional["pd.DataFrame"]:
+    import pandas as pd
+
+    bucket_seconds = {
+        "1m": 60,
+        "5m": 300,
+        "15m": 900,
+        "30m": 1800,
+        "1h": 3600,
+        "4h": 14400,
+        "1d": 86400,
+    }.get(str(interval or "").lower())
+    if not bucket_seconds:
+        return None
+
+    samples: List[Tuple[float, float]] = []
+    try:
+        from websocket_dashboard import get_live_price_history
+
+        for item in get_live_price_history(asset, limit=max(200, int(periods) * 20)):
+            if source_hint and str(item.get("source") or "").upper() != str(source_hint).upper():
+                continue
+            price = float(item.get("price"))
+            ts = float(item.get("timestamp"))
+            samples.append((ts, price))
+    except Exception:
+        pass
+
+    if not samples:
+        try:
+            feed_rows = get_feed(source_filter=str(source_hint or "").lower() or None, limit=max(500, int(periods) * 30))
+        except Exception:
+            feed_rows = []
+        for row in feed_rows:
+            if str(row.get("symbol") or "") != asset:
+                continue
+            try:
+                samples.append((float(row.get("timestamp")), float(row.get("price_raw"))))
+            except Exception:
+                continue
+
+    if len(samples) < 2:
+        return None
+
+    samples.sort(key=lambda item: item[0])
+    rows: List[Dict[str, float]] = []
+    current_bucket: Optional[int] = None
+    bucket_prices: List[float] = []
+    bucket_ts: Optional[pd.Timestamp] = None
+
+    for ts, price in samples:
+        bucket = int(ts // bucket_seconds) * bucket_seconds
+        if current_bucket is None:
+            current_bucket = bucket
+            bucket_ts = pd.to_datetime(bucket, unit="s", utc=True)
+        if bucket != current_bucket:
+            if bucket_prices and bucket_ts is not None:
+                rows.append(
+                    {
+                        "timestamp": bucket_ts,
+                        "open": float(bucket_prices[0]),
+                        "high": float(max(bucket_prices)),
+                        "low": float(min(bucket_prices)),
+                        "close": float(bucket_prices[-1]),
+                        "volume": float(len(bucket_prices)),
+                    }
+                )
+            current_bucket = bucket
+            bucket_ts = pd.to_datetime(bucket, unit="s", utc=True)
+            bucket_prices = []
+        bucket_prices.append(float(price))
+
+    if bucket_prices and bucket_ts is not None:
+        rows.append(
+            {
+                "timestamp": bucket_ts,
+                "open": float(bucket_prices[0]),
+                "high": float(max(bucket_prices)),
+                "low": float(min(bucket_prices)),
+                "close": float(bucket_prices[-1]),
+                "volume": float(len(bucket_prices)),
+            }
+        )
+
+    if not rows:
+        return None
+
+    frame = pd.DataFrame(rows).set_index("timestamp").sort_index()
+    return frame.tail(int(max(2, periods)))
+
+
+def _parse_chart_history_end_time(value: Any) -> Optional["pd.Timestamp"]:
+    import pandas as pd
+
+    if value in (None, ""):
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        if raw.isdigit():
+            ts = pd.to_datetime(int(raw), unit="s", utc=True, errors="coerce")
+        else:
+            ts = pd.to_datetime(raw, utc=True, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return pd.Timestamp(ts)
+    except Exception:
+        return None
+
+
+def _deep_history_bar_limit(interval: str, requested: int) -> int:
+    capped = {
+        "1m": 1000,
+        "5m": 1000,
+        "15m": 1000,
+        "30m": 1000,
+        "1h": 1000,
+        "4h": 1000,
+        "1d": 1500,
+    }.get(str(interval or "").lower(), 1000)
+    return max(50, min(int(requested), int(capped)))
+
+
+def _serialize_chart_candles(df: "pd.DataFrame") -> List[Dict[str, Any]]:
+    import pandas as pd
+
+    frame = df.copy()
+    frame.columns = [str(c).lower() for c in frame.columns]
+    timestamps = []
+    for idx_val in frame.index:
+        try:
+            ts = pd.Timestamp(idx_val)
+            if ts.tzinfo is not None:
+                ts = ts.tz_convert("UTC").tz_localize(None)
+            timestamps.append(int(ts.timestamp()))
+        except Exception:
+            timestamps.append(0)
+
+    seen: set[int] = set()
+    candles: List[Dict[str, Any]] = []
+    for t, (_, row) in zip(timestamps, frame.iterrows()):
+        if t == 0 or t in seen:
+            continue
+        seen.add(t)
+        candles.append(
+            {
+                "time": t,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row.get("volume", 0) or 0),
+            }
+        )
+    candles.sort(key=lambda item: item["time"])
+    return candles
 
 
 @app.route("/api/chart/assets")
@@ -1898,6 +2421,8 @@ def api_chart_candles():
         asset    = request.args.get("asset", "EUR/USD")
         interval = request.args.get("interval", "15m")
         cat      = _cat(asset)
+        descriptor = _chart_asset_descriptor(asset, cat)
+        ig_primary = str(descriptor.get("primary_provider") or "").upper() == "IG"
         requested_periods = int(get_chart_timeframe_periods(interval))
         periods = _chart_period_limit(asset, cat, interval, requested_periods)
         cache_key = f"chart_candles:{asset}:{cat}:{interval}:{periods}"
@@ -1917,6 +2442,36 @@ def api_chart_candles():
         }
         df = _fetcher.get_ohlcv(asset, cat, interval=interval, periods=periods)
         used = interval
+        meta = {}
+        try:
+            meta = _fetcher.get_last_ohlcv_metadata(asset, interval)
+        except Exception:
+            meta = {}
+        if (df is None or df.empty) and _is_historical_allowance_error(meta):
+            retry_periods = _chart_allowance_retry_limit(asset, cat, interval, periods)
+            if retry_periods < periods:
+                retry_df = _fetcher.get_ohlcv(asset, cat, interval=interval, periods=retry_periods)
+                if retry_df is not None and not retry_df.empty:
+                    df = retry_df
+                    periods = retry_periods
+                    try:
+                        meta = _fetcher.get_last_ohlcv_metadata(asset, interval)
+                    except Exception:
+                        meta = {}
+
+        if ig_primary:
+            if df is None or df.empty:
+                stream_df = _stream_candles_from_live_feed(asset, interval, periods, source_hint="IG")
+                if stream_df is not None and not stream_df.empty:
+                    df = stream_df
+                    used = interval
+                    meta = {
+                        "source": "IG Stream",
+                        "source_class": "stream_cache",
+                        "provider_warning_message": str(meta.get("provider_error_message") or ""),
+                        "provider_warning_code": str(meta.get("provider_error_code") or ""),
+                    }
+
         allow_fallback = cat in ("forex", "indices")
         if (df is None or df.empty) and allow_fallback and interval in fallbacks:
             for fb in fallbacks[interval]:
@@ -1928,11 +2483,6 @@ def api_chart_candles():
                     break
 
         if df is None or df.empty:
-            meta = {}
-            try:
-                meta = _fetcher.get_last_ohlcv_metadata(asset, interval)
-            except Exception:
-                meta = {}
             last_good_payload = _cache_get(last_good_key)
             if _is_historical_allowance_error(meta) and last_good_payload:
                 fallback_payload = dict(last_good_payload)
@@ -1942,6 +2492,8 @@ def api_chart_candles():
                 fallback_payload["message"] = "Using cached candles due to provider historical allowance."
                 return jsonify(fallback_payload)
             message = str(meta.get("provider_error_message") or f"No data for {asset}")
+            if _is_historical_allowance_error(meta):
+                message = "IG historical allowance exceeded for this chart. Try a higher timeframe or wait for allowance reset."
             return jsonify({"success": True, "candles": [],
                             "message": message,
                             "interval_used": interval,
@@ -1950,43 +2502,22 @@ def api_chart_candles():
                             "provider_error_code": meta.get("provider_error_code"),
                             "provider_error_message": meta.get("provider_error_message")})
 
-        df.columns = [c.lower() for c in df.columns]
-        timestamps = []
-        for idx_val in df.index:
-            try:
-                ts = pd.Timestamp(idx_val)
-                if ts.tzinfo is not None:
-                    ts = ts.tz_convert("UTC").tz_localize(None)
-                timestamps.append(int(ts.timestamp()))
-            except Exception:
-                timestamps.append(0)
-
-        seen: set = set()
-        candles   = []
-        for t, (_, row) in zip(timestamps, df.iterrows()):
-            if t == 0 or t in seen:
-                continue
-            seen.add(t)
-            candles.append({
-                "time":   t,
-                "open":   float(row["open"]),
-                "high":   float(row["high"]),
-                "low":    float(row["low"]),
-                "close":  float(row["close"]),
-                "volume": float(row.get("volume", 0)),
-            })
-        candles.sort(key=lambda x: x["time"])
-        meta = {}
-        try:
-            meta = _fetcher.get_last_ohlcv_metadata(asset, used)
-        except Exception:
+        candles = _serialize_chart_candles(df)
+        if str(meta.get("source_class") or "") != "stream_cache":
             meta = {}
+            try:
+                meta = _fetcher.get_last_ohlcv_metadata(asset, used)
+            except Exception:
+                meta = {}
         payload = {
             "success": True,
             "candles": candles,
             "interval_used": used,
             "bars_requested": periods,
             "data_source": meta.get("source"),
+            "data_source_class": meta.get("source_class"),
+            "live_overlay_allowed": _history_allows_live_overlay(descriptor, meta),
+            "live_price_source": descriptor.get("primary_provider"),
             "cached": False,
         }
         _cache_set(cache_key, payload, ttl=_chart_history_cache_ttl(asset, cat, used))
@@ -1997,6 +2528,83 @@ def api_chart_candles():
     except Exception as e:
         logger.error(f"[candles] {e}")
         return handle_api_error(e, "/api/chart/candles", 500)
+
+
+@app.route("/api/chart/history")
+@_check_api_auth
+@_check_rate_limit
+def api_chart_history():
+    try:
+        asset = request.args.get("asset", "EUR/USD")
+        interval = request.args.get("interval", "1h")
+        cat = _cat(asset)
+        requested = _deep_history_bar_limit(interval, int(request.args.get("bars", "500")))
+        end_time = _parse_chart_history_end_time(request.args.get("end_time"))
+        closed_only = end_time is not None
+        end_key = end_time.isoformat() if end_time is not None else "latest"
+        cache_key = f"chart_history:{asset}:{cat}:{interval}:{requested}:{end_key}"
+        cached_payload = _cache_get(cache_key)
+        if cached_payload:
+            return jsonify(cached_payload)
+
+        df = _fetcher.get_ohlcv(
+            asset,
+            cat,
+            interval=interval,
+            periods=requested,
+            end_time=end_time,
+            closed_only=closed_only,
+        )
+        meta = {}
+        try:
+            meta = _fetcher.get_last_ohlcv_metadata(asset, interval)
+        except Exception:
+            meta = {}
+
+        if df is None or df.empty:
+            return jsonify(
+                {
+                    "success": True,
+                    "candles": [],
+                    "message": str(meta.get("provider_error_message") or f"No history for {asset}"),
+                    "interval_used": interval,
+                    "bars_requested": requested,
+                    "bars_returned": 0,
+                    "data_source": meta.get("source"),
+                    "data_source_class": meta.get("source_class"),
+                    "requested_end_time": end_time.isoformat() if end_time is not None else "",
+                    "history_mode": "deep",
+                    "has_more": False,
+                }
+            )
+
+        candles = _serialize_chart_candles(df)
+        oldest_time = candles[0]["time"] if candles else None
+        newest_time = candles[-1]["time"] if candles else None
+        payload = {
+            "success": True,
+            "candles": candles,
+            "interval_used": interval,
+            "bars_requested": requested,
+            "bars_returned": len(candles),
+            "data_source": meta.get("source"),
+            "data_source_class": meta.get("source_class"),
+            "provider_family": meta.get("provider_family") or meta.get("source"),
+            "requested_end_time": end_time.isoformat() if end_time is not None else "",
+            "history_mode": "deep",
+            "oldest_time": oldest_time,
+            "newest_time": newest_time,
+            "next_end_time": (int(oldest_time) - 1) if oldest_time is not None else None,
+            "has_more": bool(oldest_time is not None and len(candles) >= requested),
+        }
+        _cache_set(cache_key, payload, ttl=900)
+        return jsonify(payload)
+    except APIError as e:
+        return handle_api_error(e, "/api/chart/history", e.status_code)
+    except Exception as e:
+        logger.error(f"[chart-history] {e}")
+        return handle_api_error(e, "/api/chart/history", 500)
+
 
 @app.route("/api/chart/stream")
 @_check_api_auth
@@ -2045,28 +2653,11 @@ def api_market_heatmap():
         return jsonify(cached)
     try:
         from concurrent.futures import ThreadPoolExecutor, wait
-        
+
         def _fetch_one(ac):
             asset, cat = ac
-            if _is_market_weekend(cat):
-                return None
             try:
-                # Fetch 1-day data to get TODAY's open vs current price (true 24h view)
-                df_daily = _fetcher.get_ohlcv(asset, cat, interval="1d", periods=5)
-                if df_daily is None or df_daily.empty or "close" not in df_daily.columns:
-                    return None
-                
-                closes = df_daily["close"].astype(float)
-                opens  = df_daily["open"].astype(float)
-                current_price = float(closes.iloc[-1])
-                today_open = float(opens.iloc[-1])  # Today's opening price
-                
-                # Calculate % change from today's open to current price
-                chg = (current_price - today_open) / today_open * 100 if today_open > 0 else 0.0
-                
-                return {"asset": asset, "category": cat,
-                        "change_pct": round(float(chg), 3),
-                        "price": round(current_price, 5)}
+                return _heatmap_item(asset, cat)
             except Exception as _he:
                 logger.debug(f"[Heatmap] {asset}: {_he}")
                 return None
@@ -2094,7 +2685,7 @@ def api_market_heatmap():
             except Exception:
                 pass
 
-        results.sort(key=lambda x: x["change_pct"], reverse=True)
+        results.sort(key=lambda x: float(x.get("change_pct")) if x.get("change_pct") is not None else float("-inf"), reverse=True)
         payload = {
             "success": True,
             "items": results,
@@ -2113,10 +2704,12 @@ def api_correlation_matrix():
     cached = _cache_get("correlation")
     if cached is not None:
         try:
+            import math
+
             labels = cached.get("labels") or []
             matrix = cached.get("matrix") or []
             invalid = any(
-                value is None or (isinstance(value, (int, float)) and not np.isfinite(value))
+                isinstance(value, (int, float)) and not math.isfinite(value)
                 for row in matrix for value in row
             )
             if labels and matrix and not invalid:
@@ -2125,66 +2718,99 @@ def api_correlation_matrix():
             pass
     try:
         import pandas as pd
-        import numpy as np
         from concurrent.futures import ThreadPoolExecutor, wait
-        from config.config import get_trading_timeframe
-        assets = [a for a, _ in ALL_ASSETS]  # all 19 tradeable assets
 
-        def _fetch_close(a):
-            cat = _cat(a)
-            interval = get_trading_timeframe(cat)
-            try:
-                # Correlation uses historical closes only; fetcher handles local OHLCV caching.
-                df = _fetcher.get_ohlcv(a, cat, interval=interval, periods=50)
-                if df is not None and not df.empty and "close" in df.columns:
-                    return a, df["close"].astype(float)
-            except Exception:
-                pass
-            return a, None
+        assets = [a for a, _ in ALL_ASSETS]
+        plans = [
+            ("1d", 45, 8),
+            ("1h", 240, 24),
+            ("5m", 288, 24),
+        ]
+        best_payload: Optional[Dict[str, Any]] = None
+        best_available_assets = -1
 
-        closes: Dict[str, Any] = {}
-        # Use 6 workers — fewer threads avoids throttling while still fetching cached data in parallel
-        pool = ThreadPoolExecutor(max_workers=6)
-        try:
-            futures = {pool.submit(_fetch_close, a): a for a in assets}
-            done, not_done = wait(futures, timeout=30)
-            for future in done:
+        for interval, periods, min_points in plans:
+            def _fetch_close(a):
+                cat = _cat(a)
                 try:
-                    a, series = future.result()
-                    if series is not None: closes[a] = series
+                    df, meta, _ = _fetch_ohlcv_with_allowance_retry(a, cat, interval, periods)
+                    descriptor = _chart_asset_descriptor(a, cat)
+                    ig_primary = str(descriptor.get("primary_provider") or "").upper() == "IG"
+                    if ig_primary and (df is None or df.empty):
+                        stream_df = _stream_candles_from_live_feed(a, interval, periods, source_hint="IG")
+                        if stream_df is not None and not stream_df.empty:
+                            df = stream_df
+                    if df is not None and not df.empty and "close" in df.columns:
+                        normalized = _normalize_correlation_series(df["close"].astype(float), interval)
+                        if not normalized.empty:
+                            return a, normalized.tail(periods)
                 except Exception:
                     pass
-            if not_done:
-                logger.warning(f"[Correlation] timeout fetching {len(not_done)} assets: {[futures[f] for f in not_done]}")
-                for fut in not_done:
-                    fut.cancel()
-        finally:
-            try:
-                pool.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                pass
+                return a, None
 
-        if len(closes) < 2:
+            closes: Dict[str, Any] = {}
+            pool = ThreadPoolExecutor(max_workers=6)
+            try:
+                futures = {pool.submit(_fetch_close, a): a for a in assets}
+                done, not_done = wait(futures, timeout=30)
+                for future in done:
+                    try:
+                        a, series = future.result()
+                        if series is not None:
+                            closes[a] = series
+                    except Exception:
+                        pass
+                if not_done:
+                    logger.warning(f"[Correlation] timeout fetching {len(not_done)} assets for {interval}: {[futures[f] for f in not_done]}")
+                    for fut in not_done:
+                        fut.cancel()
+            finally:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+
+            if len(closes) < 2:
+                continue
+
+            frame = pd.DataFrame(closes).sort_index()
+            returns = frame.pct_change(fill_method=None)
+            returns = returns.dropna(axis=1, thresh=min_points)
+            if returns.shape[1] < 2:
+                continue
+
+            corr = returns.corr(min_periods=min_points).reindex(index=assets, columns=assets)
+            if returns.shape[1] > 0:
+                for label in returns.columns:
+                    corr.loc[label, label] = 1.0
+
+            corr = corr.round(3)
+            matrix: List[List[Optional[float]]] = []
+            for _, row in corr.iterrows():
+                matrix.append([
+                    None if pd.isna(value) else float(value)
+                    for value in row.tolist()
+                ])
+
+            candidate = {
+                "success": True,
+                "labels": assets,
+                "matrix": matrix,
+                "interval": interval,
+                "expected_assets": len(assets),
+                "available_assets": int(returns.shape[1]),
+                "partial": int(returns.shape[1]) < len(assets),
+            }
+            if int(returns.shape[1]) > best_available_assets:
+                best_payload = candidate
+                best_available_assets = int(returns.shape[1])
+            if int(returns.shape[1]) >= len(assets):
+                break
+
+        if not best_payload:
             return jsonify({"success": False, "error": "Not enough price data — try again in 30s"})
 
-        # Keep pairwise overlap instead of dropping every row that has any NaN.
-        # Different asset classes often have slightly different candle timestamps.
-        frame = pd.DataFrame(closes)
-        returns = frame.pct_change(fill_method=None)
-        returns = returns.dropna(axis=1, thresh=10)
-        if returns.shape[1] < 2:
-            return jsonify({"success": False, "error": "Not enough aligned data"})
-
-        corr = returns.corr(min_periods=10)
-        corr = corr.dropna(axis=0, how="all").dropna(axis=1, how="all")
-        if corr.shape[1] < 2:
-            return jsonify({"success": False, "error": "Not enough correlated data"})
-
-        for label in corr.columns:
-            corr.loc[label, label] = 1.0
-        corr = corr.fillna(0.0).round(3)
-
-        payload = {"success": True, "labels": list(corr.columns), "matrix": corr.values.tolist()}
+        payload = best_payload
         _cache_set("correlation", payload, ttl=600)
         return jsonify(payload)
     except APIError as e:
@@ -2303,6 +2929,13 @@ def api_ai_predictions_overview():
     sig_data = sig_resp.get_json() if hasattr(sig_resp, 'get_json') else json.loads(sig_resp.get_data(as_text=True))
 
     signal_list = sig_data.get("signals") if sig_data.get("success") else []
+    core = _core()
+    closed_trades = []
+    if core and hasattr(core, "get_closed_trades"):
+        try:
+            closed_trades = list(core.get_closed_trades(limit=300) or [])
+        except Exception:
+            closed_trades = []
     live_quality = {
         "signal_count": len(signal_list),
         "avg_confidence": round(
@@ -2360,12 +2993,14 @@ def api_ai_predictions_overview():
             )[:5]
         ],
     }
+    playbook_performance = _summarize_playbook_performance(closed_trades, days_back=days)
     payload = {
         "success": True,
         "accuracy": accuracy,
         "signals": signal_list,
         "live_quality": live_quality,
         "live_leaders": live_leaders,
+        "playbook_performance": playbook_performance,
         "timestamp": datetime.utcnow().isoformat(),
     }
     _cache_set(cache_key, payload, ttl=20)
@@ -2970,16 +3605,14 @@ def api_strategy_performance():
 @_check_rate_limit
 def api_backtest_strategies():
     try:
-        from strategy_lab import StrategyBuilder
-        presets = list(StrategyBuilder.all_configs().keys())
-        archived_presets = list(StrategyBuilder.archived_configs().keys())
-        live_runtime = ["policy_agent"]
         return jsonify(
             {
                 "success": True,
-                "presets": presets,
-                "archived_presets": archived_presets,
-                "live_runtime": live_runtime,
+                "enabled": False,
+                "presets": [],
+                "archived_presets": [],
+                "playbooks": list(_PLAYBOOK_RUNTIME_BLUEPRINTS),
+                "live_runtime": ["playbook_only"],
             }
         )
     except APIError as e:
@@ -2987,108 +3620,12 @@ def api_backtest_strategies():
     except Exception as e:
         return handle_api_error(e, "/api/backtest/strategies", 500)
 
-
-@app.route("/api/strategy-lab/automation")
-@_check_api_auth
-@_check_rate_limit
-def api_strategy_lab_automation():
-    try:
-        from strategy_lab.auto_research import (
-            is_auto_research_running,
-            load_auto_research_settings,
-            load_auto_research_status,
-        )
-        from strategy_lab.live_bridge import load_registry_entries
-
-        settings = load_auto_research_settings()
-        status = load_auto_research_status()
-        status["running"] = bool(status.get("running")) or is_auto_research_running()
-        auto_entries = [
-            {
-                "name": str(entry.get("name") or "unknown"),
-                "asset": str(entry.get("asset") or ""),
-                "category": str(entry.get("category") or ""),
-                "research_summary": copy.deepcopy(entry.get("research_summary") or {}),
-            }
-            for entry in load_registry_entries()
-            if str(entry.get("source") or "") == "bot_auto_research"
-        ]
-        return jsonify(
-            {
-                "success": True,
-                "settings": settings,
-                "status": status,
-                "auto_live_entries": auto_entries,
-            }
-        )
-    except APIError as e:
-        return handle_api_error(e, "/api/strategy-lab/automation", e.status_code)
-    except Exception as e:
-        return handle_api_error(e, "/api/strategy-lab/automation", 500)
-
-
-@app.route("/api/strategy-lab/automation/run", methods=["POST"])
-@_check_api_auth
-@_check_rate_limit
-def api_strategy_lab_automation_run():
-    try:
-        from strategy_lab.auto_research import trigger_auto_research_cycle_async
-
-        payload = trigger_auto_research_cycle_async(trigger="manual_button")
-        status_code = 202 if payload.get("started") else 409
-        return jsonify({"success": bool(payload.get("started")), **payload}), status_code
-    except APIError as e:
-        return handle_api_error(e, "/api/strategy-lab/automation/run", e.status_code)
-    except Exception as e:
-        return handle_api_error(e, "/api/strategy-lab/automation/run", 500)
-
 @app.route("/api/backtest/run")
 @_check_api_auth
 @_check_rate_limit
 def api_backtest_run():
     try:
-        asset    = request.args.get("asset", "").strip()
-        strategy = request.args.get("strategy", "").strip()
-
-        if not asset or not strategy:
-            raise BadRequest("asset and strategy are required")
-
-        canonical = registry.canonical(asset)
-        category  = registry.category(canonical)
-        if category == "unknown":
-            raise BadRequest(f"Unknown asset: {asset}")
-
-        from strategy_lab import (
-            StrategyBuilder,
-            resolve_backtest_end_time,
-            resolve_backtest_periods,
-            run_backtest,
-        )
-
-        configs = StrategyBuilder.all_configs()
-        if strategy not in configs:
-            raise BadRequest(f"Unknown strategy: {strategy}")
-
-        raw_periods = request.args.get("periods")
-        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods(category)
-        snapshot_end = resolve_backtest_end_time(category)
-        result = run_backtest(
-            configs[strategy],
-            canonical,
-            category,
-            periods=periods,
-            end_time=snapshot_end,
-        )
-        return jsonify({
-            "success": True,
-            "strategy": strategy,
-            "asset": canonical,
-            "periods": periods,
-            "snapshot_end_utc": snapshot_end.isoformat(),
-            "metrics": result.to_dict(),
-            "trades": result.trades,
-            "equity_curve": result.equity_curve,
-        })
+        return _playbook_only_disabled_response("/api/backtest/run", "Backtest API")
     except APIError as e:
         return handle_api_error(e, "/api/backtest/run", e.status_code)
     except Exception as e:
@@ -3099,75 +3636,7 @@ def api_backtest_run():
 @_check_rate_limit
 def api_backtest_robustness():
     try:
-        asset = request.args.get("asset", "").strip()
-        strategy = request.args.get("strategy", "").strip()
-        depth = request.args.get("depth", "standard").strip().lower() or "standard"
-
-        if not asset or not strategy:
-            raise BadRequest("asset and strategy are required")
-
-        canonical = registry.canonical(asset)
-        category = registry.category(canonical)
-        if category == "unknown":
-            raise BadRequest(f"Unknown asset: {asset}")
-
-        param_overrides: Dict[str, Any] = {}
-        for key in ("rsi_period", "stop_mult", "tp_mult", "ema_fast", "ema_slow", "atr_period", "bb_period", "bb_std"):
-            raw = request.args.get(key)
-            if raw in (None, ""):
-                continue
-            try:
-                if "." in raw:
-                    param_overrides[key] = float(raw)
-                else:
-                    param_overrides[key] = int(raw)
-            except Exception:
-                raise BadRequest(f"Invalid value for {key}: {raw}")
-
-        from strategy_lab import (
-            StrategyBuilder,
-            resolve_backtest_end_time,
-            resolve_backtest_periods,
-            run_robustness_analysis,
-        )
-        from strategy_lab.parameter_optimizer import ParameterOptimizer
-
-        raw_periods = request.args.get("periods")
-        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods(category)
-        snapshot_end = resolve_backtest_end_time(category)
-        cache_suffix = ":".join(f"{k}={param_overrides[k]}" for k in sorted(param_overrides))
-        cache_key = f"backtest_robustness:{canonical}:{strategy}:{depth}:{periods}:{snapshot_end.isoformat()}:{cache_suffix}"
-        cached = _cache_get(cache_key)
-        if cached:
-            return jsonify(cached)
-
-        configs = StrategyBuilder.all_configs()
-        if strategy not in configs:
-            raise BadRequest(f"Unknown strategy: {strategy}")
-        selected_config = copy.deepcopy(configs[strategy])
-        if param_overrides:
-            selected_config = ParameterOptimizer._apply_params(selected_config, param_overrides)
-
-        report = run_robustness_analysis(
-            strategy_config=selected_config,
-            asset=canonical,
-            category=category,
-            periods=periods,
-            end_time=snapshot_end,
-            research_profile=depth,
-        )
-        payload = {
-            "success": True,
-            "strategy": strategy,
-            "asset": canonical,
-            "periods": periods,
-            "research_profile": depth,
-            "snapshot_end_utc": snapshot_end.isoformat(),
-            "params": param_overrides,
-            "robustness": report,
-        }
-        _cache_set(cache_key, payload, ttl=120)
-        return jsonify(payload)
+        return _playbook_only_disabled_response("/api/backtest/robustness", "Backtest API")
     except APIError as e:
         return handle_api_error(e, "/api/backtest/robustness", e.status_code)
     except Exception as e:
@@ -3178,67 +3647,7 @@ def api_backtest_robustness():
 @_check_rate_limit
 def api_backtest_compare():
     try:
-        asset   = request.args.get("asset", "").strip()
-
-        if not asset:
-            raise BadRequest("asset is required")
-
-        canonical = registry.canonical(asset)
-        category  = registry.category(canonical)
-        if category == "unknown":
-            raise BadRequest(f"Unknown asset: {asset}")
-
-        from strategy_lab import (
-            StrategyBuilder,
-            resolve_backtest_end_time,
-            resolve_backtest_periods,
-            run_backtest,
-        )
-        from strategy_lab.performance_analyzer import PerformanceAnalyzer
-
-        raw_periods = request.args.get("periods")
-        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods(category)
-        snapshot_end = resolve_backtest_end_time(category)
-
-        configs = StrategyBuilder.all_configs()
-        results = []
-        labels = []
-        for name, config in configs.items():
-            try:
-                result = run_backtest(config, canonical, category, periods=periods, end_time=snapshot_end)
-                results.append(result)
-                labels.append(name)
-            except Exception as e:
-                logger.warning(f"[StrategyLab] compare skip {name}: {e}")
-
-        if not results:
-            raise BadRequest("No strategies could be backtested")
-
-        analyzer = PerformanceAnalyzer()
-        ranked = analyzer.compare(results, labels=labels)
-        output = [
-            {
-                "name": row["label"],
-                "strategy": row["label"],
-                "type": "lab",
-                "sharpe": row["sharpe"],
-                "win_rate": row["win_rate"],
-                "total_pnl": row["total_pnl"],
-                "max_dd": row.get("max_drawdown", 0),
-                "trades": row["trades"],
-                "profit_factor": row.get("profit_factor", 0),
-            }
-            for row in ranked
-        ]
-        best = output[0]["name"] if output else ""
-        return jsonify({
-            "success": True,
-            "asset": canonical,
-            "periods": periods,
-            "snapshot_end_utc": snapshot_end.isoformat(),
-            "results": output,
-            "best": best,
-        })
+        return _playbook_only_disabled_response("/api/backtest/compare", "Backtest API")
     except APIError as e:
         return handle_api_error(e, "/api/backtest/compare", e.status_code)
     except Exception as e:
@@ -3249,53 +3658,7 @@ def api_backtest_compare():
 @_check_rate_limit
 def api_backtest_optimize():
     try:
-        asset    = request.args.get("asset", "").strip()
-        strategy = request.args.get("strategy", "").strip()
-
-        if not asset or not strategy:
-            raise BadRequest("asset and strategy are required")
-
-        canonical = registry.canonical(asset)
-        category  = registry.category(canonical)
-        if category == "unknown":
-            raise BadRequest(f"Unknown asset: {asset}")
-
-        from strategy_lab import (
-            StrategyBuilder,
-            optimize_strategy,
-            resolve_backtest_end_time,
-            resolve_backtest_periods,
-        )
-
-        configs = StrategyBuilder.all_configs()
-        if strategy not in configs:
-            raise BadRequest(f"Unknown strategy: {strategy}")
-
-        raw_periods = request.args.get("periods")
-        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods(category)
-        snapshot_end = resolve_backtest_end_time(category)
-        results = optimize_strategy(
-            base_config=configs[strategy],
-            param_grid={
-                "rsi_period": [10, 14, 21],
-                "stop_mult":  [1.0, 1.5, 2.0],
-                "tp_mult":    [2.0, 3.0, 4.0],
-            },
-            asset=canonical,
-            category=category,
-            periods=periods,
-            end_time=snapshot_end,
-        )
-
-        return jsonify({
-            "success": True,
-            "strategy": strategy,
-            "asset": canonical,
-            "periods": periods,
-            "snapshot_end_utc": snapshot_end.isoformat(),
-            "total": len(results),
-            "top5": results[:5],
-        })
+        return _playbook_only_disabled_response("/api/backtest/optimize", "Backtest API")
     except APIError as e:
         return handle_api_error(e, "/api/backtest/optimize", e.status_code)
     except Exception as e:
@@ -3306,58 +3669,7 @@ def api_backtest_optimize():
 @_check_rate_limit
 def api_backtest_multi_asset():
     try:
-        strategy = request.args.get("strategy", "").strip()
-
-        if not strategy:
-            raise BadRequest("strategy is required")
-
-        from strategy_lab import (
-            StrategyBuilder,
-            resolve_backtest_end_time,
-            resolve_backtest_periods,
-            run_backtest,
-        )
-
-        configs = StrategyBuilder.all_configs()
-        if strategy not in configs:
-            raise BadRequest(f"Unknown strategy: {strategy}")
-
-        raw_periods = request.args.get("periods")
-        periods = int(raw_periods) if raw_periods not in (None, "") else resolve_backtest_periods("")
-        snapshot_end = resolve_backtest_end_time("")
-        chosen_config = configs[strategy]
-        from core.assets import registry
-
-        test_assets = list(registry.all_assets())
-
-        results = []
-        for asset, category in test_assets:
-            try:
-                result = run_backtest(chosen_config, asset, category, periods=periods, end_time=snapshot_end)
-                results.append({
-                    "asset": asset,
-                    "category": category,
-                    "sharpe": result.sharpe_ratio,
-                    "win_rate": result.win_rate,
-                    "total_pnl": result.total_pnl,
-                    "max_dd": result.max_drawdown,
-                    "trades": result.total_trades,
-                })
-            except Exception as e:
-                logger.warning(f"[StrategyLab] multi-asset skip {asset}: {e}")
-
-        if not results:
-            raise BadRequest("No assets could be backtested")
-
-        best = max(results, key=lambda r: r.get("sharpe", 0))["asset"]
-        return jsonify({
-            "success": True,
-            "strategy": strategy,
-            "periods": periods,
-            "snapshot_end_utc": snapshot_end.isoformat(),
-            "results": results,
-            "best": best,
-        })
+        return _playbook_only_disabled_response("/api/backtest/multi-asset", "Backtest API")
     except APIError as e:
         return handle_api_error(e, "/api/backtest/multi-asset", e.status_code)
     except Exception as e:
@@ -3578,29 +3890,46 @@ def api_trade_history():
     """Return last N closed trades with full details for the history panel."""
     try:
         limit = int(request.args.get("limit", 50))
-        from services.db_pool import get_db
-        trades = get_db().get_recent_trades(limit=limit)
-        from datetime import timedelta as _td
-        from config.config import TZ_NAME, TZ_OFFSET_HOURS
+        raw_limit = max(limit * 3, limit + 10)
+        from core.state import rollup_closed_trade_history, state as runtime_state
+        trades = rollup_closed_trade_history(runtime_state.get_closed_positions(limit=raw_limit), limit=limit)
+        from config.config import TZ_NAME
+        def _infer_partial_trade_shape(trade_id: str, metadata: dict, exit_reason: str) -> tuple[str | None, bool]:
+            parent_trade_id = metadata.get("parent_trade_id")
+            if parent_trade_id in ("", None):
+                raw_id = str(trade_id or "")
+                if "-PT" in raw_id:
+                    candidate, suffix = raw_id.rsplit("-PT", 1)
+                    if candidate and suffix.isdigit():
+                        parent_trade_id = candidate
+            partial_flag = metadata.get("is_partial_close")
+            if partial_flag is None:
+                partial_flag = bool(parent_trade_id) or str(exit_reason or "").lower().startswith("partial tp")
+            return (str(parent_trade_id) if parent_trade_id not in ("", None) else None, bool(partial_flag))
         def _enrich(trade):
             d = dict(trade)
             _meta = dict(d.get("metadata") or {})
+            parent_trade_id, is_partial_close = _infer_partial_trade_shape(
+                str(d.get("trade_id") or ""),
+                _meta,
+                str(d.get("exit_reason") or ""),
+            )
+            d["parent_trade_id"] = parent_trade_id
+            d["is_partial_close"] = is_partial_close
             d.update(_extract_execution_feedback_fields(_meta))
             d.update(_extract_memory_fields(_meta))
             d.update(_extract_opportunity_fields(_meta))
             d.update(_extract_signal_intelligence_fields(_meta))
-            # Convert stored UTC timestamps into the configured dashboard timezone.
-            display_offset = _td(hours=TZ_OFFSET_HOURS)
             try:
-                entry_raw = d.get("entry_time")
+                entry_raw = d.get("entry_time") or d.get("open_time")
                 exit_raw = d.get("exit_time")
+                if entry_raw and not d.get("entry_time"):
+                    d["entry_time"] = entry_raw
+                if entry_raw and not d.get("open_time"):
+                    d["open_time"] = entry_raw
                 if entry_raw and exit_raw:
-                    et = datetime.fromisoformat(str(entry_raw).replace("Z", "+00:00")).replace(tzinfo=None)
-                    xt = datetime.fromisoformat(str(exit_raw).replace("Z", "+00:00")).replace(tzinfo=None)
-                    et_local = et + display_offset
-                    xt_local = xt + display_offset
-                    d["entry_time"] = et_local.isoformat()
-                    d["exit_time"] = xt_local.isoformat()
+                    et = datetime.fromisoformat(str(entry_raw).replace("Z", "+00:00"))
+                    xt = datetime.fromisoformat(str(exit_raw).replace("Z", "+00:00"))
                     d["display_timezone"] = TZ_NAME
                     secs = abs((xt - et).total_seconds())
                     mins = int(secs / 60)
@@ -3611,7 +3940,17 @@ def api_trade_history():
                     else:
                         d["duration_str"] = f"{mins//1440}d {(mins%1440)//60}h"
                 else:
-                    d["duration_str"] = "—"
+                    duration_minutes = d.get("duration_minutes")
+                    if duration_minutes not in (None, ""):
+                        mins = max(0, int(float(duration_minutes)))
+                        if mins < 60:
+                            d["duration_str"] = f"{mins}m"
+                        elif mins < 1440:
+                            d["duration_str"] = f"{mins//60}h {mins%60}m"
+                        else:
+                            d["duration_str"] = f"{mins//1440}d {(mins%1440)//60}h"
+                    else:
+                        d["duration_str"] = "—"
             except Exception:
                 d["duration_str"] = "—"
             return d
@@ -3867,17 +4206,7 @@ def api_system_health():
             phase_health["phase4_narrative_ai"] = True
         except Exception:
             phase_health["phase4_narrative_ai"] = False
-        try:
-            from strategy_lab import StrategyBuilder
-            StrategyBuilder.all_configs()
-            phase_health["phase5_strategy_lab"] = True
-        except Exception:
-            phase_health["phase5_strategy_lab"] = False
-        try:
-            from ml.meta_model import predictor as _mp
-            phase_health["phase6_meta_ai"] = _mp is not None
-        except Exception:
-            phase_health["phase6_meta_ai"] = False
+        phase_health["phase6_meta_ai"] = False
         try:
             from services.intelligence_alerts import alert_service as _as
             phase_health["phase7_intel_alerts"] = getattr(_as, "_running", False)
@@ -3908,8 +4237,6 @@ def api_system_health():
             "stale_source_count": int(health.get("stale_source_count", 0) or 0),
             "never_seen_sources": list(health.get("never_seen_sources") or []),
             "never_seen_source_count": int(health.get("never_seen_source_count", 0) or 0),
-            "training_health":  dict(health.get("training_health") or {}),
-            "training_summary": dict(health.get("training_summary") or {}),
             "ig_broker":       dict(health.get("ig_broker") or {}),
             "recent_error_count": int(health.get("recent_error_count", 0) or 0),
             "recent_errors":    list(health.get("recent_errors") or []),
@@ -4055,15 +4382,6 @@ def api_page_overview():
             "hunts": _response_to_dict(_call_view(api_phase3_stop_hunts)),
         }
         ttl = 15
-    elif page == "strategy_lab":
-        payload = {
-            "success": True,
-            "status": _response_to_dict(_call_view(api_status)),
-            "strategies": _response_to_dict(_call_view(api_backtest_strategies)),
-            "performance": _response_to_dict(_call_view(api_strategy_performance)),
-            "automation": _response_to_dict(_call_view(api_strategy_lab_automation)),
-        }
-        ttl = 20
     elif page == "command_center":
         command_center = _response_to_dict(_call_view(api_command_center))
         payload = {

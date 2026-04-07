@@ -25,10 +25,8 @@ from config.config import (
     GOVERNANCE_REQUIRE_NON_DELAYED_PRICE,
     GOVERNANCE_VALIDATION_DAYS,
     GOVERNANCE_VALIDATION_HORIZON,
-    LIVE_APPROVED_REGISTRY_ONLY,
-    LIVE_REQUIRE_ASSET_APPROVAL,
+    PLAYBOOK_ONLY_RUNTIME,
 )
-from ml.registry import registry
 from risk.forex_filter import ForexFilter
 from utils.logger import get_logger
 
@@ -36,11 +34,12 @@ logger = get_logger()
 
 MODE_NAME = "deriv"
 
-_ACCEPTABLE_SOURCE_CLASSES = {"stream", "broker", "primary_api", "secondary_api", "cache"}
+_ACCEPTABLE_SOURCE_CLASSES = {"stream", "broker", "primary_api", "secondary_api", "cache", "local_store"}
 _SOURCE_SCORE = {
     "stream": 96,
     "broker": 92,
     "primary_api": 88,
+    "local_store": 84,
     "secondary_api": 76,
     "cache": 70,
     "fallback": 40,
@@ -48,17 +47,71 @@ _SOURCE_SCORE = {
     "unavailable": 0,
 }
 
+_LIVE_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
+    "crypto": {
+        "min_risk_reward": 1.35,
+        "min_ml_confidence": 0.14,
+        "min_live_accuracy": 45.0,
+        "bootstrap_min_live_accuracy": 42.0,
+        "expectancy_min_avg_r": -0.05,
+    },
+    "commodities": {
+        "min_risk_reward": 1.15,
+        "min_ml_confidence": 0.14,
+        "min_live_accuracy": 50.0,
+        "bootstrap_min_live_accuracy": 45.0,
+        "expectancy_min_avg_r": -0.02,
+        "allow_provisional_research_in_paper": True,
+    },
+    "forex": {
+        "min_risk_reward": 1.15,
+    },
+    "indices": {
+        "min_risk_reward": 1.25,
+        "min_ml_confidence": 0.14,
+        "min_live_accuracy": 50.0,
+        "bootstrap_min_live_accuracy": 45.0,
+    },
+}
+
+_PAPER_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
+    "crypto": {
+        "min_risk_reward": 1.20,
+        "min_ml_confidence": 0.14,
+        "min_live_accuracy": 25.0,
+        "bootstrap_min_live_accuracy": 22.0,
+        "expectancy_min_avg_r": -0.05,
+    },
+    "commodities": {
+        "min_risk_reward": 1.00,
+        "min_ml_confidence": 0.14,
+        "min_live_accuracy": 50.0,
+        "bootstrap_min_live_accuracy": 45.0,
+        "expectancy_min_avg_r": -0.02,
+        "allow_provisional_research_in_paper": True,
+    },
+    "forex": {
+        "min_risk_reward": 0.75,
+    },
+    "indices": {
+        "min_risk_reward": 1.00,
+        "min_ml_confidence": 0.14,
+        "min_live_accuracy": 45.0,
+        "bootstrap_min_live_accuracy": 40.0,
+    },
+}
+
 
 class SignalGovernance:
     def evaluate(self, signal, context: Dict[str, Any] | None = None) -> Dict[str, Any]:
         context = context or {}
         asset = signal.canonical_asset or signal.asset
-        policy_status = str(signal.metadata.get("agent_policy_status", "ok") or "ok").strip().lower()
-        model_key = (
-            signal.metadata.get("policy_model") if policy_status == "ok" else ""
+        category = str(signal.category or "").strip().lower()
+        model_key = str(
+            signal.metadata.get("playbook_name")
             or signal.metadata.get("seed_model")
-            or f"{signal.category}_classifier"
-        )
+            or "playbook_runtime"
+        ).strip()
         research_model_key, model_meta, research_warning = self._resolve_research_model(signal, model_key)
         market_data = context.get("market_data") or signal.metadata.get("market_data") or {}
         price_meta = market_data.get("price") or {}
@@ -67,7 +120,8 @@ class SignalGovernance:
         registry_validation = self._get_registry_validation(asset, signal.category)
         expectancy_validation = self._get_expectancy_validation(asset, signal.category)
         adaptive_policy = context.get("adaptive_policy") or signal.metadata.get("adaptive_policy") or {}
-        min_risk_reward = self._effective_min_risk_reward(adaptive_policy)
+        min_risk_reward = self._effective_min_risk_reward(adaptive_policy, category=category)
+        min_ml_confidence = self._effective_min_ml_confidence(category)
 
         violations = []
         warnings = []
@@ -78,6 +132,12 @@ class SignalGovernance:
         market_intel_score = float(signal.metadata.get("market_intelligence_score", 0.0) or 0.0)
         market_intel_sources = list(signal.metadata.get("market_intelligence_sources") or [])
         ml_conf = float(signal.metadata.get("ml_confidence", context.get("ml_confidence", 0.0)) or 0.0)
+        seed_source = str(signal.metadata.get("seed_source", "") or "").strip().lower()
+        playbook_action = str(signal.metadata.get("playbook_action", "") or "").strip().lower()
+        playbook_confidence = float(signal.metadata.get("playbook_confidence", 0.0) or 0.0)
+        effective_seed_confidence = ml_conf
+        if seed_source == "playbook" or playbook_action in {"seed", "override"}:
+            effective_seed_confidence = max(effective_seed_confidence, playbook_confidence)
         live_total = int(live_validation.get("total", 0) or 0)
         live_accuracy = float(live_validation.get("accuracy_pct", 0.0) or 0.0)
         price_score = self._source_score(price_meta)
@@ -87,16 +147,22 @@ class SignalGovernance:
         research_ok, research_note = self._assess_model_research(
             research_model_key,
             model_meta,
-            category=signal.category,
+            category=category,
         )
 
         if valid_sources < GOVERNANCE_MIN_REAL_SOURCES:
             violations.append(f"real_sources={valid_sources} below minimum {GOVERNANCE_MIN_REAL_SOURCES}")
 
-        if ml_conf < GOVERNANCE_MIN_ML_CONFIDENCE:
-            violations.append(
-                f"ml_confidence={ml_conf:.3f} below minimum {GOVERNANCE_MIN_ML_CONFIDENCE:.3f}"
-            )
+        if effective_seed_confidence < min_ml_confidence:
+            if seed_source == "playbook" or playbook_action in {"seed", "override"}:
+                violations.append(
+                    f"seed_confidence={effective_seed_confidence:.3f} below minimum {min_ml_confidence:.3f} "
+                    f"(ml={ml_conf:.3f}, playbook={playbook_confidence:.3f})"
+                )
+            else:
+                violations.append(
+                    f"ml_confidence={ml_conf:.3f} below minimum {min_ml_confidence:.3f}"
+                )
 
         if float(signal.risk_reward or 0.0) < min_risk_reward:
             violations.append(
@@ -137,13 +203,16 @@ class SignalGovernance:
         elif registry_warning:
             warnings.append(registry_warning)
 
-        live_violation, live_warning = self._assess_live_validation(live_validation)
+        live_violation, live_warning = self._assess_live_validation(live_validation, category=category)
         if live_violation:
             violations.append(live_violation)
         elif live_warning:
             warnings.append(live_warning)
 
-        expectancy_violation, expectancy_warning = self._assess_expectancy_validation(expectancy_validation)
+        expectancy_violation, expectancy_warning = self._assess_expectancy_validation(
+            expectancy_validation,
+            category=category,
+        )
         if expectancy_violation:
             violations.append(expectancy_violation)
         elif expectancy_warning:
@@ -181,7 +250,9 @@ class SignalGovernance:
         elif expectancy_samples > 0:
             score += 2
         score += min(8, valid_sources * 2)
-        score += min(10, ml_conf * 20)
+        score += min(10, effective_seed_confidence * 20)
+        if seed_source == "playbook" and playbook_action in {"seed", "override"}:
+            score += min(4, max(0.0, playbook_confidence - 0.5) * 10)
         if market_intel_sources:
             score += min(6, max(1, len(market_intel_sources)))
             score += min(5, abs(market_intel_score) * 5)
@@ -214,17 +285,59 @@ class SignalGovernance:
                 "ohlcv": ohlcv_meta,
             },
             "min_risk_reward": round(min_risk_reward, 2),
+            "effective_seed_confidence": round(effective_seed_confidence, 4),
         }
 
     @staticmethod
-    def _effective_min_risk_reward(adaptive_policy: Dict[str, Any]) -> float:
+    def _category_profile(category: str) -> Dict[str, float | bool]:
+        base: Dict[str, float | bool] = {
+            "min_risk_reward": float(GOVERNANCE_MIN_RISK_REWARD),
+            "min_ml_confidence": float(GOVERNANCE_MIN_ML_CONFIDENCE),
+            "min_live_accuracy": float(GOVERNANCE_MIN_LIVE_ACCURACY),
+            "bootstrap_min_live_accuracy": float(GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY),
+            "expectancy_min_avg_r": float(GOVERNANCE_EXPECTANCY_MIN_AVG_R),
+            "allow_provisional_research_in_paper": False,
+        }
+        category_key = str(category or "").strip().lower()
+        runtime_live = os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
+        profile_source = (
+            _LIVE_CATEGORY_GOVERNANCE_PROFILES
+            if runtime_live
+            else _PAPER_CATEGORY_GOVERNANCE_PROFILES
+        )
+        base.update(profile_source.get(category_key, {}))
+        return base
+
+    @classmethod
+    def _effective_min_ml_confidence(cls, category: str) -> float:
+        profile = cls._category_profile(category)
+        return max(0.05, float(profile.get("min_ml_confidence", GOVERNANCE_MIN_ML_CONFIDENCE) or GOVERNANCE_MIN_ML_CONFIDENCE))
+
+    @classmethod
+    def _effective_min_risk_reward(cls, adaptive_policy: Dict[str, Any], *, category: str = "") -> float:
+        runtime_live = os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
+        category_key = str(category or "").strip().lower()
+        if runtime_live:
+            rr_floor = 1.0
+        elif category_key == "forex":
+            rr_floor = 0.65
+        elif category_key in {"commodities", "indices"}:
+            rr_floor = 0.85
+        elif category_key == "crypto":
+            rr_floor = 1.0
+        else:
+            rr_floor = 0.75
         try:
             adaptive_min_rr = float((adaptive_policy or {}).get("min_rr", 0.0) or 0.0)
         except Exception:
             adaptive_min_rr = 0.0
         if adaptive_min_rr > 0.0:
-            return max(1.0, adaptive_min_rr)
-        return max(1.0, float(GOVERNANCE_MIN_RISK_REWARD))
+            return max(rr_floor, adaptive_min_rr)
+        profile = cls._category_profile(category)
+        return max(
+            rr_floor,
+            float(profile.get("min_risk_reward", GOVERNANCE_MIN_RISK_REWARD) or GOVERNANCE_MIN_RISK_REWARD),
+        )
 
     @staticmethod
     def _has_research_metadata(model_meta: Dict[str, Any]) -> bool:
@@ -241,58 +354,33 @@ class SignalGovernance:
             )
         )
 
-    @staticmethod
-    def _policy_supports_signal_direction(signal) -> bool:
-        direction = str(getattr(signal, "direction", "") or "").upper()
-        try:
-            policy_score = float(signal.metadata.get("agent_score", 0.5) or 0.5)
-        except Exception:
-            policy_score = 0.5
-        if direction == "BUY":
-            return policy_score >= 0.55
-        if direction == "SELL":
-            return policy_score <= 0.45
-        return False
-
     @classmethod
     def _resolve_research_model(cls, signal, decision_model_key: str) -> tuple[str, Dict[str, Any], str]:
-        decision_model_key = str(decision_model_key or "").strip()
-        decision_meta = registry.get_metadata(decision_model_key) if decision_model_key else {}
-        if cls._has_research_metadata(decision_meta):
-            return decision_model_key, decision_meta, ""
+        decision_model_key = str(decision_model_key or "").strip() or "playbook_runtime"
+        decision_meta = dict(signal.metadata.get("playbook_research") or {})
+        if not cls._has_research_metadata(decision_meta):
+            decision_meta = {
+                "research_approved": True,
+                "research_status": "playbook_runtime",
+                "research_grade": "runtime",
+            }
+        return decision_model_key, decision_meta, ""
 
-        policy_model_key = str(signal.metadata.get("policy_model") or f"{signal.category}_policy").strip()
-        if not policy_model_key or policy_model_key == decision_model_key:
-            return decision_model_key, decision_meta, ""
-
-        policy_meta = registry.get_metadata(policy_model_key) if policy_model_key else {}
-        if not cls._has_research_metadata(policy_meta):
-            return decision_model_key, decision_meta, ""
-        if not cls._policy_supports_signal_direction(signal):
-            return decision_model_key, decision_meta, ""
-
-        research_ok, _research_note = cls._assess_model_research(
-            policy_model_key,
-            policy_meta,
-            category=signal.category,
-        )
-        if not research_ok:
-            return decision_model_key, decision_meta, ""
-
-        missing_name = decision_model_key or "seed model"
-        return (
-            policy_model_key,
-            policy_meta,
-            f"using aligned {policy_model_key} research metadata because {missing_name} metadata is unavailable",
-        )
-
-    @staticmethod
+    @classmethod
     def _assess_model_research(
+        cls,
         model_key: str,
         model_meta: Dict[str, Any],
         *,
         category: str = "",
     ) -> tuple[bool, str]:
+        research_state = str(
+            model_meta.get("research_status")
+            or model_meta.get("research_grade")
+            or ""
+        ).strip().lower()
+        if research_state in {"playbook_runtime", "runtime"}:
+            return True, ""
         if bool(model_meta.get("research_approved")):
             return True, ""
 
@@ -302,16 +390,8 @@ class SignalGovernance:
         walk_forward_threshold = float(model_meta.get("walk_forward_threshold", 0.52) or 0.52)
         walk_forward_samples = int(model_meta.get("walk_forward_samples", 0) or 0)
         walk_forward_required = int(model_meta.get("walk_forward_required_samples", 60) or 60)
-        research_state = str(
-            model_meta.get("research_status")
-            or model_meta.get("research_grade")
-            or ""
-        ).strip().lower()
         category_name = str(category or "").strip().lower()
         runtime_live = os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
-
-        if category_name == "commodities":
-            return False, f"model {model_key or 'unknown'} lacks approved walk-forward research"
 
         provisional_ok = (
             research_state == "provisional"
@@ -319,6 +399,16 @@ class SignalGovernance:
             and walk_forward_accuracy >= walk_forward_threshold
             and walk_forward_samples >= walk_forward_required
         )
+        profile = cls._category_profile(category_name)
+        allow_paper_provisional = bool(profile.get("allow_provisional_research_in_paper", False))
+
+        if category_name == "commodities":
+            if provisional_ok and not runtime_live and allow_paper_provisional:
+                return True, (
+                    f"model {model_key or 'unknown'} allowed in paper runtime with provisional commodity research"
+                )
+            return False, f"model {model_key or 'unknown'} lacks approved walk-forward research"
+
         if provisional_ok:
             return True, f"model {model_key or 'unknown'} using bootstrap research allowance ({research_state})"
 
@@ -420,11 +510,17 @@ class SignalGovernance:
             return "", note
         return "", ""
 
-    @staticmethod
-    def _assess_live_validation(live_validation: Dict[str, Any]) -> tuple[str, str]:
+    @classmethod
+    def _assess_live_validation(cls, live_validation: Dict[str, Any], *, category: str = "") -> tuple[str, str]:
         live_total = int(live_validation.get("total", 0) or 0)
         live_accuracy = float(live_validation.get("accuracy_pct", 0.0) or 0.0)
         scope = live_validation.get("scope", "fallback")
+        profile = cls._category_profile(category)
+        min_live_accuracy = float(profile.get("min_live_accuracy", GOVERNANCE_MIN_LIVE_ACCURACY) or GOVERNANCE_MIN_LIVE_ACCURACY)
+        bootstrap_min_live_accuracy = float(
+            profile.get("bootstrap_min_live_accuracy", GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY)
+            or GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY
+        )
 
         if scope == "unavailable":
             return "", "live validation unavailable"
@@ -463,20 +559,20 @@ class SignalGovernance:
                     f"below minimum {GOVERNANCE_PORTFOLIO_MIN_LIVE_ACCURACY:.1f}%",
                     "",
                 )
-            if live_accuracy < GOVERNANCE_MIN_LIVE_ACCURACY:
+            if live_accuracy < min_live_accuracy:
                 return "", (
                     f"live portfolio accuracy {live_accuracy:.1f}% "
-                    f"below preferred {GOVERNANCE_MIN_LIVE_ACCURACY:.1f}%"
+                    f"below preferred {min_live_accuracy:.1f}%"
                 )
             return "", ""
         if live_total < GOVERNANCE_MIN_LIVE_SAMPLES:
             if (
                 live_total >= GOVERNANCE_BOOTSTRAP_MIN_LIVE_SAMPLES
-                and live_accuracy < GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY
+                and live_accuracy < bootstrap_min_live_accuracy
             ):
                 return (
                     f"live {scope} bootstrap accuracy {live_accuracy:.1f}% "
-                    f"below minimum {GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY:.1f}% "
+                    f"below minimum {bootstrap_min_live_accuracy:.1f}% "
                     f"after {live_total} samples",
                     "",
                 )
@@ -484,22 +580,24 @@ class SignalGovernance:
                 f"live validation bootstrap: {live_total}/{GOVERNANCE_MIN_LIVE_SAMPLES} "
                 f"evaluated samples"
             )
-        if live_accuracy < GOVERNANCE_MIN_LIVE_ACCURACY:
+        if live_accuracy < min_live_accuracy:
             return (
                 f"live {scope} accuracy {live_accuracy:.1f}% "
-                f"below minimum {GOVERNANCE_MIN_LIVE_ACCURACY:.1f}%",
+                f"below minimum {min_live_accuracy:.1f}%",
                 "",
             )
         return "", ""
 
-    @staticmethod
-    def _assess_expectancy_validation(expectancy_validation: Dict[str, Any]) -> tuple[str, str]:
+    @classmethod
+    def _assess_expectancy_validation(cls, expectancy_validation: Dict[str, Any], *, category: str = "") -> tuple[str, str]:
         scope = str(expectancy_validation.get("scope") or "bootstrap")
         sample_count = int(expectancy_validation.get("sample_count", 0) or 0)
         avg_rr_realized = float(expectancy_validation.get("avg_rr_realized", 0.0) or 0.0)
         target_hit_rate = float(expectancy_validation.get("target_hit_rate", 0.0) or 0.0)
         premature_stop_rate = float(expectancy_validation.get("premature_stop_rate", 0.0) or 0.0)
         avg_quality_score = float(expectancy_validation.get("avg_quality_score", 0.0) or 0.0)
+        profile = cls._category_profile(category)
+        min_avg_r = float(profile.get("expectancy_min_avg_r", GOVERNANCE_EXPECTANCY_MIN_AVG_R) or GOVERNANCE_EXPECTANCY_MIN_AVG_R)
 
         if scope == "unavailable":
             return "", "execution expectancy unavailable"
@@ -515,10 +613,10 @@ class SignalGovernance:
                 f"execution expectancy bootstrap: {sample_count}/{GOVERNANCE_EXPECTANCY_MIN_SAMPLES} "
                 f"closed trades"
             )
-        if avg_rr_realized < GOVERNANCE_EXPECTANCY_MIN_AVG_R:
+        if avg_rr_realized < min_avg_r:
             return (
                 f"live asset expectancy {avg_rr_realized:.2f}R below minimum "
-                f"{GOVERNANCE_EXPECTANCY_MIN_AVG_R:.2f}R",
+                f"{min_avg_r:.2f}R",
                 "",
             )
         if (
@@ -605,38 +703,19 @@ class SignalGovernance:
 
     @staticmethod
     def _get_registry_validation(asset: str, category: str) -> Dict[str, Any]:
-        runtime_live = os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
-        required = LIVE_APPROVED_REGISTRY_ONLY and runtime_live
-        asset_required = required and LIVE_REQUIRE_ASSET_APPROVAL
-        registry_count = 0
-        empty_registry = False
-
-        try:
-            from strategy_lab.live_bridge import find_live_registry_matches, load_registry_entries
-
-            registry_count = len(load_registry_entries())
-            empty_registry = registry_count == 0
-            matches = find_live_registry_matches(asset, category)
-        except Exception as exc:
-            logger.debug(f"[SignalGovernance] Live strategy registry unavailable: {exc}")
-            matches = {
-                "asset": asset,
-                "category": category,
-                "matched": False,
-                "exact_match": False,
-                "match_scope": "unavailable",
-                "strategies": [],
-                "names": [],
-            }
-            registry_count = 0
-            empty_registry = False
         return {
-            "required": required,
-            "asset_required": asset_required,
-            "bootstrap_mode": required and empty_registry,
-            "empty_registry": empty_registry,
-            "registry_count": registry_count,
-            **matches,
+            "required": False,
+            "asset_required": False,
+            "bootstrap_mode": False,
+            "empty_registry": False,
+            "registry_count": 0,
+            "asset": asset,
+            "category": category,
+            "matched": False,
+            "exact_match": False,
+            "match_scope": "playbook_only" if PLAYBOOK_ONLY_RUNTIME else "registry_removed",
+            "strategies": [],
+            "names": [],
         }
 
     @staticmethod

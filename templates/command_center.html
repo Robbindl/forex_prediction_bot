@@ -192,11 +192,10 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <div class="sb-section">Dashboards</div>
     <a href="/command-center" class="sb-link active"><span class="sb-icon">⚡</span>Command Center</a>
     <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
-    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>Playbook Intel</a>
     <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
     <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
     <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
-    <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
@@ -410,10 +409,32 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 // Clock
 setInterval(()=>{document.getElementById('clock').textContent=new Date(Date.now()+3*3600000).toUTCString().substring(17,25)+' EAT';},1000);
 
+const DASHBOARD_TIME_ZONE='Africa/Nairobi';
+
 function fmtNum(n,dec=2){return n==null?'—':(n>=0?'+':'')+Number(n).toFixed(dec)}
 function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
 function colorClass(n){return n>=0?'gn':'rd'}
 function humanToken(v){return String(v||'').replace(/_/g,' ')}
+function parseDashboardTime(raw){
+  if(!raw)return null;
+  const text=String(raw).trim();
+  if(!text)return null;
+  const normalized=(text.endsWith('Z')||/[+-]\d{2}:\d{2}$/.test(text)||/[+-]\d{4}$/.test(text))?text:text+'Z';
+  const dt=new Date(normalized);
+  return Number.isNaN(dt.getTime())?null:dt;
+}
+function fmtDashboardTime(raw){
+  const dt=parseDashboardTime(raw);
+  if(!dt)return'—';
+  return new Intl.DateTimeFormat('en-GB',{
+    timeZone:DASHBOARD_TIME_ZONE,
+    day:'2-digit',
+    month:'short',
+    hour:'2-digit',
+    minute:'2-digit',
+    hour12:false,
+  }).format(dt);
+}
 function depthLabel(item){
   if(item.depth_mode)return humanToken(item.depth_mode)
   if(item.depth_available)return 'true depth';
@@ -713,6 +734,7 @@ async function loadHistory(){
       return;
     }
     let trades=d.trades||[];
+    trades=trades.filter(t=>!t.is_partial_close);
 
     // Apply filter
     if(filter==='forex')      trades=trades.filter(t=>t.category==='forex');
@@ -729,18 +751,6 @@ async function loadHistory(){
       return;
     }
 
-    const _utc=iso=>{
-      if(!iso)return null;
-      // Always parse as UTC — append Z if no tz info present
-      const s=iso.endsWith('Z')||iso.includes('+00')||iso.includes('+0')?iso:iso+'Z';
-      const d=new Date(s);
-      return isNaN(d)?null:d;
-    };
-    const fmtTime=iso=>{
-      const d=_utc(iso);
-      if(!d)return'—';
-      return d.toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
-    };
     const fmtDur=ms=>{
       const m=Math.floor(ms/60000);
       if(m<60)return m+'m';
@@ -749,6 +759,7 @@ async function loadHistory(){
     };
     const reasonLabel=r=>{
       if(!r)return'—';
+      if(r.includes('Partial TP') && r.includes('->'))return r;
       if(r.includes('Take Profit'))return'Take Profit';
       if(r.includes('Stop Loss'))return r.includes('offline') ? 'Stop Loss (Offline)' : 'Stop Loss';
       if(r.includes('Trail'))return'Trailing Exit';
@@ -761,7 +772,7 @@ async function loadHistory(){
     tbody.innerHTML=trades.map(t=>{
       const pnl=Number(t.pnl||0);
       const pnlCol=pnl>=0?'var(--gr)':'var(--rd)';
-      const dir=(t.direction||'BUY').toUpperCase();
+      const dir=((t.direction||t.signal||'BUY')+'').toUpperCase();
       const ep=Number(t.entry_price||0);
       const xp=Number(t.exit_price||0);
       const execQ=Number(t.execution_quality_score||0);
@@ -786,11 +797,11 @@ async function loadHistory(){
         <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
         <td style="font-family:monospace;font-size:11px">${fmt(ep)}</td>
         <td style="font-family:monospace;font-size:11px">${fmt(xp)}</td>
-        <td style="font-size:11px;color:var(--tx3)">${fmtTime(t.entry_time)}</td>
-        <td style="font-size:11px;color:var(--tx3)">${fmtTime(t.exit_time)}</td>
+        <td style="font-size:11px;color:var(--tx3)">${fmtDashboardTime(t.entry_time)}</td>
+        <td style="font-size:11px;color:var(--tx3)">${fmtDashboardTime(t.exit_time)}</td>
         <td style="font-size:11px;color:var(--am)">${dur}</td>
         <td style="font-weight:700;color:${pnlCol}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-        <td style="font-size:10px;color:var(--tx3)">${reasonLabel(t.exit_reason)}${reasonMeta}</td>
+        <td style="font-size:10px;color:var(--tx3)">${reasonLabel(t.display_exit_reason||t.exit_reason)}${reasonMeta}${t.continuation_summary?`<div style="font-size:10px;color:var(--am);margin-top:2px">${t.continuation_summary}</div>`:''}</td>
         <td style="font-size:11px">${t.confidence?Math.round(t.confidence*100)+'%':'—'}</td>
       </tr>`;
     }).join('');
@@ -948,13 +959,12 @@ function renderPositions(pos){
     try{
       const raw=p.open_time||'';
       if(raw){
-        const s=raw.endsWith('Z')||raw.includes('+')?raw:raw+'Z';
-        const ot=new Date(s);
-        if(!isNaN(ot)){
+        const ot=parseDashboardTime(raw);
+        if(ot){
           const mins=Math.floor((Date.now()-ot)/60000);
           const absMins=Math.abs(mins);
           const dur=absMins<60?absMins+'m':absMins<1440?Math.floor(absMins/60)+'h '+absMins%60+'m':Math.floor(absMins/1440)+'d';
-          const timeStr=ot.toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+          const timeStr=fmtDashboardTime(raw);
           openStr=timeStr+' <span style="color:var(--tx3);font-size:10px">('+dur+')</span>';
         }
       }

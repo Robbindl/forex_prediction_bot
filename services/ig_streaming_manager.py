@@ -4,7 +4,7 @@ import threading
 from datetime import datetime
 from typing import Callable, Dict, Optional
 
-from services.ig_market_bridge import IGRequestError, ig_market_bridge
+from services.ig_market_bridge import IGRequestError, _normalize_ig_commodity_price, ig_market_bridge
 from services.market_data_router import filter_ig_primary_assets
 from utils.logger import get_logger
 
@@ -317,6 +317,8 @@ class IGStreamingManager:
         ask = _safe_float(fields.get("ASKPRICE1") or fields.get("OFFER"))
         bid_size = _safe_float(fields.get("BIDSIZE1"))
         ask_size = _safe_float(fields.get("ASKSIZE1"))
+        bid = _normalize_ig_commodity_price(asset, bid)
+        ask = _normalize_ig_commodity_price(asset, ask)
         if bid is None and ask is None:
             return
         if bid is not None and ask is not None:
@@ -343,6 +345,8 @@ class IGStreamingManager:
             level_ask = _safe_float(fields.get(f"ASKPRICE{level}"))
             level_bid_size = _safe_float(fields.get(f"BIDSIZE{level}"))
             level_ask_size = _safe_float(fields.get(f"ASKSIZE{level}"))
+            level_bid = _normalize_ig_commodity_price(asset, level_bid)
+            level_ask = _normalize_ig_commodity_price(asset, level_ask)
             if any(value is not None for value in (level_bid, level_ask, level_bid_size, level_ask_size)):
                 levels.append(
                     {

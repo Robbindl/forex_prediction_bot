@@ -7,11 +7,17 @@ from collections import deque
 from datetime import datetime
 import threading
 
+try:
+    from services.local_candle_store import local_candle_store
+except Exception:
+    local_candle_store = None
+
 # ─── SINGLE shared store ───────────────────────────────────────────────────────
-recent_transactions: deque = deque(maxlen=500)
+recent_transactions: deque = deque(maxlen=5000)
 
 # ─── LIVE PRICE STORE (used by fetcher.get_real_time_price for P&L calc) ─────
 live_prices: dict = {}  # {asset: (price, timestamp, source)}
+live_price_history: dict = {}  # {asset: deque[(price, timestamp, source)]}
 live_prices_lock = threading.Lock()
 
 # ─── Per-exchange connection status ───────────────────────────────────────────
@@ -68,7 +74,15 @@ def get_feed(source_filter: str = None, limit: int = 200) -> list:
 def set_live_price(asset: str, price: float, source: str = "WebSocket") -> None:
     """Store latest real-time price from WebSocket. Called by callback."""
     with live_prices_lock:
-        live_prices[asset] = (price, datetime.now().timestamp(), source)
+        ts = datetime.now().timestamp()
+        live_prices[asset] = (price, ts, source)
+        history = live_price_history.setdefault(asset, deque(maxlen=5000))
+        history.append((float(price), float(ts), str(source)))
+    if local_candle_store is not None:
+        try:
+            local_candle_store.record_live_price(asset, float(price), source=str(source), timestamp=float(ts))
+        except Exception:
+            pass
 
 
 def get_live_price(asset: str, max_age_seconds: float = 10.0) -> tuple:
@@ -98,3 +112,29 @@ def get_live_price_snapshot(asset: str, max_age_seconds: float | None = None) ->
             "source": str(source),
             "age_seconds": age,
         }
+
+
+def get_live_price_history(
+    asset: str,
+    max_age_seconds: float | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    with live_prices_lock:
+        history = list(live_price_history.get(asset, ()))
+    if not history:
+        return []
+    now_ts = datetime.now().timestamp()
+    items = []
+    for price, ts, source in history:
+        age = max(0.0, now_ts - float(ts or 0.0))
+        if max_age_seconds is not None and age > float(max_age_seconds):
+            continue
+        items.append({
+            "price": float(price),
+            "timestamp": float(ts),
+            "source": str(source),
+            "age_seconds": age,
+        })
+    if limit is not None and limit > 0:
+        items = items[-int(limit):]
+    return items

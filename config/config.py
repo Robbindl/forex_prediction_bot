@@ -30,6 +30,18 @@ IG_ROUTED_CATEGORIES  = [
     if item.strip()
 ]
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
+DUKASCOPY_HISTORY_ENABLED = os.getenv("DUKASCOPY_HISTORY_ENABLED", "true").lower() == "true"
+DUKASCOPY_SYMBOL_MAP  = os.getenv("DUKASCOPY_SYMBOL_MAP", "").strip()
+FMP_HISTORY_ENABLED   = os.getenv("FMP_HISTORY_ENABLED", "true").lower() == "true"
+FMP_API_KEY           = os.getenv("FMP_API_KEY", "").strip()
+FMP_SYMBOL_MAP        = os.getenv("FMP_SYMBOL_MAP", "").strip()
+LOCAL_CANDLE_STORE_ENABLED = os.getenv("LOCAL_CANDLE_STORE_ENABLED", "true").lower() == "true"
+LOCAL_CANDLE_STORE_PATH = Path(os.getenv("LOCAL_CANDLE_STORE_PATH", "data/local_candles.sqlite3"))
+LOCAL_CANDLE_STORE_REQUIRED_COVERAGE = max(
+    0.5,
+    min(1.0, float(os.getenv("LOCAL_CANDLE_STORE_REQUIRED_COVERAGE", "1.0"))),
+)
+PLAYBOOK_ONLY_RUNTIME = os.getenv("PLAYBOOK_ONLY_RUNTIME", "false").lower() == "true"
 EIA_API_KEY           = os.getenv("EIA_API_KEY", "")
 
 # ─────────────────────────────────────────────────────────────────────────────

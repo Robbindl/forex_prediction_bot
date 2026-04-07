@@ -54,12 +54,19 @@ def validate_apis() -> None:
 
     # Reddit — no credentials needed (uses public JSON endpoints)
 
-    # ── Optional: FMP for put/call ────────────────────────────────────────
+    # ── Optional: FMP history/backfill ────────────────────────────────────
     fmp_key = os.getenv("FMP_API_KEY", "")
     if _is_placeholder(fmp_key):
         warnings.append(
             "FMP_API_KEY not set.  "
-            "Put/call ratio for US indices disabled (AAII may still work)."
+            "FMP historical backfill is disabled, so charts/research/history will fall back to broker-only OHLCV."
+        )
+
+    dukascopy_enabled = os.getenv("DUKASCOPY_HISTORY_ENABLED", "true").strip().lower() == "true"
+    if not dukascopy_enabled:
+        warnings.append(
+            "DUKASCOPY_HISTORY_ENABLED is false.  "
+            "Free Dukascopy historical backfill for forex/commodities/indices is disabled."
         )
 
     # ── Optional: Twitter ─────────────────────────────────────────────────

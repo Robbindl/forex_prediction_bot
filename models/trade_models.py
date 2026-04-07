@@ -5,6 +5,7 @@ Fixed imports to use config/database.py Base.
 """
 from __future__ import annotations
 import uuid
+import re
 from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, Index,
     Integer, JSON, Numeric, String, ForeignKey, Text,
@@ -34,7 +35,7 @@ class Trade(Base):
     entry_time    = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     exit_time     = Column(DateTime(timezone=True), index=True)
     exit_reason   = Column(String(50))
-    strategy_id   = Column(String(30), nullable=False, index=True)
+    strategy_id   = Column(String(80), nullable=False, index=True)
     confidence    = Column(Numeric(5, 4))
     canonical_asset = Column(String(30))
     trade_metadata  = Column(JSON)
@@ -46,27 +47,49 @@ class Trade(Base):
         Index("idx_trades_canonical_asset_exit_time", "canonical_asset", "exit_time"),
     )
 
+    @staticmethod
+    def _float_or_none(value):
+        return float(value) if value is not None else None
+
+    @staticmethod
+    def _infer_parent_trade_id(trade_id: str, metadata: dict) -> str | None:
+        parent_trade_id = metadata.get("parent_trade_id")
+        if parent_trade_id not in (None, ""):
+            return str(parent_trade_id)
+        match = re.match(r"^(?P<parent>.+)-PT\d+$", str(trade_id or ""))
+        if match:
+            return match.group("parent")
+        return None
+
     def to_dict(self) -> dict:
+        metadata = dict(self.trade_metadata or {})
+        parent_trade_id = self._infer_parent_trade_id(self.trade_id, metadata)
+        is_partial_close = metadata.get("is_partial_close")
+        if is_partial_close is None:
+            reason = str(self.exit_reason or "").lower()
+            is_partial_close = bool(parent_trade_id) or reason.startswith("partial tp")
         return {
             "trade_id":       self.trade_id,
             "asset":          self.asset,
             "canonical_asset":self.canonical_asset,
             "category":       self.category,
             "direction":      self.direction,
-            "entry_price":    float(self.entry_price)   if self.entry_price   else None,
-            "exit_price":     float(self.exit_price)    if self.exit_price    else None,
-            "position_size":  float(self.position_size) if self.position_size else None,
-            "stop_loss":      float(self.stop_loss)     if self.stop_loss     else None,
-            "take_profit":    float(self.take_profit)   if self.take_profit   else None,
-            "pnl":            float(self.pnl)           if self.pnl           else None,
-            "pnl_percent":    float(self.pnl_percent)   if self.pnl_percent   else None,
-            "duration_minutes": int(self.duration_minutes) if self.duration_minutes else 0,
+            "entry_price":    self._float_or_none(self.entry_price),
+            "exit_price":     self._float_or_none(self.exit_price),
+            "position_size":  self._float_or_none(self.position_size),
+            "stop_loss":      self._float_or_none(self.stop_loss),
+            "take_profit":    self._float_or_none(self.take_profit),
+            "pnl":            self._float_or_none(self.pnl),
+            "pnl_percent":    self._float_or_none(self.pnl_percent),
+            "duration_minutes": int(self.duration_minutes) if self.duration_minutes is not None else 0,
             "entry_time":     self.entry_time.isoformat() if self.entry_time  else None,
             "exit_time":      self.exit_time.isoformat()  if self.exit_time   else None,
             "exit_reason":    self.exit_reason,
             "strategy_id":    self.strategy_id,
-            "confidence":     float(self.confidence)    if self.confidence    else None,
-            "metadata":       self.trade_metadata,
+            "confidence":     self._float_or_none(self.confidence),
+            "parent_trade_id": parent_trade_id,
+            "is_partial_close": bool(is_partial_close),
+            "metadata":       metadata,
         }
 
 
@@ -89,7 +112,7 @@ class OpenPosition(Base):
     take_profit   = Column(Numeric(20, 8))
     position_size = Column(Numeric(20, 8), nullable=False)
     confidence    = Column(Numeric(5, 4))
-    strategy_id   = Column(String(30))
+    strategy_id   = Column(String(80))
     open_time     = Column(DateTime(timezone=True), server_default=func.now())
     position_data = Column(JSON)   # full position dict for lossless restore
 

@@ -86,6 +86,10 @@ yarn-error.log*
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
 *.postgres
 !data/cache.py
 *.sql

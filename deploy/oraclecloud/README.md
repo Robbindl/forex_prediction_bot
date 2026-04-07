@@ -131,7 +131,6 @@ Core logs:
 - `logs/trading_bot.log`
 - `logs/errors.log`
 - `logs/trades.log`
-- `logs/ml_prediction_service.log`
 
 ## 10. Production notes
 

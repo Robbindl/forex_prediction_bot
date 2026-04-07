@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
 from config.config import (
@@ -23,6 +24,54 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 def _direction_sign(direction: str) -> int:
     return 1 if str(direction or "").upper() == "BUY" else -1
+
+
+_LIVE_CATEGORY_BASE_MIN_RR = {
+    "crypto": 1.35,
+    "commodities": 1.15,
+    "forex": 1.15,
+    "indices": 1.25,
+}
+
+_PAPER_CATEGORY_BASE_MIN_RR = {
+    "crypto": 1.20,
+    "commodities": 1.00,
+    "forex": 0.75,
+    "indices": 1.00,
+}
+
+
+def _runtime_live() -> bool:
+    return os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
+
+
+def _category_base_min_rr(category: str) -> float:
+    category_key = str(category or "").lower()
+    profile = _LIVE_CATEGORY_BASE_MIN_RR if _runtime_live() else _PAPER_CATEGORY_BASE_MIN_RR
+    return float(profile.get(category_key, GOVERNANCE_MIN_RISK_REWARD))
+
+
+def _category_min_rr_floor(category: str, base_rr: float) -> float:
+    category_key = str(category or "").lower()
+    if _runtime_live():
+        if category_key == "forex":
+            return 0.95
+        if category_key == "commodities":
+            return 1.00
+        if category_key == "indices":
+            return 1.05
+        if category_key == "crypto":
+            return 1.20
+        return max(1.0, base_rr - 0.10)
+    if category_key == "forex":
+        return 0.65
+    if category_key == "commodities":
+        return 0.85
+    if category_key == "indices":
+        return 0.85
+    if category_key == "crypto":
+        return 1.00
+    return max(0.75, base_rr - 0.20)
 
 
 class AdaptivePolicyService:
@@ -102,7 +151,7 @@ class AdaptivePolicyService:
         base_confidence = float(MIN_FINAL_CONFIDENCE)
         base_spread = float(SPREAD_THRESHOLDS.get(category_key, 0.002) or 0.002)
         base_cooldown = int(TRADE_CLOSE_COOLDOWN_MINUTES)
-        base_rr = float(GOVERNANCE_MIN_RISK_REWARD)
+        base_rr = _category_base_min_rr(category_key)
 
         min_final_confidence = base_confidence
         max_spread = base_spread
@@ -281,7 +330,8 @@ class AdaptivePolicyService:
         max_spread = round(_clip(max_spread, base_spread * 0.65, base_spread * 1.45), 6)
         risk_multiplier = round(_clip(risk_multiplier, 0.60, 1.35), 4)
         cooldown_minutes = int(round(_clip(cooldown_minutes, 5, max(base_cooldown + 20, 20))))
-        min_rr = round(_clip(min_rr, 1.2, 2.2), 2)
+        min_rr_floor = _category_min_rr_floor(category_key, base_rr)
+        min_rr = round(_clip(min_rr, min_rr_floor, 2.2), 2)
         target_rr_multiplier = round(_clip(target_rr_multiplier, 0.88, 1.18), 4)
 
         return {

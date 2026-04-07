@@ -1,60 +1,4 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# RSI STRATEGY (15m optimized)
-# ─────────────────────────────────────────────────────────────────────────────
-# Standard RSI period=14 lags 14 candles = 210 minutes on 15m. Too slow.
-# Optimized: period=8 = ~120 minutes lag. Much faster reaction.
-# Oversold/Overbought thresholds slightly adjusted:
-#   Oversold 30 → 28 (catch earlier bounces on 15m)
-#   Overbought 70 → 72 (avoid false topples)
-
-RSI_STRATEGY = {
-    "period": 8,          # fast response for 15m
-    "oversold": 28,
-    "overbought": 72,
-    "min_confidence": 0.58,
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MACD STRATEGY (15m optimized)
-# ─────────────────────────────────────────────────────────────────────────────
-# Standard: fast=12, slow=26, signal=9
-# On 15m: Standard fast (12 candles = 180 min) already responsive.
-# Reduce signal line from 9 to 6 for faster histogram crossovers.
-
-MACD_STRATEGY = {
-    "fast": 12,
-    "slow": 26,
-    "signal": 6,
-    "min_confidence": 0.58,
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# BOLLINGER BANDS STRATEGY (15m is native sweet spot)
-# ─────────────────────────────────────────────────────────────────────────────
-# Bollinger Bands work BEST on 15m-1h timeframes.
-# Period 20 = ~5 hours of history on 15m. Perfect for mean reversion.
-
-BOLLINGER_STRATEGY = {
-    "period": 20,
-    "std_dev": 2.0,
-    "squeeze_threshold": 0.35,
-    "min_confidence": 0.60,
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VOTING ENSEMBLE (15m optimized)
-# ─────────────────────────────────────────────────────────────────────────────
-# On 15m: Accept single strong votes from fast-responsive strategies.
-# Allow trade on 1 strategy vote if confidence >= 0.65.
-
-VOTING_STRATEGY = {
-    "min_votes": 1,
-    "min_confidence": 0.58,
-    "unanimity_boost": 0.05,
-    "disagreement_penalty": -0.05,
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # NEWS EVENT BLOCKING (15m-friendly)
 # ─────────────────────────────────────────────────────────────────────────────
 # Original: PRE_EVENT_MINS=60 blocks signals for 1 hour. KILLS 15m scalping.
@@ -174,7 +118,7 @@ RECOMMENDED_ENV_OVERRIDES = {
 Before going live with 15m all-assets:
 
 [ ] Set TRADING_TIMEFRAME=15m in .env
-[ ] Confirm policy_agent remains the only live runtime strategy
+[ ] Confirm the live runtime playbook/policy stack matches the assets you want to trade
 [ ] Keep the Strategy Lab active bench trimmed to the current 9 research presets
 [ ] Leave archived presets out of auto-research until they earn re-entry
 [ ] Update data_ingestion.news_event_monitor PRE_EVENT_MINS=10 (CRITICAL!)
@@ -186,10 +130,6 @@ Before going live with 15m all-assets:
 """
 
 __all__ = [
-    "RSI_STRATEGY",
-    "MACD_STRATEGY",
-    "BOLLINGER_STRATEGY",
-    "VOTING_STRATEGY",
     "NEWS_EVENT",
     "RISK_MULTIPLIER",
     "ASSET_CLASS_TUNING",

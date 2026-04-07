@@ -144,7 +144,7 @@ class SignalReporter:
             get_db().save_strategy_performance_snapshot(
                 asset=signal.canonical_asset or signal.asset,
                 category=signal.category,
-                strategy_id=signal.strategy_id or "voting",
+                strategy_id=signal.strategy_id or "playbook_runtime",
                 win_rate=performance["win_rate"],
                 sharpe_ratio=performance["sharpe_ratio"],
                 total_trades=performance["total_trades"],
@@ -254,30 +254,7 @@ class SignalReporter:
         best config. Results are displayed on the dashboard.
         """
         try:
-            from strategy_lab import optimize_strategy, StrategyBuilder
-            from config.config import ASSET_CATEGORIES
-
-            for category, assets in ASSET_CATEGORIES.items():
-                for asset in assets[:3]:   # limit to first 3 per category
-                    try:
-                        results = optimize_strategy(
-                            base_config=StrategyBuilder.example_config(),
-                            param_grid={
-                                "rsi_period": [10, 14, 21],
-                                "stop_mult":  [1.0, 1.5, 2.0],
-                            },
-                            asset=asset,
-                            category=category,
-                            periods=300,
-                        )
-                        if results:
-                            self._store_optimisation_result(asset, category, results[0])
-                            # Invalidate cache so next signal gets fresh backtest
-                            with _cache_lock:
-                                _backtest_cache.pop(f"{asset}:{category}", None)
-                    except Exception as e:
-                        logger.debug(f"[SignalReporter] Optimise {asset}: {e}")
-                    time.sleep(2)   # gentle pacing between assets
+            logger.info("[SignalReporter] Daily optimisation removed in playbook runtime")
         except Exception as e:
             logger.error(f"[SignalReporter] _run_daily_optimisation: {e}")
 

@@ -10,7 +10,6 @@ from config.config import (
     SIGNAL_CONFIDENCE_CURVE_POWER,
     SPREAD_THRESHOLDS,
 )
-from ml.registry import registry
 
 
 def _clip(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -30,6 +29,18 @@ def _maybe_float(value: Any, default: float = 0.0) -> float:
 
 
 class SignalScorecard:
+    @staticmethod
+    def _playbook_quality(signal) -> Optional[float]:
+        action = str(signal.metadata.get("playbook_action", "") or "").strip().lower()
+        if action not in {"seed", "override", "support"}:
+            return None
+        playbook_score = _clip(_maybe_float(signal.metadata.get("playbook_score"), 0.0))
+        playbook_confidence = _clip(_maybe_float(signal.metadata.get("playbook_confidence"), 0.0))
+        if playbook_score <= 0.0 and playbook_confidence <= 0.0:
+            return None
+        action_bias = 0.08 if action in {"seed", "override"} else 0.03
+        return _clip(playbook_score * 0.45 + playbook_confidence * 0.47 + action_bias)
+
     @staticmethod
     def _curve_score(raw_score: float) -> float:
         raw = _clip(raw_score)
@@ -72,27 +83,19 @@ class SignalScorecard:
     def _research_quality(signal, context: Dict[str, Any]) -> float:
         governance = signal.metadata.get("governance_validation") or {}
         research = governance.get("model_research") or {}
-        if governance.get("approved") and research.get("research_approved"):
+        research_state = str(research.get("research_status") or research.get("research_grade") or "").strip().lower()
+        if governance.get("approved") and (
+            research.get("research_approved") or research_state in {"playbook_runtime", "runtime"}
+        ):
             return 1.0
-        if research.get("research_approved"):
+        if research.get("research_approved") or research_state in {"playbook_runtime", "runtime"}:
             return 0.95
         if float(research.get("walk_forward_accuracy", 0.0) or 0.0) >= 0.55:
             return 0.80
         if float(research.get("holdout_accuracy", 0.0) or 0.0) >= 0.52:
             return 0.68
-
-        model_key = (
-            signal.metadata.get("policy_model")
-            or signal.metadata.get("seed_model")
-            or f"{signal.category}_classifier"
-        )
-        model_meta = registry.get_metadata(model_key) if model_key else {}
-        if bool(model_meta.get("research_approved")):
-            return 1.0
-        if float(model_meta.get("walk_forward_accuracy", 0.0) or 0.0) >= 0.55:
-            return 0.80
-        if float(model_meta.get("holdout_accuracy", 0.0) or 0.0) >= 0.52:
-            return 0.68
+        if str(signal.metadata.get("seed_source") or "").strip().lower() == "playbook":
+            return 0.92
         return 0.55
 
     @staticmethod
@@ -348,7 +351,9 @@ class SignalScorecard:
     def score(self, signal, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         context = context or {}
 
-        seed_score = _clip(
+        seed_source = str(signal.metadata.get("seed_source", "") or "").strip().lower()
+        playbook_confidence = _clip(_maybe_float(signal.metadata.get("playbook_confidence"), 0.0))
+        ml_seed_score = _clip(
             _maybe_float(
                 signal.metadata.get(
                     "ml_confidence",
@@ -360,6 +365,14 @@ class SignalScorecard:
                 getattr(signal, "confidence", 0.0),
             )
         )
+        if seed_source == "playbook":
+            seed_score = max(
+                ml_seed_score,
+                playbook_confidence,
+                _clip(_maybe_float(signal.metadata.get("seed_candidate_score"), getattr(signal, "confidence", 0.0))),
+            )
+        else:
+            seed_score = ml_seed_score
         structure_score = self._structure_quality(signal, context)
         regime_score = self._regime_quality(signal, context)
         rr_score = self._risk_reward_quality(signal)
@@ -378,6 +391,7 @@ class SignalScorecard:
         }
 
         optional_components = {
+            "playbook": (self._playbook_quality(signal), 0.08),
             "ml_alignment": (self._ml_alignment_quality(signal, context), 0.07),
             "broker_quality": (self._broker_quality(signal), 0.07),
             "microstructure": (self._microstructure_quality(signal), 0.05),
@@ -430,6 +444,10 @@ class SignalScorecard:
             notes.append("live validation still bootstrapping")
         if signal.metadata.get("ml_prediction_real") is True and signal.metadata.get("ml_direction_agrees") is False:
             notes.append("ml direction conflicts with trade direction")
+        if seed_source == "playbook":
+            notes.append(
+                f"playbook {signal.metadata.get('playbook_name', 'setup')} seeded the trade"
+            )
         if signal.metadata.get("seed_below_floor"):
             notes.append("seed score started below minimum floor")
         rr_gap = max(0.0, _maybe_float(signal.metadata.get("adaptive_rr_gap"), 0.0))

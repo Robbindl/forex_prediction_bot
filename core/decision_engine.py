@@ -11,6 +11,7 @@ from config.config import (
     MAX_SIGNAL_CONFIDENCE,
     MIN_CONFIDENCE_SCORE,
     MIN_FINAL_CONFIDENCE,
+    PLAYBOOK_ONLY_RUNTIME,
     SPREAD_THRESHOLDS,
     get_trading_timeframe,
 )
@@ -912,85 +913,29 @@ class SignalDecisionEngine:
 
     def _apply_policy_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence
-        try:
-            from ml.meta_model import predictor
-            signal = predictor.process(signal, context)
-        except Exception as exc:
-            logger.warning(f"[DecisionEngine] Meta AI unavailable for {signal.asset}: {exc}")
-            signal.journal.record(
-                layer=STEP_POLICY,
-                name="meta_ai",
-                decision=INFO,
-                reason=f"meta AI unavailable: {exc}",
-                conf_before=signal.confidence,
-                conf_after=signal.confidence,
-            )
-
-        try:
-            from ml.agent import agent as _agent
-            policy_context = dict(context or {})
-            policy_context["signal_metadata"] = {
-                **signal.metadata,
-                "seed_candidate_score": signal.metadata.get("seed_candidate_score", signal.confidence),
-                "direction": signal.direction,
-            }
-            result = _agent.decide(signal, policy_context)
-            if result is None:
-                reason = signal.metadata.get("agent_rejection_reason", "Agent rejected signal")
-                signal.kill(reason, STEP_POLICY)
-                signal.journal.record(
-                    layer=STEP_POLICY,
-                    name="policy",
-                    decision=KILLED,
-                    reason=reason,
-                    conf_before=conf_before,
-                    conf_after=signal.confidence,
-                    data={
-                        "agent_score": round(float(signal.metadata.get("agent_score", 0.0)), 4),
-                        "agent_confidence": round(float(signal.metadata.get("agent_confidence", 0.0)), 4),
-                        "agent_directional_edge": round(float(signal.metadata.get("agent_directional_edge", 0.0)), 4),
-                    },
-                )
-                return False
-            policy_status = str(signal.metadata.get("agent_policy_status", "ok") or "ok")
-            signal.metadata["policy_review_passed"] = True
-            signal.step_reached = STEP_POLICY
-            if policy_status == "ok":
-                reason = f"policy accepted {signal.direction} (score={float(signal.metadata.get('agent_score', 0.0)):.3f})"
-            elif policy_status == "reversed":
-                from_dir = str(signal.metadata.get("agent_policy_reversal_from") or "").upper() or "UNKNOWN"
-                to_dir = str(signal.metadata.get("agent_policy_reversal_to") or signal.direction or "").upper()
-                reason = f"policy reversed seed {from_dir}->{to_dir} (score={float(signal.metadata.get('agent_score', 0.0)):.3f})"
-            else:
-                reason = f"policy bypassed ({policy_status})"
-            signal.journal.record(
-                layer=STEP_POLICY,
-                name="policy",
-                decision=PASS,
-                reason=reason,
-                conf_before=conf_before,
-                conf_after=signal.confidence,
-                data={
-                    "agent_score": round(float(signal.metadata.get("agent_score", 0.0)), 4),
-                    "agent_confidence": round(float(signal.metadata.get("agent_confidence", 0.0)), 4),
-                    "agent_directional_edge": round(float(signal.metadata.get("agent_directional_edge", 0.0)), 4),
-                    "agent_policy_status": policy_status,
-                    "final_confidence": round(signal.confidence, 4),
-                },
-            )
-            return True
-        except Exception as exc:
-            logger.error(f"[DecisionEngine] Policy agent error: {exc}")
-            signal.step_reached = STEP_POLICY
-            signal.journal.record(
-                layer=STEP_POLICY,
-                name="policy",
-                decision=INFO,
-                reason=f"policy agent unavailable: {exc}",
-                conf_before=conf_before,
-                conf_after=signal.confidence,
-            )
-            return True
+        policy_status = "playbook_only" if PLAYBOOK_ONLY_RUNTIME else "policy_retired"
+        advisory = (
+            "policy review skipped in playbook-only runtime"
+            if PLAYBOOK_ONLY_RUNTIME
+            else "legacy policy review removed; playbook path is primary"
+        )
+        signal.metadata["agent_policy_status"] = policy_status
+        signal.metadata["agent_policy_advisory"] = advisory
+        signal.metadata["policy_review_passed"] = True
+        signal.step_reached = STEP_POLICY
+        signal.journal.record(
+            layer=STEP_POLICY,
+            name="policy",
+            decision=PASS,
+            reason=advisory,
+            conf_before=conf_before,
+            conf_after=signal.confidence,
+            data={
+                "agent_policy_status": policy_status,
+                "final_confidence": round(signal.confidence, 4),
+            },
+        )
+        return True
 
     def _apply_governance_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence

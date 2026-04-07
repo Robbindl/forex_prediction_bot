@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Predictions — Robbie</title>
+<title>Playbook Intel — Robbie</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -43,17 +43,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .leader-score{font-size:12px;font-weight:700}
 .leader-meta{font-size:10px;color:var(--tx3)}
 
-/* Accuracy rings */
-.ring-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;padding:16px;min-height:150px;align-items:start}
-.ring-item{text-align:center}
-.ring-wrap{position:relative;width:80px;height:80px;margin:0 auto 8px}
-.ring-wrap svg{width:100%;height:100%;transform:rotate(-90deg)}
-.ring-bg{fill:none;stroke:rgba(255,255,255,.07);stroke-width:7}
-.ring-fg{fill:none;stroke-width:7;stroke-linecap:round;transition:stroke-dashoffset .8s}
-.ring-text{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700}
-.ring-label{font-size:12px;color:var(--tx2);font-weight:600}
-.ring-sub{font-size:11px;color:var(--tx3);margin-top:2px}
-
 /* Prediction cards grid */
 .pred-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;padding:12px 16px;align-items:start}
 .pred-card{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:12px;position:relative;overflow:hidden}
@@ -74,28 +63,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .pc-footer{margin-top:8px;display:flex;justify-content:space-between;font-size:10px;color:var(--tx3)}
 .rr-badge{background:rgba(179,136,255,.13);color:var(--pu);padding:1px 6px;border-radius:3px;font-weight:600}
 
-/* Accuracy chart */
-.chart-wrap{position:relative;height:240px}
 .chart-panel-body{padding:12px 16px;height:240px;min-height:240px;width:100%;position:relative}
 .prediction-panel-body{flex:1;overflow-y:auto;min-height:240px;max-height:520px}
-.table-panel-body{overflow-y:auto;max-height:420px}
-
-/* Recent predictions table */
-.pred-table{width:100%;border-collapse:collapse;font-size:12px}
-.pred-table th{color:var(--tx3);font-size:10px;text-transform:uppercase;letter-spacing:.4px;padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;font-weight:500}
-.pred-table td{padding:8px 8px;border-bottom:1px solid rgba(30,38,53,.5)}
-.pred-table tr:last-child td{border:none}
-.tick-y{color:var(--gr);font-weight:700}.tick-n{color:var(--rd);font-weight:700}
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.pu{color:var(--pu)}.mu{color:var(--tx2)}
 .empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
 
-/* Days pills */
-.days-pills{display:flex;gap:4px;margin-left:auto}
-.dpill{padding:3px 10px;border-radius:20px;font-size:11px;cursor:pointer;border:1px solid var(--bd);color:var(--tx2);background:transparent}
-.dpill.on{background:var(--bl);border-color:var(--bl);color:#fff}
-
 /* Scrollable panel bodies */
-#ringGrid{max-height:none;overflow-y:visible}
 #predGrid{max-height:none;overflow-y:auto}
 .panel-body{}
 
@@ -128,7 +101,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   .content>*{margin-bottom:10px}
   .summary-grid{grid-template-columns:repeat(2,1fr)}
   .leader-grid{grid-template-columns:1fr}
-  .ring-grid{grid-template-columns:1fr}
   .chart-panel-body{height:220px;min-height:220px}
   .prediction-panel-body{min-height:200px;max-height:none}
 }
@@ -144,11 +116,10 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <div class="sb-section">Dashboards</div>
     <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
     <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
-    <a href="/ai-predictions" class="sb-link active"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/ai-predictions" class="sb-link active"><span class="sb-icon">🤖</span>Playbook Intel</a>
     <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
     <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
     <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
-    <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
@@ -158,18 +129,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   <div class="main">
     <div class="topbar">
       <button class="hamburger" id="menuBtn" aria-label="Menu" onclick="toggleSidebar()"><span></span><span></span><span></span></button>
-      <div class="page-title"><div class="dot"></div>AI Predictions</div>
-      <div class="tb-right">
-        <div class="days-pills">
-          <button class="dpill" onclick="loadAcc(7,this)">7d</button>
-          <button class="dpill on" onclick="loadAcc(30,this)">30d</button>
-          <button class="dpill" onclick="loadAcc(90,this)">90d</button>
-        </div>
-      </div>
+      <div class="page-title"><div class="dot"></div>Playbook Intel</div>
+      <div class="tb-right" style="font-size:12px;color:var(--tx2)">Playbook-only runtime</div>
     </div>
     <div class="content">
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🧠 Prediction Snapshot</span></div>
+        <div class="panel-header"><span class="panel-title">🧭 Playbook Snapshot</span></div>
         <div class="summary-grid" id="summaryGrid">
           <div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div>
           <div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div>
@@ -179,7 +144,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       </div>
 
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🛰️ Broker & Depth Context</span></div>
+        <div class="panel-header"><span class="panel-title">🛰️ Runtime Spine & Diagnostics</span></div>
         <div class="summary-grid" id="diagnosticGrid">
           <div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div>
           <div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div>
@@ -188,48 +153,45 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
-      <!-- Accuracy rings -->
-      <div class="panel">
-        <div class="panel-header"><span class="panel-title">🎯 Forecast Accuracy</span></div>
-        <div class="ring-grid" id="ringGrid">
-          <div class="ring-item"><div class="empty">Loading…</div></div>
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🧩 Playbook Mix</span></div>
+        <div class="leader-grid" id="playbookMixPanel">
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+          <div class="leader-box"><div class="empty">Loading…</div></div>
         </div>
       </div>
 
-      <!-- Accuracy over time -->
-      <div class="panel panel-wide">
-        <div class="panel-header"><span class="panel-title">📈 Accuracy Over Time</span></div>
-        <div class="chart-panel-body"><canvas id="accChart"></canvas></div>
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🗺️ Session & Entry Breakdown</span></div>
+        <div class="leader-grid" id="breakdownPanel">
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+        </div>
       </div>
 
-      <!-- Live decision-engine predictions -->
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🔮 Active Signal Decisions</span><span id="predCount" style="font-size:11px;color:var(--tx3);margin-left:auto">0 signals</span></div>
+        <div class="panel-header"><span class="panel-title">📚 Recent Realized Performance</span></div>
+        <div class="leader-grid" id="performancePanel">
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🎯 Active Playbook Decisions</span><span id="predCount" style="font-size:11px;color:var(--tx3);margin-left:auto">0 signals</span></div>
         <div class="pred-grid prediction-panel-body" id="predGrid"><div class="empty">Loading…</div></div>
       </div>
 
-      <!-- Confidence Distribution -->
       <div class="panel panel-full" style="margin-bottom:12px">
-        <div class="panel-header"><span class="panel-title">📊 Confidence Distribution</span></div>
+        <div class="panel-header"><span class="panel-title">📊 Live Confidence Mix</span></div>
         <div class="chart-panel-body"><canvas id="confChart"></canvas></div>
       </div>
 
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🏁 Accuracy Leaders</span></div>
+        <div class="panel-header"><span class="panel-title">🏁 Runtime Leaders</span></div>
         <div class="leader-grid" id="leaderGrid">
           <div class="leader-box"><div class="empty">Loading…</div></div>
           <div class="leader-box"><div class="empty">Loading…</div></div>
-        </div>
-      </div>
-
-      <!-- Recent evaluated predictions -->
-      <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">📋 Recent Evaluated Predictions</span></div>
-        <div class="panel-body table-panel-body">
-          <table class="pred-table">
-            <thead><tr><th>Asset</th><th>Dir</th><th>Entry</th><th>Result</th><th>Move %</th><th>Conf</th><th>Horizon</th><th>Time</th></tr></thead>
-            <tbody id="recentBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
-          </table>
         </div>
       </div>
     </div>
@@ -237,22 +199,18 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 </div>
 <script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
-let accChartInst=null;
-
-function ring(pct,color){
-  const r=32,circ=2*Math.PI*r,off=circ-(pct/100)*circ;
-  return`<svg viewBox="0 0 80 80"><circle class="ring-bg" cx="40" cy="40" r="${r}"/><circle class="ring-fg" cx="40" cy="40" r="${r}" stroke="${color}" stroke-dasharray="${circ}" stroke-dashoffset="${off}"/></svg>`;
-}
-function hzColor(p){return p>=60?'var(--gr)':p>=45?'var(--am)':'var(--rd)'}
-
 let _aiPredictionsCache = null;
 function renderAiUnavailable(message){
-  const msg = message || 'AI prediction data unavailable';
+  const msg = message || 'Playbook intel unavailable';
   document.getElementById('summaryGrid').innerHTML = '<div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">'+msg+'</div></div>';
   document.getElementById('diagnosticGrid').innerHTML = '<div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">'+msg+'</div></div>';
-  document.getElementById('ringGrid').innerHTML = '<div class="ring-item"><div class="empty">'+msg+'</div></div>';
-  document.getElementById('recentBody').innerHTML = '<tr><td colspan="8" class="empty">'+msg+'</td></tr>';
+  document.getElementById('playbookMixPanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
+  document.getElementById('breakdownPanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
+  document.getElementById('performancePanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
   document.getElementById('leaderGrid').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
+  document.getElementById('predGrid').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('predCount').textContent = '0 signals';
+  if(confChartInst) confChartInst.destroy();
 }
 async function fetchAiPredictionsOverview(days){
   const now = Date.now();
@@ -268,89 +226,93 @@ async function fetchAiPredictionsOverview(days){
   return d;
 }
 
-async function loadAcc(days,el){
-  document.querySelectorAll('.dpill').forEach(p=>p.classList.remove('on'));
-  if(el)el.classList.add('on');
+function signalMeta(signal){
+  return signal && typeof signal.metadata === 'object' && signal.metadata ? signal.metadata : {};
+}
+
+function presentLabel(value, fallback){
+  const raw = String(value || '').trim();
+  return raw ? raw : fallback;
+}
+
+function playbookName(signal){
+  const meta = signalMeta(signal);
+  return presentLabel(meta.playbook_name || signal.strategy_id, 'Playbook runtime');
+}
+
+function sessionName(signal){
+  const meta = signalMeta(signal);
+  return presentLabel(meta.session_label || meta.session, 'Sessionless');
+}
+
+function entryStyle(signal){
+  const meta = signalMeta(signal);
+  return presentLabel(meta.playbook_entry_style || meta.entry_style, 'Unspecified');
+}
+
+function countSignals(signals, getter){
+  const totals = new Map();
+  signals.forEach((signal) => {
+    const key = getter(signal);
+    const row = totals.get(key) || {count: 0, conf: 0};
+    const raw = Number(signal.confidence || 0) || 0;
+    row.count += 1;
+    row.conf += raw <= 1 ? raw * 100 : raw;
+    totals.set(key, row);
+  });
+  return Array.from(totals.entries())
+    .map(([label, row]) => ({
+      label,
+      count: row.count,
+      avgConf: row.count ? row.conf / row.count : 0,
+    }))
+    .sort((a, b) => (b.count - a.count) || (b.avgConf - a.avgConf));
+}
+
+function renderSummaryList(title, items, renderMeta, accent){
+  return `
+    <div class="leader-box">
+      <div class="leader-title">${title}</div>
+      ${items.length ? items.map((item) => `
+        <div class="leader-row">
+          <div class="leader-asset">${item.label}</div>
+          <div class="leader-meta">${renderMeta(item)}</div>
+          <div class="leader-score" style="color:${accent}">${item.count}</div>
+        </div>
+      `).join('') : '<div class="empty">No live decisions</div>'}
+    </div>
+  `;
+}
+
+async function loadOverview(){
   try{
-    const overview = await fetchAiPredictionsOverview(days);
-    const accuracy = overview.accuracy || {};
+    const overview = await fetchAiPredictionsOverview(30);
     if(!overview.success){
-      document.getElementById('ringGrid').innerHTML='<div class="empty">Accuracy unavailable</div>';
-      document.getElementById('recentBody').innerHTML='<tr><td colspan="8" class="empty">Accuracy data unavailable</td></tr>';
-      if(accChartInst) accChartInst.destroy();
+      renderAiUnavailable('Playbook intel unavailable');
       return;
     }
-    const bh=accuracy.by_horizon||{};
-    const recent=accuracy.recent||[];
-    const byAsset=accuracy.by_asset||{};
-
     renderPredictionSummary(overview);
     renderDiagnosticsSummary(overview);
-    renderAccuracyLeaders(byAsset, overview);
-
-    // Rings
-    const labels=['1H','4H','24H'];const titles=['1 Hour','4 Hours','24 Hours'];
-    document.getElementById('ringGrid').innerHTML=labels.map((lbl,i)=>{
-      const h=bh[lbl]||{accuracy_pct:0,total:0,correct:0};
-      const pct=h.accuracy_pct||0;const col=hzColor(pct);
-      return`<div class="ring-item">
-        <div class="ring-wrap">${ring(pct,col)}<div class="ring-text" style="color:${col}">${pct.toFixed(0)}%</div></div>
-        <div class="ring-label" style="color:${col}">${titles[i]}</div>
-        <div class="ring-sub">${h.correct||0}/${h.total||0} correct</div>
-      </div>`;
-    }).join('');
-
-    // Chart
-    if(accChartInst)accChartInst.destroy();
-    const dayMap={};
-    recent.forEach(r=>{const day=(r.time||'').substring(0,10);if(!day)return;if(!dayMap[day])dayMap[day]={t:0,c:0};dayMap[day].t++;if(r.correct)dayMap[day].c++;});
-    const days_=Object.keys(dayMap).sort().slice(-14);
-    accChartInst=new Chart(document.getElementById('accChart'),{
-      type:'bar',
-      data:{labels:days_.map(d=>d.substring(5)),datasets:[{
-        label:'Accuracy %',
-        data:days_.map(d=>dayMap[d].t?dayMap[d].c/dayMap[d].t*100:null),
-        backgroundColor:days_.map(d=>{const p=dayMap[d].t?dayMap[d].c/dayMap[d].t*100:50;return p>=60?'rgba(0,208,132,.45)':p>=45?'rgba(255,165,0,.45)':'rgba(255,69,96,.45)';}),
-        borderRadius:4,
-      }]},
-      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
-        scales:{x:{ticks:{color:'#4a5568',font:{size:10}},grid:{display:false}},
-                y:{min:0,max:100,ticks:{color:'#4a5568',font:{size:10},callback:v=>v+'%'},grid:{color:'rgba(30,38,53,.8)'}}}}
-    });
-
-    // Recent table
-    const tbody=document.getElementById('recentBody');
-    if(!recent.length){tbody.innerHTML='<tr><td colspan="8" class="empty">No evaluated predictions yet</td></tr>';return;}
-    tbody.innerHTML=recent.slice(0,20).map(r=>{
-      const correct=r.correct;
-      const pct=(r.move_pct||0);
-      return`<tr>
-        <td><strong>${r.asset}</strong></td>
-        <td style="color:${r.direction==='BUY'?'var(--gr)':'var(--rd)'};font-weight:600">${r.direction}</td>
-        <td style="font-family:monospace">${(r.entry||0).toFixed(4)}</td>
-        <td class="${correct?'tick-y':'tick-n'}">${correct?'✓ Correct':'✗ Wrong'}</td>
-        <td style="color:${pct>=0?'var(--gr)':'var(--rd)'}">${pct>=0?'+':''}${pct.toFixed(2)}%</td>
-        <td>${((r.confidence||0)*100).toFixed(0)}%</td>
-        <td style="color:var(--tx3)">${r.horizon}</td>
-        <td style="color:var(--tx3)">${(r.time||'').substring(5,16)}</td>
-      </tr>`;
-    }).join('');
+    renderPlaybookMix(overview);
+    renderBreakdown(overview);
+    renderPerformance(overview);
+    renderRuntimeLeaders(overview);
+    renderPredictions(overview);
+    renderConfDistribution(overview);
   }catch(e){
     console.error(e);
-    renderAiUnavailable('AI overview timed out');
-    if(accChartInst) accChartInst.destroy();
+    renderAiUnavailable('Playbook intel timed out');
   }
 }
 
 function renderPredictionSummary(overview){
   try{
-    const accuracy = overview.accuracy || {};
     const signals = overview.signals || [];
     const liveQuality = overview.live_quality || {};
-    const byH = accuracy.by_horizon || {};
-    const horizons = Object.entries(byH);
-    const totalEvaluated = horizons.reduce((sum, [, item]) => sum + Number(item.total || 0), 0);
-    const bestHorizon = horizons.sort((a,b)=>Number(b[1].accuracy_pct||0)-Number(a[1].accuracy_pct||0))[0];
+    const performance = overview.playbook_performance || {};
+    const performanceSummary = performance.summary || {};
+    const playbooks = countSignals(signals, playbookName);
+    const sessions = countSignals(signals, sessionName);
     const avgConf = signals.length ? signals.reduce((sum, s) => {
       const raw = Number(s.confidence || 0);
       return sum + (raw <= 1 ? raw * 100 : raw);
@@ -387,22 +349,34 @@ function renderPredictionSummary(overview){
         color: avgExec >= 62 ? 'var(--gr)' : avgExec >= 50 ? 'var(--am)' : 'var(--tx2)',
       },
       {
-        value: String(totalEvaluated),
-        label: 'Evaluated Forecasts',
-        sub: `${accuracy.days_back || 30} day window`,
-        color: 'var(--pu)',
-      },
-      {
-        value: bestHorizon ? `${bestHorizon[0]} ${Number(bestHorizon[1].accuracy_pct || 0).toFixed(0)}%` : '—',
-        label: 'Best Horizon',
-        sub: bestHorizon ? `${bestHorizon[1].correct || 0}/${bestHorizon[1].total || 0} correct` : 'not enough data',
-        color: 'var(--gr)',
-      },
-      {
         value: avgOpp ? avgOpp.toFixed(3) : '—',
         label: 'Avg Opportunity Score',
         sub: signals.length ? 'ranked active decisions' : 'no ranked decisions',
         color: avgOpp >= 0.72 ? 'var(--cy)' : avgOpp >= 0.58 ? 'var(--bl)' : 'var(--tx2)',
+      },
+      {
+        value: playbooks[0] ? playbooks[0].label : '—',
+        label: 'Top Playbook',
+        sub: playbooks[0] ? `${playbooks[0].count} live signals` : 'no active playbooks',
+        color: 'var(--pu)',
+      },
+      {
+        value: sessions[0] ? sessions[0].label : '—',
+        label: 'Dominant Session',
+        sub: sessions[0] ? `${sessions[0].count} live signals` : 'session tags pending',
+        color: 'var(--bl)',
+      },
+      {
+        value: performanceSummary.trade_count ? `${Number(performanceSummary.win_rate || 0).toFixed(1)}%` : '—',
+        label: 'Recent Realized WR',
+        sub: performanceSummary.trade_count ? `${performanceSummary.trade_count} closed playbook trades` : 'no closed playbook trades',
+        color: Number(performanceSummary.win_rate || 0) >= 58 ? 'var(--gr)' : Number(performanceSummary.win_rate || 0) >= 50 ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
+        value: performanceSummary.trade_count ? Number(performanceSummary.profit_factor || 0).toFixed(2) : '—',
+        label: 'Recent Profit Factor',
+        sub: performanceSummary.top_playbook ? `leader ${performanceSummary.top_playbook}` : 'awaiting realized history',
+        color: Number(performanceSummary.profit_factor || 0) >= 1.3 ? 'var(--cy)' : Number(performanceSummary.profit_factor || 0) >= 1.0 ? 'var(--am)' : 'var(--tx2)',
       },
     ].map(item => `
       <div class="summary-card">
@@ -474,66 +448,63 @@ function renderDiagnosticsSummary(overview){
   }catch(e){}
 }
 
-function renderAccuracyLeaders(byAsset, overview){
+function renderPlaybookMix(overview){
   try{
-    const rows = Object.entries(byAsset || {}).map(([asset, item]) => ({
-      asset,
-      total: Number(item.total || 0),
-      accuracy: Number(item.accuracy_pct || 0),
-      correct: Number(item.correct || 0),
-    })).filter(item => item.total > 0);
-
-    const strong = rows.filter(item => item.total >= 3);
-    const ranked = (strong.length ? strong : rows).sort((a,b) => b.accuracy - a.accuracy);
-    const best = ranked.slice(0, 5);
-    const liveRanked = (overview?.signals || []).map(item => {
-      const memory = Number(item.memory_score || 0);
-      const execution = Number(item.execution_quality_score || 0);
-      const blend = memory > 0 || execution > 0 ? (memory + execution) / 2 : 0;
-      return {
-        asset: item.asset,
-        subtitle: `${item.direction || '—'} · M ${memory ? memory.toFixed(0) : '—'} · E ${execution ? execution.toFixed(0) : '—'}`,
-        score: blend,
-      };
-    }).filter(item => item.score > 0).sort((a,b) => b.score - a.score).slice(0, 5);
-    const renderList = (title, items, positive=true) => `
-      <div class="leader-box">
-        <div class="leader-title">${title}</div>
-        ${items.length ? items.map(item => `
-          <div class="leader-row">
-            <div class="leader-asset">${item.asset}</div>
-            <div class="leader-meta">${item.correct}/${item.total}</div>
-            <div class="leader-score" style="color:${positive ? 'var(--gr)' : 'var(--rd)'}">${item.accuracy.toFixed(0)}%</div>
-          </div>
-        `).join('') : '<div class="empty">Not enough evaluated forecasts</div>'}
-      </div>
-    `;
-    const renderQualityList = (title, items) => `
-      <div class="leader-box">
-        <div class="leader-title">${title}</div>
-        ${items.length ? items.map(item => `
-          <div class="leader-row">
-            <div class="leader-asset">${item.asset}</div>
-            <div class="leader-meta">${item.subtitle}</div>
-            <div class="leader-score" style="color:var(--cy)">${item.score.toFixed(0)}</div>
-          </div>
-        `).join('') : '<div class="empty">No live quality signals</div>'}
-      </div>
-    `;
-    document.getElementById('leaderGrid').innerHTML = renderList('Accuracy Leaders', best, true) + renderQualityList('Live Quality Leaders', liveRanked);
+    const signals = overview.signals || [];
+    const playbooks = countSignals(signals, playbookName).slice(0, 5);
+    const categories = countSignals(signals, (item) => presentLabel(item.category, 'uncategorized')).slice(0, 5);
+    document.getElementById('playbookMixPanel').innerHTML =
+      renderSummaryList('Playbooks', playbooks, (item) => `${item.avgConf.toFixed(0)}% avg conf`, 'var(--pu)') +
+      renderSummaryList('Asset Classes', categories, (item) => `${item.avgConf.toFixed(0)}% avg conf`, 'var(--cy)');
   }catch(e){}
 }
 
-async function loadPredictions(){
+function renderBreakdown(overview){
   try{
-    const overview = await fetchAiPredictionsOverview(30);
-    const d = overview || {};
-    if(!d.success){
-      document.getElementById('predGrid').innerHTML='<div class="empty">No active signal decisions</div>';
-      document.getElementById('predCount').textContent='0 signals';
-      return;
-    }
-    const preds=d.signals||[];
+    const signals = overview.signals || [];
+    const sessions = countSignals(signals, sessionName).slice(0, 5);
+    const entries = countSignals(signals, entryStyle).slice(0, 5);
+    document.getElementById('breakdownPanel').innerHTML =
+      renderSummaryList('Sessions', sessions, (item) => `${item.avgConf.toFixed(0)}% avg conf`, 'var(--gr)') +
+      renderSummaryList('Entry Styles', entries, (item) => `${item.avgConf.toFixed(0)}% avg conf`, 'var(--am)');
+  }catch(e){}
+}
+
+function renderPerformance(overview){
+  try{
+    const performance = overview.playbook_performance || {};
+    const playbooks = Array.isArray(performance.playbooks) ? performance.playbooks : [];
+    const assets = Array.isArray(performance.assets) ? performance.assets : [];
+    document.getElementById('performancePanel').innerHTML =
+      renderSummaryList('Playbooks', playbooks, (item) => `${Number(item.win_rate || 0).toFixed(1)}% WR · PF ${Number(item.profit_factor || 0).toFixed(2)}`, 'var(--gr)') +
+      renderSummaryList('Assets', assets, (item) => `${Number(item.win_rate || 0).toFixed(1)}% WR · ${Number(item.total_pnl || 0) >= 0 ? '+' : ''}${Number(item.total_pnl || 0).toFixed(2)}`, 'var(--cy)');
+  }catch(e){}
+}
+
+function renderRuntimeLeaders(overview){
+  try{
+    const leaders = overview.live_leaders || {};
+    const renderLiveLeaders = (title, items, accent) => `
+      <div class="leader-box">
+        <div class="leader-title">${title}</div>
+        ${items.length ? items.map((item) => `
+          <div class="leader-row">
+            <div class="leader-asset">${item.asset}</div>
+            <div class="leader-meta">${item.direction || '—'} · ${item.subtitle || 'runtime'}</div>
+            <div class="leader-score" style="color:${accent}">${Number(item.score || 0).toFixed(1)}</div>
+          </div>
+        `).join('') : '<div class="empty">No live leaders yet</div>'}
+      </div>
+    `;
+    document.getElementById('leaderGrid').innerHTML =
+      renderLiveLeaders('Memory Leaders', leaders.memory || [], 'var(--gr)') +
+      renderLiveLeaders('Execution Leaders', leaders.execution || [], 'var(--cy)');
+  }catch(e){}
+}
+
+function renderPredictions(overview){
+  try{
+    const preds=overview.signals||[];
     document.getElementById('predCount').textContent=preds.length+' signals';
     const grid=document.getElementById('predGrid');
     if(!preds.length){grid.innerHTML='<div class="empty">No active signal decisions</div>';return;}
@@ -547,6 +518,9 @@ async function loadPredictions(){
       const memSamples=Number(p.memory_sample_count||0);
       const execSamples=Number(p.execution_feedback_sample_count||0);
       const notes=[...(Array.isArray(p.memory_notes)?p.memory_notes:[]), ...(Array.isArray(p.execution_notes)?p.execution_notes:[])].slice(0,2);
+      const playbook = playbookName(p);
+      const session = sessionName(p);
+      const style = entryStyle(p);
       const fmt=n=>n?(n<10?n.toFixed(5):n.toFixed(2)):'—';
       return`<div class="pred-card pc-${isBuy?'buy':'sell'}">
         <div class="pc-header">
@@ -563,7 +537,8 @@ async function loadPredictions(){
           <div class="pc-level"><div class="pc-level-l">Stop</div><div class="pc-level-v" style="color:var(--rd)">${fmt(p.sl)}</div></div>
           <div class="pc-level"><div class="pc-level-l">Target</div><div class="pc-level-v" style="color:var(--gr)">${fmt(p.tp)}</div></div>
         </div>
-        <div class="pc-footer"><span>${p.strategy||'Decision Engine'}</span><span class="rr-badge">R:R ${p.rr||'—'}</span></div>
+        <div class="pc-footer"><span>${playbook}</span><span class="rr-badge">R:R ${p.rr||'—'}</span></div>
+        <div class="pc-footer"><span>${style}</span><span>${session}</span></div>
         <div class="pc-footer"><span>Memory ${memoryScore?memoryScore.toFixed(0):'—'}${memSamples?` · n${memSamples}`:''}</span><span>Exec ${execQ?execQ.toFixed(0):'—'}${execSamples?` · n${execSamples}`:''}</span></div>
         <div class="pc-footer"><span>${oppScore?`Opp ${oppScore.toFixed(3)}`:'Opportunity pending'}</span><span>${p.opportunity_rank?`Rank #${p.opportunity_rank}`:(p.memory_regime||p.category||'')}</span></div>
         ${notes.length?`<div class="pc-footer"><span style="color:var(--tx2)">${notes.join(' · ')}</span><span></span></div>`:''}
@@ -574,18 +549,16 @@ async function loadPredictions(){
 
 let confChartInst = null;
 
-async function loadConfDistribution(){
+function renderConfDistribution(overview){
   try{
-    const overview = await fetchAiPredictionsOverview(30);
-    const d = overview || {};
     const chartCanvas = document.getElementById('confChart');
-    if(!d.success){
+    if(!overview.success){
       if(confChartInst) confChartInst.destroy();
       if(chartCanvas) chartCanvas.style.display = 'none';
       return;
     }
     if(chartCanvas) chartCanvas.style.display = 'block';
-    const preds = d.signals || [];
+    const preds = overview.signals || [];
     
     // Bin confidence scores into buckets (45-50, 50-55, 55-60, 60-65, 65-70, 70-75, 75-80, 80-85, 85-90)
     const bins = [0,0,0,0,0,0,0,0,0];
@@ -646,10 +619,8 @@ async function loadConfDistribution(){
   }catch(e){console.error('[ConfDist]', e);}
 }
 
-loadAcc(30); loadPredictions(); loadConfDistribution();
-setInterval(() => loadAcc(30), 60000);  // Refresh accuracy every 60 seconds
-setInterval(loadPredictions, 30000);
-setInterval(loadConfDistribution, 30000);
+loadOverview();
+setInterval(loadOverview, 30000);
 </script>
 
 <script>

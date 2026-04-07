@@ -362,10 +362,9 @@ class PredictionTracker:
 
     def _run_live_training(self, category: str) -> None:
         try:
-            from ml import trainer as _trainer
-            _trainer.train_live_from_outcomes(category)
-        except Exception as e:
-            logger.debug(f"[PredTracker] Live training failed: {e}")
+            logger.debug(
+                f"[PredTracker] Live training retired in playbook-native runtime; skipping category={category}"
+            )
         finally:
             with self._live_training_lock:
                 self._live_training_running = False

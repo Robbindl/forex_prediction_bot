@@ -1,20 +1,6 @@
 version: '3.8'
 
 services:
-  master-controller:
-    image: trading-bot
-    container_name: master-controller
-    restart: unless-stopped
-    volumes:
-      - ./ml_models:/app/ml_models
-      - ./logs:/app/logs
-      - ./paper_trades.json:/app/paper_trades.json
-      - ./.env:/app/.env
-      - ./config:/app/config
-    command: python master_controller.py
-    networks:
-      - trading-network
-
   trading-bot:
     image: trading-bot
     container_name: trading-bot
@@ -25,11 +11,9 @@ services:
       - ./paper_trades.json:/app/paper_trades.json
       - ./.env:/app/.env
       - ./config:/app/config
-    command: python trading_system.py --mode live --balance 30 --strategy-mode voting
+    command: python bot.py --balance 30
     networks:
       - trading-network
-    depends_on:
-      - master-controller
 
   web-dashboard:
     image: trading-bot
@@ -42,25 +26,7 @@ services:
       - ./paper_trades.json:/app/paper_trades.json
       - ./.env:/app/.env
       - ./config:/app/config
-      - ./web_launcher.py:/app/web_launcher.py
-    command: python web_launcher.py
-    networks:
-      - trading-network
-    depends_on:
-      - trading-bot
-
-  perf-dashboard:
-    image: trading-bot
-    container_name: perf-dashboard
-    restart: unless-stopped
-    ports:
-      - "8050:8050"
-    volumes:
-      - ./logs:/app/logs
-      - ./paper_trades.json:/app/paper_trades.json
-      - ./.env:/app/.env
-      - ./config:/app/config
-    command: python performance_dashboard.py
+    command: python -m dashboard.web_app_live
     networks:
       - trading-network
     depends_on:

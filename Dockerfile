@@ -51,4 +51,4 @@ RUN mkdir -p logs ml_models trained_models training_logs backtest_results
 EXPOSE 5000 8050
 
 # Default command (runs trading bot)
-CMD ["python", "trading_system.py", "--mode", "live", "--balance", "30", "--strategy-mode", "voting"]
+CMD ["python", "bot.py", "--balance", "30"]

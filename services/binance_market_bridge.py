@@ -136,7 +136,12 @@ class BinanceMarketBridge:
                 "limit": request_limit,
             }
             if cutoff is not None and not pd.isna(cutoff):
-                params["endTime"] = int(pd.Timestamp(cutoff).timestamp() * 1000) - (1 if closed_only else 0)
+                cutoff_ts = pd.Timestamp(cutoff)
+                if cutoff_ts.tzinfo is None:
+                    cutoff_ts = cutoff_ts.tz_localize("UTC")
+                else:
+                    cutoff_ts = cutoff_ts.tz_convert("UTC")
+                params["endTime"] = int(cutoff_ts.timestamp() * 1000) - (1 if closed_only else 0)
             response = self._session.get(
                 f"{_BASE_URL}{_KLINES_ENDPOINT}",
                 params=params,
@@ -172,6 +177,10 @@ class BinanceMarketBridge:
             frame = frame.dropna(subset=["open", "high", "low", "close"])
             if cutoff is not None and not pd.isna(cutoff):
                 cutoff_ts = pd.Timestamp(cutoff)
+                if cutoff_ts.tzinfo is None:
+                    cutoff_ts = cutoff_ts.tz_localize("UTC")
+                else:
+                    cutoff_ts = cutoff_ts.tz_convert("UTC")
                 if closed_only:
                     frame = frame[frame.index < cutoff_ts]
                 else:

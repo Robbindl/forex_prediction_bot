@@ -101,6 +101,17 @@ def _coerce_datetime(value: Any) -> Optional[datetime]:
         return None
 
 
+def _normalized_trade_metadata(trade_data: Dict) -> Dict[str, Any]:
+    metadata = dict(trade_data.get("metadata") or {})
+    parent_trade_id = trade_data.get("parent_trade_id")
+    if parent_trade_id not in (None, ""):
+        metadata["parent_trade_id"] = str(parent_trade_id)
+    is_partial_close = trade_data.get("is_partial_close")
+    if is_partial_close is not None:
+        metadata["is_partial_close"] = bool(is_partial_close)
+    return metadata
+
+
 class DatabaseService:
     """
     Single class for all DB operations.
@@ -183,6 +194,7 @@ class DatabaseService:
     def save_trade(self, trade_data: Dict) -> str:
         """Persist a closed trade. Returns trade_id."""
         tid = str(_np(trade_data.get("trade_id", str(uuid.uuid4())[:12])))
+        normalized_metadata = _normalized_trade_metadata(trade_data)
         with self.get_session() as s:
             existing = s.query(Trade).filter_by(trade_id=tid).first()
             if existing:
@@ -193,7 +205,9 @@ class DatabaseService:
                 existing.pnl         = _np(trade_data.get("pnl"))
                 existing.pnl_percent = _np(trade_data.get("pnl_percent"))
                 existing.duration_minutes = int(_np(trade_data.get("duration_minutes", 0)))
-                existing.trade_metadata = trade_data.get("metadata", existing.trade_metadata or {})
+                merged_metadata = dict(existing.trade_metadata or {})
+                merged_metadata.update(normalized_metadata)
+                existing.trade_metadata = merged_metadata
                 return tid
 
             row = Trade(
@@ -215,7 +229,7 @@ class DatabaseService:
                 strategy_id     = str(_np(trade_data.get("strategy_id", "UNKNOWN"))),
                 confidence      = _np(trade_data.get("confidence", 0)),
                 duration_minutes = int(_np(trade_data.get("duration_minutes", 0))),
-                trade_metadata  = trade_data.get("metadata", {}),
+                trade_metadata  = normalized_metadata,
             )
             s.add(row)
         logger.debug(f"[DB] Trade saved: {tid}")

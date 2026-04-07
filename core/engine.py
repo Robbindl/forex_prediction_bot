@@ -14,6 +14,7 @@ import pandas as pd
 from config.config import (
     MAX_SIGNAL_CONFIDENCE,
     MIN_FINAL_CONFIDENCE,
+    PLAYBOOK_ONLY_RUNTIME,
     TRADE_CLOSE_COOLDOWN_MINUTES as CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES,
     get_timeframe_periods,
     get_trading_timeframe,
@@ -1027,8 +1028,6 @@ class TradingCore:
         never_seen_sources: List[str] = []
         recent_error_count = 0
         recent_errors: List[Dict[str, Any]] = []
-        training_health: Dict[str, Any] = {}
-        training_summary: Dict[str, Any] = {}
         ig_broker: Dict[str, Any] = {}
         signal_diagnostics: Dict[str, Any] = {}
         try:
@@ -1052,14 +1051,6 @@ class TradingCore:
             )
             recent_error_count = int(monitor_snapshot.get("recent_error_count", 0) or 0)
             recent_errors = list(monitor_snapshot.get("recent_errors") or [])[-5:]
-        except Exception:
-            pass
-        try:
-            from ml.trainer import get_training_health_snapshot
-
-            training_snapshot = get_training_health_snapshot(getattr(self, "_trainer", None))
-            training_health = dict(training_snapshot.get("categories") or {})
-            training_summary = dict(training_snapshot.get("summary") or {})
         except Exception:
             pass
         try:
@@ -1168,8 +1159,6 @@ class TradingCore:
             "never_seen_source_count": len(never_seen_sources),
             "recent_error_count": recent_error_count,
             "recent_errors":    recent_errors,
-            "training_health":  training_health,
-            "training_summary": training_summary,
             "ig_broker":        ig_broker,
             "signal_diagnostics": signal_diagnostics,
             "issues":           issues,
@@ -1195,17 +1184,14 @@ class TradingCore:
             from data.fetcher           import DataFetcher
             from risk.manager           import RiskManager
             from execution.paper_trader import PaperTrader
-            from ml.registry            import registry as model_registry
 
             self.fetcher       = DataFetcher()
             self._risk_manager = RiskManager(account_balance=self.state.balance)
 
-            # ── Singleton strategy + predictor — created once, reused every cycle ──
-            from ml.agent import agent as TradingAgent
             self._strategy  = None
             self._predictor = None
-            self._agent     = TradingAgent
-            logger.info("[TradingCore] PolicyAgent initialised (singletons)")
+            self._agent     = None
+            logger.info("[TradingCore] Playbook-native runtime active — legacy policy agent removed")
             self._paper_trader = PaperTrader(
                 account_balance=self.state.balance,
                 risk_manager=self._risk_manager,
@@ -1337,10 +1323,7 @@ class TradingCore:
             # the bot was offline. First breach chronologically wins.
             self._check_offline_sl_tp()
 
-            try:
-                model_registry.load_all()
-            except Exception as me:
-                logger.warning(f"[TradingCore] ML registry load warning: {me}")
+            logger.info("[TradingCore] Playbook-native runtime active — ML registry load removed")
 
             # Pre-warm OHLCV cache in background — avoids slow first trading cycle
             import threading as _threading
@@ -1854,10 +1837,43 @@ class TradingCore:
         except Exception:
             return "n/a"
 
+    @staticmethod
+    def _fmt_reason_list(value: Any, limit: int = 3) -> str:
+        if isinstance(value, (list, tuple)):
+            items = [str(item).strip() for item in value if str(item).strip()]
+        elif value:
+            items = [str(value).strip()]
+        else:
+            items = []
+        if not items:
+            return "n/a"
+        return ",".join(items[: max(1, int(limit or 1))])
+
     def _log_seed_decision(self, asset: str, context: Dict[str, Any], reason: str) -> None:
+        seed_decision = dict(context.get("seed_decision") or {})
+        playbook_decision = dict(context.get("playbook_decision") or {})
+        structure = dict(context.get("market_structure") or {})
+        current_interval = str(context.get("timeframe") or "").strip().lower() or "n/a"
+        playbook_interval = (
+            str(playbook_decision.get("preferred_interval") or seed_decision.get("playbook_timeframe") or "").strip().lower()
+            or current_interval
+        )
+        session_label = (
+            str(playbook_decision.get("session_label") or playbook_decision.get("session") or seed_decision.get("session") or "").strip().lower()
+            or "n/a"
+        )
+        rejected_reasons = playbook_decision.get("rejected_reasons") or seed_decision.get("rejected_reasons") or []
+        candidate_count = playbook_decision.get("candidate_count", seed_decision.get("candidate_count", 0))
         logger.info(
             f"[TradingCore] Decision {asset} no_seed "
             f"reason={reason} "
+            f"session={session_label} "
+            f"tf={current_interval}->{playbook_interval} "
+            f"bias={str(structure.get('structure_bias', seed_decision.get('structure_bias', 'neutral'))).lower()} "
+            f"align={self._fmt_metric(structure.get('alignment_score', seed_decision.get('alignment_score')))} "
+            f"setup={self._fmt_metric(structure.get('setup_quality', seed_decision.get('setup_quality')))} "
+            f"candidates={candidate_count} "
+            f"rejected={self._fmt_reason_list(rejected_reasons)} "
             f"ml={self._fmt_metric(context.get('ml_prediction'))}/"
             f"{self._fmt_metric(context.get('ml_confidence'))} "
             f"sent={self._fmt_metric(context.get('sentiment_score'))} "
@@ -1888,55 +1904,17 @@ class TradingCore:
         price_data,
         context: Dict[str, Any],
     ) -> Optional[Signal]:
-        predictor = self._predictor
-        if predictor is None:
-            try:
-                from ml.registry import registry as shared_registry
-                if shared_registry.get(f"{category}_classifier") is None:
-                    shared_registry.load_all()
-                from ml.predictor import predictor as local_predictor
-                predictor = local_predictor
-            except Exception as e:
-                context["seed_decision"] = {"status": "unavailable", "reason": "predictor_unavailable"}
-                logger.debug(f"[TradingCore] Seed predictor unavailable for {asset}: {e}")
-                self._log_seed_decision(asset, context, "predictor_unavailable")
-                predictor = None
-
-        if predictor is None:
-            return None
-
-        try:
-            up_prob, ml_conf = predictor.predict(canonical, category, price_data)
-        except Exception as e:
-            context["seed_decision"] = {"status": "error", "reason": "predictor_error"}
-            logger.debug(f"[TradingCore] Seed predictor failed for {asset}: {e}")
-            self._log_seed_decision(asset, context, "predictor_error")
-            return None
-
+        up_prob = 0.5
+        ml_conf = 0.0
         context["ml_prediction"] = up_prob
         context["ml_confidence"] = ml_conf
         context["seed_decision"] = {
-            "status": "evaluated",
-            "model": f"{category}_classifier",
+            "status": "playbook_runtime",
+            "model": "playbook",
             "probability": up_prob,
             "confidence": ml_conf,
+            "reason": "legacy classifier seed removed",
         }
-
-        if ml_conf < 0.10:
-            context["seed_decision"]["status"] = "rejected"
-            context["seed_decision"]["reason"] = "classifier_neutral"
-            self._log_seed_decision(asset, context, "classifier_neutral")
-            return None
-
-        if up_prob > 0.5:
-            direction = "BUY"
-        elif up_prob < 0.5:
-            direction = "SELL"
-        else:
-            context["seed_decision"]["status"] = "rejected"
-            context["seed_decision"]["reason"] = "classifier_exactly_neutral"
-            self._log_seed_decision(asset, context, "classifier_exactly_neutral")
-            return None
 
         structure = context.get("market_structure") or {}
         structure_bias = str(structure.get("structure_bias", "neutral")).lower()
@@ -1946,8 +1924,96 @@ class TradingCore:
         breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
         volatility_state = str(structure.get("volatility_state", "unknown"))
 
+        playbook_pick: Dict[str, Any] = {"action": "", "primary": None, "candidates": []}
+        playbook_interval = ""
+        playbook_price_data = price_data
+        try:
+            from services.playbook_service import get_service as get_playbook_service
+
+            playbook_service = get_playbook_service()
+            playbook_interval = str(playbook_service.preferred_interval(category, canonical) or "").strip().lower()
+            current_interval = str(context.get("timeframe") or get_trading_timeframe(category) or "").strip().lower()
+            fetcher = context.get("fetcher") or getattr(self, "fetcher", None)
+            if (
+                fetcher is not None
+                and playbook_interval
+                and playbook_interval != current_interval
+            ):
+                try:
+                    fetched_frame = fetcher.get_ohlcv(
+                        canonical,
+                        category,
+                        interval=playbook_interval,
+                        periods=get_timeframe_periods(playbook_interval),
+                    )
+                    if fetched_frame is not None and not getattr(fetched_frame, "empty", True):
+                        playbook_price_data = fetched_frame
+                except Exception as exc:
+                    logger.debug(f"[TradingCore] Playbook timeframe fetch unavailable for {asset}: {exc}")
+            playbook_pick = playbook_service.pick_seed(
+                canonical,
+                category,
+                playbook_price_data,
+                context,
+                ml_direction="",
+                ml_confidence=0.0,
+            ) or playbook_pick
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Playbook seed unavailable for {asset}: {exc}")
+
+        playbook_primary = dict(playbook_pick.get("primary") or {})
+        playbook_action = str(playbook_pick.get("action") or "")
+        playbook_direction = str(playbook_primary.get("direction") or "").upper()
+        playbook_name = str(playbook_primary.get("playbook") or "").strip()
+        playbook_confidence = float(playbook_primary.get("confidence", 0.0) or 0.0)
+        playbook_entry_style = str(playbook_primary.get("entry_style") or "").strip()
+        playbook_management_template = dict(playbook_primary.get("management") or {})
+        context["playbook_decision"] = {
+            "action": playbook_action,
+            "playbook": playbook_name,
+            "direction": playbook_direction,
+            "confidence": round(playbook_confidence, 4),
+            "score": round(float(playbook_primary.get("score", 0.0) or 0.0), 4),
+            "entry_style": playbook_entry_style,
+            "session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            "preferred_interval": playbook_interval,
+            "candidate_count": len(playbook_pick.get("candidates") or []),
+            "blocked_reason": str(playbook_pick.get("blocked_reason") or ""),
+            "rejected_reasons": list(playbook_pick.get("rejected_reasons") or []),
+            "allowed_sessions": list(playbook_pick.get("allowed_sessions") or []),
+            "asset_plan": dict(playbook_pick.get("asset_plan") or {}),
+            "notes": list(playbook_primary.get("notes") or []),
+        }
+
+        if playbook_action in {"seed", "override"} and playbook_direction:
+            direction = playbook_direction
+            seed_confidence = playbook_confidence
+            seed_source = "playbook"
+            seed_model = playbook_name or "playbook"
+            context["seed_decision"].update({
+                "status": "playbook_seed",
+                "reason": playbook_action,
+                "direction": direction,
+                "playbook": playbook_name,
+                "playbook_confidence": round(playbook_confidence, 4),
+            })
+        else:
+            context["seed_decision"].update({
+                "status": "rejected",
+                "reason": playbook_pick.get("blocked_reason") or "no_playbook_seed",
+                "session": context["playbook_decision"].get("session_label") or context["playbook_decision"].get("session") or "",
+                "playbook_timeframe": playbook_interval or str(context.get("timeframe") or ""),
+                "candidate_count": context["playbook_decision"].get("candidate_count", 0),
+                "rejected_reasons": list(context["playbook_decision"].get("rejected_reasons") or []),
+                "structure_bias": structure_bias,
+                "alignment_score": round(alignment_score, 4),
+                "setup_quality": round(setup_quality, 4),
+            })
+            self._log_seed_decision(asset, context, context["seed_decision"]["reason"])
+            return None
+
         structure_note = "neutral"
-        seed_confidence = float(ml_conf)
         direction_sign = 1 if direction == "BUY" else -1
         setup_alignment = breakout_score if abs(breakout_score) >= abs(pullback_score) else pullback_score
 
@@ -1978,6 +2044,12 @@ class TradingCore:
             "ml_prediction": up_prob,
             "ml_confidence": ml_conf,
             "ml_prediction_real": ml_conf > 0.0,
+            "playbook_action": playbook_action,
+            "playbook_name": playbook_name,
+            "playbook_direction": playbook_direction,
+            "playbook_confidence": round(playbook_confidence, 4),
+            "playbook_entry_style": playbook_entry_style,
+            "playbook_timeframe": playbook_interval or str(context.get("timeframe") or ""),
             "sentiment_score": context.get("sentiment_score", 0.0),
             "regime": structure.get("regime", context.get("regime", "unknown")),
             "confidence": seed_confidence,
@@ -2092,6 +2164,44 @@ class TradingCore:
             reward_dist = dist * 1.5 * max(0.80, min(1.20, target_rr_multiplier))
             take_profit = entry_price + reward_dist if direction == "BUY" else entry_price - reward_dist
 
+        trade_management_plan: Dict[str, Any] = {}
+        take_profit_levels: List[float] = self._build_take_profit_levels(entry_price, take_profit, direction)
+        risk_distance = abs(entry_price - stop_loss)
+        if (
+            playbook_direction == direction
+            and playbook_action in {"seed", "override", "support"}
+            and risk_distance > 0.0
+            and playbook_management_template
+        ):
+            partial_rrs = []
+            for raw_rr in list(playbook_management_template.get("partial_take_profit_rr") or []):
+                try:
+                    rr_value = float(raw_rr)
+                except Exception:
+                    continue
+                if rr_value > 0.0:
+                    partial_rrs.append(rr_value)
+            runner_target_rr = float(playbook_management_template.get("runner_target_rr", 0.0) or 0.0)
+            current_rr = abs(float(take_profit) - float(entry_price)) / max(risk_distance, 1e-9)
+            if runner_target_rr > 0.0:
+                runner_target_rr = max(runner_target_rr, current_rr)
+                reward_distance = risk_distance * runner_target_rr
+                take_profit = entry_price + reward_distance if direction == "BUY" else entry_price - reward_distance
+                take_profit_levels = []
+                level_rrs = sorted({round(rr, 4) for rr in partial_rrs + [runner_target_rr] if rr > 0.0})
+                for level_rr in level_rrs:
+                    reward = risk_distance * level_rr
+                    level_price = entry_price + reward if direction == "BUY" else entry_price - reward
+                    take_profit_levels.append(round(level_price, 6))
+            trade_management_plan = {
+                **playbook_management_template,
+                "partial_take_profit_rr": [round(float(rr), 4) for rr in partial_rrs],
+                "runner_target_rr": round(runner_target_rr or current_rr, 4),
+                "preferred_interval": playbook_interval or playbook_management_template.get("preferred_interval") or "",
+                "entry_style": playbook_entry_style,
+                "session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            }
+
         signal = Signal(
             asset=asset,
             canonical_asset=canonical,
@@ -2102,16 +2212,28 @@ class TradingCore:
             stop_loss=stop_loss,
             take_profit=take_profit,
             risk_reward=round(abs(take_profit - entry_price) / max(abs(entry_price - stop_loss), 1e-9), 4),
-            strategy_id="policy_agent",
-            indicators={"seed_source": "classifier", "seed_model": f"{category}_classifier"},
+            strategy_id=f"playbook_{playbook_name}" if playbook_name and playbook_action else "playbook_runtime",
+            indicators={"seed_source": seed_source, "seed_model": seed_model},
+            take_profit_levels=take_profit_levels,
         )
         signal.metadata.update({
             "ml_prediction": round(up_prob, 4),
             "ml_confidence": round(ml_conf, 4),
             "ml_prediction_real": ml_conf > 0.0,
             "seed_candidate_score": round(signal.confidence, 4),
-            "seed_source": "classifier",
-            "seed_model": f"{category}_classifier",
+            "seed_source": seed_source,
+            "seed_model": seed_model,
+            "playbook_action": playbook_action,
+            "playbook_name": playbook_name,
+            "playbook_direction": playbook_direction,
+            "playbook_score": round(float(playbook_primary.get("score", 0.0) or 0.0), 4),
+            "playbook_confidence": round(playbook_confidence, 4),
+            "playbook_entry_style": playbook_entry_style,
+            "playbook_session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            "playbook_timeframe": playbook_interval or str(context.get("timeframe") or ""),
+            "playbook_notes": list(playbook_primary.get("notes") or []),
+            "trade_management_plan": trade_management_plan,
             "market_data": context.get("market_data", {}),
             "atr": round(atr, 6) if atr > 0 else 0.0,
             "exit_model": "atr" if atr > 0 else "category_fallback",
@@ -2138,6 +2260,11 @@ class TradingCore:
             "target_rr_multiplier": round(target_rr_multiplier, 4),
             "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
             "structure_target_alignment": structure_target_alignment,
+            "playbook_timeframe": playbook_interval or str(context.get("timeframe") or ""),
+            "playbook_entry_style": playbook_entry_style,
+            "playbook_session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            "trade_management_plan": trade_management_plan,
         }
         context["seed_decision"]["status"] = "signal"
         context["seed_decision"]["direction"] = direction
@@ -2145,6 +2272,8 @@ class TradingCore:
         context["seed_decision"]["structure_bias"] = structure_bias
         context["seed_decision"]["structure_note"] = structure_note
         context["seed_decision"]["setup_quality"] = round(setup_quality, 4)
+        context["seed_decision"]["seed_source"] = seed_source
+        context["seed_decision"]["seed_model"] = seed_model
         context["seed_decision"]["execution_feedback_policy"] = execution_feedback_policy
         return signal
 
@@ -2252,7 +2381,7 @@ class TradingCore:
                     pass
         return prices
 
-    # ── Context helpers — wired so classifier receives live macro/narrative data ──
+    # ── Context helpers — wired so playbooks receive live macro/narrative data ──
 
     @staticmethod
     def _get_macro_impact_static() -> str:

@@ -368,6 +368,7 @@ class PaperTrader:
         tp_levels  = pos.get("take_profit_levels", [])
         size       = float(pos.get("position_size", 0))
         metadata   = self._metadata_dict(pos.get("metadata"))
+        management = self._metadata_dict(metadata.get("trade_management_plan"))
         tracked_before = {
             "position_size": float(pos.get("position_size", 0)),
             "stop_loss": float(pos.get("stop_loss", 0)),
@@ -415,39 +416,53 @@ class PaperTrader:
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Trailing stop + break-even ───────────────────────────────────────
-        # Break-even at 60% toward TP — protects profit without cutting too early.
-        # Trail at 90% toward TP with 0.5×ATR buffer — gives room to breathe on
-        # 15m crypto candles which easily swing 0.3×ATR in one bar.
-        if take_profit and entry and stop_loss:
-            tp_dist = abs(take_profit - entry)
-            sl_dist = abs(entry - stop_loss)
-            if tp_dist > 0:
-                if direction == "BUY":
-                    progress = (price - entry) / tp_dist
-                    if progress >= 0.90:
-                        # Trail SL 0.5×ATR behind highest price reached
-                        atr_approx = float(pos.get("original_sl", stop_loss))
-                        atr_approx = abs(entry - atr_approx)  # original SL dist = 1×ATR
-                        trail_sl = float(pos.get("highest_price", price)) - (0.5 * atr_approx)
+        # Playbook-managed trades trail off initial risk/ATR once 1R is reached.
+        # Other trades keep the older TP-progress fallback.
+        if entry and stop_loss:
+            initial_risk = abs(entry - float(pos.get("original_sl", stop_loss)))
+            atr_value = self._safe_float(metadata.get("atr"), 0.0)
+            if management and initial_risk > 0.0:
+                trail_activation_rr = max(0.5, self._safe_float(management.get("trail_activation_rr"), 1.0))
+                trail_atr_multiple = max(0.4, self._safe_float(management.get("trail_atr_multiple"), 0.8))
+                favorable_move = (price - entry) if direction == "BUY" else (entry - price)
+                progress_rr = favorable_move / max(initial_risk, 1e-9)
+                if progress_rr >= trail_activation_rr:
+                    trail_dist = max(initial_risk * 0.85, atr_value * trail_atr_multiple if atr_value > 0 else 0.0)
+                    if direction == "BUY":
+                        trail_sl = float(pos.get("highest_price", price)) - trail_dist
                         if trail_sl > stop_loss:
                             pos["stop_loss"] = trail_sl
                             stop_loss = trail_sl
-                    elif progress >= 0.60:
-                        # Move SL to break-even — never lose on a trade that went 60% your way
-                        if entry > stop_loss:
-                            pos["stop_loss"] = entry
-                            stop_loss = entry
-                else:  # SELL
-                    progress = (entry - price) / tp_dist
-                    if progress >= 0.90:
-                        atr_approx = float(pos.get("original_sl", stop_loss))
-                        atr_approx = abs(entry - atr_approx)
-                        trail_sl = float(pos.get("lowest_price", price)) + (0.5 * atr_approx)
+                    else:
+                        trail_sl = float(pos.get("lowest_price", price)) + trail_dist
                         if trail_sl < stop_loss:
                             pos["stop_loss"] = trail_sl
                             stop_loss = trail_sl
-                    elif progress >= 0.60:
-                        if entry < stop_loss:
+            elif take_profit:
+                tp_dist = abs(take_profit - entry)
+                if tp_dist > 0:
+                    if direction == "BUY":
+                        progress = (price - entry) / tp_dist
+                        if progress >= 0.90:
+                            atr_approx = float(pos.get("original_sl", stop_loss))
+                            atr_approx = abs(entry - atr_approx)
+                            trail_sl = float(pos.get("highest_price", price)) - (0.5 * atr_approx)
+                            if trail_sl > stop_loss:
+                                pos["stop_loss"] = trail_sl
+                                stop_loss = trail_sl
+                        elif progress >= 0.60 and entry > stop_loss:
+                            pos["stop_loss"] = entry
+                            stop_loss = entry
+                    else:
+                        progress = (entry - price) / tp_dist
+                        if progress >= 0.90:
+                            atr_approx = float(pos.get("original_sl", stop_loss))
+                            atr_approx = abs(entry - atr_approx)
+                            trail_sl = float(pos.get("lowest_price", price)) + (0.5 * atr_approx)
+                            if trail_sl < stop_loss:
+                                pos["stop_loss"] = trail_sl
+                                stop_loss = trail_sl
+                        elif progress >= 0.60 and entry < stop_loss:
                             pos["stop_loss"] = entry
                             stop_loss = entry
         # ─────────────────────────────────────────────────────────────────────

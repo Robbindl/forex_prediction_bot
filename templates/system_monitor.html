@@ -119,11 +119,10 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     <div class="sb-section">Dashboards</div>
     <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
     <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
-    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>Playbook Intel</a>
     <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
     <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
     <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
-    <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link active"><span class="sb-icon">🖥️</span>System</a>
@@ -192,13 +191,13 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div id="serviceList"><div class="empty">Loading…</div></div>
       </div>
 
-      <!-- Model training -->
+      <!-- Playbook runtime -->
       <div class="panel panel-full">
         <div class="panel-header">
-          <span class="panel-title">🧠 Model Training</span>
-          <span class="panel-badge" id="trainBadge">—</span>
+          <span class="panel-title">🧭 Playbook Runtime</span>
+          <span class="panel-badge" id="runtimeBadge">—</span>
         </div>
-        <div id="trainingPanel"><div class="empty">Loading…</div></div>
+        <div id="runtimePanel"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Source freshness -->
@@ -215,7 +214,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="panel-header"><span class="panel-title">📊 Trading Stats</span></div>
         <div class="stat-mini-grid">
           <div class="sm"><div class="sm-val gn" id="sBalance">—</div><div class="sm-lbl">Balance</div></div>
-          <div class="sm"><div class="sm-val" id="sStrategy">—</div><div class="sm-lbl">Strategy</div></div>
+          <div class="sm"><div class="sm-val" id="sStrategy">—</div><div class="sm-lbl">Runtime Mode</div></div>
           <div class="sm"><div class="sm-val" id="sPositions">—</div><div class="sm-lbl">Open positions</div></div>
           <div class="sm"><div class="sm-val" id="sCooldowns">—</div><div class="sm-lbl">Cooldowns</div></div>
         </div>
@@ -394,8 +393,6 @@ async function load(){
       phase2_whale_intel:  'Whale Intelligence',
       phase3_order_flow:   'Order Flow',
       phase4_narrative_ai: 'Narrative AI',
-      phase5_strategy_lab: 'Strategy Lab',
-      phase6_meta_ai:      'Meta AI',
       phase7_intel_alerts: 'Intelligence Alerts',
     };
     const serviceEl=document.getElementById('serviceList');
@@ -410,57 +407,32 @@ async function load(){
       }).join('');
     }
 
-    // Model training
-    const training = d.training_health || {};
-    const trainingSummary = d.training_summary || {};
-    const trainingNames = {
-      crypto: 'Crypto',
-      forex: 'Forex',
-      commodities: 'Commodities',
-      indices: 'Indices',
-    };
-    const trainingPanel = document.getElementById('trainingPanel');
-    const trainingBadge = document.getElementById('trainBadge');
-    const categories = Object.keys(trainingNames);
-    const healthyCount = trainingSummary.healthy || 0;
-    const mixedCount = trainingSummary.mixed || 0;
-    const degradedCount = trainingSummary.degraded || 0;
-    trainingBadge.textContent = `${healthyCount} healthy / ${mixedCount} mixed / ${degradedCount} degraded`;
-    if(trainingPanel){
-      if(!categories.some((key)=>training[key])){
-        trainingPanel.innerHTML = '<div class="empty">Training status unavailable</div>';
-      }else{
-        trainingPanel.innerHTML = `<div class="train-grid">${categories.map((key)=>{
-          const item = training[key] || {};
-          const classifier = item.classifier || {};
-          const policy = item.policy || {};
-          const state = item.status || 'unknown';
-          const ok = state === 'healthy';
-          const warm = state === 'mixed';
-          const dotClass = ok ? 'proc-dot-on' : warm ? 'proc-dot-off' : 'proc-dot-off';
-          const stateColor = ok ? 'var(--gr)' : warm ? 'var(--am)' : 'var(--rd)';
-          const classifierFresh = classifier.stale === false ? 'fresh' : 'stale';
-          const policyFresh = policy.stale === false ? 'fresh' : 'stale';
-          const classifierRun = (classifier.last_run || {});
-          const policyRun = (policy.last_run || {});
-          const classifierNote = classifierRun.note ? ` | last ${classifierRun.note.replaceAll('_',' ')}` : '';
-          const policyNote = policyRun.note ? ` | last ${policyRun.note.replaceAll('_',' ')}` : '';
-          const issue = (item.issues || [])[0] || '';
-          return `<div class="train-card">
+    const runtimePanel = document.getElementById('runtimePanel');
+    const runtimeBadge = document.getElementById('runtimeBadge');
+    const runtimeMode = d.strategy_mode || 'playbook_only';
+    if(runtimeBadge) runtimeBadge.textContent = runtimeMode;
+    if(runtimePanel){
+      runtimePanel.innerHTML = `
+        <div class="train-grid">
+          <div class="train-card">
             <div class="train-top">
-              <div class="proc-dot ${dotClass}" style="${warm ? 'background:var(--am);box-shadow:0 0 6px var(--am)' : ''}"></div>
-              <div class="train-name">${trainingNames[key]}</div>
-              <div class="train-state" style="color:${stateColor}">${state}</div>
+              <div class="train-name">Runtime</div>
+              <div class="train-state ${issues.length ? 'am' : 'gn'}">${issues.length ? 'guarded' : 'ready'}</div>
             </div>
-            <div class="train-meta">
-              Classifier: ${classifierFresh}${classifierNote}<br>
-              Policy: ${policyFresh}${policyNote}<br>
-              Research: ${policy.research_status || 'unknown'} policy / ${classifier.research_status || 'unknown'} classifier
+            <div class="train-meta">Mode: ${runtimeMode}</div>
+            <div class="train-meta">Open positions: ${d.open_positions || 0}</div>
+            <div class="train-meta">Cooldowns: ${d.active_cooldowns || 0}</div>
+          </div>
+          <div class="train-card">
+            <div class="train-top">
+              <div class="train-name">Telemetry</div>
+              <div class="train-state ${Number(d.recent_error_count || 0) ? 'am' : 'gn'}">${Number(d.recent_error_count || 0) ? 'watch' : 'clean'}</div>
             </div>
-            <div class="train-issue">${issue || 'No immediate training issue recorded'}</div>
-          </div>`;
-        }).join('')}</div>`;
-      }
+            <div class="train-meta">Recent errors: ${Number(d.recent_error_count || 0)}</div>
+            <div class="train-meta">Stale sources: ${Number(d.stale_source_count || 0)}</div>
+            <div class="train-meta">Never seen: ${Number(d.never_seen_source_count || 0)}</div>
+          </div>
+        </div>`;
     }
 
     // Data freshness
@@ -514,7 +486,7 @@ async function load(){
       {name:'PostgreSQL',ok:procs['PostgreSQL']},
       {name:'Redis',ok:procs['Redis']},
       {name:'Command Bot',ok:procs['Telegram']},
-      {name:'Prediction Tracker',ok:procs['PredTracker']},
+      {name:'Outcome Tracker',ok:procs['PredTracker']},
       {name:'Intel Alerts',ok:services['phase7_intel_alerts']},
     ];
     connEl.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px">'+

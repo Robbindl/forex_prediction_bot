@@ -80,12 +80,10 @@ def _main_menu_keyboard(summary: Optional[Dict[str, Any]] = None) -> InlineKeybo
     summary = summary or {}
     open_positions = max(0, int(summary.get("open_positions", 0) or 0))
     diary_trades = max(0, int(summary.get("diary_trades", 0) or 0))
-    strategy_count = max(0, int(summary.get("strategy_count", 0) or 0))
     is_running = bool(summary.get("is_running", False))
 
     positions_label = f"📈 Positions ({open_positions})"
     diary_label = f"📔 Diary ({diary_trades})" if diary_trades > 0 else "📔 Diary"
-    strategies_label = f"🧩 Strategies ({strategy_count})" if strategy_count > 0 else "🧩 Strategies"
     run_label = "⏸ Pause" if is_running else "▶️ Resume"
     run_action = "pause" if is_running else "resume"
 
@@ -94,7 +92,7 @@ def _main_menu_keyboard(summary: Optional[Dict[str, Any]] = None) -> InlineKeybo
         [("💰 Balance",   "balance"),  ("🎯 Signals",    "signals")],
         [("🧠 Ask Robbie","ask"),      (diary_label,     "diary")],
         [("😶 Mood",      "mood"),      ("📡 Market",    "market")],
-        [(strategies_label,"strategies"),(run_label,     run_action)],
+        [("🏠 Menu",      "menu"),      (run_label,      run_action)],
     )
 
 def _back_button(dest: str = "menu") -> List:
@@ -453,7 +451,7 @@ class TelegramCommander:
     def _sanitise_markdown(text: str) -> str:
         """
         Fix common Markdown issues that cause Telegram parse errors.
-        Strategy: balance every special character so Telegram never sees
+        Approach: balance every special character so Telegram never sees
         an unclosed entity. Handles text from OpenAI, news APIs, price feeds.
         """
         if not text:
@@ -610,6 +608,10 @@ class TelegramCommander:
                     opened_at = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
             else:
                 opened_at = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
+            playbook_block = self._format_playbook_runtime_block(trade)
+            playbook_text = f"\n🧭 *Playbook*\n{playbook_block}" if playbook_block else ""
+            diagnostics_block = self._format_runtime_diagnostics_block(trade)
+            diagnostics_text = f"\n🧪 *Diagnostics*\n{diagnostics_block}" if diagnostics_block else ""
             self.send_message(
                 f"{emoji} *TRADE OPENED*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
@@ -622,7 +624,8 @@ class TelegramCommander:
                 f"Target:   `{self._fmt_price(tp, _a)}`\n"
                 f"R:R:      `{rr:.1f}:1`\n"
                 f"Conf:     `{float(trade.get('confidence', 0)):.0%}`\n"
-                f"Strategy: `{trade.get('strategy_id', '?')}`\n"
+                f"{playbook_text}"
+                f"{diagnostics_text}\n"
                 f"ID:       `{trade.get('trade_id', '?')}`"
             )
         except Exception as e:
@@ -678,6 +681,8 @@ class TelegramCommander:
                         dur_str = f"{mins//1440}d {(mins%1440)//60}h"
             except Exception:
                 pass
+            playbook_block = self._format_playbook_runtime_block(trade)
+            playbook_text = f"\n🧭 *Playbook*\n{playbook_block}" if playbook_block else ""
             review_block = self._format_trade_review_block(trade)
             self.send_message(
                 f"{icon} *TRADE CLOSED*\n"
@@ -692,6 +697,7 @@ class TelegramCommander:
                 f"Entry:  `{self._fmt_price(_en, _a2)}`\n"
                 f"Exit:   `{self._fmt_price(_ex, _a2)}`\n"
                 f"P&L:    `{sign}${pnl:.2f}`"
+                f"{playbook_text}"
                 f"{review_block}"
             )
         except Exception as e:
@@ -925,8 +931,6 @@ class TelegramCommander:
             await self._btn_diary(query)
         elif data == "market":
             await self._btn_market(query)
-        elif data == "strategies":
-            await self._btn_strategies(query)
         elif data == "pause":
             await self._btn_pause(query)
         elif data == "resume":
@@ -1154,13 +1158,6 @@ class TelegramCommander:
             reply_markup=_kb([("🔄 Refresh", "market"), ("🏠 Menu", "menu")]),
         )
 
-    async def _btn_strategies(self, query) -> None:
-        text = self._build_strategies()
-        await query.edit_message_text(
-            text, parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_kb([("🏠 Menu", "menu")]),
-        )
-
     async def _btn_pause(self, query) -> None:
         text = self._do_pause()
         await query.edit_message_text(
@@ -1193,7 +1190,7 @@ class TelegramCommander:
         open_pos  = health.get("open_positions", 0)
         daily_pnl = daily.get("daily_pnl", 0)
         pnl_icon  = "📈" if daily_pnl >= 0 else "📉"
-        training_text = self._format_training_status(health.get("training_health") or {})
+        routing_text = self._format_provider_routing_status()
         ig_text = self._format_ig_broker_status(health.get("ig_broker") or {})
         diagnostics_text = self._format_signal_diagnostics_status(health.get("signal_diagnostics") or {})
 
@@ -1216,7 +1213,7 @@ class TelegramCommander:
             f"RAM:       {health.get('ram_pct', 0):.0f}%\n"
             f"CPU:       {health.get('cpu_pct', 0):.0f}%\n"
             f"Cooldowns: {health.get('active_cooldowns', 0)}\n"
-            f"{training_text}"
+            f"{routing_text}"
             f"{ig_text}"
             f"{diagnostics_text}"
             f"_Updated: {datetime.now().strftime('%H:%M:%S')}_"
@@ -1226,30 +1223,6 @@ class TelegramCommander:
             [("💰 Balance",  "balance"),  ("🏠 Menu",      "menu")],
         )
         return text, kb
-
-    @staticmethod
-    def _format_training_status(training_health: Dict[str, Any]) -> str:
-        if not isinstance(training_health, dict) or not training_health:
-            return "\n"
-
-        labels = {
-            "crypto": "Crypto",
-            "forex": "Forex",
-            "commodities": "Comms",
-            "indices": "Indices",
-        }
-        icons = {"healthy": "🟢", "mixed": "🟡", "degraded": "🔴"}
-        parts = []
-        for key in ("crypto", "forex", "commodities", "indices"):
-            item = training_health.get(key) or {}
-            status = str(item.get("status") or "unknown").lower()
-            parts.append(f"{icons.get(status, '⚪')} {labels[key]}")
-
-        return (
-            f"\n"
-            f"🧠 *Model Training*\n"
-            f"{' | '.join(parts)}\n"
-        )
 
     @staticmethod
     def _format_ig_broker_status(ig_broker: Dict[str, Any]) -> str:
@@ -1299,12 +1272,283 @@ class TelegramCommander:
             f"Blocks:    {int(signal_diagnostics.get('recent_pattern_block_count', 0) or 0)} recent-pattern block(s)\n"
         )
 
+    @staticmethod
+    def _format_provider_routing_status() -> str:
+        try:
+            from config.config import IG_ROUTED_CATEGORIES
+        except Exception:
+            return ""
+
+        routed_categories = {str(cat or "").strip().lower() for cat in (IG_ROUTED_CATEGORIES or [])}
+        total_assets = list(registry.all_assets())
+        if not total_assets:
+            return ""
+
+        ig_count = sum(1 for _, category in total_assets if str(category or "").strip().lower() in routed_categories)
+        deriv_count = max(0, len(total_assets) - ig_count)
+        if ig_count <= 0:
+            return ""
+
+        return (
+            f"\n"
+            f"🛰 *Provider Routing*\n"
+            f"Deriv:    {deriv_count} assets\n"
+            f"IG:       {ig_count} assets\n"
+        )
+
+    @staticmethod
+    def _humanise_diagnostic_label(value: Any, drop_prefix: str = "") -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if drop_prefix and text.lower().startswith(drop_prefix.lower()):
+            text = text[len(drop_prefix):]
+        return text.replace("_", " ").strip()
+
+    @classmethod
+    def _playbook_snapshot(cls, payload: Dict[str, Any]) -> Dict[str, str]:
+        meta = payload.get("metadata", payload.get("trade_metadata", {})) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        management = meta.get("trade_management_plan") if isinstance(meta.get("trade_management_plan"), dict) else {}
+
+        raw_playbook = str(
+            payload.get("playbook_name")
+            or meta.get("playbook_name")
+            or payload.get("playbook")
+            or meta.get("playbook")
+            or ""
+        ).strip()
+        if not raw_playbook:
+            legacy_runtime_id = str(payload.get("strategy_id") or meta.get("strategy_id") or "").strip()
+            if legacy_runtime_id.startswith("playbook_"):
+                raw_playbook = legacy_runtime_id[len("playbook_"):]
+            elif legacy_runtime_id == "playbook_runtime":
+                raw_playbook = "playbook runtime"
+
+        entry_style = cls._humanise_diagnostic_label(
+            payload.get("playbook_entry_style")
+            or meta.get("playbook_entry_style")
+            or payload.get("entry_style")
+            or meta.get("entry_style")
+            or management.get("entry_style")
+            or ""
+        )
+        session_label = cls._humanise_diagnostic_label(
+            payload.get("session_label")
+            or meta.get("session_label")
+            or payload.get("playbook_session")
+            or meta.get("playbook_session")
+            or payload.get("session")
+            or meta.get("session")
+            or management.get("session")
+            or ""
+        )
+        timeframe = str(
+            payload.get("playbook_timeframe")
+            or meta.get("playbook_timeframe")
+            or payload.get("preferred_interval")
+            or meta.get("preferred_interval")
+            or management.get("preferred_interval")
+            or ""
+        ).strip().lower()
+
+        partials = management.get("partial_take_profit_rr") if isinstance(management.get("partial_take_profit_rr"), list) else []
+        partial_label = ""
+        if partials:
+            try:
+                partial_label = f"TP1 {float(partials[0]):.1f}R"
+            except Exception:
+                partial_label = ""
+        runner_target = ""
+        try:
+            runner = float(management.get("runner_target_rr", 0.0) or 0.0)
+            if runner > 0:
+                runner_target = f"Runner {runner:.1f}R"
+        except Exception:
+            runner_target = ""
+        trail_label = ""
+        try:
+            activation = float(management.get("trail_activation_rr", 0.0) or 0.0)
+            atr_multiple = float(management.get("trail_atr_multiple", 0.0) or 0.0)
+            if activation > 0 and atr_multiple > 0:
+                trail_label = f"Trail {activation:.1f}R · ATRx{atr_multiple:.2f}"
+        except Exception:
+            trail_label = ""
+
+        management_bits = [bit for bit in (partial_label, runner_target, trail_label) if bit]
+        return {
+            "playbook": cls._humanise_diagnostic_label(raw_playbook),
+            "entry_style": entry_style,
+            "session_label": session_label,
+            "timeframe": timeframe,
+            "management_summary": " | ".join(management_bits),
+        }
+
+    @classmethod
+    def _format_playbook_runtime_block(cls, payload: Dict[str, Any], prefix: str = "") -> str:
+        snap = cls._playbook_snapshot(payload)
+        lines: List[str] = []
+        if snap["playbook"]:
+            label = f"{prefix}Playbook `{snap['playbook']}`"
+            if snap["entry_style"]:
+                label += f" | `{snap['entry_style']}`"
+            lines.append(label)
+        session_bits = []
+        if snap["session_label"]:
+            session_bits.append(f"Session `{snap['session_label']}`")
+        if snap["timeframe"]:
+            session_bits.append(f"TF `{snap['timeframe']}`")
+        if session_bits:
+            lines.append(f"{prefix}{' | '.join(session_bits)}")
+        if snap["management_summary"]:
+            lines.append(f"{prefix}Manage `{snap['management_summary']}`")
+        return "\n".join(lines)
+
+    @classmethod
+    def _diagnostic_snapshot(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        meta = payload.get("metadata", payload.get("trade_metadata", {})) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        broker = meta.get("broker_quality") if isinstance(meta.get("broker_quality"), dict) else {}
+        micro = meta.get("market_microstructure") if isinstance(meta.get("market_microstructure"), dict) else {}
+        cross = meta.get("cross_asset_context") if isinstance(meta.get("cross_asset_context"), dict) else {}
+        adaptive = meta.get("adaptive_policy") if isinstance(meta.get("adaptive_policy"), dict) else {}
+        recent_review = adaptive.get("recent_review_profile") if isinstance(adaptive.get("recent_review_profile"), dict) else {}
+
+        notes = payload.get("recent_pattern_notes")
+        if not isinstance(notes, list):
+            notes = meta.get("recent_pattern_notes")
+        if not isinstance(notes, list):
+            notes = recent_review.get("notes") if isinstance(recent_review.get("notes"), list) else []
+
+        clean_notes: List[str] = []
+        for note in list(notes or [])[:2]:
+            clean = cls._humanise_diagnostic_label(note, drop_prefix="recent_pattern_")
+            if clean:
+                clean_notes.append(clean)
+
+        return {
+            "broker_score": float(
+                payload.get("broker_quality_score", meta.get("broker_quality_score", broker.get("score", 0.0))) or 0.0
+            ),
+            "provider": str(
+                payload.get("broker_primary_provider", meta.get("broker_primary_provider", broker.get("primary_provider", "")))
+                or ""
+            ),
+            "agreement": cls._humanise_diagnostic_label(
+                payload.get("broker_agreement_state", meta.get("broker_agreement_state", broker.get("quote_agreement_state", "")))
+            ),
+            "quote_quality": cls._humanise_diagnostic_label(
+                payload.get(
+                    "broker_quote_quality_state",
+                    meta.get("broker_quote_quality_state", broker.get("quote_quality_state", "")),
+                )
+            ),
+            "spread_regime": cls._humanise_diagnostic_label(
+                payload.get("broker_spread_regime", meta.get("broker_spread_regime", broker.get("spread_regime", "")))
+            ),
+            "micro_score": float(
+                payload.get("microstructure_score", meta.get("microstructure_score", micro.get("score", 0.0))) or 0.0
+            ),
+            "depth_available": bool(payload.get("depth_available", meta.get("depth_available", micro.get("depth_available")))),
+            "synthetic_depth_available": bool(
+                payload.get(
+                    "synthetic_depth_available",
+                    meta.get("synthetic_depth_available", micro.get("synthetic_depth_available")),
+                )
+            ),
+            "cross_state": cls._humanise_diagnostic_label(
+                payload.get("cross_asset_state", meta.get("cross_asset_state", cross.get("state", "")))
+            ),
+            "cross_peer": str(
+                payload.get("cross_asset_primary_peer", meta.get("cross_asset_primary_peer", cross.get("dominant_peer", "")))
+                or ""
+            ),
+            "recent_pattern_notes": clean_notes,
+            "recent_pattern_block": bool(
+                payload.get(
+                    "recent_pattern_block_new_entries",
+                    meta.get("recent_pattern_block_new_entries", recent_review.get("block_new_entries")),
+                )
+            ),
+        }
+
+    @classmethod
+    def _format_runtime_diagnostics_block(cls, payload: Dict[str, Any], prefix: str = "") -> str:
+        snapshot = cls._diagnostic_snapshot(payload)
+        lines: List[str] = []
+
+        broker_parts = [part for part in [snapshot["agreement"], snapshot["quote_quality"], snapshot["spread_regime"]] if part]
+        if snapshot["broker_score"] > 0.0 or snapshot["provider"] or broker_parts:
+            broker_line = f"{prefix}Broker `{snapshot['broker_score']:.2f}`"
+            if snapshot["provider"]:
+                broker_line += f" | `{snapshot['provider']}`"
+            if broker_parts:
+                broker_line += f" | {' / '.join(broker_parts)}"
+            lines.append(broker_line)
+
+        depth_mode = "Top-book"
+        if snapshot["depth_available"]:
+            depth_mode = "True depth"
+        elif snapshot["synthetic_depth_available"]:
+            depth_mode = "Synthetic depth"
+        if snapshot["micro_score"] > 0.0 or snapshot["depth_available"] or snapshot["synthetic_depth_available"]:
+            lines.append(f"{prefix}Micro `{snapshot['micro_score']:.2f}` | Depth `{depth_mode}`")
+
+        context_parts = []
+        if snapshot["cross_state"] and snapshot["cross_peer"]:
+            context_parts.append(f"Spillover `{snapshot['cross_state']}` via `{snapshot['cross_peer']}`")
+        elif snapshot["cross_peer"]:
+            context_parts.append(f"Spillover via `{snapshot['cross_peer']}`")
+        if snapshot["recent_pattern_notes"]:
+            context_parts.append(f"Pattern `{', '.join(snapshot['recent_pattern_notes'])}`")
+        elif snapshot["recent_pattern_block"]:
+            context_parts.append("Pattern `recent-pattern block`")
+        if context_parts:
+            lines.append(f"{prefix}{' | '.join(context_parts)}")
+
+        return "\n".join(lines)
+
+    @classmethod
+    def _format_trade_history_context(cls, trade: Dict[str, Any]) -> str:
+        review = cls._trade_review(trade)
+        playbook_block = cls._format_playbook_runtime_block(trade, prefix="  ")
+        lines: List[str] = []
+        if playbook_block:
+            lines.append(playbook_block)
+        if not isinstance(review, dict) or not review:
+            return f"{playbook_block}\n" if playbook_block else ""
+
+        entry = review.get("entry_diagnostics") if isinstance(review.get("entry_diagnostics"), dict) else {}
+        broker_context = cls._humanise_diagnostic_label(entry.get("broker_context"))
+        depth_mode = cls._humanise_diagnostic_label(entry.get("depth_mode"))
+        cross_context = cls._humanise_diagnostic_label(entry.get("cross_asset_context"))
+        cross_peer = str(entry.get("cross_asset_primary_peer") or "").strip()
+
+        parts = []
+        if broker_context:
+            parts.append(f"broker {broker_context}")
+        if depth_mode:
+            parts.append(depth_mode)
+        if cross_context and cross_peer:
+            parts.append(f"{cross_context} via {cross_peer}")
+        elif cross_context:
+            parts.append(cross_context)
+        if not parts:
+            summary = str(review.get("summary") or "").strip()
+            if not summary:
+                return "\n".join(lines) + ("\n" if lines else "")
+            lines.append(f"  🧠 {summary[:90]}{'...' if len(summary) > 90 else ''}")
+            return "\n".join(lines) + "\n"
+        lines.append(f"  🧠 {' | '.join(parts)}")
+        return "\n".join(lines) + "\n"
+
     def _main_menu_snapshot(self) -> Dict[str, Any]:
         core = self.trading_system
         open_positions = 0
         balance = "—"
         is_running = False
-        strategy_count = 0
 
         if core:
             try:
@@ -1316,10 +1560,6 @@ class TelegramCommander:
             except Exception:
                 balance = "—"
             is_running = bool(getattr(core, "is_running", False))
-            try:
-                strategy_count = len(core.get_strategy_stats() or {})
-            except Exception:
-                strategy_count = 0
 
         diary_trades = 0
         try:
@@ -1334,7 +1574,6 @@ class TelegramCommander:
             "open_positions": open_positions,
             "balance": balance,
             "is_running": is_running,
-            "strategy_count": strategy_count,
             "diary_trades": diary_trades,
         }
 
@@ -1344,15 +1583,14 @@ class TelegramCommander:
         balance = summary["balance"]
         open_positions = int(summary["open_positions"])
         diary_trades = int(summary["diary_trades"])
-        strategy_count = int(summary["strategy_count"])
 
-        if diary_trades > 0 or strategy_count > 0:
+        if diary_trades > 0:
             history_line = (
                 f"History is live: diary has {diary_trades} closed trade"
-                f"{'s' if diary_trades != 1 else ''}, strategies tracked: {strategy_count}."
+                f"{'s' if diary_trades != 1 else ''} to learn from."
             )
         else:
-            history_line = "Diary and strategies fill in after the bot has closed trades to learn from."
+            history_line = "The diary fills in after the bot has closed trades to learn from."
 
         text = (
             f"🤖 *Robbie Control Panel*\n\n"
@@ -1414,11 +1652,15 @@ class TelegramCommander:
             # Format open time
             open_time_str = ""
             try:
-                from datetime import datetime as _dt
+                from datetime import datetime as _dt, timezone as _tz
                 ot = p.get("open_time", "")
                 if ot:
                     opened = _dt.fromisoformat(ot)
-                    elapsed = _dt.utcnow() - opened
+                    if opened.tzinfo is None:
+                        opened = opened.replace(tzinfo=_tz.utc)
+                    else:
+                        opened = opened.astimezone(_tz.utc)
+                    elapsed = _dt.now(_tz.utc) - opened
                     mins = int(elapsed.total_seconds() / 60)
                     if mins < 60:
                         duration = f"{mins}m ago"
@@ -1430,6 +1672,11 @@ class TelegramCommander:
             except Exception:
                 pass
 
+            diagnostics_block = self._format_runtime_diagnostics_block(p, prefix="  ")
+            diagnostics_text = f"{diagnostics_block}\n" if diagnostics_block else ""
+            playbook_block = self._format_playbook_runtime_block(p, prefix="  ")
+            playbook_text = f"{playbook_block}\n" if playbook_block else ""
+
             lines.append(
                 f"{emoji} *{asset}* ({direction})\n"
                 f"  Entry: `{self._fmt_price(entry, asset)}` → Current: `{self._fmt_price(float(p.get('current_price', entry)), asset)}`\n"
@@ -1437,6 +1684,8 @@ class TelegramCommander:
                 f"  Conf: {conf:.0%} | Size: `{p.get('position_size', 0):.4f}`\n"
                 f"{pnl_str}"
                 f"{open_time_str}"
+                f"{playbook_text}"
+                f"{diagnostics_text}"
                 f"  ID: `{tid}`\n"
             )
             buttons.append([(f"❌ Close {asset}", f"close:{tid}")])
@@ -1485,20 +1734,36 @@ class TelegramCommander:
     async def _show_history(self, send_fn, filter_cat: str = "all") -> None:
         """Render last 10 closed trades with open/close times and P&L."""
         try:
-            from services.db_pool import get_db
+            from core.state import rollup_closed_trade_history, state as runtime_state
 
             def _trade_get(trade, key: str, default=None):
                 if isinstance(trade, dict):
                     return trade.get(key, default)
                 return getattr(trade, key, default)
 
+            def _normalize_trade(trade):
+                if isinstance(trade, dict):
+                    row = dict(trade)
+                elif hasattr(trade, "to_dict"):
+                    row = dict(trade.to_dict())
+                else:
+                    row = {}
+                entry_time = row.get("entry_time") or row.get("open_time")
+                if entry_time:
+                    row["entry_time"] = entry_time
+                    row.setdefault("open_time", entry_time)
+                return row
+
             category_filter = filter_cat if filter_cat in ("forex", "crypto", "commodities", "indices") else ""
             pnl_filter = filter_cat if filter_cat in ("won", "lost") else "all"
-            trades = get_db().get_recent_trades(
-                limit=30,
-                category=category_filter,
-                pnl_filter=pnl_filter,
-            )
+            raw_trades = [_normalize_trade(t) for t in runtime_state.get_closed_positions(limit=120)]
+            trades = rollup_closed_trade_history(raw_trades, limit=30)
+            if category_filter:
+                trades = [t for t in trades if str(_trade_get(t, "category", "") or "") == category_filter]
+            if pnl_filter == "won":
+                trades = [t for t in trades if float(_trade_get(t, "pnl", 0) or 0) > 0]
+            elif pnl_filter == "lost":
+                trades = [t for t in trades if float(_trade_get(t, "pnl", 0) or 0) < 0]
 
             if not trades:
                 await send_fn(
@@ -1534,7 +1799,7 @@ class TelegramCommander:
                 dir_  = str(_trade_get(t, "direction", "BUY") or "BUY").upper()
 
                 # Times and duration
-                open_t_raw = _trade_get(t, "entry_time")
+                open_t_raw = _trade_get(t, "entry_time") or _trade_get(t, "open_time")
                 close_t_raw = _trade_get(t, "exit_time")
                 open_t = None
                 close_t = None
@@ -1547,8 +1812,14 @@ class TelegramCommander:
                     open_t = None
                     close_t = None
                 dur_str = ""
-                if open_t and close_t:
-                    mins = int((close_t - open_t).total_seconds() / 60)
+                duration_minutes = _trade_get(t, "duration_minutes")
+                if duration_minutes not in (None, ""):
+                    mins = max(0, int(float(duration_minutes)))
+                elif open_t and close_t:
+                    mins = max(0, int((close_t - open_t).total_seconds() / 60))
+                else:
+                    mins = None
+                if mins is not None:
                     if mins < 60:    dur_str = f"{mins}m"
                     elif mins < 1440: dur_str = f"{mins//60}h {mins%60}m"
                     else:             dur_str = f"{mins//1440}d"
@@ -1557,14 +1828,20 @@ class TelegramCommander:
                 close_str = close_t.strftime("%d %b %H:%M") if close_t else "—"
 
                 # Exit reason emoji
-                reason = str(_trade_get(t, "exit_reason", "") or "")
+                reason = str(_trade_get(t, "display_exit_reason", _trade_get(t, "exit_reason", "")) or "")
                 r_em = next((v for k, v in reason_emojis.items() if k in reason), "📌")
+                continuation_summary = str(_trade_get(t, "continuation_summary", "") or "")
 
                 lines.append(
                     f"{em} *{_trade_get(t, 'asset', 'UNKNOWN')}* {dir_}\n"
                     f"  🕐 {open_str} → {close_str} ({dur_str})\n"
                     f"  {r_em} {reason or '—'} | {pnl_em} ${pnl:+.2f}\n"
                 )
+                if continuation_summary:
+                    lines.append(f"  ↪ {continuation_summary}")
+                review_context = TelegramCommander._format_trade_history_context(t)
+                if review_context:
+                    lines.append(review_context)
 
             await send_fn(
                 "\n".join(lines),
@@ -1837,7 +2114,7 @@ class TelegramCommander:
         )
         kb = _kb(
             [("🔄 Refresh", "balance"),  ("📊 Status",   "status")],
-            [("🧩 Strategies","strategies"),("🏠 Menu",  "menu")],
+            [("🏠 Menu", "menu")],
         )
         return text, kb
 
@@ -1874,7 +2151,11 @@ class TelegramCommander:
         rr     = float(sig.get("risk_reward", sig.get("rr_ratio", 0)))
         meta   = sig.get("metadata", {}) or {}
         regime = meta.get("regime", "")
-        sess   = meta.get("session", "")
+        sess   = meta.get("session_label") or meta.get("playbook_session") or meta.get("session", "")
+        playbook_block = self._format_playbook_runtime_block(sig)
+        playbook_text = f"\n🧭 *Playbook*\n{playbook_block}\n" if playbook_block else "\n"
+        diagnostics_block = self._format_runtime_diagnostics_block(sig)
+        diagnostics_text = f"\n🧪 *Diagnostics*\n{diagnostics_block}\n" if diagnostics_block else "\n"
 
         # TP levels
         tp_levels = sig.get("take_profit_levels", [])
@@ -1897,7 +2178,8 @@ class TelegramCommander:
             f"R:R ratio:  {rr:.2f}:1\n"
             f"Regime:     {regime.replace('_', ' ') or '—'}\n"
             f"Session:    {sess or '—'}\n"
-            f"Strategy:   {sig.get('strategy_id', '—')}\n\n"
+            f"{playbook_text}"
+            f"{diagnostics_text}"
             f"_Decision engine ✅_"
         )
         kb = _kb(
@@ -2013,36 +2295,6 @@ class TelegramCommander:
 
         text += f"\n_Total trades in memory: {total}_"
         return text
-
-    def _build_strategies(self) -> str:
-        core = self.trading_system
-        if not core:
-            return "⏳ Engine not ready."
-        try:
-            stats = core.get_strategy_stats()
-            if not stats:
-                return (
-                    "📊 *Strategy Stats*\n\n"
-                    "No completed strategy history yet.\n"
-                    "This page becomes useful after trades close and the bot can compare strategy win rate and P&L."
-                )
-
-            lines = ["🧩 *Strategy Performance*\n"]
-            for strat, s in sorted(
-                stats.items(), key=lambda x: x[1].get("pnl", 0), reverse=True
-            )[:10]:
-                total  = s.get("wins", 0) + s.get("losses", 0)
-                wr     = s.get("wins", 0) / total * 100 if total else 0
-                pnl    = s.get("pnl", 0)
-                icon   = "🔥" if wr > 60 else "✅" if wr > 50 else "⚠️"
-                ps     = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
-                lines.append(
-                    f"{icon} *{strat}*\n"
-                    f"   {total} trades | {wr:.0f}% WR | {ps}\n"
-                )
-            return "\n".join(lines)
-        except Exception as e:
-            return f"❌ Error: {e}"
 
     @staticmethod
     def _is_weekend_for_category(category: str) -> bool:
@@ -2209,7 +2461,7 @@ class TelegramCommander:
                     _kb([("🎯 Signals", "signals"), ("🏠 Menu", "menu")]),
                 )
 
-            lines = ["*Top Ranked Opportunities*\n"]
+            lines = ["*Top Playbook Opportunities*\n"]
             for idx, item in enumerate(setups, start=1):
                 opp = float(item.get("opportunity_score", 0.0) or 0.0)
                 conf = float(item.get("confidence", 0.0) or 0.0)
@@ -2245,12 +2497,15 @@ class TelegramCommander:
                     provider_line = f"\n  Broker state `{broker_state}`"
                 else:
                     provider_line = ""
+                playbook_block = self._format_playbook_runtime_block(item, prefix="  ")
+                playbook_line = f"\n{playbook_block}" if playbook_block else ""
                 source = "live signal" if item.get("source") == "signal" else "open position"
                 lines.append(
                     f"`#{idx}` *{item.get('asset','?')}* {str(item.get('direction','')).upper()}"
                     f"\n  Opportunity `{opp:.3f}` | Confidence `{conf:.0%}`"
                     f"\n  Memory `{mem:.0f}` | Execution `{exec_q:.0f}` | Broker `{broker_q:.2f}`"
                     f"\n  Micro `{micro_q:.2f}` | Depth `{depth_mode}` | {source}"
+                    f"{playbook_line}"
                     f"{cross_line}"
                     f"{provider_line}\n"
                 )

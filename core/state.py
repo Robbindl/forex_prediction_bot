@@ -17,6 +17,130 @@ _STATE_FILE = Path("data/system_state.json")
 _STATE_FILE.parent.mkdir(exist_ok=True)
 
 
+def _coerce_trade_time(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _normalize_closed_trade_snapshot(trade: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(trade or {})
+
+    entry_time = normalized.get("entry_time") or normalized.get("open_time")
+    if entry_time not in (None, ""):
+        normalized["entry_time"] = entry_time
+        normalized.setdefault("open_time", entry_time)
+
+    metadata = normalized.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        normalized["metadata"] = metadata
+
+    direction = (
+        normalized.get("direction")
+        or normalized.get("signal")
+        or metadata.get("playbook_direction")
+        or metadata.get("direction")
+        or "BUY"
+    )
+    direction = str(direction or "BUY").upper()
+    normalized["direction"] = direction
+    normalized["signal"] = direction
+
+    duration_raw = normalized.get("duration_minutes")
+    if duration_raw in (None, ""):
+        entry_dt = _coerce_trade_time(normalized.get("entry_time"))
+        exit_dt = _coerce_trade_time(normalized.get("exit_time"))
+        if entry_dt and exit_dt:
+            normalized["duration_minutes"] = max(0, int((exit_dt - entry_dt).total_seconds() / 60))
+    else:
+        try:
+            normalized["duration_minutes"] = max(0, int(float(duration_raw)))
+        except Exception:
+            normalized["duration_minutes"] = 0
+
+    return normalized
+
+
+def _closed_trade_sort_key(trade: Dict[str, Any]) -> datetime:
+    return (
+        _coerce_trade_time(trade.get("exit_time"))
+        or _coerce_trade_time(trade.get("entry_time"))
+        or _coerce_trade_time(trade.get("open_time"))
+        or datetime.min.replace(tzinfo=timezone.utc)
+    )
+
+
+def _infer_partial_trade_shape(trade: Dict[str, Any]) -> tuple[Optional[str], bool]:
+    normalized = _normalize_closed_trade_snapshot(trade)
+    metadata = normalized.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    parent_trade_id = metadata.get("parent_trade_id")
+    raw_id = str(normalized.get("trade_id", "") or "")
+    if parent_trade_id in (None, "") and "-PT" in raw_id:
+        candidate, suffix = raw_id.rsplit("-PT", 1)
+        if candidate and suffix.isdigit():
+            parent_trade_id = candidate
+    partial_flag = metadata.get("is_partial_close")
+    if partial_flag is None:
+        partial_flag = bool(parent_trade_id) or str(normalized.get("exit_reason") or "").lower().startswith("partial tp")
+    clean_parent = str(parent_trade_id) if parent_trade_id not in (None, "") else None
+    return clean_parent, bool(partial_flag)
+
+
+def rollup_closed_trade_history(trades: List[Dict[str, Any]], limit: int = 100) -> List[Dict[str, Any]]:
+    normalized = [_normalize_closed_trade_snapshot(t) for t in trades or []]
+    partials_by_parent: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    parents: List[Dict[str, Any]] = []
+
+    for trade in normalized:
+        parent_trade_id, is_partial_close = _infer_partial_trade_shape(trade)
+        trade["parent_trade_id"] = parent_trade_id
+        trade["is_partial_close"] = is_partial_close
+        if is_partial_close and parent_trade_id:
+            partials_by_parent[parent_trade_id].append(trade)
+        else:
+            parents.append(trade)
+
+    rolled: List[Dict[str, Any]] = []
+    for trade in parents:
+        trade_id = str(trade.get("trade_id", "") or "")
+        partials = sorted(partials_by_parent.get(trade_id, []), key=_closed_trade_sort_key)
+        partial_pnl = sum(float(p.get("pnl") or 0.0) for p in partials)
+        runner_pnl = float(trade.get("pnl") or 0.0)
+        total_pnl = runner_pnl + partial_pnl
+        final_reason = str(trade.get("exit_reason", "") or "")
+
+        row = dict(trade)
+        row["partial_close_count"] = len(partials)
+        row["has_partial_closes"] = bool(partials)
+        row["partial_realized_pnl"] = round(partial_pnl, 8)
+        row["runner_realized_pnl"] = round(runner_pnl, 8)
+        row["total_realized_pnl"] = round(total_pnl, 8)
+        row["pnl"] = round(total_pnl, 8)
+        row["partial_trade_ids"] = [str(p.get("trade_id", "") or "") for p in partials]
+        row["partial_exit_reasons"] = [str(p.get("exit_reason", "") or "") for p in partials]
+        row["continued_after_partial"] = bool(partials)
+        if partials:
+            partial_label = f"Partial TP x{len(partials)}"
+            row["display_exit_reason"] = f"{partial_label} -> {final_reason or 'Runner closed'}"
+            row["continuation_summary"] = f"{partial_label} | Runner {runner_pnl:+.2f} | Total {total_pnl:+.2f}"
+        else:
+            row["display_exit_reason"] = final_reason
+            row["continuation_summary"] = ""
+        rolled.append(row)
+
+    rolled = sorted(rolled, key=_closed_trade_sort_key, reverse=True)
+    return rolled[:limit]
+
+
 def _merge_trade_metadata(base: Any, extra: Any) -> Dict[str, Any]:
     merged: Dict[str, Any] = {}
     if isinstance(base, dict):
@@ -110,12 +234,17 @@ class SystemState:
             if pos is None:
                 return None
 
+            entry_time_str = pos.get("entry_time") or pos.get("open_time", "")
+            if entry_time_str:
+                pos["entry_time"] = entry_time_str
+                pos.setdefault("open_time", entry_time_str)
+
             # Calculate duration from open_time to exit_time (in minutes)
             exit_time = datetime.now(timezone.utc).isoformat()
             duration_minutes = 0
             try:
                 from datetime import datetime as dt_class
-                open_time_str = pos.get("open_time", "")
+                open_time_str = entry_time_str
                 if open_time_str:
                     try:
                         # Try parsing with fromisoformat
@@ -154,6 +283,7 @@ class SystemState:
                 if update_meta is not None:
                     pos["metadata"] = _merge_trade_metadata(pos.get("metadata"), update_meta)
 
+            pos = _normalize_closed_trade_snapshot(pos)
             _attach_execution_feedback(pos)
 
             self._daily_pnl  += pnl
@@ -211,15 +341,15 @@ class SystemState:
     def get_closed_positions(self, limit: int = 100) -> List[Dict]:
         """Return from memory cache; fall back to DB for older records."""
         with self._lock:
-            cached = list(reversed(self._closed_positions[-limit:]))
+            cached = [_normalize_closed_trade_snapshot(t) for t in reversed(self._closed_positions[-limit:])]
         if len(cached) >= limit:
-            return cached[:limit]
+            return sorted(cached, key=_closed_trade_sort_key, reverse=True)[:limit]
 
         try:
             from services.db_pool import get_db
-            db_recent = get_db().get_recent_trades(limit)
+            db_recent = [_normalize_closed_trade_snapshot(t) for t in get_db().get_recent_trades(limit)]
         except Exception:
-            return cached[:limit]
+            return sorted(cached, key=_closed_trade_sort_key, reverse=True)[:limit]
 
         seen_trade_ids = {
             str(trade.get("trade_id", "") or "")
@@ -238,6 +368,11 @@ class SystemState:
             if len(merged) >= limit:
                 break
 
+        merged = sorted(
+            [_normalize_closed_trade_snapshot(t) for t in merged],
+            key=_closed_trade_sort_key,
+            reverse=True,
+        )
         return merged[:limit]
 
     def open_position_count(self) -> int:
@@ -439,7 +574,12 @@ class SystemState:
             if parent is None:
                 return None
 
-            partial_snapshot = dict(partial_trade)
+            partial_snapshot = _normalize_closed_trade_snapshot(dict(partial_trade))
+            if not partial_snapshot.get("entry_time"):
+                entry_time = parent.get("entry_time") or parent.get("open_time")
+                if entry_time:
+                    partial_snapshot["entry_time"] = entry_time
+                    partial_snapshot.setdefault("open_time", entry_time)
             _attach_execution_feedback(partial_snapshot)
             pnl = float(partial_snapshot.get("pnl", 0.0))
 
@@ -495,7 +635,7 @@ class SystemState:
         """Write balance / cooldowns / counters to local JSON (fast cache)."""
         try:
             data = {
-                "schema_version":  3,
+                "schema_version":  4,
                 "saved_at":        datetime.now().isoformat(),
                 "balance":         self._balance,
                 "initial_balance": self._initial_balance,
@@ -507,6 +647,7 @@ class SystemState:
                 "session_stats":   dict(self._session_stats),
                 "asset_stats":     dict(self._asset_stats),
                 "open_positions":  list(self._open_positions.values()),
+                "closed_positions": list(self._closed_positions[-200:]),
             }
             fd, tmp = tempfile.mkstemp(prefix="state_", suffix=".tmp", dir=_STATE_FILE.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -549,6 +690,10 @@ class SystemState:
                 if tid and tid not in self._open_positions:
                     self._open_positions[tid] = pos
 
+            closed_positions = raw.get("closed_positions", [])
+            if closed_positions:
+                self._closed_positions = list(closed_positions)[-500:]
+
             # Day rollover
             if self._last_save_date != date.today().isoformat():
                 self._daily_trades   = 0
@@ -567,12 +712,30 @@ class SystemState:
             positions = db.load_open_positions()
             if positions:
                 restored = 0
+                closed_trade_ids = {
+                    str(pos.get("trade_id", "") or "")
+                    for pos in self._closed_positions
+                    if pos.get("trade_id")
+                }
+                stale_open_trade_ids = []
                 for pos in positions:
                     tid = pos.get("trade_id")
                     if tid:
+                        if tid in closed_trade_ids:
+                            stale_open_trade_ids.append(tid)
+                            continue
                         self._open_positions[tid] = pos
                         restored += 1
                 logger.info(f"[State] Restored {restored} open position(s) from DB")
+
+                for trade_id in stale_open_trade_ids:
+                    try:
+                        db.delete_open_position(trade_id)
+                        logger.warning(
+                            f"[State] Removed stale DB open position already marked closed in cache: {trade_id}"
+                        )
+                    except Exception as e:
+                        logger.error(f"[State] failed removing stale open position {trade_id}: {e}")
 
                 # Ensure any JSON cache positions are also reflected in DB (cross-merge)
                 for pos in list(self._open_positions.values()):

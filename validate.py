@@ -43,6 +43,7 @@ def main():
     if env_exists:
         env_content = Path(".env").read_text()
         all_ok &= check("TRADING_TIMEFRAME=15m" in env_content, "TRADING_TIMEFRAME=15m configured")
+        all_ok &= check("playbook_only_runtime=true" in env_content.lower(), "PLAYBOOK_ONLY_RUNTIME=true configured")
         all_ok &= check("deriv_enabled=true" in env_content.lower(), "DERIV_ENABLED=true configured")
         all_ok &= check("DERIV_APP_ID=" in env_content, "DERIV_APP_ID present in .env")
         all_ok &= check("IG_API_KEY=" in env_content, "IG_API_KEY present in .env")
@@ -54,28 +55,20 @@ def main():
         all_ok &= check("TIMEFRAMES=1m,5m,15m,30m,1h,4h,1d" in env_content, "TIMEFRAMES include 30m and 4h")
         all_ok &= check("TZ_OFFSET_HOURS=3" in env_content, "TZ_OFFSET_HOURS=3 configured")
     
-    # Check 2: Strategy runtime model
-    print("\n2. STRATEGY RUNTIME")
+    # Check 2: Playbook runtime model
+    print("\n2. PLAYBOOK RUNTIME")
     print("-" * 70)
 
     try:
-        from strategy_lab.strategy_builder import StrategyBuilder
-
-        active = StrategyBuilder.all_configs()
-        archived = StrategyBuilder.archived_configs()
-        all_ok &= check(len(active) == 9, f"Strategy Lab active bench trimmed to 9 presets [actual: {len(active)}]")
-        all_ok &= check("golden_cross" not in active, "Golden Cross removed from active research bench")
-        all_ok &= check("rsi_scalper" not in active, "RSI scalper removed from active research bench")
-        all_ok &= check("stoch_trend" not in active, "Stochastic trend preset removed from active research bench")
-        all_ok &= check(len(archived) == 6, f"Archived preset bench has 6 entries [actual: {len(archived)}]")
-    except Exception as e:
-        all_ok &= check(False, f"Strategy bench validation failed: {e}")
-
-    try:
         engine_content = Path("core/engine.py").read_text(encoding="utf-8")
-        all_ok &= check("strategy_id=\"policy_agent\"" in engine_content, "Live runtime remains policy_agent-based")
+        bot_content = Path("bot.py").read_text(encoding="utf-8")
+        dashboard_content = Path("dashboard/web_app_live.py").read_text(encoding="utf-8")
+        all_ok &= check("playbook_" in engine_content, "Live runtime seeds playbook-driven setups")
+        all_ok &= check("policy agent init removed" in engine_content.lower(), "Policy agent init removed from engine runtime")
+        all_ok &= check("ML prediction service removed" in bot_content, "Bot runtime no longer starts ML prediction service")
+        all_ok &= check("strategy-lab" not in dashboard_content.lower(), "Dashboard no longer exposes legacy Strategy Lab routes")
     except Exception as e:
-        all_ok &= check(False, f"Policy agent runtime check failed: {e}")
+        all_ok &= check(False, f"Playbook runtime check failed: {e}")
 
     # Check 3: News event blocking
     print("\n3. NEWS EVENT BLOCKING (15m-friendly)")

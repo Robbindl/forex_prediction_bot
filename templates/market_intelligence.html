@@ -71,6 +71,10 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
 .status-tag{font-size:10px;padding:2px 7px;border-radius:10px;background:rgba(41,121,255,.15);color:var(--bl)}
 .chart-controls{display:flex;gap:4px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
 .chart-controls::-webkit-scrollbar{display:none}
+.chart-mode-controls{display:flex;gap:4px;align-items:center}
+.history-tools{display:none;gap:6px;align-items:center;flex-wrap:wrap}
+.history-tools.on{display:flex}
+.history-tools input[type="date"]{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--tx);outline:none}
 .dp-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,1fr);gap:12px;padding:12px 16px;align-items:start}
 .dp-stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 .dp-stat{background:var(--s2);border-radius:8px;padding:10px 12px;min-height:82px}
@@ -131,11 +135,10 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
     <div class="sb-section">Dashboards</div>
     <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
     <a href="/market-intelligence" class="sb-link active"><span class="sb-icon">📊</span>Market Intel</a>
-    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>AI Predictions</a>
+    <a href="/ai-predictions" class="sb-link"><span class="sb-icon">🤖</span>Playbook Intel</a>
     <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
     <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
     <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
-    <a href="/strategy-lab" class="sb-link"><span class="sb-icon">🧪</span>Strategy Lab</a>
     <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
     <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
     <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
@@ -166,9 +169,24 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
       <!-- RESIZABLE LIVE CHART -->
       <div class="chart-panel" id="chartPanel" style="height:400px">
         <div class="panel-header" style="flex-shrink:0">
-          <span class="panel-title">🕯️ Live Chart</span>
-          <span id="chartStatus" class="status-tag">Loading…</span>
-          <span id="livePrice" style="font-size:15px;font-weight:700;color:var(--cy);margin-left:auto">—</span>
+          <span class="panel-title" id="chartPanelTitle">🕯️ Live Chart</span>
+          <div class="chart-mode-controls">
+            <button id="chartModeLive" class="tb-btn on" onclick="setChartMode('live')">Live</button>
+            <button id="chartModeHistory" class="tb-btn" onclick="setChartMode('history')">History</button>
+          </div>
+          <div id="historyControls" class="history-tools">
+            <select id="historyBars" onchange="onHistoryBarsChanged()">
+              <option value="250">250 bars</option>
+              <option value="500" selected>500 bars</option>
+              <option value="1000">1000 bars</option>
+            </select>
+            <input type="date" id="historyEndDate">
+            <button class="tb-btn" onclick="jumpHistory()">Jump</button>
+            <button id="historyLoadOlder" class="tb-btn" onclick="loadOlderHistory()">Load older</button>
+            <button class="tb-btn" onclick="resetHistory()">Reset</button>
+          </div>
+          <span id="chartStatus" class="status-tag" style="margin-left:auto">Loading…</span>
+          <span id="livePrice" style="font-size:15px;font-weight:700;color:var(--cy);margin-left:12px">—</span>
         </div>
         <div class="chart-area" id="chartArea">
           <div id="lwChart"></div>
@@ -269,6 +287,7 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
 <script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
 let lwChart, cSeries, vSeries, sseSource;
+let livePriceLine = null;
 let _lastAsset = null, _lastTf = null, _userZoomed = false;
 let currentAsset = 'EUR/USD', currentTf = '5m';
 let candlesLoading = false;
@@ -276,6 +295,75 @@ let _chartCandles = [];
 let _chartTfUsed = '5m';
 let _chartBooted = false;
 let _chartRetryCount = 0;
+let _chartLiveOverlayAllowed = true;
+let _chartLiveSource = '';
+let _chartMode = 'live';
+let _historyCursor = null;
+let _historyHasMore = false;
+let _lastLiveReloadAt = 0;
+
+function clearLivePriceLine() {
+  if (!cSeries || !livePriceLine) return;
+  try { cSeries.removePriceLine(livePriceLine); } catch (e) {}
+  livePriceLine = null;
+}
+
+function setLivePriceLine(price) {
+  if (!cSeries || !Number.isFinite(price)) return;
+  if (!livePriceLine) {
+    livePriceLine = cSeries.createPriceLine({
+      price,
+      color: '#00e5ff',
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: 'LIVE',
+    });
+    return;
+  }
+  try {
+    livePriceLine.applyOptions({price});
+  } catch (e) {
+    clearLivePriceLine();
+    setLivePriceLine(price);
+  }
+}
+
+function updateChartModeUi() {
+  const liveBtn = document.getElementById('chartModeLive');
+  const historyBtn = document.getElementById('chartModeHistory');
+  const historyControls = document.getElementById('historyControls');
+  const title = document.getElementById('chartPanelTitle');
+  const livePriceEl = document.getElementById('livePrice');
+  if (liveBtn) liveBtn.classList.toggle('on', _chartMode === 'live');
+  if (historyBtn) historyBtn.classList.toggle('on', _chartMode === 'history');
+  if (historyControls) historyControls.classList.toggle('on', _chartMode === 'history');
+  if (title) title.textContent = _chartMode === 'history' ? '🗃️ Deep History' : '🕯️ Live Chart';
+  if (livePriceEl) livePriceEl.style.opacity = _chartMode === 'history' ? '.5' : '1';
+}
+
+function historyEndTimeFromInput() {
+  const input = document.getElementById('historyEndDate');
+  const raw = String(input?.value || '').trim();
+  return raw ? `${raw}T23:59:59Z` : null;
+}
+
+function mergeCandles(existing, incoming) {
+  const merged = new Map();
+  [...incoming, ...existing].forEach(candle => {
+    if (candle && Number.isFinite(Number(candle.time))) {
+      merged.set(Number(candle.time), candle);
+    }
+  });
+  return Array.from(merged.values()).sort((a, b) => Number(a.time) - Number(b.time));
+}
+
+function updateHistoryButtons() {
+  const loadOlderBtn = document.getElementById('historyLoadOlder');
+  if (!loadOlderBtn) return;
+  loadOlderBtn.disabled = !_historyHasMore || candlesLoading;
+  loadOlderBtn.textContent = _historyHasMore ? 'Load older' : 'Start reached';
+}
 
 function intervalSeconds(tf) {
   return {
@@ -299,6 +387,10 @@ function volumeBarFor(candle) {
 
 function applyLiveTickToChart(price, ts) {
   if (!Number.isFinite(price) || !_chartCandles.length) return;
+  if (!_chartLiveOverlayAllowed) {
+    setLivePriceLine(price);
+    return;
+  }
   const sec = intervalSeconds(_chartTfUsed || currentTf);
   if (!sec) return;
 
@@ -381,6 +473,7 @@ function initChart() {
 
 // ── Load candles — resets price scale on every asset change ──────────────────
 async function loadCandles() {
+  if (_chartMode !== 'live') return;
   if (candlesLoading) return;
   candlesLoading = true;
   const st = document.getElementById('chartStatus');
@@ -404,6 +497,7 @@ async function loadCandles() {
     const assetChanged = (_lastAsset !== currentAsset || _lastTf !== currentTf);
     _lastAsset = currentAsset;
     _lastTf    = currentTf;
+    _lastLiveReloadAt = Date.now();
     const usedTf = d.interval_used || currentTf;
     const isFallback = usedTf !== currentTf;
     const isCached = !!d.cached;
@@ -416,23 +510,30 @@ async function loadCandles() {
 
     // Save current visible range before updating data
     let savedRange = null;
-    if (!assetChanged && _userZoomed) {
+    if (!assetChanged) {
       try { savedRange = lwChart.timeScale().getVisibleRange(); } catch(e) {}
     }
 
     _chartCandles = d.candles.slice();
     _chartTfUsed = usedTf;
-    cSeries.setData([]);
-    vSeries.setData([]);
+    _chartLiveOverlayAllowed = d.live_overlay_allowed !== false;
+    _chartLiveSource = String(d.live_price_source || '');
+    _historyCursor = _chartCandles.length ? Number(_chartCandles[0].time) : null;
+    _historyHasMore = false;
+    updateHistoryButtons();
+    clearLivePriceLine();
 
     cSeries.setData(_chartCandles);
     vSeries.setData(_chartCandles.map(volumeBarFor));
 
     if (assetChanged || !_userZoomed) {
-      // New asset or first load — fit everything
-      lwChart.timeScale().fitContent();
-      lwChart.priceScale('right').applyOptions({autoScale: true});
-      _userZoomed = false;
+      if (assetChanged) {
+        lwChart.timeScale().fitContent();
+        lwChart.priceScale('right').applyOptions({autoScale: true});
+        _userZoomed = false;
+      } else {
+        try { lwChart.timeScale().scrollToRealTime(); } catch(e) {}
+      }
     } else if (savedRange) {
       // User has zoomed — restore their exact view
       try { lwChart.timeScale().setVisibleRange(savedRange); } catch(e) {}
@@ -443,6 +544,7 @@ async function loadCandles() {
         ? `${barLabel} · requested ${currentTf}, showing ${usedTf}${sourceLabel}`
         : `${barLabel} · ${usedTf}${sourceLabel}`,
     ];
+    if (!_chartLiveOverlayAllowed && _chartLiveSource) statusParts.push(`live ${_chartLiveSource} overlay`);
     if (isCached) statusParts.push('cached');
     if (d.provider_warning_message) statusParts.push('provider constrained');
     st.textContent = statusParts.join(' · ');
@@ -450,9 +552,78 @@ async function loadCandles() {
     st.style.color = (isFallback || isCached || d.provider_warning_message) ? 'var(--am)' : 'var(--gr)';
   } else {
     _chartCandles = [];
+    _chartLiveOverlayAllowed = true;
+    _chartLiveSource = '';
+    clearLivePriceLine();
     const rawMessage = String(d?.provider_error_message || d?.message || `No ${currentTf} data`);
     const compactMessage = rawMessage.length > 72 ? `${rawMessage.slice(0, 69)}…` : rawMessage;
     st.textContent = d?.data_source ? `${d.data_source}: ${compactMessage}` : compactMessage;
+    st.style.background = 'rgba(255,69,96,.12)';
+    st.style.color = 'var(--rd)';
+  }
+}
+
+async function loadHistoryCandles({append=false, endTime=null} = {}) {
+  if (_chartMode !== 'history' || candlesLoading) return;
+  candlesLoading = true;
+  updateHistoryButtons();
+  const st = document.getElementById('chartStatus');
+  st.textContent = append ? 'Loading older history…' : 'Loading history…';
+  st.style.background = 'rgba(41,121,255,.15)';
+  st.style.color = 'var(--bl)';
+  clearLivePriceLine();
+  const livePriceEl = document.getElementById('livePrice');
+  if (livePriceEl) livePriceEl.textContent = '—';
+
+  const bars = Number(document.getElementById('historyBars')?.value || 500);
+  const resolvedEnd = endTime || historyEndTimeFromInput();
+  const params = new URLSearchParams({
+    asset: currentAsset,
+    interval: currentTf,
+    bars: String(bars),
+  });
+  if (resolvedEnd) params.set('end_time', resolvedEnd);
+
+  const d = await fetchWithTimeout(`/api/chart/history?${params.toString()}`, 40000);
+  candlesLoading = false;
+  if (d && d.candles && d.candles.length) {
+    const incoming = d.candles.slice();
+    let savedRange = null;
+    if (append) {
+      try { savedRange = lwChart.timeScale().getVisibleRange(); } catch (e) {}
+    }
+
+    _chartCandles = append ? mergeCandles(_chartCandles, incoming) : incoming;
+    _chartTfUsed = d.interval_used || currentTf;
+    _chartLiveOverlayAllowed = false;
+    _chartLiveSource = '';
+    _historyCursor = d.oldest_time || (_chartCandles.length ? Number(_chartCandles[0].time) : null);
+    _historyHasMore = !!d.has_more;
+    updateHistoryButtons();
+
+    clearLivePriceLine();
+    cSeries.setData(_chartCandles);
+    vSeries.setData(_chartCandles.map(volumeBarFor));
+
+    if (append && savedRange) {
+      try { lwChart.timeScale().setVisibleRange(savedRange); } catch (e) { lwChart.timeScale().fitContent(); }
+    } else {
+      lwChart.timeScale().fitContent();
+      lwChart.priceScale('right').applyOptions({autoScale: true});
+      _userZoomed = false;
+    }
+
+    const sourceLabel = d.data_source ? ` · ${d.data_source}` : '';
+    const olderLabel = _historyHasMore ? ' · older available' : ' · start reached';
+    const appendLabel = append ? ` (+${incoming.length})` : '';
+    st.textContent = `${_chartCandles.length} bars${appendLabel} · ${_chartTfUsed}${sourceLabel} · history${olderLabel}`;
+    st.style.background = 'rgba(0,208,132,.12)';
+    st.style.color = 'var(--gr)';
+  } else {
+    _historyHasMore = false;
+    updateHistoryButtons();
+    const rawMessage = String(d?.message || `No ${currentTf} history`);
+    st.textContent = rawMessage.length > 72 ? `${rawMessage.slice(0, 69)}…` : rawMessage;
     st.style.background = 'rgba(255,69,96,.12)';
     st.style.color = 'var(--rd)';
   }
@@ -670,7 +841,7 @@ async function loadDataPlane() {
 
 // ── Live price stream ─────────────────────────────────────────────────────────
 function startStream() {
-  if (!_chartBooted) return;
+  if (!_chartBooted || _chartMode !== 'live') return;
   if (sseSource) sseSource.close();
   const livePriceEl = document.getElementById('livePrice');
   if (livePriceEl) livePriceEl.textContent = '—';
@@ -682,7 +853,16 @@ function startStream() {
         const price = d.price;
         document.getElementById('livePrice').textContent =
           price ? (price < 10 ? price.toFixed(5) : price.toFixed(2)) : '—';
-        if (price && d.ts) applyLiveTickToChart(Number(price), Number(d.ts));
+        const tickSource = String(d.source || '');
+        if (price && d.ts) {
+          if (_chartLiveOverlayAllowed) {
+            if (!_chartLiveSource || !_chartLiveSource.length || tickSource.toUpperCase().startsWith(_chartLiveSource.toUpperCase())) {
+              applyLiveTickToChart(Number(price), Number(d.ts));
+            }
+          } else {
+            setLivePriceLine(Number(price));
+          }
+        }
       }
     } catch(err) {}
   };
@@ -706,18 +886,24 @@ async function loadHeatmap(manual=false) {
     st.style.color = 'var(--rd)';
     return;
   }
-  const max = Math.max(...d.items.map(i => Math.abs(i.change_pct)), 0.1);
+  const numericMoves = d.items
+    .map(i => (i && i.change_pct !== null && i.change_pct !== undefined) ? Number(i.change_pct) : NaN)
+    .filter(v => Number.isFinite(v));
+  const max = Math.max(...numericMoves.map(v => Math.abs(v)), 0.1);
   grid.innerHTML = d.items.map(i => {
-    const pct  = i.change_pct || 0;
-    const inten = Math.min(1, Math.abs(pct) / max);
-    const bg   = pct >= 0
-      ? `rgba(0,208,132,${0.08 + inten * 0.5})`
-      : `rgba(255,69,96,${0.08 + inten * 0.5})`;
-    const tc   = pct >= 0 ? 'var(--gr)' : 'var(--rd)';
+    const hasPct = i && i.change_pct !== null && i.change_pct !== undefined && Number.isFinite(Number(i.change_pct));
+    const pct  = hasPct ? Number(i.change_pct) : null;
+    const inten = hasPct ? Math.min(1, Math.abs(pct) / max) : 0;
+    const bg   = !hasPct
+      ? 'rgba(122,136,153,.12)'
+      : pct >= 0
+        ? `rgba(0,208,132,${0.08 + inten * 0.5})`
+        : `rgba(255,69,96,${0.08 + inten * 0.5})`;
+    const tc   = !hasPct ? 'var(--tx2)' : pct >= 0 ? 'var(--gr)' : 'var(--rd)';
     const sym  = i.asset.replace('-USD','').replace('/USD','').replace('=F','').replace('^','');
     return `<div class="hm-cell" style="background:${bg}" onclick="changeToAsset('${i.asset}')">
       <div class="hm-asset" style="color:var(--tx)">${sym}</div>
-      <div class="hm-pct" style="color:${tc}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</div>
+      <div class="hm-pct" style="color:${tc}">${hasPct ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : 'LIVE'}</div>
       <div class="hm-price">${i.price > 10 ? i.price.toFixed(2) : i.price.toFixed(5)}</div>
     </div>`;
   }).join('');
@@ -779,8 +965,9 @@ async function loadCorrelation(manual=false) {
   d.matrix.forEach((row, i) => {
     html += `<div class="corr-label">${d.labels[i].replace('-USD','').replace('/USD','').replace('=F','').replace('^','')}</div>`;
     row.forEach((val, j) => {
-      const parsed = Number(val);
-      const valid = Number.isFinite(parsed);
+      const missing = val === null || val === undefined || val === '';
+      const parsed = missing ? NaN : Number(val);
+      const valid = !missing && Number.isFinite(parsed);
       const v   = valid ? parsed : 0;
       const abs = Math.abs(v);
       let bg;
@@ -860,8 +1047,12 @@ function changeToAsset(a) {
   }
   loadDataPlane();
   if (_chartBooted) {
-    loadCandles();
-    startStream();
+    if (_chartMode === 'history') {
+      loadHistoryCandles({append:false});
+    } else {
+      loadCandles();
+      startStream();
+    }
   }
 }
 
@@ -869,8 +1060,12 @@ function changeChartAsset() {
   currentAsset = document.getElementById('chartAsset').value;
   loadDataPlane();
   if (_chartBooted) {
-    loadCandles();
-    startStream();
+    if (_chartMode === 'history') {
+      loadHistoryCandles({append:false});
+    } else {
+      loadCandles();
+      startStream();
+    }
   }
 }
 
@@ -878,7 +1073,67 @@ function setTf(tf, el) {
   currentTf = tf;
   document.querySelectorAll('.chart-controls .tb-btn').forEach(b => b.classList.remove('on'));
   el.classList.add('on');
-  loadCandles();
+  if (_chartMode === 'history') {
+    loadHistoryCandles({append:false});
+  } else {
+    loadCandles();
+  }
+}
+
+function setChartMode(mode) {
+  const nextMode = mode === 'history' ? 'history' : 'live';
+  if (_chartMode === nextMode && _chartBooted) {
+    if (_chartMode === 'history') {
+      loadHistoryCandles({append:false});
+    } else {
+      loadCandles();
+      startStream();
+    }
+    return;
+  }
+  _chartMode = nextMode;
+  updateChartModeUi();
+  if (sseSource) {
+    sseSource.close();
+    sseSource = null;
+  }
+  const livePriceEl = document.getElementById('livePrice');
+  if (livePriceEl) livePriceEl.textContent = '—';
+  _userZoomed = false;
+  if (!_chartBooted) return;
+  if (_chartMode === 'history') {
+    loadHistoryCandles({append:false});
+  } else {
+    loadCandles();
+    startStream();
+  }
+}
+
+function onHistoryBarsChanged() {
+  if (_chartMode === 'history') loadHistoryCandles({append:false});
+}
+
+function jumpHistory() {
+  if (_chartMode !== 'history') {
+    setChartMode('history');
+    return;
+  }
+  loadHistoryCandles({append:false, endTime: historyEndTimeFromInput()});
+}
+
+function loadOlderHistory() {
+  if (_chartMode !== 'history' || !_historyHasMore || !_historyCursor) return;
+  const beforeIso = new Date((Number(_historyCursor) - 1) * 1000).toISOString();
+  loadHistoryCandles({append:true, endTime: beforeIso});
+}
+
+function resetHistory() {
+  const input = document.getElementById('historyEndDate');
+  if (input) input.value = '';
+  _userZoomed = false;
+  if (_chartMode === 'history') {
+    loadHistoryCandles({append:false});
+  }
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -899,8 +1154,13 @@ function bootChartSection() {
   }
   initChart();
   _chartBooted = true;
-  loadCandles();
-  startStream();
+  updateChartModeUi();
+  if (_chartMode === 'history') {
+    loadHistoryCandles({append:false});
+  } else {
+    loadCandles();
+    startStream();
+  }
 }
 
 function _boot() {
@@ -918,8 +1178,20 @@ function _boot() {
 }
 _boot();
 
-// Refresh chart every 60s, heatmap every 60s
-setInterval(() => { if (_chartBooted) loadCandles(); else bootChartSection(); }, 15000);  // 15s — responsive within-candle updates
+// Refresh chart on a paced cadence aligned to the selected timeframe.
+setInterval(() => {
+  if (!_chartBooted) {
+    bootChartSection();
+    return;
+  }
+  if (_chartMode === 'live') {
+    const sec = intervalSeconds(currentTf) || 60;
+    const minReloadMs = Math.max(sec * 1000, 15000);
+    if (!_lastLiveReloadAt || (Date.now() - _lastLiveReloadAt) >= minReloadMs) {
+      loadCandles();
+    }
+  }
+}, 15000);
 setInterval(() => { loadDataPlane(); }, 60000);
 setInterval(() => { loadHeatmap(); }, 60000);  // 60s — heatmap doesn't need to be faster
 </script>

@@ -22,6 +22,40 @@ logger = get_logger()
 Base = declarative_base()
 
 
+def _ensure_varchar_min_length(conn, table_name: str, column_name: str, min_length: int) -> None:
+    row = conn.execute(
+        text(
+            """
+            SELECT character_maximum_length
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = :table_name
+              AND column_name = :column_name
+            """
+        ),
+        {"table_name": table_name, "column_name": column_name},
+    ).first()
+    if not row:
+        return
+    current_length = row[0]
+    if current_length is None or int(current_length) >= int(min_length):
+        return
+    conn.execute(
+        text(f'ALTER TABLE "{table_name}" ALTER COLUMN "{column_name}" TYPE VARCHAR({int(min_length)})')
+    )
+    logger.info(
+        f"[DB] Migrated {table_name}.{column_name} VARCHAR({current_length}) -> VARCHAR({int(min_length)})"
+    )
+
+
+def _sync_runtime_schema() -> None:
+    with engine.connect() as conn:
+        _ensure_varchar_min_length(conn, "trades", "strategy_id", 80)
+        _ensure_varchar_min_length(conn, "trades", "exit_reason", 100)
+        _ensure_varchar_min_length(conn, "open_positions", "strategy_id", 80)
+        conn.commit()
+
+
 def _redacted_database_url(url: str) -> str:
     try:
         return make_url(url).render_as_string(hide_password=True)
@@ -99,6 +133,7 @@ def init_db() -> None:
         MemorableMoments, HumanExplanations,
     )
     Base.metadata.create_all(bind=engine)
+    _sync_runtime_schema()
     logger.info("[DB] All tables created / verified")
 
     # Create whale tables (raw SQL DDL)
