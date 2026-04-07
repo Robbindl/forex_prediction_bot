@@ -143,6 +143,28 @@ def _analyze_frame(interval: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     elif trend_state == "trending_down" and current <= slow_level:
         pullback_score = -pullback_proximity
 
+    upside_extension_fast = max(0.0, (current - fast_level) / atr_ref)
+    downside_extension_fast = max(0.0, (fast_level - current) / atr_ref)
+    upside_extension_slow = max(0.0, (current - slow_level) / atr_ref)
+    downside_extension_slow = max(0.0, (slow_level - current) / atr_ref)
+
+    upside_exhaustion = 0.0
+    downside_exhaustion = 0.0
+    if trend_state == "trending_up":
+        upside_exhaustion = _clip(
+            _clip((upside_extension_fast - 0.85) / 1.10) * 0.42
+            + _clip((upside_extension_slow - 1.35) / 1.35) * 0.34
+            + _clip((near_high - 0.82) / 0.18) * 0.16
+            + (0.08 if vol_state in {"expansion", "extreme"} else 0.0)
+        )
+    elif trend_state == "trending_down":
+        downside_exhaustion = _clip(
+            _clip((downside_extension_fast - 0.85) / 1.10) * 0.42
+            + _clip((downside_extension_slow - 1.35) / 1.35) * 0.34
+            + _clip((near_low - 0.82) / 0.18) * 0.16
+            + (0.08 if vol_state in {"expansion", "extreme"} else 0.0)
+        )
+
     return {
         "interval": interval,
         "current_price": round(current, 6),
@@ -157,6 +179,8 @@ def _analyze_frame(interval: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         "distance_to_resistance": round(distance_to_resistance, 6),
         "pullback_score": round(_clip(pullback_score), 4),
         "breakout_score": round(_clip(breakout_score), 4),
+        "upside_exhaustion_score": round(_clip(upside_exhaustion), 4),
+        "downside_exhaustion_score": round(_clip(downside_exhaustion), 4),
     }
 
 
@@ -225,13 +249,19 @@ class MarketStructureService:
 
         pullback_score = 0.0
         breakout_score = 0.0
+        upside_exhaustion_score = 0.0
+        downside_exhaustion_score = 0.0
         for interval, info in details.items():
             weight = _FRAME_WEIGHTS.get(interval, 0.15)
             pullback_score += float(info["pullback_score"]) * weight
             breakout_score += float(info["breakout_score"]) * weight
+            upside_exhaustion_score += float(info.get("upside_exhaustion_score", 0.0) or 0.0) * weight
+            downside_exhaustion_score += float(info.get("downside_exhaustion_score", 0.0) or 0.0) * weight
         if weight_total > 0:
             pullback_score /= weight_total
             breakout_score /= weight_total
+            upside_exhaustion_score /= weight_total
+            downside_exhaustion_score /= weight_total
 
         volatility_state = str(primary.get("volatility_state", "unknown"))
         if volatility_state == "extreme":
@@ -250,6 +280,15 @@ class MarketStructureService:
             + opportunity_score * 0.25
             + _VOLATILITY_FIT.get(volatility_state, 0.5) * 0.15
         )
+        dominant_exhaustion = (
+            upside_exhaustion_score
+            if structure_bias == "buy"
+            else downside_exhaustion_score
+            if structure_bias == "sell"
+            else max(upside_exhaustion_score, downside_exhaustion_score)
+        )
+        if dominant_exhaustion > 0.0:
+            setup_quality -= min(0.22, dominant_exhaustion * 0.22)
         setup_quality = max(0.0, min(1.0, setup_quality))
 
         return {
@@ -266,6 +305,10 @@ class MarketStructureService:
             "pullback_score": round(_clip(pullback_score), 4),
             "breakout_score": round(_clip(breakout_score), 4),
             "setup_quality": round(setup_quality, 4),
+            "upside_exhaustion_score": round(_clip(upside_exhaustion_score), 4),
+            "downside_exhaustion_score": round(_clip(downside_exhaustion_score), 4),
+            "dominant_exhaustion_score": round(_clip(dominant_exhaustion), 4),
+            "bias_exhausted": bool(dominant_exhaustion >= 0.60),
             "support_levels": [primary.get("support")] if primary.get("support") is not None else [],
             "resistance_levels": [primary.get("resistance")] if primary.get("resistance") is not None else [],
             "distance_to_support": primary.get("distance_to_support"),

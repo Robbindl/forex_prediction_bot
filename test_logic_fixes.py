@@ -74,6 +74,16 @@ def test_execute_signal_sizes_before_portfolio_risk() -> None:
     assert seen["signal"]["position_size"] == 123.45
     engine._paper_trader.execute_signal.assert_not_called()
 
+
+def test_trading_core_fmt_ml_pair_hides_inactive_ml() -> None:
+    assert TradingCore._fmt_ml_pair(0.5, 0.0) == "n/a"
+    assert TradingCore._fmt_ml_pair(0.5, 0.1) == "n/a"
+    assert TradingCore._fmt_ml_pair(None, 0.9) == "n/a"
+
+
+def test_trading_core_fmt_ml_pair_formats_real_ml() -> None:
+    assert TradingCore._fmt_ml_pair(0.7342, 0.421) == "0.734/0.421"
+
 def test_reprice_open_positions_tightens_existing_sell_exit_levels() -> None:
     engine = TradingCore(balance=10_000.0)
     positions = [
@@ -9682,6 +9692,63 @@ def _build_aggressive_breakdown_frame(start: float = 159.60, rows: int = 70) -> 
         }
     )
 
+def _build_exhausted_uptrend_frame(start: float = 100.0, rows: int = 90) -> pd.DataFrame:
+    closes = []
+    value = start
+    for i in range(rows - 5):
+        value += 0.28 if i % 3 != 0 else 0.12
+        closes.append(round(value, 4))
+
+    for bump in (1.8, 2.6, 3.4, 4.2, 5.0):
+        value += bump
+        closes.append(round(value, 4))
+
+    opens = [closes[0]] + closes[:-1]
+    highs = [round(max(o, c) + 0.45, 4) for o, c in zip(opens, closes)]
+    lows = [round(min(o, c) - 0.35, 4) for o, c in zip(opens, closes)]
+    volume = [1000 + i * 7 for i in range(rows - 5)] + [2100, 2400, 2700, 3000, 3300]
+
+    return pd.DataFrame(
+        {
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": volume,
+        }
+    )
+
+def _build_early_inflection_frame(start: float = 1.1500, rows: int = 70) -> pd.DataFrame:
+    closes = []
+    value = start
+    for i in range(rows - 1):
+        value += 0.00007 if i % 3 != 0 else 0.00003
+        closes.append(round(value, 6))
+
+    opens = [closes[0]] + closes[:-1]
+    highs = [round(max(o, c) + 0.00006, 6) for o, c in zip(opens, closes)]
+    lows = [round(min(o, c) - 0.00005, 6) for o, c in zip(opens, closes)]
+    volume = [950 + i * 4 for i in range(rows - 1)]
+
+    range_high = max(highs[-18:])
+    latest_open = round(range_high - 0.00001, 6)
+    latest_close = round(range_high - 0.00018, 6)
+    opens.append(latest_open)
+    closes.append(latest_close)
+    highs.append(round(range_high - 0.000005, 6))
+    lows.append(round(latest_close - 0.00005, 6))
+    volume.append(volume[-1] + 180)
+
+    return pd.DataFrame(
+        {
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": volume,
+        }
+    )
+
 def test_market_structure_service_detects_aligned_buy_setup() -> None:
     svc_mod = importlib.import_module("services.market_structure_service")
     service = svc_mod.get_service()
@@ -9700,6 +9767,24 @@ def test_market_structure_service_detects_aligned_buy_setup() -> None:
     assert structure["alignment_score"] > 0.5
     assert structure["setup_quality"] > 0.3
     assert structure["trend_15m"] == "trending_up"
+
+def test_market_structure_service_flags_upside_exhaustion_on_extended_buy_move() -> None:
+    svc_mod = importlib.import_module("services.market_structure_service")
+    service = svc_mod.get_service()
+
+    structure = service.analyze(
+        "XAU/USD",
+        "commodities",
+        {
+            "15m": _build_exhausted_uptrend_frame(),
+            "1h": _build_exhausted_uptrend_frame(start=102.0),
+            "4h": _build_exhausted_uptrend_frame(start=105.0),
+        },
+    )
+
+    assert structure["structure_bias"] == "buy"
+    assert structure["upside_exhaustion_score"] > 0.55
+    assert structure["bias_exhausted"] is True
 
 def test_generate_seed_signal_uses_market_structure_alignment() -> None:
     core = TradingCore.__new__(TradingCore)
@@ -9926,6 +10011,141 @@ def test_playbook_service_detects_breakout_retest_entry(monkeypatch) -> None:
     assert retest["direction"] == "BUY"
     assert retest["entry_style"] == "retest_hold"
 
+def test_playbook_service_blocks_long_trend_pullback_when_upside_exhausted(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 7, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+
+    candidate = service._trend_pullback(
+        _build_trend_frame(100.0, 0.35),
+        asset="XAU/USD",
+        category="commodities",
+        session="europe_core",
+        structure={
+            "structure_bias": "buy",
+            "alignment_score": 0.74,
+            "setup_quality": 0.72,
+            "pullback_score": 0.78,
+            "breakout_score": 0.12,
+            "volatility_state": "normal",
+            "regime": "trending_up",
+            "trend_15m": "trending_up",
+            "trend_1h": "trending_up",
+            "distance_to_support": 0.0016,
+            "distance_to_resistance": 0.0004,
+            "upside_exhaustion_score": 0.71,
+            "downside_exhaustion_score": 0.0,
+        },
+    )
+
+    assert candidate is None
+
+def test_playbook_service_detects_early_inflection_for_selected_asset(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 7, 9, 30, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "EUR/USD",
+        "forex",
+        _build_early_inflection_frame(),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.71,
+                "setup_quality": 0.69,
+                "pullback_score": 0.22,
+                "breakout_score": 0.41,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0019,
+                "distance_to_resistance": 0.0005,
+                "upside_exhaustion_score": 0.63,
+                "downside_exhaustion_score": 0.0,
+            }
+        },
+    )
+
+    assert any(candidate["playbook"] == "early_inflection" for candidate in analysis["candidates"])
+    inflection = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "early_inflection")
+    assert inflection["direction"] == "SELL"
+    assert inflection["entry_style"] == "early_inflection_turn"
+
+def test_playbook_service_does_not_enable_early_inflection_for_non_selected_asset(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 7, 9, 30, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "XAG/USD",
+        "commodities",
+        _build_early_inflection_frame(start=72.0),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.71,
+                "setup_quality": 0.69,
+                "pullback_score": 0.22,
+                "breakout_score": 0.41,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0019,
+                "distance_to_resistance": 0.0005,
+                "upside_exhaustion_score": 0.63,
+                "downside_exhaustion_score": 0.0,
+            }
+        },
+    )
+
+    assert not any(candidate["playbook"] == "early_inflection" for candidate in analysis["candidates"])
+
+def test_playbook_service_requires_dual_trend_confirmation_for_long_pullback(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 7, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+
+    candidate = service._trend_pullback(
+        _build_trend_frame(1.1500, 0.0002),
+        asset="EUR/USD",
+        category="forex",
+        session="europe_core",
+        structure={
+            "structure_bias": "buy",
+            "alignment_score": 0.72,
+            "setup_quality": 0.70,
+            "pullback_score": 0.74,
+            "breakout_score": 0.10,
+            "volatility_state": "normal",
+            "regime": "trending_up",
+            "trend_15m": "trending_up",
+            "trend_1h": "ranging",
+            "distance_to_support": 0.0014,
+            "distance_to_resistance": 0.0010,
+            "upside_exhaustion_score": 0.18,
+            "downside_exhaustion_score": 0.0,
+        },
+    )
+
+    assert candidate is None
+
 def test_playbook_service_detects_reversal_exhaustion(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
@@ -9959,6 +10179,72 @@ def test_playbook_service_detects_reversal_exhaustion(monkeypatch) -> None:
     reversal = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "reversal_exhaustion")
     assert reversal["direction"] == "SELL"
     assert reversal["entry_style"] == "reclaim_reversal"
+
+def test_playbook_service_detects_reversal_exhaustion_for_index(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 15, 30, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "US100",
+        "indices",
+        _build_reversal_sweep_frame(start=24100.0),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.69,
+                "setup_quality": 0.68,
+                "pullback_score": 0.07,
+                "breakout_score": 0.73,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0019,
+                "distance_to_resistance": 0.0006,
+            }
+        },
+    )
+
+    assert any(candidate["playbook"] == "reversal_exhaustion" for candidate in analysis["candidates"])
+    reversal = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "reversal_exhaustion")
+    assert reversal["direction"] == "SELL"
+
+def test_playbook_service_detects_reversal_exhaustion_for_alt_crypto(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 16, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "BNB-USD",
+        "crypto",
+        _build_reversal_sweep_frame(start=600.0),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.70,
+                "setup_quality": 0.69,
+                "pullback_score": 0.06,
+                "breakout_score": 0.74,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0017,
+                "distance_to_resistance": 0.0005,
+            }
+        },
+    )
+
+    assert any(candidate["playbook"] == "reversal_exhaustion" for candidate in analysis["candidates"])
+    reversal = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "reversal_exhaustion")
+    assert reversal["direction"] == "SELL"
 
 def test_playbook_service_detects_aggressive_expansion_trigger(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
@@ -10027,6 +10313,40 @@ def test_playbook_service_detects_opening_drive_for_us_index(monkeypatch) -> Non
     opening_drive = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "opening_drive")
     assert opening_drive["direction"] == "BUY"
     assert opening_drive["entry_style"] == "opening_drive_break"
+
+def test_playbook_service_blocks_us_index_after_open_window(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 18, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    pick = service.pick_seed(
+        "US500",
+        "indices",
+        _build_breakout_frame(start=5800.0),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.74,
+                "setup_quality": 0.72,
+                "pullback_score": 0.11,
+                "breakout_score": 0.82,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 1.8,
+                "distance_to_resistance": 0.8,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == ""
+    assert pick["blocked_reason"].startswith("session_block:us_core")
 
 def test_playbook_service_detects_news_impulse_for_major_forex(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")

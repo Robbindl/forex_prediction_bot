@@ -1837,6 +1837,16 @@ class TradingCore:
         except Exception:
             return "n/a"
 
+    @classmethod
+    def _fmt_ml_pair(cls, prediction: Any, confidence: Any) -> str:
+        try:
+            conf = float(confidence)
+        except Exception:
+            conf = 0.0
+        if prediction is None or conf <= 0.10:
+            return "n/a"
+        return f"{cls._fmt_metric(prediction)}/{cls._fmt_metric(confidence)}"
+
     @staticmethod
     def _fmt_reason_list(value: Any, limit: int = 3) -> str:
         if isinstance(value, (list, tuple)):
@@ -1874,8 +1884,7 @@ class TradingCore:
             f"setup={self._fmt_metric(structure.get('setup_quality', seed_decision.get('setup_quality')))} "
             f"candidates={candidate_count} "
             f"rejected={self._fmt_reason_list(rejected_reasons)} "
-            f"ml={self._fmt_metric(context.get('ml_prediction'))}/"
-            f"{self._fmt_metric(context.get('ml_confidence'))} "
+            f"ml={self._fmt_ml_pair(context.get('ml_prediction'), context.get('ml_confidence'))} "
             f"sent={self._fmt_metric(context.get('sentiment_score'))} "
             f"funding={context.get('funding_bias', 'NEUTRAL')} "
             f"oi={context.get('oi_signal', 'NEUTRAL')}"
@@ -1886,8 +1895,7 @@ class TradingCore:
         logger.info(
             f"[TradingCore] Decision {signal.asset} killed "
             f"step={signal.step_reached} dir={signal.direction} "
-            f"ml={self._fmt_metric(signal.metadata.get('ml_prediction', context.get('ml_prediction')))}/"
-            f"{self._fmt_metric(signal.metadata.get('ml_confidence', context.get('ml_confidence')))} "
+            f"ml={self._fmt_ml_pair(signal.metadata.get('ml_prediction', context.get('ml_prediction')), signal.metadata.get('ml_confidence', context.get('ml_confidence')))} "
             f"sent={self._fmt_metric(signal.metadata.get('sentiment_score', context.get('sentiment_score')))} "
             f"whale={signal.metadata.get('whale_dominant', 'n/a')} "
             f"oflow={self._fmt_metric(signal.metadata.get('orderflow_imbalance'))} "
@@ -2043,7 +2051,7 @@ class TradingCore:
             **existing_meta,
             "ml_prediction": up_prob,
             "ml_confidence": ml_conf,
-            "ml_prediction_real": ml_conf > 0.0,
+            "ml_prediction_real": ml_conf > 0.10,
             "playbook_action": playbook_action,
             "playbook_name": playbook_name,
             "playbook_direction": playbook_direction,
@@ -2219,7 +2227,7 @@ class TradingCore:
         signal.metadata.update({
             "ml_prediction": round(up_prob, 4),
             "ml_confidence": round(ml_conf, 4),
-            "ml_prediction_real": ml_conf > 0.0,
+            "ml_prediction_real": ml_conf > 0.10,
             "seed_candidate_score": round(signal.confidence, 4),
             "seed_source": seed_source,
             "seed_model": seed_model,

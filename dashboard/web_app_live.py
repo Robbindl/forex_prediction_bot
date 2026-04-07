@@ -416,6 +416,7 @@ _PLAYBOOK_RUNTIME_BLUEPRINTS = [
     "breakout_continuation",
     "breakout_retest",
     "trend_pullback",
+    "early_inflection",
     "reversal_exhaustion",
     "failed_break_reclaim",
     "aggressive_expansion",
