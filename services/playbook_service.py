@@ -524,12 +524,64 @@ class PlaybookService:
             or (structure_bias == "sell" and direction == "SELL")
         )
 
-        if alignment_score < plan.min_alignment_score:
-            return False, f"alignment_too_weak:{playbook}"
-        if setup_quality < plan.min_setup_quality:
-            return False, f"setup_quality_too_weak:{playbook}"
+        if playbook == "crypto_orderflow_continuation":
+            profile = self._profile(category)
+            candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
+            imbalance_strength = abs(_safe_float(candidate.get("book_imbalance", 0.0), 0.0))
+            micro_strength = abs(_safe_float(candidate.get("micro_score", 0.0), 0.0))
+            strong_micro_break = (
+                candidate_score >= max(profile.breakout_min_score, 0.60)
+                and imbalance_strength >= 0.38
+                and micro_strength >= 0.28
+            )
+            relaxed_alignment_floor = 0.0 if strong_micro_break else max(0.25, float(plan.min_alignment_score) - 0.18)
+            relaxed_setup_floor = max(0.12, float(plan.min_setup_quality) - (0.42 if strong_micro_break else 0.12))
 
-        if playbook in _TREND_PLAYBOOKS:
+            if alignment_score < relaxed_alignment_floor:
+                return False, f"alignment_too_weak:{playbook}"
+            if setup_quality < relaxed_setup_floor:
+                return False, f"setup_quality_too_weak:{playbook}"
+            if direction == "BUY" and upside_exhaustion_score >= 0.72:
+                return False, f"upside_exhausted:{playbook}"
+            if direction == "SELL" and downside_exhaustion_score >= 0.72:
+                return False, f"downside_exhausted:{playbook}"
+            if structure_bias in {"buy", "sell"} and not bias_alignment and not strong_micro_break:
+                return False, f"bias_conflict:{playbook}"
+            if aligned_trends < 1 and not strong_micro_break:
+                return False, f"trend_misaligned:{playbook}"
+        elif playbook in {"aggressive_expansion", "breakout_continuation", "news_impulse"}:
+            profile = self._profile(category)
+            candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
+            impulse_floor = {
+                "aggressive_expansion": max(profile.expansion_min_score, 0.68),
+                "breakout_continuation": max(profile.breakout_min_score, 0.66),
+                "news_impulse": max(profile.breakout_min_score, 0.62),
+            }.get(playbook, 0.68)
+            strong_impulse_break = candidate_score >= impulse_floor
+            candidate["_strong_impulse_break"] = strong_impulse_break
+            relaxed_alignment_floor = 0.0 if strong_impulse_break else max(0.25, float(plan.min_alignment_score) - 0.16)
+            relaxed_setup_floor = max(0.12, float(plan.min_setup_quality) - (0.42 if strong_impulse_break else 0.10))
+
+            if alignment_score < relaxed_alignment_floor:
+                return False, f"alignment_too_weak:{playbook}"
+            if setup_quality < relaxed_setup_floor:
+                return False, f"setup_quality_too_weak:{playbook}"
+            exhaustion_limit = 0.72 if strong_impulse_break else 0.62
+            if direction == "BUY" and upside_exhaustion_score >= exhaustion_limit:
+                return False, f"upside_exhausted:{playbook}"
+            if direction == "SELL" and downside_exhaustion_score >= exhaustion_limit:
+                return False, f"downside_exhausted:{playbook}"
+            if structure_bias in {"buy", "sell"} and not bias_alignment and not strong_impulse_break:
+                return False, f"bias_conflict:{playbook}"
+            if aligned_trends < max(0, int(plan.min_trend_agreement or 0)) and not strong_impulse_break:
+                return False, f"trend_misaligned:{playbook}"
+        else:
+            if alignment_score < plan.min_alignment_score:
+                return False, f"alignment_too_weak:{playbook}"
+            if setup_quality < plan.min_setup_quality:
+                return False, f"setup_quality_too_weak:{playbook}"
+
+        if playbook in _TREND_PLAYBOOKS and playbook != "crypto_orderflow_continuation" and not bool(candidate.get("_strong_impulse_break")):
             if direction == "BUY" and upside_exhaustion_score >= 0.62:
                 return False, f"upside_exhausted:{playbook}"
             if direction == "SELL" and downside_exhaustion_score >= 0.62:
@@ -1548,6 +1600,9 @@ class PlaybookService:
             "direction": direction,
             "score": round(score, 4),
             "confidence": round(confidence, 4),
+            "book_imbalance": round(imbalance, 4),
+            "micro_score": round(micro_score, 4),
+            "spread_bps": round(spread_bps, 2),
             "entry_style": "orderflow_break",
             "session": session,
             "preferred_interval": preferred_interval,

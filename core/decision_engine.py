@@ -609,6 +609,20 @@ class SignalDecisionEngine:
         data: Dict[str, Any] = {}
         notes: List[str] = []
         engine = context.get("engine")
+        management_plan = (
+            signal.metadata.get("trade_management_plan")
+            if isinstance(signal.metadata.get("trade_management_plan"), dict)
+            else {}
+        )
+        staged_targets: List[float] = []
+        for raw_level in list(getattr(signal, "take_profit_levels", []) or []):
+            try:
+                level = float(raw_level)
+            except Exception:
+                continue
+            if level > 0:
+                staged_targets.append(round(level, 6))
+        has_managed_target_plan = bool(management_plan and staged_targets)
         adaptive_policy: Dict[str, Any] = {}
         try:
             from services.adaptive_policy_service import get_service as get_adaptive_policy_service
@@ -659,7 +673,13 @@ class SignalDecisionEngine:
             )
             return False
 
-        if signal.entry_price and signal.stop_loss and signal.take_profit and abs(adaptive_target_rr_multiplier - 1.0) > 1e-6:
+        if (
+            signal.entry_price
+            and signal.stop_loss
+            and signal.take_profit
+            and abs(adaptive_target_rr_multiplier - 1.0) > 1e-6
+            and not has_managed_target_plan
+        ):
             try:
                 risk = abs(float(signal.entry_price) - float(signal.stop_loss))
                 current_reward = abs(float(signal.take_profit) - float(signal.entry_price))
@@ -722,6 +742,7 @@ class SignalDecisionEngine:
             and signal.entry_price
             and signal.stop_loss
             and signal.take_profit
+            and not has_managed_target_plan
         ):
             try:
                 aligned_tp = align_tp_fn(
@@ -752,6 +773,24 @@ class SignalDecisionEngine:
                         data["structure_target_alignment"] = structure_alignment
             except Exception as exc:
                 logger.debug(f"[DecisionEngine] Structure target alignment failed for {signal.asset}: {exc}")
+
+        if has_managed_target_plan:
+            try:
+                final_target = float(staged_targets[-1])
+                signal.take_profit_levels = list(staged_targets)
+                signal.take_profit = round(final_target, 6)
+                risk = abs(float(signal.entry_price) - float(signal.stop_loss))
+                if risk > 0:
+                    signal.risk_reward = round(abs(final_target - float(signal.entry_price)) / risk, 2)
+                signal.metadata["primary_take_profit"] = round(float(staged_targets[0]), 6)
+                signal.metadata["runner_take_profit"] = round(final_target, 6)
+                data["trade_management_targets"] = {
+                    "primary_take_profit": round(float(staged_targets[0]), 6),
+                    "runner_take_profit": round(final_target, 6),
+                    "staged_target_count": len(staged_targets),
+                }
+            except Exception as exc:
+                logger.debug(f"[DecisionEngine] Managed target sync failed for {signal.asset}: {exc}")
 
         if spread and price and price > 0:
             try:

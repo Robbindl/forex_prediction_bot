@@ -1120,16 +1120,38 @@ class SignalJournal:
             conf    = float(getattr(signal, "confidence",  0))
             size    = float(getattr(signal, "position_size", 0))
             rr      = float(getattr(signal, "risk_reward",  0))
+            tp_levels = []
+            for raw_level in list(getattr(signal, "take_profit_levels", []) or []):
+                try:
+                    level = float(raw_level)
+                except Exception:
+                    continue
+                if level > 0:
+                    tp_levels.append(level)
+            first_target = float(tp_levels[0]) if tp_levels else tp
+            runner_target = float(tp_levels[-1]) if len(tp_levels) > 1 else 0.0
+            risk = abs(entry_p - sl)
+            first_rr = abs(first_target - entry_p) / risk if risk > 0 and first_target else rr
+            runner_rr = abs(runner_target - entry_p) / risk if risk > 0 and runner_target else rr
 
-            lines.append(
-                f"🚀 *EXECUTING*\n"
-                f"   Entry: `{entry_p:.5f}`\n"
-                f"   SL:    `{sl:.5f}`\n"
-                f"   TP:    `{tp:.5f}`\n"
-                f"   R:R:   {rr:.1f}:1\n"
-                f"   Conf:  {conf:.0%}\n"
-                f"   Size:  {size:.4f}"
-            )
+            executing_lines = [
+                "🚀 *EXECUTING*",
+                f"   Entry: `{entry_p:.5f}`",
+                f"   SL:    `{sl:.5f}`",
+            ]
+            if first_target:
+                label = "TP1" if runner_target and abs(runner_target - first_target) > 1e-9 else "TP"
+                executing_lines.append(f"   {label}:    `{first_target:.5f}`")
+            if runner_target and abs(runner_target - first_target) > 1e-9:
+                executing_lines.append(f"   Run:   `{runner_target:.5f}`")
+                executing_lines.append(f"   R:R:   TP1 {first_rr:.1f}:1 | Run {runner_rr:.1f}:1")
+            else:
+                executing_lines.append(f"   R:R:   {rr:.1f}:1")
+            executing_lines.extend([
+                f"   Conf:  {conf:.0%}",
+                f"   Size:  {size:.4f}",
+            ])
+            lines.append("\n".join(executing_lines))
 
         lines.append(f"\n_Decision engine: {self.total_elapsed_ms():.0f}ms_")
         return "\n".join(lines)
@@ -1211,20 +1233,36 @@ class SignalJournal:
             conf    = float(getattr(signal, "confidence",  0))
             size    = float(getattr(signal, "position_size", 0))
             rr      = float(getattr(signal, "risk_reward",  0))
+            tp_levels = []
+            for raw_level in list(getattr(signal, "take_profit_levels", []) or []):
+                try:
+                    level = float(raw_level)
+                except Exception:
+                    continue
+                if level > 0:
+                    tp_levels.append(level)
+            first_target = float(tp_levels[0]) if tp_levels else tp
+            runner_target = float(tp_levels[-1]) if len(tp_levels) > 1 else 0.0
+            risk = abs(entry_p - sl)
+            first_rr = abs(first_target - entry_p) / risk if risk > 0 and first_target else rr
+            runner_rr = abs(runner_target - entry_p) / risk if risk > 0 and runner_target else rr
 
             lines.extend([
                 "",
                 "How the trade will be managed:",
             ])
             lines.extend(execution_lines)
-            lines.extend([
-                f"- Planned entry: {self._format_price(entry_p)}",
-                f"- Protective stop: {self._format_price(sl)}",
-                f"- First main target: {self._format_price(tp)}",
-                f"- Reward to risk: {rr:.1f}:1",
-                f"- Position size: {size:.4f}",
-                f"- Confidence at execution: {conf:.0%}",
-            ])
+            lines.append(f"- Planned entry: {self._format_price(entry_p)}")
+            lines.append(f"- Protective stop: {self._format_price(sl)}")
+            if first_target:
+                lines.append(f"- First main target: {self._format_price(first_target)}")
+            if runner_target and abs(runner_target - first_target) > 1e-9:
+                lines.append(f"- Runner target: {self._format_price(runner_target)}")
+                lines.append(f"- Reward to risk: TP1 {first_rr:.1f}:1 | Runner {runner_rr:.1f}:1")
+            else:
+                lines.append(f"- Reward to risk: {rr:.1f}:1")
+            lines.append(f"- Position size: {size:.4f}")
+            lines.append(f"- Confidence at execution: {conf:.0%}")
 
         lines.extend([
             "",

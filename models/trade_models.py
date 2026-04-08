@@ -15,6 +15,15 @@ from sqlalchemy.sql import func
 from config.database import Base
 
 
+def _infer_lot_size(asset: str, category: str, position_size: float) -> float:
+    try:
+        from risk.position_sizer import PositionSizer
+
+        return float(PositionSizer.lots_from_size(asset, category, float(position_size or 0.0)))
+    except Exception:
+        return 0.0
+
+
 class Trade(Base):
     """Every closed trade — permanent record."""
     __tablename__ = "trades"
@@ -68,6 +77,9 @@ class Trade(Base):
         if is_partial_close is None:
             reason = str(self.exit_reason or "").lower()
             is_partial_close = bool(parent_trade_id) or reason.startswith("partial tp")
+        lot_size = metadata.get("lot_size")
+        if lot_size in (None, ""):
+            lot_size = _infer_lot_size(self.asset, self.category, self._float_or_none(self.position_size) or 0.0)
         return {
             "trade_id":       self.trade_id,
             "asset":          self.asset,
@@ -87,6 +99,7 @@ class Trade(Base):
             "exit_reason":    self.exit_reason,
             "strategy_id":    self.strategy_id,
             "confidence":     self._float_or_none(self.confidence),
+            "lot_size":       float(lot_size) if lot_size not in (None, "") else 0.0,
             "parent_trade_id": parent_trade_id,
             "is_partial_close": bool(is_partial_close),
             "metadata":       metadata,
@@ -118,6 +131,9 @@ class OpenPosition(Base):
 
     def to_dict(self) -> dict:
         base = self.position_data or {}
+        lot_size = base.get("lot_size")
+        if lot_size in (None, ""):
+            lot_size = _infer_lot_size(self.asset, self.category, float(self.position_size) if self.position_size else 0.0)
         base.update({
             "trade_id":       self.trade_id,
             "asset":          self.asset,
@@ -128,6 +144,7 @@ class OpenPosition(Base):
             "stop_loss":      float(self.stop_loss)     if self.stop_loss     else 0,
             "take_profit":    float(self.take_profit)   if self.take_profit   else 0,
             "position_size":  float(self.position_size) if self.position_size else 0,
+            "lot_size":       float(lot_size) if lot_size not in (None, "") else 0.0,
             "confidence":     float(self.confidence)    if self.confidence    else 0,
             "strategy_id":    self.strategy_id or "",
             "open_time":      self.open_time.isoformat() if self.open_time else "",

@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 
 import core.state as state_mod
+import config.config as cfg
 from core.asset_profiles import get_profile
 from core.assets import registry
 from core.engine import TradingCore
@@ -83,6 +84,190 @@ def test_trading_core_fmt_ml_pair_hides_inactive_ml() -> None:
 
 def test_trading_core_fmt_ml_pair_formats_real_ml() -> None:
     assert TradingCore._fmt_ml_pair(0.7342, 0.421) == "0.734/0.421"
+
+
+def test_position_sizer_uses_mt5_style_lot_steps_and_balance_scaling(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "DEFAULT_RISK_PER_TRADE", 1.5, raising=False)
+    monkeypatch.setattr(cfg, "CRYPTO_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "COMMODITIES_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "INDICES_RISK_PER_TRADE", 1.5, raising=False)
+    monkeypatch.setattr(cfg, "MAX_RISK_PER_TRADE", 3.0, raising=False)
+
+    small = PositionSizer(1_500.0).calculate(
+        entry_price=4000.0,
+        stop_loss=3990.0,
+        category="commodities",
+        confidence=0.70,
+        asset="XAU/USD",
+    )
+    large = PositionSizer(20_000.0).calculate(
+        entry_price=4000.0,
+        stop_loss=3990.0,
+        category="commodities",
+        confidence=0.70,
+        asset="XAU/USD",
+    )
+
+    assert small == 1.0
+    assert large == 20.0
+    assert PositionSizer.lots_from_size("XAU/USD", "commodities", small) == 0.01
+    assert PositionSizer.lots_from_size("XAU/USD", "commodities", large) == 0.2
+
+
+def test_position_sizer_uses_gold_base_of_point_one_lot_at_ten_thousand(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "COMMODITIES_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "MAX_RISK_PER_TRADE", 3.0, raising=False)
+
+    size = PositionSizer(10_000.0).calculate(
+        entry_price=4000.0,
+        stop_loss=3990.0,
+        category="commodities",
+        confidence=0.70,
+        asset="XAU/USD",
+    )
+
+    assert size == 10.0
+    assert PositionSizer.lots_from_size("XAU/USD", "commodities", size) == 0.1
+
+
+def test_position_sizer_uses_gold_equivalent_reference_for_eurusd(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "DEFAULT_RISK_PER_TRADE", 1.5, raising=False)
+    monkeypatch.setattr(cfg, "MAX_RISK_PER_TRADE", 3.0, raising=False)
+
+    size = PositionSizer(10_000.0).calculate(
+        entry_price=1.1000,
+        stop_loss=1.0960,
+        category="forex",
+        confidence=0.70,
+        asset="EUR/USD",
+    )
+
+    assert size == 37000.0
+    assert PositionSizer.lots_from_size("EUR/USD", "forex", size) == 0.37
+
+
+def test_position_sizer_increases_lot_size_with_higher_confidence(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "COMMODITIES_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "MAX_RISK_PER_TRADE", 3.0, raising=False)
+
+    base = PositionSizer(10_000.0).calculate(
+        entry_price=4000.0,
+        stop_loss=3990.0,
+        category="commodities",
+        confidence=0.70,
+        asset="XAU/USD",
+    )
+    high = PositionSizer(10_000.0).calculate(
+        entry_price=4000.0,
+        stop_loss=3990.0,
+        category="commodities",
+        confidence=0.90,
+        asset="XAU/USD",
+    )
+
+    assert PositionSizer.lots_from_size("XAU/USD", "commodities", base) == 0.1
+    assert PositionSizer.lots_from_size("XAU/USD", "commodities", high) == 0.2
+
+
+def test_position_sizer_returns_zero_when_even_min_lot_is_too_risky(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "COMMODITIES_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "MAX_RISK_PER_TRADE", 3.0, raising=False)
+
+    size = PositionSizer(50.0).calculate(
+        entry_price=4000.0,
+        stop_loss=3970.0,
+        category="commodities",
+        confidence=0.70,
+        asset="XAU/USD",
+    )
+
+    assert size == 0.0
+
+
+def test_position_sizer_keeps_xag_proportional_below_broker_floor(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "COMMODITIES_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "MAX_RISK_PER_TRADE", 3.0, raising=False)
+
+    size = PositionSizer(10_000.0).calculate(
+        entry_price=70.0,
+        stop_loss=69.0,
+        category="commodities",
+        confidence=0.70,
+        asset="XAG/USD",
+    )
+
+    assert round(size, 6) == 10.0
+    assert PositionSizer.lots_from_size("XAG/USD", "commodities", size) == 0.002
+
+
+def test_position_sizer_keeps_wti_and_xrp_proportional_on_small_balances(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "COMMODITIES_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "CRYPTO_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "MAX_RISK_PER_TRADE", 3.0, raising=False)
+
+    wti_size = PositionSizer(1_500.0).calculate(
+        entry_price=90.0,
+        stop_loss=89.0,
+        category="commodities",
+        confidence=0.70,
+        asset="WTI",
+    )
+    xrp_size = PositionSizer(1_500.0).calculate(
+        entry_price=1.30,
+        stop_loss=1.20,
+        category="crypto",
+        confidence=0.70,
+        asset="XRP-USD",
+    )
+
+    assert PositionSizer.lots_from_size("WTI", "commodities", wti_size) == 0.002
+    assert PositionSizer.lots_from_size("XRP-USD", "crypto", xrp_size) == 0.002
+
+
+def test_fetcher_pings_technicals_on_cache_hit(monkeypatch) -> None:
+    import data.fetcher as fetcher_mod
+
+    df = pd.DataFrame({"open": [1.0], "high": [1.1], "low": [0.9], "close": [1.05], "volume": [1.0]})
+    seen: list[str] = []
+
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: (df, {"source": "cache"}), raising=False)
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_ping_health", staticmethod(lambda source: seen.append(str(source))), raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    result = fetcher.get_ohlcv("EUR/USD", "forex", interval="5m", periods=1)
+
+    assert result is not None
+    assert seen == ["technicals"]
+
+
+def test_fetcher_pings_technicals_on_local_store_full_hit(monkeypatch) -> None:
+    import data.fetcher as fetcher_mod
+
+    df = pd.DataFrame(
+        {
+            "open": [1.0, 1.1],
+            "high": [1.1, 1.2],
+            "low": [0.9, 1.0],
+            "close": [1.05, 1.15],
+            "volume": [1.0, 1.0],
+        }
+    )
+    seen: list[str] = []
+
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "set", lambda *args, **kwargs: None, raising=False)
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_ping_health", staticmethod(lambda source: seen.append(str(source))), raising=False)
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._local_candle_store = SimpleNamespace(
+        get_ohlcv=lambda *args, **kwargs: (df, {"source": "LocalStore", "realtime": True})
+    )
+
+    result = fetcher.get_ohlcv("EUR/USD", "forex", interval="5m", periods=2)
+
+    assert result is not None
+    assert len(result) == 2
+    assert seen == ["technicals"]
 
 def test_reprice_open_positions_tightens_existing_sell_exit_levels() -> None:
     engine = TradingCore(balance=10_000.0)
@@ -324,6 +509,30 @@ def test_paper_trader_applies_realistic_entry_and_exit_costs() -> None:
     assert trade is not None
     assert round(trade["entry_price"], 4) == 100.7
     assert trade["metadata"]["paper_execution"]["fill_mode"] == "paper_realistic"
+
+
+def test_paper_trader_usd_jpy_commission_uses_usd_notional() -> None:
+    trader = PaperTrader(account_balance=10_000.0)
+
+    pos = {
+        "asset": "USD/JPY",
+        "category": "forex",
+        "direction": "SELL",
+        "entry_price": 158.87428904,
+    }
+
+    gross_pnl, net_pnl, entry_commission, exit_commission, total_commission = trader._calculate_net_pnl(
+        pos,
+        158.65565054,
+        32500.0,
+        0.00004,
+    )
+
+    assert gross_pnl > 0
+    assert round(entry_commission, 2) == 1.30
+    assert round(exit_commission, 2) == 1.30
+    assert round(total_commission, 2) == 2.60
+    assert net_pnl > 0
 
 def test_paper_trader_execute_signal_records_utc_open_time() -> None:
     trader = PaperTrader(account_balance=10_000.0)
@@ -5651,7 +5860,7 @@ def test_telegram_build_top_setups_includes_broker_and_depth_context() -> None:
     assert "Broker `0.91`" in text
     assert "Micro `0.73`" in text
     assert "Depth `True depth`" in text
-    assert "Cross-asset `buy support` via `XAG/USD`" in text
+    assert "Cross-market `buy support` via `XAG/USD`" in text
     assert "Provider `IG` | strong / fresh / tight" in text
     assert "Playbook `opening drive` | `opening drive break`" in text
     assert "Session `us open` | TF `5m`" in text
@@ -5716,8 +5925,8 @@ def test_telegram_build_signal_includes_runtime_diagnostics() -> None:
     assert "Manage `TP1 1.0R | Runner 2.4R | Trail 1.0R · ATRx0.85`" in text
     assert "Broker `0.86` | `IG` | strong / fresh / tight" in text
     assert "Micro `0.42` | Depth `True depth`" in text
-    assert "Spillover `buy support` via `XAG/USD`" in text
-    assert "Pattern `true depth winners`" in text
+    assert "Cross-market `buy support` via `XAG/USD`" in text
+    assert "Pattern memory `true depth winners`" in text
 
 def test_telegram_build_positions_includes_runtime_diagnostics() -> None:
     tg_mod = importlib.import_module("telegram_commander")
@@ -5780,8 +5989,54 @@ def test_telegram_build_positions_includes_runtime_diagnostics() -> None:
     assert "Session `us core` | TF `15m`" in text
     assert "Broker `0.76` | `Binance` | unconfirmed / aging" in text
     assert "Micro `0.19` | Depth `True depth`" in text
-    assert "Spillover `conflicted` via `ETH-USD`" in text
-    assert "Pattern `premature stop`" in text
+    assert "Cross-market `conflicted` via `ETH-USD`" in text
+    assert "Pattern memory `premature stop`" in text
+
+
+def test_telegram_build_positions_uses_live_price_for_current_display() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    class _FakeFetcher:
+        def get_real_time_price(self, asset, category):
+            return 4711.41, 0.0
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.trading_system = SimpleNamespace(
+        fetcher=_FakeFetcher(),
+        get_positions=lambda: [
+            {
+                "asset": "XAU/USD",
+                "category": "commodities",
+                "direction": "BUY",
+                "entry_price": 4689.35867537,
+                "current_price": None,
+                "stop_loss": 4670.257,
+                "take_profit": 4731.5012,
+                "take_profit_levels": [4706.283, 4731.5012],
+                "position_size": 3.0,
+                "confidence": 0.62,
+                "trade_id": "699b6bee-b07",
+                "open_time": "2026-04-07T20:35:16+00:00",
+                "metadata": {
+                    "playbook_name": "breakout_continuation",
+                    "playbook_entry_style": "breakout_close",
+                    "playbook_timeframe": "5m",
+                    "session_label": "us core",
+                    "trade_management_plan": {
+                        "partial_take_profit_rr": [1.0],
+                        "runner_target_rr": 2.4,
+                        "trail_activation_rr": 1.0,
+                        "trail_atr_multiple": 0.85,
+                    },
+                },
+            }
+        ],
+    )
+
+    text, _ = asyncio.run(commander._build_positions())
+
+    assert "Entry: `4,689.36` → Current: `4,711.41`" in text
+    assert "P&L:" in text
 
 def test_telegram_trade_history_context_uses_review_diagnostics() -> None:
     tg_mod = importlib.import_module("telegram_commander")
@@ -5813,9 +6068,9 @@ def test_telegram_trade_history_context_uses_review_diagnostics() -> None:
 
     assert "Playbook `failed break reclaim` | `reclaim failure`" in text
     assert "Session `us overlap` | TF `5m`" in text
-    assert "broker fragile" in text
-    assert "synthetic depth" in text
-    assert "conflicted via WTI" in text
+    assert "State `fragile`" in text
+    assert "Depth `synthetic depth`" in text
+    assert "Cross-market `conflicted` via `WTI`" in text
 
 def test_robbie_explainer_confidence_question_uses_signal_not_mood() -> None:
     personality_mod = importlib.import_module("services.personality_service")
@@ -5931,13 +6186,20 @@ def test_telegram_alert_trade_closed_includes_post_trade_review() -> None:
     )
 
     message = captured["text"]
-    assert "Trade Review" in message
-    assert "What went wrong" in message
-    assert "What I'll avoid" in message
+    assert "Execution Audit" in message
+    assert "Post-Trade Audit" in message
+    assert "Failure stack" in message
+    assert "Next avoid" in message
     assert "Do not chase extended entries" in message
     assert "04 Apr 2026 10:00:00 UTC" in message
     assert "04 Apr 2026 10:37:00 UTC" in message
     assert "37m" in message
+
+def test_telegram_humanises_equity_labels_for_user_facing_diagnostics() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    assert tg_mod.TelegramCommander._humanise_diagnostic_label("broad_equity_confirmation") == "broad index confirmation"
+    assert tg_mod.TelegramCommander._humanise_diagnostic_label("risk_off_equities") == "risk-off indices"
 
 def test_websocket_manager_repeated_deriv_disconnects_are_downgraded(monkeypatch) -> None:
     import asyncio
@@ -6843,6 +7105,39 @@ def test_chart_asset_descriptor_reflects_provider_routing(monkeypatch) -> None:
     assert forex["secondary_provider"] == ""
     assert forex["quote_mode"] == "stream"
 
+def test_extract_market_data_provenance_fields_uses_runtime_descriptor(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_chart_asset_descriptor",
+        lambda asset, category: {
+            "primary_provider": "IG" if asset == "XAU/USD" else "Deriv",
+            "secondary_provider": "Deriv" if asset == "XAU/USD" else "",
+            "quote_mode": "stream",
+        },
+        raising=False,
+    )
+
+    fields = dashboard_mod._extract_market_data_provenance_fields(
+        {
+            "market_data": {
+                "price": {"source": "IG", "source_class": "primary_api", "realtime": True},
+                "ohlcv": {"source": "Dukascopy", "source_class": "secondary_api", "provider_family": "DUKASCOPY"},
+            }
+        },
+        asset="XAU/USD",
+        category="commodities",
+    )
+
+    assert fields["history_source"] == "Dukascopy"
+    assert fields["history_source_class"] == "secondary_api"
+    assert fields["history_provider_family"] == "DUKASCOPY"
+    assert fields["live_source"] == "IG"
+    assert fields["runtime_primary_provider"] == "IG"
+    assert fields["runtime_secondary_provider"] == "Deriv"
+    assert fields["quote_mode"] == "stream"
+
 def test_api_chart_candles_includes_data_source_on_success(monkeypatch) -> None:
     import pandas as pd
 
@@ -7374,6 +7669,52 @@ def test_page_overview_command_center_reuses_embedded_whale_summary(monkeypatch)
     assert payload["whale"]["alert_count_24h"] == 3
     assert payload["whale"]["recent"][0]["asset"] == "BTC-USD"
 
+def test_page_overview_sentiment_intelligence_includes_heatmap(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    class _FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def get_json(self):
+            return self._payload
+
+    def _fake_call_view(fn):
+        name = getattr(fn, "__name__", "")
+        if name == "api_status":
+            return _FakeResponse({"success": True, "provider_routing": {"summary_label": "Playbook native"}})
+        if name == "api_sentiment_dashboard":
+            return _FakeResponse({"success": True, "overview": {"score": 0.21}})
+        if name == "api_sentiment_by_asset":
+            return _FakeResponse({"success": True, "items": [{"asset": "BTC-USD", "score": 0.61}]})
+        if name == "api_market_events":
+            return _FakeResponse({"success": True, "events": [{"asset": "BTC-USD", "priority": "HIGH"}]})
+        if name == "api_market_heatmap":
+            return _FakeResponse({
+                "success": True,
+                "items": [
+                    {"asset": "BTC-USD", "change_pct": -1.4},
+                    {"asset": "ETH-USD", "change_pct": 0.8},
+                ],
+            })
+        raise AssertionError(f"Unexpected view {name}")
+
+    monkeypatch.setattr(dashboard_mod, "_call_view", _fake_call_view, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/page-overview?page=sentiment_intelligence"):
+        response = dashboard_mod.api_page_overview()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["heatmap"]["success"] is True
+    assert payload["heatmap"]["items"][0]["asset"] == "BTC-USD"
+
 def test_sentiment_dashboard_exposes_macro_news_context(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -7512,6 +7853,7 @@ def test_command_center_survives_live_price_wait_timeout(monkeypatch) -> None:
     assert payload["success"] is True
     assert payload["open_positions"] == 1
     assert payload["positions"][0]["current_price"] == 0.0
+    assert payload["positions"][0]["lot_size"] == 1.0
     assert payload["positions"][0]["memory_score"] == 71.0
     assert payload["positions"][0]["execution_quality_score"] == 64.0
     assert payload["positions"][0]["opportunity_score"] == 0.83
@@ -8640,6 +8982,76 @@ def test_telegram_manager_uses_configured_debug_flag_and_pid_file(monkeypatch) -
         importlib.reload(config_mod)
         importlib.reload(manager_mod)
 
+def test_telegram_manager_treats_reused_legacy_pid_as_stale(monkeypatch, tmp_path) -> None:
+    manager_mod = importlib.import_module("telegram_manager")
+    pid_file = tmp_path / "telegram_bot.pid"
+    pid_file.write_text("10560", encoding="utf-8")
+
+    class _Proc:
+        def __init__(self, pid: int):
+            self.pid = pid
+
+        def create_time(self) -> float:
+            return 1234.0
+
+        def name(self) -> str:
+            return "SystemSettingsBroker.exe"
+
+        def exe(self) -> str:
+            return r"C:\\Windows\\SystemSettingsBroker.exe"
+
+        def cmdline(self) -> list[str]:
+            return []
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_Proc))
+    monkeypatch.setattr(manager_mod.TelegramManager, "_pid_file", pid_file, raising=False)
+    monkeypatch.setattr(manager_mod.os, "getpid", lambda: 99999)
+    manager_mod.TelegramManager._instance = None
+    manager = manager_mod.TelegramManager()
+
+    assert manager._check_pid_file() is False
+    assert not pid_file.exists()
+
+def test_telegram_manager_matches_json_pid_record_by_create_time(monkeypatch, tmp_path) -> None:
+    manager_mod = importlib.import_module("telegram_manager")
+    pid_file = tmp_path / "telegram_bot.pid"
+    pid_file.write_text(
+        json.dumps(
+            {
+                "pid": 24680,
+                "create_time": 54321.25,
+                "name": "python.exe",
+                "cmdline": ["python", "bot.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _Proc:
+        def __init__(self, pid: int):
+            self.pid = pid
+
+        def create_time(self) -> float:
+            return 54321.25
+
+        def name(self) -> str:
+            return "python.exe"
+
+        def exe(self) -> str:
+            return r"C:\\Python\\python.exe"
+
+        def cmdline(self) -> list[str]:
+            return ["python", "bot.py"]
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_Proc))
+    monkeypatch.setattr(manager_mod.TelegramManager, "_pid_file", pid_file, raising=False)
+    monkeypatch.setattr(manager_mod.os, "getpid", lambda: 99999)
+    manager_mod.TelegramManager._instance = None
+    manager = manager_mod.TelegramManager()
+
+    assert manager._check_pid_file() is True
+    assert pid_file.exists()
+
 def test_telegram_category_keyboard_matches_active_universe() -> None:
     tg_mod = importlib.import_module("telegram_commander")
     keyboard = tg_mod._category_keyboard().inline_keyboard
@@ -8666,6 +9078,7 @@ def test_trade_history_api_uses_runtime_state_and_normalizes_open_time(monkeypat
             "asset": "EUR/USD",
             "category": "forex",
             "direction": "BUY",
+            "position_size": 12000.0,
             "open_time": "2026-03-29T10:00:00+00:00",
             "exit_time": "2026-03-29T11:30:00+00:00",
             "duration_minutes": 90,
@@ -8686,6 +9099,7 @@ def test_trade_history_api_uses_runtime_state_and_normalizes_open_time(monkeypat
     assert payload["trades"][0]["open_time"] == "2026-03-29T10:00:00+00:00"
     assert payload["trades"][0]["entry_time"] == "2026-03-29T10:00:00+00:00"
     assert payload["trades"][0]["exit_time"] == "2026-03-29T11:30:00+00:00"
+    assert payload["trades"][0]["lot_size"] == 0.12
 
 def test_trade_history_api_enriches_execution_feedback_fields(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
@@ -8860,6 +9274,18 @@ def test_trade_history_api_disables_caching(monkeypatch) -> None:
     assert response.headers["Pragma"] == "no-cache"
     assert response.headers["Expires"] == "0"
 
+def test_database_trade_metadata_normalization_preserves_lot_size() -> None:
+    sys.modules.pop("services.database_service", None)
+    db_mod = importlib.import_module("services.database_service")
+
+    metadata = db_mod._normalized_trade_metadata({
+        "metadata": {"playbook_name": "breakout_continuation"},
+        "lot_size": 0.12,
+    })
+
+    assert metadata["playbook_name"] == "breakout_continuation"
+    assert metadata["lot_size"] == 0.12
+
 def test_risk_portfolio_api_includes_execution_feedback_summary(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -9026,6 +9452,97 @@ def test_risk_portfolio_api_includes_signal_diagnostics_snapshot(monkeypatch) ->
     assert payload["signal_diagnostics"]["cross_conflict_count"] == 1
     assert payload["signal_diagnostics"]["recent_pattern_block_count"] == 1
 
+def test_risk_portfolio_api_includes_cluster_groups(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    class _PortfolioRisk:
+        def get_portfolio_stats(self, positions, balance):
+            return {
+                "total_exposure": 4100.0,
+                "exposure_pct": 41.0,
+                "drawdown_pct": 2.7,
+                "peak_balance": 10400.0,
+            }
+
+    class _Core:
+        portfolio_risk = _PortfolioRisk()
+
+        def get_positions(self):
+            return [
+                {
+                    "asset": "BTC-USD",
+                    "category": "crypto",
+                    "direction": "BUY",
+                    "position_size": 0.12,
+                    "entry_price": 68500.0,
+                    "pnl": 220.0,
+                    "metadata": {
+                        "setup_memory": {"memory_score": 70.0},
+                        "execution_feedback": {"quality_score": 66.0},
+                        "opportunity_score": 0.82,
+                    },
+                },
+                {
+                    "asset": "SOL-USD",
+                    "category": "crypto",
+                    "direction": "SELL",
+                    "position_size": 4.0,
+                    "entry_price": 145.0,
+                    "pnl": -35.0,
+                    "metadata": {
+                        "setup_memory": {"memory_score": 58.0},
+                        "execution_feedback": {"quality_score": 52.0},
+                        "opportunity_score": 0.61,
+                    },
+                },
+                {
+                    "asset": "XAU/USD",
+                    "category": "commodities",
+                    "direction": "BUY",
+                    "position_size": 1.0,
+                    "entry_price": 2320.0,
+                    "pnl": 45.0,
+                    "metadata": {
+                        "setup_memory": {"memory_score": 64.0},
+                        "execution_feedback": {"quality_score": 60.0},
+                        "opportunity_score": 0.73,
+                    },
+                },
+            ]
+
+        def get_balance(self):
+            return 10_000.0
+
+        def get_performance(self):
+            return {"win_rate": 0.56, "total_trades": 20, "total_pnl": 510.0}
+
+        def get_closed_trades(self, limit=100):
+            return [{"pnl": 100.0}, {"pnl": -40.0}]
+
+    class _Feedback:
+        def summarize_history(self, asset="", category="", days_back=120, limit=500):
+            return {"sample_count": 5 if category else 11}
+
+    feedback_mod = importlib.import_module("services.execution_feedback_service")
+    monkeypatch.setattr(feedback_mod, "get_service", lambda: _Feedback(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_core", lambda: _Core(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/risk/portfolio")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert any(group["label"] == "Crypto Majors" for group in payload["cluster_groups"])
+    assert any(group["label"] == "Crypto Alts" for group in payload["cluster_groups"])
+    assert any(group["label"] == "Precious Metals" for group in payload["cluster_groups"])
+    majors = next(group for group in payload["cluster_groups"] if group["label"] == "Crypto Majors")
+    assert majors["direction_skew"] == "BUY"
+    assert majors["avg_execution_quality"] == 66.0
+
 def test_ai_predictions_overview_includes_live_quality_and_leaders(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
     recent_exit = datetime.now(timezone.utc).isoformat()
@@ -9079,6 +9596,37 @@ def test_ai_predictions_overview_includes_live_quality_and_leaders(monkeypatch) 
                         "execution_quality_score": 59.0,
                         "execution_feedback_sample_count": 7,
                         "opportunity_score": 0.71,
+                    },
+                ],
+            })
+        if name == "api_phase7_signal_journal":
+            return _FakeResponse({
+                "success": True,
+                "journals": [
+                    {
+                        "asset": "BTC-USD",
+                        "direction": "SELL",
+                        "decision": "KILLED",
+                        "killed_by": "governance",
+                        "kill_reason": "alignment_too_weak:breakout_retest",
+                        "opportunity_score": 0.88,
+                        "setup_quality": 0.51,
+                        "alignment_score": 0.18,
+                        "final_policy_score": 0.43,
+                        "structure_bias": "sell",
+                        "depth_mode": "true_depth",
+                        "broker_agreement_state": "strong",
+                        "microstructure_source": "binance",
+                        "top_positive_factor": "orderflow_breakout",
+                        "top_negative_factor": "alignment_lag",
+                        "stop_hunt_risk": 0.11,
+                        "exhaustion_risk": 0.22,
+                    },
+                    {
+                        "asset": "ETH-USD",
+                        "direction": "BUY",
+                        "decision": "SURVIVED",
+                        "opportunity_score": 0.70,
                     },
                 ],
             })
@@ -9147,7 +9695,11 @@ def test_ai_predictions_overview_includes_live_quality_and_leaders(monkeypatch) 
     assert payload["live_leaders"]["execution"][0]["score"] == 68.0
     assert payload["playbook_performance"]["summary"]["trade_count"] == 2
     assert payload["playbook_performance"]["summary"]["win_rate"] == 50.0
+    assert payload["playbook_performance"]["summary"]["avg_hold_minutes"] == 0.0
+    assert payload["playbook_performance"]["summary"]["stop_exit_rate"] == 0.0
     assert payload["playbook_performance"]["playbooks"][0]["label"] == "crypto_orderflow_continuation"
+    assert payload["near_misses"][0]["asset"] == "BTC-USD"
+    assert payload["near_misses"][0]["reason"] == "alignment_too_weak:breakout_retest"
 
 def test_strategy_performance_includes_memory_and_execution_metrics(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
@@ -10429,6 +10981,80 @@ def test_playbook_service_detects_crypto_orderflow_continuation(monkeypatch) -> 
     orderflow = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "crypto_orderflow_continuation")
     assert orderflow["direction"] == "BUY"
     assert orderflow["entry_style"] == "orderflow_break"
+
+
+def test_playbook_service_allows_strong_crypto_orderflow_with_neutral_alignment(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 16, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "BTC-USD",
+        "crypto",
+        _build_breakout_frame(start=68000.0),
+        context={
+            "market_microstructure": {
+                "depth_available": True,
+                "synthetic_depth_available": False,
+                "book_imbalance": 0.67,
+                "score": 0.52,
+                "spread_bps": 6.0,
+            },
+            "market_structure": {
+                "structure_bias": "neutral",
+                "alignment_score": 0.0,
+                "setup_quality": 0.18,
+                "pullback_score": 0.08,
+                "breakout_score": 0.44,
+                "volatility_state": "expansion",
+                "regime": "volatile",
+                "trend_15m": "unknown",
+                "trend_1h": "unknown",
+                "distance_to_support": 80.0,
+                "distance_to_resistance": 25.0,
+            },
+        },
+    )
+
+    assert any(candidate["playbook"] == "crypto_orderflow_continuation" for candidate in analysis["candidates"])
+    orderflow = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "crypto_orderflow_continuation")
+    assert orderflow["direction"] == "BUY"
+
+
+def test_playbook_service_allows_strong_forex_impulse_with_neutral_alignment(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "EUR/USD",
+        "forex",
+        _build_breakout_frame(),
+        context={
+            "market_structure": {
+                "structure_bias": "neutral",
+                "alignment_score": 0.0,
+                "setup_quality": 0.20,
+                "pullback_score": 0.08,
+                "breakout_score": 0.55,
+                "volatility_state": "expansion",
+                "regime": "volatile",
+                "trend_15m": "unknown",
+                "trend_1h": "unknown",
+                "distance_to_support": 0.0020,
+                "distance_to_resistance": 0.0004,
+            },
+            "news_event": {},
+        },
+    )
+
+    assert any(candidate["playbook"] in {"aggressive_expansion", "breakout_continuation"} for candidate in analysis["candidates"])
 
 def test_playbook_service_blocks_major_forex_without_dual_trend_alignment(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
@@ -13874,4 +14500,211 @@ def test_sentiment_review_no_longer_mutates_signal_score() -> None:
 
     assert signal.confidence == 0.71
     assert "sentiment_support" in result["adjustments"]
+
+
+def test_execution_review_keeps_managed_multi_target_plan(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    adaptive_mod = importlib.import_module("services.adaptive_policy_service")
+    scorecard_mod = importlib.import_module("services.signal_scorecard")
+    engine = decision_mod.SignalDecisionEngine()
+
+    monkeypatch.setattr(
+        adaptive_mod.get_service(),
+        "get_thresholds",
+        lambda asset, category, context=None, signal=None, state=None: {
+            "min_final_confidence": 0.55,
+            "max_spread": 0.003,
+            "risk_multiplier": 1.0,
+            "min_rr": 1.2,
+            "target_rr_multiplier": 1.0,
+            "block_new_entries": False,
+            "block_reason": "",
+            "recent_review_profile": {},
+            "notes": [],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scorecard_mod.get_service(),
+        "score",
+        lambda signal, context=None: {
+            "final_score": float(signal.confidence),
+            "raw_score": float(signal.confidence),
+            "reliability": 0.8,
+            "breakdown": {},
+            "notes": [],
+            "live_validation": {},
+        },
+        raising=False,
+    )
+
+    risk_manager = SimpleNamespace(
+        align_take_profit_to_structure=lambda entry, proposed_take_profit, direction, **kwargs: 101.25,
+        calculate_position_size=lambda **kwargs: 1.0,
+    )
+
+    signal = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.62,
+        entry_price=100.0,
+        stop_loss=90.0,
+        take_profit=124.0,
+        risk_reward=2.4,
+    )
+    signal.take_profit_levels = [110.0, 124.0]
+    signal.metadata["trade_management_plan"] = {
+        "partial_take_profit_rr": [1.0],
+        "runner_target_rr": 2.4,
+        "trail_activation_rr": 1.0,
+        "trail_atr_multiple": 0.85,
+        "break_even_after_partial": True,
+    }
+
+    approved = engine._apply_execution_review(
+        signal,
+        {
+            "category": "commodities",
+            "spread": 0.05,
+            "price": 100.0,
+            "price_data": _build_trend_frame(100.0, 0.2),
+            "engine": SimpleNamespace(_risk_manager=risk_manager, state=None),
+        },
+    )
+
+    assert approved is True
+    assert signal.alive is True
+    assert signal.take_profit == 124.0
+    assert signal.take_profit_levels == [110.0, 124.0]
+    assert signal.risk_reward == 2.4
+    assert signal.metadata["primary_take_profit"] == 110.0
+    assert signal.metadata["runner_take_profit"] == 124.0
+    assert "structure_target_alignment" not in signal.metadata
+
+
+def test_offline_gap_fill_keeps_runner_open_after_partial_tp(monkeypatch) -> None:
+    now_utc = datetime.now(timezone.utc)
+    trade_id = "runner-open"
+    position = {
+        "trade_id": trade_id,
+        "asset": "XAU/USD",
+        "canonical_asset": "XAU/USD",
+        "category": "commodities",
+        "direction": "BUY",
+        "entry_price": 100.0,
+        "stop_loss": 90.0,
+        "original_sl": 90.0,
+        "take_profit": 124.0,
+        "take_profit_levels": [110.0, 124.0],
+        "position_size": 2.0,
+        "tp_hit": 0,
+        "open_time": (now_utc - timedelta(minutes=30)).isoformat(),
+        "highest_price": 100.0,
+        "lowest_price": 100.0,
+        "metadata": {
+            "atr": 4.0,
+            "trade_management_plan": {
+                "partial_take_profit_rr": [1.0],
+                "runner_target_rr": 2.4,
+                "trail_activation_rr": 1.0,
+                "trail_atr_multiple": 0.85,
+                "break_even_after_partial": True,
+            },
+        },
+    }
+
+    class FakeState:
+        def __init__(self, pos):
+            self.positions = {pos["trade_id"]: dict(pos)}
+            self.synced = []
+            self.closed = []
+            self.balance = 10000.0
+
+        def get_open_positions(self):
+            return list(self.positions.values())
+
+        def sync_open_position(self, position):
+            self.positions[position["trade_id"]] = dict(position)
+            self.synced.append(dict(position))
+
+        def close_position(self, trade_id, exit_price, exit_reason, pnl, extra_updates=None):
+            snapshot = dict(self.positions.pop(trade_id))
+            snapshot.update({
+                "exit_price": exit_price,
+                "exit_reason": exit_reason,
+                "pnl": pnl,
+            })
+            self.closed.append(snapshot)
+            return snapshot
+
+        def set_cooldown(self, canonical_asset, minutes):
+            return None
+
+    partials: list[dict] = []
+    fake_state = FakeState(position)
+
+    df = pd.DataFrame(
+        [
+            {"open": 101.0, "high": 111.0, "low": 99.0, "close": 109.0},
+            {"open": 108.0, "high": 112.0, "low": 103.0, "close": 107.0},
+        ],
+        index=pd.date_range(now_utc - timedelta(minutes=25), periods=2, freq="5min", tz="UTC"),
+    )
+
+    core = object.__new__(TradingCore)
+    core.state = fake_state
+    core.fetcher = SimpleNamespace(get_ohlcv=lambda asset, category, interval="5m", periods=0: df)
+    core._paper_trader = SimpleNamespace(_lock=threading.RLock(), open_positions={trade_id: dict(position)}, on_trade_closed=None)
+    core._risk_manager = SimpleNamespace(update_balance=lambda balance: None)
+    core.registry = SimpleNamespace(canonical=lambda asset: asset)
+    core._notify_telegram_close = lambda trade: None
+    core._record_partial_reduction = lambda parent_snapshot, partial_trade, pnl: partials.append(dict(partial_trade))
+
+    core._check_offline_sl_tp()
+
+    assert len(partials) == 1
+    assert partials[0]["exit_reason"] == "Partial TP 1/2 (offline)"
+    assert not fake_state.closed
+    remaining = fake_state.positions[trade_id]
+    assert remaining["tp_hit"] == 1
+    assert remaining["position_size"] == 1.0
+    assert remaining["stop_loss"] == 103.5
+    assert core._paper_trader.open_positions[trade_id]["position_size"] == 1.0
+
+
+def test_telegram_trade_opened_alert_shows_tp1_and_runner() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+    commander = object.__new__(tg_mod.TelegramCommander)
+    captured: dict[str, str] = {}
+    commander.send_message = lambda text, **kwargs: captured.setdefault("text", text)
+
+    commander.alert_trade_opened(
+        {
+            "asset": "XAU/USD",
+            "direction": "BUY",
+            "entry_price": 4689.358675,
+            "stop_loss": 4670.257,
+            "take_profit": 4735.202755,
+            "take_profit_levels": [4708.460675, 4735.202755],
+            "confidence": 0.62,
+            "trade_id": "abc123",
+            "open_time": "2026-04-07T19:21:35+00:00",
+            "metadata": {
+                "playbook_name": "breakout_continuation",
+                "trade_management_plan": {
+                    "partial_take_profit_rr": [1.0],
+                    "runner_target_rr": 2.4,
+                    "trail_activation_rr": 1.0,
+                    "trail_atr_multiple": 0.85,
+                },
+            },
+        }
+    )
+
+    text = captured["text"]
+    assert "TP1:" in text
+    assert "Runner:" in text
+    assert "Runner 2.4:1" in text
 

@@ -42,6 +42,27 @@ def _normalize_closed_trade_snapshot(trade: Dict[str, Any]) -> Dict[str, Any]:
         metadata = {}
         normalized["metadata"] = metadata
 
+    lot_size = normalized.get("lot_size")
+    if lot_size in (None, ""):
+        lot_size = metadata.get("lot_size")
+    if lot_size in (None, ""):
+        try:
+            from risk.position_sizer import PositionSizer
+
+            position_size = float(normalized.get("position_size") or 0.0)
+            asset = str(normalized.get("asset") or "")
+            category = str(normalized.get("category") or "forex")
+            inferred_lot = PositionSizer.lots_from_size(asset, category, position_size)
+            if inferred_lot > 0:
+                lot_size = inferred_lot
+        except Exception:
+            lot_size = None
+    if lot_size not in (None, ""):
+        try:
+            normalized["lot_size"] = float(lot_size)
+        except Exception:
+            pass
+
     direction = (
         normalized.get("direction")
         or normalized.get("signal")

@@ -156,8 +156,33 @@ class PaperTrader:
         return max(0.15, min(1.85, multiplier))
 
     @staticmethod
-    def _commission_cost(price: float, size: float, commission_rate: float) -> float:
-        return abs(float(price or 0.0) * float(size or 0.0) * max(0.0, float(commission_rate or 0.0)))
+    def _commission_notional_usd(asset: str, category: str, price: float, size: float) -> float:
+        category = str(category or "").lower()
+        symbol = str(asset or "").upper()
+        price = abs(float(price or 0.0))
+        size = abs(float(size or 0.0))
+        if size <= 0.0:
+            return 0.0
+
+        if category == "forex" and "/" in symbol:
+            base, quote = symbol.split("/", 1)
+            base = base.strip().upper()
+            quote = quote.strip().upper()
+            if quote == "USD":
+                return price * size
+            if base == "USD":
+                return size
+            # Crosses like EUR/JPY or GBP/JPY do not have a direct USD quote in
+            # this context; using base-units notional is a closer approximation
+            # than multiplying by the JPY quote and overstating commission.
+            return size
+
+        return price * size
+
+    @classmethod
+    def _commission_cost(cls, asset: str, category: str, price: float, size: float, commission_rate: float) -> float:
+        notional_usd = cls._commission_notional_usd(asset, category, price, size)
+        return abs(notional_usd * max(0.0, float(commission_rate or 0.0)))
 
     def _calculate_pnl(self, asset: str, category: str, entry: float, exit_price: float, size: float, direction: str) -> float:
         try:
@@ -179,8 +204,8 @@ class PaperTrader:
         direction = pos.get("direction", pos.get("signal", "BUY"))
         entry = float(pos.get("entry_price", exit_price))
         gross_pnl = self._calculate_pnl(asset, category, entry, exit_price, size, direction)
-        entry_commission = self._commission_cost(entry, size, commission_rate)
-        exit_commission = self._commission_cost(exit_price, size, commission_rate)
+        entry_commission = self._commission_cost(asset, category, entry, size, commission_rate)
+        exit_commission = self._commission_cost(asset, category, exit_price, size, commission_rate)
         total_commission = entry_commission + exit_commission
         net_pnl = gross_pnl - total_commission
         return gross_pnl, net_pnl, entry_commission, exit_commission, total_commission
@@ -218,10 +243,26 @@ class PaperTrader:
         entry      = float(signal.get("entry_price", 0))
         stop_loss  = float(signal.get("stop_loss", 0))
         take_profit= float(signal.get("take_profit", 0))
-        tp_levels  = signal.get("take_profit_levels", [])
+        raw_tp_levels = signal.get("take_profit_levels", [])
+        tp_levels: List[float] = []
+        for raw_level in list(raw_tp_levels or []):
+            try:
+                level = float(raw_level)
+            except Exception:
+                continue
+            if level > 0:
+                tp_levels.append(round(level, 6))
         category   = signal.get("category", "forex")
         strategy   = signal.get("strategy_id", "UNKNOWN")
         metadata   = self._metadata_dict(signal.get("metadata"))
+
+        if tp_levels:
+            take_profit = float(tp_levels[-1])
+            metadata = {
+                **metadata,
+                "primary_take_profit": float(tp_levels[0]),
+                "runner_take_profit": float(tp_levels[-1]),
+            }
 
         if not entry or not stop_loss:
             logger.warning(f"[PaperTrader] Missing price data for {asset}")
@@ -240,6 +281,13 @@ class PaperTrader:
 
         if not pos_size or pos_size <= 0:
             return None
+
+        try:
+            from risk.position_sizer import PositionSizer as _PS
+
+            lot_size = _PS.lots_from_size(asset, category, pos_size)
+        except Exception:
+            lot_size = 0.0
 
         # NOTE: Daily loss limit is checked in core/engine.py:_execute_signal()
         # before this method is called — no need to check again here
@@ -296,6 +344,7 @@ class PaperTrader:
             "original_take_profit": take_profit,
             "take_profit_levels": tp_levels,
             "position_size":      pos_size,
+            "lot_size":           round(lot_size, 4),
             "strategy_id":        strategy,
             "open_time":          datetime.now(timezone.utc).isoformat(),
             "pnl":                0.0,

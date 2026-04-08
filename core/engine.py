@@ -2588,8 +2588,24 @@ class TradingCore:
             entry       = float(pos.get("entry_price", 0))
             stop_loss   = float(pos.get("stop_loss", 0))
             take_profit = float(pos.get("take_profit", 0))
+            tp_levels   = []
+            for raw_level in list(pos.get("take_profit_levels", []) or []):
+                try:
+                    level = float(raw_level)
+                except Exception:
+                    continue
+                if level > 0:
+                    tp_levels.append(round(level, 6))
+            if tp_levels:
+                take_profit = float(tp_levels[-1])
             open_time   = pos.get("open_time", "")
             size        = float(pos.get("position_size", 0))
+            metadata    = dict(pos.get("metadata") or {})
+            management  = (
+                metadata.get("trade_management_plan")
+                if isinstance(metadata.get("trade_management_plan"), dict)
+                else {}
+            )
 
             if not entry or not stop_loss or not asset:
                 continue
@@ -2626,6 +2642,50 @@ class TradingCore:
                 if df.empty:
                     continue
 
+                current_pos = dict(pos)
+                current_pos["take_profit"] = take_profit
+                if tp_levels:
+                    current_pos["take_profit_levels"] = list(tp_levels)
+                current_pos["metadata"] = metadata
+                initial_risk = abs(entry - float(current_pos.get("original_sl", stop_loss) or stop_loss))
+                atr_value = float(metadata.get("atr", 0.0) or 0.0)
+                try:
+                    trail_activation_rr = max(0.5, float(management.get("trail_activation_rr", 1.0) or 1.0))
+                except Exception:
+                    trail_activation_rr = 1.0
+                try:
+                    trail_atr_multiple = max(0.4, float(management.get("trail_atr_multiple", 0.8) or 0.8))
+                except Exception:
+                    trail_atr_multiple = 0.8
+                break_even_after_partial = bool(management.get("break_even_after_partial", False))
+
+                def _apply_gapfill_trailing() -> None:
+                    if not management or initial_risk <= 0.0:
+                        return
+                    if direction == "BUY":
+                        favorable_extreme = float(current_pos.get("highest_price", entry) or entry)
+                        progress_rr = (favorable_extreme - entry) / max(initial_risk, 1e-9)
+                    else:
+                        favorable_extreme = float(current_pos.get("lowest_price", entry) or entry)
+                        progress_rr = (entry - favorable_extreme) / max(initial_risk, 1e-9)
+                    if progress_rr < trail_activation_rr:
+                        return
+                    trail_dist = max(
+                        initial_risk * 0.85,
+                        atr_value * trail_atr_multiple if atr_value > 0 else 0.0,
+                    )
+                    if trail_dist <= 0.0:
+                        return
+                    current_sl = float(current_pos.get("stop_loss", stop_loss) or stop_loss)
+                    if direction == "BUY":
+                        trail_sl = favorable_extreme - trail_dist
+                        if trail_sl > current_sl:
+                            current_pos["stop_loss"] = round(trail_sl, 6)
+                    else:
+                        trail_sl = favorable_extreme + trail_dist
+                        if trail_sl < current_sl:
+                            current_pos["stop_loss"] = round(trail_sl, 6)
+
                 # Scan each bar chronologically — first breach wins
                 breach_price  = None
                 breach_reason = None
@@ -2634,31 +2694,156 @@ class TradingCore:
                 for bar_time, bar in df.iterrows():
                     bar_low  = float(bar["low"])
                     bar_high = float(bar["high"])
+                    current_pos["highest_price"] = max(float(current_pos.get("highest_price", entry) or entry), bar_high)
+                    current_pos["lowest_price"] = min(float(current_pos.get("lowest_price", entry) or entry), bar_low)
+
+                    current_stop = float(current_pos.get("stop_loss", stop_loss) or stop_loss)
+                    tp_idx = max(0, int(current_pos.get("tp_hit", 0) or 0))
 
                     if direction == "BUY":
-                        if bar_low <= stop_loss:
-                            breach_price  = stop_loss
+                        if bar_low <= current_stop:
+                            breach_price  = current_stop
                             breach_reason = "Stop Loss (offline)"
                             breach_time   = bar_time
                             break
-                        if take_profit and bar_high >= take_profit:
+                        if tp_levels and tp_idx < len(tp_levels):
+                            tp_level = float(tp_levels[tp_idx])
+                            if bar_high >= tp_level:
+                                if tp_idx + 1 >= len(tp_levels):
+                                    breach_price = tp_level
+                                    breach_reason = "Take Profit (offline)"
+                                    breach_time = bar_time
+                                    break
+                                total_tiers = len(tp_levels)
+                                original_size = float(current_pos.get("position_size", size) or size)
+                                close_fraction = 1.0 / max(1, total_tiers - tp_idx)
+                                partial_size = max(0.0, original_size * close_fraction)
+                                remaining_size = max(0.0, original_size - partial_size)
+                                try:
+                                    from risk.position_sizer import PositionSizer as _PS
+
+                                    partial_pnl = _PS.pnl(asset, category, entry, tp_level, partial_size, direction)
+                                except Exception:
+                                    partial_pnl = (tp_level - entry) * partial_size
+
+                                partial_trade = {
+                                    **dict(current_pos),
+                                    "trade_id": f"{trade_id}-PT{tp_idx + 1}",
+                                    "parent_trade_id": trade_id,
+                                    "is_partial_close": True,
+                                    "position_size": partial_size,
+                                    "lot_size": current_pos.get("lot_size"),
+                                    "exit_price": round(tp_level, 6),
+                                    "exit_reason": f"Partial TP {tp_idx + 1}/{total_tiers} (offline)",
+                                    "pnl": round(partial_pnl, 6),
+                                    "exit_time": bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time),
+                                    "duration_minutes": max(0, int((bar_time - dt_open).total_seconds() / 60)),
+                                    "metadata": {
+                                        **dict(current_pos.get("metadata") or {}),
+                                        "offline_gap_fill": {
+                                            "breach_time": bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time),
+                                            "checked_bars": int(len(df)),
+                                            "partial_tp_hit": int(tp_idx + 1),
+                                        },
+                                    },
+                                }
+
+                                current_pos["position_size"] = round(remaining_size, 8)
+                                current_pos["tp_hit"] = tp_idx + 1
+                                if break_even_after_partial:
+                                    if direction == "BUY" and entry > float(current_pos.get("stop_loss", 0) or 0):
+                                        current_pos["stop_loss"] = round(entry, 6)
+                                    elif direction == "SELL" and entry < float(current_pos.get("stop_loss", 99e9) or 99e9):
+                                        current_pos["stop_loss"] = round(entry, 6)
+
+                                self.state.sync_open_position(current_pos)
+                                if self._paper_trader:
+                                    with self._paper_trader._lock:
+                                        self._paper_trader.open_positions[trade_id] = dict(current_pos)
+                                self._record_partial_reduction(current_pos, partial_trade, partial_pnl)
+                                _apply_gapfill_trailing()
+                                continue
+                        elif take_profit and bar_high >= take_profit:
                             breach_price  = take_profit
                             breach_reason = "Take Profit (offline)"
                             breach_time   = bar_time
                             break
                     else:  # SELL
-                        if bar_high >= stop_loss:
-                            breach_price  = stop_loss
+                        if bar_high >= current_stop:
+                            breach_price  = current_stop
                             breach_reason = "Stop Loss (offline)"
                             breach_time   = bar_time
                             break
-                        if take_profit and bar_low <= take_profit:
+                        if tp_levels and tp_idx < len(tp_levels):
+                            tp_level = float(tp_levels[tp_idx])
+                            if bar_low <= tp_level:
+                                if tp_idx + 1 >= len(tp_levels):
+                                    breach_price = tp_level
+                                    breach_reason = "Take Profit (offline)"
+                                    breach_time = bar_time
+                                    break
+                                total_tiers = len(tp_levels)
+                                original_size = float(current_pos.get("position_size", size) or size)
+                                close_fraction = 1.0 / max(1, total_tiers - tp_idx)
+                                partial_size = max(0.0, original_size * close_fraction)
+                                remaining_size = max(0.0, original_size - partial_size)
+                                try:
+                                    from risk.position_sizer import PositionSizer as _PS
+
+                                    partial_pnl = _PS.pnl(asset, category, entry, tp_level, partial_size, direction)
+                                except Exception:
+                                    partial_pnl = (entry - tp_level) * partial_size
+
+                                partial_trade = {
+                                    **dict(current_pos),
+                                    "trade_id": f"{trade_id}-PT{tp_idx + 1}",
+                                    "parent_trade_id": trade_id,
+                                    "is_partial_close": True,
+                                    "position_size": partial_size,
+                                    "lot_size": current_pos.get("lot_size"),
+                                    "exit_price": round(tp_level, 6),
+                                    "exit_reason": f"Partial TP {tp_idx + 1}/{total_tiers} (offline)",
+                                    "pnl": round(partial_pnl, 6),
+                                    "exit_time": bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time),
+                                    "duration_minutes": max(0, int((bar_time - dt_open).total_seconds() / 60)),
+                                    "metadata": {
+                                        **dict(current_pos.get("metadata") or {}),
+                                        "offline_gap_fill": {
+                                            "breach_time": bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time),
+                                            "checked_bars": int(len(df)),
+                                            "partial_tp_hit": int(tp_idx + 1),
+                                        },
+                                    },
+                                }
+
+                                current_pos["position_size"] = round(remaining_size, 8)
+                                current_pos["tp_hit"] = tp_idx + 1
+                                if break_even_after_partial:
+                                    if direction == "BUY" and entry > float(current_pos.get("stop_loss", 0) or 0):
+                                        current_pos["stop_loss"] = round(entry, 6)
+                                    elif direction == "SELL" and entry < float(current_pos.get("stop_loss", 99e9) or 99e9):
+                                        current_pos["stop_loss"] = round(entry, 6)
+
+                                self.state.sync_open_position(current_pos)
+                                if self._paper_trader:
+                                    with self._paper_trader._lock:
+                                        self._paper_trader.open_positions[trade_id] = dict(current_pos)
+                                self._record_partial_reduction(current_pos, partial_trade, partial_pnl)
+                                _apply_gapfill_trailing()
+                                continue
+                        elif take_profit and bar_low <= take_profit:
                             breach_price  = take_profit
                             breach_reason = "Take Profit (offline)"
                             breach_time   = bar_time
                             break
 
+                    _apply_gapfill_trailing()
+
                 if breach_price is None:
+                    self.state.sync_open_position(current_pos)
+                    if self._paper_trader:
+                        with self._paper_trader._lock:
+                            self._paper_trader.open_positions[trade_id] = dict(current_pos)
                     logger.debug(f"[GapFill] {asset}: no breach found — position remains open")
                     continue
 
@@ -2696,6 +2881,8 @@ class TradingCore:
                 )
                 if not closed:
                     continue
+                if self._risk_manager is not None:
+                    self._risk_manager.update_balance(self.state.balance)
 
                 # Remove from PaperTrader
                 if self._paper_trader:

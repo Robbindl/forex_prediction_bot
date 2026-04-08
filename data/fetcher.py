@@ -416,6 +416,7 @@ class DataFetcher:
             cached_df, cached_meta = cached
             meta = self._stamp_metadata(cached_meta, from_cache=True)
             self._ohlcv_meta[meta_key] = meta
+            self._ping_health("technicals")
             return cached_df.copy()
 
         last_error_meta: Optional[Dict[str, Any]] = None
@@ -445,6 +446,7 @@ class DataFetcher:
                     if self._local_history_satisfies(local_df, periods):
                         self._ohlcv_meta[meta_key] = meta
                         cache.set(cache_key, (local_df.copy(), meta), ttl=_ohlcv_cache_ttl(interval))
+                        self._ping_health("technicals")
                         return local_df
                     local_partial_df = local_df
                     local_partial_meta = meta

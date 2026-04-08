@@ -48,7 +48,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
 .panel-badge{margin-left:auto;font-size:10px;padding:2px 8px;border-radius:20px;background:var(--s3);color:var(--tx3)}
 .panel-body{padding:12px 16px}
-.gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.pu{color:var(--pu)}
+.gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.pu{color:var(--pu)}.mu{color:var(--tx2)}
 .empty{text-align:center;padding:24px;color:var(--tx3);font-size:13px}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .metric-card,.panel{animation:fadeUp .3s ease both}
@@ -257,6 +257,48 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
+      <div class="panel panel-wide" style="animation-delay:.295s">
+        <div class="panel-header">
+          <span>🎛️</span>
+          <span class="panel-title">Operator Actions</span>
+          <span class="panel-badge" id="actionBadge">—</span>
+        </div>
+        <div class="panel-body">
+          <div class="outcome-grid" id="actionGrid">
+            <div class="outcome-card"><div class="outcome-kicker">Posture</div><div class="outcome-value">—</div><div class="outcome-note">Loading…</div></div>
+            <div class="outcome-card"><div class="outcome-kicker">Lead Channel</div><div class="outcome-value">—</div><div class="outcome-note">Loading…</div></div>
+            <div class="outcome-card"><div class="outcome-kicker">Review Drag</div><div class="outcome-value">—</div><div class="outcome-note">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel panel-wide" style="animation-delay:.297s">
+        <div class="panel-header">
+          <span>🎯</span>
+          <span class="panel-title">Actionability Score</span>
+          <span class="panel-badge" id="actionabilityBadge">—</span>
+        </div>
+        <div class="panel-body" id="actionabilityPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel panel-wide" style="animation-delay:.298s">
+        <div class="panel-header">
+          <span>🧠</span>
+          <span class="panel-title">Why It Matters</span>
+          <span class="panel-badge" id="mattersBadge">—</span>
+        </div>
+        <div class="panel-body" id="mattersPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel panel-wide" style="animation-delay:.299s">
+        <div class="panel-header">
+          <span>🧭</span>
+          <span class="panel-title">Affected Assets</span>
+          <span class="panel-badge" id="affectedBadge">—</span>
+        </div>
+        <div class="panel-body" id="affectedPanel"><div class="empty">Loading…</div></div>
+      </div>
+
       <!-- Signal decision journal -->
       <div class="panel panel-wide" style="animation-delay:.3s">
         <div class="panel-header">
@@ -418,6 +460,109 @@ async function loadJournal() {
         <div class="outcome-note">${item.note}</div>
       </div>
     `).join('');
+    const priorityCounts = {CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0};
+    allAlerts.forEach((alert) => {
+      const key = String(alert.priority || '').toUpperCase();
+      if (priorityCounts[key] != null) priorityCounts[key] += 1;
+    });
+    const channelCounts = {};
+    allAlerts.forEach((alert) => {
+      const key = String(alert.channel || 'Unknown');
+      channelCounts[key] = (channelCounts[key] || 0) + 1;
+    });
+    const leadChannel = Object.entries(channelCounts).sort((a,b) => b[1] - a[1])[0];
+    const posture = priorityCounts.CRITICAL ? 'Act now' : priorityCounts.HIGH ? 'Watch closely' : journals.length ? 'Routine review' : 'Quiet';
+    const postureClass = priorityCounts.CRITICAL ? 'rd' : priorityCounts.HIGH ? 'am' : journals.length ? 'gn' : 'cy';
+    document.getElementById('actionBadge').textContent = posture;
+    document.getElementById('actionGrid').innerHTML = [
+      {
+        kicker: 'Posture',
+        value: posture,
+        note: priorityCounts.CRITICAL ? `${priorityCounts.CRITICAL} critical alerts demand immediate attention` : priorityCounts.HIGH ? `${priorityCounts.HIGH} high-priority alerts are active` : 'No high-urgency alert stack right now',
+        klass: postureClass,
+      },
+      {
+        kicker: 'Lead Channel',
+        value: leadChannel ? leadChannel[0] : '—',
+        note: leadChannel ? `${leadChannel[1]} recent alerts from the busiest intelligence channel` : 'No dominant alert source yet',
+        klass: leadChannel ? 'cy' : 'mu',
+      },
+      {
+        kicker: 'Review Drag',
+        value: `${fragileCount + conflictCount + blockCount}`,
+        note: fragileCount || conflictCount || blockCount ? `${fragileCount} broker · ${conflictCount} cross · ${blockCount} pattern` : 'The review stack is not showing strong drag right now',
+        klass: fragileCount || conflictCount || blockCount ? 'rd' : 'gn',
+      },
+    ].map(item => `
+      <div class="outcome-card">
+        <div class="outcome-kicker">${item.kicker}</div>
+        <div class="outcome-value ${item.klass}">${item.value}</div>
+        <div class="outcome-note">${item.note}</div>
+      </div>
+    `).join('');
+    const sortedAlerts = allAlerts.slice().sort((a,b) => {
+      const pa = ['CRITICAL','HIGH','MEDIUM','LOW'].indexOf(String(a.priority || '').toUpperCase());
+      const pb = ['CRITICAL','HIGH','MEDIUM','LOW'].indexOf(String(b.priority || '').toUpperCase());
+      return (pa === -1 ? 9 : pa) - (pb === -1 ? 9 : pb);
+    });
+    const leadAlert = sortedAlerts[0] || null;
+    const leadEvent = leadAlert?.event || {};
+    const leadAsset = leadEvent.asset || leadEvent.symbol || leadEvent.label || leadEvent.narrative || '—';
+    const actionability = leadAlert ? (String(leadAlert.priority || '').toUpperCase() === 'CRITICAL' ? 90 : String(leadAlert.priority || '').toUpperCase() === 'HIGH' ? 72 : String(leadAlert.priority || '').toUpperCase() === 'MEDIUM' ? 55 : 35) : 0;
+    document.getElementById('actionabilityBadge').textContent = leadAlert ? `${actionability}` : 'Idle';
+    document.getElementById('actionabilityPanel').innerHTML = leadAlert ? `
+      <div class="outcome-grid">
+        <div class="outcome-card">
+          <div class="outcome-kicker">Lead alert</div>
+          <div class="outcome-value ${actionability >= 70 ? 'rd' : actionability >= 50 ? 'am' : 'cy'}">${actionability}</div>
+          <div class="outcome-note">${leadAlert.channel || 'Unknown'} · ${leadAlert.priority || 'LOW'} priority</div>
+        </div>
+        <div class="outcome-card">
+          <div class="outcome-kicker">Current posture</div>
+          <div class="outcome-value ${postureClass}">${posture}</div>
+          <div class="outcome-note">${leadAsset}</div>
+        </div>
+        <div class="outcome-card">
+          <div class="outcome-kicker">Alert load</div>
+          <div class="outcome-value cy">${allAlerts.length}</div>
+          <div class="outcome-note">${priorityCounts.CRITICAL} critical · ${priorityCounts.HIGH} high</div>
+        </div>
+      </div>` : '<div class="empty">No actionable alert stack right now.</div>';
+
+    document.getElementById('mattersBadge').textContent = leadAlert ? (leadAlert.priority || 'Live') : 'Quiet';
+    document.getElementById('mattersPanel').innerHTML = leadAlert ? `
+      <div class="outcome-grid">
+        <div class="outcome-card">
+          <div class="outcome-kicker">Why it matters</div>
+          <div class="outcome-value ${postureClass}" style="font-size:18px">${leadAsset}</div>
+          <div class="outcome-note">${(leadAlert.message || leadAlert.channel || 'Lead alert').replace(/[*_]/g,' ').slice(0,160)}</div>
+        </div>
+        <div class="outcome-card">
+          <div class="outcome-kicker">Desk read</div>
+          <div class="outcome-value ${fragileCount || conflictCount || blockCount ? 'am' : 'gn'}" style="font-size:18px">${fragileCount || conflictCount || blockCount ? 'Review drag' : 'Clean channel'}</div>
+          <div class="outcome-note">${fragileCount || conflictCount || blockCount ? `${fragileCount} broker · ${conflictCount} cross · ${blockCount} pattern drag` : 'The review stack is not heavily resisting this alert flow.'}</div>
+        </div>
+      </div>` : '<div class="empty">No lead alert to translate yet.</div>';
+
+    const affected = new Map();
+    allAlerts.forEach((alert) => {
+      const evt = alert.event || {};
+      const asset = evt.asset || evt.symbol || evt.label || evt.narrative;
+      if(!asset) return;
+      affected.set(asset, (affected.get(asset) || 0) + 1);
+    });
+    const affectedRows = Array.from(affected.entries()).sort((a,b) => b[1] - a[1]).slice(0,6);
+    document.getElementById('affectedBadge').textContent = affectedRows.length ? `${affectedRows.length} assets` : 'Quiet';
+    document.getElementById('affectedPanel').innerHTML = affectedRows.length ? `
+      <div class="outcome-grid">
+        ${affectedRows.map(([asset,count]) => `
+          <div class="outcome-card">
+            <div class="outcome-kicker">${asset}</div>
+            <div class="outcome-value cy">${count}</div>
+            <div class="outcome-note">Direct or spillover mentions in the active alert stack</div>
+          </div>
+        `).join('')}
+      </div>` : '<div class="empty">No assets are concentrated in the active alert stack.</div>';
     if (!journals.length) { document.getElementById('journalFeed').innerHTML = '<div class="empty">No signal journal data</div>'; return; }
 
     const stepClass = dec => dec === 'PASS' ? 'jl-pass' : dec === 'KILLED' ? 'jl-kill' : 'jl-skip';
@@ -471,6 +616,14 @@ async function loadJournal() {
   } catch(e) {
     document.getElementById('frictionBadge').textContent = 'Unavailable';
     document.getElementById('frictionGrid').innerHTML = '<div class="empty" style="grid-column:span 3">Review friction unavailable</div>';
+    document.getElementById('actionBadge').textContent = 'Unavailable';
+    document.getElementById('actionGrid').innerHTML = '<div class="empty" style="grid-column:span 3">Operator actions unavailable</div>';
+    document.getElementById('actionabilityBadge').textContent = 'Unavailable';
+    document.getElementById('actionabilityPanel').innerHTML = '<div class="empty">Actionability scoring unavailable</div>';
+    document.getElementById('mattersBadge').textContent = 'Unavailable';
+    document.getElementById('mattersPanel').innerHTML = '<div class="empty">Why-it-matters panel unavailable</div>';
+    document.getElementById('affectedBadge').textContent = 'Unavailable';
+    document.getElementById('affectedPanel').innerHTML = '<div class="empty">Affected-assets panel unavailable</div>';
   }
 }
 

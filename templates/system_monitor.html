@@ -200,6 +200,22 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div id="runtimePanel"><div class="empty">Loading…</div></div>
       </div>
 
+      <div class="panel panel-full">
+        <div class="panel-header">
+          <span class="panel-title">🧬 Runtime Integrity</span>
+          <span class="panel-badge" id="integrityBadge">—</span>
+        </div>
+        <div id="integrityPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel panel-full">
+        <div class="panel-header">
+          <span class="panel-title">🪫 Execution Friction</span>
+          <span class="panel-badge" id="execFrictionBadge">—</span>
+        </div>
+        <div id="execFrictionPanel"><div class="empty">Loading…</div></div>
+      </div>
+
       <!-- Source freshness -->
       <div class="panel panel-full">
         <div class="panel-header">
@@ -207,6 +223,14 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <span class="panel-badge" id="freshBadge">—</span>
         </div>
         <div id="freshnessPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel panel-full">
+        <div class="panel-header">
+          <span class="panel-title">🗺️ Stale Feed Map</span>
+          <span class="panel-badge" id="staleMapBadge">—</span>
+        </div>
+        <div id="staleMapPanel"><div class="empty">Loading…</div></div>
       </div>
 
       <!-- Trading stats -->
@@ -435,7 +459,6 @@ async function load(){
         </div>`;
     }
 
-    // Data freshness
     const freshness = snapshot.source_health || {};
     const freshnessNames = {
       technicals: 'Technicals',
@@ -444,9 +467,102 @@ async function load(){
       funding_rate: 'Funding & OI',
     };
     const freshnessKeys = Object.keys(freshnessNames);
+    const seenFreshness = freshnessKeys.filter(k => freshness[k] && freshness[k].status !== 'never_seen');
+    const freshNow = seenFreshness.filter(k => freshness[k] && freshness[k].fresh);
+    const integrityBadge = document.getElementById('integrityBadge');
+    const integrityState = issues.length || Number(d.recent_error_count || 0) || (seenFreshness.length && freshNow.length !== seenFreshness.length)
+      ? 'Guarded'
+      : d.processes?.['TradingCore']
+        ? 'Stable'
+        : 'Warming';
+    integrityBadge.textContent = integrityState;
+    integrityBadge.style.color = integrityState === 'Stable' ? 'var(--gr)' : integrityState === 'Guarded' ? 'var(--am)' : 'var(--bl)';
+    document.getElementById('integrityPanel').innerHTML = `
+      <div class="train-grid">
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Process truth</div>
+            <div class="train-state ${d.processes?.['TradingCore'] ? 'gn' : 'rd'}">${d.processes?.['TradingCore'] ? 'online' : 'offline'}</div>
+          </div>
+          <div class="train-meta">${Object.values(procs).filter(Boolean).length}/${Object.keys(procs).length} tracked processes running</div>
+          <div class="train-issue">${issues.length ? `${issues.length} active issue flags in the monitor` : 'No monitor issue flags right now'}</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Feed freshness</div>
+            <div class="train-state ${freshNow.length === seenFreshness.length && seenFreshness.length ? 'gn' : seenFreshness.length ? 'am' : 'bl'}">${seenFreshness.length ? `${freshNow.length}/${seenFreshness.length}` : 'waiting'}</div>
+          </div>
+          <div class="train-meta">${seenFreshness.length ? `${freshNow.length} of ${seenFreshness.length} tracked feeds are fresh` : 'No live freshness samples yet'}</div>
+          <div class="train-issue">${Number(d.stale_source_count || 0)} stale sources · ${Number(d.never_seen_source_count || 0)} never seen</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Execution friction</div>
+            <div class="train-state ${Number(d.recent_error_count || 0) ? 'am' : 'gn'}">${Number(d.recent_error_count || 0) ? 'watch' : 'clean'}</div>
+          </div>
+          <div class="train-meta">Recent errors ${Number(d.recent_error_count || 0)} · cooldowns ${Number(d.active_cooldowns || 0)}</div>
+          <div class="train-issue">${Number(d.open_positions || 0)} open positions under the current runtime</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Operator trust</div>
+            <div class="train-state ${integrityState === 'Stable' ? 'gn' : integrityState === 'Guarded' ? 'am' : 'bl'}">${integrityState.toLowerCase()}</div>
+          </div>
+          <div class="train-meta">Mode ${runtimeMode} · balance ${(d.balance || 0).toFixed(2)}</div>
+          <div class="train-issue">${integrityState === 'Stable' ? 'All major runtime surfaces agree with the current monitor view.' : 'Use the freshness, latency, and error panels before trusting the desk blindly.'}</div>
+        </div>
+      </div>`;
+
+    const metrics = overview.metrics || {};
+    const errors = overview.errors || {};
+    const staleCount = Number(d.stale_source_count || 0);
+    const recentErrors = Number(d.recent_error_count || 0);
+    const decisionLatency = Number(metrics.decision?.p95_ms || metrics.decision?.avg_ms || 0);
+    const telegramLatency = Number(metrics.telegram_send?.p95_ms || metrics.telegram_send?.avg_ms || 0);
+    const frictionState = recentErrors || staleCount || cpu >= 85 || ram >= 85 ? 'Guarded' : decisionLatency >= 800 || telegramLatency >= 1000 ? 'Watch' : 'Clean';
+    document.getElementById('execFrictionBadge').textContent = frictionState;
+    document.getElementById('execFrictionPanel').innerHTML = `
+      <div class="train-grid">
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Latency drag</div>
+            <div class="train-state ${decisionLatency >= 800 ? 'am' : 'gn'}">${decisionLatency ? decisionLatency.toFixed(0) + 'ms' : '—'}</div>
+          </div>
+          <div class="train-meta">Decision P95${telegramLatency ? ` · Telegram ${telegramLatency.toFixed(0)}ms` : ''}</div>
+          <div class="train-issue">${decisionLatency >= 800 ? 'Decision latency is elevated enough to slow entries.' : 'Latency is not the main desk drag right now.'}</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Feed friction</div>
+            <div class="train-state ${staleCount ? 'am' : 'gn'}">${staleCount}</div>
+          </div>
+          <div class="train-meta">${Number(d.never_seen_source_count || 0)} never-seen sources · ${Object.keys(snapshot.source_health || {}).length} tracked feeds</div>
+          <div class="train-issue">${staleCount ? 'Stale feeds are directly increasing execution uncertainty.' : 'No tracked stale-feed drag right now.'}</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Resource drag</div>
+            <div class="train-state ${cpu >= 85 || ram >= 85 ? 'rd' : cpu >= 70 || ram >= 70 ? 'am' : 'gn'}">${Math.max(cpu, ram).toFixed(0)}%</div>
+          </div>
+          <div class="train-meta">CPU ${cpu.toFixed(1)}% · RAM ${ram.toFixed(1)}%</div>
+          <div class="train-issue">${cpu >= 85 || ram >= 85 ? 'Machine pressure can slow chart, signal, and alert surfaces together.' : 'Host resources are not the leading source of friction.'}</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Error churn</div>
+            <div class="train-state ${recentErrors ? 'am' : 'gn'}">${recentErrors}</div>
+          </div>
+          <div class="train-meta">${errors.rate_per_min || 0}/min recent error rate</div>
+          <div class="train-issue">${recentErrors ? 'Recent runtime errors are still adding operator noise.' : 'Error tracker is currently quiet.'}</div>
+        </div>
+      </div>`;
+
+    // Data freshness
     const freshEl = document.getElementById('freshnessPanel');
-    const seenCount = freshnessKeys.filter(k => freshness[k] && freshness[k].status !== 'never_seen').length;
-    const freshCount = freshnessKeys.filter(k => freshness[k] && freshness[k].fresh).length;
+    const staleMapEl = document.getElementById('staleMapPanel');
+    const seenCount = seenFreshness.length;
+    const freshCount = freshNow.length;
+    const staleKeys = freshnessKeys.filter(k => freshness[k] && freshness[k].status !== 'never_seen' && !freshness[k].fresh);
     document.getElementById('freshBadge').textContent = seenCount ? `${freshCount}/${freshnessKeys.length} fresh` : 'warming';
     if(!seenCount){
       freshEl.innerHTML = '<div class="empty">Waiting for live telemetry from the data stack</div>';
@@ -462,6 +578,27 @@ async function load(){
             <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
             <div class="fresh-name">${freshnessNames[key]}</div>
             <div class="fresh-state ${ok?'proc-on':'proc-off'}">${status}</div>
+          </div>
+          <div class="fresh-age">${age}</div>
+          <div class="fresh-threshold">${threshold}</div>
+        </div>`;
+      }).join('')}</div>`;
+    }
+    document.getElementById('staleMapBadge').textContent = staleKeys.length ? `${staleKeys.length} stale` : seenCount ? 'Clear' : 'Waiting';
+    if(!seenCount){
+      staleMapEl.innerHTML = '<div class="empty">The stale-feed map will appear after the monitor sees live source telemetry.</div>';
+    }else if(!staleKeys.length){
+      staleMapEl.innerHTML = '<div class="empty">No tracked feeds are stale right now.</div>';
+    }else{
+      staleMapEl.innerHTML = `<div class="fresh-grid">${staleKeys.map((key) => {
+        const item = freshness[key] || {};
+        const age = item.age_secs == null ? 'No samples yet' : `${item.age_secs.toFixed ? item.age_secs.toFixed(1) : item.age_secs}s old`;
+        const threshold = item.threshold == null ? 'Threshold —' : `Threshold ${item.threshold}s`;
+        return `<div class="fresh-card">
+          <div class="fresh-top">
+            <div class="proc-dot proc-dot-off"></div>
+            <div class="fresh-name">${freshnessNames[key] || key}</div>
+            <div class="fresh-state proc-off">stale</div>
           </div>
           <div class="fresh-age">${age}</div>
           <div class="fresh-threshold">${threshold}</div>
@@ -539,7 +676,7 @@ async function loadLatency(){
     if(!d.success)return;
     const m=d.metrics||{};
     const order=['decision','prediction','backtest','sentiment_fetch','telegram_send'];
-    const labels={'decision':'Decision Engine','prediction':'ML Predict','backtest':'Backtest',
+    const labels={'decision':'Decision Engine','prediction':'Playbook Scan','backtest':'Replay Audit',
                   'sentiment_fetch':'Sentiment','telegram_send':'Telegram'};
     const items=order.filter(k=>m[k]&&m[k].count>0);
     if(!items.length){document.getElementById('latencyPanel').innerHTML='<div class="empty">No data yet — signals needed</div>';return;}

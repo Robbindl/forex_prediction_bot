@@ -212,6 +212,26 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="panel-body translation-body" id="signalLinkPanel"><div class="empty">Loading…</div></div>
       </div>
 
+      <div class="panel translation-panel">
+        <div class="panel-header"><span class="panel-title">🎛️ Operator Lens</span></div>
+        <div class="panel-body translation-body" id="operatorLensPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel translation-panel">
+        <div class="panel-header"><span class="panel-title">⚔️ Price vs Sentiment Conflict</span></div>
+        <div class="panel-body translation-body" id="conflictPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel translation-panel">
+        <div class="panel-header"><span class="panel-title">🧭 Narrative Drift</span></div>
+        <div class="panel-body translation-body" id="driftPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel translation-panel">
+        <div class="panel-header"><span class="panel-title">⏳ Event Risk Timeline</span></div>
+        <div class="panel-body translation-body" id="timelinePanel"><div class="empty">Loading…</div></div>
+      </div>
+
       <div class="sentiment-insight-grid">
         <div class="panel regime-panel">
           <div class="panel-header"><span class="panel-title">📡 Market Regime Inputs</span></div>
@@ -268,9 +288,22 @@ function renderSentimentUnavailable(message){
   document.getElementById('regimePanel').innerHTML = '<div class="empty" style="grid-column:span 2">'+msg+'</div>';
   document.getElementById('leaderPanel').innerHTML = '<div class="empty">'+msg+'</div>';
   document.getElementById('signalLinkPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('operatorLensPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('conflictPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('driftPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+  document.getElementById('timelinePanel').innerHTML = '<div class="empty">'+msg+'</div>';
   document.getElementById('assetGrid').innerHTML = '<div class="empty" style="grid-column:span 5">'+msg+'</div>';
   document.getElementById('newsPanel').innerHTML = '<div class="empty">'+msg+'</div>';
   document.getElementById('eventsPanel').innerHTML = '<div class="empty">'+msg+'</div>';
+}
+
+function normalizeSentimentAsset(asset){
+  return String(asset || '')
+    .toUpperCase()
+    .replace('/USD','')
+    .replace('-USD','')
+    .replace('USDT','')
+    .replace('=F','');
 }
 async function fetchSentimentOverview(){
   const now = Date.now();
@@ -310,6 +343,7 @@ async function load(){
     const d = page.sentiment || {};
     const da = page.by_asset || {assets:[]};
     const ev = page.events || {};
+    const heatmap = page.heatmap || {items:[]};
     const status = page.status || {};
     const routing = status.provider_routing || {};
     const diagnostics = status.signal_diagnostics || {};
@@ -380,6 +414,94 @@ async function load(){
       </div>
     `).join('');
 
+    const convictionLeader = activeSnapshots.slice().sort((a,b) => Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0)))[0] || null;
+    document.getElementById('operatorLensPanel').innerHTML = [
+      {
+        label: 'Desk stance',
+        value: riskReduce ? 'Guarded' : context.mode === 'aligned' ? 'Lean with tape' : context.mode.startsWith('contrarian') ? 'Fade extremes' : 'Mixed',
+        note: risk.summary || context.summary || 'Macro and headlines are blended into the desk stance.',
+        color: riskReduce ? 'var(--rd)' : context.mode === 'aligned' ? 'var(--gr)' : 'var(--am)',
+      },
+      {
+        label: 'Headline vs macro',
+        value: `${fmtScore(news.score || 0)} / ${fmtScore(score)}`,
+        note: `${news.interpretation || sBucket(news.score || 0)} headlines vs ${context.display_label || market.interpretation || 'Neutral'} composite`,
+        color: context.mode === 'aligned' ? 'var(--gr)' : context.mode.startsWith('contrarian') ? 'var(--am)' : 'var(--cy)',
+      },
+      {
+        label: 'Highest conviction',
+        value: convictionLeader ? convictionLeader.asset : '—',
+        note: convictionLeader ? `${fmtScore(convictionLeader.score)} · ${convictionLeader.label || sBucket(convictionLeader.score)}` : 'No live per-asset sentiment leader',
+        color: convictionLeader ? sColor(Number(convictionLeader.score || 0)) : 'var(--tx2)',
+      },
+      {
+        label: 'Event posture',
+        value: riskText,
+        note: highImpactCount ? `${highImpactCount} high-impact events in queue` : 'No heavy event stack in the current calendar',
+        color: riskColor,
+      },
+    ].map(item => `
+      <div class="translation-card">
+        <div class="translation-label">${item.label}</div>
+        <div class="translation-value ${String(item.value).length > 16 ? 'compact' : ''}" style="color:${item.color}">${item.value}</div>
+        <div class="translation-note">${item.note}</div>
+      </div>
+    `).join('');
+
+    const arts=d.articles||[];
+    const heatRows = Array.isArray(heatmap.items) ? heatmap.items : [];
+    const heatIndex = new Map();
+    heatRows.forEach((item) => {
+      heatIndex.set(normalizeSentimentAsset(item.asset), item);
+    });
+    const conflicts = activeSnapshots.map((row) => {
+      const heat = heatIndex.get(normalizeSentimentAsset(row.asset));
+      const sentimentScore = Number(row.score || 0);
+      const changePct = Number(heat?.change_pct || 0);
+      const conflict = sentimentScore !== 0 && changePct !== 0 && Math.sign(sentimentScore) !== Math.sign(changePct);
+      return {
+        asset: row.asset,
+        sentimentScore,
+        changePct,
+        label: row.label || sBucket(sentimentScore),
+        conflict,
+        conflictScore: Math.abs(sentimentScore) * Math.abs(changePct),
+      };
+    }).filter(item => item.conflict).sort((a,b) => b.conflictScore - a.conflictScore);
+    document.getElementById('conflictPanel').innerHTML = conflicts.length ? conflicts.slice(0,4).map((item) => `
+      <div class="translation-card">
+        <div class="translation-label">${item.asset}</div>
+        <div class="translation-value ${String(item.asset).length > 16 ? 'compact' : ''}" style="color:var(--am)">${fmtScore(item.sentimentScore)} / ${item.changePct >= 0 ? '+' : ''}${item.changePct.toFixed(2)}%</div>
+        <div class="translation-note">${item.label} sentiment is leaning against live price direction, so this asset is trading in conflict right now.</div>
+      </div>
+    `).join('') : '<div class="empty">No strong price-vs-sentiment conflicts are active right now.</div>';
+
+    const nowMs = Date.now();
+    const windows = [
+      {label:'1h', ms:3600000},
+      {label:'4h', ms:4*3600000},
+      {label:'24h', ms:24*3600000},
+    ];
+    const driftRows = windows.map((window) => {
+      const rows = arts.filter(article => {
+        const ts = new Date(article.date || article.time || article.published_at || 0).getTime();
+        return Number.isFinite(ts) && (nowMs - ts) <= window.ms;
+      });
+      const scoreAvg = rows.length ? avg(rows.map(article => Number(article.sentiment || 0))) : 0;
+      return {
+        label: window.label,
+        count: rows.length,
+        score: scoreAvg,
+      };
+    });
+    document.getElementById('driftPanel').innerHTML = driftRows.map((item) => `
+      <div class="translation-card">
+        <div class="translation-label">${item.label} drift</div>
+        <div class="translation-value" style="color:${sColor(item.score)}">${fmtScore(item.score)}</div>
+        <div class="translation-note">${item.count} headlines in this window · ${sBucket(item.score)}</div>
+      </div>
+    `).join('');
+
     // Distribution
     const dist=d.sentiment_distribution||{bullish:0,neutral:0,bearish:0};
     const total=Math.max(1,dist.bullish+dist.neutral+dist.bearish);
@@ -395,7 +517,6 @@ async function load(){
     }).join('')+`<div class="panel-note" style="margin-top:10px">Headline average ${fmtScore(news.score || 0)} · ${news.interpretation || sBucket(news.score || 0)}</div>`;
 
     // News
-    const arts=d.articles||[];
     const nEl=document.getElementById('newsPanel');
     if(!arts.length){nEl.innerHTML='<div class="empty">No articles</div>';}
     else{nEl.innerHTML=`<div class="panel-note">Individual headlines are scored separately from the macro composite and can stay bearish while the composite turns contrarian-bullish.</div>`+arts.slice(0,8).map(a=>`
@@ -459,7 +580,7 @@ async function load(){
         sub: 'Whether sentiment is being reinforced by true or synthetic depth',
       },
       {
-        label: 'Spillover pressure',
+        label: 'Cross-Market Pressure',
         score: `${highImpactCount}/${conflictCount}`,
         note: blockCount ? `${blockCount} recent pattern blocks` : `${highImpactCount} macro events queued`,
         color: conflictCount || blockCount ? 'var(--rd)' : 'var(--gr)',
@@ -502,6 +623,14 @@ async function load(){
         <div style="font-size:13px;margin-bottom:2px">${e.title||e.event||''}</div>
         <div style="font-size:11px;color:var(--tx3)">${e.time||e.date||''} ${e.impact?`· <span style="color:${String(e.impact).toUpperCase()==='HIGH'?'var(--rd)':'var(--am)'}">${e.impact}</span>`:''}</div>
       </div>`).join('');}
+
+    document.getElementById('timelinePanel').innerHTML = evs.length ? evs.slice(0,4).map(e => `
+      <div class="translation-card">
+        <div class="translation-label">${e.time || e.date || 'Scheduled'}</div>
+        <div class="translation-value ${String(e.title || e.event || '').length > 18 ? 'compact' : ''}" style="color:${String(e.impact || '').toUpperCase()==='HIGH'?'var(--rd)':'var(--am)'}">${e.title || e.event || 'Macro event'}</div>
+        <div class="translation-note">${e.impact ? `${e.impact} impact` : 'Event queued'}${e.currency ? ` · ${e.currency}` : ''}</div>
+      </div>
+    `).join('') : '<div class="empty">No dated event timeline is active right now.</div>';
   }catch(e){
     renderSentimentUnavailable('Sentiment overview timed out');
   }

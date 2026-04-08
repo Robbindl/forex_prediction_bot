@@ -251,7 +251,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="panel panel-secondary" style="animation-delay:.4s">
           <div class="panel-header">
             <span>⚡</span>
-            <span class="panel-title">Stop Hunt Detections</span>
+            <span class="panel-title">Sweep Detector</span>
             <span class="panel-badge" id="huntBadge">—</span>
           </div>
           <div class="panel-body" style="flex:1;overflow-y:auto;min-height:120px" id="huntList">
@@ -267,6 +267,50 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <span class="panel-badge" id="flowBridgeBadge">Loading…</span>
         </div>
         <div class="panel-body flow-bridge-body" id="flowBridgeList">
+          <div class="empty">Loading…</div>
+        </div>
+      </div>
+
+      <div class="panel flow-bridge-panel" style="animation-delay:.5s">
+        <div class="panel-header">
+          <span>🛠️</span>
+          <span class="panel-title">Execution Friction</span>
+          <span class="panel-badge" id="frictionBridgeBadge">Loading…</span>
+        </div>
+        <div class="panel-body flow-bridge-body" id="executionFrictionPanel">
+          <div class="empty">Loading…</div>
+        </div>
+      </div>
+
+      <div class="panel flow-bridge-panel" style="animation-delay:.55s">
+        <div class="panel-header">
+          <span>🌊</span>
+          <span class="panel-title">Depth Quality</span>
+          <span class="panel-badge" id="depthQualityBadge">Loading…</span>
+        </div>
+        <div class="panel-body flow-bridge-body" id="depthQualityPanel">
+          <div class="empty">Loading…</div>
+        </div>
+      </div>
+
+      <div class="panel flow-bridge-panel" style="animation-delay:.6s">
+        <div class="panel-header">
+          <span>🧽</span>
+          <span class="panel-title">Absorption / Rejection</span>
+          <span class="panel-badge" id="absorptionBadge">Loading…</span>
+        </div>
+        <div class="panel-body flow-bridge-body" id="absorptionPanel">
+          <div class="empty">Loading…</div>
+        </div>
+      </div>
+
+      <div class="panel flow-bridge-panel" style="animation-delay:.65s">
+        <div class="panel-header">
+          <span>🚀</span>
+          <span class="panel-title">Flow Acceleration</span>
+          <span class="panel-badge" id="accelerationBadge">Loading…</span>
+        </div>
+        <div class="panel-body flow-bridge-body" id="accelerationPanel">
           <div class="empty">Loading…</div>
         </div>
       </div>
@@ -376,7 +420,7 @@ async function loadHunts() {
     const hunts = d.hunts || [];
     document.getElementById('mHuntCount').textContent = hunts.length;
     document.getElementById('huntBadge').textContent  = hunts.length + ' recent';
-    if (!hunts.length) { document.getElementById('huntList').innerHTML = '<div class="empty">No stop hunts detected</div>'; return; }
+    if (!hunts.length) { document.getElementById('huntList').innerHTML = '<div class="empty">No sweep events detected</div>'; return; }
     const html = hunts.slice(0,12).map(h => {
       const sig = h.implication || 'BUY';
       return `<div class="hunt-item">
@@ -465,8 +509,199 @@ async function loadFlowBridge() {
         <div class="flow-bridge-sub">${item.sub}</div>
       </div>
     `).join('') + '</div>';
+
+    const wallBidLead = walls.filter((wall) => String(wall.side || '').toUpperCase() === 'BID').length;
+    const wallAskLead = walls.length - wallBidLead;
+    const huntBuyLead = hunts.filter((hunt) => String(hunt.implication || '').toUpperCase() === 'BUY').length;
+    const huntSellLead = hunts.length - huntBuyLead;
+    const frictionState = fragileCount || conflictCount || blockCount ? 'Guarded' : hunts.length || walls.length ? 'Live' : 'Idle';
+    document.getElementById('frictionBridgeBadge').textContent = frictionState;
+    document.getElementById('executionFrictionPanel').innerHTML = '<div class="flow-bridge-grid">' + [
+      {
+        title: 'Execution posture',
+        value: frictionState,
+        meta: fragileCount ? `${fragileCount} fragile broker contexts still drag the tape` : 'No active broker fragility pressure',
+        color: fragileCount ? 'var(--am)' : diagnostics.count ? 'var(--gr)' : 'var(--tx2)',
+        sub: 'Desk view of whether flow can be trusted for execution right now',
+      },
+      {
+        title: 'Wall asymmetry',
+        value: `${wallBidLead}/${wallAskLead}`,
+        meta: walls.length ? `${wallBidLead} bid-led vs ${wallAskLead} ask-led liquidity walls` : 'No wall concentration yet',
+        color: wallBidLead > wallAskLead ? 'var(--gr)' : wallAskLead > wallBidLead ? 'var(--rd)' : 'var(--cy)',
+        sub: 'Where passive liquidity is leaning across the active book',
+      },
+      {
+        title: 'Hunt pressure',
+        value: `${huntBuyLead}/${huntSellLead}`,
+        meta: hunts.length ? `${hunts.length} stop-hunt events in the current window` : 'No hunts detected in the active lookback',
+        color: huntBuyLead > huntSellLead ? 'var(--gr)' : huntSellLead > huntBuyLead ? 'var(--rd)' : 'var(--tx2)',
+        sub: 'Which side has been getting cleaned out most recently',
+      },
+      {
+        title: 'Cross drag',
+        value: `${conflictCount}/${blockCount}`,
+        meta: conflictCount || blockCount ? 'Cross-market conflict or pattern memory is still blocking some flow' : 'Cross-market checks are not the main drag right now',
+        color: conflictCount || blockCount ? 'var(--rd)' : 'var(--gr)',
+        sub: 'Review stack friction beyond the raw order-book read',
+      },
+    ].map(item => `
+      <div class="flow-bridge-card">
+        <div class="flow-bridge-kicker">${item.title}</div>
+        <div class="flow-bridge-value ${String(item.value).length > 16 ? 'compact' : ''}" style="color:${item.color}">${item.value}</div>
+        <div class="flow-bridge-note">${item.meta}</div>
+        <div class="flow-bridge-sub">${item.sub}</div>
+      </div>
+    `).join('') + '</div>';
+
+    const strongWalls = walls.filter((wall) => ['STRONG', 'EXTREME'].includes(String(wall.strength || '').toUpperCase())).length;
+    const wallQualityPct = walls.length ? ((strongWalls / walls.length) * 100) : 0;
+    const flowState = {};
+    function ensure(asset){
+      if(!asset) return null;
+      if(!flowState[asset]){
+        flowState[asset] = {asset, imbalance:0, wallDelta:0, huntDelta:0, bidWalls:0, askWalls:0, buyHunts:0, sellHunts:0};
+      }
+      return flowState[asset];
+    }
+    Object.entries(imbalance.imbalances || {}).forEach(([asset, score]) => {
+      const row = ensure(asset);
+      if(row) row.imbalance = Number(score || 0);
+    });
+    walls.forEach((wall) => {
+      const row = ensure(wall.asset);
+      if(!row) return;
+      const weight = wallWeight(wall);
+      if(String(wall.side || '').toUpperCase() === 'BID'){
+        row.bidWalls += 1;
+        row.wallDelta += weight;
+      }else{
+        row.askWalls += 1;
+        row.wallDelta -= weight;
+      }
+    });
+    hunts.forEach((hunt) => {
+      const row = ensure(hunt.asset);
+      if(!row) return;
+      const weight = Math.max(0.2, Number(hunt.confidence || 0) || 0.2);
+      if(String(hunt.implication || '').toUpperCase() === 'SELL'){
+        row.sellHunts += 1;
+        row.huntDelta -= weight;
+      }else{
+        row.buyHunts += 1;
+        row.huntDelta += weight;
+      }
+    });
+    const depthRanked = Object.values(flowState).map((row) => {
+      row.score = row.imbalance + row.wallDelta * 0.2 + row.huntDelta * 0.25;
+      return row;
+    }).sort((a,b) => Math.abs(b.score) - Math.abs(a.score));
+    const leadDepth = depthRanked[0] || null;
+    const leadSweep = hunts.slice().sort((a,b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0] || null;
+    const depthState = trueDepthCount ? 'True-led' : syntheticDepthCount ? 'Synthetic-led' : walls.length || hunts.length ? 'Proxy' : 'Idle';
+    document.getElementById('depthQualityBadge').textContent = depthState;
+    document.getElementById('depthQualityPanel').innerHTML = '<div class="flow-bridge-grid">' + [
+      {
+        title: 'Runtime depth',
+        value: `${trueDepthCount}T / ${syntheticDepthCount}S`,
+        meta: diagnostics.count ? diagnostics.summary_label || 'Live diagnostics active' : 'No active signal diagnostics yet',
+        color: trueDepthCount ? 'var(--gr)' : syntheticDepthCount ? 'var(--am)' : 'var(--tx2)',
+        sub: 'Whether the desk is trading on true depth or synthetic proxies',
+      },
+      {
+        title: 'Wall quality',
+        value: walls.length ? `${wallQualityPct.toFixed(0)}%` : '—',
+        meta: walls.length ? `${strongWalls}/${walls.length} walls are strong or extreme` : 'No live wall set yet',
+        color: wallQualityPct >= 60 ? 'var(--gr)' : wallQualityPct >= 35 ? 'var(--am)' : 'var(--tx2)',
+        sub: 'How much of the visible book has real size behind it',
+      },
+      {
+        title: 'Sweep leader',
+        value: leadSweep ? formatFlowAsset(leadSweep.asset) : '—',
+        meta: leadSweep ? `${String(leadSweep.implication || '').toUpperCase()} ${(Number(leadSweep.confidence || 0) * 100).toFixed(0)}% · ${String(leadSweep.wall_side || '').toUpperCase()}` : 'No dominant sweep in the active window',
+        color: leadSweep ? (String(leadSweep.implication || '').toUpperCase() === 'SELL' ? 'var(--rd)' : 'var(--gr)') : 'var(--tx2)',
+        sub: 'The cleanest sweep / stop-hunt event in the recent tape',
+      },
+      {
+        title: 'Best book',
+        value: leadDepth ? formatFlowAsset(leadDepth.asset) : '—',
+        meta: leadDepth ? `Score ${(leadDepth.score >= 0 ? '+' : '') + leadDepth.score.toFixed(3)} · ${leadDepth.bidWalls} bid / ${leadDepth.askWalls} ask walls` : 'No blended depth leader yet',
+        color: leadDepth ? (leadDepth.score >= 0 ? 'var(--gr)' : 'var(--rd)') : 'var(--tx2)',
+        sub: 'Composite depth leader from imbalance, walls, and sweep pressure',
+      },
+    ].map(item => `
+      <div class="flow-bridge-card">
+        <div class="flow-bridge-kicker">${item.title}</div>
+        <div class="flow-bridge-value ${String(item.value).length > 16 ? 'compact' : ''}" style="color:${item.color}">${item.value}</div>
+        <div class="flow-bridge-note">${item.meta}</div>
+        <div class="flow-bridge-sub">${item.sub}</div>
+      </div>
+    `).join('') + '</div>';
+
+    const absorptionRows = depthRanked.slice(0,4).map((row) => {
+      const rejection = row.bidWalls && row.sellHunts ? 'Bid absorption failed' : row.askWalls && row.buyHunts ? 'Ask rejection failed' : 'Mixed response';
+      return {
+        title: formatFlowAsset(row.asset),
+        value: `${row.bidWalls}/${row.askWalls}`,
+        meta: `${row.buyHunts} buy hunts · ${row.sellHunts} sell hunts · ${rejection}`,
+        color: row.score >= 0 ? 'var(--gr)' : 'var(--rd)',
+      };
+    });
+    document.getElementById('absorptionBadge').textContent = absorptionRows.length ? 'Live' : 'Idle';
+    document.getElementById('absorptionPanel').innerHTML = absorptionRows.length
+      ? '<div class="flow-bridge-grid">' + absorptionRows.map(item => `
+          <div class="flow-bridge-card">
+            <div class="flow-bridge-kicker">${item.title}</div>
+            <div class="flow-bridge-value" style="color:${item.color}">${item.value}</div>
+            <div class="flow-bridge-note">${item.meta}</div>
+            <div class="flow-bridge-sub">Bid/ask wall absorption versus recent sweep rejection.</div>
+          </div>
+        `).join('') + '</div>'
+      : '<div class="empty">No absorption / rejection pattern is clear right now</div>';
+
+    const acceleration = [
+      {
+        title: 'Wall build',
+        value: `${walls.length}`,
+        meta: strongWalls ? `${strongWalls} strong walls in the active tape` : 'No strong wall build yet',
+        color: strongWalls >= 3 ? 'var(--gr)' : walls.length ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
+        title: 'Sweep velocity',
+        value: `${hunts.length}`,
+        meta: hunts.length ? `${huntBuyLead} buy-led · ${huntSellLead} sell-led sweeps` : 'No active sweep acceleration',
+        color: hunts.length >= 4 ? 'var(--rd)' : hunts.length ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
+        title: 'Imbalance tilt',
+        value: `${bullishCount}/${bearishCount}`,
+        meta: bullishCount > bearishCount ? 'Buy-side pressure is accelerating' : bearishCount > bullishCount ? 'Sell-side pressure is accelerating' : 'Pressure is balanced',
+        color: bullishCount > bearishCount ? 'var(--gr)' : bearishCount > bullishCount ? 'var(--rd)' : 'var(--cy)',
+      },
+      {
+        title: 'Lead tape',
+        value: leadDepth ? formatFlowAsset(leadDepth.asset) : '—',
+        meta: leadDepth ? `Score ${(leadDepth.score >= 0 ? '+' : '') + leadDepth.score.toFixed(3)} from combined flow inputs` : 'No accelerating tape leader',
+        color: leadDepth ? (leadDepth.score >= 0 ? 'var(--gr)' : 'var(--rd)') : 'var(--tx2)',
+      },
+    ];
+    document.getElementById('accelerationBadge').textContent = walls.length || hunts.length || bullishCount || bearishCount ? 'Tracking' : 'Idle';
+    document.getElementById('accelerationPanel').innerHTML = '<div class="flow-bridge-grid">' + acceleration.map(item => `
+      <div class="flow-bridge-card">
+        <div class="flow-bridge-kicker">${item.title}</div>
+        <div class="flow-bridge-value" style="color:${item.color}">${item.value}</div>
+        <div class="flow-bridge-note">${item.meta}</div>
+        <div class="flow-bridge-sub">Whether liquidity and sweep pressure are accelerating or fading.</div>
+      </div>
+    `).join('') + '</div>';
   } catch(e) {
+    document.getElementById('absorptionBadge').textContent = 'Unavailable';
+    document.getElementById('accelerationBadge').textContent = 'Unavailable';
     document.getElementById('flowBridgeList').innerHTML = '<div class="empty">Flow bridge unavailable</div>';
+    document.getElementById('executionFrictionPanel').innerHTML = '<div class="empty">Execution friction unavailable</div>';
+    document.getElementById('depthQualityPanel').innerHTML = '<div class="empty">Depth quality unavailable</div>';
+    document.getElementById('absorptionPanel').innerHTML = '<div class="empty">Absorption / rejection unavailable</div>';
+    document.getElementById('accelerationPanel').innerHTML = '<div class="empty">Flow acceleration unavailable</div>';
   }
 }
 

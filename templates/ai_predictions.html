@@ -178,6 +178,38 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       </div>
 
       <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">📌 Operator Queue</span></div>
+        <div class="leader-grid" id="operatorQueuePanel">
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🧬 Asset-Playbook Matrix</span></div>
+        <div class="leader-grid" id="matrixPanel">
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🪫 Failure Archetypes</span></div>
+        <div class="leader-grid" id="failurePanel">
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <div class="panel panel-full">
+        <div class="panel-header"><span class="panel-title">🧠 Confidence Decomposition</span></div>
+        <div class="leader-grid" id="confidencePanel">
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+          <div class="leader-box"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <div class="panel panel-full">
         <div class="panel-header"><span class="panel-title">🎯 Active Playbook Decisions</span><span id="predCount" style="font-size:11px;color:var(--tx3);margin-left:auto">0 signals</span></div>
         <div class="pred-grid prediction-panel-body" id="predGrid"><div class="empty">Loading…</div></div>
       </div>
@@ -207,6 +239,10 @@ function renderAiUnavailable(message){
   document.getElementById('playbookMixPanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
   document.getElementById('breakdownPanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
   document.getElementById('performancePanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
+  document.getElementById('operatorQueuePanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
+  document.getElementById('matrixPanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
+  document.getElementById('failurePanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
+  document.getElementById('confidencePanel').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
   document.getElementById('leaderGrid').innerHTML = '<div class="leader-box"><div class="empty">'+msg+'</div></div><div class="leader-box"><div class="empty">'+msg+'</div></div>';
   document.getElementById('predGrid').innerHTML = '<div class="empty">'+msg+'</div>';
   document.getElementById('predCount').textContent = '0 signals';
@@ -221,7 +257,7 @@ async function fetchAiPredictionsOverview(days){
   if(!d.success){
     d = await window.dashboardFetchJson(`/api/ai-predictions/overview?days=${days}`, {timeoutMs: 12000});
   }
-  if(!d.success) throw new Error('AI overview unavailable');
+  if(!d.success) throw new Error('Playbook overview unavailable');
   _aiPredictionsCache = {days, fetched: now, data: d};
   return d;
 }
@@ -237,7 +273,9 @@ function presentLabel(value, fallback){
 
 function playbookName(signal){
   const meta = signalMeta(signal);
-  return presentLabel(meta.playbook_name || signal.strategy_id, 'Playbook runtime');
+  const raw = String(meta.playbook_name || signal.strategy_id || '').trim();
+  if(raw.startsWith('playbook_')) return raw.slice(9).replaceAll('_',' ');
+  return presentLabel(raw, 'Playbook runtime');
 }
 
 function sessionName(signal){
@@ -248,6 +286,20 @@ function sessionName(signal){
 function entryStyle(signal){
   const meta = signalMeta(signal);
   return presentLabel(meta.playbook_entry_style || meta.entry_style, 'Unspecified');
+}
+
+function humanToken(value, fallback){
+  const raw = String(value || '').trim();
+  if(!raw) return fallback;
+  return raw.replace(/_/g, ' ');
+}
+
+function formatHoldMinutes(value){
+  const minutes = Number(value || 0);
+  if(!Number.isFinite(minutes) || minutes <= 0) return '—';
+  if(minutes >= 1440) return `${(minutes / 1440).toFixed(1)}d`;
+  if(minutes >= 60) return `${(minutes / 60).toFixed(1)}h`;
+  return `${minutes.toFixed(0)}m`;
 }
 
 function countSignals(signals, getter){
@@ -277,7 +329,7 @@ function renderSummaryList(title, items, renderMeta, accent){
         <div class="leader-row">
           <div class="leader-asset">${item.label}</div>
           <div class="leader-meta">${renderMeta(item)}</div>
-          <div class="leader-score" style="color:${accent}">${item.count}</div>
+          <div class="leader-score" style="color:${accent}">${item.count ?? item.trade_count ?? '—'}</div>
         </div>
       `).join('') : '<div class="empty">No live decisions</div>'}
     </div>
@@ -296,6 +348,10 @@ async function loadOverview(){
     renderPlaybookMix(overview);
     renderBreakdown(overview);
     renderPerformance(overview);
+    renderOperatorQueue(overview);
+    renderAssetPlaybookMatrix(overview);
+    renderFailureArchetypes(overview);
+    renderConfidenceDecomposition(overview);
     renderRuntimeLeaders(overview);
     renderPredictions(overview);
     renderConfDistribution(overview);
@@ -388,6 +444,50 @@ function renderPredictionSummary(overview){
   }catch(e){}
 }
 
+function renderOperatorQueue(overview){
+  try{
+    const signals = (overview.signals || []).slice();
+    const nearMisses = (overview.near_misses || []).slice();
+    const status = overview.status || {};
+    const routing = status.provider_routing || {};
+    const diagnostics = status.signal_diagnostics || {};
+    const ranked = signals.slice().sort((a,b) => Number(b.opportunity_score || 0) - Number(a.opportunity_score || 0));
+    const fragile = Number(diagnostics.broker_fragile_count || 0);
+    const conflicts = Number(diagnostics.cross_conflict_count || 0);
+    const blocks = Number(diagnostics.recent_pattern_block_count || 0);
+    const depthTrue = Number(diagnostics.true_depth_count || 0);
+    const depthSynthetic = Number(diagnostics.synthetic_depth_count || 0);
+    document.getElementById('operatorQueuePanel').innerHTML = `
+      <div class="leader-box">
+        <div class="leader-title">Near-Miss Queue</div>
+        ${nearMisses.length ? nearMisses.slice(0,4).map(item => `
+          <div class="leader-row">
+            <div class="leader-asset">${item.asset || '—'}</div>
+            <div class="leader-meta">${humanToken(item.killed_by, 'review')} · Opp ${Number(item.opportunity_score || 0).toFixed(3)} · Align ${Number(item.alignment_score || 0).toFixed(2)}${item.reason ? ` · ${String(item.reason).slice(0,48)}` : ''}</div>
+            <div class="leader-score" style="color:${String(item.direction || '').toUpperCase() === 'SELL' ? 'var(--rd)' : 'var(--gr)'}">${Number(item.setup_quality || 0).toFixed(2)}</div>
+          </div>
+        `).join('') : '<div class="empty">No rejected setups are close enough to queue right now</div>'}
+      </div>
+      <div class="leader-box">
+        <div class="leader-title">Desk Focus & Drag</div>
+        ${[
+          ranked[0] ? {asset:'Live focus', meta:`${ranked[0].asset || '—'} · ${playbookName(ranked[0])} · ${sessionName(ranked[0])}`, score:`Opp ${Number(ranked[0].opportunity_score || 0).toFixed(3)}`, color:String(ranked[0].direction || '').toUpperCase() === 'SELL' ? 'var(--rd)' : 'var(--gr)'} : null,
+          {asset:'Feed spine', meta:routing.summary_label || 'Unavailable', score:routing.fallback_label ? `Fallback ${routing.fallback_label}` : 'No fallback split', color:'var(--cy)'},
+          {asset:'Broker pressure', meta:diagnostics.summary_label || 'No live diagnostics', score:`${Number(diagnostics.broker_supportive_count || 0)}/${fragile}`, color:fragile ? 'var(--am)' : 'var(--gr)'},
+          {asset:'Depth mode', meta:`${depthTrue} true depth · ${depthSynthetic} synthetic depth`, score:depthTrue ? 'true-led' : depthSynthetic ? 'synthetic-led' : 'idle', color:depthTrue ? 'var(--gr)' : depthSynthetic ? 'var(--am)' : 'var(--tx2)'},
+          {asset:'Pattern drag', meta:`${conflicts} cross conflicts · ${blocks} pattern blocks`, score:blocks || conflicts ? 'guarded' : 'clear', color:blocks || conflicts ? 'var(--rd)' : 'var(--gr)'},
+        ].filter(Boolean).map(item => `
+          <div class="leader-row">
+            <div class="leader-asset">${item.asset}</div>
+            <div class="leader-meta">${item.meta}</div>
+            <div class="leader-score" style="color:${item.color}">${item.score}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }catch(e){}
+}
+
 function renderDiagnosticsSummary(overview){
   try{
     const status = overview.status || {};
@@ -476,8 +576,79 @@ function renderPerformance(overview){
     const playbooks = Array.isArray(performance.playbooks) ? performance.playbooks : [];
     const assets = Array.isArray(performance.assets) ? performance.assets : [];
     document.getElementById('performancePanel').innerHTML =
-      renderSummaryList('Playbooks', playbooks, (item) => `${Number(item.win_rate || 0).toFixed(1)}% WR · PF ${Number(item.profit_factor || 0).toFixed(2)}`, 'var(--gr)') +
-      renderSummaryList('Assets', assets, (item) => `${Number(item.win_rate || 0).toFixed(1)}% WR · ${Number(item.total_pnl || 0) >= 0 ? '+' : ''}${Number(item.total_pnl || 0).toFixed(2)}`, 'var(--cy)');
+      renderSummaryList('Playbook Scorecards', playbooks, (item) => `${Number(item.win_rate || 0).toFixed(1)}% WR · PF ${Number(item.profit_factor || 0).toFixed(2)} · R ${Number(item.avg_rr_realized || 0).toFixed(2)} · Hold ${formatHoldMinutes(item.avg_hold_minutes)} · Stop ${Number(item.stop_exit_rate || 0).toFixed(0)}%`, 'var(--gr)') +
+      renderSummaryList('Asset Scorecards', assets, (item) => `${Number(item.win_rate || 0).toFixed(1)}% WR · PF ${Number(item.profit_factor || 0).toFixed(2)} · Hold ${formatHoldMinutes(item.avg_hold_minutes)} · ${Number(item.total_pnl || 0) >= 0 ? '+' : ''}${Number(item.total_pnl || 0).toFixed(2)}`, 'var(--cy)');
+  }catch(e){}
+}
+
+function renderAssetPlaybookMatrix(overview){
+  try{
+    const rows = Array.isArray(overview.asset_playbook_matrix) ? overview.asset_playbook_matrix : [];
+    const liveRows = rows.filter(item => Number(item.live_count || 0) > 0).slice(0,5);
+    const closedRows = rows.filter(item => Number(item.closed_count || 0) > 0).slice(0,5);
+    document.getElementById('matrixPanel').innerHTML =
+      renderSummaryList('Live Asset / Playbook', liveRows.map(item => ({
+        label: `${item.asset} · ${humanToken(item.playbook, 'playbook')}`,
+        count: Number(item.live_count || 0),
+        avgConf: Number(item.avg_confidence || 0),
+      })), (item) => `${item.avgConf.toFixed(1)}% avg conf`, 'var(--cy)') +
+      renderSummaryList('Closed Asset / Playbook', closedRows.map(item => ({
+        label: `${item.asset} · ${humanToken(item.playbook, 'playbook')}`,
+        trade_count: Number(item.closed_count || 0),
+        win_rate: Number(item.win_rate || 0),
+        total_pnl: Number(item.total_pnl || 0),
+      })), (item) => `${item.win_rate.toFixed(1)}% WR · ${(item.total_pnl >= 0 ? '+' : '') + item.total_pnl.toFixed(2)}`, 'var(--pu)');
+  }catch(e){}
+}
+
+function renderFailureArchetypes(overview){
+  try{
+    const rows = Array.isArray(overview.failure_archetypes) ? overview.failure_archetypes : [];
+    const archetypes = rows.slice(0,6);
+    const topAssets = [];
+    archetypes.forEach(item => {
+      (item.top_assets || []).forEach(asset => topAssets.push({label: asset, count: Number(item.count || 0), meta: humanToken(item.label, 'failure')}));
+    });
+    document.getElementById('failurePanel').innerHTML =
+      renderSummaryList('Failure Buckets', archetypes.map(item => ({
+        label: humanToken(item.label, 'failure'),
+        count: Number(item.count || 0),
+        top_assets: item.top_assets || [],
+      })), (item) => (item.top_assets || []).length ? `Top ${item.top_assets.join(', ')}` : 'No dominant asset', 'var(--rd)') +
+      renderSummaryList('Most Exposed Assets', topAssets.slice(0,6).map(item => ({
+        label: item.label,
+        count: item.count,
+        meta: item.meta,
+      })), (item) => item.meta || 'failure', 'var(--am)');
+  }catch(e){}
+}
+
+function renderConfidenceDecomposition(overview){
+  try{
+    const data = overview.confidence_decomposition || {};
+    const components = Array.isArray(data.components) ? data.components : [];
+    const topComponent = data.top_component ? humanToken(data.top_component, 'confidence') : 'No leader';
+    document.getElementById('confidencePanel').innerHTML =
+      renderSummaryList('Confidence Components', components.slice(0,5).map(item => ({
+        label: humanToken(item.label, 'component'),
+        count: Number(item.sample_count || 0),
+        avgConf: Number(item.avg_score || 0),
+      })), (item) => `${item.avgConf.toFixed(1)} avg score · ${item.count} samples`, 'var(--gr)') +
+      `<div class="leader-box">
+        <div class="leader-title">Desk Read</div>
+        <div class="leader-row">
+          <div class="leader-asset">Top component</div>
+          <div class="leader-meta">Current leader in the live confidence stack</div>
+          <div class="leader-score" style="color:var(--cy)">${topComponent}</div>
+        </div>
+        ${(components.slice(0,4)).map(item => `
+          <div class="leader-row">
+            <div class="leader-asset">${humanToken(item.label, 'component')}</div>
+            <div class="leader-meta">${Number(item.sample_count || 0)} live samples</div>
+            <div class="leader-score" style="color:${Number(item.avg_score || 0) >= 60 ? 'var(--gr)' : Number(item.avg_score || 0) >= 40 ? 'var(--am)' : 'var(--tx2)'}">${Number(item.avg_score || 0).toFixed(1)}</div>
+          </div>
+        `).join('')}
+      </div>`;
   }catch(e){}
 }
 
@@ -521,6 +692,29 @@ function renderPredictions(overview){
       const playbook = playbookName(p);
       const session = sessionName(p);
       const style = entryStyle(p);
+      const providerLine = [
+        presentLabel(p.broker_primary_provider, 'primary n/a'),
+        p.broker_comparison_provider ? `vs ${p.broker_comparison_provider}` : '',
+      ].filter(Boolean).join(' ');
+      const provenanceLine = [
+        p.history_source ? `Hist ${presentLabel(p.history_source, '')}` : '',
+        (p.live_source || p.runtime_primary_provider) ? `Live ${presentLabel(p.live_source || p.runtime_primary_provider, '')}` : '',
+        p.quote_mode ? humanToken(p.quote_mode, '') : '',
+      ].filter(Boolean).join(' · ');
+      const agreementLine = [
+        humanToken(p.broker_agreement_state, 'agreement n/a'),
+        p.broker_quote_quality_state ? `· ${humanToken(p.broker_quote_quality_state, '')}` : '',
+        p.broker_spread_regime ? `· ${humanToken(p.broker_spread_regime, '')}` : '',
+      ].join('');
+      const depthLine = [
+        humanToken(p.depth_mode, 'top of book'),
+        p.microstructure_source ? `· ${humanToken(p.microstructure_source, '')}` : '',
+      ].join(' ');
+      const crossLine = [
+        p.cross_asset_primary_peer ? `${p.cross_asset_primary_peer}` : humanToken(p.cross_asset_context_state, 'cross n/a'),
+        p.cross_asset_primary_relation ? `· ${humanToken(p.cross_asset_primary_relation, '')}` : '',
+        Number.isFinite(Number(p.cross_asset_alignment)) ? ` · ${Number(p.cross_asset_alignment || 0).toFixed(2)}` : '',
+      ].join('');
       const fmt=n=>n?(n<10?n.toFixed(5):n.toFixed(2)):'—';
       return`<div class="pred-card pc-${isBuy?'buy':'sell'}">
         <div class="pc-header">
@@ -541,6 +735,9 @@ function renderPredictions(overview){
         <div class="pc-footer"><span>${style}</span><span>${session}</span></div>
         <div class="pc-footer"><span>Memory ${memoryScore?memoryScore.toFixed(0):'—'}${memSamples?` · n${memSamples}`:''}</span><span>Exec ${execQ?execQ.toFixed(0):'—'}${execSamples?` · n${execSamples}`:''}</span></div>
         <div class="pc-footer"><span>${oppScore?`Opp ${oppScore.toFixed(3)}`:'Opportunity pending'}</span><span>${p.opportunity_rank?`Rank #${p.opportunity_rank}`:(p.memory_regime||p.category||'')}</span></div>
+        <div class="pc-footer"><span>${provenanceLine || 'Provenance n/a'}</span><span>${providerLine || 'Broker n/a'}</span></div>
+        <div class="pc-footer"><span>${agreementLine || 'Agreement n/a'}</span><span>${depthLine || 'Depth n/a'}</span></div>
+        <div class="pc-footer"><span>${crossLine || 'Cross n/a'}</span><span></span></div>
         ${notes.length?`<div class="pc-footer"><span style="color:var(--tx2)">${notes.join(' · ')}</span><span></span></div>`:''}
       </div>`;
     }).join('');
@@ -585,7 +782,7 @@ function renderConfDistribution(overview){
       data: {
         labels: labels,
         datasets: [{
-          label: 'Prediction Count',
+          label: 'Signal Count',
           data: bins,
           backgroundColor: bins.map(b => b > 0 ? 'rgba(41, 121, 255, 0.6)' : 'rgba(74, 85, 104, 0.3)'),
           borderColor: '#2979ff',

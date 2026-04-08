@@ -1138,6 +1138,33 @@ def _extract_signal_intelligence_fields(metadata: Any) -> Dict[str, Any]:
     }
 
 
+def _extract_market_data_provenance_fields(
+    metadata: Any,
+    *,
+    asset: str = "",
+    category: str = "",
+) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    market_data = meta.get("market_data") if isinstance(meta.get("market_data"), dict) else {}
+    price_meta = market_data.get("price") if isinstance(market_data.get("price"), dict) else {}
+    ohlcv_meta = market_data.get("ohlcv") if isinstance(market_data.get("ohlcv"), dict) else {}
+    descriptor = _chart_asset_descriptor(asset, category) if asset else {}
+    primary_provider = str(descriptor.get("primary_provider") or "")
+    secondary_provider = str(descriptor.get("secondary_provider") or "")
+    quote_mode = str(descriptor.get("quote_mode") or "")
+    return {
+        "history_source": str(ohlcv_meta.get("source") or ""),
+        "history_source_class": str(ohlcv_meta.get("source_class") or ""),
+        "history_provider_family": str(ohlcv_meta.get("provider_family") or ohlcv_meta.get("source") or ""),
+        "live_source": str(price_meta.get("source") or primary_provider or ""),
+        "live_source_class": str(price_meta.get("source_class") or ""),
+        "live_realtime": bool(price_meta.get("realtime")) if price_meta else False,
+        "runtime_primary_provider": primary_provider,
+        "runtime_secondary_provider": secondary_provider,
+        "quote_mode": quote_mode,
+    }
+
+
 def _coerce_utc_datetime(value: Any) -> Optional[datetime]:
     if value in (None, ""):
         return None
@@ -1181,6 +1208,19 @@ def _playbook_name_from_trade(trade: Dict[str, Any]) -> str:
     return ""
 
 
+def _playbook_name_from_payload(payload: Dict[str, Any]) -> str:
+    metadata = dict(payload.get("metadata") or {})
+    direct = str(payload.get("playbook_name") or metadata.get("playbook_name") or "").strip()
+    if direct:
+        return direct
+    strategy_id = str(payload.get("strategy_id") or "").strip()
+    if strategy_id.startswith("playbook_"):
+        return strategy_id[len("playbook_") :]
+    if strategy_id == "playbook_runtime":
+        return "playbook_runtime"
+    return ""
+
+
 def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: int = 30) -> Dict[str, Any]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days_back or 30)))
     playbook_rows: Dict[str, Dict[str, Any]] = {}
@@ -1191,6 +1231,8 @@ def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: 
     gross_win = 0.0
     gross_loss = 0.0
     rr_values: List[float] = []
+    hold_minutes: List[float] = []
+    stop_exit_count = 0
 
     def _bucket(container: Dict[str, Dict[str, Any]], label: str) -> Dict[str, Any]:
         return container.setdefault(
@@ -1204,6 +1246,8 @@ def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: 
                 "gross_loss": 0.0,
                 "total_pnl": 0.0,
                 "rr_values": [],
+                "hold_minutes": [],
+                "stop_exit_count": 0,
             },
         )
 
@@ -1222,8 +1266,12 @@ def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: 
         execution = _extract_execution_feedback_fields(metadata)
         rr_realized = float(execution.get("rr_realized", 0.0) or 0.0)
         asset_label = str(trade.get("canonical_asset") or trade.get("asset") or "").strip() or "UNKNOWN"
+        entry_time = _coerce_utc_datetime(trade.get("entry_time") or trade.get("open_time"))
+        exit_time = _coerce_utc_datetime(trade.get("exit_time"))
+        exit_reason = str(trade.get("exit_reason") or metadata.get("exit_reason") or "").strip().lower()
         is_win = pnl > 0.0
         is_loss = pnl < 0.0
+        is_stop_exit = "stop loss" in exit_reason
 
         trade_count += 1
         if is_win or is_loss:
@@ -1235,6 +1283,13 @@ def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: 
                 gross_loss += abs(pnl)
         if abs(rr_realized) > 1e-9:
             rr_values.append(rr_realized)
+        if entry_time is not None and exit_time is not None and exit_time >= entry_time:
+            hold_minutes_value = (exit_time - entry_time).total_seconds() / 60.0
+            hold_minutes.append(hold_minutes_value)
+        else:
+            hold_minutes_value = None
+        if is_stop_exit:
+            stop_exit_count += 1
 
         for container, label in ((playbook_rows, playbook_name), (asset_rows, asset_label)):
             row = _bucket(container, label)
@@ -1242,6 +1297,10 @@ def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: 
             row["total_pnl"] += pnl
             if abs(rr_realized) > 1e-9:
                 row["rr_values"].append(rr_realized)
+            if hold_minutes_value is not None:
+                row["hold_minutes"].append(hold_minutes_value)
+            if is_stop_exit:
+                row["stop_exit_count"] += 1
             if is_win or is_loss:
                 row["decisive_count"] += 1
                 if is_win:
@@ -1258,9 +1317,14 @@ def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: 
             gross_win_local = float(item.pop("gross_win", 0.0) or 0.0)
             gross_loss_local = float(item.pop("gross_loss", 0.0) or 0.0)
             rr_local = list(item.pop("rr_values", []) or [])
+            hold_local = list(item.pop("hold_minutes", []) or [])
+            stop_local = int(item.pop("stop_exit_count", 0) or 0)
+            trade_local = int(item.get("trade_count", 0) or 0)
             item["win_rate"] = round((wins / decisive) * 100.0, 1) if decisive else 0.0
             item["profit_factor"] = round(gross_win_local / gross_loss_local, 2) if gross_loss_local else (round(gross_win_local, 2) if gross_win_local else 0.0)
             item["avg_rr_realized"] = round(sum(rr_local) / len(rr_local), 3) if rr_local else 0.0
+            item["avg_hold_minutes"] = round(sum(hold_local) / len(hold_local), 1) if hold_local else 0.0
+            item["stop_exit_rate"] = round((stop_local / trade_local) * 100.0, 1) if trade_local else 0.0
             item["total_pnl"] = round(float(item.get("total_pnl", 0.0) or 0.0), 2)
             output.append(item)
         output.sort(
@@ -1282,6 +1346,8 @@ def _summarize_playbook_performance(trades: List[Dict[str, Any]], *, days_back: 
             "win_rate": round((win_count / decisive_count) * 100.0, 1) if decisive_count else 0.0,
             "profit_factor": round(gross_win / gross_loss, 2) if gross_loss else (round(gross_win, 2) if gross_win else 0.0),
             "avg_rr_realized": round(sum(rr_values) / len(rr_values), 3) if rr_values else 0.0,
+            "avg_hold_minutes": round(sum(hold_minutes) / len(hold_minutes), 1) if hold_minutes else 0.0,
+            "stop_exit_rate": round((stop_exit_count / trade_count) * 100.0, 1) if trade_count else 0.0,
             "top_playbook": str(playbooks[0]["label"]) if playbooks else "",
         },
         "playbooks": playbooks,
@@ -1345,6 +1411,584 @@ def _summarize_signal_diagnostics(rows: Any) -> Dict[str, Any]:
         "recent_pattern_block_count": recent_pattern_blocks,
         "summary_label": summary_label,
     }
+
+
+def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for row in list(journals or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("decision") or "").upper() == "SURVIVED":
+            continue
+        asset = str(row.get("asset") or "").strip()
+        if not asset:
+            continue
+        opportunity = float(row.get("opportunity_score") or 0.0)
+        setup_quality = float(row.get("setup_quality") or 0.0)
+        alignment = float(row.get("alignment_score") or 0.0)
+        final_score = float(row.get("final_policy_score") or 0.0)
+        stop_hunt_risk = float(row.get("stop_hunt_risk") or 0.0)
+        exhaustion_risk = float(row.get("exhaustion_risk") or 0.0)
+        rank_score = (
+            max(0.0, opportunity) * 0.55
+            + max(0.0, setup_quality) * 0.2
+            + max(0.0, alignment) * 0.15
+            + max(0.0, final_score) * 0.1
+        )
+        items.append(
+            {
+                "asset": asset,
+                "direction": str(row.get("direction") or "").upper(),
+                "killed_by": str(row.get("killed_by") or row.get("last_layer") or ""),
+                "reason": str(row.get("kill_reason") or row.get("final_policy_reason") or ""),
+                "opportunity_score": round(opportunity, 3),
+                "setup_quality": round(setup_quality, 3),
+                "alignment_score": round(alignment, 3),
+                "structure_bias": str(row.get("structure_bias") or ""),
+                "depth_mode": str(row.get("depth_mode") or ""),
+                "broker_agreement_state": str(row.get("broker_agreement_state") or ""),
+                "microstructure_source": str(row.get("microstructure_source") or ""),
+                "top_positive_factor": str(row.get("top_positive_factor") or ""),
+                "top_negative_factor": str(row.get("top_negative_factor") or ""),
+                "stop_hunt_risk": round(stop_hunt_risk, 3),
+                "exhaustion_risk": round(exhaustion_risk, 3),
+                "rank_score": round(rank_score, 4),
+            }
+        )
+    items.sort(
+        key=lambda item: (
+            float(item.get("rank_score", 0.0) or 0.0),
+            float(item.get("opportunity_score", 0.0) or 0.0),
+            float(item.get("setup_quality", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    return items[: max(1, int(limit or 6))]
+
+
+def _current_playbook_session(category: str = "") -> str:
+    try:
+        from services.playbook_service import _active_session
+
+        return str(_active_session(category=category) or "off")
+    except Exception:
+        return "off"
+
+
+def _build_session_radar(limit: int = 12) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+    current_by_category: Dict[str, str] = {}
+    try:
+        from services.playbook_service import PlaybookService
+
+        playbooks = PlaybookService()
+        for asset, category in ALL_ASSETS:
+            cat = str(category or "").strip().lower()
+            current_by_category.setdefault(cat, _current_playbook_session(cat))
+            try:
+                session_open, current, allowed_sessions = playbooks._session_allowed(asset, cat)
+            except Exception:
+                current = current_by_category.get(cat, "off")
+                allowed_sessions = ()
+                session_open = False
+            descriptor = _chart_asset_descriptor(asset, cat)
+            rows.append(
+                {
+                    "asset": asset,
+                    "category": cat,
+                    "current_session": current,
+                    "allowed_sessions": list(allowed_sessions or ()),
+                    "session_open": bool(session_open),
+                    "preferred_interval": playbooks.preferred_interval(cat, asset),
+                    "primary_provider": descriptor.get("primary_provider", ""),
+                    "secondary_provider": descriptor.get("secondary_provider", ""),
+                }
+            )
+    except Exception:
+        return {
+            "current_by_category": {},
+            "open_count": 0,
+            "blocked_count": 0,
+            "rows": [],
+        }
+
+    rows.sort(
+        key=lambda row: (
+            0 if row.get("session_open") else 1,
+            str(row.get("category") or ""),
+            str(row.get("asset") or ""),
+        )
+    )
+    return {
+        "current_by_category": current_by_category,
+        "open_count": sum(1 for row in rows if row.get("session_open")),
+        "blocked_count": sum(1 for row in rows if not row.get("session_open")),
+        "rows": rows[: max(4, int(limit or 12))],
+        "all_rows": rows,
+    }
+
+
+def _summarize_why_not_traded(journals: Any, near_misses: Any, *, limit: int = 6) -> Dict[str, Any]:
+    blocker_counts: Dict[str, int] = {}
+    asset_counts: Dict[str, Dict[str, Any]] = {}
+    for row in list(journals or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("decision") or "").upper() == "SURVIVED":
+            continue
+        asset = str(row.get("asset") or "").strip()
+        if not asset:
+            continue
+        blocker = str(
+            row.get("killed_by")
+            or row.get("blocked_reason")
+            or row.get("kill_reason")
+            or row.get("final_policy_reason")
+            or row.get("last_layer")
+            or "no_candidate"
+        ).strip() or "no_candidate"
+        blocker_label = blocker.split(":", 1)[0]
+        blocker_counts[blocker_label] = blocker_counts.get(blocker_label, 0) + 1
+        bucket = asset_counts.setdefault(
+            asset,
+            {"asset": asset, "count": 0, "top_blocker": blocker_label, "reason": blocker, "setup_quality": 0.0},
+        )
+        bucket["count"] += 1
+        bucket["setup_quality"] = max(float(bucket.get("setup_quality", 0.0) or 0.0), float(row.get("setup_quality", 0.0) or 0.0))
+
+    top_blockers = [
+        {"label": label, "count": count}
+        for label, count in sorted(blocker_counts.items(), key=lambda item: (-item[1], item[0]))
+    ][: max(3, int(limit or 6))]
+
+    top_assets = sorted(
+        asset_counts.values(),
+        key=lambda item: (
+            int(item.get("count", 0) or 0),
+            float(item.get("setup_quality", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )[: max(3, int(limit or 6))]
+
+    return {
+        "top_blockers": top_blockers,
+        "top_assets": top_assets,
+        "lead_blocker": top_blockers[0]["label"] if top_blockers else "",
+        "lead_count": top_blockers[0]["count"] if top_blockers else 0,
+    }
+
+
+def _build_watchlist_ladder(
+    top_opportunities: Any,
+    near_misses: Any,
+    session_radar: Dict[str, Any],
+    positions: Any,
+) -> Dict[str, Any]:
+    hot = []
+    for item in list(top_opportunities or [])[:4]:
+        if not isinstance(item, dict):
+            continue
+        hot.append(
+            {
+                "asset": str(item.get("asset") or ""),
+                "direction": str(item.get("direction") or item.get("signal") or "").upper(),
+                "opportunity_score": round(float(item.get("opportunity_score", 0.0) or 0.0), 3),
+                "confidence": round(float(item.get("confidence", 0.0) or 0.0) * 100.0, 1),
+            }
+        )
+
+    almost_ready = []
+    for item in list(near_misses or [])[:4]:
+        if not isinstance(item, dict):
+            continue
+        almost_ready.append(
+            {
+                "asset": str(item.get("asset") or ""),
+                "direction": str(item.get("direction") or "").upper(),
+                "reason": str(item.get("reason") or item.get("killed_by") or ""),
+                "opportunity_score": round(float(item.get("opportunity_score", 0.0) or 0.0), 3),
+                "setup_quality": round(float(item.get("setup_quality", 0.0) or 0.0), 3),
+            }
+        )
+
+    blocked = []
+    active_assets = {str(item.get("asset") or "") for item in list(positions or []) if isinstance(item, dict)}
+    for row in list(session_radar.get("all_rows") or []):
+        if row.get("session_open"):
+            continue
+        asset = str(row.get("asset") or "")
+        if asset in active_assets:
+            continue
+        blocked.append(
+            {
+                "asset": asset,
+                "current_session": str(row.get("current_session") or ""),
+                "allowed_sessions": list(row.get("allowed_sessions") or []),
+                "category": str(row.get("category") or ""),
+            }
+        )
+        if len(blocked) >= 4:
+            break
+
+    occupied = {item.get("asset") for item in hot + almost_ready + blocked if isinstance(item, dict)}
+    inactive = []
+    for row in list(session_radar.get("all_rows") or []):
+        asset = str(row.get("asset") or "")
+        if asset in occupied or asset in active_assets or not row.get("session_open"):
+            continue
+        inactive.append(
+            {
+                "asset": asset,
+                "category": str(row.get("category") or ""),
+                "preferred_interval": str(row.get("preferred_interval") or ""),
+            }
+        )
+        if len(inactive) >= 4:
+            break
+
+    return {
+        "hot": hot,
+        "almost_ready": almost_ready,
+        "blocked": blocked,
+        "inactive": inactive,
+    }
+
+
+def _build_trade_tape(positions: Any, closed_trades: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for pos in list(positions or []):
+        if not isinstance(pos, dict):
+            continue
+        opened_at = _coerce_utc_datetime(pos.get("open_time") or pos.get("entry_time"))
+        events.append(
+            {
+                "asset": str(pos.get("asset") or ""),
+                "direction": str(pos.get("direction") or pos.get("signal") or "").upper(),
+                "stage": "open",
+                "event_time": opened_at.isoformat() if opened_at else "",
+                "time_sort": opened_at.timestamp() if opened_at else 0.0,
+                "note": str(pos.get("strategy_id") or ""),
+                "pnl": round(float(pos.get("pnl", 0.0) or 0.0), 2),
+            }
+        )
+
+    for trade in list(closed_trades or []):
+        if not isinstance(trade, dict):
+            continue
+        exit_time = _coerce_utc_datetime(trade.get("exit_time") or trade.get("entry_time"))
+        stage = "partial" if _is_partial_close_trade_row(trade) else "closed"
+        events.append(
+            {
+                "asset": str(trade.get("asset") or ""),
+                "direction": str(trade.get("direction") or trade.get("signal") or "").upper(),
+                "stage": stage,
+                "event_time": exit_time.isoformat() if exit_time else "",
+                "time_sort": exit_time.timestamp() if exit_time else 0.0,
+                "note": str(trade.get("exit_reason") or trade.get("continuation_summary") or ""),
+                "pnl": round(float(trade.get("pnl", 0.0) or 0.0), 2),
+            }
+        )
+
+    events.sort(key=lambda item: float(item.get("time_sort", 0.0) or 0.0), reverse=True)
+    return events[: max(4, int(limit or 12))]
+
+
+def _load_authoritative_closed_trades(limit: int = 50) -> List[Dict[str, Any]]:
+    target = max(1, int(limit or 50))
+    rows: List[Dict[str, Any]] = []
+    try:
+        from services.db_pool import get_db
+
+        rows = list(get_db().get_recent_trades(limit=target) or [])
+    except Exception as exc:
+        logger.debug(f"[dashboard] closed-trade DB load fallback: {exc}")
+
+    if not rows:
+        try:
+            from core.state import state as runtime_state
+
+            rows = list(runtime_state.get_closed_positions(limit=target) or [])
+        except Exception as exc:
+            logger.debug(f"[dashboard] closed-trade runtime fallback failed: {exc}")
+            rows = []
+
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        metadata = dict(item.get("metadata") or item.get("trade_metadata") or {})
+        item["metadata"] = metadata
+        paper_execution = metadata.get("paper_execution")
+        if isinstance(paper_execution, dict):
+            net_pnl = paper_execution.get("net_pnl")
+            if net_pnl not in (None, ""):
+                try:
+                    item["pnl"] = float(net_pnl)
+                except Exception:
+                    pass
+        normalized.append(item)
+    return normalized
+
+
+def _build_trade_lifecycle(positions: Any, closed_trades: Any, journals: Any) -> Dict[str, Any]:
+    seed_count = 0
+    approved_count = 0
+    for row in list(journals or []):
+        if not isinstance(row, dict):
+            continue
+        seed_count += 1
+        if str(row.get("decision") or "").upper() == "SURVIVED":
+            approved_count += 1
+
+    raw_closed = [row for row in list(closed_trades or []) if isinstance(row, dict)]
+    partial_count = sum(1 for row in raw_closed if _is_partial_close_trade_row(row))
+    closed_count = sum(1 for row in raw_closed if not _is_partial_close_trade_row(row))
+    runner_count = sum(1 for row in raw_closed if bool(row.get("has_partial_closes")))
+
+    return {
+        "seeded": seed_count,
+        "approved": approved_count,
+        "opened": len(list(positions or [])),
+        "partial": partial_count,
+        "runner_closed": runner_count,
+        "closed": closed_count,
+    }
+
+
+def _summarize_asset_playbook_matrix(signals: Any, trades: Any, *, limit: int = 8) -> List[Dict[str, Any]]:
+    matrix: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    def _bucket(asset: str, playbook: str) -> Dict[str, Any]:
+        return matrix.setdefault(
+            (asset, playbook),
+            {
+                "asset": asset,
+                "playbook": playbook,
+                "live_count": 0,
+                "avg_confidence": 0.0,
+                "closed_count": 0,
+                "win_count": 0,
+                "total_pnl": 0.0,
+            },
+        )
+
+    for signal in list(signals or []):
+        if not isinstance(signal, dict):
+            continue
+        asset = str(signal.get("asset") or "").strip()
+        playbook = _playbook_name_from_payload(signal)
+        if not asset or not playbook:
+            continue
+        row = _bucket(asset, playbook)
+        row["live_count"] += 1
+        row["avg_confidence"] += float(signal.get("confidence", 0.0) or 0.0) * 100.0
+
+    for trade in list(trades or []):
+        if not isinstance(trade, dict) or _is_partial_close_trade_row(trade):
+            continue
+        asset = str(trade.get("canonical_asset") or trade.get("asset") or "").strip()
+        playbook = _playbook_name_from_trade(trade)
+        if not asset or not playbook:
+            continue
+        row = _bucket(asset, playbook)
+        pnl = float(trade.get("pnl", 0.0) or 0.0)
+        row["closed_count"] += 1
+        row["total_pnl"] += pnl
+        if pnl > 0.0:
+            row["win_count"] += 1
+
+    rows = []
+    for row in matrix.values():
+        if row["live_count"]:
+            row["avg_confidence"] = round(row["avg_confidence"] / row["live_count"], 1)
+        else:
+            row["avg_confidence"] = 0.0
+        row["win_rate"] = round((row["win_count"] / row["closed_count"]) * 100.0, 1) if row["closed_count"] else 0.0
+        row["total_pnl"] = round(float(row["total_pnl"] or 0.0), 2)
+        rows.append(row)
+
+    rows.sort(
+        key=lambda item: (
+            int(item.get("live_count", 0) or 0) + int(item.get("closed_count", 0) or 0),
+            float(item.get("total_pnl", 0.0) or 0.0),
+            float(item.get("avg_confidence", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    return rows[: max(4, int(limit or 8))]
+
+
+def _summarize_failure_archetypes(journals: Any, trades: Any, *, limit: int = 6) -> List[Dict[str, Any]]:
+    archetypes: Dict[str, Dict[str, Any]] = {}
+
+    def _touch(label: str, asset: str) -> None:
+        row = archetypes.setdefault(label, {"label": label, "count": 0, "assets": {}})
+        row["count"] += 1
+        if asset:
+            row["assets"][asset] = row["assets"].get(asset, 0) + 1
+
+    for row in list(journals or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("decision") or "").upper() == "SURVIVED":
+            continue
+        asset = str(row.get("asset") or "")
+        reason = str(row.get("kill_reason") or row.get("final_policy_reason") or row.get("blocked_reason") or row.get("killed_by") or "").lower()
+        if "session" in reason:
+            label = "Session window"
+        elif "depth" in reason or str(row.get("depth_mode") or "").lower() in {"synthetic_depth", "top_of_book"}:
+            label = "Hostile depth"
+        elif float(row.get("stop_hunt_risk", 0.0) or 0.0) >= 0.55:
+            label = "Stop-hunt risk"
+        elif float(row.get("exhaustion_risk", 0.0) or 0.0) >= 0.55:
+            label = "Exhaustion"
+        elif "cross" in reason:
+            label = "Cross-market conflict"
+        else:
+            label = "Pattern filter"
+        _touch(label, asset)
+
+    for trade in list(trades or []):
+        if not isinstance(trade, dict) or _is_partial_close_trade_row(trade):
+            continue
+        meta = dict(trade.get("metadata") or {})
+        execution = _extract_execution_feedback_fields(meta)
+        asset = str(trade.get("canonical_asset") or trade.get("asset") or "")
+        if bool(execution.get("late_entry")):
+            _touch("Late entry", asset)
+        if bool(execution.get("premature_stop")):
+            _touch("Premature stop", asset)
+
+    rows = []
+    for row in archetypes.values():
+        assets = sorted(row.pop("assets").items(), key=lambda item: (-item[1], item[0]))
+        row["top_assets"] = [asset for asset, _ in assets[:3]]
+        rows.append(row)
+    rows.sort(key=lambda item: (int(item.get("count", 0) or 0), str(item.get("label") or "")), reverse=True)
+    return rows[: max(3, int(limit or 6))]
+
+
+def _summarize_confidence_decomposition(signals: Any) -> Dict[str, Any]:
+    buckets = {
+        "structure": [],
+        "flow": [],
+        "broker": [],
+        "memory": [],
+        "cross_market": [],
+    }
+    for signal in list(signals or []):
+        if not isinstance(signal, dict):
+            continue
+        buckets["structure"].append(float(signal.get("opportunity_score", 0.0) or 0.0) * 100.0)
+        buckets["flow"].append(abs(float(signal.get("microstructure_score", 0.0) or 0.0)) * 100.0)
+        buckets["broker"].append(float(signal.get("broker_quality_score", 0.0) or 0.0) * 100.0)
+        buckets["memory"].append(float(signal.get("memory_score", 0.0) or 0.0))
+        cross_alignment = float(signal.get("cross_asset_alignment", 0.0) or 0.0)
+        cross_conf = float(signal.get("cross_asset_confidence", 0.0) or 0.0)
+        buckets["cross_market"].append(((abs(cross_alignment) + max(0.0, cross_conf)) / 2.0) * 100.0)
+
+    components = []
+    for label, values in buckets.items():
+        avg_score = round(sum(values) / len(values), 1) if values else 0.0
+        components.append({"label": label, "avg_score": avg_score, "sample_count": len(values)})
+    components.sort(key=lambda item: float(item.get("avg_score", 0.0) or 0.0), reverse=True)
+    return {
+        "components": components,
+        "top_component": components[0]["label"] if components else "",
+    }
+
+
+def _summarize_stop_concentration(positions: Any, *, limit: int = 5) -> List[Dict[str, Any]]:
+    groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for pos in list(positions or []):
+        if not isinstance(pos, dict):
+            continue
+        cluster = _risk_cluster_group(pos.get("asset"), pos.get("category"))
+        direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+        key = (cluster, direction)
+        row = groups.setdefault(
+            key,
+            {"label": cluster, "direction": direction, "count": 0, "avg_stop_distance_pct": 0.0, "assets": []},
+        )
+        entry = float(pos.get("entry_price", 0.0) or 0.0)
+        stop = float(pos.get("stop_loss", 0.0) or 0.0)
+        dist_pct = abs(entry - stop) / entry * 100.0 if entry and stop else 0.0
+        row["count"] += 1
+        row["avg_stop_distance_pct"] += dist_pct
+        row["assets"].append(str(pos.get("asset") or ""))
+
+    rows: List[Dict[str, Any]] = []
+    for row in groups.values():
+        count = int(row.get("count", 0) or 0)
+        row["avg_stop_distance_pct"] = round(float(row.get("avg_stop_distance_pct", 0.0) or 0.0) / count, 3) if count else 0.0
+        row["assets"] = list(dict.fromkeys(row.get("assets") or []))[:4]
+        rows.append(row)
+    rows.sort(
+        key=lambda item: (
+            int(item.get("count", 0) or 0),
+            -float(item.get("avg_stop_distance_pct", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    return rows[: max(3, int(limit or 5))]
+
+
+def _summarize_scenario_risk(positions: Any) -> List[Dict[str, Any]]:
+    scenarios = {
+        "USD spike": {"assets": {"EUR/USD", "GBP/USD", "AUD/USD", "USD/CAD", "USD/JPY", "XAU/USD", "XAG/USD"}},
+        "Risk-off": {"categories": {"indices", "crypto"}, "assets": {"XAU/USD"}},
+        "Oil shock": {"assets": {"WTI", "USD/CAD", "US30", "US100", "US500"}},
+        "Rates shock": {"assets": {"USD/JPY", "XAU/USD", "US100", "US500", "US30", "BTC-USD"}},
+    }
+    rows: List[Dict[str, Any]] = []
+    for label, rule in scenarios.items():
+        impacted = []
+        exposure = 0.0
+        for pos in list(positions or []):
+            if not isinstance(pos, dict):
+                continue
+            asset = str(pos.get("asset") or "")
+            category = str(pos.get("category") or "").lower()
+            if asset in set(rule.get("assets") or set()) or category in set(rule.get("categories") or set()):
+                impacted.append(asset)
+                exposure += float(pos.get("position_size", 0.0) or 0.0) * float(pos.get("entry_price", 0.0) or 0.0)
+        rows.append(
+            {
+                "label": label,
+                "count": len(impacted),
+                "exposure": round(exposure, 2),
+                "assets": list(dict.fromkeys(impacted))[:5],
+            }
+        )
+    rows.sort(key=lambda item: (float(item.get("exposure", 0.0) or 0.0), int(item.get("count", 0) or 0)), reverse=True)
+    return rows
+
+
+def _risk_cluster_group(asset: Any, category: Any) -> str:
+    symbol = str(asset or "").upper().replace("/", "").replace("-", "").replace("=F", "")
+    cat = str(category or "").lower()
+    if cat == "crypto":
+        if symbol in {"BTCUSD", "ETHUSD"}:
+            return "Crypto Majors"
+        return "Crypto Alts"
+    if cat == "indices":
+        if symbol == "UK100":
+            return "Europe Indices"
+        return "US Indices"
+    if cat == "commodities":
+        if symbol in {"XAUUSD", "XAGUSD"}:
+            return "Precious Metals"
+        if "WTI" in symbol or "LIGHTCMDUSD" in symbol:
+            return "Energy"
+        return "Commodities"
+    if cat == "forex":
+        if "JPY" in symbol:
+            return "JPY FX"
+        if symbol in {"EURUSD", "GBPUSD", "AUDUSD", "USDCAD"}:
+            return "USD FX"
+        return "FX Crosses"
+    return cat.title() or "Unclassified"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE ROUTES
@@ -1586,11 +2230,20 @@ def api_command_center():
     try:
         core = _core()
         perf = {}; daily = {}; positions = []; health = {}
+        closed_trades: List[Dict[str, Any]] = []
+        journals: List[Dict[str, Any]] = []
         if core:
             perf      = core.get_performance()
             daily     = core.get_daily_stats()
             positions = core.get_positions()
             health    = core.health_report()
+            closed_trades = _load_authoritative_closed_trades(limit=40)
+        try:
+            journal_payload = _response_to_dict(_call_view(api_phase7_signal_journal))
+            if bool(journal_payload.get("success")):
+                journals = list(journal_payload.get("journals") or [])
+        except Exception:
+            journals = []
 
         # Slow external calls cached 5 minutes
         _cc_slow = _cache_get("cc_slow")
@@ -1689,14 +2342,17 @@ def api_command_center():
         # Build signals list (Active Signals panel)
         signals = []
         for p in positions[:6]:
+            _asset = p.get("asset", "")
+            _cat = p.get("category", "")
             _cp2 = _live_prices.get(p.get("asset", ""), 0.0)
             _meta = dict(p.get("metadata") or {})
             _exec = _extract_execution_feedback_fields(_meta)
             _memory = _extract_memory_fields(_meta)
             _opportunity = _extract_opportunity_fields(_meta)
             _intel = _extract_signal_intelligence_fields(_meta)
+            _provenance = _extract_market_data_provenance_fields(_meta, asset=_asset, category=_cat)
             signals.append({
-                "asset":         p.get("asset", ""),
+                "asset":         _asset,
                 "signal":        p.get("direction", p.get("signal", "BUY")),
                 "direction":     p.get("direction", p.get("signal", "BUY")),
                 "confidence":    float(p.get("confidence", 0) or 0),
@@ -1704,7 +2360,7 @@ def api_command_center():
                 "current_price": _cp2,
                 "stop_loss":     float(p.get("stop_loss", 0) or 0),
                 "take_profit":   float(p.get("take_profit", 0) or 0),
-                "category":      p.get("category", ""),
+                "category":      _cat,
                 "strategy_id":   p.get("strategy_id", ""),
                 "pnl":           float(p.get("pnl", 0) or 0),
                 "metadata":      _meta,
@@ -1712,6 +2368,7 @@ def api_command_center():
                 **_memory,
                 **_opportunity,
                 **_intel,
+                **_provenance,
             })
 
         # Build enriched positions list (Open Positions table)
@@ -1725,6 +2382,17 @@ def api_command_center():
             _dir   = p.get("direction", p.get("signal", "BUY"))
             _asset = p.get("asset", "")
             _cat   = p.get("category", "forex")
+            try:
+                _lot_size = float(p.get("lot_size", 0) or 0)
+            except Exception:
+                _lot_size = 0.0
+            if not _lot_size and _size:
+                try:
+                    from risk.position_sizer import PositionSizer as _PS
+
+                    _lot_size = _PS.lots_from_size(_asset, _cat, _size)
+                except Exception:
+                    _lot_size = 0.0
             # Recalculate live P&L using pip-based formula
             _live_pnl = float(p.get("pnl", 0) or 0)
             if _cp3 and _entry and _size:
@@ -1738,6 +2406,7 @@ def api_command_center():
             _memory = _extract_memory_fields(_meta)
             _opportunity = _extract_opportunity_fields(_meta)
             _intel = _extract_signal_intelligence_fields(_meta)
+            _provenance = _extract_market_data_provenance_fields(_meta, asset=_asset, category=_cat)
             enriched_positions.append({
                 "trade_id":      p.get("trade_id", ""),
                 "asset":         _asset,
@@ -1748,8 +2417,11 @@ def api_command_center():
                 "current_price": _cp3,
                 "stop_loss":     float(p.get("stop_loss", 0) or 0),
                 "take_profit":   float(p.get("take_profit", 0) or 0),
+                "take_profit_levels": list(p.get("take_profit_levels", []) or []),
+                "tp_hit":        int(p.get("tp_hit", 0) or 0),
                 "pnl":           round(_live_pnl, 2),
                 "position_size": _size,
+                "lot_size":      round(_lot_size, 4),
                 "strategy_id":   p.get("strategy_id", ""),
                 "open_time":     str(p.get("open_time", "") or ""),
                 "risk_reward":   float(p.get("risk_reward", 0) or 0),
@@ -1758,6 +2430,7 @@ def api_command_center():
                 **_memory,
                 **_opportunity,
                 **_intel,
+                **_provenance,
             })
 
         signal_quality = {
@@ -1810,6 +2483,12 @@ def api_command_center():
 
         _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
         _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
+        near_misses = _summarize_near_misses(journals, limit=8)
+        session_radar = _build_session_radar(limit=12)
+        why_not_traded = _summarize_why_not_traded(journals, near_misses, limit=6)
+        watchlist_ladder = _build_watchlist_ladder(top_opportunities, near_misses, session_radar, enriched_positions)
+        trade_tape = _build_trade_tape(enriched_positions, closed_trades, limit=12)
+        trade_lifecycle = _build_trade_lifecycle(enriched_positions, closed_trades, journals)
 
         return jsonify({
             "success":          True,
@@ -1830,6 +2509,12 @@ def api_command_center():
             "signal_quality":   signal_quality,
             "top_opportunities": top_opportunities,
             "weak_positions":   weak_positions,
+            "near_misses":      near_misses,
+            "why_not_traded":   why_not_traded,
+            "session_radar":    session_radar,
+            "watchlist_ladder": watchlist_ladder,
+            "trade_tape":       trade_tape,
+            "trade_lifecycle":  trade_lifecycle,
             "positions":        enriched_positions,
             "provider_routing": _provider_routing_summary(),
             "signal_diagnostics": signal_diagnostics,
@@ -1855,10 +2540,13 @@ def api_signals_live():
 
         if core:
             for p in core.get_positions():
+                _asset = p.get("asset", "")
+                _cat = p.get("category", "forex")
                 _meta = dict(p.get("metadata") or {})
                 _exec = _extract_execution_feedback_fields(_meta)
                 _memory = _extract_memory_fields(_meta)
                 _opportunity = _extract_opportunity_fields(_meta)
+                _provenance = _extract_market_data_provenance_fields(_meta, asset=_asset, category=_cat)
                 d = (p.get("direction") or p.get("signal", "BUY")).upper()
                 c = float(p.get("confidence", 0))
                 if filt == "buy"  and d != "BUY":  continue
@@ -1868,7 +2556,7 @@ def api_signals_live():
                 _cur_price = 0.0
                 try:
                     _cp, _ = _get_fetcher().get_real_time_price(
-                        p.get("asset", ""), p.get("category", "forex")
+                        _asset, _cat
                     )
                     if _cp:
                         _cur_price = float(_cp)
@@ -1876,9 +2564,9 @@ def api_signals_live():
                     pass
 
                 signals.append({
-                    "asset":         p.get("asset", ""),
+                    "asset":         _asset,
                     "signal":        d, "direction": d,
-                    "category":      p.get("category", ""),
+                    "category":      _cat,
                     "confidence":    c,
                     "entry_price":   float(p.get("entry_price", 0)),
                     "current_price": _cur_price,
@@ -1895,6 +2583,7 @@ def api_signals_live():
                     **_memory,
                     **_opportunity,
                     **_extract_signal_intelligence_fields(_meta),
+                    **_provenance,
                 })
         else:
             with _sig_lock:
@@ -1913,6 +2602,11 @@ def api_signals_live():
                     **_extract_memory_fields(_meta),
                     **_extract_opportunity_fields(_meta),
                     **_extract_signal_intelligence_fields(_meta),
+                    **_extract_market_data_provenance_fields(
+                        _meta,
+                        asset=str(s.get("asset", "") or ""),
+                        category=str(s.get("category", "") or ""),
+                    ),
                 })
 
         buys     = sum(1 for s in signals if s.get("signal") == "BUY")
@@ -2517,8 +3211,11 @@ def api_chart_candles():
             "bars_requested": periods,
             "data_source": meta.get("source"),
             "data_source_class": meta.get("source_class"),
+            "provider_family": meta.get("provider_family") or meta.get("source"),
             "live_overlay_allowed": _history_allows_live_overlay(descriptor, meta),
             "live_price_source": descriptor.get("primary_provider"),
+            "provider_warning_code": str(meta.get("provider_error_code") or ""),
+            "provider_warning_message": str(meta.get("provider_error_message") or ""),
             "cached": False,
         }
         _cache_set(cache_key, payload, ttl=_chart_history_cache_ttl(asset, cat, used))
@@ -2928,8 +3625,11 @@ def api_ai_predictions_overview():
 
     sig_resp = _call_view(api_signals_live)
     sig_data = sig_resp.get_json() if hasattr(sig_resp, 'get_json') else json.loads(sig_resp.get_data(as_text=True))
+    journal_resp = _call_view(api_phase7_signal_journal)
+    journal_data = journal_resp.get_json() if hasattr(journal_resp, "get_json") else json.loads(journal_resp.get_data(as_text=True))
 
     signal_list = sig_data.get("signals") if sig_data.get("success") else []
+    journals = journal_data.get("journals") if journal_data.get("success") else []
     core = _core()
     closed_trades = []
     if core and hasattr(core, "get_closed_trades"):
@@ -2982,7 +3682,7 @@ def api_ai_predictions_overview():
                 "direction": s.get("direction", ""),
                 "score": round(float(s.get("execution_quality_score", 0.0) or 0.0), 1),
                 "samples": int(s.get("execution_feedback_sample_count", 0) or 0),
-                "subtitle": str(s.get("strategy_id") or s.get("category", "")),
+                "subtitle": str(_playbook_name_from_payload(s) or s.get("category", "")),
             }
             for s in sorted(
                 signal_list,
@@ -2995,10 +3695,18 @@ def api_ai_predictions_overview():
         ],
     }
     playbook_performance = _summarize_playbook_performance(closed_trades, days_back=days)
+    near_misses = _summarize_near_misses(journals, limit=6)
+    asset_playbook_matrix = _summarize_asset_playbook_matrix(signal_list, closed_trades, limit=10)
+    failure_archetypes = _summarize_failure_archetypes(journals, closed_trades, limit=6)
+    confidence_decomposition = _summarize_confidence_decomposition(signal_list)
     payload = {
         "success": True,
         "accuracy": accuracy,
         "signals": signal_list,
+        "near_misses": near_misses,
+        "asset_playbook_matrix": asset_playbook_matrix,
+        "failure_archetypes": failure_archetypes,
+        "confidence_decomposition": confidence_decomposition,
         "live_quality": live_quality,
         "live_leaders": live_leaders,
         "playbook_performance": playbook_performance,
@@ -3374,8 +4082,11 @@ def api_risk_portfolio():
             pass
 
         by_cat: Dict = {}
+        by_cluster: Dict[str, Dict[str, Any]] = {}
         for p in positions:
             cat = p.get("category", "unknown")
+            cluster = _risk_cluster_group(p.get("asset", ""), cat)
+            direction = str(p.get("direction") or p.get("signal") or "BUY").upper()
             meta = dict(p.get("metadata") or {})
             memory = _extract_memory_fields(meta)
             execution = _extract_execution_feedback_fields(meta)
@@ -3396,15 +4107,36 @@ def api_risk_portfolio():
                 "cross_conflict_count": 0,
                 "recent_block_count": 0,
             })
+            by_cluster.setdefault(cat and cluster or "Unclassified", {
+                "label": cluster or "Unclassified",
+                "count": 0,
+                "pnl": 0.0,
+                "exposure": 0.0,
+                "buy_count": 0,
+                "sell_count": 0,
+                "execution_scores": [],
+                "memory_scores": [],
+                "opportunity_scores": [],
+            })
             by_cat[cat]["count"]    += 1
             by_cat[cat]["pnl"]      += float(p.get("pnl") or 0)
             by_cat[cat]["exposure"] += float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
+            by_cluster[cluster]["count"] += 1
+            by_cluster[cluster]["pnl"] += float(p.get("pnl") or 0)
+            by_cluster[cluster]["exposure"] += float(p.get("position_size", 0)) * float(p.get("entry_price", 0))
+            if direction == "SELL":
+                by_cluster[cluster]["sell_count"] += 1
+            else:
+                by_cluster[cluster]["buy_count"] += 1
             if float(memory.get("memory_score", 0.0) or 0.0) > 0:
                 by_cat[cat]["memory_scores"].append(float(memory.get("memory_score", 0.0) or 0.0))
+                by_cluster[cluster]["memory_scores"].append(float(memory.get("memory_score", 0.0) or 0.0))
             if float(execution.get("execution_quality_score", 0.0) or 0.0) > 0:
                 by_cat[cat]["execution_scores"].append(float(execution.get("execution_quality_score", 0.0) or 0.0))
+                by_cluster[cluster]["execution_scores"].append(float(execution.get("execution_quality_score", 0.0) or 0.0))
             if float(opportunity.get("opportunity_score", 0.0) or 0.0) > 0:
                 by_cat[cat]["opportunity_scores"].append(float(opportunity.get("opportunity_score", 0.0) or 0.0))
+                by_cluster[cluster]["opportunity_scores"].append(float(opportunity.get("opportunity_score", 0.0) or 0.0))
             if float(intelligence.get("broker_quality_score", 0.0) or 0.0) > 0:
                 by_cat[cat]["broker_scores"].append(float(intelligence.get("broker_quality_score", 0.0) or 0.0))
             if abs(float(intelligence.get("microstructure_score", 0.0) or 0.0)) > 1e-9:
@@ -3434,6 +4166,30 @@ def api_risk_portfolio():
             info["avg_microstructure_score"] = round(sum(micro_scores) / len(micro_scores), 3) if micro_scores else 0.0
             info["avg_cross_asset_alignment"] = round(sum(cross_alignments) / len(cross_alignments), 3) if cross_alignments else 0.0
 
+        cluster_groups: List[Dict[str, Any]] = []
+        for info in by_cluster.values():
+            execution_scores = list(info.pop("execution_scores", []) or [])
+            memory_scores = list(info.pop("memory_scores", []) or [])
+            opportunity_scores = list(info.pop("opportunity_scores", []) or [])
+            count = int(info.get("count", 0) or 0)
+            buy_count = int(info.get("buy_count", 0) or 0)
+            sell_count = int(info.get("sell_count", 0) or 0)
+            info["avg_execution_quality"] = round(sum(execution_scores) / len(execution_scores), 1) if execution_scores else 0.0
+            info["avg_memory_score"] = round(sum(memory_scores) / len(memory_scores), 1) if memory_scores else 0.0
+            info["avg_opportunity_score"] = round(sum(opportunity_scores) / len(opportunity_scores), 3) if opportunity_scores else 0.0
+            info["direction_skew"] = "SELL" if sell_count > buy_count else "BUY" if buy_count > sell_count else "MIXED"
+            info["skew_ratio"] = round((max(buy_count, sell_count) / count) * 100.0, 1) if count else 0.0
+            info["pnl"] = round(float(info.get("pnl", 0.0) or 0.0), 2)
+            info["exposure"] = round(float(info.get("exposure", 0.0) or 0.0), 2)
+            cluster_groups.append(info)
+        cluster_groups.sort(
+            key=lambda item: (
+                float(item.get("exposure", 0.0) or 0.0),
+                int(item.get("count", 0) or 0),
+            ),
+            reverse=True,
+        )
+
         closed  = core.get_closed_trades(limit=100)
         wins    = [t for t in closed if float(t.get("pnl") or 0) > 0]
         losses  = [t for t in closed if float(t.get("pnl") or 0) <= 0 and float(t.get("pnl") or 0) != 0]
@@ -3443,6 +4199,7 @@ def api_risk_portfolio():
 
         execution_summary: Dict[str, Any] = {}
         execution_by_category: Dict[str, Any] = {}
+        weak_queue: List[Dict[str, Any]] = []
         try:
             from services.execution_feedback_service import get_service as get_execution_feedback_service
 
@@ -3457,6 +4214,13 @@ def api_risk_portfolio():
         except Exception:
             execution_summary = {}
             execution_by_category = {}
+        try:
+            weak_queue = _get_command_center_weak_positions(core, limit=5)
+        except Exception:
+            weak_queue = []
+
+        stop_concentration = _summarize_stop_concentration(positions, limit=5)
+        scenario_risk = _summarize_scenario_risk(positions)
 
         payload = {
             "success":        True,
@@ -3467,6 +4231,7 @@ def api_risk_portfolio():
             "drawdown_pct":   risk_stats.get("drawdown_pct", 0),
             "peak_balance":   risk_stats.get("peak_balance", balance),
             "by_category":    by_cat,
+            "cluster_groups": cluster_groups,
             "win_rate":       _wr(perf.get("win_rate", 0)),
             "profit_factor":  round(pf, 2),
             "avg_win":        round(avg_win, 2),
@@ -3508,6 +4273,9 @@ def api_risk_portfolio():
             },
             "execution_feedback": execution_summary,
             "execution_by_category": execution_by_category,
+            "stop_concentration": stop_concentration,
+            "scenario_risk": scenario_risk,
+            "weak_queue": weak_queue,
             "signal_diagnostics": _summarize_signal_diagnostics(
                 [_extract_signal_intelligence_fields(dict(p.get("metadata") or {})) for p in positions]
             ),
@@ -3892,8 +4660,9 @@ def api_trade_history():
     try:
         limit = int(request.args.get("limit", 50))
         raw_limit = max(limit * 3, limit + 10)
-        from core.state import rollup_closed_trade_history, state as runtime_state
-        trades = rollup_closed_trade_history(runtime_state.get_closed_positions(limit=raw_limit), limit=limit)
+        from core.state import rollup_closed_trade_history
+        from risk.position_sizer import PositionSizer as _PS
+        trades = rollup_closed_trade_history(_load_authoritative_closed_trades(limit=raw_limit), limit=limit)
         from config.config import TZ_NAME
         def _infer_partial_trade_shape(trade_id: str, metadata: dict, exit_reason: str) -> tuple[str | None, bool]:
             parent_trade_id = metadata.get("parent_trade_id")
@@ -3921,6 +4690,26 @@ def api_trade_history():
             d.update(_extract_memory_fields(_meta))
             d.update(_extract_opportunity_fields(_meta))
             d.update(_extract_signal_intelligence_fields(_meta))
+            d.update(
+                _extract_market_data_provenance_fields(
+                    _meta,
+                    asset=str(d.get("asset") or ""),
+                    category=str(d.get("category") or ""),
+                )
+            )
+            try:
+                lot_size = d.get("lot_size")
+                if lot_size in (None, ""):
+                    lot_size = _meta.get("lot_size")
+                if lot_size in (None, ""):
+                    lot_size = _PS.lots_from_size(
+                        str(d.get("asset") or ""),
+                        str(d.get("category") or "forex"),
+                        float(d.get("position_size", 0.0) or 0.0),
+                    )
+                d["lot_size"] = round(float(lot_size or 0.0), 4)
+            except Exception:
+                d["lot_size"] = 0.0
             try:
                 entry_raw = d.get("entry_time") or d.get("open_time")
                 exit_raw = d.get("exit_time")
@@ -4372,6 +5161,7 @@ def api_page_overview():
             "sentiment": _response_to_dict(_call_view(api_sentiment_dashboard)),
             "by_asset": _response_to_dict(_call_view(api_sentiment_by_asset)),
             "events": _response_to_dict(_call_view(api_market_events)),
+            "heatmap": _response_to_dict(_call_view(api_market_heatmap)),
         }
         ttl = 30
     elif page == "order_flow":

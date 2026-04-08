@@ -109,6 +109,12 @@ def _normalized_trade_metadata(trade_data: Dict) -> Dict[str, Any]:
     is_partial_close = trade_data.get("is_partial_close")
     if is_partial_close is not None:
         metadata["is_partial_close"] = bool(is_partial_close)
+    lot_size = trade_data.get("lot_size")
+    if lot_size not in (None, ""):
+        try:
+            metadata["lot_size"] = float(lot_size)
+        except Exception:
+            pass
     return metadata
 
 

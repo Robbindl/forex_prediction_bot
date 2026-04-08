@@ -1,10 +1,13 @@
 """
-Telegram Bot Manager - Singleton to prevent conflicts
-Handles stale PID files from crashed/force-closed previous runs
+Telegram Bot Manager - Singleton to prevent conflicts.
+
+Uses a PID file with process metadata so Windows PID reuse does not falsely
+block Telegram startup after a restart.
 """
 
-import os
 import atexit
+import json
+import os
 from pathlib import Path
 from config.config import DEBUG_FORCE_TELEGRAM, TELEGRAM_PID_FILE
 from utils.logger import logger
@@ -23,21 +26,76 @@ class TelegramManager:
             cls._instance.bot = None
         return cls._instance
 
-    def _is_pid_alive(self, pid: int) -> bool:
-        """Check if a PID is actually running on this OS."""
+    def _get_process_snapshot(self, pid: int) -> dict | None:
+        """Return identifying metadata for a live process, or None."""
         try:
-            if os.name == 'nt':  # Windows
-                import subprocess
-                result = subprocess.run(
-                    ['tasklist', '/FI', f'PID eq {pid}'],
-                    capture_output=True, text=True
-                )
-                return str(pid) in result.stdout
-            else:  # Linux/Mac
-                os.kill(pid, 0)
-                return True
-        except (OSError, ProcessLookupError):
+            import psutil
+
+            proc = psutil.Process(pid)
+            return {
+                "pid": int(pid),
+                "create_time": float(proc.create_time()),
+                "name": str(proc.name() or ""),
+                "exe": str(proc.exe() or ""),
+                "cmdline": [str(part) for part in (proc.cmdline() or []) if part],
+            }
+        except Exception:
+            return None
+
+    def _looks_like_bot_process(self, snapshot: dict) -> bool:
+        """Best-effort check for legacy plain-PID files."""
+        name = str(snapshot.get("name", "")).lower()
+        exe = str(snapshot.get("exe", "")).lower()
+        cmdline = " ".join(snapshot.get("cmdline") or []).lower()
+        repo_root = str(Path.cwd()).lower()
+        is_python = "python" in name or "python" in exe
+        return is_python and ("bot.py" in cmdline or repo_root in cmdline or "telegram" in cmdline)
+
+    def _read_pid_record(self) -> dict:
+        """Support both new JSON metadata and legacy plain PID files."""
+        raw = self._pid_file.read_text(encoding="utf-8").strip()
+        if not raw:
+            raise ValueError("empty pid file")
+        if raw.startswith("{"):
+            record = json.loads(raw)
+            if "pid" not in record:
+                raise ValueError("pid missing from record")
+            return record
+        return {"pid": int(raw), "legacy": True}
+
+    def _matches_live_owner(self, record: dict) -> bool:
+        """True only when the PID file still points at the same bot process."""
+        pid = int(record["pid"])
+        if pid == os.getpid():
             return False
+
+        snapshot = self._get_process_snapshot(pid)
+        if snapshot is None:
+            return False
+
+        if record.get("legacy"):
+            return self._looks_like_bot_process(snapshot)
+
+        try:
+            expected_create_time = float(record.get("create_time"))
+        except (TypeError, ValueError):
+            expected_create_time = None
+
+        if expected_create_time is None:
+            return self._looks_like_bot_process(snapshot)
+
+        return abs(float(snapshot["create_time"]) - expected_create_time) < 1.0
+
+    def _current_pid_record(self) -> dict:
+        """Metadata written to the PID file for the current process."""
+        pid = os.getpid()
+        snapshot = self._get_process_snapshot(pid) or {}
+        return {
+            "pid": pid,
+            "create_time": snapshot.get("create_time"),
+            "name": snapshot.get("name", ""),
+            "cmdline": snapshot.get("cmdline", []),
+        }
 
     def _check_pid_file(self) -> bool:
         """
@@ -48,16 +106,17 @@ class TelegramManager:
             return False
 
         try:
-            pid = int(self._pid_file.read_text().strip())
-            if self._is_pid_alive(pid) and pid != os.getpid():
+            record = self._read_pid_record()
+            pid = int(record["pid"])
+            if self._matches_live_owner(record):
                 logger.warning(f"Telegram bot already running (PID {pid})")
                 return True
             else:
-                # Stale file — previous run crashed or was force-closed
-                logger.info(f"Removing stale Telegram PID file (PID {pid} not running)")
+                # Stale file — previous run crashed, or PID was reused by another process.
+                logger.info(f"Removing stale Telegram PID file (PID {pid} not active for this bot)")
                 self._pid_file.unlink()
                 return False
-        except (ValueError, OSError):
+        except (ValueError, OSError, json.JSONDecodeError):
             # Corrupted or unreadable PID file — remove it
             logger.info("Removing invalid Telegram PID file")
             try:
@@ -99,8 +158,11 @@ class TelegramManager:
         try:
             from telegram_commander import TelegramCommander
 
-            # Write our PID
-            self._pid_file.write_text(str(os.getpid()))
+            # Write our process metadata so PID reuse does not cause false conflicts.
+            self._pid_file.write_text(
+                json.dumps(self._current_pid_record()),
+                encoding="utf-8",
+            )
 
             self.bot = TelegramCommander(token, chat_id, trading_system)
             self.bot.start()
@@ -129,10 +191,10 @@ class TelegramManager:
 
         try:
             if self._pid_file.exists():
-                owner_pid = self._pid_file.read_text().strip()
-                if owner_pid == str(os.getpid()):
+                owner_record = self._read_pid_record()
+                if str(owner_record.get("pid")) == str(os.getpid()):
                     self._pid_file.unlink()
-        except OSError:
+        except (OSError, ValueError, json.JSONDecodeError):
             pass
         self.bot = None
         self.is_running = False

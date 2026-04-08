@@ -99,7 +99,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .whale-title{font-size:12px;font-weight:600}
 .whale-meta{font-size:11px;color:var(--tx3);margin-top:1px}
 .whale-amount{font-size:13px;font-weight:700;color:var(--cy);white-space:nowrap}
-.pulse-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.pulse-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .pulse-card{background:var(--s2);border-radius:8px;padding:10px 12px}
 .pulse-val{font-size:20px;font-weight:700;margin-bottom:3px}
 .pulse-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
@@ -142,6 +142,22 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .topop-asset{font-size:13px;font-weight:700}
 .topop-meta{font-size:10px;color:var(--tx3);margin-top:5px;line-height:1.35}
 .topop-score{font-size:18px;font-weight:700;color:var(--cy)}
+.board-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
+.board-card{background:var(--s2);border:1px solid rgba(38,48,69,.8);border-radius:10px;padding:10px 12px;min-height:92px}
+.board-title{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.board-value{font-size:18px;font-weight:700;margin-bottom:4px}
+.board-note{font-size:11px;color:var(--tx2);line-height:1.4}
+.desk-list{display:flex;flex-direction:column;gap:8px}
+.desk-row{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.5)}
+.desk-row:last-child{border:none}
+.desk-main{flex:1}
+.desk-head{font-size:12px;font-weight:700}
+.desk-meta{font-size:11px;color:var(--tx3);line-height:1.4;margin-top:3px}
+.desk-side{font-size:11px;font-weight:700;white-space:nowrap}
+.tape-stage{padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.tape-open{background:rgba(0,208,132,.12);color:var(--gr)}
+.tape-partial{background:rgba(255,165,0,.15);color:var(--am)}
+.tape-closed{background:rgba(255,69,96,.12);color:var(--rd)}
 
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .metric-card,.panel{animation:fadeUp .3s ease both}
@@ -224,7 +240,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       <div class="metric-card mc-green" style="animation-delay:.05s">
         <div class="mc-label">Balance</div>
         <div class="mc-value gn" id="mBal">—</div>
-        <div class="mc-sub" id="mBalSub">Account equity</div>
+        <div class="mc-sub" id="mBalSub">Account value</div>
         <span class="mc-icon">💰</span>
       </div>
       <div class="metric-card mc-blue" style="animation-delay:.1s">
@@ -244,6 +260,55 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="mc-value pu" id="mPos">—</div>
         <div class="mc-sub">Active trades</div>
         <span class="mc-icon">📊</span>
+      </div>
+
+      <div class="panel panel-full" style="animation-delay:.22s">
+        <div class="panel-header">
+          <span class="panel-title">🎛️ Operator Focus</span>
+          <span class="panel-badge" id="focusBadge">Loading…</span>
+        </div>
+        <div class="panel-body">
+          <div class="pulse-grid" id="focusPanel">
+            <div class="pulse-card"><div class="pulse-val mu">—</div><div class="pulse-lbl">Loading</div><div class="pulse-sub">Loading…</div></div>
+            <div class="pulse-card"><div class="pulse-val mu">—</div><div class="pulse-lbl">Loading</div><div class="pulse-sub">Loading…</div></div>
+            <div class="pulse-card"><div class="pulse-val mu">—</div><div class="pulse-lbl">Loading</div><div class="pulse-sub">Loading…</div></div>
+            <div class="pulse-card"><div class="pulse-val mu">—</div><div class="pulse-lbl">Loading</div><div class="pulse-sub">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel panel-full" style="animation-delay:.23s">
+        <div class="panel-header">
+          <span class="panel-title">🚫 Why Not Traded</span>
+          <span class="panel-badge" id="whyNotBadge">Loading…</span>
+        </div>
+        <div class="panel-body">
+          <div class="board-grid" id="whyNotPanel">
+            <div class="board-card"><div class="board-title">Loading</div><div class="board-value mu">—</div><div class="board-note">Loading…</div></div>
+            <div class="board-card"><div class="board-title">Loading</div><div class="board-value mu">—</div><div class="board-note">Loading…</div></div>
+            <div class="board-card"><div class="board-title">Loading</div><div class="board-value mu">—</div><div class="board-note">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel panel-wide" style="animation-delay:.235s">
+        <div class="panel-header">
+          <span class="panel-title">📡 Session Radar</span>
+          <span class="panel-badge" id="sessionRadarBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="sessionRadarPanel">
+          <div class="empty">Loading…</div>
+        </div>
+      </div>
+
+      <div class="panel panel-wide" style="animation-delay:.24s">
+        <div class="panel-header">
+          <span class="panel-title">🪜 Watchlist Ladder</span>
+          <span class="panel-badge" id="watchlistBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="watchlistPanel">
+          <div class="empty">Loading…</div>
+        </div>
       </div>
 
       <!-- Row 2: signals + positions + sentiment + whale -->
@@ -285,6 +350,29 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="panel-body" id="whalePanel" style="flex:1;overflow-y:auto;min-height:120px"><div class="spinner">Loading…</div></div>
       </div>
 
+      <div class="panel panel-wide" style="animation-delay:.37s">
+        <div class="panel-header">
+          <span class="panel-title">🧪 Near-Miss Board</span>
+          <span class="panel-badge" id="nearMissBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="nearMissPanel">
+          <div class="empty">Loading…</div>
+        </div>
+      </div>
+
+      <div class="panel panel-wide" style="animation-delay:.38s">
+        <div class="panel-header">
+          <span class="panel-title">🔁 Trade Lifecycle</span>
+          <span class="panel-badge" id="lifecycleBadge">Loading…</span>
+        </div>
+        <div class="panel-body">
+          <div class="board-grid" id="lifecyclePanel">
+            <div class="board-card"><div class="board-title">Loading</div><div class="board-value mu">—</div><div class="board-note">Loading…</div></div>
+            <div class="board-card"><div class="board-title">Loading</div><div class="board-value mu">—</div><div class="board-note">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Row 3: open positions full width -->
       <div class="panel panel-full" style="animation-delay:.4s">
         <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between">
@@ -323,13 +411,23 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <div class="pos-table-wrap" style="flex:1;overflow-x:auto;overflow-y:auto;max-height:300px">
             <table class="pos-table" id="posTable">
               <thead><tr>
-                <th>Asset</th><th>Dir</th><th>Entry</th><th>Current</th>
+                <th>Asset</th><th>Dir</th><th>Lot</th><th>Entry</th><th>Current</th>
                 <th>Stop</th><th>Target</th><th>P&L</th><th>Conf</th>
                 <th>Opened</th><th>Action</th>
               </tr></thead>
-              <tbody id="posBody"><tr><td colspan="10" class="empty">No open positions</td></tr></tbody>
+              <tbody id="posBody"><tr><td colspan="11" class="empty">No open positions</td></tr></tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <div class="panel panel-full" style="margin-top:16px">
+        <div class="panel-header">
+          <span class="panel-title">🎞️ Trade Tape</span>
+          <span class="panel-badge" id="tradeTapeBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="tradeTapePanel">
+          <div class="empty">Loading…</div>
         </div>
       </div>
 
@@ -371,6 +469,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
               <tr>
                 <th>Asset</th>
                 <th>Dir</th>
+                <th>Lot</th>
                 <th>Entry</th>
                 <th>Exit</th>
                 <th>Opened</th>
@@ -382,7 +481,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
               </tr>
             </thead>
             <tbody id="historyBody">
-              <tr><td colspan="10" class="empty">Loading history…</td></tr>
+              <tr><td colspan="11" class="empty">Loading history…</td></tr>
             </tbody>
           </table>
         </div>
@@ -415,6 +514,18 @@ function fmtNum(n,dec=2){return n==null?'—':(n>=0?'+':'')+Number(n).toFixed(de
 function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
 function colorClass(n){return n>=0?'gn':'rd'}
 function humanToken(v){return String(v||'').replace(/_/g,' ')}
+function provenanceLine(item){
+  const bits=[];
+  const hist=item.history_source?`Hist ${humanToken(item.history_source)}`:'';
+  const live=(item.live_source||item.runtime_primary_provider)?`Live ${humanToken(item.live_source||item.runtime_primary_provider)}`:'';
+  const quote=item.quote_mode?humanToken(item.quote_mode):'';
+  const histClass=item.history_source_class?humanToken(item.history_source_class):'';
+  if(hist)bits.push(hist);
+  if(live)bits.push(live);
+  if(quote)bits.push(quote);
+  if(histClass)bits.push(histClass);
+  return bits.join(' · ');
+}
 function parseDashboardTime(raw){
   if(!raw)return null;
   const text=String(raw).trim();
@@ -446,6 +557,69 @@ function recentPatternLine(item){
   if(item.recent_pattern_block_new_entries)return 'Pattern blocked';
   if(notes.length)return humanToken(notes[0]);
   return '';
+}
+function titleToken(value,fallback='—'){
+  const raw=String(value||'').trim();
+  if(!raw)return fallback;
+  return raw.replace(/_/g,' ').replace(/\b\w/g,m=>m.toUpperCase());
+}
+function stageClass(stage){
+  const key=String(stage||'').toLowerCase();
+  if(key==='open')return 'tape-open';
+  if(key==='partial')return 'tape-partial';
+  return 'tape-closed';
+}
+function renderCommandBoardCards(targetId, items, emptyText){
+  const el=document.getElementById(targetId);
+  if(!el)return;
+  if(!items||!items.length){
+    el.innerHTML=`<div class="empty" style="grid-column:1/-1">${emptyText}</div>`;
+    return;
+  }
+  el.innerHTML=items.map(item=>`
+    <div class="board-card">
+      <div class="board-title">${item.title||'Desk read'}</div>
+      <div class="board-value ${item.valueClass||'mu'}">${item.value??'—'}</div>
+      <div class="board-note">${item.note||''}</div>
+    </div>
+  `).join('');
+}
+function renderDeskRows(targetId, items, emptyText){
+  const el=document.getElementById(targetId);
+  if(!el)return;
+  if(!items||!items.length){
+    el.innerHTML=`<div class="empty">${emptyText}</div>`;
+    return;
+  }
+  el.innerHTML=`<div class="desk-list">${items.map(item=>`
+    <div class="desk-row">
+      <div class="desk-main">
+        <div class="desk-head">${item.head||'—'}</div>
+        <div class="desk-meta">${item.meta||''}</div>
+      </div>
+      <div class="desk-side ${item.sideClass||''}">${item.side||''}</div>
+    </div>
+  `).join('')}</div>`;
+}
+function renderTradeTape(events){
+  const panel=document.getElementById('tradeTapePanel');
+  const badge=document.getElementById('tradeTapeBadge');
+  if(!panel||!badge)return;
+  badge.textContent=events&&events.length?`${events.length} recent`:'Quiet';
+  if(!events||!events.length){
+    panel.innerHTML='<div class="empty">No recent trade lifecycle events</div>';
+    return;
+  }
+  panel.innerHTML=`<div class="desk-list">${events.map(item=>`
+    <div class="desk-row">
+      <span class="tape-stage ${stageClass(item.stage)}">${titleToken(item.stage,'event')}</span>
+      <div class="desk-main">
+        <div class="desk-head">${item.asset||'—'} ${item.direction||''}</div>
+        <div class="desk-meta">${item.note||'No event note'}${item.event_time?` · ${fmtDashboardTime(item.event_time)}`:''}</div>
+      </div>
+      <div class="desk-side ${Number(item.pnl||0)>=0?'gn':'rd'}">${item.pnl==null?'—':fmtMoney(item.pnl)}</div>
+    </div>
+  `).join('')}</div>`;
 }
 
 function setActionStatus(message,type='info'){
@@ -511,8 +685,22 @@ function setCommandCenterUnavailable(message){
   document.getElementById('topOpsPanel').style.display = 'grid';
   document.getElementById('topOpsPanel').innerHTML = `<div class="empty" style="grid-column:1/-1;padding:14px 0">${msg}</div>`;
   document.getElementById('whalePanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('focusBadge').textContent = 'Unavailable';
+  document.getElementById('focusPanel').innerHTML = `<div class="empty" style="grid-column:1/-1">${msg}</div>`;
   document.getElementById('sentLabel').textContent = 'Unavailable';
   document.getElementById('pulseChips').innerHTML = '<span class="mini-chip bad">API timeout</span>';
+  document.getElementById('whyNotBadge').textContent = 'Unavailable';
+  document.getElementById('whyNotPanel').innerHTML = `<div class="empty" style="grid-column:1/-1">${msg}</div>`;
+  document.getElementById('sessionRadarBadge').textContent = 'Unavailable';
+  document.getElementById('sessionRadarPanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('watchlistBadge').textContent = 'Unavailable';
+  document.getElementById('watchlistPanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('nearMissBadge').textContent = 'Unavailable';
+  document.getElementById('nearMissPanel').innerHTML = `<div class="empty">${msg}</div>`;
+  document.getElementById('lifecycleBadge').textContent = 'Unavailable';
+  document.getElementById('lifecyclePanel').innerHTML = `<div class="empty" style="grid-column:1/-1">${msg}</div>`;
+  document.getElementById('tradeTapeBadge').textContent = 'Unavailable';
+  document.getElementById('tradeTapePanel').innerHTML = `<div class="empty">${msg}</div>`;
 }
 async function fetchCommandCenterOverview(){
   const now = Date.now();
@@ -582,6 +770,53 @@ async function loadMain(){
     document.getElementById('providerStatus').textContent=providerLabel;
     document.getElementById('engineBadge').textContent=running?'Live':'Offline';
     document.getElementById('engineBadge').className='tb-badge '+(running?'badge-live':'badge-off');
+    const topOpportunities = d.top_opportunities || [];
+    const lead = topOpportunities[0] || null;
+    const positions = d.positions || [];
+    const categoryCounts = positions.reduce((acc, item) => {
+      const key = String(item.category || 'unknown');
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const leadCategory = Object.entries(categoryCounts).sort((a,b) => b[1] - a[1])[0];
+    const supportiveCount = Number(signalDiagnostics.broker_supportive_count || 0);
+    const fragileCount = Number(signalDiagnostics.broker_fragile_count || 0);
+    const trueDepthCount = Number(signalDiagnostics.true_depth_count || 0);
+    const syntheticDepthCount = Number(signalDiagnostics.synthetic_depth_count || 0);
+    const focusState = lead ? 'Armed' : posLen ? 'Managing' : 'Quiet';
+    document.getElementById('focusBadge').textContent = focusState;
+    document.getElementById('focusPanel').innerHTML = [
+      {
+        value: lead ? `${lead.asset || '—'} ${String(lead.direction || lead.signal || '').toUpperCase()}` : 'No queue',
+        valueClass: lead ? (String(lead.direction || lead.signal || '').toUpperCase() === 'SELL' ? 'rd' : 'gn') : 'mu',
+        label: 'Next Candidate',
+        sub: lead ? `Opp ${Number(lead.opportunity_score || 0).toFixed(3)} · Conf ${Math.round(Number(lead.confidence || 0) * 100)}%` : 'No setup is currently strong enough to lead the desk',
+      },
+      {
+        value: providerRouting.summary_label || 'Unavailable',
+        valueClass: providerRouting.summary_label ? 'cy' : 'mu',
+        label: 'Feed Spine',
+        sub: providerRouting.fallback_label ? `Fallback ${providerRouting.fallback_label}` : 'No published fallback split',
+      },
+      {
+        value: posLen ? `${posLen} open` : 'Flat',
+        valueClass: posLen ? 'pu' : 'mu',
+        label: 'Book State',
+        sub: leadCategory ? `${leadCategory[0]} leads with ${leadCategory[1]} positions` : 'No open exposure in the book',
+      },
+      {
+        value: `${supportiveCount}/${fragileCount}`,
+        valueClass: fragileCount ? 'am' : supportiveCount ? 'gn' : 'mu',
+        label: 'Broker Pressure',
+        sub: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : 'No live pressure diagnostics yet',
+      },
+    ].map(item => `
+      <div class="pulse-card">
+        <div class="pulse-val ${item.valueClass}">${item.value}</div>
+        <div class="pulse-lbl">${item.label}</div>
+        <div class="pulse-sub">${item.sub}</div>
+      </div>
+    `).join('');
   }catch(e){console.error('[CC] metrics:',e);}
 
   // ── Active signals ───────────────────────────────────────────────────────
@@ -604,6 +839,7 @@ async function loadMain(){
         const microQ=Number(s.microstructure_score||0);
         const detail=`Mem ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'} · Opp ${opp?opp.toFixed(3):'—'}`;
         const brokerState=humanToken(s.broker_agreement_state||s.broker_context||'');
+        const provenance=provenanceLine(s);
         const crossPeer=s.cross_asset_primary_peer||'';
         const crossRelation=humanToken(s.cross_asset_primary_relation||'');
         const crossAlign=Number(s.cross_asset_alignment||0);
@@ -614,6 +850,7 @@ async function loadMain(){
           <div style="flex:1">
             <div class="sig-asset">${s.asset||'?'}</div>
             <div class="sig-meta">${s.category||''} · ${detail}</div>
+            ${provenance?`<div class="sig-meta">${provenance}</div>`:''}
             <div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>
             ${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}
             ${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}
@@ -626,6 +863,82 @@ async function loadMain(){
       }).join('');
     }
   }catch(e){console.error('[CC] signals:',e);}
+
+  try{
+    const why=d.why_not_traded||{};
+    const leadBlocker=titleToken(why.lead_blocker,'No blocker');
+    document.getElementById('whyNotBadge').textContent=why.lead_count?`${leadBlocker} · ${why.lead_count}`:'Clear';
+    renderCommandBoardCards('whyNotPanel',[
+      {
+        title:'Lead blocker',
+        value:leadBlocker,
+        valueClass:why.lead_count?'am':'gn',
+        note:why.lead_count?`${why.lead_count} recent rejects were dominated by this blocker.`:'No repeated blocker is dominating the journal right now.',
+      },
+      ...((why.top_blockers||[]).slice(0,2).map(item=>({
+        title:titleToken(item.label,'Blocker'),
+        value:String(item.count||0),
+        valueClass:Number(item.count||0)>=3?'rd':'am',
+        note:'Recent reject count across the journal stack.',
+      }))),
+      ...((why.top_assets||[]).slice(0,3).map(item=>({
+        title:item.asset||'—',
+        value:titleToken(item.top_blocker,'Blocked'),
+        valueClass:'cy',
+        note:`${item.count||0} rejects · setup ${(Number(item.setup_quality||0)).toFixed(2)}`,
+      }))),
+    ].slice(0,6),'No recurring blockers in the recent journal');
+
+    const radar=d.session_radar||{};
+    document.getElementById('sessionRadarBadge').textContent=radar.open_count!=null?`${radar.open_count} open / ${radar.blocked_count||0} blocked`:'Unavailable';
+    renderDeskRows('sessionRadarPanel',(radar.rows||[]).slice(0,8).map(item=>({
+      head:`${item.asset} · ${titleToken(item.current_session,'Off')}`,
+      meta:item.session_open
+        ? `${titleToken(item.category)} open now · ${item.preferred_interval||'—'} · ${item.primary_provider||'—'}`
+        : `Allowed ${((item.allowed_sessions||[]).map(v=>titleToken(v))).join(', ') || 'n/a'} · ${item.primary_provider||'—'}`,
+      side:item.session_open?'OPEN':'BLOCKED',
+      sideClass:item.session_open?'gn':'am',
+    })),'Session radar unavailable');
+
+    const ladder=d.watchlist_ladder||{};
+    const sections=[
+      {label:'Hot', items:ladder.hot||[], cls:'gn', text:item=>`${item.asset||'—'} ${item.direction||''}`, note:item=>`Opp ${(Number(item.opportunity_score||0)).toFixed(3)} · Conf ${(Number(item.confidence||0)).toFixed(0)}%`},
+      {label:'Almost Ready', items:ladder.almost_ready||[], cls:'am', text:item=>`${item.asset||'—'} ${item.direction||''}`, note:item=>`${titleToken(item.reason,'Near miss')} · setup ${(Number(item.setup_quality||0)).toFixed(3)}`},
+      {label:'Blocked', items:ladder.blocked||[], cls:'rd', text:item=>`${item.asset||'—'} · ${titleToken(item.current_session,'Off')}`, note:item=>`Allowed ${((item.allowed_sessions||[]).map(v=>titleToken(v))).join(', ') || 'n/a'}`},
+      {label:'Inactive', items:ladder.inactive||[], cls:'mu', text:item=>`${item.asset||'—'} · ${titleToken(item.category,'Unknown')}`, note:item=>`${item.preferred_interval||'—'} playbook interval`},
+    ];
+    document.getElementById('watchlistBadge').textContent=sections.reduce((sum,section)=>sum+(section.items?.length||0),0)+' staged';
+    document.getElementById('watchlistPanel').innerHTML='<div class="board-grid">'+sections.map(section=>`
+      <div class="board-card">
+        <div class="board-title">${section.label}</div>
+        ${section.items && section.items.length ? section.items.slice(0,3).map(item=>`
+          <div class="desk-meta" style="margin-top:6px"><span class="${section.cls}" style="font-weight:700">${section.text(item)}</span><br>${section.note(item)}</div>
+        `).join('') : '<div class="board-note">No assets in this ladder state.</div>'}
+      </div>
+    `).join('')+'</div>';
+
+    const nearMisses=d.near_misses||[];
+    document.getElementById('nearMissBadge').textContent=nearMisses.length?`${nearMisses.length} tracked`:'Clear';
+    renderDeskRows('nearMissPanel',nearMisses.slice(0,6).map(item=>({
+      head:`${item.asset||'—'} ${String(item.direction||'').toUpperCase() || ''}`,
+      meta:`${titleToken(item.reason||item.killed_by||'no candidate')} · Opp ${(Number(item.opportunity_score||0)).toFixed(3)} · Setup ${(Number(item.setup_quality||0)).toFixed(3)}`,
+      side:item.session_label?titleToken(item.session_label):'NEAR',
+      sideClass:'am',
+    })),'No near-miss setups right now');
+
+    const lifecycle=d.trade_lifecycle||{};
+    document.getElementById('lifecycleBadge').textContent=`${lifecycle.seeded||0} seed → ${lifecycle.closed||0} closed`;
+    renderCommandBoardCards('lifecyclePanel',[
+      {title:'Seeded',value:String(lifecycle.seeded||0),valueClass:'cy',note:'Raw journal signals that reached the seed stage.'},
+      {title:'Approved',value:String(lifecycle.approved||0),valueClass:'gn',note:'Signals that survived the review stack.'},
+      {title:'Opened',value:String(lifecycle.opened||0),valueClass:'pu',note:'Live positions currently running in the book.'},
+      {title:'Partial',value:String(lifecycle.partial||0),valueClass:(lifecycle.partial||0)?'am':'mu',note:'Partial exits recorded in the recent lifecycle.'},
+      {title:'Runner Closed',value:String(lifecycle.runner_closed||0),valueClass:(lifecycle.runner_closed||0)?'bl':'mu',note:'Closed trades that previously scaled out.'},
+      {title:'Closed',value:String(lifecycle.closed||0),valueClass:(lifecycle.closed||0)?'rd':'mu',note:'Fully closed parent trades in the recent window.'},
+    ],'No lifecycle data');
+
+    renderTradeTape(d.trade_tape||[]);
+  }catch(e){console.error('[CC] desk panels:',e);}
 
   // ── Sentiment ────────────────────────────────────────────────────────────
   try{
@@ -730,7 +1043,7 @@ async function loadHistory(){
     const filter=document.getElementById('historyFilter')?.value||'all';
     const d=await fetchProtectedJson(`/api/trade-history?limit=50&no_cache=1&_=${Date.now()}`, {timeoutMs: 12000});
     if(!d.success){
-      document.getElementById('historyBody').innerHTML='<tr><td colspan="10" class="empty">Trade history unavailable</td></tr>';
+      document.getElementById('historyBody').innerHTML='<tr><td colspan="11" class="empty">Trade history unavailable</td></tr>';
       return;
     }
     let trades=d.trades||[];
@@ -747,7 +1060,7 @@ async function loadHistory(){
     document.getElementById('historyCount').textContent=trades.length;
     const tbody=document.getElementById('historyBody');
     if(!trades.length){
-      tbody.innerHTML='<tr><td colspan="10" class="empty">No closed trades</td></tr>';
+      tbody.innerHTML='<tr><td colspan="11" class="empty">No closed trades</td></tr>';
       return;
     }
 
@@ -773,11 +1086,18 @@ async function loadHistory(){
       const pnl=Number(t.pnl||0);
       const pnlCol=pnl>=0?'var(--gr)':'var(--rd)';
       const dir=((t.direction||t.signal||'BUY')+'').toUpperCase();
+      const lot=Number(t.lot_size||0);
       const ep=Number(t.entry_price||0);
       const xp=Number(t.exit_price||0);
       const execQ=Number(t.execution_quality_score||0);
       const rrRealized=Number(t.rr_realized||0);
+      const provenance=provenanceLine(t);
       const fmt=n=>n>0?(sm(n)?n.toFixed(5):n.toFixed(2)):'—';
+      const fmtLot=n=>{
+        if(!(n>0)) return '—';
+        if(n>=1) return n.toFixed(2);
+        return n.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+      };
       const dur=t.duration_str||'—';  // pre-calculated server-side in UTC
       const catEmoji={forex:'💱',crypto:'₿',commodities:'🥇',indices:'📈'}[t.category]||'📊';
       const execTags=[];
@@ -789,19 +1109,23 @@ async function loadHistory(){
       const reasonMeta=execTags.length
         ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${execTags.slice(0,3).join(' · ')}</div>`
         : '';
+      const provenanceMeta=provenance
+        ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${provenance}</div>`
+        : '';
       return`<tr style="opacity:0.9">
         <td>
           <strong>${t.asset||'?'}</strong>
           <span style="font-size:10px;color:var(--tx3);margin-left:4px">${catEmoji}</span>
         </td>
         <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
+        <td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td>
         <td style="font-family:monospace;font-size:11px">${fmt(ep)}</td>
         <td style="font-family:monospace;font-size:11px">${fmt(xp)}</td>
         <td style="font-size:11px;color:var(--tx3)">${fmtDashboardTime(t.entry_time)}</td>
         <td style="font-size:11px;color:var(--tx3)">${fmtDashboardTime(t.exit_time)}</td>
         <td style="font-size:11px;color:var(--am)">${dur}</td>
         <td style="font-weight:700;color:${pnlCol}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-        <td style="font-size:10px;color:var(--tx3)">${reasonLabel(t.display_exit_reason||t.exit_reason)}${reasonMeta}${t.continuation_summary?`<div style="font-size:10px;color:var(--am);margin-top:2px">${t.continuation_summary}</div>`:''}</td>
+        <td style="font-size:10px;color:var(--tx3)">${reasonLabel(t.display_exit_reason||t.exit_reason)}${reasonMeta}${provenanceMeta}${t.continuation_summary?`<div style="font-size:10px;color:var(--am);margin-top:2px">${t.continuation_summary}</div>`:''}</td>
         <td style="font-size:11px">${t.confidence?Math.round(t.confidence*100)+'%':'—'}</td>
       </tr>`;
     }).join('');
@@ -925,15 +1249,20 @@ function renderPositions(pos){
   const tbody=document.getElementById('posBody');
   if(!tbody)return;
   if(!pos.length){
-    tbody.innerHTML='<tr><td colspan="10" class="empty">No open positions</td></tr>';
+    tbody.innerHTML='<tr><td colspan="11" class="empty">No open positions</td></tr>';
     return;
   }
   tbody.innerHTML=pos.map(p=>{
     const dir=(p.direction||p.signal||'BUY').toUpperCase();
     const pnl=Number(p.pnl||0);
+    const lot=Number(p.lot_size||0);
     const e=Number(p.entry_price||0);
     const sl=Number(p.stop_loss||0);
     const tp=Number(p.take_profit||0);
+    const tpLevels=Array.isArray(p.take_profit_levels)?p.take_profit_levels.map(v=>Number(v||0)).filter(v=>v>0):[];
+    const tpHit=Math.max(0, Number(p.tp_hit||0));
+    const nextTp=tpLevels.length?Number(tpLevels[Math.min(tpHit, tpLevels.length-1)]||0):tp;
+    const runnerTp=tpLevels.length>1 && tpHit < tpLevels.length-1 ? Number(tpLevels[tpLevels.length-1]||0) : 0;
     const cur=Number(p.current_price||0);
     const execQ=Number(p.execution_quality_score||0);
     const execSamples=Number(p.execution_feedback_sample_count||0);
@@ -947,11 +1276,17 @@ function renderPositions(pos){
     const brokerQ=Number(p.broker_quality_score||0);
     const microQ=Number(p.microstructure_score||0);
     const brokerState=humanToken(p.broker_agreement_state||p.broker_context||'');
+    const provenance=provenanceLine(p);
     const crossPeer=p.cross_asset_primary_peer||'';
     const crossAlign=Number(p.cross_asset_alignment||0);
     const patternLine=recentPatternLine(p);
     const sm=e>0&&e<10;
     const fmt=n=>n>0?(sm?n.toFixed(5):n.toFixed(2)):'—';
+    const fmtLot=n=>{
+      if(!(n>0)) return '—';
+      if(n>=1) return n.toFixed(2);
+      return n.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+    };
     const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
     const tid=p.trade_id||'';
     // Open time + duration — force UTC parsing
@@ -971,14 +1306,15 @@ function renderPositions(pos){
     }catch(ex){}
     // Progress bar toward TP
     let progress=0;
-    if(tp&&e&&sl){
-      const tpDist=Math.abs(tp-e);
+    if(nextTp&&e&&sl){
+      const tpDist=Math.abs(nextTp-e);
       const curDist=dir==='BUY'?cur-e:e-cur;
       progress=tpDist>0?Math.max(0,Math.min(100,(curDist/tpDist*100))):0;
     }
     const pBar=`<div style="height:3px;background:var(--bd);border-radius:2px;margin-top:2px"><div style="height:3px;width:${progress.toFixed(0)}%;background:${progress>80?'var(--gr)':progress>50?'var(--am)':'var(--bl)'};border-radius:2px;transition:width .5s"></div></div>`;
     const execMeta=execSamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Exec ${execQ.toFixed(0)} · n${execSamples}</div>`:'';
     const memoryMeta=memorySamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Memory ${memoryScore.toFixed(0)} · n${memorySamples}</div>`:'';
+    const provenanceMeta=provenance?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${provenance}</div>`:'';
     const brokerMeta=(brokerQ||brokerState)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''}</div>`:'';
     const microMeta=`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Micro ${microQ.toFixed(2)} · ${depthLabel(p)}</div>`;
     const postureMeta=(rrMult!==1||stopMult!==1)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">RR x${rrMult.toFixed(2)} · SL x${stopMult.toFixed(2)}</div>`:'';
@@ -986,13 +1322,15 @@ function renderPositions(pos){
     const noteMeta=execNotes.length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${execNotes.slice(0,2).join(' · ')}</div>`:'';
     const crossMeta=crossPeer?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${crossAlign>=0?'Cross support':'Cross conflict'} via ${crossPeer}</div>`:'';
     const patternMeta=patternLine?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${patternLine}</div>`:'';
+    const targetMeta=runnerTp && Math.abs(runnerTp-nextTp)>1e-9 ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">Runner ${fmt(runnerTp)}</div>` : '';
     return`<tr>
-      <td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${brokerMeta}${microMeta}${crossMeta}${patternMeta}${pBar}</td>
+      <td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${provenanceMeta}${brokerMeta}${microMeta}${crossMeta}${patternMeta}${pBar}</td>
       <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
+      <td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td>
       <td style="font-family:monospace">${fmt(e)}</td>
       <td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td>
       <td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td>
-      <td style="font-family:monospace;color:var(--gr)">${fmt(tp)}${postureMeta}</td>
+      <td style="font-family:monospace;color:var(--gr)">${fmt(nextTp||tp)}${targetMeta}${postureMeta}</td>
       <td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
       <td>${(Number(p.confidence||0)*100).toFixed(0)}%${rankMeta}${noteMeta}</td>
       <td style="font-size:11px;white-space:nowrap">${openStr}</td>
@@ -1075,7 +1413,7 @@ async function runWeakReduction(){
 function filterPositions(){
   const filter = document.getElementById('posFilter')?.value || 'all';
   if(!_allPositions.length){
-    document.getElementById('posBody').innerHTML='<tr><td colspan="10" class="empty">No open positions</td></tr>';
+    document.getElementById('posBody').innerHTML='<tr><td colspan="11" class="empty">No open positions</td></tr>';
     return;
   }
   const filtered = filter === 'all' ? _allPositions :
@@ -1083,7 +1421,7 @@ function filterPositions(){
     filter === 'losing'  ? _allPositions.filter(p => Number(p.pnl||0) <= 0) :
     _allPositions.filter(p => (p.category||'').toLowerCase() === filter.toLowerCase());
   if(!filtered.length){
-    document.getElementById('posBody').innerHTML=`<tr><td colspan="10" class="empty">No ${filter} positions</td></tr>`;
+    document.getElementById('posBody').innerHTML=`<tr><td colspan="11" class="empty">No ${filter} positions</td></tr>`;
     return;
   }
   renderPositions(filtered);

@@ -201,6 +201,46 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="panel-body" id="runtimeLinkPanel"><div class="empty">Loading…</div></div>
       </div>
 
+      <div class="panel panel-wide">
+        <div class="panel-header">
+          <span class="panel-title">🎛️ Whale Desk Read</span>
+          <span class="panel-badge" id="deskReadBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="whaleDeskPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel panel-wide">
+        <div class="panel-header">
+          <span class="panel-title">🏦 Exchange Flow Bias</span>
+          <span class="panel-badge" id="flowBiasBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="exchangeFlowPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel panel-wide">
+        <div class="panel-header">
+          <span class="panel-title">📡 Large Player Follow-Through</span>
+          <span class="panel-badge" id="followBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="followPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel panel-wide">
+        <div class="panel-header">
+          <span class="panel-title">🎯 Whale Signal Quality</span>
+          <span class="panel-badge" id="qualityBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="qualityPanel"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="panel panel-wide">
+        <div class="panel-header">
+          <span class="panel-title">🧲 Concentration Panel</span>
+          <span class="panel-badge" id="concentrationBadge">Loading…</span>
+        </div>
+        <div class="panel-body" id="concentrationPanel"><div class="empty">Loading…</div></div>
+      </div>
+
       <!-- Top assets chart -->
       <div class="panel panel-wide">
         <div class="panel-header"><span class="panel-title">📊 Volume by Asset</span></div>
@@ -301,6 +341,16 @@ async function load(){
       document.getElementById('wBiasNote').textContent='—';
       document.getElementById('runtimeBadge').textContent='Unavailable';
       document.getElementById('runtimeLinkPanel').innerHTML='<div class="empty">Runtime link unavailable</div>';
+      document.getElementById('deskReadBadge').textContent='Unavailable';
+      document.getElementById('whaleDeskPanel').innerHTML='<div class="empty">Whale desk read unavailable</div>';
+      document.getElementById('flowBiasBadge').textContent='Unavailable';
+      document.getElementById('exchangeFlowPanel').innerHTML='<div class="empty">Exchange flow bias unavailable</div>';
+      document.getElementById('followBadge').textContent='Unavailable';
+      document.getElementById('followPanel').innerHTML='<div class="empty">Large player follow-through unavailable</div>';
+      document.getElementById('qualityBadge').textContent='Unavailable';
+      document.getElementById('qualityPanel').innerHTML='<div class="empty">Whale signal quality unavailable</div>';
+      document.getElementById('concentrationBadge').textContent='Unavailable';
+      document.getElementById('concentrationPanel').innerHTML='<div class="empty">Concentration view unavailable</div>';
       document.getElementById('whaleTimeline').innerHTML='<div class="empty">Whale overview unavailable</div>';
       document.getElementById('alertBody').innerHTML='<tr><td colspan="5" class="empty">Whale overview unavailable</td></tr>';
       document.getElementById('whaleDot').classList.add('off');
@@ -413,6 +463,126 @@ async function load(){
         <div class="mix-meta" style="min-width:180px;text-align:left;color:${item.color}">${item.value} · ${item.note}</div>
       </div>
     `).join('');
+    document.getElementById('deskReadBadge').textContent = biasLabel;
+    const leadSource = sourceEntries[0] || null;
+    const leadAsset = rawTopAssets[0] || null;
+    document.getElementById('whaleDeskPanel').innerHTML = [
+      {
+        title: 'Operator posture',
+        value: biasLabel,
+        note: rawAlerts.length ? `${rawAlerts.length} alerts across your crypto basket in the last 24h` : 'No whale flow in the current lookback',
+        color: biasClass === 'gn' ? 'var(--gr)' : biasClass === 'rd' ? 'var(--rd)' : 'var(--cy)',
+      },
+      {
+        title: 'Lead asset',
+        value: leadAsset ? String(leadAsset.asset || '').replace('-USD','').replace('/USD','') : '—',
+        note: leadAsset ? `${formatUsdCompact(leadAsset.volume || 0)} ranked flow volume` : 'No leading asset in the current window',
+        color: leadAsset ? 'var(--cy)' : 'var(--tx2)',
+      },
+      {
+        title: 'Lead source',
+        value: leadSource ? leadSource[0] : '—',
+        note: leadSource ? `${leadSource[1].count} alerts · ${formatUsdCompact(leadSource[1].volume)}` : 'No dominant whale source right now',
+        color: leadSource ? 'var(--pu)' : 'var(--tx2)',
+      },
+      {
+        title: 'Runtime drag',
+        value: runtimeState,
+        note: runtimeConflicts || runtimeBlocks ? `${runtimeConflicts} cross conflicts · ${runtimeBlocks} pattern blocks` : 'Runtime link is not actively pushing back on the whale read',
+        color: runtimeFragile || runtimeConflicts || runtimeBlocks ? 'var(--am)' : 'var(--gr)',
+      },
+    ].map(item => `
+      <div class="mix-row">
+        <div class="mix-label" style="width:120px">${item.title}</div>
+        <div class="mix-bar-wrap"><div class="mix-bar" style="width:100%;background:${item.color}"></div></div>
+        <div class="mix-meta" style="min-width:190px;text-align:left;color:${item.color}">${item.value} · ${item.note}</div>
+      </div>
+    `).join('');
+
+    const assetBias = {};
+    rawAlerts.forEach((alert) => {
+      const asset = String(alert.symbol || alert.asset || '').toUpperCase();
+      if(!asset) return;
+      if(!assetBias[asset]){
+        assetBias[asset] = {asset, buy:0, sell:0, neutral:0, count:0};
+      }
+      const row = assetBias[asset];
+      const value = Number(alert.value_usd || 0);
+      const direction = String(alert.direction || '').toUpperCase();
+      row.count += 1;
+      if(direction === 'BUY') row.buy += value;
+      else if(direction === 'SELL') row.sell += value;
+      else row.neutral += value;
+    });
+    const rankedBias = Object.values(assetBias).map((row) => {
+      row.net = row.buy - row.sell;
+      row.total = row.buy + row.sell + row.neutral;
+      row.bias = row.net > 0 ? 'Accumulation' : row.net < 0 ? 'Distribution' : 'Balanced';
+      return row;
+    }).sort((a,b) => Math.abs(b.net) - Math.abs(a.net));
+    document.getElementById('flowBiasBadge').textContent = rankedBias.length ? rankedBias[0].bias : 'Quiet';
+    document.getElementById('exchangeFlowPanel').innerHTML = rankedBias.length ? rankedBias.slice(0,4).map((row) => `
+      <div class="mix-row">
+        <div class="mix-label">${row.asset.replace('-USD','').replace('USDT','')}</div>
+        <div class="mix-bar-wrap"><div class="mix-bar" style="width:${Math.max(10, row.total ? Math.min(100, Math.abs(row.net) / row.total * 100) : 10)}%;background:${row.net > 0 ? 'var(--gr)' : row.net < 0 ? 'var(--rd)' : 'var(--cy)'}"></div></div>
+        <div class="mix-meta">${row.bias} · ${formatUsdCompact(Math.abs(row.net))} net · ${row.count} alerts</div>
+      </div>
+    `).join('') : '<div class="empty">No exchange flow bias is active for the tracked crypto set.</div>';
+
+    const leadRecent = rawRecent[0] || null;
+    document.getElementById('followBadge').textContent = leadRecent ? 'Tracked' : 'Quiet';
+    document.getElementById('followPanel').innerHTML = rawRecent.length ? rawRecent.slice(0,4).map((row) => {
+      const usd = Number(row.value_usd || 0);
+      const direction = String(row.direction || '').toUpperCase();
+      const color = direction === 'SELL' ? 'var(--rd)' : direction === 'BUY' ? 'var(--gr)' : 'var(--cy)';
+      return `<div class="mix-row">
+        <div class="mix-label">${String(row.symbol || row.asset || '—').replace('-USD','').replace('USDT','')}</div>
+        <div class="mix-bar-wrap"><div class="mix-bar" style="width:${Math.max(10, Math.min(100, usd / Math.max(usd, 1000000) * 100))}%;background:${color}"></div></div>
+        <div class="mix-meta">${direction || 'NEUTRAL'} · ${formatSourceLabel(row.source)} · ${formatUsdCompact(usd)}</div>
+      </div>`;
+    }).join('') : '<div class="empty">No recent large-player follow-through is active.</div>';
+
+    const megaAlerts = rawAlerts.filter(row => Number(row.value_usd || 0) >= 10000000);
+    const directionalAlerts = rawAlerts.filter(row => ['BUY','SELL'].includes(String(row.direction || '').toUpperCase()));
+    const qualityState = megaAlerts.length || directionalAlerts.length ? 'Live' : 'Thin';
+    document.getElementById('qualityBadge').textContent = qualityState;
+    document.getElementById('qualityPanel').innerHTML = [
+      {
+        title: 'Directional share',
+        value: rawAlerts.length ? `${((directionalAlerts.length / rawAlerts.length) * 100).toFixed(0)}%` : '—',
+        note: rawAlerts.length ? `${directionalAlerts.length}/${rawAlerts.length} alerts have explicit direction` : 'No alerts yet',
+        color: directionalAlerts.length ? 'var(--gr)' : 'var(--tx2)',
+      },
+      {
+        title: 'Mega alerts',
+        value: `${megaAlerts.length}`,
+        note: megaAlerts.length ? `${megaAlerts.length} alerts are $10M+ and worth institutional attention` : 'No $10M+ alerts in the window',
+        color: megaAlerts.length ? 'var(--am)' : 'var(--tx2)',
+      },
+      {
+        title: 'Signal cleanliness',
+        value: rawAlerts.length ? (biasLabel === 'Balanced' ? 'Mixed' : biasLabel) : 'Idle',
+        note: rawAlerts.length ? `${directionStats.NEUTRAL.count} neutral / mixed alerts are diluting the tape` : 'No active tape to score',
+        color: biasClass === 'gn' ? 'var(--gr)' : biasClass === 'rd' ? 'var(--rd)' : 'var(--cy)',
+      },
+    ].map(item => `
+      <div class="mix-row">
+        <div class="mix-label">${item.title}</div>
+        <div class="mix-bar-wrap"><div class="mix-bar" style="width:100%;background:${item.color}"></div></div>
+        <div class="mix-meta" style="min-width:180px;text-align:left;color:${item.color}">${item.value} · ${item.note}</div>
+      </div>
+    `).join('');
+
+    const totalTrackedVolume = rawTopAssets.reduce((sum, item) => sum + Number(item.volume || 0), 0);
+    document.getElementById('concentrationBadge').textContent = rawTopAssets.length ? 'Live' : 'Idle';
+    document.getElementById('concentrationPanel').innerHTML = rawTopAssets.length ? rawTopAssets.slice(0,4).map((row) => {
+      const share = totalTrackedVolume ? (Number(row.volume || 0) / totalTrackedVolume) * 100 : 0;
+      return `<div class="mix-row">
+        <div class="mix-label">${String(row.asset || '—').replace('-USD','').replace('/USD','')}</div>
+        <div class="mix-bar-wrap"><div class="mix-bar" style="width:${Math.max(8, Math.min(100, share))}%;background:${share >= 50 ? 'var(--rd)' : share >= 30 ? 'var(--am)' : 'var(--cy)'}"></div></div>
+        <div class="mix-meta">${share.toFixed(1)}% of tracked whale volume · ${formatUsdCompact(row.volume || 0)}</div>
+      </div>`;
+    }).join('') : '<div class="empty">No whale concentration is visible across the tracked assets.</div>';
 
     // Bar chart
     if(barChart)barChart.destroy();
