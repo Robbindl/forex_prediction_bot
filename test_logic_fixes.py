@@ -34,6 +34,63 @@ from risk.position_sizer import PositionSizer
 def _patch_db(monkeypatch, fake_db) -> None:
     monkeypatch.setattr(sys.modules["services.db_pool"], "get_db", lambda: fake_db, raising=False)
 
+
+def _pin_playbook_clock(
+    monkeypatch,
+    when: datetime | None = None,
+) -> None:
+    playbook_mod = importlib.import_module("services.playbook_service")
+    frozen = when or datetime(2026, 4, 6, 15, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(playbook_mod, "_utc_now", lambda: frozen, raising=False)
+
+
+def _stub_playbook_seed(
+    monkeypatch,
+    *,
+    direction: str = "BUY",
+    playbook: str = "breakout_continuation",
+    confidence: float = 0.62,
+    preferred_interval: str = "5m",
+    entry_style: str = "breakout_close",
+    management: dict | None = None,
+) -> None:
+    playbook_mod = importlib.import_module("services.playbook_service")
+
+    class _FakePlaybookService:
+        @staticmethod
+        def preferred_interval(category: str, asset: str) -> str:
+            return preferred_interval
+
+        @staticmethod
+        def pick_seed(*args, **kwargs):
+            return {
+                "action": "seed",
+                "session": "us_open",
+                "session_label": "us_open",
+                "primary": {
+                    "direction": direction,
+                    "playbook": playbook,
+                    "confidence": confidence,
+                    "score": confidence,
+                    "entry_style": entry_style,
+                    "management": dict(management or {}),
+                    "notes": [],
+                },
+                "candidates": [
+                    {
+                        "playbook": playbook,
+                        "direction": direction,
+                        "confidence": confidence,
+                    }
+                ],
+                "blocked_reason": "",
+                "rejected_reasons": [],
+                "allowed_sessions": ["europe_open", "europe_core", "us_overlap", "us_open", "us_core"],
+                "asset_plan": {},
+            }
+
+    monkeypatch.setattr(playbook_mod, "get_service", lambda: _FakePlaybookService(), raising=False)
+
 def test_execute_signal_sizes_before_portfolio_risk() -> None:
     engine = TradingCore(balance=10_000.0)
     engine.state = SimpleNamespace(
@@ -8813,9 +8870,10 @@ def test_risk_manager_aligns_take_profit_to_structure() -> None:
     assert strong_breakout_take_profit > neutral_take_profit
     assert strong_breakout_take_profit <= base_take_profit
 
-def test_generate_seed_signal_passes_estimated_atr_to_risk_manager() -> None:
+def test_generate_seed_signal_passes_estimated_atr_to_risk_manager(monkeypatch) -> None:
     engine = TradingCore(balance=10_000.0)
     engine._predictor = SimpleNamespace(predict=lambda canonical, category, df: (0.20, 0.85))
+    _stub_playbook_seed(monkeypatch)
 
     seen: dict = {}
 
@@ -10338,9 +10396,10 @@ def test_market_structure_service_flags_upside_exhaustion_on_extended_buy_move()
     assert structure["upside_exhaustion_score"] > 0.55
     assert structure["bias_exhausted"] is True
 
-def test_generate_seed_signal_uses_market_structure_alignment() -> None:
+def test_generate_seed_signal_uses_market_structure_alignment(monkeypatch) -> None:
     core = TradingCore.__new__(TradingCore)
     core._predictor = SimpleNamespace(predict=lambda *args, **kwargs: (0.72, 0.60))
+    _stub_playbook_seed(monkeypatch, confidence=0.60)
     core._risk_manager = SimpleNamespace(
         get_stop_loss=lambda entry, direction, category, atr=0.0: entry - 10.0,
         get_take_profit=lambda entry, stop_loss, direction, category="": entry + 15.0,
@@ -10372,8 +10431,9 @@ def test_generate_seed_signal_uses_market_structure_alignment() -> None:
     assert signal.metadata["structure_bias"] == "buy"
     assert signal.metadata["setup_quality"] == structure["setup_quality"]
 
-def test_playbook_service_seeds_breakout_when_classifier_is_neutral() -> None:
+def test_playbook_service_seeds_breakout_when_classifier_is_neutral(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
+    _pin_playbook_clock(monkeypatch)
     service = svc_mod.get_service()
     price_data = _build_breakout_frame()
     context = {
@@ -10406,8 +10466,9 @@ def test_playbook_service_seeds_breakout_when_classifier_is_neutral() -> None:
     assert pick["primary"]["direction"] == "BUY"
     assert float(pick["primary"]["confidence"]) >= 0.58
 
-def test_generate_seed_signal_uses_playbook_when_classifier_is_neutral() -> None:
+def test_generate_seed_signal_uses_playbook_when_classifier_is_neutral(monkeypatch) -> None:
     core = TradingCore.__new__(TradingCore)
+    _pin_playbook_clock(monkeypatch)
     core._predictor = SimpleNamespace(predict=lambda *args, **kwargs: (0.5, 0.05))
     core._risk_manager = SimpleNamespace(
         get_stop_loss=lambda entry, direction, category, atr=0.0: entry - 0.0009,
@@ -11252,8 +11313,9 @@ def test_playbook_service_uses_asset_specific_management_overrides(monkeypatch) 
     assert management["trail_activation_rr"] >= 1.0
     assert management["trail_atr_multiple"] >= 1.0
 
-def test_generate_seed_signal_playbook_only_rejects_without_playbook_seed() -> None:
+def test_generate_seed_signal_playbook_only_rejects_without_playbook_seed(monkeypatch) -> None:
     core = TradingCore.__new__(TradingCore)
+    _pin_playbook_clock(monkeypatch)
     core._predictor = SimpleNamespace(predict=lambda *args, **kwargs: (0.82, 0.76))
     core._risk_manager = SimpleNamespace(
         get_stop_loss=lambda entry, direction, category, atr=0.0: entry - 0.0009,
@@ -13678,6 +13740,81 @@ def test_top_ranked_opportunities_can_skip_refresh_when_snapshot_empty(monkeypat
     assert ranked == []
     assert calls == []
 
+def test_classify_signal_candidates_tracks_cooling_open_and_market_blocks() -> None:
+    core = TradingCore.__new__(TradingCore)
+    core.state = SimpleNamespace(
+        is_cooling_down=lambda asset: asset == "EUR/USD",
+        has_open_position_for=lambda asset: asset == "BTC-USD",
+    )
+    core._market_hours_status = (
+        lambda asset, category: (False, "us_closed") if asset == "US100" else (True, "open")
+    )
+
+    scan = TradingCore._classify_signal_candidates(
+        core,
+        [
+            ("EUR/USD", "forex"),
+            ("BTC-USD", "crypto"),
+            ("XAU/USD", "commodities"),
+            ("US100", "indices"),
+        ],
+    )
+
+    assert scan["base_candidates"] == [("XAU/USD", "commodities"), ("US100", "indices")]
+    assert scan["tradable_candidates"] == [("XAU/USD", "commodities")]
+    assert scan["cooling_count"] == 1
+    assert scan["open_position_count"] == 1
+    assert scan["market_block_counts"]["us_closed"] == 1
+
+def test_generate_signals_uses_classified_candidates_and_summary(monkeypatch) -> None:
+    from collections import Counter
+
+    core = TradingCore.__new__(TradingCore)
+    core.registry = SimpleNamespace(all_assets=lambda: [("BTC-USD", "crypto"), ("US100", "indices")])
+    core._stop_event = SimpleNamespace(is_set=lambda: False)
+
+    expected_signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.82,
+    )
+    summary_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        core,
+        "_classify_signal_candidates",
+        lambda asset_list: {
+            "base_candidates": [("BTC-USD", "crypto"), ("US100", "indices")],
+            "tradable_candidates": [("BTC-USD", "crypto")],
+            "market_block_counts": Counter({"us_closed": 2}),
+            "cooling_count": 0,
+            "open_position_count": 0,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(core, "_log_signal_scan_overview", lambda **kwargs: None, raising=False)
+    monkeypatch.setattr(
+        core,
+        "_collect_generated_signals",
+        lambda candidates: ([(expected_signal, {"asset": "BTC-USD"})], Counter({"no_seed_signal": 1}), len(candidates)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        core,
+        "_log_signal_scan_summary",
+        lambda **kwargs: summary_calls.append(kwargs),
+        raising=False,
+    )
+
+    generated = TradingCore._generate_signals(core)
+
+    assert generated == [(expected_signal, {"asset": "BTC-USD"})]
+    assert summary_calls[0]["tradable_count"] == 1
+    assert summary_calls[0]["generated_count"] == 1
+    assert summary_calls[0]["status_counts"]["market_closed"] == 2
+
 def test_get_weak_positions_can_skip_provider_market_status() -> None:
     engine = TradingCore(balance=10_000.0)
     engine.state._open_positions = {
@@ -13709,8 +13846,10 @@ def test_get_weak_positions_can_skip_provider_market_status() -> None:
     assert weak[0]["asset"] == "BNB-USD"
     assert weak[0]["market_reason"] == "crypto_24x7"
 
-def test_generate_seed_signal_aligns_take_profit_to_structure() -> None:
+def test_generate_seed_signal_aligns_take_profit_to_structure(monkeypatch) -> None:
     engine = TradingCore(balance=10_000.0)
+    _pin_playbook_clock(monkeypatch)
+    _stub_playbook_seed(monkeypatch, confidence=0.64)
     engine._predictor = SimpleNamespace(predict=lambda canonical, category, df: (0.80, 0.88))
     engine._risk_manager = importlib.import_module("risk.manager").RiskManager(account_balance=10_000.0)
 

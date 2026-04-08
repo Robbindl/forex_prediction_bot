@@ -212,11 +212,30 @@ class SignalDecisionEngine:
 
     run = evaluate
 
-    def _apply_market_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
-        conf_before = signal.confidence
-        data: Dict[str, Any] = {}
-        notes: List[str] = []
+    @staticmethod
+    def _kill_review(
+        signal: Signal,
+        *,
+        step: int,
+        name: str,
+        reason: str,
+        conf_before: float,
+        data: Dict[str, Any],
+    ) -> bool:
+        signal.kill(reason, step)
+        signal.journal.record(
+            layer=step,
+            name=name,
+            decision=KILLED,
+            reason=reason,
+            conf_before=conf_before,
+            conf_after=signal.confidence,
+            data=data,
+        )
+        return False
 
+    @staticmethod
+    def _market_seed_and_ml(signal: Signal, context: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> float:
         seed_below_floor = signal.confidence < MIN_CONFIDENCE_SCORE
         signal.metadata["seed_below_floor"] = seed_below_floor
         data["seed_below_floor"] = seed_below_floor
@@ -238,7 +257,10 @@ class SignalDecisionEngine:
         else:
             signal.metadata["ml_prediction_real"] = False
             notes.append("ml_unavailable")
+        return ml_conf
 
+    @staticmethod
+    def _market_rr_and_spread(signal: Signal, context: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> float:
         rr = 0.0
         if signal.entry_price and signal.stop_loss and signal.take_profit:
             try:
@@ -266,173 +288,186 @@ class SignalDecisionEngine:
                 pass
         signal.metadata["observed_spread_pct"] = round(spread_pct, 6)
         data["spread_pct"] = round(spread_pct, 5)
+        return rr
 
+    @staticmethod
+    def _market_broker_quality(signal: Signal, context: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> None:
         broker_quality = context.get("broker_quality") or {}
-        if isinstance(broker_quality, dict) and broker_quality:
-            try:
-                broker_score = float(broker_quality.get("score", 0.0) or 0.0)
-                agreement_state = str(broker_quality.get("quote_agreement_state", "unconfirmed") or "unconfirmed")
-                agreement_score = broker_quality.get("quote_agreement_score")
-                spread_regime = str(broker_quality.get("spread_regime", "unknown") or "unknown")
-                quote_quality_state = str(broker_quality.get("quote_quality_state", "unknown") or "unknown")
-                market_state = str(broker_quality.get("market_state", "unknown") or "unknown")
-                transition_risk = float(broker_quality.get("market_transition_risk", 0.0) or 0.0)
-                fallback_active = bool(broker_quality.get("fallback_active"))
+        if not isinstance(broker_quality, dict) or not broker_quality:
+            return
+        try:
+            broker_score = float(broker_quality.get("score", 0.0) or 0.0)
+            agreement_state = str(broker_quality.get("quote_agreement_state", "unconfirmed") or "unconfirmed")
+            agreement_score = broker_quality.get("quote_agreement_score")
+            spread_regime = str(broker_quality.get("spread_regime", "unknown") or "unknown")
+            quote_quality_state = str(broker_quality.get("quote_quality_state", "unknown") or "unknown")
+            market_state = str(broker_quality.get("market_state", "unknown") or "unknown")
+            transition_risk = float(broker_quality.get("market_transition_risk", 0.0) or 0.0)
+            fallback_active = bool(broker_quality.get("fallback_active"))
 
-                signal.metadata["broker_quality"] = dict(broker_quality)
-                signal.metadata["broker_quality_score"] = round(broker_score, 4)
-                signal.metadata["broker_agreement_state"] = agreement_state
-                signal.metadata["broker_spread_regime"] = spread_regime
-                signal.metadata["broker_quote_quality_state"] = quote_quality_state
-                signal.metadata["broker_market_state"] = market_state
-                data["broker_quality"] = {
-                    "score": round(broker_score, 4),
-                    "primary_provider": broker_quality.get("primary_provider"),
-                    "comparison_provider": broker_quality.get("comparison_provider"),
-                    "agreement_state": agreement_state,
-                    "agreement_score": round(float(agreement_score), 4) if agreement_score is not None else None,
-                    "spread_regime": spread_regime,
-                    "quote_quality_state": quote_quality_state,
-                    "market_state": market_state,
-                    "market_state_transition": broker_quality.get("market_state_transition", ""),
-                    "market_transition_risk": round(transition_risk, 4),
-                    "fallback_active": fallback_active,
-                }
-
-                if agreement_state in {"strong", "aligned"}:
-                    notes.append("broker_confirmed")
-                elif agreement_state == "divergent":
-                    notes.append("broker_divergence")
-                elif agreement_state == "severe_divergence":
-                    notes.append("broker_severe_divergence")
-
-                if spread_regime in {"wide", "stressed", "extreme"}:
-                    notes.append(f"spread_{spread_regime}")
-                if quote_quality_state in {"aging", "stale", "delayed"}:
-                    notes.append(f"quote_{quote_quality_state}")
-                if broker_quality.get("market_state_changed"):
-                    notes.append("market_state_changed")
-                if transition_risk >= 0.65:
-                    notes.append("market_transition_risk")
-                if fallback_active:
-                    notes.append("provider_fallback_active")
-            except Exception:
-                pass
-
-        micro = context.get("market_microstructure") or {}
-        if isinstance(micro, dict) and micro:
-            try:
-                micro_score = float(micro.get("score", 0.0) or 0.0)
-                stop_hunt_risk = float(micro.get("stop_hunt_risk", 0.0) or 0.0)
-                exhaustion_risk = float(micro.get("exhaustion_risk", 0.0) or 0.0)
-                tick_imbalance = float(micro.get("tick_imbalance", 0.0) or 0.0)
-                book_imbalance = float(micro.get("book_imbalance", 0.0) or 0.0)
-                velocity_bps = float(micro.get("velocity_bps", 0.0) or 0.0)
-                aligned_micro = micro_score if signal.direction == "BUY" else -micro_score
-                aligned_book = book_imbalance if signal.direction == "BUY" else -book_imbalance
-                aligned_tick = tick_imbalance if signal.direction == "BUY" else -tick_imbalance
-                aligned_velocity = velocity_bps if signal.direction == "BUY" else -velocity_bps
-                signal.metadata["market_microstructure"] = dict(micro)
-                signal.metadata["microstructure_score"] = round(micro_score, 3)
-                signal.metadata["stop_hunt_risk"] = round(stop_hunt_risk, 3)
-                signal.metadata["exhaustion_risk"] = round(exhaustion_risk, 3)
-                signal.metadata["microstructure_alignment"] = round(aligned_micro, 3)
-                signal.metadata["tick_imbalance"] = round(tick_imbalance, 4)
-                signal.metadata["book_imbalance"] = round(book_imbalance, 4)
-                signal.metadata["velocity_bps"] = round(velocity_bps, 4)
-                signal.metadata["depth_available"] = bool(micro.get("depth_available"))
-                signal.metadata["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
-                signal.metadata["microstructure_source"] = str(micro.get("microstructure_source") or "")
-                data["microstructure_score"] = round(micro_score, 3)
-                data["stop_hunt_risk"] = round(stop_hunt_risk, 3)
-                data["exhaustion_risk"] = round(exhaustion_risk, 3)
-                data["tick_imbalance"] = round(tick_imbalance, 4)
-                data["book_imbalance"] = round(book_imbalance, 4)
-                data["velocity_bps"] = round(velocity_bps, 4)
-                data["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
-                if stop_hunt_risk >= 0.45:
-                    notes.append("stop_hunt_penalty")
-                if exhaustion_risk >= 0.42:
-                    notes.append("micro_exhaustion")
-                if micro.get("synthetic_depth_available"):
-                    notes.append("synthetic_depth_proxy")
-                if aligned_micro >= 0.20:
-                    notes.append("micro_boost")
-                elif aligned_micro <= -0.20:
-                    notes.append("micro_penalty")
-                if aligned_book >= 0.18:
-                    notes.append("book_pressure_support")
-                elif aligned_book <= -0.18:
-                    notes.append("book_pressure_conflict")
-                if aligned_tick >= 0.22 and aligned_velocity > 0:
-                    notes.append("micro_momentum_support")
-                elif aligned_tick <= -0.22 and aligned_velocity < 0:
-                    notes.append("micro_momentum_conflict")
-            except Exception:
-                pass
-
-        structure = context.get("market_structure") or {}
-        if isinstance(structure, dict) and structure:
-            structure_bias = str(structure.get("structure_bias", "neutral")).lower()
-            alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
-            setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
-            pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
-            breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
-            volatility_state = str(structure.get("volatility_state", "unknown"))
-            distance_to_support = structure.get("distance_to_support")
-            distance_to_resistance = structure.get("distance_to_resistance")
-
-            signal.metadata["market_structure"] = dict(structure)
-            signal.metadata["structure_bias"] = structure_bias
-            signal.metadata["alignment_score"] = round(alignment_score, 4)
-            signal.metadata["setup_quality"] = round(setup_quality, 4)
-            signal.metadata["volatility_state"] = volatility_state
-
-            direction_sign = 1 if signal.direction == "BUY" else -1
-            dominant_setup = breakout_score if abs(breakout_score) >= abs(pullback_score) else pullback_score
-            signal.metadata["dominant_setup_score"] = round(dominant_setup, 4)
-            signal.metadata["setup_direction_alignment"] = round(dominant_setup * direction_sign, 4)
-            structure_data = {
-                "structure_bias": structure_bias,
-                "alignment_score": round(alignment_score, 4),
-                "setup_quality": round(setup_quality, 4),
-                "pullback_score": round(pullback_score, 4),
-                "breakout_score": round(breakout_score, 4),
-                "volatility_state": volatility_state,
-                "distance_to_support": distance_to_support,
-                "distance_to_resistance": distance_to_resistance,
+            signal.metadata["broker_quality"] = dict(broker_quality)
+            signal.metadata["broker_quality_score"] = round(broker_score, 4)
+            signal.metadata["broker_agreement_state"] = agreement_state
+            signal.metadata["broker_spread_regime"] = spread_regime
+            signal.metadata["broker_quote_quality_state"] = quote_quality_state
+            signal.metadata["broker_market_state"] = market_state
+            data["broker_quality"] = {
+                "score": round(broker_score, 4),
+                "primary_provider": broker_quality.get("primary_provider"),
+                "comparison_provider": broker_quality.get("comparison_provider"),
+                "agreement_state": agreement_state,
+                "agreement_score": round(float(agreement_score), 4) if agreement_score is not None else None,
+                "spread_regime": spread_regime,
+                "quote_quality_state": quote_quality_state,
+                "market_state": market_state,
+                "market_state_transition": broker_quality.get("market_state_transition", ""),
+                "market_transition_risk": round(transition_risk, 4),
+                "fallback_active": fallback_active,
             }
-            data["market_structure"] = structure_data
 
-            if structure_bias in {"buy", "sell"}:
-                if (structure_bias == "buy" and signal.direction == "BUY") or (
-                    structure_bias == "sell" and signal.direction == "SELL"
-                ):
-                    notes.append("structure_aligned")
-                elif alignment_score >= 0.45:
-                    notes.append("structure_conflict")
+            if agreement_state in {"strong", "aligned"}:
+                notes.append("broker_confirmed")
+            elif agreement_state == "divergent":
+                notes.append("broker_divergence")
+            elif agreement_state == "severe_divergence":
+                notes.append("broker_severe_divergence")
 
-            if dominant_setup * direction_sign >= 0.45:
-                notes.append("setup_confirmed")
-            elif dominant_setup * direction_sign <= -0.45:
-                notes.append("setup_conflict")
+            if spread_regime in {"wide", "stressed", "extreme"}:
+                notes.append(f"spread_{spread_regime}")
+            if quote_quality_state in {"aging", "stale", "delayed"}:
+                notes.append(f"quote_{quote_quality_state}")
+            if broker_quality.get("market_state_changed"):
+                notes.append("market_state_changed")
+            if transition_risk >= 0.65:
+                notes.append("market_transition_risk")
+            if fallback_active:
+                notes.append("provider_fallback_active")
+        except Exception:
+            pass
 
-            if setup_quality < 0.25:
-                notes.append("weak_setup_quality")
+    @staticmethod
+    def _market_microstructure(signal: Signal, context: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> None:
+        micro = context.get("market_microstructure") or {}
+        if not isinstance(micro, dict) or not micro:
+            return
+        try:
+            micro_score = float(micro.get("score", 0.0) or 0.0)
+            stop_hunt_risk = float(micro.get("stop_hunt_risk", 0.0) or 0.0)
+            exhaustion_risk = float(micro.get("exhaustion_risk", 0.0) or 0.0)
+            tick_imbalance = float(micro.get("tick_imbalance", 0.0) or 0.0)
+            book_imbalance = float(micro.get("book_imbalance", 0.0) or 0.0)
+            velocity_bps = float(micro.get("velocity_bps", 0.0) or 0.0)
+            aligned_micro = micro_score if signal.direction == "BUY" else -micro_score
+            aligned_book = book_imbalance if signal.direction == "BUY" else -book_imbalance
+            aligned_tick = tick_imbalance if signal.direction == "BUY" else -tick_imbalance
+            aligned_velocity = velocity_bps if signal.direction == "BUY" else -velocity_bps
+            signal.metadata["market_microstructure"] = dict(micro)
+            signal.metadata["microstructure_score"] = round(micro_score, 3)
+            signal.metadata["stop_hunt_risk"] = round(stop_hunt_risk, 3)
+            signal.metadata["exhaustion_risk"] = round(exhaustion_risk, 3)
+            signal.metadata["microstructure_alignment"] = round(aligned_micro, 3)
+            signal.metadata["tick_imbalance"] = round(tick_imbalance, 4)
+            signal.metadata["book_imbalance"] = round(book_imbalance, 4)
+            signal.metadata["velocity_bps"] = round(velocity_bps, 4)
+            signal.metadata["depth_available"] = bool(micro.get("depth_available"))
+            signal.metadata["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
+            signal.metadata["microstructure_source"] = str(micro.get("microstructure_source") or "")
+            data["microstructure_score"] = round(micro_score, 3)
+            data["stop_hunt_risk"] = round(stop_hunt_risk, 3)
+            data["exhaustion_risk"] = round(exhaustion_risk, 3)
+            data["tick_imbalance"] = round(tick_imbalance, 4)
+            data["book_imbalance"] = round(book_imbalance, 4)
+            data["velocity_bps"] = round(velocity_bps, 4)
+            data["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
+            if stop_hunt_risk >= 0.45:
+                notes.append("stop_hunt_penalty")
+            if exhaustion_risk >= 0.42:
+                notes.append("micro_exhaustion")
+            if micro.get("synthetic_depth_available"):
+                notes.append("synthetic_depth_proxy")
+            if aligned_micro >= 0.20:
+                notes.append("micro_boost")
+            elif aligned_micro <= -0.20:
+                notes.append("micro_penalty")
+            if aligned_book >= 0.18:
+                notes.append("book_pressure_support")
+            elif aligned_book <= -0.18:
+                notes.append("book_pressure_conflict")
+            if aligned_tick >= 0.22 and aligned_velocity > 0:
+                notes.append("micro_momentum_support")
+            elif aligned_tick <= -0.22 and aligned_velocity < 0:
+                notes.append("micro_momentum_conflict")
+        except Exception:
+            pass
 
-            if volatility_state == "extreme":
-                notes.append("extreme_volatility")
-            elif volatility_state == "expansion" and dominant_setup * direction_sign >= 0.35:
-                notes.append("volatility_support")
+    @staticmethod
+    def _market_structure(signal: Signal, context: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> Dict[str, Any]:
+        structure = context.get("market_structure") or {}
+        if not isinstance(structure, dict) or not structure:
+            return {}
 
-            try:
-                if signal.direction == "BUY" and distance_to_resistance is not None and float(distance_to_resistance) <= 0.0025:
-                    notes.append("near_resistance")
-                if signal.direction == "SELL" and distance_to_support is not None and float(distance_to_support) <= 0.0025:
-                    notes.append("near_support")
-            except Exception:
-                pass
+        structure_bias = str(structure.get("structure_bias", "neutral")).lower()
+        alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
+        setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
+        pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
+        breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
+        volatility_state = str(structure.get("volatility_state", "unknown"))
+        distance_to_support = structure.get("distance_to_support")
+        distance_to_resistance = structure.get("distance_to_resistance")
 
+        signal.metadata["market_structure"] = dict(structure)
+        signal.metadata["structure_bias"] = structure_bias
+        signal.metadata["alignment_score"] = round(alignment_score, 4)
+        signal.metadata["setup_quality"] = round(setup_quality, 4)
+        signal.metadata["volatility_state"] = volatility_state
+
+        direction_sign = 1 if signal.direction == "BUY" else -1
+        dominant_setup = breakout_score if abs(breakout_score) >= abs(pullback_score) else pullback_score
+        signal.metadata["dominant_setup_score"] = round(dominant_setup, 4)
+        signal.metadata["setup_direction_alignment"] = round(dominant_setup * direction_sign, 4)
+        data["market_structure"] = {
+            "structure_bias": structure_bias,
+            "alignment_score": round(alignment_score, 4),
+            "setup_quality": round(setup_quality, 4),
+            "pullback_score": round(pullback_score, 4),
+            "breakout_score": round(breakout_score, 4),
+            "volatility_state": volatility_state,
+            "distance_to_support": distance_to_support,
+            "distance_to_resistance": distance_to_resistance,
+        }
+
+        if structure_bias in {"buy", "sell"}:
+            if (structure_bias == "buy" and signal.direction == "BUY") or (
+                structure_bias == "sell" and signal.direction == "SELL"
+            ):
+                notes.append("structure_aligned")
+            elif alignment_score >= 0.45:
+                notes.append("structure_conflict")
+
+        if dominant_setup * direction_sign >= 0.45:
+            notes.append("setup_confirmed")
+        elif dominant_setup * direction_sign <= -0.45:
+            notes.append("setup_conflict")
+
+        if setup_quality < 0.25:
+            notes.append("weak_setup_quality")
+
+        if volatility_state == "extreme":
+            notes.append("extreme_volatility")
+        elif volatility_state == "expansion" and dominant_setup * direction_sign >= 0.35:
+            notes.append("volatility_support")
+
+        try:
+            if signal.direction == "BUY" and distance_to_resistance is not None and float(distance_to_resistance) <= 0.0025:
+                notes.append("near_resistance")
+            if signal.direction == "SELL" and distance_to_support is not None and float(distance_to_support) <= 0.0025:
+                notes.append("near_support")
+        except Exception:
+            pass
+        return structure
+
+    @staticmethod
+    def _market_regime(signal: Signal, context: Dict[str, Any], structure: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> str:
         profile = get_profile(signal.asset)
         timeframe = context.get("timeframe") or get_trading_timeframe(profile.category)
         df = context.get("price_data")
@@ -454,9 +489,11 @@ class SignalDecisionEngine:
         data["orderflow_imbalance"] = round(imbalance, 3)
 
         allowed = {"BUY": {"trending_up", "ranging", "unknown"}, "SELL": {"trending_down", "ranging", "unknown"}}.get(signal.direction, {"unknown"})
-        if regime in ("trending_up", "trending_down"):
-            if (signal.direction == "BUY" and regime == "trending_up") or (signal.direction == "SELL" and regime == "trending_down"):
-                notes.append("trend_aligned")
+        if regime in ("trending_up", "trending_down") and (
+            (signal.direction == "BUY" and regime == "trending_up")
+            or (signal.direction == "SELL" and regime == "trending_down")
+        ):
+            notes.append("trend_aligned")
         if regime == "volatile":
             notes.append("volatile")
         elif regime not in allowed:
@@ -468,6 +505,50 @@ class SignalDecisionEngine:
                 notes.append("orderflow_support")
             elif imbalance * direction_sign < -0.30:
                 notes.append("orderflow_conflict")
+        return regime
+
+    @staticmethod
+    def _market_news(signal: Signal, data: Dict[str, Any], notes: List[str]) -> tuple[str, str, str, str, int]:
+        news = _get_news_state(signal.category)
+        news_state = str(news.get("state", "clear") or "clear")
+        event_name = str(news.get("event", "") or "")
+        impact = str(news.get("impact", "") or "")
+        news_direction = str(news.get("direction", "") or "")
+        mins = int(news.get("mins_to", 0) or 0)
+        signal.metadata["news_state"] = news_state
+        signal.metadata["news_event"] = event_name
+        signal.metadata["news_impact"] = impact
+        signal.metadata["news_direction"] = news_direction
+        signal.metadata["news_mins_to"] = mins
+        data["news_state"] = news_state
+        data["news"] = {
+            "event": event_name,
+            "impact": impact,
+            "direction": news_direction,
+            "mins_to": mins,
+        }
+        if news_state == "pre" and impact == "MEDIUM":
+            notes.append("medium_event_pre")
+        if news_state == "post" and news_direction:
+            if news_direction == signal.direction:
+                signal.metadata["news_alignment"] = "aligned"
+                notes.append("post_event_aligned")
+            else:
+                signal.metadata["news_alignment"] = "conflict"
+                notes.append("post_event_conflict")
+        return news_state, event_name, impact, news_direction, mins
+
+    def _apply_market_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
+        conf_before = signal.confidence
+        data: Dict[str, Any] = {}
+        notes: List[str] = []
+
+        ml_conf = self._market_seed_and_ml(signal, context, data, notes)
+        rr = self._market_rr_and_spread(signal, context, data, notes)
+        self._market_broker_quality(signal, context, data, notes)
+        self._market_microstructure(signal, context, data, notes)
+        structure = self._market_structure(signal, context, data, notes)
+        regime = self._market_regime(signal, context, structure, data, notes)
 
         session = _active_session()
         utc_hour = _utc_hour()
@@ -480,75 +561,36 @@ class SignalDecisionEngine:
         data["market_reason"] = market_reason
 
         if not market_open:
-            reason = market_reason
-            signal.kill(reason, STEP_MARKET)
-            signal.journal.record(
-                layer=STEP_MARKET,
+            return self._kill_review(
+                signal,
+                step=STEP_MARKET,
                 name="market",
-                decision=KILLED,
-                reason=reason,
+                reason=market_reason,
                 conf_before=conf_before,
-                conf_after=signal.confidence,
                 data=data,
             )
-            return False
 
-        news = _get_news_state(signal.category)
-        news_state = news.get("state", "clear")
-        event_name = news.get("event", "")
-        impact = news.get("impact", "")
-        direction = news.get("direction", "")
-        mins = news.get("mins_to", 0)
-        signal.metadata["news_state"] = news_state
-        signal.metadata["news_event"] = event_name
-        signal.metadata["news_impact"] = impact
-        signal.metadata["news_direction"] = direction
-        signal.metadata["news_mins_to"] = mins
-        data["news_state"] = news_state
-        data["news"] = {
-            "event": event_name,
-            "impact": impact,
-            "direction": direction,
-            "mins_to": mins,
-        }
+        news_state, event_name, impact, _news_direction, mins = self._market_news(signal, data, notes)
 
         if news_state == "pre" and impact == "HIGH":
-            reason = f"HIGH impact event in {mins}min: {event_name}"
-            signal.kill(reason, STEP_MARKET)
-            signal.journal.record(
-                layer=STEP_MARKET,
+            return self._kill_review(
+                signal,
+                step=STEP_MARKET,
                 name="market",
-                decision=KILLED,
-                reason=reason,
+                reason=f"HIGH impact event in {mins}min: {event_name}",
                 conf_before=conf_before,
-                conf_after=signal.confidence,
                 data=data,
             )
-            return False
 
         if news_state == "active" and impact == "HIGH":
-            reason = f"HIGH impact event active: {event_name}"
-            signal.kill(reason, STEP_MARKET)
-            signal.journal.record(
-                layer=STEP_MARKET,
+            return self._kill_review(
+                signal,
+                step=STEP_MARKET,
                 name="market",
-                decision=KILLED,
-                reason=reason,
+                reason=f"HIGH impact event active: {event_name}",
                 conf_before=conf_before,
-                conf_after=signal.confidence,
                 data=data,
             )
-            return False
-
-        if news_state == "pre" and impact == "MEDIUM":
-            notes.append("medium_event_pre")
-        if news_state == "post" and direction:
-            if direction == signal.direction:
-                signal.metadata["news_alignment"] = "aligned"
-                notes.append("post_event_aligned")
-            else:
-                signal.metadata["news_alignment"] = "conflict"
-                notes.append("post_event_conflict")
 
         signal.metadata["market_review_notes"] = list(notes)
         data["notes"] = notes
@@ -601,6 +643,143 @@ class SignalDecisionEngine:
         )
         return True
 
+    @staticmethod
+    def _execution_adaptive_policy(
+        signal: Signal,
+        context: Dict[str, Any],
+        data: Dict[str, Any],
+        engine: Any,
+        category: str,
+    ) -> Dict[str, Any]:
+        adaptive_policy: Dict[str, Any] = {}
+        try:
+            from services.adaptive_policy_service import get_service as get_adaptive_policy_service
+
+            adaptive_policy = get_adaptive_policy_service().get_thresholds(
+                asset=signal.asset,
+                category=category,
+                context=context,
+                signal=signal,
+                state=getattr(engine, "state", None) if engine else None,
+            )
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Adaptive policy unavailable for {signal.asset}: {exc}")
+
+        normalized = {
+            "raw": adaptive_policy,
+            "max_spread_pct": float(adaptive_policy.get("max_spread", SPREAD_THRESHOLDS.get(category, 0.002)) or 0.002),
+            "min_final_conf": float(adaptive_policy.get("min_final_confidence", MIN_FINAL_CONFIDENCE) or MIN_FINAL_CONFIDENCE),
+            "adaptive_risk_multiplier": float(adaptive_policy.get("risk_multiplier", 1.0) or 1.0),
+            "adaptive_min_rr": float(adaptive_policy.get("min_rr", 0.0) or 0.0),
+            "adaptive_target_rr_multiplier": float(adaptive_policy.get("target_rr_multiplier", 1.0) or 1.0),
+            "adaptive_block": bool(adaptive_policy.get("block_new_entries")),
+            "adaptive_block_reason": str(adaptive_policy.get("block_reason") or "").strip(),
+        }
+        if adaptive_policy:
+            signal.metadata["adaptive_policy"] = dict(adaptive_policy)
+            data["adaptive_policy"] = {
+                "min_final_confidence": round(normalized["min_final_conf"], 4),
+                "max_spread": round(normalized["max_spread_pct"], 6),
+                "risk_multiplier": round(normalized["adaptive_risk_multiplier"], 4),
+                "cooldown_minutes": int(adaptive_policy.get("cooldown_minutes", 0) or 0),
+                "min_rr": round(normalized["adaptive_min_rr"], 2),
+                "target_rr_multiplier": round(normalized["adaptive_target_rr_multiplier"], 4),
+                "block_new_entries": normalized["adaptive_block"],
+                "block_reason": normalized["adaptive_block_reason"],
+                "recent_review_profile": dict(adaptive_policy.get("recent_review_profile") or {}),
+                "notes": list(adaptive_policy.get("notes") or []),
+            }
+        return normalized
+
+    @staticmethod
+    def _execution_apply_target_rr(
+        signal: Signal,
+        adaptive_target_rr_multiplier: float,
+        has_managed_target_plan: bool,
+        data: Dict[str, Any],
+    ) -> None:
+        if not (
+            signal.entry_price
+            and signal.stop_loss
+            and signal.take_profit
+            and abs(adaptive_target_rr_multiplier - 1.0) > 1e-6
+            and not has_managed_target_plan
+        ):
+            return
+        try:
+            risk = abs(float(signal.entry_price) - float(signal.stop_loss))
+            current_reward = abs(float(signal.take_profit) - float(signal.entry_price))
+            if risk <= 0 or current_reward <= 0:
+                return
+            current_rr = current_reward / risk
+            adjusted_rr = max(1.0, current_rr * adaptive_target_rr_multiplier)
+            adjusted_reward = risk * adjusted_rr
+            if signal.direction == "BUY":
+                signal.take_profit = round(float(signal.entry_price) + adjusted_reward, 6)
+            else:
+                signal.take_profit = round(float(signal.entry_price) - adjusted_reward, 6)
+            signal.risk_reward = round(adjusted_rr, 2)
+            signal.metadata["adaptive_target_rr_multiplier"] = round(adaptive_target_rr_multiplier, 4)
+            data["adaptive_target_rr_applied"] = {
+                "previous_rr": round(current_rr, 4),
+                "target_rr_multiplier": round(adaptive_target_rr_multiplier, 4),
+                "adjusted_rr": round(adjusted_rr, 4),
+            }
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Adaptive target RR adjustment failed for {signal.asset}: {exc}")
+
+    @staticmethod
+    def _execution_sync_managed_targets(signal: Signal, staged_targets: List[float], data: Dict[str, Any]) -> None:
+        if not staged_targets:
+            return
+        try:
+            final_target = float(staged_targets[-1])
+            signal.take_profit_levels = list(staged_targets)
+            signal.take_profit = round(final_target, 6)
+            risk = abs(float(signal.entry_price) - float(signal.stop_loss))
+            if risk > 0:
+                signal.risk_reward = round(abs(final_target - float(signal.entry_price)) / risk, 2)
+            signal.metadata["primary_take_profit"] = round(float(staged_targets[0]), 6)
+            signal.metadata["runner_take_profit"] = round(final_target, 6)
+            data["trade_management_targets"] = {
+                "primary_take_profit": round(float(staged_targets[0]), 6),
+                "runner_take_profit": round(final_target, 6),
+                "staged_target_count": len(staged_targets),
+            }
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Managed target sync failed for {signal.asset}: {exc}")
+
+    def _execution_spread_gate(
+        self,
+        signal: Signal,
+        spread: Any,
+        price: Any,
+        max_spread_pct: float,
+        conf_before: float,
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> bool:
+        if not (spread and price and price > 0):
+            return True
+        try:
+            liquidity = float(spread) / float(price)
+            data["liquidity_proxy"] = round(liquidity, 6)
+            if liquidity > max_spread_pct:
+                return self._kill_review(
+                    signal,
+                    step=STEP_EXECUTION,
+                    name="execution",
+                    reason=f"final spread {liquidity:.5f} > {max_spread_pct} ({signal.category})",
+                    conf_before=conf_before,
+                    data=data,
+                )
+            signal.metadata["liquidity_proxy"] = round(liquidity, 6)
+            if liquidity > max_spread_pct * 0.75:
+                notes.append("spread_heavy")
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Spread gate failed for {signal.asset}: {exc}")
+        return True
+
     def _apply_execution_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence
         price = signal.entry_price
@@ -623,83 +802,26 @@ class SignalDecisionEngine:
             if level > 0:
                 staged_targets.append(round(level, 6))
         has_managed_target_plan = bool(management_plan and staged_targets)
-        adaptive_policy: Dict[str, Any] = {}
-        try:
-            from services.adaptive_policy_service import get_service as get_adaptive_policy_service
-
-            adaptive_policy = get_adaptive_policy_service().get_thresholds(
-                asset=signal.asset,
-                category=category,
-                context=context,
-                signal=signal,
-                state=getattr(engine, "state", None) if engine else None,
-            )
-        except Exception as exc:
-            logger.debug(f"[DecisionEngine] Adaptive policy unavailable for {signal.asset}: {exc}")
-
-        max_spread_pct = float(adaptive_policy.get("max_spread", SPREAD_THRESHOLDS.get(category, 0.002)) or 0.002)
-        min_final_conf = float(adaptive_policy.get("min_final_confidence", MIN_FINAL_CONFIDENCE) or MIN_FINAL_CONFIDENCE)
-        adaptive_risk_multiplier = float(adaptive_policy.get("risk_multiplier", 1.0) or 1.0)
-        adaptive_min_rr = float(adaptive_policy.get("min_rr", 0.0) or 0.0)
-        adaptive_target_rr_multiplier = float(adaptive_policy.get("target_rr_multiplier", 1.0) or 1.0)
-        adaptive_block = bool(adaptive_policy.get("block_new_entries"))
-        adaptive_block_reason = str(adaptive_policy.get("block_reason") or "").strip()
-        if adaptive_policy:
-            signal.metadata["adaptive_policy"] = dict(adaptive_policy)
-            data["adaptive_policy"] = {
-                "min_final_confidence": round(min_final_conf, 4),
-                "max_spread": round(max_spread_pct, 6),
-                "risk_multiplier": round(adaptive_risk_multiplier, 4),
-                "cooldown_minutes": int(adaptive_policy.get("cooldown_minutes", 0) or 0),
-                "min_rr": round(adaptive_min_rr, 2),
-                "target_rr_multiplier": round(adaptive_target_rr_multiplier, 4),
-                "block_new_entries": adaptive_block,
-                "block_reason": adaptive_block_reason,
-                "recent_review_profile": dict(adaptive_policy.get("recent_review_profile") or {}),
-                "notes": list(adaptive_policy.get("notes") or []),
-            }
+        adaptive_policy = self._execution_adaptive_policy(signal, context, data, engine, category)
+        max_spread_pct = float(adaptive_policy["max_spread_pct"])
+        min_final_conf = float(adaptive_policy["min_final_conf"])
+        adaptive_risk_multiplier = float(adaptive_policy["adaptive_risk_multiplier"])
+        adaptive_min_rr = float(adaptive_policy["adaptive_min_rr"])
+        adaptive_target_rr_multiplier = float(adaptive_policy["adaptive_target_rr_multiplier"])
+        adaptive_block = bool(adaptive_policy["adaptive_block"])
+        adaptive_block_reason = str(adaptive_policy["adaptive_block_reason"])
 
         if adaptive_block:
-            reason = adaptive_block_reason or "recent similar setups are blocked by post-trade learning"
-            signal.kill(reason, STEP_EXECUTION)
-            signal.journal.record(
-                layer=STEP_EXECUTION,
+            return self._kill_review(
+                signal,
+                step=STEP_EXECUTION,
                 name="execution",
-                decision=KILLED,
-                reason=reason,
+                reason=adaptive_block_reason or "recent similar setups are blocked by post-trade learning",
                 conf_before=conf_before,
-                conf_after=signal.confidence,
                 data=data,
             )
-            return False
 
-        if (
-            signal.entry_price
-            and signal.stop_loss
-            and signal.take_profit
-            and abs(adaptive_target_rr_multiplier - 1.0) > 1e-6
-            and not has_managed_target_plan
-        ):
-            try:
-                risk = abs(float(signal.entry_price) - float(signal.stop_loss))
-                current_reward = abs(float(signal.take_profit) - float(signal.entry_price))
-                if risk > 0 and current_reward > 0:
-                    current_rr = current_reward / risk
-                    adjusted_rr = max(1.0, current_rr * adaptive_target_rr_multiplier)
-                    adjusted_reward = risk * adjusted_rr
-                    if signal.direction == "BUY":
-                        signal.take_profit = round(float(signal.entry_price) + adjusted_reward, 6)
-                    else:
-                        signal.take_profit = round(float(signal.entry_price) - adjusted_reward, 6)
-                    signal.risk_reward = round(adjusted_rr, 2)
-                    signal.metadata["adaptive_target_rr_multiplier"] = round(adaptive_target_rr_multiplier, 4)
-                    data["adaptive_target_rr_applied"] = {
-                        "previous_rr": round(current_rr, 4),
-                        "target_rr_multiplier": round(adaptive_target_rr_multiplier, 4),
-                        "adjusted_rr": round(adjusted_rr, 4),
-                    }
-            except Exception as exc:
-                logger.debug(f"[DecisionEngine] Adaptive target RR adjustment failed for {signal.asset}: {exc}")
+        self._execution_apply_target_rr(signal, adaptive_target_rr_multiplier, has_managed_target_plan, data)
 
         df = context.get("price_data")
         if df is not None and len(df) >= 20:
@@ -775,45 +897,10 @@ class SignalDecisionEngine:
                 logger.debug(f"[DecisionEngine] Structure target alignment failed for {signal.asset}: {exc}")
 
         if has_managed_target_plan:
-            try:
-                final_target = float(staged_targets[-1])
-                signal.take_profit_levels = list(staged_targets)
-                signal.take_profit = round(final_target, 6)
-                risk = abs(float(signal.entry_price) - float(signal.stop_loss))
-                if risk > 0:
-                    signal.risk_reward = round(abs(final_target - float(signal.entry_price)) / risk, 2)
-                signal.metadata["primary_take_profit"] = round(float(staged_targets[0]), 6)
-                signal.metadata["runner_take_profit"] = round(final_target, 6)
-                data["trade_management_targets"] = {
-                    "primary_take_profit": round(float(staged_targets[0]), 6),
-                    "runner_take_profit": round(final_target, 6),
-                    "staged_target_count": len(staged_targets),
-                }
-            except Exception as exc:
-                logger.debug(f"[DecisionEngine] Managed target sync failed for {signal.asset}: {exc}")
+            self._execution_sync_managed_targets(signal, staged_targets, data)
 
-        if spread and price and price > 0:
-            try:
-                liquidity = float(spread) / float(price)
-                data["liquidity_proxy"] = round(liquidity, 6)
-                if liquidity > max_spread_pct:
-                    reason = f"final spread {liquidity:.5f} > {max_spread_pct} ({category})"
-                    signal.kill(reason, STEP_EXECUTION)
-                    signal.journal.record(
-                        layer=STEP_EXECUTION,
-                        name="execution",
-                        decision=KILLED,
-                        reason=reason,
-                        conf_before=conf_before,
-                        conf_after=signal.confidence,
-                        data=data,
-                    )
-                    return False
-                signal.metadata["liquidity_proxy"] = round(liquidity, 6)
-                if liquidity > max_spread_pct * 0.75:
-                    notes.append("spread_heavy")
-            except Exception as exc:
-                logger.debug(f"[DecisionEngine] Spread gate failed for {signal.asset}: {exc}")
+        if not self._execution_spread_gate(signal, spread, price, max_spread_pct, conf_before, data, notes):
+            return False
 
         if adaptive_min_rr > 0 and float(signal.risk_reward or 0.0) < adaptive_min_rr:
             rr_gap = max(0.0, adaptive_min_rr - float(signal.risk_reward or 0.0))

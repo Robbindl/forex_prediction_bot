@@ -2223,242 +2223,267 @@ def api_system_status():
 # API — COMMAND CENTER
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+    perf: Dict[str, Any] = {}
+    daily: Dict[str, Any] = {}
+    positions: List[Dict[str, Any]] = []
+    health: Dict[str, Any] = {}
+    closed_trades: List[Dict[str, Any]] = []
+    if core:
+        perf = core.get_performance()
+        daily = core.get_daily_stats()
+        positions = core.get_positions()
+        health = core.health_report()
+        closed_trades = _load_authoritative_closed_trades(limit=40)
+    return perf, daily, positions, health, closed_trades
+
+
+def _command_center_journals() -> List[Dict[str, Any]]:
+    journals: List[Dict[str, Any]] = []
+    try:
+        journal_payload = _response_to_dict(_call_view(api_phase7_signal_journal))
+        if bool(journal_payload.get("success")):
+            journals = list(journal_payload.get("journals") or [])
+    except Exception:
+        journals = []
+    return journals
+
+
+def _fetch_command_center_slow_data() -> Dict[str, Any]:
+    sent_score = 0.0
+    whale_count = 0
+    whale_recent: List[Dict[str, Any]] = []
+    pool = None
+    try:
+        from concurrent.futures import ThreadPoolExecutor, wait
+
+        pool = ThreadPoolExecutor(max_workers=2)
+        futures = {}
+        sa = _get_sent()
+        if sa:
+            futures[pool.submit(sa.get_comprehensive_sentiment)] = "sentiment"
+        mi = _get_market_intelligence()
+        if mi:
+            futures[pool.submit(
+                mi.get_whale_dashboard_summary,
+                min_value_usd=500_000,
+                hours=24,
+                recent_limit=5,
+                alert_limit=5,
+            )] = "whales"
+
+        if futures:
+            done, not_done = wait(tuple(futures.keys()), timeout=4.5)
+            for future in done:
+                kind = futures[future]
+                try:
+                    payload = future.result()
+                    if kind == "sentiment":
+                        sent_score = float((payload or {}).get("score", 0) or 0)
+                    elif kind == "whales":
+                        whale_recent = list((payload or {}).get("recent", []) or [])
+                        whale_count = int((payload or {}).get("alert_count_24h", 0) or 0)
+                except Exception as exc:
+                    logger.debug(f"[dashboard] command-center {kind} error: {exc}")
+            for future in not_done:
+                future.cancel()
+            if not_done:
+                logger.warning(f"[dashboard] command-center slow data timed out for {len(not_done)} task(s)")
+    except Exception as exc:
+        logger.debug(f"[dashboard] command-center slow data setup failed: {exc}")
+    finally:
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+    return {
+        "sentiment_score": round(sent_score, 3),
+        "whale_alerts_24h": whale_count,
+        "alert_count_24h": whale_count,
+        "recent": whale_recent,
+    }
+
+
+def _fetch_command_center_live_prices(positions: Any, *, limit: int = 8) -> Dict[str, float]:
+    assets: List[Tuple[str, str]] = []
+    live_prices: Dict[str, float] = {}
+    for position in list(positions or [])[: max(1, int(limit or 8))]:
+        asset = str(position.get("asset", "") or "")
+        category = str(position.get("category", "forex") or "forex")
+        if asset and asset not in live_prices:
+            assets.append((asset, category))
+    if not assets:
+        return live_prices
+
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    max_workers = min(4, len(assets))
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = {
+            pool.submit(_fetcher.get_real_time_price, asset, category): asset
+            for asset, category in assets
+        }
+        done, not_done = wait(tuple(futures.keys()), timeout=4)
+        for future in done:
+            asset = futures[future]
+            try:
+                price, _ = future.result()
+                if price:
+                    live_prices[asset] = float(price)
+            except Exception:
+                pass
+        if not_done:
+            for future in not_done:
+                future.cancel()
+            logger.debug(f"[dashboard] command-center live price fetch timed out for {len(not_done)} asset(s)")
+    finally:
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+    return live_prices
+
+
+def _build_command_center_enriched_positions(positions: Any, live_prices: Dict[str, float]) -> List[Dict[str, Any]]:
+    enriched_positions: List[Dict[str, Any]] = []
+    for position in list(positions or [])[:8]:
+        current_price = live_prices.get(position.get("asset", ""), 0.0)
+        entry_price = float(position.get("entry_price", 0) or 0)
+        position_size = float(position.get("position_size", 0) or 0)
+        direction = position.get("direction", position.get("signal", "BUY"))
+        asset = str(position.get("asset", "") or "")
+        category = str(position.get("category", "forex") or "forex")
+        try:
+            lot_size = float(position.get("lot_size", 0) or 0)
+        except Exception:
+            lot_size = 0.0
+        if not lot_size and position_size:
+            try:
+                from risk.position_sizer import PositionSizer as _PS
+
+                lot_size = _PS.lots_from_size(asset, category, position_size)
+            except Exception:
+                lot_size = 0.0
+        live_pnl = float(position.get("pnl", 0) or 0)
+        if current_price and entry_price and position_size:
+            try:
+                from risk.position_sizer import PositionSizer as _PS
+
+                live_pnl = _PS.pnl(asset, category, entry_price, current_price, position_size, direction)
+            except Exception:
+                live_pnl = (current_price - entry_price) * position_size if direction == "BUY" else (entry_price - current_price) * position_size
+        metadata = dict(position.get("metadata") or {})
+        enriched_positions.append({
+            "trade_id": position.get("trade_id", ""),
+            "asset": asset,
+            "category": category,
+            "direction": direction,
+            "confidence": float(position.get("confidence", 0) or 0),
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "stop_loss": float(position.get("stop_loss", 0) or 0),
+            "take_profit": float(position.get("take_profit", 0) or 0),
+            "take_profit_levels": list(position.get("take_profit_levels", []) or []),
+            "tp_hit": int(position.get("tp_hit", 0) or 0),
+            "pnl": round(live_pnl, 2),
+            "position_size": position_size,
+            "lot_size": round(lot_size, 4),
+            "strategy_id": position.get("strategy_id", ""),
+            "open_time": str(position.get("open_time", "") or ""),
+            "risk_reward": float(position.get("risk_reward", 0) or 0),
+            "metadata": metadata,
+            **_extract_execution_feedback_fields(metadata),
+            **_extract_memory_fields(metadata),
+            **_extract_opportunity_fields(metadata),
+            **_extract_signal_intelligence_fields(metadata),
+            **_extract_market_data_provenance_fields(metadata, asset=asset, category=category),
+        })
+    return enriched_positions
+
+
+def _build_command_center_signals(enriched_positions: Any) -> List[Dict[str, Any]]:
+    signals: List[Dict[str, Any]] = []
+    for position in list(enriched_positions or [])[:6]:
+        signals.append({
+            "asset": position.get("asset", ""),
+            "signal": position.get("direction", "BUY"),
+            "direction": position.get("direction", "BUY"),
+            "confidence": float(position.get("confidence", 0) or 0),
+            "entry_price": float(position.get("entry_price", 0) or 0),
+            "current_price": float(position.get("current_price", 0) or 0),
+            "stop_loss": float(position.get("stop_loss", 0) or 0),
+            "take_profit": float(position.get("take_profit", 0) or 0),
+            "category": position.get("category", ""),
+            "strategy_id": position.get("strategy_id", ""),
+            "pnl": float(position.get("pnl", 0) or 0),
+            "metadata": dict(position.get("metadata") or {}),
+            **_extract_execution_feedback_fields(position.get("metadata") or {}),
+            **_extract_memory_fields(position.get("metadata") or {}),
+            **_extract_opportunity_fields(position.get("metadata") or {}),
+            **_extract_signal_intelligence_fields(position.get("metadata") or {}),
+            **_extract_market_data_provenance_fields(
+                position.get("metadata") or {},
+                asset=str(position.get("asset", "") or ""),
+                category=str(position.get("category", "") or ""),
+            ),
+        })
+    return signals
+
+
+def _command_center_signal_quality(signals: Any) -> Dict[str, Any]:
+    signal_list = list(signals or [])
+    return {
+        "avg_memory_score": round(
+            sum(float(signal.get("memory_score", 0.0) or 0.0) for signal in signal_list) / len(signal_list),
+            1,
+        ) if signal_list else 0.0,
+        "avg_execution_quality": round(
+            sum(float(signal.get("execution_quality_score", 0.0) or 0.0) for signal in signal_list) / len(signal_list),
+            1,
+        ) if signal_list else 0.0,
+        "avg_opportunity_score": round(
+            sum(float(signal.get("opportunity_score", 0.0) or 0.0) for signal in signal_list) / len(signal_list),
+            3,
+        ) if signal_list else 0.0,
+        "memory_ready_count": sum(1 for signal in signal_list if int(signal.get("memory_sample_count", 0) or 0) > 0),
+        "execution_ready_count": sum(1 for signal in signal_list if int(signal.get("execution_feedback_sample_count", 0) or 0) > 0),
+        "top_signal_asset": (
+            max(
+                signal_list,
+                key=lambda item: (
+                    float(item.get("opportunity_score", 0.0) or 0.0),
+                    float(item.get("confidence", 0.0) or 0.0),
+                ),
+            ).get("asset", "")
+            if signal_list else ""
+        ),
+    }
+
+
 @app.route("/api/command-center")
 @_check_api_auth
 @_check_rate_limit
 def api_command_center():
     try:
         core = _core()
-        perf = {}; daily = {}; positions = []; health = {}
-        closed_trades: List[Dict[str, Any]] = []
-        journals: List[Dict[str, Any]] = []
-        if core:
-            perf      = core.get_performance()
-            daily     = core.get_daily_stats()
-            positions = core.get_positions()
-            health    = core.health_report()
-            closed_trades = _load_authoritative_closed_trades(limit=40)
-        try:
-            journal_payload = _response_to_dict(_call_view(api_phase7_signal_journal))
-            if bool(journal_payload.get("success")):
-                journals = list(journal_payload.get("journals") or [])
-        except Exception:
-            journals = []
+        perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core)
+        journals = _command_center_journals()
 
         # Slow external calls cached 5 minutes
         _cc_slow = _cache_get("cc_slow")
         if _cc_slow is None:
-            sent_score = 0.0
-            whale_count = 0
-            whale_recent = []
-            pool = None
-            try:
-                from concurrent.futures import ThreadPoolExecutor, wait
+            _cc_slow = _fetch_command_center_slow_data()
+        whale_recent = list((_cc_slow or {}).get("recent") or [])
+        whale_count = int((_cc_slow or {}).get("alert_count_24h", 0) or 0)
+        sent_score = float((_cc_slow or {}).get("sentiment_score", 0.0) or 0.0)
+        _cache_set("cc_slow", _cc_slow, ttl=600 if whale_recent or whale_count or sent_score else 45)
 
-                pool = ThreadPoolExecutor(max_workers=2)
-                futures = {}
-                sa = _get_sent()
-                if sa:
-                    futures[pool.submit(sa.get_comprehensive_sentiment)] = "sentiment"
-                mi = _get_market_intelligence()
-                if mi:
-                    futures[pool.submit(
-                        mi.get_whale_dashboard_summary,
-                        min_value_usd=500_000,
-                        hours=24,
-                        recent_limit=5,
-                        alert_limit=5,
-                    )] = "whales"
-
-                if futures:
-                    done, not_done = wait(tuple(futures.keys()), timeout=4.5)
-                    for future in done:
-                        kind = futures[future]
-                        try:
-                            payload = future.result()
-                            if kind == "sentiment":
-                                sent_score = float((payload or {}).get("score", 0) or 0)
-                            elif kind == "whales":
-                                whale_recent = list((payload or {}).get("recent", []) or [])
-                                whale_count = int((payload or {}).get("alert_count_24h", 0) or 0)
-                        except Exception as exc:
-                            logger.debug(f"[dashboard] command-center {kind} error: {exc}")
-                    for future in not_done:
-                        future.cancel()
-                    if not_done:
-                        logger.warning(f"[dashboard] command-center slow data timed out for {len(not_done)} task(s)")
-            except Exception as exc:
-                logger.debug(f"[dashboard] command-center slow data setup failed: {exc}")
-            finally:
-                if pool is not None:
-                    try:
-                        pool.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
-            _cc_slow = {
-                "sentiment_score":  round(sent_score, 3),
-                "whale_alerts_24h": whale_count,
-                "alert_count_24h":  whale_count,
-                "recent":           whale_recent,
-            }
-            _cache_set("cc_slow", _cc_slow, ttl=600 if whale_recent or whale_count or sent_score else 45)
-
-        # Fetch live prices for all open positions in one pass,
-        # then use the same prices for both latest_signals and positions table.
-        _live_prices: Dict[str, float] = {}
-        assets = []
-        for p in positions[:8]:
-            _asset = p.get("asset", "")
-            _cat   = p.get("category", "forex")
-            if _asset and _asset not in _live_prices:
-                assets.append((_asset, _cat))
-
-        if assets:
-            from concurrent.futures import ThreadPoolExecutor, wait
-            max_workers = min(4, len(assets))
-            pool = ThreadPoolExecutor(max_workers=max_workers)
-            try:
-                futures = {pool.submit(_fetcher.get_real_time_price, asset, cat): asset
-                           for asset, cat in assets}
-                done, not_done = wait(tuple(futures.keys()), timeout=4)
-                for future in done:
-                    asset = futures[future]
-                    try:
-                        _r2, _ = future.result()
-                        if _r2:
-                            _live_prices[asset] = float(_r2)
-                    except Exception:
-                        pass
-                if not_done:
-                    for future in not_done:
-                        future.cancel()
-                    logger.debug(f"[dashboard] command-center live price fetch timed out for {len(not_done)} asset(s)")
-            finally:
-                try:
-                    pool.shutdown(wait=False, cancel_futures=True)
-                except Exception:
-                    pass
-
-        # Build signals list (Active Signals panel)
-        signals = []
-        for p in positions[:6]:
-            _asset = p.get("asset", "")
-            _cat = p.get("category", "")
-            _cp2 = _live_prices.get(p.get("asset", ""), 0.0)
-            _meta = dict(p.get("metadata") or {})
-            _exec = _extract_execution_feedback_fields(_meta)
-            _memory = _extract_memory_fields(_meta)
-            _opportunity = _extract_opportunity_fields(_meta)
-            _intel = _extract_signal_intelligence_fields(_meta)
-            _provenance = _extract_market_data_provenance_fields(_meta, asset=_asset, category=_cat)
-            signals.append({
-                "asset":         _asset,
-                "signal":        p.get("direction", p.get("signal", "BUY")),
-                "direction":     p.get("direction", p.get("signal", "BUY")),
-                "confidence":    float(p.get("confidence", 0) or 0),
-                "entry_price":   float(p.get("entry_price", 0) or 0),
-                "current_price": _cp2,
-                "stop_loss":     float(p.get("stop_loss", 0) or 0),
-                "take_profit":   float(p.get("take_profit", 0) or 0),
-                "category":      _cat,
-                "strategy_id":   p.get("strategy_id", ""),
-                "pnl":           float(p.get("pnl", 0) or 0),
-                "metadata":      _meta,
-                **_exec,
-                **_memory,
-                **_opportunity,
-                **_intel,
-                **_provenance,
-            })
-
-        # Build enriched positions list (Open Positions table)
-        # Each entry is guaranteed to have all numeric fields as Python floats
-        # and includes current_price so the table can show live movement colour.
-        enriched_positions = []
-        for p in positions[:8]:
-            _cp3   = _live_prices.get(p.get("asset", ""), 0.0)
-            _entry = float(p.get("entry_price", 0) or 0)
-            _size  = float(p.get("position_size", 0) or 0)
-            _dir   = p.get("direction", p.get("signal", "BUY"))
-            _asset = p.get("asset", "")
-            _cat   = p.get("category", "forex")
-            try:
-                _lot_size = float(p.get("lot_size", 0) or 0)
-            except Exception:
-                _lot_size = 0.0
-            if not _lot_size and _size:
-                try:
-                    from risk.position_sizer import PositionSizer as _PS
-
-                    _lot_size = _PS.lots_from_size(_asset, _cat, _size)
-                except Exception:
-                    _lot_size = 0.0
-            # Recalculate live P&L using pip-based formula
-            _live_pnl = float(p.get("pnl", 0) or 0)
-            if _cp3 and _entry and _size:
-                try:
-                    from risk.position_sizer import PositionSizer as _PS
-                    _live_pnl = _PS.pnl(_asset, _cat, _entry, _cp3, _size, _dir)
-                except Exception:
-                    _live_pnl = (_cp3 - _entry) * _size if _dir == "BUY" else (_entry - _cp3) * _size
-            _meta = dict(p.get("metadata") or {})
-            _exec = _extract_execution_feedback_fields(_meta)
-            _memory = _extract_memory_fields(_meta)
-            _opportunity = _extract_opportunity_fields(_meta)
-            _intel = _extract_signal_intelligence_fields(_meta)
-            _provenance = _extract_market_data_provenance_fields(_meta, asset=_asset, category=_cat)
-            enriched_positions.append({
-                "trade_id":      p.get("trade_id", ""),
-                "asset":         _asset,
-                "category":      _cat,
-                "direction":     _dir,
-                "confidence":    float(p.get("confidence", 0) or 0),
-                "entry_price":   _entry,
-                "current_price": _cp3,
-                "stop_loss":     float(p.get("stop_loss", 0) or 0),
-                "take_profit":   float(p.get("take_profit", 0) or 0),
-                "take_profit_levels": list(p.get("take_profit_levels", []) or []),
-                "tp_hit":        int(p.get("tp_hit", 0) or 0),
-                "pnl":           round(_live_pnl, 2),
-                "position_size": _size,
-                "lot_size":      round(_lot_size, 4),
-                "strategy_id":   p.get("strategy_id", ""),
-                "open_time":     str(p.get("open_time", "") or ""),
-                "risk_reward":   float(p.get("risk_reward", 0) or 0),
-                "metadata":      _meta,
-                **_exec,
-                **_memory,
-                **_opportunity,
-                **_intel,
-                **_provenance,
-            })
-
-        signal_quality = {
-            "avg_memory_score": round(
-                sum(float(s.get("memory_score", 0.0) or 0.0) for s in signals) / len(signals),
-                1,
-            ) if signals else 0.0,
-            "avg_execution_quality": round(
-                sum(float(s.get("execution_quality_score", 0.0) or 0.0) for s in signals) / len(signals),
-                1,
-            ) if signals else 0.0,
-            "avg_opportunity_score": round(
-                sum(float(s.get("opportunity_score", 0.0) or 0.0) for s in signals) / len(signals),
-                3,
-            ) if signals else 0.0,
-            "memory_ready_count": sum(1 for s in signals if int(s.get("memory_sample_count", 0) or 0) > 0),
-            "execution_ready_count": sum(1 for s in signals if int(s.get("execution_feedback_sample_count", 0) or 0) > 0),
-            "top_signal_asset": (
-                max(
-                    signals,
-                    key=lambda item: (
-                        float(item.get("opportunity_score", 0.0) or 0.0),
-                        float(item.get("confidence", 0.0) or 0.0),
-                    ),
-                ).get("asset", "")
-                if signals else ""
-            ),
-        }
+        live_prices = _fetch_command_center_live_prices(positions, limit=8)
+        enriched_positions = _build_command_center_enriched_positions(positions, live_prices)
+        signals = _build_command_center_signals(enriched_positions)
+        signal_quality = _command_center_signal_quality(signals)
         signal_diagnostics = _summarize_signal_diagnostics(enriched_positions)
         top_opportunities = _cache_get("cc_top_opportunities")
         weak_positions = _cache_get("cc_weak_positions")
@@ -3760,6 +3785,140 @@ def api_whale_summary():
 # API — SENTIMENT INTELLIGENCE
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _default_sentiment_dashboard_result() -> Dict[str, Any]:
+    return {
+        "success": True,
+        "overall_sentiment": "Neutral",
+        "score": 0.0,
+        "fear_greed": {"value": 50, "classification": "Neutral"},
+        "vix": {"value": 20, "classification": "Normal"},
+        "article_count": 0,
+        "sentiment_distribution": {"bullish": 0, "neutral": 0, "bearish": 0},
+        "articles": [],
+        "whale_alerts": [],
+        "market_composite": {
+            "score": 0.0,
+            "interpretation": "Neutral",
+            "components": {},
+            "drivers": [],
+        },
+        "news_sentiment": {
+            "score": 0.0,
+            "interpretation": "Neutral",
+            "article_count": 0,
+            "distribution": {"bullish": 0, "neutral": 0, "bearish": 0},
+        },
+        "sentiment_context": {
+            "mode": "neutral",
+            "display_label": "Neutral",
+            "summary": "Awaiting sentiment inputs.",
+        },
+    }
+
+
+def _apply_sentiment_dashboard_task_result(result: Dict[str, Any], key: str, payload: Any) -> None:
+    if key == "market_sentiment" and payload:
+        market_score = float(payload.get("score", 0) or 0)
+        market_interpretation = payload.get("interpretation", "Neutral")
+        components = {
+            str(name): round(float(value or 0.0), 3)
+            for name, value in dict(payload.get("components", {}) or {}).items()
+        }
+        drivers = [
+            {
+                "key": name,
+                "label": _sentiment_component_label(name),
+                "score": value,
+            }
+            for name, value in sorted(
+                components.items(),
+                key=lambda item: abs(float(item[1] or 0.0)),
+                reverse=True,
+            )
+            if abs(float(value or 0.0)) > 0.001
+        ]
+        result["score"] = market_score
+        result["overall_sentiment"] = market_interpretation
+        result["market_composite"] = {
+            "score": market_score,
+            "interpretation": market_interpretation,
+            "components": components,
+            "drivers": drivers[:4],
+        }
+        return
+
+    if key == "fear_greed" and payload:
+        result["fear_greed"] = {
+            "value": payload.get("value", 50),
+            "classification": payload.get("classification", "Neutral"),
+        }
+        return
+
+    if key == "vix" and payload:
+        result["vix"] = {
+            "value": payload.get("value", 20),
+            "classification": payload.get("classification", "Normal"),
+        }
+        return
+
+    if key == "articles" and payload:
+        articles = list(payload or [])
+        scores = [
+            float(article.get("sentiment", 0) or 0)
+            for article in articles
+            if article.get("sentiment") is not None
+        ]
+        news_score = (sum(scores) / len(scores)) if scores else 0.0
+        bullish = sum(1 for article in articles if float(article.get("sentiment", 0) or 0) > 0.1)
+        bearish = sum(1 for article in articles if float(article.get("sentiment", 0) or 0) < -0.1)
+        distribution = {
+            "bullish": bullish,
+            "neutral": len(articles) - bullish - bearish,
+            "bearish": bearish,
+        }
+        result["sentiment_distribution"] = distribution
+        result["articles"] = sorted(articles, key=lambda item: item.get("date", ""), reverse=True)[:20]
+        result["article_count"] = len(articles)
+        result["news_sentiment"] = {
+            "score": round(news_score, 3),
+            "interpretation": _interpret_sentiment_score(news_score),
+            "article_count": len(articles),
+            "distribution": distribution,
+        }
+        return
+
+    if key == "whales" and payload:
+        result["whale_alerts"] = list(payload or [])[:10]
+
+
+def _finalize_sentiment_dashboard_result(result: Dict[str, Any]) -> None:
+    if result["sentiment_distribution"] == {"bullish": 0, "neutral": 0, "bearish": 0}:
+        score = float(result.get("score", 0) or 0)
+        if score > 0.05:
+            result["sentiment_distribution"] = {"bullish": 1, "neutral": 0, "bearish": 0}
+        elif score < -0.05:
+            result["sentiment_distribution"] = {"bullish": 0, "neutral": 0, "bearish": 1}
+        else:
+            result["sentiment_distribution"] = {"bullish": 0, "neutral": 1, "bearish": 0}
+
+    if result["news_sentiment"]["article_count"] == 0:
+        result["news_sentiment"] = {
+            "score": 0.0,
+            "interpretation": _interpret_sentiment_score(0.0),
+            "article_count": int(result.get("article_count", 0) or 0),
+            "distribution": dict(result.get("sentiment_distribution", {}) or {}),
+        }
+
+    fear_greed_value = float((result.get("fear_greed") or {}).get("value", 50) or 50)
+    result["sentiment_context"] = _build_sentiment_context(
+        market_score=float(result.get("score", 0) or 0),
+        news_score=float((result.get("news_sentiment") or {}).get("score", 0) or 0),
+        fear_greed_value=fear_greed_value,
+        market_interpretation=str(result.get("overall_sentiment") or "Neutral"),
+        article_count=int(result.get("article_count", 0) or 0),
+    )
+
+
 @app.route("/api/sentiment/dashboard")
 @_check_api_auth
 @_check_rate_limit
@@ -3772,31 +3931,7 @@ def api_sentiment_dashboard():
         if sa is None:
             return jsonify({"success": False, "error": "Sentiment service unavailable"}), 503
 
-        result: Dict = {
-            "success": True, "overall_sentiment": "Neutral", "score": 0.0,
-            "fear_greed": {"value": 50, "classification": "Neutral"},
-            "vix": {"value": 20, "classification": "Normal"},
-            "article_count": 0,
-            "sentiment_distribution": {"bullish": 0, "neutral": 0, "bearish": 0},
-            "articles": [], "whale_alerts": [],
-            "market_composite": {
-                "score": 0.0,
-                "interpretation": "Neutral",
-                "components": {},
-                "drivers": [],
-            },
-            "news_sentiment": {
-                "score": 0.0,
-                "interpretation": "Neutral",
-                "article_count": 0,
-                "distribution": {"bullish": 0, "neutral": 0, "bearish": 0},
-            },
-            "sentiment_context": {
-                "mode": "neutral",
-                "display_label": "Neutral",
-                "summary": "Awaiting sentiment inputs.",
-            },
-        }
+        result = _default_sentiment_dashboard_result()
         timed_out_tasks = 0
 
         pool = None
@@ -3819,71 +3954,7 @@ def api_sentiment_dashboard():
                 except Exception as exc:
                     logger.debug(f"[dashboard] sentiment {key} error: {exc}")
                     continue
-
-                if key == "market_sentiment" and payload:
-                    market_score = float(payload.get("score", 0) or 0)
-                    market_interpretation = payload.get("interpretation", "Neutral")
-                    components = {
-                        str(name): round(float(value or 0.0), 3)
-                        for name, value in dict(payload.get("components", {}) or {}).items()
-                    }
-                    drivers = [
-                        {
-                            "key": name,
-                            "label": _sentiment_component_label(name),
-                            "score": value,
-                        }
-                        for name, value in sorted(
-                            components.items(),
-                            key=lambda item: abs(float(item[1] or 0.0)),
-                            reverse=True,
-                        )
-                        if abs(float(value or 0.0)) > 0.001
-                    ]
-                    result["score"] = market_score
-                    result["overall_sentiment"] = market_interpretation
-                    result["market_composite"] = {
-                        "score": market_score,
-                        "interpretation": market_interpretation,
-                        "components": components,
-                        "drivers": drivers[:4],
-                    }
-                elif key == "fear_greed" and payload:
-                    result["fear_greed"] = {
-                        "value": payload.get("value", 50),
-                        "classification": payload.get("classification", "Neutral"),
-                    }
-                elif key == "vix" and payload:
-                    result["vix"] = {
-                        "value": payload.get("value", 20),
-                        "classification": payload.get("classification", "Normal"),
-                    }
-                elif key == "articles" and payload:
-                    arts = list(payload or [])
-                    scores = [
-                        float(article.get("sentiment", 0) or 0)
-                        for article in arts
-                        if article.get("sentiment") is not None
-                    ]
-                    news_score = (sum(scores) / len(scores)) if scores else 0.0
-                    b = sum(1 for a in arts if float(a.get("sentiment", 0)) > 0.1)
-                    be = sum(1 for a in arts if float(a.get("sentiment", 0)) < -0.1)
-                    distribution = {
-                        "bullish": b,
-                        "neutral": len(arts) - b - be,
-                        "bearish": be,
-                    }
-                    result["sentiment_distribution"] = distribution
-                    result["articles"] = sorted(arts, key=lambda x: x.get("date", ""), reverse=True)[:20]
-                    result["article_count"] = len(arts)
-                    result["news_sentiment"] = {
-                        "score": round(news_score, 3),
-                        "interpretation": _interpret_sentiment_score(news_score),
-                        "article_count": len(arts),
-                        "distribution": distribution,
-                    }
-                elif key == "whales" and payload:
-                    result["whale_alerts"] = list(payload or [])[:10]
+                _apply_sentiment_dashboard_task_result(result, key, payload)
 
             for future in not_done:
                 future.cancel()
@@ -3899,31 +3970,7 @@ def api_sentiment_dashboard():
                 except Exception:
                     pass
 
-        if result["sentiment_distribution"] == {"bullish": 0, "neutral": 0, "bearish": 0}:
-            score = float(result.get("score", 0) or 0)
-            if score > 0.05:
-                result["sentiment_distribution"] = {"bullish": 1, "neutral": 0, "bearish": 0}
-            elif score < -0.05:
-                result["sentiment_distribution"] = {"bullish": 0, "neutral": 0, "bearish": 1}
-            else:
-                result["sentiment_distribution"] = {"bullish": 0, "neutral": 1, "bearish": 0}
-
-        if result["news_sentiment"]["article_count"] == 0:
-            result["news_sentiment"] = {
-                "score": 0.0,
-                "interpretation": _interpret_sentiment_score(0.0),
-                "article_count": int(result.get("article_count", 0) or 0),
-                "distribution": dict(result.get("sentiment_distribution", {}) or {}),
-            }
-
-        fg_value = float((result.get("fear_greed") or {}).get("value", 50) or 50)
-        result["sentiment_context"] = _build_sentiment_context(
-            market_score=float(result.get("score", 0) or 0),
-            news_score=float((result.get("news_sentiment") or {}).get("score", 0) or 0),
-            fear_greed_value=fg_value,
-            market_interpretation=str(result.get("overall_sentiment") or "Neutral"),
-            article_count=int(result.get("article_count", 0) or 0),
-        )
+        _finalize_sentiment_dashboard_result(result)
 
         ttl = 600 if result["article_count"] or result["whale_alerts"] else (5 if timed_out_tasks else 45)
         _cache_set("sentiment_dashboard", result, ttl=ttl)

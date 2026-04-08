@@ -780,6 +780,270 @@ class SignalJournal:
             return ""
         return _NARRATIVE_LABELS.get(raw, SignalJournal._humanize_token(raw).title())
 
+    @staticmethod
+    def _execution_snapshot(signal: Any) -> Dict[str, Any]:
+        if signal is None:
+            return {
+                "entry_price": 0.0,
+                "stop_loss": 0.0,
+                "take_profit": 0.0,
+                "confidence": 0.0,
+                "position_size": 0.0,
+                "risk_reward": 0.0,
+                "first_target": 0.0,
+                "runner_target": 0.0,
+                "first_rr": 0.0,
+                "runner_rr": 0.0,
+            }
+
+        entry_price = float(getattr(signal, "entry_price", 0) or 0)
+        stop_loss = float(getattr(signal, "stop_loss", 0) or 0)
+        take_profit = float(getattr(signal, "take_profit", 0) or 0)
+        confidence = float(getattr(signal, "confidence", 0) or 0)
+        position_size = float(getattr(signal, "position_size", 0) or 0)
+        risk_reward = float(getattr(signal, "risk_reward", 0) or 0)
+        tp_levels: List[float] = []
+        for raw_level in list(getattr(signal, "take_profit_levels", []) or []):
+            try:
+                level = float(raw_level)
+            except Exception:
+                continue
+            if level > 0:
+                tp_levels.append(level)
+        first_target = float(tp_levels[0]) if tp_levels else take_profit
+        runner_target = float(tp_levels[-1]) if len(tp_levels) > 1 else 0.0
+        risk = abs(entry_price - stop_loss)
+        first_rr = abs(first_target - entry_price) / risk if risk > 0 and first_target else risk_reward
+        runner_rr = abs(runner_target - entry_price) / risk if risk > 0 and runner_target else risk_reward
+        return {
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "confidence": confidence,
+            "position_size": position_size,
+            "risk_reward": risk_reward,
+            "first_target": first_target,
+            "runner_target": runner_target,
+            "first_rr": first_rr,
+            "runner_rr": runner_rr,
+        }
+
+    def _telegram_plain_market_line(self, entry: JournalEntry, data: Dict[str, Any], summary: Dict[str, Any]) -> str:
+        clauses: List[str] = []
+        regime = self._humanize_token(data.get("regime") or summary.get("regime"))
+        if regime:
+            clauses.append(f"trend is {regime}")
+        ml_direction = str(data.get("ml_direction") or "").upper()
+        if ml_direction:
+            clauses.append(f"the model also points {ml_direction.lower()}")
+        rr = _safe_float(data.get("rr"), None)
+        if rr is not None and rr > 0:
+            clauses.append(f"reward to risk is {rr:.2f}:1")
+        session = self._humanize_token(data.get("session"))
+        if session:
+            clauses.append(f"the setup showed up during the {session.title()} session")
+        news_state = self._humanize_token(data.get("news_state"))
+        if news_state:
+            if news_state == "clear":
+                clauses.append("there is no major news pressure right now")
+            else:
+                clauses.append(f"news is {news_state}")
+        agreement_state = str(summary.get("broker_agreement_state") or "").lower()
+        primary_provider = str(summary.get("broker_primary_provider") or "").strip()
+        comparison_provider = str(summary.get("broker_comparison_provider") or "").strip()
+        if primary_provider and comparison_provider and agreement_state:
+            if agreement_state in {"strong", "aligned"}:
+                clauses.append(f"{primary_provider} and {comparison_provider} are aligned")
+            elif agreement_state == "divergent":
+                clauses.append(f"{primary_provider} and {comparison_provider} are showing some price divergence")
+            elif agreement_state == "severe_divergence":
+                clauses.append(f"{primary_provider} and {comparison_provider} are materially diverging")
+        quote_quality_state = self._humanize_token(summary.get("broker_quote_quality_state"))
+        if quote_quality_state:
+            clauses.append(f"quote quality is {quote_quality_state}")
+        spread_regime = self._humanize_token(summary.get("broker_spread_regime"))
+        if spread_regime:
+            clauses.append(f"spread regime is {spread_regime}")
+        sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "market conditions look tradable"
+        return f"- Market view: {self._sentence(sentence)}."
+
+    def _telegram_plain_intelligence_line(self, entry: JournalEntry, data: Dict[str, Any]) -> str:
+        clauses: List[str] = []
+        sentiment_desc = self._describe_sentiment(data.get("sentiment_score"))
+        if sentiment_desc == "neutral":
+            clauses.append("sentiment is broadly neutral")
+        else:
+            clauses.append(f"sentiment is {sentiment_desc}")
+        ig_client_sentiment = data.get("ig_client_sentiment")
+        if isinstance(ig_client_sentiment, dict):
+            bias = str(ig_client_sentiment.get("bias") or "").upper()
+            long_pct = _safe_float(ig_client_sentiment.get("long_pct"), None)
+            short_pct = _safe_float(ig_client_sentiment.get("short_pct"), None)
+            if bias in {"BUY", "SELL"} and long_pct is not None and short_pct is not None:
+                clauses.append(
+                    f"IG client positioning is {long_pct:.0f}% long versus {short_pct:.0f}% short, leaning {bias.lower()}"
+                )
+        whale_dominant = str(data.get("whale_dominant") or "").upper()
+        if whale_dominant in {"BUY", "SELL"}:
+            clauses.append(f"whale flow leans {whale_dominant.lower()}")
+        source_count = len(data.get("sentiment_sources") or [])
+        if source_count:
+            clauses.append(f"this view is backed by {source_count} sources")
+        narrative = self._narrative_label(data.get("narrative"))
+        if narrative:
+            clauses.append(f"the main narrative is {narrative}")
+        cross_asset_alignment = _safe_float(data.get("cross_asset_alignment"), None)
+        cross_asset_peer = str(data.get("cross_asset_primary_peer") or "").strip()
+        cross_asset_relation = self._humanize_token(data.get("cross_asset_primary_relation"))
+        if cross_asset_alignment is not None and cross_asset_peer:
+            if cross_asset_alignment >= 0.22:
+                clauses.append(
+                    f"{cross_asset_peer} is confirming the trade"
+                    f"{f' through {cross_asset_relation}' if cross_asset_relation else ''}"
+                )
+            elif cross_asset_alignment <= -0.22:
+                clauses.append(
+                    f"{cross_asset_peer} is conflicting with the trade"
+                    f"{f' through {cross_asset_relation}' if cross_asset_relation else ''}"
+                )
+        sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "intelligence checks were supportive"
+        return f"- Flow and sentiment: {self._sentence(sentence)}."
+
+    def _telegram_plain_memory_line(self, entry: JournalEntry, data: Dict[str, Any]) -> str:
+        clauses: List[str] = []
+        win_rate = _safe_float(data.get("memory_win_rate"), None)
+        sample_count = _safe_int(data.get("memory_sample_count"), None)
+        if win_rate is not None and sample_count:
+            clauses.append(f"similar setups won {win_rate * 100:.1f}% of the time across {sample_count} examples")
+        else:
+            memory_score = _safe_float(data.get("memory_score"), None)
+            if memory_score is not None:
+                clauses.append(f"similar setup memory scored {memory_score:.1f} out of 100")
+        memory_edge = _safe_float(data.get("memory_edge"), None)
+        if memory_edge is not None:
+            if memory_edge > 0.05:
+                clauses.append("historical edge is positive")
+            elif memory_edge < -0.05:
+                clauses.append("historical edge is negative")
+        sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "historical memory was supportive"
+        return f"- Historical context: {self._sentence(sentence)}."
+
+    def _telegram_plain_meta_ai_line(self, entry: JournalEntry, data: Dict[str, Any], summary: Dict[str, Any]) -> str:
+        clauses: List[str] = []
+        regime = self._humanize_token(data.get("regime") or summary.get("regime"))
+        if regime:
+            clauses.append(f"the broader regime is {regime}")
+        ensemble = _safe_float(data.get("ensemble"), None)
+        if ensemble is not None:
+            if ensemble >= 0.67:
+                clauses.append("the ensemble view supports the trade")
+            elif ensemble <= 0.33:
+                clauses.append("the ensemble view leans against the trade")
+            else:
+                clauses.append("the ensemble view is neutral")
+        reason = self._humanize_reason(entry.reason).lower()
+        if "no adjustment" in reason:
+            clauses.append("it did not change conviction")
+        elif "support" in reason:
+            clauses.append("it added a small supportive bias")
+        elif "conflict" in reason:
+            clauses.append("it flagged some conflict")
+        sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "meta model review was neutral"
+        return f"- Broader AI view: {self._sentence(sentence)}."
+
+    def _telegram_plain_policy_line(self, entry: JournalEntry, data: Dict[str, Any], direction_word: str) -> str:
+        clauses: List[str] = []
+        policy_status = self._humanize_token(data.get("agent_policy_status") or "ok")
+        if entry.decision == PASS:
+            if policy_status == "ok":
+                clauses.append(f"the policy model approved the {direction_word} setup")
+            else:
+                clauses.append(f"the policy model was treated as advisory ({policy_status})")
+        elif entry.decision == KILLED:
+            clauses.append(f"the policy model rejected the {direction_word} setup")
+        directional_edge = _safe_float(data.get("agent_directional_edge"), None)
+        if directional_edge is not None:
+            if directional_edge >= 0.65:
+                clauses.append("directional edge was strong")
+            elif directional_edge <= 0.35:
+                clauses.append("directional edge was weak")
+        sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "policy review completed"
+        return f"- Policy check: {self._sentence(sentence)}."
+
+    def _telegram_plain_governance_line(self, entry: JournalEntry, data: Dict[str, Any], summary: Dict[str, Any]) -> str:
+        clauses = ["data quality and live checks passed" if entry.decision == PASS else "governance checks blocked the setup"]
+        grade = str(data.get("grade") or summary.get("governance_grade") or "").strip()
+        if grade:
+            clauses.append(f"grade {grade}")
+        valid_sources = _safe_int(data.get("valid_sources"), None)
+        min_required = _safe_int(data.get("min_required"), None)
+        if valid_sources is not None and min_required is not None:
+            clauses.append(f"{valid_sources} sources cleared the minimum of {min_required}")
+        sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "governance review completed"
+        return f"- Safety checks: {self._sentence(sentence)}."
+
+    def _telegram_plain_execution_line(self, entry: JournalEntry, data: Dict[str, Any], summary: Dict[str, Any], signal: Any) -> str:
+        clauses: List[str] = []
+        if entry.decision == PASS:
+            clauses.append("the setup stayed above the live execution floor")
+        else:
+            clauses.append(self._humanize_reason(entry.reason) or "execution rules blocked the trade")
+        depth_mode = str(summary.get("depth_mode") or "").lower()
+        if depth_mode == "true_depth":
+            clauses.append("true order-book depth is available")
+        elif depth_mode == "synthetic_depth":
+            clauses.append("microstructure is using a synthetic depth proxy")
+        elif summary.get("microstructure_source"):
+            clauses.append("microstructure is running on top-of-book quotes only")
+        pressure = str(summary.get("microstructure_pressure") or "").upper()
+        if pressure in {"BUY", "SELL"}:
+            if pressure == str(self.direction or "").upper():
+                clauses.append(f"microstructure pressure still leans {pressure.lower()}")
+            else:
+                clauses.append(f"microstructure pressure leans {pressure.lower()}, so the tape is not fully aligned")
+        stop_hunt_risk = _safe_float(summary.get("stop_hunt_risk"), None)
+        if stop_hunt_risk is not None and stop_hunt_risk >= 0.45:
+            clauses.append("stop-hunt risk is elevated")
+        exhaustion_risk = _safe_float(summary.get("exhaustion_risk"), None)
+        if exhaustion_risk is not None and exhaustion_risk >= 0.42:
+            clauses.append("exhaustion risk is elevated")
+        position_size = _safe_float(data.get("position_size"), _safe_float(getattr(signal, "position_size", 0.0), None))
+        if position_size is not None and position_size > 0:
+            clauses.append(f"position size is {position_size:.4f}")
+        tp_levels = len(getattr(signal, "take_profit_levels", []) or [])
+        if tp_levels:
+            clauses.append(f"{tp_levels} take profit levels are set")
+        notes = [self._humanize_token(note) for note in (data.get("notes") or [])]
+        if "balance drawdown" in notes:
+            clauses.append("sizing was kept conservative because the account is in drawdown")
+        sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "execution review completed"
+        return f"- Execution posture: {self._sentence(sentence)}."
+
+    def _telegram_plain_research_line(self, entry: JournalEntry, data: Dict[str, Any]) -> str:
+        clauses: List[str] = []
+        research_approved = data.get("research_approved")
+        if research_approved is True:
+            clauses.append("the active model is approved for live use")
+        elif research_approved is False:
+            clauses.append("the active model is not yet approved for full live use")
+        model_key = self._humanize_token(data.get("model_key"))
+        if model_key:
+            clauses.append(f"it is using the {model_key} model")
+        metrics: List[str] = []
+        walk_forward = _safe_float(data.get("walk_forward_accuracy"), None)
+        if walk_forward is not None:
+            metrics.append(f"walk forward {walk_forward * 100:.1f}%")
+        holdout = _safe_float(data.get("holdout_accuracy"), None)
+        if holdout is not None:
+            metrics.append(f"holdout {holdout * 100:.1f}%")
+        live_accuracy = _safe_float(data.get("live_validation_accuracy_pct"), None)
+        if live_accuracy is not None and live_accuracy > 0:
+            metrics.append(f"live {live_accuracy:.1f}%")
+        if metrics:
+            clauses.append("validation reads " + self._join_clauses(metrics))
+        sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "research validation is available"
+        return f"- Research backing: {self._sentence(sentence)}."
+
     def _telegram_plain_stage_line(self, entry: JournalEntry, signal=None, summary: Optional[Dict[str, Any]] = None) -> str:
         summary = summary or {}
         data = entry.data if isinstance(entry.data, dict) else {}
@@ -787,220 +1051,28 @@ class SignalJournal:
         direction_word = str(self.direction or "").lower()
 
         if name == "market":
-            clauses: List[str] = []
-            regime = self._humanize_token(data.get("regime") or summary.get("regime"))
-            if regime:
-                clauses.append(f"trend is {regime}")
-            ml_direction = str(data.get("ml_direction") or "").upper()
-            if ml_direction:
-                clauses.append(f"the model also points {ml_direction.lower()}")
-            rr = _safe_float(data.get("rr"), None)
-            if rr is not None and rr > 0:
-                clauses.append(f"reward to risk is {rr:.2f}:1")
-            session = self._humanize_token(data.get("session"))
-            if session:
-                clauses.append(f"the setup showed up during the {session.title()} session")
-            news_state = self._humanize_token(data.get("news_state"))
-            if news_state:
-                if news_state == "clear":
-                    clauses.append("there is no major news pressure right now")
-                else:
-                    clauses.append(f"news is {news_state}")
-            agreement_state = str(summary.get("broker_agreement_state") or "").lower()
-            primary_provider = str(summary.get("broker_primary_provider") or "").strip()
-            comparison_provider = str(summary.get("broker_comparison_provider") or "").strip()
-            if primary_provider and comparison_provider and agreement_state:
-                if agreement_state in {"strong", "aligned"}:
-                    clauses.append(f"{primary_provider} and {comparison_provider} are aligned")
-                elif agreement_state == "divergent":
-                    clauses.append(f"{primary_provider} and {comparison_provider} are showing some price divergence")
-                elif agreement_state == "severe_divergence":
-                    clauses.append(f"{primary_provider} and {comparison_provider} are materially diverging")
-            quote_quality_state = self._humanize_token(summary.get("broker_quote_quality_state"))
-            if quote_quality_state:
-                clauses.append(f"quote quality is {quote_quality_state}")
-            spread_regime = self._humanize_token(summary.get("broker_spread_regime"))
-            if spread_regime:
-                clauses.append(f"spread regime is {spread_regime}")
-            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "market conditions look tradable"
-            return f"- Market view: {self._sentence(sentence)}."
+            return self._telegram_plain_market_line(entry, data, summary)
 
         if name == "intelligence":
-            clauses = []
-            sentiment_desc = self._describe_sentiment(data.get("sentiment_score"))
-            if sentiment_desc == "neutral":
-                clauses.append("sentiment is broadly neutral")
-            else:
-                clauses.append(f"sentiment is {sentiment_desc}")
-            ig_client_sentiment = data.get("ig_client_sentiment")
-            if isinstance(ig_client_sentiment, dict):
-                bias = str(ig_client_sentiment.get("bias") or "").upper()
-                long_pct = _safe_float(ig_client_sentiment.get("long_pct"), None)
-                short_pct = _safe_float(ig_client_sentiment.get("short_pct"), None)
-                if bias in {"BUY", "SELL"} and long_pct is not None and short_pct is not None:
-                    clauses.append(
-                        f"IG client positioning is {long_pct:.0f}% long versus {short_pct:.0f}% short, leaning {bias.lower()}"
-                    )
-            whale_dominant = str(data.get("whale_dominant") or "").upper()
-            if whale_dominant in {"BUY", "SELL"}:
-                clauses.append(f"whale flow leans {whale_dominant.lower()}")
-            source_count = len(data.get("sentiment_sources") or [])
-            if source_count:
-                clauses.append(f"this view is backed by {source_count} sources")
-            narrative = self._narrative_label(data.get("narrative"))
-            if narrative:
-                clauses.append(f"the main narrative is {narrative}")
-            cross_asset_alignment = _safe_float(data.get("cross_asset_alignment"), None)
-            cross_asset_peer = str(data.get("cross_asset_primary_peer") or "").strip()
-            cross_asset_relation = self._humanize_token(data.get("cross_asset_primary_relation"))
-            if cross_asset_alignment is not None and cross_asset_peer:
-                if cross_asset_alignment >= 0.22:
-                    clauses.append(
-                        f"{cross_asset_peer} is confirming the trade"
-                        f"{f' through {cross_asset_relation}' if cross_asset_relation else ''}"
-                    )
-                elif cross_asset_alignment <= -0.22:
-                    clauses.append(
-                        f"{cross_asset_peer} is conflicting with the trade"
-                        f"{f' through {cross_asset_relation}' if cross_asset_relation else ''}"
-                    )
-            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "intelligence checks were supportive"
-            return f"- Flow and sentiment: {self._sentence(sentence)}."
+            return self._telegram_plain_intelligence_line(entry, data)
 
         if name == "memory":
-            clauses = []
-            win_rate = _safe_float(data.get("memory_win_rate"), None)
-            sample_count = _safe_int(data.get("memory_sample_count"), None)
-            if win_rate is not None and sample_count:
-                clauses.append(f"similar setups won {win_rate * 100:.1f}% of the time across {sample_count} examples")
-            else:
-                memory_score = _safe_float(data.get("memory_score"), None)
-                if memory_score is not None:
-                    clauses.append(f"similar setup memory scored {memory_score:.1f} out of 100")
-            memory_edge = _safe_float(data.get("memory_edge"), None)
-            if memory_edge is not None:
-                if memory_edge > 0.05:
-                    clauses.append("historical edge is positive")
-                elif memory_edge < -0.05:
-                    clauses.append("historical edge is negative")
-            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "historical memory was supportive"
-            return f"- Historical context: {self._sentence(sentence)}."
+            return self._telegram_plain_memory_line(entry, data)
 
         if name == "meta_ai":
-            clauses = []
-            regime = self._humanize_token(data.get("regime") or summary.get("regime"))
-            if regime:
-                clauses.append(f"the broader regime is {regime}")
-            ensemble = _safe_float(data.get("ensemble"), None)
-            if ensemble is not None:
-                if ensemble >= 0.67:
-                    clauses.append("the ensemble view supports the trade")
-                elif ensemble <= 0.33:
-                    clauses.append("the ensemble view leans against the trade")
-                else:
-                    clauses.append("the ensemble view is neutral")
-            reason = self._humanize_reason(entry.reason).lower()
-            if "no adjustment" in reason:
-                clauses.append("it did not change conviction")
-            elif "support" in reason:
-                clauses.append("it added a small supportive bias")
-            elif "conflict" in reason:
-                clauses.append("it flagged some conflict")
-            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "meta model review was neutral"
-            return f"- Broader AI view: {self._sentence(sentence)}."
+            return self._telegram_plain_meta_ai_line(entry, data, summary)
 
         if name == "policy":
-            clauses = []
-            policy_status = self._humanize_token(data.get("agent_policy_status") or "ok")
-            if entry.decision == PASS:
-                if policy_status == "ok":
-                    clauses.append(f"the policy model approved the {direction_word} setup")
-                else:
-                    clauses.append(f"the policy model was treated as advisory ({policy_status})")
-            elif entry.decision == KILLED:
-                clauses.append(f"the policy model rejected the {direction_word} setup")
-            directional_edge = _safe_float(data.get("agent_directional_edge"), None)
-            if directional_edge is not None:
-                if directional_edge >= 0.65:
-                    clauses.append("directional edge was strong")
-                elif directional_edge <= 0.35:
-                    clauses.append("directional edge was weak")
-            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "policy review completed"
-            return f"- Policy check: {self._sentence(sentence)}."
+            return self._telegram_plain_policy_line(entry, data, direction_word)
 
         if name == "governance":
-            clauses = ["data quality and live checks passed" if entry.decision == PASS else "governance checks blocked the setup"]
-            grade = str(data.get("grade") or summary.get("governance_grade") or "").strip()
-            if grade:
-                clauses.append(f"grade {grade}")
-            valid_sources = _safe_int(data.get("valid_sources"), None)
-            min_required = _safe_int(data.get("min_required"), None)
-            if valid_sources is not None and min_required is not None:
-                clauses.append(f"{valid_sources} sources cleared the minimum of {min_required}")
-            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "governance review completed"
-            return f"- Safety checks: {self._sentence(sentence)}."
+            return self._telegram_plain_governance_line(entry, data, summary)
 
         if name == "execution":
-            clauses = []
-            if entry.decision == PASS:
-                clauses.append("the setup stayed above the live execution floor")
-            else:
-                clauses.append(self._humanize_reason(entry.reason) or "execution rules blocked the trade")
-            depth_mode = str(summary.get("depth_mode") or "").lower()
-            if depth_mode == "true_depth":
-                clauses.append("true order-book depth is available")
-            elif depth_mode == "synthetic_depth":
-                clauses.append("microstructure is using a synthetic depth proxy")
-            elif summary.get("microstructure_source"):
-                clauses.append("microstructure is running on top-of-book quotes only")
-            pressure = str(summary.get("microstructure_pressure") or "").upper()
-            if pressure in {"BUY", "SELL"}:
-                if pressure == str(self.direction or "").upper():
-                    clauses.append(f"microstructure pressure still leans {pressure.lower()}")
-                else:
-                    clauses.append(f"microstructure pressure leans {pressure.lower()}, so the tape is not fully aligned")
-            stop_hunt_risk = _safe_float(summary.get("stop_hunt_risk"), None)
-            if stop_hunt_risk is not None and stop_hunt_risk >= 0.45:
-                clauses.append("stop-hunt risk is elevated")
-            exhaustion_risk = _safe_float(summary.get("exhaustion_risk"), None)
-            if exhaustion_risk is not None and exhaustion_risk >= 0.42:
-                clauses.append("exhaustion risk is elevated")
-            position_size = _safe_float(data.get("position_size"), _safe_float(getattr(signal, "position_size", 0.0), None))
-            if position_size is not None and position_size > 0:
-                clauses.append(f"position size is {position_size:.4f}")
-            tp_levels = len(getattr(signal, "take_profit_levels", []) or [])
-            if tp_levels:
-                clauses.append(f"{tp_levels} take profit levels are set")
-            notes = [self._humanize_token(note) for note in (data.get("notes") or [])]
-            if "balance drawdown" in notes:
-                clauses.append("sizing was kept conservative because the account is in drawdown")
-            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "execution review completed"
-            return f"- Execution posture: {self._sentence(sentence)}."
+            return self._telegram_plain_execution_line(entry, data, summary, signal)
 
         if name == "research_validation":
-            clauses = []
-            research_approved = data.get("research_approved")
-            if research_approved is True:
-                clauses.append("the active model is approved for live use")
-            elif research_approved is False:
-                clauses.append("the active model is not yet approved for full live use")
-            model_key = self._humanize_token(data.get("model_key"))
-            if model_key:
-                clauses.append(f"it is using the {model_key} model")
-            metrics: List[str] = []
-            walk_forward = _safe_float(data.get("walk_forward_accuracy"), None)
-            if walk_forward is not None:
-                metrics.append(f"walk forward {walk_forward * 100:.1f}%")
-            holdout = _safe_float(data.get("holdout_accuracy"), None)
-            if holdout is not None:
-                metrics.append(f"holdout {holdout * 100:.1f}%")
-            live_accuracy = _safe_float(data.get("live_validation_accuracy_pct"), None)
-            if live_accuracy is not None and live_accuracy > 0:
-                metrics.append(f"live {live_accuracy:.1f}%")
-            if metrics:
-                clauses.append("validation reads " + self._join_clauses(metrics))
-            sentence = self._join_clauses(clauses) or self._humanize_reason(entry.reason) or "research validation is available"
-            return f"- Research backing: {self._sentence(sentence)}."
+            return self._telegram_plain_research_line(entry, data)
 
         reason = self._humanize_reason(entry.reason)
         if not reason:
@@ -1114,25 +1186,16 @@ class SignalJournal:
 
         # Execution details for surviving signals
         if survived and signal:
-            entry_p = float(getattr(signal, "entry_price", 0))
-            sl      = float(getattr(signal, "stop_loss",   0))
-            tp      = float(getattr(signal, "take_profit", 0))
-            conf    = float(getattr(signal, "confidence",  0))
-            size    = float(getattr(signal, "position_size", 0))
-            rr      = float(getattr(signal, "risk_reward",  0))
-            tp_levels = []
-            for raw_level in list(getattr(signal, "take_profit_levels", []) or []):
-                try:
-                    level = float(raw_level)
-                except Exception:
-                    continue
-                if level > 0:
-                    tp_levels.append(level)
-            first_target = float(tp_levels[0]) if tp_levels else tp
-            runner_target = float(tp_levels[-1]) if len(tp_levels) > 1 else 0.0
-            risk = abs(entry_p - sl)
-            first_rr = abs(first_target - entry_p) / risk if risk > 0 and first_target else rr
-            runner_rr = abs(runner_target - entry_p) / risk if risk > 0 and runner_target else rr
+            snapshot = self._execution_snapshot(signal)
+            entry_p = float(snapshot["entry_price"])
+            sl = float(snapshot["stop_loss"])
+            conf = float(snapshot["confidence"])
+            size = float(snapshot["position_size"])
+            rr = float(snapshot["risk_reward"])
+            first_target = float(snapshot["first_target"])
+            runner_target = float(snapshot["runner_target"])
+            first_rr = float(snapshot["first_rr"])
+            runner_rr = float(snapshot["runner_rr"])
 
             executing_lines = [
                 "🚀 *EXECUTING*",
@@ -1227,25 +1290,16 @@ class SignalJournal:
                 lines.extend(context_lines + trust_lines + other_lines)
 
         if survived and signal:
-            entry_p = float(getattr(signal, "entry_price", 0))
-            sl      = float(getattr(signal, "stop_loss",   0))
-            tp      = float(getattr(signal, "take_profit", 0))
-            conf    = float(getattr(signal, "confidence",  0))
-            size    = float(getattr(signal, "position_size", 0))
-            rr      = float(getattr(signal, "risk_reward",  0))
-            tp_levels = []
-            for raw_level in list(getattr(signal, "take_profit_levels", []) or []):
-                try:
-                    level = float(raw_level)
-                except Exception:
-                    continue
-                if level > 0:
-                    tp_levels.append(level)
-            first_target = float(tp_levels[0]) if tp_levels else tp
-            runner_target = float(tp_levels[-1]) if len(tp_levels) > 1 else 0.0
-            risk = abs(entry_p - sl)
-            first_rr = abs(first_target - entry_p) / risk if risk > 0 and first_target else rr
-            runner_rr = abs(runner_target - entry_p) / risk if risk > 0 and runner_target else rr
+            snapshot = self._execution_snapshot(signal)
+            entry_p = float(snapshot["entry_price"])
+            sl = float(snapshot["stop_loss"])
+            conf = float(snapshot["confidence"])
+            size = float(snapshot["position_size"])
+            rr = float(snapshot["risk_reward"])
+            first_target = float(snapshot["first_target"])
+            runner_target = float(snapshot["runner_target"])
+            first_rr = float(snapshot["first_rr"])
+            runner_rr = float(snapshot["runner_rr"])
 
             lines.extend([
                 "",
