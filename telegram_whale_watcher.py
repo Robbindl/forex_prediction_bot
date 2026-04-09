@@ -378,6 +378,91 @@ class TelegramWhaleWatcher:
                 logger.warning(f"[TelegramWhaleWatcher] Could not resolve configured channel '{spec}'")
         return resolved
 
+    async def _connect_client(self):
+        try:
+            from telethon import TelegramClient
+            from telethon.errors import SessionPasswordNeededError
+        except ImportError:
+            logger.error(
+                "[TelegramWhaleWatcher] telethon not installed — "
+                "run: pip install telethon"
+            )
+            return None
+
+        client = TelegramClient(self._session, self._api_id, self._api_hash)
+        self._client = client
+
+        try:
+            await client.start(phone=self._phone)
+            logger.info("[TelegramWhaleWatcher] Telethon connected")
+            self._mark_healthy()
+        except SessionPasswordNeededError:
+            logger.error(
+                "[TelegramWhaleWatcher] 2FA enabled — "
+                "run telethon interactively once to create the session file"
+            )
+            return None
+        except Exception as e:
+            logger.error(f"[TelegramWhaleWatcher] Connect failed: {e}")
+            return None
+
+        return client
+
+    async def _fetch_recent_history(self, client, resolved_channels: List) -> None:
+        for entity in resolved_channels:
+            if not self._is_running:
+                break
+            try:
+                async for msg in client.iter_messages(entity, limit=50):
+                    if msg.text:
+                        channel_name = str(getattr(entity, "title", "") or getattr(entity, "username", "") or "telegram")
+                        alert = _parse_alert(msg.text, channel_name, msg.date or datetime.utcnow())
+                        if alert:
+                            self._add_alert(alert)
+                logger.debug(
+                    f"[TelegramWhaleWatcher] Fetched history from "
+                    f"{getattr(entity, 'title', getattr(entity, 'username', entity))}"
+                )
+            except Exception as e:
+                logger.debug(
+                    f"[TelegramWhaleWatcher] Could not read "
+                    f"{getattr(entity, 'title', getattr(entity, 'username', entity))}: {e}"
+                )
+
+    async def _handle_new_message(self, event) -> None:
+        if not event.text:
+            return
+        channel_name = str(
+            getattr(event.chat, "title", "")
+            or getattr(event.chat, "username", "")
+            or event.chat_id
+        )
+        alert = _parse_alert(event.text, channel_name, datetime.utcnow())
+        if alert:
+            self._add_alert(alert)
+            logger.info(
+                f"[TelegramWhaleWatcher] NEW alert: "
+                f"{alert['symbol']} ${alert['value_usd']/1_000_000:.1f}M"
+            )
+            if self.on_alert:
+                try:
+                    self.on_alert(alert)
+                except Exception:
+                    pass
+
+    async def _register_live_handler(self, client, resolved_channels: List) -> None:
+        from telethon import events
+
+        client.add_event_handler(self._handle_new_message, events.NewMessage(chats=resolved_channels))
+        logger.info(
+            f"[TelegramWhaleWatcher] Listening to {len(resolved_channels)} channels"
+        )
+
+    async def _keepalive_loop(self) -> None:
+        while self._is_running:
+            self._mark_healthy()
+            await asyncio.sleep(5)
+
     # ── Internal Telethon listener ────────────────────────────────────────
 
     def _run_listener(self) -> None:
@@ -394,31 +479,8 @@ class TelegramWhaleWatcher:
 
     async def _listen_async(self) -> None:
         """Async Telethon client — connects, fetches history, then listens live."""
-        try:
-            from telethon import TelegramClient, events
-            from telethon.errors import SessionPasswordNeededError
-        except ImportError:
-            logger.error(
-                "[TelegramWhaleWatcher] telethon not installed — "
-                "run: pip install telethon"
-            )
-            return
-
-        client = TelegramClient(self._session, self._api_id, self._api_hash)
-        self._client = client
-
-        try:
-            await client.start(phone=self._phone)
-            logger.info("[TelegramWhaleWatcher] Telethon connected")
-            self._mark_healthy()
-        except SessionPasswordNeededError:
-            logger.error(
-                "[TelegramWhaleWatcher] 2FA enabled — "
-                "run telethon interactively once to create the session file"
-            )
-            return
-        except Exception as e:
-            logger.error(f"[TelegramWhaleWatcher] Connect failed: {e}")
+        client = await self._connect_client()
+        if client is None:
             return
 
         resolved_channels = await self._resolve_watch_entities(client)
@@ -427,54 +489,9 @@ class TelegramWhaleWatcher:
             return
         self._mark_healthy()
 
-        # ── Fetch recent history from each channel ──────────────────────
-        for entity in resolved_channels:
-            if not self._is_running:
-                break
-            try:
-                async for msg in client.iter_messages(entity, limit=50):
-                    if msg.text:
-                        channel_name = str(getattr(entity, "title", "") or getattr(entity, "username", "") or "telegram")
-                        alert = _parse_alert(msg.text, channel_name, msg.date or datetime.utcnow())
-                        if alert:
-                            self._add_alert(alert)
-                logger.debug(f"[TelegramWhaleWatcher] Fetched history from {getattr(entity, 'title', getattr(entity, 'username', entity))}")
-            except Exception as e:
-                logger.debug(f"[TelegramWhaleWatcher] Could not read {getattr(entity, 'title', getattr(entity, 'username', entity))}: {e}")
-
-        # ── Real-time listener for new messages ─────────────────────────
-        @client.on(events.NewMessage(chats=resolved_channels))
-        async def _on_message(event):
-            if not event.text:
-                return
-            channel_name = str(
-                getattr(event.chat, "title", "")
-                or getattr(event.chat, "username", "")
-                or event.chat_id
-            )
-            alert = _parse_alert(event.text, channel_name, datetime.utcnow())
-            if alert:
-                self._add_alert(alert)
-                logger.info(
-                    f"[TelegramWhaleWatcher] NEW alert: "
-                    f"{alert['symbol']} ${alert['value_usd']/1_000_000:.1f}M"
-                )
-                # Fire optional callback for downstream fan-out.
-                if self.on_alert:
-                    try:
-                        self.on_alert(alert)
-                    except Exception:
-                        pass
-
-        logger.info(
-            f"[TelegramWhaleWatcher] Listening to {len(resolved_channels)} channels"
-        )
-
-        # Keep running until stopped
-        while self._is_running:
-            self._mark_healthy()
-            await asyncio.sleep(5)
-
+        await self._fetch_recent_history(client, resolved_channels)
+        await self._register_live_handler(client, resolved_channels)
+        await self._keepalive_loop()
         await client.disconnect()
 
     def _add_alert(self, alert: Dict) -> None:

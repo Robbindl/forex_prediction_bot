@@ -542,24 +542,21 @@ class _NewsSentiment:
         results: List[Tuple[float, float]] = []
         try:
             from reddit_watcher import RedditWatcher
-            rw      = RedditWatcher()
-            data    = rw.get_asset_sentiment(asset)
-            posts   = data.get("posts", [])
+            rw = RedditWatcher()
+            data = rw.get_asset_sentiment(asset)
+            posts = data.get("posts", [])
             if not posts:
                 return results
 
             # Normalise engagement weights across this batch
-            engagements = [
-                max(1, p.get("score", 0) + p.get("comments", 0))
-                for p in posts
-            ]
+            engagements = [max(1, p.get("score", 0) + p.get("comments", 0)) for p in posts]
             max_eng = max(engagements) if engagements else 1
 
             now = time.time()
             macro_signals: List[Tuple[str, float, float]] = []  # (direction, weight, velocity)
 
             for post, eng in zip(posts, engagements):
-                title   = post.get("title", "")
+                title = post.get("title", "")
                 if not title:
                     continue
 
@@ -574,66 +571,27 @@ class _NewsSentiment:
                 # ── Velocity: upvote rate as breaking-news signal ─────────
                 created = post.get("created")
                 velocity_mult = 1.0
-                if created:
-                    try:
-                        if hasattr(created, "timestamp"):
-                            age_hours = (now - created.timestamp()) / 3600
-                        elif isinstance(created, datetime):
-                            age_hours = (now - created.timestamp()) / 3600
-                        else:
-                            age_hours = None
+                age_hours = cls._reddit_post_age_hours(created, now)
+                if age_hours is not None:
+                    # Enforce freshness window (recent 6-12h)
+                    if age_hours > cls._MAX_AGE_HOURS:
+                        continue
 
-                        if age_hours is not None:
-                            # Enforce freshness window (recent 6-12h)
-                            if age_hours > cls._MAX_AGE_HOURS:
-                                continue
+                    if age_hours < 2.0 and eng > 100:
+                        # Breaking news — posts less than 2h old with >100 engagement
+                        velocity = eng / max(0.1, age_hours)
+                        # Scale: 500 upvotes/hr = 1.5x multiplier
+                        velocity_mult = min(2.0, 1.0 + velocity / 1000)
 
-                            if age_hours < 2.0 and eng > 100:
-                                # Breaking news — posts less than 2h old with >100 engagement
-                                velocity = eng / max(0.1, age_hours)
-                                # Scale: 500 upvotes/hr = 1.5x multiplier
-                                velocity_mult = min(2.0, 1.0 + velocity / 1000)
-                    except Exception:
-                        pass
-
-                final_score  = _clamp(kw_score * velocity_mult)
+                final_score = _clamp(kw_score * velocity_mult)
                 final_weight = norm_weight * velocity_mult
                 results.append((final_score, final_weight))
 
-                # ── Macro event detection ─────────────────────────────────
-                words = set(title.lower().split())
-                words = {w.strip(".,!?;:") for w in words}
-                is_macro_bearish = bool(words & cls._MACRO_BEARISH)
-                is_macro_bullish = bool(words & cls._MACRO_BULLISH)
+                macro_signal = cls._reddit_macro_signal(title, eng, norm_weight, velocity_mult)
+                if macro_signal is not None:
+                    macro_signals.append(macro_signal)
 
-                if is_macro_bearish and eng > 200:
-                    macro_signals.append(("bearish", norm_weight, velocity_mult))
-                elif is_macro_bullish and eng > 200:
-                    macro_signals.append(("bullish", norm_weight, velocity_mult))
-
-            # ── Store macro signals cross-asset ───────────────────────────
-            if macro_signals:
-                total_macro_w = sum(w * v for _, w, v in macro_signals)
-                bearish_w = sum(w * v for d, w, v in macro_signals if d == "bearish")
-                bullish_w = sum(w * v for d, w, v in macro_signals if d == "bullish")
-                net = (bullish_w - bearish_w) / max(1, total_macro_w)
-
-                # Write cross-asset implications into cache (30 min TTL)
-                # Structure: _MACRO_IMPACT[direction][category] = impact_value
-                expiry = now + 1800
-                direction = "bearish" if net < 0 else "bullish"
-                category_impacts = cls._MACRO_IMPACT.get(direction, {})
-                with cls._macro_lock:
-                    for cat_name, raw_impact in category_impacts.items():
-                        # Weight impact by signal strength (net ranges -1 to +1)
-                        impact = raw_impact * min(1.0, abs(net) * 2)
-                        existing = cls._macro_event_cache.get(cat_name)
-                        if not existing or time.time() >= existing[1]:
-                            cls._macro_event_cache[cat_name] = (impact, expiry)
-                            logger.info(
-                                f"[NewsSentiment] Macro {direction} event → "
-                                f"{cat_name} impact={impact:+.3f} (strength={abs(net):.2f})"
-                            )
+            cls._store_macro_impacts(macro_signals, now)
 
         except Exception as e:
             logger.debug(f"[NewsSentiment] Reddit scored fetch failed for {asset}: {e}")
@@ -674,21 +632,67 @@ class _NewsSentiment:
         except Exception:
             return None
 
-    @classmethod
-    def _fetch_articles(cls, asset: str) -> List[str]:
-        canonical_asset = _canon_asset(asset)
-        keywords = _ASSET_KEYWORDS.get(canonical_asset, [canonical_asset.lower()])
-        query    = " OR ".join(f'"{kw}"' for kw in keywords[:3])
-        articles = []
+    @staticmethod
+    def _reddit_post_age_hours(created: Any, now: float) -> Optional[float]:
+        if not created:
+            return None
+        try:
+            if hasattr(created, "timestamp") or isinstance(created, datetime):
+                return (now - created.timestamp()) / 3600
+        except Exception:
+            return None
+        return None
 
-        # NewsAPI — called if quota available
+    @classmethod
+    def _reddit_macro_signal(
+        cls,
+        title: str,
+        eng: float,
+        norm_weight: float,
+        velocity_mult: float,
+    ) -> Optional[Tuple[str, float, float]]:
+        words = {w.strip(".,!?;:") for w in title.lower().split()}
+        is_macro_bearish = bool(words & cls._MACRO_BEARISH)
+        is_macro_bullish = bool(words & cls._MACRO_BULLISH)
+        if is_macro_bearish and eng > 200:
+            return ("bearish", norm_weight, velocity_mult)
+        if is_macro_bullish and eng > 200:
+            return ("bullish", norm_weight, velocity_mult)
+        return None
+
+    @classmethod
+    def _store_macro_impacts(cls, macro_signals: List[Tuple[str, float, float]], now: float) -> None:
+        if not macro_signals:
+            return
+
+        total_macro_w = sum(w * v for _, w, v in macro_signals)
+        bearish_w = sum(w * v for d, w, v in macro_signals if d == "bearish")
+        bullish_w = sum(w * v for d, w, v in macro_signals if d == "bullish")
+        net = (bullish_w - bearish_w) / max(1, total_macro_w)
+
+        expiry = now + 1800
+        direction = "bearish" if net < 0 else "bullish"
+        category_impacts = cls._MACRO_IMPACT.get(direction, {})
+        with cls._macro_lock:
+            for cat_name, raw_impact in category_impacts.items():
+                impact = raw_impact * min(1.0, abs(net) * 2)
+                existing = cls._macro_event_cache.get(cat_name)
+                if not existing or time.time() >= existing[1]:
+                    cls._macro_event_cache[cat_name] = (impact, expiry)
+                    logger.info(
+                        f"[NewsSentiment] Macro {direction} event → "
+                        f"{cat_name} impact={impact:+.3f} (strength={abs(net):.2f})"
+                    )
+
+    @classmethod
+    def _fetch_newsapi_articles(cls, canonical_asset: str, query: str, asset: str) -> List[str]:
+        articles: List[str] = []
         if NEWSAPI_KEY and _QuotaManager.can_call("newsapi"):
             try:
                 r = requests.get(
                     "https://newsapi.org/v2/everything",
-                    params={"q": query, "language": "en", "pageSize": 20,
-                            "sortBy": "publishedAt", "apiKey": NEWSAPI_KEY},
-                    timeout=10
+                    params={"q": query, "language": "en", "pageSize": 20, "sortBy": "publishedAt", "apiKey": NEWSAPI_KEY},
+                    timeout=10,
                 )
                 if r.status_code == 200:
                     _QuotaManager.record_call("newsapi")
@@ -704,15 +708,18 @@ class _NewsSentiment:
                     _QuotaManager.disable_api("newsapi", str(e))
                 elif not _is_quota_error(e):
                     logger.debug(f"[Sentiment] NewsAPI {asset}: {e}")
+        return articles
 
-        # GNews — called if quota available (fallback to NewsAPI if disabled)
+    @classmethod
+    def _fetch_gnews_articles(cls, keywords: List[str], asset: str) -> List[str]:
+        articles: List[str] = []
         if GNEWS_KEY and _QuotaManager.can_call("gnews"):
             try:
                 kw = keywords[0]
-                r  = requests.get(
+                r = requests.get(
                     "https://gnews.io/api/v4/search",
                     params={"q": kw, "lang": "en", "max": 10, "token": GNEWS_KEY},
-                    timeout=10
+                    timeout=10,
                 )
                 if r.status_code == 200:
                     _QuotaManager.record_call("gnews")
@@ -728,24 +735,27 @@ class _NewsSentiment:
                     _QuotaManager.disable_api("gnews", str(e))
                 elif not _is_quota_error(e):
                     logger.debug(f"[Sentiment] GNews {asset}: {e}")
+        return articles
 
-        # Alpha Vantage news — called if quota available
+    @classmethod
+    def _fetch_alphavantage_articles(cls, canonical_asset: str, asset: str) -> List[str]:
+        articles: List[str] = []
         if ALPHA_VANTAGE_API_KEY and _QuotaManager.can_call("av"):
             try:
-                tickers = {"XAU/USD": "GOLD", "WTI": "CRUDE", "XAG/USD": "SILVER",
-                           "US500": "SPY", "US30": "DIA", "US100": "QQQ",
-                           "UK100": "EWU", "BTC-USD": "COIN", "ETH-USD": "COIN"}.get(canonical_asset, "")
+                tickers = {
+                    "XAU/USD": "GOLD", "WTI": "CRUDE", "XAG/USD": "SILVER",
+                    "US500": "SPY", "US30": "DIA", "US100": "QQQ",
+                    "UK100": "EWU", "BTC-USD": "COIN", "ETH-USD": "COIN",
+                }.get(canonical_asset, "")
                 if tickers:
                     r = requests.get(
                         "https://www.alphavantage.co/query",
-                        params={"function": "NEWS_SENTIMENT", "tickers": tickers,
-                                "limit": 10, "apikey": ALPHA_VANTAGE_API_KEY},
-                        timeout=10
+                        params={"function": "NEWS_SENTIMENT", "tickers": tickers, "limit": 10, "apikey": ALPHA_VANTAGE_API_KEY},
+                        timeout=10,
                     )
                     if r.status_code == 200:
                         _QuotaManager.record_call("av")
-                        feed = r.json().get("feed", [])
-                        for a in feed:
+                        for a in r.json().get("feed", []):
                             published = cls._parse_datetime(a.get("time") or a.get("publishedAt"))
                             if not cls._is_recent_time(published):
                                 continue
@@ -757,19 +767,19 @@ class _NewsSentiment:
                     _QuotaManager.disable_api("av", str(e))
                 elif not _is_quota_error(e):
                     logger.debug(f"[Sentiment] AlphaVantage news {asset}: {e}")
+        return articles
 
-        # Finnhub news — called if quota available
+    @classmethod
+    def _fetch_finnhub_articles(cls, canonical_asset: str, asset: str) -> List[str]:
+        articles: List[str] = []
         if FINNHUB_API_KEY and _QuotaManager.can_call("finnhub"):
             try:
                 import finnhub
-                fh  = finnhub.Client(api_key=FINNHUB_API_KEY)
-                cat = _cat(asset)
-                if cat == "crypto":
-                    news = fh.general_news("crypto", min_id=0)
-                else:
-                    news = fh.general_news("general", min_id=0)
+
+                fh = finnhub.Client(api_key=FINNHUB_API_KEY)
+                news = fh.general_news("crypto", min_id=0) if _cat(asset) == "crypto" else fh.general_news("general", min_id=0)
                 _QuotaManager.record_call("finnhub")
-                kws = _ASSET_KEYWORDS.get(_canon_asset(asset), [])
+                kws = _ASSET_KEYWORDS.get(canonical_asset, [])
                 for n in news[:20]:
                     published = cls._parse_datetime(n.get("datetime") or n.get("publishedAt") or n.get("datetimeUTC"))
                     if not cls._is_recent_time(published):
@@ -782,13 +792,24 @@ class _NewsSentiment:
                     _QuotaManager.disable_api("finnhub", str(e))
                 else:
                     logger.debug(f"[Sentiment] Finnhub news {asset}: {e}")
+        return articles
 
-        # Filter to asset-specific articles
+    @staticmethod
+    def _filter_asset_articles(articles: List[str], canonical_asset: str) -> List[str]:
+        kws = _ASSET_KEYWORDS.get(canonical_asset, [canonical_asset.lower()])
+        return [a for a in articles if any(kw in a.lower() for kw in kws)]
+
+    @classmethod
+    def _fetch_articles(cls, asset: str) -> List[str]:
         canonical_asset = _canon_asset(asset)
-        kws      = _ASSET_KEYWORDS.get(canonical_asset, [canonical_asset.lower()])
-        filtered = [a for a in articles
-                    if any(kw in a.lower() for kw in kws)]
-        return filtered
+        keywords = _ASSET_KEYWORDS.get(canonical_asset, [canonical_asset.lower()])
+        query    = " OR ".join(f'"{kw}"' for kw in keywords[:3])
+        articles = []
+        articles.extend(cls._fetch_newsapi_articles(canonical_asset, query, asset))
+        articles.extend(cls._fetch_gnews_articles(keywords, asset))
+        articles.extend(cls._fetch_alphavantage_articles(canonical_asset, asset))
+        articles.extend(cls._fetch_finnhub_articles(canonical_asset, asset))
+        return cls._filter_asset_articles(articles, canonical_asset)
 
     # ── Bearish phrases — score -2 each (stronger signal than single words) ──
     _BEARISH_PHRASES = [
@@ -868,142 +889,153 @@ class _NewsSentiment:
         raw = score / matches   # -1 to +1
         return round(_clamp(raw * 0.8), 3)  # scale to ±0.8
 
+    @staticmethod
+    def _dashboard_article(title: str, source: str, date: str, url: str, sentiment: float) -> Dict[str, Any]:
+        return {
+            "title": title,
+            "source": source,
+            "date": date,
+            "url": url,
+            "sentiment": round(sentiment, 2),
+        }
+
     @classmethod
-    def get_articles_for_dashboard(cls, limit: int = 20) -> List[Dict]:
-        """Fetch recent general market articles for the dashboard news feed.
-        Priority:
-          1. NewsAPI 'everything' endpoint (free tier — top-headlines is paid)
-          2. GNews search endpoint (free tier)
-          3. RSS feeds via feedparser — no API key, always works
-          4. Reddit public search — no credentials needed
-        """
-        cache_key = f"dashboard_articles:{max(1, int(limit or 20))}"
+    def _cache_dashboard_articles(cls, cache_key: str, articles: List[Dict]) -> None:
         with cls._lock:
-            cached = cls._cache.get(cache_key)
-            if cached and time.time() < cached[1]:
-                return list(cached[0])[:limit]
+            cls._cache[cache_key] = (list(articles), time.time() + cls._DASHBOARD_TTL)
 
-        articles_out = []
+    @classmethod
+    def _dashboard_newsapi_articles(cls, limit: int) -> List[Dict]:
+        articles_out: List[Dict] = []
+        if not NEWSAPI_KEY:
+            return articles_out
+        try:
+            r = requests.get(
+                "https://newsapi.org/v2/everything",
+                params={
+                    "q": "forex OR crypto OR stock market OR trading OR bitcoin",
+                    "language": "en",
+                    "sortBy": "publishedAt",
+                    "pageSize": limit,
+                    "apiKey": NEWSAPI_KEY,
+                },
+                timeout=10,
+            )
+            if r.status_code == 200:
+                for a in r.json().get("articles", []):
+                    title = (a.get("title") or "").strip()
+                    if not title or "[Removed]" in title:
+                        continue
+                    text = title + " " + (a.get("description") or "")
+                    score = cls._score_headline(text, "US500") or 0.0
+                    articles_out.append(
+                        cls._dashboard_article(
+                            title,
+                            a.get("source", {}).get("name", ""),
+                            (a.get("publishedAt") or "")[:10],
+                            a.get("url", ""),
+                            score,
+                        )
+                    )
+                if articles_out:
+                    return articles_out[:limit]
+        except Exception as e:
+            if not _is_quota_error(e):
+                logger.debug(f"[Sentiment] NewsAPI feed: {e}")
+        return articles_out
 
-        # ── 1. NewsAPI — 'everything' works on free tier ─────────────────────
-        if NEWSAPI_KEY:
-            try:
-                r = requests.get(
-                    "https://newsapi.org/v2/everything",
-                    params={
-                        "q":        "forex OR crypto OR ""stock market"" OR trading OR bitcoin",
-                        "language": "en",
-                        "sortBy":   "publishedAt",
-                        "pageSize": limit,
-                        "apiKey":   NEWSAPI_KEY,
-                    },
-                    timeout=10
-                )
-                if r.status_code == 200:
-                    for a in r.json().get("articles", []):
-                        title = (a.get("title") or "").strip()
-                        if not title or "[Removed]" in title:
-                            continue
-                        text  = title + " " + (a.get("description") or "")
-                        score = cls._score_headline(text, "US500") or 0.0
-                        articles_out.append({
-                            "title":     title,
-                            "source":    a.get("source", {}).get("name", ""),
-                            "date":      (a.get("publishedAt") or "")[:10],
-                            "url":       a.get("url", ""),
-                            "sentiment": round(score, 2),
-                        })
-                    if articles_out:
-                        return articles_out[:limit]
-            except Exception as e:
-                if not _is_quota_error(e):
-                    logger.debug(f"[Sentiment] NewsAPI feed: {e}")
+    @classmethod
+    def _dashboard_gnews_articles(cls, limit: int) -> List[Dict]:
+        articles_out: List[Dict] = []
+        if not GNEWS_KEY:
+            return articles_out
+        try:
+            r = requests.get(
+                "https://gnews.io/api/v4/search",
+                params={"q": "finance trading market", "lang": "en", "max": limit, "token": GNEWS_KEY},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                for a in r.json().get("articles", []):
+                    title = (a.get("title") or "").strip()
+                    if not title:
+                        continue
+                    text = title + " " + (a.get("description") or "")
+                    score = cls._score_headline(text, "US500") or 0.0
+                    articles_out.append(
+                        cls._dashboard_article(
+                            title,
+                            a.get("source", {}).get("name", ""),
+                            (a.get("publishedAt") or "")[:10],
+                            a.get("url", ""),
+                            score,
+                        )
+                    )
+                if articles_out:
+                    return articles_out[:limit]
+        except Exception as e:
+            if not _is_quota_error(e):
+                logger.debug(f"[Sentiment] GNews feed: {e}")
+        return articles_out
 
-        # ── 2. GNews fallback ─────────────────────────────────────────────────
-        if GNEWS_KEY:
-            try:
-                r = requests.get(
-                    "https://gnews.io/api/v4/search",
-                    params={"q": "finance trading market", "lang": "en",
-                            "max": limit, "token": GNEWS_KEY},
-                    timeout=10
-                )
-                if r.status_code == 200:
-                    for a in r.json().get("articles", []):
-                        title = (a.get("title") or "").strip()
-                        if not title:
-                            continue
-                        text  = title + " " + (a.get("description") or "")
-                        score = cls._score_headline(text, "US500") or 0.0
-                        articles_out.append({
-                            "title":     title,
-                            "source":    a.get("source", {}).get("name", ""),
-                            "date":      (a.get("publishedAt") or "")[:10],
-                            "url":       a.get("url", ""),
-                            "sentiment": round(score, 2),
-                        })
-                    if articles_out:
-                        return articles_out[:limit]
-            except Exception as e:
-                if not _is_quota_error(e):
-                    logger.debug(f"[Sentiment] GNews feed: {e}")
+    @staticmethod
+    def _dashboard_rss_date(pub: str) -> str:
+        try:
+            import email.utils
 
-        # ── 3. RSS feeds — no API key needed, always available ────────────────
-        _RSS = [
-            ("Reuters Markets",    "https://feeds.reuters.com/reuters/businessNews"),
-            ("CNBC Markets",       "https://www.cnbc.com/id/10001147/device/rss/rss.html"),
-            ("CoinDesk",           "https://www.coindesk.com/arc/outboundfeeds/rss/"),
-            ("FX Street",          "https://www.fxstreet.com/rss"),
-            ("Investing.com News", "https://www.investing.com/rss/news.rss"),
-            # Cointelegraph can be materially slower; leave it last so the dashboard
-            # reaches the article limit using faster feeds first.
-            ("Cointelegraph",      "https://cointelegraph.com/rss"),
-        ]
+            ts = email.utils.parsedate_to_datetime(pub)
+            return ts.strftime("%Y-%m-%d")
+        except Exception:
+            return pub[:10] if pub else ""
+
+    @classmethod
+    def _dashboard_rss_articles(cls, limit: int) -> List[Dict]:
+        articles_out: List[Dict] = []
         try:
             import feedparser
-            from datetime import datetime as _dt
-            seen = set()
-            for source_name, url in _RSS:
-                if len(articles_out) >= limit:
-                    break
-                try:
-                    feed = feedparser.parse(url)
-                    for entry in feed.entries[:5]:
-                        title = (entry.get("title") or "").strip()
-                        if not title or title in seen:
-                            continue
-                        seen.add(title)
-                        pub   = entry.get("published", "")
-                        # Parse date
-                        date_str = ""
-                        try:
-                            import email.utils
-                            ts = email.utils.parsedate_to_datetime(pub)
-                            date_str = ts.strftime("%Y-%m-%d")
-                        except Exception:
-                            date_str = pub[:10] if pub else ""
-                        text  = title + " " + (entry.get("summary") or "")
-                        score = cls._score_headline(text, "US500") or 0.0
-                        articles_out.append({
-                            "title":     title,
-                            "source":    source_name,
-                            "date":      date_str,
-                            "url":       entry.get("link", ""),
-                            "sentiment": round(score, 2),
-                        })
-                except Exception:
-                    continue
-            if articles_out:
-                result = sorted(articles_out, key=lambda x: x.get("date", ""), reverse=True)[:limit]
-                with cls._lock:
-                    cls._cache[cache_key] = (result, time.time() + cls._DASHBOARD_TTL)
-                return result
         except ImportError:
             logger.debug("[Sentiment] feedparser not installed — RSS fallback unavailable")
-        except Exception as e:
-            logger.debug(f"[Sentiment] RSS feed: {e}")
+            return articles_out
 
-        # ── 4. Reddit public search — no credentials needed ───────────────────
+        rss_sources = [
+            ("Reuters Markets", "https://feeds.reuters.com/reuters/businessNews"),
+            ("CNBC Markets", "https://www.cnbc.com/id/10001147/device/rss/rss.html"),
+            ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+            ("FX Street", "https://www.fxstreet.com/rss"),
+            ("Investing.com News", "https://www.investing.com/rss/news.rss"),
+            ("Cointelegraph", "https://cointelegraph.com/rss"),
+        ]
+        seen = set()
+        for source_name, url in rss_sources:
+            if len(articles_out) >= limit:
+                break
+            try:
+                feed = feedparser.parse(url)
+                for entry in feed.entries[:5]:
+                    title = (entry.get("title") or "").strip()
+                    if not title or title in seen:
+                        continue
+                    seen.add(title)
+                    text = title + " " + (entry.get("summary") or "")
+                    score = cls._score_headline(text, "US500") or 0.0
+                    articles_out.append(
+                        cls._dashboard_article(
+                            title,
+                            source_name,
+                            cls._dashboard_rss_date(entry.get("published", "")),
+                            entry.get("link", ""),
+                            score,
+                        )
+                    )
+            except Exception:
+                continue
+        if articles_out:
+            return sorted(articles_out, key=lambda x: x.get("date", ""), reverse=True)[:limit]
+        return articles_out
+
+    @classmethod
+    def _dashboard_reddit_articles(cls, limit: int) -> List[Dict]:
+        articles_out: List[Dict] = []
         try:
             headers = {"User-Agent": "Mozilla/5.0 TradingBot/1.0"}
             r = requests.get(
@@ -1020,24 +1052,57 @@ class _NewsSentiment:
                     if not title:
                         continue
                     score = cls._score_headline(title, "US500") or 0.0
-                    import datetime
+                    import datetime as _dt
+
                     ts = d.get("created_utc", 0)
-                    date_str = datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
-                    articles_out.append({
-                        "title":     title,
-                        "source":    f"r/{d.get('subreddit', 'investing')}",
-                        "date":      date_str,
-                        "url":       f"https://reddit.com{d.get('permalink', '')}",
-                        "sentiment": round(score, 2),
-                    })
+                    date_str = _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
+                    articles_out.append(
+                        cls._dashboard_article(
+                            title,
+                            f"r/{d.get('subreddit', 'investing')}",
+                            date_str,
+                            f"https://reddit.com{d.get('permalink', '')}",
+                            score,
+                        )
+                    )
         except Exception as e:
             logger.debug(f"[Sentiment] Reddit public: {e}")
+        return articles_out
 
-        result = articles_out[:limit]
-        if result:
-            with cls._lock:
-                cls._cache[cache_key] = (result, time.time() + cls._DASHBOARD_TTL)
-        return result
+    @classmethod
+    def get_articles_for_dashboard(cls, limit: int = 20) -> List[Dict]:
+        """Fetch recent general market articles for the dashboard news feed.
+        Priority:
+          1. NewsAPI 'everything' endpoint (free tier — top-headlines is paid)
+          2. GNews search endpoint (free tier)
+          3. RSS feeds via feedparser — no API key, always works
+          4. Reddit public search — no credentials needed
+        """
+        cache_key = f"dashboard_articles:{max(1, int(limit or 20))}"
+        with cls._lock:
+            cached = cls._cache.get(cache_key)
+            if cached and time.time() < cached[1]:
+                return list(cached[0])[:limit]
+
+        articles_out = cls._dashboard_newsapi_articles(limit)
+        if articles_out:
+            cls._cache_dashboard_articles(cache_key, articles_out)
+            return articles_out[:limit]
+
+        articles_out = cls._dashboard_gnews_articles(limit)
+        if articles_out:
+            cls._cache_dashboard_articles(cache_key, articles_out)
+            return articles_out[:limit]
+
+        articles_out = cls._dashboard_rss_articles(limit)
+        if articles_out:
+            cls._cache_dashboard_articles(cache_key, articles_out)
+            return articles_out[:limit]
+
+        articles_out = cls._dashboard_reddit_articles(limit)
+        if articles_out:
+            cls._cache_dashboard_articles(cache_key, articles_out)
+        return articles_out[:limit]
 
 
 class _CryptoSignals:

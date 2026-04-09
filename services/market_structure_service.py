@@ -191,35 +191,94 @@ class MarketStructureService:
         category: str,
         frames: Mapping[str, pd.DataFrame],
     ) -> Dict[str, Any]:
+        details, ordered_intervals = self._collect_frame_details(frames)
+        if not details:
+            return self._empty_analysis(asset, category)
+
+        primary_interval = self._primary_interval(ordered_intervals, details)
+        primary = details[primary_interval]
+        trend = self._trend_summary(details)
+        range_scores = self._range_summary(details, trend["weight_total"])
+        volatility_state = str(primary.get("volatility_state", "unknown"))
+        regime = self._classify_regime(volatility_state, trend["structure_bias"], trend["alignment_score"])
+        opportunity_score = max(
+            abs(trend["weighted_score"]),
+            abs(range_scores["pullback_score"]),
+            abs(range_scores["breakout_score"]),
+        )
+        dominant_exhaustion = (
+            range_scores["upside_exhaustion_score"]
+            if trend["structure_bias"] == "buy"
+            else range_scores["downside_exhaustion_score"]
+            if trend["structure_bias"] == "sell"
+            else max(range_scores["upside_exhaustion_score"], range_scores["downside_exhaustion_score"])
+        )
+        setup_quality = self._setup_quality(
+            trend["weighted_score"],
+            trend["alignment_score"],
+            opportunity_score,
+            volatility_state,
+            dominant_exhaustion,
+        )
+
+        return {
+            "asset": asset,
+            "category": category,
+            "regime": regime,
+            "primary_interval": primary_interval,
+            "volatility_state": volatility_state,
+            "structure_bias": trend["structure_bias"],
+            "trend_15m": details.get("15m", {}).get("trend_state", "unknown"),
+            "trend_1h": details.get("1h", {}).get("trend_state", "unknown"),
+            "trend_4h": details.get("4h", {}).get("trend_state", "unknown"),
+            "alignment_score": round(trend["alignment_score"], 4),
+            "pullback_score": round(_clip(range_scores["pullback_score"]), 4),
+            "breakout_score": round(_clip(range_scores["breakout_score"]), 4),
+            "setup_quality": round(setup_quality, 4),
+            "upside_exhaustion_score": round(_clip(range_scores["upside_exhaustion_score"]), 4),
+            "downside_exhaustion_score": round(_clip(range_scores["downside_exhaustion_score"]), 4),
+            "dominant_exhaustion_score": round(_clip(dominant_exhaustion), 4),
+            "bias_exhausted": bool(dominant_exhaustion >= 0.60),
+            "support_levels": [primary.get("support")] if primary.get("support") is not None else [],
+            "resistance_levels": [primary.get("resistance")] if primary.get("resistance") is not None else [],
+            "distance_to_support": primary.get("distance_to_support"),
+            "distance_to_resistance": primary.get("distance_to_resistance"),
+            "frame_details": details,
+        }
+
+    def _collect_frame_details(self, frames: Mapping[str, pd.DataFrame]) -> tuple[Dict[str, Dict[str, Any]], List[str]]:
         details: Dict[str, Dict[str, Any]] = {}
         ordered_intervals = [str(interval).lower() for interval in frames.keys()]
-
         for interval, df in frames.items():
             analyzed = _analyze_frame(str(interval).lower(), df)
             if analyzed:
                 details[str(interval).lower()] = analyzed
+        return details, ordered_intervals
 
-        if not details:
-            return {
-                "asset": asset,
-                "category": category,
-                "regime": "unknown",
-                "structure_bias": "neutral",
-                "alignment_score": 0.0,
-                "setup_quality": 0.0,
-                "pullback_score": 0.0,
-                "breakout_score": 0.0,
-                "volatility_state": "unknown",
-                "frame_details": {},
-                "support_levels": [],
-                "resistance_levels": [],
-                "distance_to_support": None,
-                "distance_to_resistance": None,
-            }
+    @staticmethod
+    def _empty_analysis(asset: str, category: str) -> Dict[str, Any]:
+        return {
+            "asset": asset,
+            "category": category,
+            "regime": "unknown",
+            "structure_bias": "neutral",
+            "alignment_score": 0.0,
+            "setup_quality": 0.0,
+            "pullback_score": 0.0,
+            "breakout_score": 0.0,
+            "volatility_state": "unknown",
+            "frame_details": {},
+            "support_levels": [],
+            "resistance_levels": [],
+            "distance_to_support": None,
+            "distance_to_resistance": None,
+        }
 
-        primary_interval = next((i for i in ordered_intervals if i in details), next(iter(details)))
-        primary = details[primary_interval]
+    @staticmethod
+    def _primary_interval(ordered_intervals: List[str], details: Dict[str, Dict[str, Any]]) -> str:
+        return next((i for i in ordered_intervals if i in details), next(iter(details)))
 
+    def _trend_summary(self, details: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         weighted_score = 0.0
         weight_total = 0.0
         for interval, info in details.items():
@@ -237,16 +296,24 @@ class MarketStructureService:
             structure_bias = "neutral"
 
         dominant_sign = 1 if structure_bias == "buy" else -1 if structure_bias == "sell" else 0
-        aligned_weight = 0.0
-        if dominant_sign != 0:
+        if dominant_sign != 0 and weight_total > 0:
+            aligned_weight = 0.0
             for interval, info in details.items():
                 interval_sign = 1 if float(info["trend_score"]) > 0.10 else -1 if float(info["trend_score"]) < -0.10 else 0
                 if interval_sign == dominant_sign:
                     aligned_weight += _FRAME_WEIGHTS.get(interval, 0.15)
-            alignment_score = aligned_weight / weight_total if weight_total > 0 else 0.0
+            alignment_score = aligned_weight / weight_total
         else:
             alignment_score = 0.0
 
+        return {
+            "weighted_score": weighted_score,
+            "weight_total": weight_total,
+            "structure_bias": structure_bias,
+            "alignment_score": alignment_score,
+        }
+
+    def _range_summary(self, details: Dict[str, Dict[str, Any]], weight_total: float) -> Dict[str, Any]:
         pullback_score = 0.0
         breakout_score = 0.0
         upside_exhaustion_score = 0.0
@@ -263,62 +330,43 @@ class MarketStructureService:
             upside_exhaustion_score /= weight_total
             downside_exhaustion_score /= weight_total
 
-        volatility_state = str(primary.get("volatility_state", "unknown"))
-        if volatility_state == "extreme":
-            regime = "volatile"
-        elif structure_bias == "buy" and alignment_score >= 0.55:
-            regime = "trending_up"
-        elif structure_bias == "sell" and alignment_score >= 0.55:
-            regime = "trending_down"
-        else:
-            regime = "ranging"
+        return {
+            "pullback_score": pullback_score,
+            "breakout_score": breakout_score,
+            "upside_exhaustion_score": upside_exhaustion_score,
+            "downside_exhaustion_score": downside_exhaustion_score,
+        }
 
-        opportunity_score = max(abs(weighted_score), abs(pullback_score), abs(breakout_score))
+    @staticmethod
+    def _classify_regime(volatility_state: str, structure_bias: str, alignment_score: float) -> str:
+        if volatility_state == "extreme":
+            return "volatile"
+        if structure_bias == "buy" and alignment_score >= 0.55:
+            return "trending_up"
+        if structure_bias == "sell" and alignment_score >= 0.55:
+            return "trending_down"
+        return "ranging"
+
+    @staticmethod
+    def _setup_quality(
+        weighted_score: float,
+        alignment_score: float,
+        opportunity_score: float,
+        volatility_state: str,
+        dominant_exhaustion: float,
+    ) -> float:
         setup_quality = (
             abs(weighted_score) * 0.35
             + alignment_score * 0.25
             + opportunity_score * 0.25
             + _VOLATILITY_FIT.get(volatility_state, 0.5) * 0.15
         )
-        dominant_exhaustion = (
-            upside_exhaustion_score
-            if structure_bias == "buy"
-            else downside_exhaustion_score
-            if structure_bias == "sell"
-            else max(upside_exhaustion_score, downside_exhaustion_score)
-        )
         if dominant_exhaustion > 0.0:
             setup_quality -= min(0.22, dominant_exhaustion * 0.22)
-        setup_quality = max(0.0, min(1.0, setup_quality))
-
-        return {
-            "asset": asset,
-            "category": category,
-            "regime": regime,
-            "primary_interval": primary_interval,
-            "volatility_state": volatility_state,
-            "structure_bias": structure_bias,
-            "trend_15m": details.get("15m", {}).get("trend_state", "unknown"),
-            "trend_1h": details.get("1h", {}).get("trend_state", "unknown"),
-            "trend_4h": details.get("4h", {}).get("trend_state", "unknown"),
-            "alignment_score": round(alignment_score, 4),
-            "pullback_score": round(_clip(pullback_score), 4),
-            "breakout_score": round(_clip(breakout_score), 4),
-            "setup_quality": round(setup_quality, 4),
-            "upside_exhaustion_score": round(_clip(upside_exhaustion_score), 4),
-            "downside_exhaustion_score": round(_clip(downside_exhaustion_score), 4),
-            "dominant_exhaustion_score": round(_clip(dominant_exhaustion), 4),
-            "bias_exhausted": bool(dominant_exhaustion >= 0.60),
-            "support_levels": [primary.get("support")] if primary.get("support") is not None else [],
-            "resistance_levels": [primary.get("resistance")] if primary.get("resistance") is not None else [],
-            "distance_to_support": primary.get("distance_to_support"),
-            "distance_to_resistance": primary.get("distance_to_resistance"),
-            "frame_details": details,
-        }
-
-
+        return max(0.0, min(1.0, setup_quality))
 _service = MarketStructureService()
 
 
 def get_service() -> MarketStructureService:
     return _service
+

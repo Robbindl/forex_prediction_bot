@@ -408,15 +408,15 @@ class PaperTrader:
         return closed
 
     def _check_exit(self, pos: Dict, price: float) -> Optional[Dict]:
-        asset      = pos.get("asset", "")
-        category   = pos.get("category", "forex")
-        direction  = pos.get("direction", pos.get("signal", "BUY"))
-        entry      = float(pos.get("entry_price", 0))
-        stop_loss  = float(pos.get("stop_loss", 0))
-        take_profit= float(pos.get("take_profit", 0))
-        tp_levels  = pos.get("take_profit_levels", [])
-        size       = float(pos.get("position_size", 0))
-        metadata   = self._metadata_dict(pos.get("metadata"))
+        asset = pos.get("asset", "")
+        category = pos.get("category", "forex")
+        direction = pos.get("direction", pos.get("signal", "BUY"))
+        entry = float(pos.get("entry_price", 0))
+        stop_loss = float(pos.get("stop_loss", 0))
+        take_profit = float(pos.get("take_profit", 0))
+        tp_levels = pos.get("take_profit_levels", [])
+        size = float(pos.get("position_size", 0))
+        metadata = self._metadata_dict(pos.get("metadata"))
         management = self._metadata_dict(metadata.get("trade_management_plan"))
         tracked_before = {
             "position_size": float(pos.get("position_size", 0)),
@@ -426,348 +426,41 @@ class PaperTrader:
             "lowest_price": float(pos.get("lowest_price", entry)),
         }
 
-        # Track extremes for trailing stop logic
-        if direction == "BUY":
-            pos["highest_price"] = max(float(pos.get("highest_price", entry)), price)
-        else:
-            pos["lowest_price"]  = min(float(pos.get("lowest_price", entry)), price)
+        self._update_exit_extremes(pos, price, direction, entry)
+        pnl, _ = self._mark_to_market_pnl(pos, price, size)
 
-        mark_fill, mark_meta = self._exit_fill(pos, price, "mark_to_market")
-        _, pnl, _, _, _ = self._calculate_net_pnl(
+        if self._is_weekend_market_closed(category):
+            pos["pnl"] = round(pnl, 6)
+            return None
+
+        stop_loss = self._apply_trailing_stop_rules(
             pos,
-            mark_fill,
-            size,
-            self._safe_float(mark_meta.get("commission_rate"), 0.0),
+            price,
+            direction,
+            entry,
+            stop_loss,
+            take_profit,
+            metadata,
+            management,
         )
 
-        # ── Weekend market-closed guard ───────────────────────────────────────
-        # Non-crypto markets (forex, commodities, indices) are closed on
-        # Saturday all day and Sunday before 22:00 UTC.  SL and TP must not
-        # trigger during this window - contract markets hold the position open and
-        # only execute when the market reopens.  Crypto is 24/7 so it is
-        # always exempt from this guard.
-        try:
-            from datetime import datetime as _dt, timezone as _tz
-            if category != "crypto":
-                _now  = _dt.now(tz=_tz.utc)
-                _wd   = _now.weekday()   # 5=Sat 6=Sun
-                _hour = _now.hour
-                _weekend = (
-                    _wd == 5                          # all Saturday
-                    or (_wd == 6 and _hour < 22)      # Sunday before 22:00
-                    or (_wd == 4 and _hour >= 22)     # Friday after 22:00
-                )
-                if _weekend:
-                    pos["pnl"] = round(pnl, 6)
-                    return None   # hold — market is closed
-        except Exception:
-            pass
-        # ─────────────────────────────────────────────────────────────────────
+        stop_loss_result = self._close_on_stop_loss(pos, price, direction, stop_loss, size, metadata)
+        if stop_loss_result is not None:
+            return stop_loss_result
 
-        # ── Trailing stop + break-even ───────────────────────────────────────
-        # Playbook-managed trades trail off initial risk/ATR once 1R is reached.
-        # Other trades keep the older TP-progress fallback.
-        if entry and stop_loss:
-            initial_risk = abs(entry - float(pos.get("original_sl", stop_loss)))
-            atr_value = self._safe_float(metadata.get("atr"), 0.0)
-            if management and initial_risk > 0.0:
-                trail_activation_rr = max(0.5, self._safe_float(management.get("trail_activation_rr"), 1.0))
-                trail_atr_multiple = max(0.4, self._safe_float(management.get("trail_atr_multiple"), 0.8))
-                favorable_move = (price - entry) if direction == "BUY" else (entry - price)
-                progress_rr = favorable_move / max(initial_risk, 1e-9)
-                if progress_rr >= trail_activation_rr:
-                    trail_dist = max(initial_risk * 0.85, atr_value * trail_atr_multiple if atr_value > 0 else 0.0)
-                    if direction == "BUY":
-                        trail_sl = float(pos.get("highest_price", price)) - trail_dist
-                        if trail_sl > stop_loss:
-                            pos["stop_loss"] = trail_sl
-                            stop_loss = trail_sl
-                    else:
-                        trail_sl = float(pos.get("lowest_price", price)) + trail_dist
-                        if trail_sl < stop_loss:
-                            pos["stop_loss"] = trail_sl
-                            stop_loss = trail_sl
-            elif take_profit:
-                tp_dist = abs(take_profit - entry)
-                if tp_dist > 0:
-                    if direction == "BUY":
-                        progress = (price - entry) / tp_dist
-                        if progress >= 0.90:
-                            atr_approx = float(pos.get("original_sl", stop_loss))
-                            atr_approx = abs(entry - atr_approx)
-                            trail_sl = float(pos.get("highest_price", price)) - (0.5 * atr_approx)
-                            if trail_sl > stop_loss:
-                                pos["stop_loss"] = trail_sl
-                                stop_loss = trail_sl
-                        elif progress >= 0.60 and entry > stop_loss:
-                            pos["stop_loss"] = entry
-                            stop_loss = entry
-                    else:
-                        progress = (entry - price) / tp_dist
-                        if progress >= 0.90:
-                            atr_approx = float(pos.get("original_sl", stop_loss))
-                            atr_approx = abs(entry - atr_approx)
-                            trail_sl = float(pos.get("lowest_price", price)) + (0.5 * atr_approx)
-                            if trail_sl < stop_loss:
-                                pos["stop_loss"] = trail_sl
-                                stop_loss = trail_sl
-                        elif progress >= 0.60 and entry < stop_loss:
-                            pos["stop_loss"] = entry
-                            stop_loss = entry
-        # ─────────────────────────────────────────────────────────────────────
+        take_profit_result = self._process_take_profit_targets(
+            pos,
+            price,
+            direction,
+            entry,
+            take_profit,
+            tp_levels,
+            size,
+            metadata,
+        )
+        if take_profit_result is not None:
+            return take_profit_result
 
-        # Stop loss
-        if direction == "BUY"  and price <= stop_loss:
-            reason = "Trailing Stop" if stop_loss != float(pos.get("original_sl", stop_loss)) else "Stop Loss"
-            close_fill, close_meta = self._exit_fill(pos, price, reason)
-            gross_pnl, net_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
-                pos,
-                close_fill,
-                size,
-                self._safe_float(close_meta.get("commission_rate"), 0.0),
-            )
-            return self._close(
-                pos,
-                close_fill,
-                reason,
-                net_pnl,
-                {
-                    "gross_pnl": round(gross_pnl, 6),
-                    "entry_commission": round(entry_commission, 6),
-                    "exit_commission": round(exit_commission, 6),
-                    "total_commission": round(total_commission, 6),
-                    "requested_exit_price": round(self._safe_float(close_meta.get("requested_exit_price"), price), 6),
-                    "metadata": {
-                        "paper_execution": {
-                            **self._metadata_dict(metadata.get("paper_execution")),
-                            **close_meta,
-                            "gross_pnl": round(gross_pnl, 6),
-                            "net_pnl": round(net_pnl, 6),
-                            "entry_commission": round(entry_commission, 6),
-                            "exit_commission": round(exit_commission, 6),
-                            "total_commission": round(total_commission, 6),
-                            "execution_cost_drag": round(total_commission, 6),
-                        }
-                    },
-                },
-            )
-        if direction == "SELL" and price >= stop_loss:
-            reason = "Trailing Stop" if stop_loss != float(pos.get("original_sl", stop_loss)) else "Stop Loss"
-            close_fill, close_meta = self._exit_fill(pos, price, reason)
-            gross_pnl, net_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
-                pos,
-                close_fill,
-                size,
-                self._safe_float(close_meta.get("commission_rate"), 0.0),
-            )
-            return self._close(
-                pos,
-                close_fill,
-                reason,
-                net_pnl,
-                {
-                    "gross_pnl": round(gross_pnl, 6),
-                    "entry_commission": round(entry_commission, 6),
-                    "exit_commission": round(exit_commission, 6),
-                    "total_commission": round(total_commission, 6),
-                    "requested_exit_price": round(self._safe_float(close_meta.get("requested_exit_price"), price), 6),
-                    "metadata": {
-                        "paper_execution": {
-                            **self._metadata_dict(metadata.get("paper_execution")),
-                            **close_meta,
-                            "gross_pnl": round(gross_pnl, 6),
-                            "net_pnl": round(net_pnl, 6),
-                            "entry_commission": round(entry_commission, 6),
-                            "exit_commission": round(exit_commission, 6),
-                            "total_commission": round(total_commission, 6),
-                            "execution_cost_drag": round(total_commission, 6),
-                        }
-                    },
-                },
-            )
-
-        # Take profit levels (partial)
-        if tp_levels:
-            tp_idx = int(pos.get("tp_hit", 0))
-            if tp_idx < len(tp_levels):
-                tp_level = tp_levels[tp_idx]
-                hit = (direction == "BUY" and price >= tp_level) or \
-                      (direction == "SELL" and price <= tp_level)
-                if hit:
-                    pos["tp_hit"] = tp_idx + 1
-                    if tp_idx + 1 >= len(tp_levels):
-                        # Final TP level — close full remaining position
-                        close_fill, close_meta = self._exit_fill(pos, tp_level, f"Take Profit {tp_idx + 1}")
-                        gross_pnl, net_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
-                            pos,
-                            close_fill,
-                            size,
-                            self._safe_float(close_meta.get("commission_rate"), 0.0),
-                        )
-                        return self._close(
-                            pos,
-                            close_fill,
-                            f"Take Profit {tp_idx + 1}",
-                            net_pnl,
-                            {
-                                "gross_pnl": round(gross_pnl, 6),
-                                "entry_commission": round(entry_commission, 6),
-                                "exit_commission": round(exit_commission, 6),
-                                "total_commission": round(total_commission, 6),
-                                "requested_exit_price": round(self._safe_float(close_meta.get("requested_exit_price"), tp_level), 6),
-                                "metadata": {
-                                    "paper_execution": {
-                                        **self._metadata_dict(metadata.get("paper_execution")),
-                                        **close_meta,
-                                        "gross_pnl": round(gross_pnl, 6),
-                                        "net_pnl": round(net_pnl, 6),
-                                        "entry_commission": round(entry_commission, 6),
-                                        "exit_commission": round(exit_commission, 6),
-                                        "total_commission": round(total_commission, 6),
-                                        "execution_cost_drag": round(total_commission, 6),
-                                    }
-                                },
-                            },
-                        )
-                    else:
-                        # FIX HIGH: Partial TP — close 1/3 of position and
-                        # continue tracking the remainder.
-                        # Previously tp_hit was incremented but position_size
-                        # was never reduced — multi-TP was completely broken;
-                        # only the final TP level ever closed anything.
-                        total_tiers   = len(tp_levels)
-                        close_fraction = 1.0 / (total_tiers - tp_idx)
-                        original_size  = float(pos.get("position_size", size))
-                        partial_size   = original_size * close_fraction
-                        remaining_size = original_size - partial_size
-
-                        close_fill, close_meta = self._exit_fill(pos, tp_level, f"Partial TP {tp_idx + 1}/{total_tiers}")
-                        gross_partial_pnl, partial_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
-                            pos,
-                            close_fill,
-                            partial_size,
-                            self._safe_float(close_meta.get("commission_rate"), 0.0),
-                        )
-
-                        # Build a partial-close trade record
-                        parent_trade_id = str(pos.get("trade_id", ""))
-                        partial_trade = self._close(
-                            dict(
-                                pos,
-                                trade_id=f"{parent_trade_id}-PT{tp_idx + 1}",
-                                parent_trade_id=parent_trade_id,
-                                is_partial_close=True,
-                                position_size=partial_size,
-                            ),
-                            close_fill,
-                            f"Partial TP {tp_idx + 1}/{total_tiers}",
-                            partial_pnl,
-                            {
-                                "gross_pnl": round(gross_partial_pnl, 6),
-                                "entry_commission": round(entry_commission, 6),
-                                "exit_commission": round(exit_commission, 6),
-                                "total_commission": round(total_commission, 6),
-                                "requested_exit_price": round(self._safe_float(close_meta.get("requested_exit_price"), tp_level), 6),
-                                "metadata": {
-                                    "paper_execution": {
-                                        **self._metadata_dict(metadata.get("paper_execution")),
-                                        **close_meta,
-                                        "gross_pnl": round(gross_partial_pnl, 6),
-                                        "net_pnl": round(partial_pnl, 6),
-                                        "entry_commission": round(entry_commission, 6),
-                                        "exit_commission": round(exit_commission, 6),
-                                        "total_commission": round(total_commission, 6),
-                                        "execution_cost_drag": round(total_commission, 6),
-                                    }
-                                },
-                            },
-                        )
-
-                        # Reduce remaining position size and update SL to break-even
-                        pos["position_size"] = remaining_size
-                        if direction == "BUY" and entry > float(pos.get("stop_loss", 0)):
-                            pos["stop_loss"] = entry   # lock in break-even
-                        elif direction == "SELL" and entry < float(pos.get("stop_loss", 99e9)):
-                            pos["stop_loss"] = entry
-
-                        self._notify_position_updated(pos)
-
-                        # Fire the callback for the partial close
-                        if partial_trade and self.on_trade_closed:
-                            try:
-                                self.on_trade_closed(partial_trade)
-                            except Exception as _e:
-                                logger.error(f"[PaperTrader] partial TP callback error: {_e}")
-                        return None   # position still open (remainder)
-        elif take_profit:
-            if direction == "BUY"  and price >= take_profit:
-                close_fill, close_meta = self._exit_fill(pos, take_profit, "Take Profit")
-                gross_pnl, net_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
-                    pos,
-                    close_fill,
-                    size,
-                    self._safe_float(close_meta.get("commission_rate"), 0.0),
-                )
-                return self._close(
-                    pos,
-                    close_fill,
-                    "Take Profit",
-                    net_pnl,
-                    {
-                        "gross_pnl": round(gross_pnl, 6),
-                        "entry_commission": round(entry_commission, 6),
-                        "exit_commission": round(exit_commission, 6),
-                        "total_commission": round(total_commission, 6),
-                        "requested_exit_price": round(self._safe_float(close_meta.get("requested_exit_price"), take_profit), 6),
-                        "metadata": {
-                            "paper_execution": {
-                                **self._metadata_dict(metadata.get("paper_execution")),
-                                **close_meta,
-                                "gross_pnl": round(gross_pnl, 6),
-                                "net_pnl": round(net_pnl, 6),
-                                "entry_commission": round(entry_commission, 6),
-                                "exit_commission": round(exit_commission, 6),
-                                "total_commission": round(total_commission, 6),
-                                "execution_cost_drag": round(total_commission, 6),
-                            }
-                        },
-                    },
-                )
-            if direction == "SELL" and price <= take_profit:
-                close_fill, close_meta = self._exit_fill(pos, take_profit, "Take Profit")
-                gross_pnl, net_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
-                    pos,
-                    close_fill,
-                    size,
-                    self._safe_float(close_meta.get("commission_rate"), 0.0),
-                )
-                return self._close(
-                    pos,
-                    close_fill,
-                    "Take Profit",
-                    net_pnl,
-                    {
-                        "gross_pnl": round(gross_pnl, 6),
-                        "entry_commission": round(entry_commission, 6),
-                        "exit_commission": round(exit_commission, 6),
-                        "total_commission": round(total_commission, 6),
-                        "requested_exit_price": round(self._safe_float(close_meta.get("requested_exit_price"), take_profit), 6),
-                        "metadata": {
-                            "paper_execution": {
-                                **self._metadata_dict(metadata.get("paper_execution")),
-                                **close_meta,
-                                "gross_pnl": round(gross_pnl, 6),
-                                "net_pnl": round(net_pnl, 6),
-                                "entry_commission": round(entry_commission, 6),
-                                "exit_commission": round(exit_commission, 6),
-                                "total_commission": round(total_commission, 6),
-                                "execution_cost_drag": round(total_commission, 6),
-                            }
-                        },
-                    },
-                )
-
-        # Update live PnL
         pos["pnl"] = round(pnl, 6)
         tracked_after = {
             "position_size": float(pos.get("position_size", 0)),
@@ -780,6 +473,315 @@ class PaperTrader:
             self._notify_position_updated(pos)
         return None
 
+    def _update_exit_extremes(self, pos: Dict, price: float, direction: str, entry: float) -> None:
+        if direction == "BUY":
+            pos["highest_price"] = max(float(pos.get("highest_price", entry)), price)
+        else:
+            pos["lowest_price"] = min(float(pos.get("lowest_price", entry)), price)
+
+    def _mark_to_market_pnl(self, pos: Dict, price: float, size: float) -> tuple[float, Dict[str, Any]]:
+        mark_fill, mark_meta = self._exit_fill(pos, price, "mark_to_market")
+        asset = pos.get("asset", "")
+        category = pos.get("category", "forex")
+        direction = pos.get("direction", pos.get("signal", "BUY"))
+        entry = float(pos.get("entry_price", price))
+        pnl = self._calculate_pnl(asset, category, entry, mark_fill, size, direction)
+        return pnl, mark_meta
+
+    @staticmethod
+    def _is_weekend_market_closed(category: str) -> bool:
+        if category == "crypto":
+            return False
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+
+            now = _dt.now(tz=_tz.utc)
+            weekday = now.weekday()
+            hour = now.hour
+            return weekday == 5 or (weekday == 6 and hour < 22) or (weekday == 4 and hour >= 22)
+        except Exception:
+            return False
+
+    def _apply_trailing_stop_rules(
+        self,
+        pos: Dict,
+        price: float,
+        direction: str,
+        entry: float,
+        stop_loss: float,
+        take_profit: float,
+        metadata: Dict[str, Any],
+        management: Dict[str, Any],
+    ) -> float:
+        if not entry or not stop_loss:
+            return stop_loss
+
+        initial_risk = abs(entry - float(pos.get("original_sl", stop_loss)))
+        if management and initial_risk > 0.0:
+            return self._apply_management_trailing_rules(
+                pos,
+                price,
+                direction,
+                entry,
+                stop_loss,
+                metadata,
+                management,
+                initial_risk,
+            )
+        if take_profit:
+            return self._apply_fallback_trailing_rules(pos, price, direction, entry, stop_loss, take_profit)
+        return stop_loss
+
+    def _apply_management_trailing_rules(
+        self,
+        pos: Dict,
+        price: float,
+        direction: str,
+        entry: float,
+        stop_loss: float,
+        metadata: Dict[str, Any],
+        management: Dict[str, Any],
+        initial_risk: float,
+    ) -> float:
+        atr_value = self._safe_float(metadata.get("atr"), 0.0)
+        trail_activation_rr = max(0.5, self._safe_float(management.get("trail_activation_rr"), 1.0))
+        trail_atr_multiple = max(0.4, self._safe_float(management.get("trail_atr_multiple"), 0.8))
+        favorable_move = (price - entry) if direction == "BUY" else (entry - price)
+        progress_rr = favorable_move / max(initial_risk, 1e-9)
+        if progress_rr >= trail_activation_rr:
+            trail_dist = max(initial_risk * 0.85, atr_value * trail_atr_multiple if atr_value > 0 else 0.0)
+            if direction == "BUY":
+                trail_sl = float(pos.get("highest_price", price)) - trail_dist
+                if trail_sl > stop_loss:
+                    pos["stop_loss"] = trail_sl
+                    stop_loss = trail_sl
+            else:
+                trail_sl = float(pos.get("lowest_price", price)) + trail_dist
+                if trail_sl < stop_loss:
+                    pos["stop_loss"] = trail_sl
+                    stop_loss = trail_sl
+        return stop_loss
+
+    def _apply_fallback_trailing_rules(
+        self,
+        pos: Dict,
+        price: float,
+        direction: str,
+        entry: float,
+        stop_loss: float,
+        take_profit: float,
+    ) -> float:
+        tp_dist = abs(take_profit - entry)
+        if tp_dist <= 0:
+            return stop_loss
+
+        if direction == "BUY":
+            progress = (price - entry) / tp_dist
+            if progress >= 0.90:
+                atr_approx = float(pos.get("original_sl", stop_loss))
+                atr_approx = abs(entry - atr_approx)
+                trail_sl = float(pos.get("highest_price", price)) - (0.5 * atr_approx)
+                if trail_sl > stop_loss:
+                    pos["stop_loss"] = trail_sl
+                    stop_loss = trail_sl
+            elif progress >= 0.60 and entry > stop_loss:
+                pos["stop_loss"] = entry
+                stop_loss = entry
+        else:
+            progress = (entry - price) / tp_dist
+            if progress >= 0.90:
+                atr_approx = float(pos.get("original_sl", stop_loss))
+                atr_approx = abs(entry - atr_approx)
+                trail_sl = float(pos.get("lowest_price", price)) + (0.5 * atr_approx)
+                if trail_sl < stop_loss:
+                    pos["stop_loss"] = trail_sl
+                    stop_loss = trail_sl
+            elif progress >= 0.60 and entry < stop_loss:
+                pos["stop_loss"] = entry
+                stop_loss = entry
+        return stop_loss
+
+    @staticmethod
+    def _is_stop_loss_hit(direction: str, price: float, stop_loss: float) -> bool:
+        if direction == "BUY":
+            return price <= stop_loss
+        return price >= stop_loss
+
+    @staticmethod
+    def _is_take_profit_hit(direction: str, price: float, take_profit: float) -> bool:
+        if direction == "BUY":
+            return price >= take_profit
+        return price <= take_profit
+
+    def _build_close_details(
+        self,
+        metadata: Dict[str, Any],
+        close_meta: Dict[str, Any],
+        gross_pnl: float,
+        net_pnl: float,
+        entry_commission: float,
+        exit_commission: float,
+        total_commission: float,
+        *,
+        fallback_exit_price: float,
+    ) -> Dict[str, Any]:
+        return {
+            "gross_pnl": round(gross_pnl, 6),
+            "entry_commission": round(entry_commission, 6),
+            "exit_commission": round(exit_commission, 6),
+            "total_commission": round(total_commission, 6),
+            "requested_exit_price": round(self._safe_float(close_meta.get("requested_exit_price"), fallback_exit_price), 6),
+            "metadata": {
+                "paper_execution": {
+                    **self._metadata_dict(metadata.get("paper_execution")),
+                    **close_meta,
+                    "gross_pnl": round(gross_pnl, 6),
+                    "net_pnl": round(net_pnl, 6),
+                    "entry_commission": round(entry_commission, 6),
+                    "exit_commission": round(exit_commission, 6),
+                    "total_commission": round(total_commission, 6),
+                    "execution_cost_drag": round(total_commission, 6),
+                }
+            },
+        }
+
+    def _close_trade(
+        self,
+        pos: Dict,
+        exit_price: float,
+        reason: str,
+        size: float,
+        metadata: Dict[str, Any],
+    ) -> Dict:
+        close_fill, close_meta = self._exit_fill(pos, exit_price, reason)
+        gross_pnl, net_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
+            pos,
+            close_fill,
+            size,
+            self._safe_float(close_meta.get("commission_rate"), 0.0),
+        )
+        return self._close(
+            pos,
+            close_fill,
+            reason,
+            net_pnl,
+            self._build_close_details(
+                metadata,
+                close_meta,
+                gross_pnl,
+                net_pnl,
+                entry_commission,
+                exit_commission,
+                total_commission,
+                fallback_exit_price=exit_price,
+            ),
+        )
+
+    def _close_on_stop_loss(
+        self,
+        pos: Dict,
+        price: float,
+        direction: str,
+        stop_loss: float,
+        size: float,
+        metadata: Dict[str, Any],
+    ) -> Optional[Dict]:
+        if self._is_stop_loss_hit(direction, price, stop_loss):
+            reason = "Trailing Stop" if stop_loss != float(pos.get("original_sl", stop_loss)) else "Stop Loss"
+            return self._close_trade(pos, price, reason, size, metadata)
+        return None
+
+    def _close_partial_take_profit(
+        self,
+        pos: Dict,
+        tp_level: float,
+        tp_idx: int,
+        total_tiers: int,
+        partial_size: float,
+        metadata: Dict[str, Any],
+    ) -> Dict:
+        close_fill, close_meta = self._exit_fill(pos, tp_level, f"Partial TP {tp_idx + 1}/{total_tiers}")
+        gross_partial_pnl, partial_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
+            pos,
+            close_fill,
+            partial_size,
+            self._safe_float(close_meta.get("commission_rate"), 0.0),
+        )
+
+        parent_trade_id = str(pos.get("trade_id", ""))
+        return self._close(
+            dict(
+                pos,
+                trade_id=f"{parent_trade_id}-PT{tp_idx + 1}",
+                parent_trade_id=parent_trade_id,
+                is_partial_close=True,
+                position_size=partial_size,
+            ),
+            close_fill,
+            f"Partial TP {tp_idx + 1}/{total_tiers}",
+            partial_pnl,
+            self._build_close_details(
+                metadata,
+                close_meta,
+                gross_partial_pnl,
+                partial_pnl,
+                entry_commission,
+                exit_commission,
+                total_commission,
+                fallback_exit_price=tp_level,
+            ),
+        )
+
+    def _process_take_profit_targets(
+        self,
+        pos: Dict,
+        price: float,
+        direction: str,
+        entry: float,
+        take_profit: float,
+        tp_levels: list,
+        size: float,
+        metadata: Dict[str, Any],
+    ) -> Optional[Dict]:
+        if tp_levels:
+            tp_idx = int(pos.get("tp_hit", 0))
+            if tp_idx < len(tp_levels):
+                tp_level = tp_levels[tp_idx]
+                if self._is_take_profit_hit(direction, price, tp_level):
+                    pos["tp_hit"] = tp_idx + 1
+                    if tp_idx + 1 >= len(tp_levels):
+                        return self._close_trade(pos, tp_level, f"Take Profit {tp_idx + 1}", size, metadata)
+
+                    total_tiers = len(tp_levels)
+                    close_fraction = 1.0 / (total_tiers - tp_idx)
+                    original_size = float(pos.get("position_size", size))
+                    partial_size = original_size * close_fraction
+                    remaining_size = original_size - partial_size
+                    partial_trade = self._close_partial_take_profit(
+                        pos,
+                        tp_level,
+                        tp_idx,
+                        total_tiers,
+                        partial_size,
+                        metadata,
+                    )
+
+                    pos["position_size"] = remaining_size
+                    if direction == "BUY" and entry > float(pos.get("stop_loss", 0)):
+                        pos["stop_loss"] = entry
+                    elif direction == "SELL" and entry < float(pos.get("stop_loss", 99e9)):
+                        pos["stop_loss"] = entry
+
+                    self._notify_position_updated(pos)
+                    if partial_trade and self.on_trade_closed:
+                        try:
+                            self.on_trade_closed(partial_trade)
+                        except Exception as _e:
+                            logger.error(f"[PaperTrader] partial TP callback error: {_e}")
+                    return None
+        elif take_profit and self._is_take_profit_hit(direction, price, take_profit):
+            return self._close_trade(pos, take_profit, "Take Profit", size, metadata)
+        return None
     def _notify_position_updated(self, pos: Dict) -> None:
         if not self.on_position_updated:
             return
@@ -867,3 +869,4 @@ class PaperTrader:
                 "open_positions": list(self.open_positions.values()),
                 "balance":        self.account_balance,
             }
+

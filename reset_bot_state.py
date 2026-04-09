@@ -46,6 +46,44 @@ def _iter_files(paths: Iterable[Path]) -> list[Path]:
     return files
 
 
+def _new_file_summary() -> dict[str, int]:
+    return {"files_deleted": 0, "files_cleared": 0, "files_locked": 0}
+
+
+def _merge_file_summaries(*summaries: dict[str, int]) -> dict[str, int]:
+    merged = _new_file_summary()
+    for summary in summaries:
+        for key in merged:
+            merged[key] += int(summary.get(key, 0))
+    return merged
+
+
+def _delete_file_group(paths: Iterable[Path]) -> dict[str, int]:
+    summary = _new_file_summary()
+    for path in paths:
+        try:
+            path.unlink()
+            summary["files_deleted"] += 1
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            summary["files_locked"] += 1
+    return summary
+
+
+def _clear_file_group(paths: Iterable[Path]) -> dict[str, int]:
+    summary = _new_file_summary()
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            path.write_text("", encoding="utf-8")
+            summary["files_cleared"] += 1
+        except PermissionError:
+            summary["files_locked"] += 1
+    return summary
+
+
 def _write_clean_state(balance: float) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     state = {
@@ -67,52 +105,11 @@ def _write_clean_state(balance: float) -> None:
 
 
 def _clear_files() -> dict[str, int]:
-    cleared = 0
-    deleted = 0
-    locked = 0
-
-    for path in _iter_files((LOG_DIR, TRADE_LOG_DIR, PORTFOLIO_REPORTS_DIR)):
-        try:
-            path.unlink()
-            deleted += 1
-        except FileNotFoundError:
-            continue
-        except PermissionError:
-            try:
-                path.write_text("", encoding="utf-8")
-                cleared += 1
-            except Exception:
-                locked += 1
-
-    for path in (TELEGRAM_LOG_FILE, STARTUP_TEST_LOG):
-        if not path.exists():
-            continue
-        try:
-            path.write_text("", encoding="utf-8")
-            cleared += 1
-        except PermissionError:
-            locked += 1
-
-    for path in (TELEGRAM_PID_FILE, PAPER_TRADES_FILE):
-        try:
-            if path.exists():
-                path.unlink()
-                deleted += 1
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            locked += 1
-
-    for path in (STATE_FILE.parent).glob("state_*.tmp"):
-        try:
-            path.unlink()
-            deleted += 1
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            locked += 1
-
-    return {"files_deleted": deleted, "files_cleared": cleared, "files_locked": locked}
+    directory_summary = _delete_file_group(_iter_files((LOG_DIR, TRADE_LOG_DIR, PORTFOLIO_REPORTS_DIR)))
+    text_summary = _clear_file_group((TELEGRAM_LOG_FILE, STARTUP_TEST_LOG))
+    tracked_summary = _delete_file_group((TELEGRAM_PID_FILE, PAPER_TRADES_FILE))
+    temp_summary = _delete_file_group(STATE_FILE.parent.glob("state_*.tmp"))
+    return _merge_file_summaries(directory_summary, text_summary, tracked_summary, temp_summary)
 
 
 def _reset_database() -> dict[str, int]:

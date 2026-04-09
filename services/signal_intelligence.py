@@ -76,8 +76,7 @@ def _get_narrative_data(asset: str) -> Dict[str, Any]:
     return service.get_narrative_snapshot(asset)
 
 
-def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
-    profile = get_profile(signal.asset)
+def _resolve_sentiment_review_context(signal, context: Dict[str, Any]) -> tuple[Dict[str, Any], List[str], Any, Dict[str, Any], Dict[str, Any]]:
     intelligence = context.get("market_intelligence")
     sentiment_details = context.get("sentiment_details")
     if not isinstance(sentiment_details, dict) and isinstance(intelligence, dict):
@@ -85,34 +84,68 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(sentiment_details, dict):
         sentiment_details = fetch_sentiment_details(signal.asset, signal.category)
 
-    score = sentiment_details.get("composite_score", sentiment_details.get("score", 0.0))
-    try:
-        score = float(score or 0.0)
-    except Exception:
-        score = 0.0
-
-    components = sentiment_details.get("components", {})
-    weights = sentiment_details.get("weights", {})
-    market_intelligence_sources: List[str] = []
-    market_intelligence_score = None
-    market_intelligence_details: Dict[str, Any] = {}
     if isinstance(intelligence, dict):
         market_intelligence_sources = list(intelligence.get("market_intelligence_sources") or [])
         market_intelligence_score = intelligence.get("market_intelligence_score")
         market_intelligence_details = dict(intelligence.get("market_intelligence_details") or {})
-    if not isinstance(components, dict):
-        components = {}
-    if not isinstance(weights, dict):
-        weights = {}
+        narrative_data = {
+            "dominant_narrative": intelligence.get("dominant_narrative", ""),
+            "narrative_strength": intelligence.get("narrative_strength", 0.0),
+        }
+    else:
+        market_intelligence_sources = []
+        market_intelligence_score = None
+        market_intelligence_details = {}
+        narrative_data = _get_narrative_data(signal.asset)
 
+    return (
+        sentiment_details,
+        market_intelligence_sources,
+        market_intelligence_score,
+        market_intelligence_details,
+        narrative_data,
+    )
+
+
+def _sentiment_review_sources(
+    *,
+    score: float,
+    ig_client_sentiment: Dict[str, Any] | None,
+    components: Dict[str, Any],
+    market_intelligence_sources: List[str],
+    dominant: str,
+    nar_strength: float,
+) -> List[str]:
+    sources_used: List[str] = []
+    if abs(score) > 0.01:
+        sources_used.append("comprehensive_sentiment")
+    if isinstance(ig_client_sentiment, dict) and ig_client_sentiment:
+        sources_used.append("ig_client_sentiment")
+    if "macro_event" in components:
+        sources_used.append("macro_event")
+    for src in market_intelligence_sources:
+        if src not in sources_used:
+            sources_used.append(src)
+    if nar_strength > 0.10 and dominant:
+        sources_used.append("narrative_ai")
+    return sources_used
+
+
+def _sentiment_review_attach_metadata(
+    signal,
+    *,
+    score: float,
+    components: Dict[str, Any],
+    weights: Dict[str, Any],
+    ig_client_sentiment: Dict[str, Any] | None,
+    market_intelligence_score: Any,
+    market_intelligence_sources: List[str],
+    market_intelligence_details: Dict[str, Any],
+) -> None:
     signal.metadata["sentiment_score"] = round(score, 3)
-    signal.metadata["sentiment_components"] = {
-        str(k): round(float(v), 3) for k, v in components.items()
-    }
-    signal.metadata["sentiment_weights"] = {
-        str(k): round(float(v), 3) for k, v in weights.items()
-    }
-    ig_client_sentiment = sentiment_details.get("ig_client_sentiment")
+    signal.metadata["sentiment_components"] = {str(k): round(float(v), 3) for k, v in components.items()}
+    signal.metadata["sentiment_weights"] = {str(k): round(float(v), 3) for k, v in weights.items()}
+
     if isinstance(ig_client_sentiment, dict) and ig_client_sentiment:
         signal.metadata["ig_client_sentiment"] = dict(ig_client_sentiment)
     if market_intelligence_score is not None:
@@ -127,28 +160,15 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     if "macro_event" in signal.metadata["sentiment_components"]:
         signal.metadata["macro_sentiment_score"] = signal.metadata["sentiment_components"]["macro_event"]
 
-    sources_used: List[str] = []
+
+def _sentiment_review_signal_adjustments(
+    *,
+    signal,
+    profile,
+    score: float,
+    components: Dict[str, Any],
+) -> List[str]:
     adjustments: List[str] = []
-    if abs(score) > 0.01:
-        sources_used.append("comprehensive_sentiment")
-    if isinstance(ig_client_sentiment, dict) and ig_client_sentiment:
-        sources_used.append("ig_client_sentiment")
-    if "macro_event" in signal.metadata["sentiment_components"]:
-        sources_used.append("macro_event")
-    for src in market_intelligence_sources:
-        if src not in sources_used:
-            sources_used.append(src)
-
-    if isinstance(intelligence, dict):
-        narrative_data = {
-            "dominant_narrative": intelligence.get("dominant_narrative", ""),
-            "narrative_strength": intelligence.get("narrative_strength", 0.0),
-        }
-    else:
-        narrative_data = _get_narrative_data(signal.asset)
-    dominant = narrative_data.get("dominant_narrative", "")
-    nar_strength = float(narrative_data.get("narrative_strength", 0.0) or 0.0)
-
     direction_sign = 1 if signal.direction == "BUY" else -1
     aligned_score = score * direction_sign
 
@@ -158,7 +178,6 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
             pc_score = _fetch_put_call(signal.asset)
         if pc_score is not None:
             signal.metadata["put_call_score"] = round(pc_score, 3)
-            sources_used.append("put_call")
             pc_aligned = pc_score * direction_sign
             if pc_aligned > 0.3:
                 adjustments.append("put_call_support")
@@ -171,7 +190,6 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
             reddit_score = _fetch_reddit_sentiment(signal.asset)
         if reddit_score is not None:
             signal.metadata["reddit_score"] = round(reddit_score, 3)
-            sources_used.append("reddit")
             reddit_aligned = reddit_score * direction_sign
             if reddit_aligned > 0.3:
                 adjustments.append("reddit_support")
@@ -186,8 +204,18 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     elif aligned_score <= _WEAK_THRESHOLD:
         adjustments.append("sentiment_conflict")
 
+    return adjustments
+
+
+def _sentiment_review_narrative_adjustments(
+    *,
+    signal,
+    profile,
+    dominant: str,
+    nar_strength: float,
+) -> List[str]:
+    adjustments: List[str] = []
     if nar_strength > 0.10 and dominant:
-        sources_used.append("narrative_ai")
         if profile.use_whale_data:
             if (signal.direction == "BUY" and dominant in _CRYPTO_BULLISH_NARRATIVES) or (
                 signal.direction == "SELL" and dominant in _CRYPTO_BEARISH_NARRATIVES
@@ -198,6 +226,88 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
             signal.direction == "SELL" and dominant in _GENERAL_BEARISH_NARRATIVES
         ):
             adjustments.append("macro_narrative_support")
+    return adjustments
+
+
+def _sentiment_review_adjustments(
+    *,
+    signal,
+    profile,
+    score: float,
+    components: Dict[str, Any],
+    dominant: str,
+    nar_strength: float,
+) -> List[str]:
+    adjustments = _sentiment_review_signal_adjustments(
+        signal=signal,
+        profile=profile,
+        score=score,
+        components=components,
+    )
+    adjustments.extend(
+        _sentiment_review_narrative_adjustments(
+            signal=signal,
+            profile=profile,
+            dominant=dominant,
+            nar_strength=nar_strength,
+        )
+    )
+    return adjustments
+
+
+def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
+    profile = get_profile(signal.asset)
+    (
+        sentiment_details,
+        market_intelligence_sources,
+        market_intelligence_score,
+        market_intelligence_details,
+        narrative_data,
+    ) = _resolve_sentiment_review_context(signal, context)
+
+    score = sentiment_details.get("composite_score", sentiment_details.get("score", 0.0))
+    try:
+        score = float(score or 0.0)
+    except Exception:
+        score = 0.0
+
+    components = sentiment_details.get("components", {})
+    weights = sentiment_details.get("weights", {})
+    if not isinstance(components, dict):
+        components = {}
+    if not isinstance(weights, dict):
+        weights = {}
+
+    ig_client_sentiment = sentiment_details.get("ig_client_sentiment")
+    _sentiment_review_attach_metadata(
+        signal,
+        score=score,
+        components=components,
+        weights=weights,
+        ig_client_sentiment=ig_client_sentiment,
+        market_intelligence_score=market_intelligence_score,
+        market_intelligence_sources=market_intelligence_sources,
+        market_intelligence_details=market_intelligence_details,
+    )
+    dominant = narrative_data.get("dominant_narrative", "")
+    nar_strength = float(narrative_data.get("narrative_strength", 0.0) or 0.0)
+
+    sources_used = _sentiment_review_sources(
+        score=score,
+        ig_client_sentiment=ig_client_sentiment,
+        components=components,
+        market_intelligence_sources=market_intelligence_sources,
+        dominant=dominant,
+        nar_strength=nar_strength,
+    )
+    adjustments = _sentiment_review_adjustments(
+        signal=signal,
+        profile=profile,
+        score=score,
+        components=components,
+        dominant=dominant,
+        nar_strength=nar_strength,
+    )
 
     signal.metadata["sentiment_sources"] = sources_used
 

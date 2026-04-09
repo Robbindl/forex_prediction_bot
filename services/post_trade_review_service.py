@@ -42,6 +42,255 @@ def _clip(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
 
 
+def _build_positive_review_notes(
+    *,
+    target_like: bool,
+    target_capture: float,
+    pnl: float,
+    giveback_ratio: float,
+    aligned_structure: bool,
+    direction: str,
+    regime: str,
+    setup_quality: float,
+    alignment_score: float,
+    memory_samples: int,
+    memory_edge: float,
+    memory_score: float,
+    opportunity_score: float,
+    execution_drag_rr: float,
+    broker_context: str,
+    micro_context: str,
+    depth_mode: str,
+    cross_asset_context: str,
+    cross_asset_peer: str,
+    cross_asset_relation: str,
+) -> tuple[List[str], List[str]]:
+    what_went_right: List[str] = []
+    keep: List[str] = []
+
+    if target_like and target_capture >= 0.95:
+        what_went_right.append("The move followed through cleanly enough to pay the planned target.")
+        keep.append("Keep letting clean trend-following moves reach their planned objective.")
+    elif pnl > 0.0:
+        what_went_right.append("The trade direction was right and the exit still locked in a profit.")
+        keep.append("Keep pressing valid direction calls even when the move does not extend all the way.")
+
+    if giveback_ratio <= 0.25 and target_capture >= 0.70:
+        what_went_right.append("Profit capture was efficient, with limited giveback after the trade moved your way.")
+        keep.append("Keep protecting winners once they have already delivered meaningful progress.")
+
+    if aligned_structure and (alignment_score >= 0.55 or setup_quality >= 0.55):
+        what_went_right.append(f"Structure stayed aligned with the {direction} idea in a {regime} backdrop.")
+        keep.append("Keep prioritizing setups where structure and regime point in the same direction.")
+
+    if memory_samples >= 6 and (memory_edge >= 0.18 or memory_score >= 62.0):
+        what_went_right.append("This resembled a setup family that already had positive memory behind it.")
+        keep.append("Keep trusting repeated setups that show a real positive historical edge.")
+
+    if opportunity_score >= 0.75:
+        what_went_right.append("The opportunity quality was strong enough to justify staying with the trade plan.")
+        keep.append("Keep sizing up only when the full opportunity picture is genuinely strong.")
+
+    if execution_drag_rr > 0.08:
+        what_went_right.append("The trade still worked even after realistic execution drag took a measurable bite out of the result.")
+        keep.append("Keep favoring the cleaner setups where the edge is large enough to survive execution costs.")
+
+    if broker_context == "supportive":
+        what_went_right.append("Broker quotes stayed aligned and usable enough to confirm the setup instead of fighting it.")
+        keep.append("Keep trusting trades more when brokers agree and quote quality stays stable.")
+
+    if micro_context == "supportive":
+        if depth_mode == "true_depth":
+            what_went_right.append("Real depth and short-horizon flow stayed supportive into the move.")
+            keep.append("Keep leaning harder on setups backed by true depth and aligned flow.")
+        else:
+            what_went_right.append("Top-of-book pressure stayed supportive enough to keep the trade onside.")
+            keep.append("Keep respecting supportive quote pressure when it stays aligned through the entry.")
+
+    if cross_asset_context == "supportive" and cross_asset_peer:
+        relation_text = f" through {cross_asset_relation}" if cross_asset_relation else ""
+        what_went_right.insert(
+            0,
+            f"Related-market confirmation from {cross_asset_peer}{relation_text} stayed aligned with the trade.",
+        )
+        keep.insert(0, "Keep trusting spillover more when the main peer is confirming in the same direction.")
+
+    return what_went_right, keep
+
+
+def _build_negative_review_notes(
+    *,
+    late_entry: bool,
+    premature_stop: bool,
+    stop_too_tight: bool,
+    stop_too_wide: bool,
+    target_miss: bool,
+    memory_samples: int,
+    memory_edge: float,
+    memory_score: float,
+    execution_drag_rr: float,
+    broker_context: str,
+    broker_transition_risk: float,
+    micro_context: str,
+    depth_mode: str,
+    stop_hunt_risk: float,
+    exhaustion_risk: float,
+    cross_asset_context: str,
+    cross_asset_peer: str,
+    cross_asset_relation: str,
+) -> tuple[List[str], List[str]]:
+    what_went_wrong: List[str] = []
+    avoid: List[str] = []
+
+    if late_entry:
+        what_went_wrong.append("The entry arrived late, so the trade took heat before it had enough room to work.")
+        avoid.append("Avoid chasing entries after the move is already mature.")
+
+    if premature_stop:
+        what_went_wrong.append("The trade showed early progress, then gave it back before protection tightened.")
+        avoid.append("Avoid letting early unrealized progress round-trip back into the stop.")
+
+    if stop_too_tight:
+        what_went_wrong.append("The stop appears to have been too tight for the amount of normal market noise.")
+        avoid.append("Avoid cramped stops when volatility is still noisy around entry.")
+
+    if stop_too_wide:
+        what_went_wrong.append("The trade never built enough favorable progress, so the stop gave too much room to a weak idea.")
+        avoid.append("Avoid giving full-size stop room to setups that do not show early proof quickly enough.")
+
+    if target_miss:
+        what_went_wrong.append("Price got most of the way toward the target, but the trade did not capture enough of that move.")
+        avoid.append("Avoid waiting passively when price has already done most of the heavy lifting.")
+
+    if memory_samples >= 6 and (memory_edge <= -0.12 or memory_score <= 42.0):
+        what_went_wrong.append("Similar setups already had weak historical memory, so this was not a high-quality pattern to force.")
+        avoid.append("Avoid forcing patterns that already show a negative live memory edge.")
+
+    if execution_drag_rr > 0.08:
+        what_went_wrong.append("Execution drag was meaningful, so the trade needed more edge than it actually had.")
+        avoid.append("Avoid marginal setups when spread, slippage, and fees are already taking a noticeable share of the risk.")
+
+    if broker_context == "fragile":
+        what_went_wrong.append("Broker confirmation was weak, with disagreement, stale quotes, or stressed spreads reducing entry quality.")
+        avoid.append("Avoid forcing trades when brokers disagree or quote quality is already degraded.")
+
+    if broker_transition_risk >= 0.65:
+        what_went_wrong.append("The market was transitioning between states, which made the trade less trustworthy at entry.")
+        avoid.append("Avoid marginal entries while the market state is still flipping or unstable.")
+
+    _append_hostile_negative_notes(
+        what_went_wrong,
+        avoid,
+        micro_context=micro_context,
+        depth_mode=depth_mode,
+        stop_hunt_risk=stop_hunt_risk,
+        exhaustion_risk=exhaustion_risk,
+    )
+
+    if cross_asset_context == "conflicted" and cross_asset_peer:
+        relation_text = f" through {cross_asset_relation}" if cross_asset_relation else ""
+        what_went_wrong.insert(
+            0,
+            f"Related-market spillover from {cross_asset_peer}{relation_text} was leaning against the trade at entry.",
+        )
+        avoid.insert(0, "Avoid forcing trades when the dominant related market is pointing the other way.")
+
+    if not what_went_wrong:
+        what_went_wrong.append("The setup failed to generate enough follow-through after entry.")
+        avoid.append("Avoid repeating the same setup without stronger confirmation.")
+
+    return what_went_wrong, avoid
+
+
+def _derive_positive_lesson(
+    *,
+    broker_context: str,
+    micro_context: str,
+    depth_mode: str,
+    cross_asset_context: str,
+    cross_asset_peer: str,
+    cross_asset_relation: str,
+    aligned_structure: bool,
+    memory_samples: int,
+    memory_edge: float,
+    memory_score: float,
+) -> str:
+    if broker_context == "supportive" and micro_context == "supportive" and depth_mode == "true_depth":
+        return "When broker confirmation and true depth both support the trade, the bot can trust the original plan more."
+    if broker_context == "supportive":
+        return "When brokers stay aligned and quote quality holds up, the bot should trust the setup more."
+    if cross_asset_context == "supportive" and cross_asset_peer:
+        relation_text = f" through {cross_asset_relation}" if cross_asset_relation else ""
+        return f"When {cross_asset_peer} confirms the trade{relation_text}, the bot can trust the setup more."
+    if aligned_structure:
+        return "When structure, regime, and direction stay aligned, the bot should keep respecting the original plan."
+    if memory_samples >= 6 and (memory_edge >= 0.18 or memory_score >= 62.0):
+        return "Positive setup memory deserves continued trust when the sample size is real."
+    return "The bot should keep favoring trades that move cleanly soon after entry and protect gains without panic."
+
+
+def _derive_negative_lesson(
+    *,
+    feedback: Dict[str, Any],
+    broker_quality: Dict[str, Any],
+    memory_samples: int,
+    memory_edge: float,
+    memory_score: float,
+    broker_context: str,
+    micro_context: str,
+    depth_mode: str,
+    cross_asset_context: str,
+    cross_asset_peer: str,
+    cross_asset_relation: str,
+) -> str:
+    if broker_context == "fragile":
+        return "When brokers disagree, quotes are stale, or spreads are stressed, the setup should clear a higher bar before entry."
+    if cross_asset_context == "conflicted" and cross_asset_peer:
+        relation_text = f" through {cross_asset_relation}" if cross_asset_relation else ""
+        return f"When {cross_asset_peer} is leaning the other way{relation_text}, the setup should clear a higher bar before entry."
+    if micro_context == "hostile" and depth_mode == "synthetic_depth":
+        return "When only proxy depth is available and the microstructure is hostile, the bot should wait for cleaner flow."
+    if _safe_float(broker_quality.get("market_transition_risk"), 0.0) >= 0.65:
+        return "Do not force trades while the market is still transitioning between stable trading states."
+    if bool(feedback.get("late_entry")):
+        return "Do not chase extended entries; wait for fresher structure or better price location."
+    if bool(feedback.get("premature_stop")):
+        return "Once a trade has already produced meaningful favorable movement, protection should tighten sooner."
+    if bool(feedback.get("stop_too_tight")):
+        return "Stops should reflect actual volatility instead of being squeezed too close to entry."
+    if bool(feedback.get("stop_too_wide")):
+        return "Weak setups that fail to show progress quickly should not be given full breathing room."
+    if bool(feedback.get("target_miss")):
+        return "When price has already reached most of the objective, the bot should secure more of the move."
+    if memory_samples >= 6 and (memory_edge <= -0.12 or memory_score <= 42.0):
+        return "Negative setup memory should carry more weight before approving similar trades again."
+    return "The setup needed stronger confirmation before entry and better evidence after entry."
+
+
+def _append_hostile_negative_notes(
+    what_went_wrong: List[str],
+    avoid: List[str],
+    *,
+    micro_context: str,
+    depth_mode: str,
+    stop_hunt_risk: float,
+    exhaustion_risk: float,
+) -> None:
+    if micro_context == "hostile":
+        if depth_mode == "synthetic_depth":
+            what_went_wrong.append("Only proxy depth was available and the microstructure was hostile, so the entry had thinner proof than it looked.")
+            avoid.append("Avoid leaning on synthetic depth alone when stop-hunt or exhaustion risk is already elevated.")
+        else:
+            what_went_wrong.append("Short-horizon flow was hostile enough to work against the entry soon after it opened.")
+            avoid.append("Avoid entries when live flow shows stop-hunt pressure or exhaustion against the trade.")
+    elif stop_hunt_risk >= 0.45:
+        what_went_wrong.append("Stop-hunt risk was elevated, so the setup needed cleaner confirmation than it had.")
+        avoid.append("Avoid entries into obvious sweep conditions unless the broader edge is exceptional.")
+    elif exhaustion_risk >= 0.42:
+        what_went_wrong.append("The move was already showing exhaustion, so the trade did not have fresh enough energy behind it.")
+        avoid.append("Avoid late entries into moves that are already tiring at the quote-flow level.")
+
+
 class PostTradeReviewService:
     def build_review(self, trade: Dict[str, Any]) -> Dict[str, Any]:
         metadata = _parse_metadata(trade.get("metadata") or trade.get("trade_metadata"))
@@ -102,6 +351,11 @@ class PostTradeReviewService:
         target_like = exit_family in {"take_profit", "take_profit_offline", "partial_tp"}
         stop_like = exit_family in {"stop_loss", "stop_loss_offline", "trailing_stop"}
         partial_close = bool(feedback.get("partial_close"))
+        late_entry = bool(feedback.get("late_entry"))
+        premature_stop = bool(feedback.get("premature_stop"))
+        stop_too_tight = bool(feedback.get("stop_too_tight"))
+        stop_too_wide = bool(feedback.get("stop_too_wide"))
+        target_miss = bool(feedback.get("target_miss"))
 
         outcome = "scratch"
         if target_like or pnl > 0.0 or rr_realized >= 0.25:
@@ -112,113 +366,49 @@ class PostTradeReviewService:
             outcome = "partial_win"
 
         if outcome in {"win", "partial_win"}:
-            if target_like and target_capture >= 0.95:
-                what_went_right.append("The move followed through cleanly enough to pay the planned target.")
-                keep.append("Keep letting clean trend-following moves reach their planned objective.")
-            elif pnl > 0.0:
-                what_went_right.append("The trade direction was right and the exit still locked in a profit.")
-                keep.append("Keep pressing valid direction calls even when the move does not extend all the way.")
-
-            if giveback_ratio <= 0.25 and target_capture >= 0.70:
-                what_went_right.append("Profit capture was efficient, with limited giveback after the trade moved your way.")
-                keep.append("Keep protecting winners once they have already delivered meaningful progress.")
-
-            if aligned_structure and (alignment_score >= 0.55 or setup_quality >= 0.55):
-                what_went_right.append(f"Structure stayed aligned with the {direction} idea in a {regime} backdrop.")
-                keep.append("Keep prioritizing setups where structure and regime point in the same direction.")
-
-            if memory_samples >= 6 and (memory_edge >= 0.18 or memory_score >= 62.0):
-                what_went_right.append("This resembled a setup family that already had positive memory behind it.")
-                keep.append("Keep trusting repeated setups that show a real positive historical edge.")
-
-            if opportunity_score >= 0.75:
-                what_went_right.append("The opportunity quality was strong enough to justify staying with the trade plan.")
-                keep.append("Keep sizing up only when the full opportunity picture is genuinely strong.")
-
-            if execution_drag_rr > 0.08:
-                what_went_right.append("The trade still worked even after realistic execution drag took a measurable bite out of the result.")
-                keep.append("Keep favoring the cleaner setups where the edge is large enough to survive execution costs.")
-
-            if broker_context == "supportive":
-                what_went_right.append("Broker quotes stayed aligned and usable enough to confirm the setup instead of fighting it.")
-                keep.append("Keep trusting trades more when brokers agree and quote quality stays stable.")
-
-            if micro_context == "supportive":
-                if depth_mode == "true_depth":
-                    what_went_right.append("Real depth and short-horizon flow stayed supportive into the move.")
-                    keep.append("Keep leaning harder on setups backed by true depth and aligned flow.")
-                else:
-                    what_went_right.append("Top-of-book pressure stayed supportive enough to keep the trade onside.")
-                    keep.append("Keep respecting supportive quote pressure when it stays aligned through the entry.")
-            if cross_asset_context == "supportive" and cross_asset_peer:
-                relation_text = f" through {cross_asset_relation}" if cross_asset_relation else ""
-                what_went_right.insert(
-                    0,
-                    f"Related-market confirmation from {cross_asset_peer}{relation_text} stayed aligned with the trade."
-                )
-                keep.insert(0, "Keep trusting spillover more when the main peer is confirming in the same direction.")
-
+            what_went_right, keep = _build_positive_review_notes(
+                target_like=target_like,
+                target_capture=target_capture,
+                pnl=pnl,
+                giveback_ratio=giveback_ratio,
+                aligned_structure=aligned_structure,
+                direction=direction,
+                regime=regime,
+                setup_quality=setup_quality,
+                alignment_score=alignment_score,
+                memory_samples=memory_samples,
+                memory_edge=memory_edge,
+                memory_score=memory_score,
+                opportunity_score=opportunity_score,
+                execution_drag_rr=execution_drag_rr,
+                broker_context=broker_context,
+                micro_context=micro_context,
+                depth_mode=depth_mode,
+                cross_asset_context=cross_asset_context,
+                cross_asset_peer=cross_asset_peer,
+                cross_asset_relation=cross_asset_relation,
+            )
         else:
-            if bool(feedback.get("late_entry")):
-                what_went_wrong.append("The entry arrived late, so the trade took heat before it had enough room to work.")
-                avoid.append("Avoid chasing entries after the move is already mature.")
-
-            if bool(feedback.get("premature_stop")):
-                what_went_wrong.append("The trade showed early progress, then gave it back before protection tightened.")
-                avoid.append("Avoid letting early unrealized progress round-trip back into the stop.")
-
-            if bool(feedback.get("stop_too_tight")):
-                what_went_wrong.append("The stop appears to have been too tight for the amount of normal market noise.")
-                avoid.append("Avoid cramped stops when volatility is still noisy around entry.")
-
-            if bool(feedback.get("stop_too_wide")):
-                what_went_wrong.append("The trade never built enough favorable progress, so the stop gave too much room to a weak idea.")
-                avoid.append("Avoid giving full-size stop room to setups that do not show early proof quickly enough.")
-
-            if bool(feedback.get("target_miss")):
-                what_went_wrong.append("Price got most of the way toward the target, but the trade did not capture enough of that move.")
-                avoid.append("Avoid waiting passively when price has already done most of the heavy lifting.")
-
-            if memory_samples >= 6 and (memory_edge <= -0.12 or memory_score <= 42.0):
-                what_went_wrong.append("Similar setups already had weak historical memory, so this was not a high-quality pattern to force.")
-                avoid.append("Avoid forcing patterns that already show a negative live memory edge.")
-
-            if execution_drag_rr > 0.08:
-                what_went_wrong.append("Execution drag was meaningful, so the trade needed more edge than it actually had.")
-                avoid.append("Avoid marginal setups when spread, slippage, and fees are already taking a noticeable share of the risk.")
-
-            if broker_context == "fragile":
-                what_went_wrong.append("Broker confirmation was weak, with disagreement, stale quotes, or stressed spreads reducing entry quality.")
-                avoid.append("Avoid forcing trades when brokers disagree or quote quality is already degraded.")
-
-            if broker_transition_risk >= 0.65:
-                what_went_wrong.append("The market was transitioning between states, which made the trade less trustworthy at entry.")
-                avoid.append("Avoid marginal entries while the market state is still flipping or unstable.")
-
-            if micro_context == "hostile":
-                if depth_mode == "synthetic_depth":
-                    what_went_wrong.append("Only proxy depth was available and the microstructure was hostile, so the entry had thinner proof than it looked.")
-                    avoid.append("Avoid leaning on synthetic depth alone when stop-hunt or exhaustion risk is already elevated.")
-                else:
-                    what_went_wrong.append("Short-horizon flow was hostile enough to work against the entry soon after it opened.")
-                    avoid.append("Avoid entries when live flow shows stop-hunt pressure or exhaustion against the trade.")
-            elif stop_hunt_risk >= 0.45:
-                what_went_wrong.append("Stop-hunt risk was elevated, so the setup needed cleaner confirmation than it had.")
-                avoid.append("Avoid entries into obvious sweep conditions unless the broader edge is exceptional.")
-            elif exhaustion_risk >= 0.42:
-                what_went_wrong.append("The move was already showing exhaustion, so the trade did not have fresh enough energy behind it.")
-                avoid.append("Avoid late entries into moves that are already tiring at the quote-flow level.")
-            if cross_asset_context == "conflicted" and cross_asset_peer:
-                relation_text = f" through {cross_asset_relation}" if cross_asset_relation else ""
-                what_went_wrong.insert(
-                    0,
-                    f"Related-market spillover from {cross_asset_peer}{relation_text} was leaning against the trade at entry."
-                )
-                avoid.insert(0, "Avoid forcing trades when the dominant related market is pointing the other way.")
-
-            if not what_went_wrong:
-                what_went_wrong.append("The setup failed to generate enough follow-through after entry.")
-                avoid.append("Avoid repeating the same setup without stronger confirmation.")
+            what_went_wrong, avoid = _build_negative_review_notes(
+                late_entry=late_entry,
+                premature_stop=premature_stop,
+                stop_too_tight=stop_too_tight,
+                stop_too_wide=stop_too_wide,
+                target_miss=target_miss,
+                memory_samples=memory_samples,
+                memory_edge=memory_edge,
+                memory_score=memory_score,
+                execution_drag_rr=execution_drag_rr,
+                broker_context=broker_context,
+                broker_transition_risk=broker_transition_risk,
+                micro_context=micro_context,
+                depth_mode=depth_mode,
+                stop_hunt_risk=stop_hunt_risk,
+                exhaustion_risk=exhaustion_risk,
+                cross_asset_context=cross_asset_context,
+                cross_asset_peer=cross_asset_peer,
+                cross_asset_relation=cross_asset_relation,
+            )
 
         lesson = self._derive_lesson(
             outcome=outcome,
@@ -338,43 +528,32 @@ class PostTradeReviewService:
         micro: Dict[str, Any],
     ) -> str:
         if outcome in {"win", "partial_win"}:
-            if broker_context == "supportive" and micro_context == "supportive" and depth_mode == "true_depth":
-                return "When broker confirmation and true depth both support the trade, the bot can trust the original plan more."
-            if broker_context == "supportive":
-                return "When brokers stay aligned and quote quality holds up, the bot should trust the setup more."
-            if cross_asset_context == "supportive" and cross_asset_peer:
-                relation_text = f" through {cross_asset_relation}" if cross_asset_relation else ""
-                return f"When {cross_asset_peer} confirms the trade{relation_text}, the bot can trust the setup more."
-            if aligned_structure:
-                return "When structure, regime, and direction stay aligned, the bot should keep respecting the original plan."
-            if memory_samples >= 6 and (memory_edge >= 0.18 or memory_score >= 62.0):
-                return "Positive setup memory deserves continued trust when the sample size is real."
-            return "The bot should keep favoring trades that move cleanly soon after entry and protect gains without panic."
+            return _derive_positive_lesson(
+                broker_context=broker_context,
+                micro_context=micro_context,
+                depth_mode=depth_mode,
+                cross_asset_context=cross_asset_context,
+                cross_asset_peer=cross_asset_peer,
+                cross_asset_relation=cross_asset_relation,
+                aligned_structure=aligned_structure,
+                memory_samples=memory_samples,
+                memory_edge=memory_edge,
+                memory_score=memory_score,
+            )
 
-        if broker_context == "fragile":
-            return "When brokers disagree, quotes are stale, or spreads are stressed, the setup should clear a higher bar before entry."
-        if cross_asset_context == "conflicted" and cross_asset_peer:
-            relation_text = f" through {cross_asset_relation}" if cross_asset_relation else ""
-            return f"When {cross_asset_peer} is leaning the other way{relation_text}, the setup should clear a higher bar before entry."
-        if micro_context == "hostile" and depth_mode == "synthetic_depth":
-            return "When only proxy depth is available and the microstructure is hostile, the bot should wait for cleaner flow."
-        if _safe_float(micro.get("stop_hunt_risk"), 0.0) >= 0.45:
-            return "Avoid entries into stop-hunt conditions unless the broader edge is overwhelming."
-        if _safe_float(broker_quality.get("market_transition_risk"), 0.0) >= 0.65:
-            return "Do not force trades while the market is still transitioning between stable trading states."
-        if bool(feedback.get("late_entry")):
-            return "Do not chase extended entries; wait for fresher structure or better price location."
-        if bool(feedback.get("premature_stop")):
-            return "Once a trade has already produced meaningful favorable movement, protection should tighten sooner."
-        if bool(feedback.get("stop_too_tight")):
-            return "Stops should reflect actual volatility instead of being squeezed too close to entry."
-        if bool(feedback.get("stop_too_wide")):
-            return "Weak setups that fail to show progress quickly should not be given full breathing room."
-        if bool(feedback.get("target_miss")):
-            return "When price has already reached most of the objective, the bot should secure more of the move."
-        if memory_samples >= 6 and (memory_edge <= -0.12 or memory_score <= 42.0):
-            return "Negative setup memory should carry more weight before approving similar trades again."
-        return "The setup needed stronger confirmation before entry and better evidence after entry."
+        return _derive_negative_lesson(
+            feedback=feedback,
+            broker_quality=broker_quality,
+            memory_samples=memory_samples,
+            memory_edge=memory_edge,
+            memory_score=memory_score,
+            broker_context=broker_context,
+            micro_context=micro_context,
+            depth_mode=depth_mode,
+            cross_asset_context=cross_asset_context,
+            cross_asset_peer=cross_asset_peer,
+            cross_asset_relation=cross_asset_relation,
+        )
 
     @staticmethod
     def _derive_next_focus(outcome: str, keep: List[str], avoid: List[str]) -> str:

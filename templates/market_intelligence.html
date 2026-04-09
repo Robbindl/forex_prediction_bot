@@ -385,6 +385,7 @@ let _currentAssetDescriptor = null;
 let _heatmapItems = [];
 let _correlationLabels = [];
 let _correlationMatrix = [];
+let _chartPricePrecision = 5;
 
 function clearLivePriceLine() {
   if (!cSeries || !livePriceLine) return;
@@ -403,6 +404,91 @@ function humanizeChartToken(value, fallback='—') {
   const raw = String(value || '').trim();
   if (!raw) return fallback;
   return raw.replace(/_/g, ' ');
+}
+
+function clampChartPrecision(value, fallback = 5) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return Math.max(0, Math.min(8, Math.round(Number(fallback) || 0)));
+  }
+  return Math.max(0, Math.min(8, Math.round(parsed)));
+}
+
+function assetPrecisionHint(asset, descriptor = null) {
+  const source = descriptor || _currentAssetDescriptor || {};
+  const explicit = Number(source.price_precision);
+  if (Number.isFinite(explicit)) {
+    return clampChartPrecision(explicit, 5);
+  }
+
+  const symbol = String(source.symbol || asset || currentAsset || '').trim().toUpperCase();
+  const category = String(source.category || '').trim().toLowerCase();
+
+  if (category === 'crypto' || /(BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB)/.test(symbol)) return 8;
+  if (category === 'forex' || symbol.includes('/')) return symbol.endsWith('JPY') || symbol.includes('/JPY') ? 3 : 5;
+  if (category === 'commodities' || /(XAU|XAG|WTI|BRENT|OIL|GAS)/.test(symbol)) {
+    return /(XAU|XAG)/.test(symbol) ? 3 : 2;
+  }
+  if (category === 'indices' || symbol.endsWith('=F') || symbol.startsWith('^')) return 2;
+  return symbol.includes('/') ? 5 : 2;
+}
+
+function decimalPlacesFromValue(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  const text = parsed.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
+  const dot = text.indexOf('.');
+  return dot >= 0 ? Math.min(8, text.length - dot - 1) : 0;
+}
+
+function chartPrecisionFromCandles(candles, asset = currentAsset, descriptor = _currentAssetDescriptor) {
+  let precision = assetPrecisionHint(asset, descriptor);
+  const sample = Array.isArray(candles) ? candles.slice(-200) : [];
+  for (const candle of sample) {
+    if (!candle) continue;
+    precision = Math.max(
+      precision,
+      decimalPlacesFromValue(candle.open),
+      decimalPlacesFromValue(candle.high),
+      decimalPlacesFromValue(candle.low),
+      decimalPlacesFromValue(candle.close),
+    );
+    if (precision >= 8) return 8;
+  }
+  return clampChartPrecision(precision, 5);
+}
+
+function applyChartPricePrecision(precision) {
+  _chartPricePrecision = clampChartPrecision(precision, _chartPricePrecision || 5);
+  if (!cSeries || typeof cSeries.applyOptions !== 'function') return;
+  try {
+    cSeries.applyOptions({
+      priceFormat: {
+        type: 'price',
+        precision: _chartPricePrecision,
+        minMove: Math.pow(10, -_chartPricePrecision),
+      },
+    });
+  } catch (e) {}
+}
+
+function syncChartPricePrecision(candles = null, asset = currentAsset, descriptor = _currentAssetDescriptor) {
+  const precision = candles ? chartPrecisionFromCandles(candles, asset, descriptor) : assetPrecisionHint(asset, descriptor);
+  applyChartPricePrecision(precision);
+  return _chartPricePrecision;
+}
+
+function formatAssetPrice(value, asset = currentAsset, descriptor = _currentAssetDescriptor) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return '—';
+  const precision = assetPrecisionHint(asset, descriptor);
+  return parsed.toFixed(precision);
+}
+
+function formatChartPrice(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return '—';
+  return parsed.toFixed(_chartPricePrecision);
 }
 
 function renderChartIntegrity() {
@@ -560,12 +646,12 @@ function renderMarketStatePanels(runtimeStatus=null) {
   levelStatusEl.style.background = candles.length ? 'rgba(0,208,132,.12)' : 'rgba(41,121,255,.15)';
   levelStatusEl.style.color = candles.length ? 'var(--gr)' : 'var(--bl)';
   levelPanelEl.innerHTML = [
-    {label:'Range high', value:high == null ? '—' : (high > 10 ? high.toFixed(2) : high.toFixed(5)), color:'var(--gr)'},
-    {label:'Range low', value:low == null ? '—' : (low > 10 ? low.toFixed(2) : low.toFixed(5)), color:'var(--rd)'},
-    {label:'Retest zone', value:retest == null ? '—' : (retest > 10 ? retest.toFixed(2) : retest.toFixed(5)), color:'var(--cy)'},
-    {label:'Breakout level', value:breakout == null ? '—' : (breakout > 10 ? breakout.toFixed(2) : breakout.toFixed(5)), color:'var(--am)'},
-    {label:'Current', value:last ? (Number(last.close) > 10 ? Number(last.close).toFixed(2) : Number(last.close).toFixed(5)) : '—', color:'var(--tx)'},
-    {label:'Exhaustion zone', value:exhaustion == null ? '—' : (exhaustion > 10 ? exhaustion.toFixed(2) : exhaustion.toFixed(5)), color:'var(--pu)'},
+    {label:'Range high', value:high == null ? '—' : formatAssetPrice(high), color:'var(--gr)'},
+    {label:'Range low', value:low == null ? '—' : formatAssetPrice(low), color:'var(--rd)'},
+    {label:'Retest zone', value:retest == null ? '—' : formatAssetPrice(retest), color:'var(--cy)'},
+    {label:'Breakout level', value:breakout == null ? '—' : formatAssetPrice(breakout), color:'var(--am)'},
+    {label:'Current', value:last ? formatAssetPrice(last.close) : '—', color:'var(--tx)'},
+    {label:'Exhaustion zone', value:exhaustion == null ? '—' : formatAssetPrice(exhaustion), color:'var(--pu)'},
   ].map(item => `
     <div class="dp-stat">
       <div class="dp-val" style="color:${item.color}">${item.value}</div>
@@ -575,7 +661,7 @@ function renderMarketStatePanels(runtimeStatus=null) {
   levelNotesEl.innerHTML = `
     <div class="event-risk-card">
       <div class="event-risk-title">Level read</div>
-      <div class="event-risk-text">${last && high != null && low != null ? `Current price is ${last.close >= rangeMid ? 'above' : 'below'} the recent midpoint. Watch ${breakout?.toFixed ? breakout.toFixed(last.close > 10 ? 2 : 5) : 'the range edge'} for breakout continuation and ${retest?.toFixed ? retest.toFixed(last.close > 10 ? 2 : 5) : 'the midpoint'} for retest behaviour.` : 'Levels will populate once recent candles are available.'}</div>
+      <div class="event-risk-text">${last && high != null && low != null ? `Current price is ${last.close >= rangeMid ? 'above' : 'below'} the recent midpoint. Watch ${breakout == null ? 'the range edge' : formatAssetPrice(breakout)} for breakout continuation and ${retest == null ? 'the midpoint' : formatAssetPrice(retest)} for retest behaviour.` : 'Levels will populate once recent candles are available.'}</div>
     </div>`;
 
   const related = (_heatmapItems || []).filter(item => item.asset !== currentAsset).slice(0,4);
@@ -674,6 +760,10 @@ function volumeBarFor(candle) {
 
 function applyLiveTickToChart(price, ts) {
   if (!Number.isFinite(price) || !_chartCandles.length) return;
+  const tickPrecision = decimalPlacesFromValue(price);
+  if (tickPrecision > _chartPricePrecision) {
+    applyChartPricePrecision(tickPrecision);
+  }
   if (!_chartLiveOverlayAllowed) {
     setLivePriceLine(price);
     return;
@@ -745,6 +835,7 @@ function initChart() {
     priceScaleId: '',
     scaleMargins: {top:0.85, bottom:0},
   });
+  syncChartPricePrecision(null, currentAsset, _currentAssetDescriptor);
   // Detect user zoom/scroll via mouse wheel and drag on chart
   const lwEl = document.getElementById('lwChart');
   lwEl.addEventListener('wheel',     () => { _userZoomed = true; }, {passive:true});
@@ -813,6 +904,7 @@ async function loadCandles() {
     _historyHasMore = false;
     updateHistoryButtons();
     clearLivePriceLine();
+    syncChartPricePrecision(_chartCandles, currentAsset, _currentAssetDescriptor);
 
     cSeries.setData(_chartCandles);
     vSeries.setData(_chartCandles.map(volumeBarFor));
@@ -905,6 +997,7 @@ async function loadHistoryCandles({append=false, endTime=null} = {}) {
     updateHistoryButtons();
 
     clearLivePriceLine();
+    syncChartPricePrecision(_chartCandles, currentAsset, _currentAssetDescriptor);
     cSeries.setData(_chartCandles);
     vSeries.setData(_chartCandles.map(volumeBarFor));
 
@@ -931,6 +1024,7 @@ async function loadHistoryCandles({append=false, endTime=null} = {}) {
     _chartProviderFamily = String(d?.provider_family || '');
     _chartProviderWarning = String(d?.provider_warning_message || '');
     updateHistoryButtons();
+    syncChartPricePrecision(_chartCandles, currentAsset, _currentAssetDescriptor);
     const rawMessage = String(d?.message || `No ${currentTf} history`);
     st.textContent = rawMessage.length > 72 ? `${rawMessage.slice(0, 69)}…` : rawMessage;
     st.style.background = 'rgba(255,69,96,.12)';
@@ -1030,6 +1124,9 @@ async function loadDataPlane() {
     return acc;
   }, {});
   _currentAssetDescriptor = selected;
+  if (_chartBooted) {
+    syncChartPricePrecision(null, selected ? selected.symbol : currentAsset, selected);
+  }
 
   summaryEl.innerHTML = [
     {label:'Active Assets', value:String(assets.length), color:'var(--cy)'},
@@ -1166,8 +1263,12 @@ function startStream() {
       const d = JSON.parse(e.data);
       if (d.type === 'tick') {
         const price = d.price;
+        const tickPrecision = decimalPlacesFromValue(price);
+        if (tickPrecision > _chartPricePrecision) {
+          applyChartPricePrecision(tickPrecision);
+        }
         document.getElementById('livePrice').textContent =
-          price ? (price < 10 ? price.toFixed(5) : price.toFixed(2)) : '—';
+          price ? formatChartPrice(price) : '—';
         const tickSource = String(d.source || '');
         if (price && d.ts) {
           if (_chartLiveOverlayAllowed) {
@@ -1221,7 +1322,7 @@ async function loadHeatmap(manual=false) {
     return `<div class="hm-cell" style="background:${bg}" onclick="changeToAsset('${i.asset}')">
       <div class="hm-asset" style="color:var(--tx)">${sym}</div>
       <div class="hm-pct" style="color:${tc}">${hasPct ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : 'LIVE'}</div>
-      <div class="hm-price">${i.price > 10 ? i.price.toFixed(2) : i.price.toFixed(5)}</div>
+      <div class="hm-price">${formatAssetPrice(i.price, i.asset, {})}</div>
     </div>`;
   }).join('');
   const expectedAssets = Number(d.expected_assets || d.items.length);
@@ -1364,6 +1465,7 @@ async function loadCorrelation(manual=false) {
 // ── Navigation helpers ────────────────────────────────────────────────────────
 function changeToAsset(a) {
   currentAsset = a;
+  syncChartPricePrecision(null, currentAsset, null);
   const sel = document.getElementById('chartAsset');
   for (let i = 0; i < sel.options.length; i++) {
     if (sel.options[i].value === a) { sel.selectedIndex = i; break; }
@@ -1381,6 +1483,7 @@ function changeToAsset(a) {
 
 function changeChartAsset() {
   currentAsset = document.getElementById('chartAsset').value;
+  syncChartPricePrecision(null, currentAsset, null);
   loadDataPlane();
   if (_chartBooted) {
     if (_chartMode === 'history') {

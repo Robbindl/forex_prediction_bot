@@ -257,11 +257,17 @@ class WhaleAlertManager:
 
         logger.info("[WhaleManager] Initialising...")
 
-        # ── Authenticated Whale Alert API ─────────────────────────────────
-        _api_key = os.getenv("WHALE_ALERT_KEY", "")
-        if _api_key and "your_" not in _api_key.lower():
+        self._init_whale_api()
+        self._init_twitter_watcher()
+        self._init_telegram_watcher()
+        self._init_reddit_watcher()
+        self._log_source_summary()
+
+    def _init_whale_api(self) -> None:
+        api_key = os.getenv("WHALE_ALERT_KEY", "")
+        if api_key and "your_" not in api_key.lower():
             try:
-                self.whale_api = WhaleAlertAPI(_api_key)
+                self.whale_api = WhaleAlertAPI(api_key)
                 logger.info("[WhaleManager] Whale Alert API: ACTIVE")
             except RuntimeError as e:
                 logger.warning(f"[WhaleManager] Whale Alert API init failed: {e}")
@@ -271,7 +277,7 @@ class WhaleAlertManager:
                 "authenticated API disabled. Set it in .env for richer whale data."
             )
 
-        # ── Twitter watcher ───────────────────────────────────────────────
+    def _init_twitter_watcher(self) -> None:
         if WHALE_TWITTER_WHALE_ENABLED and TwitterWhaleWatcher:
             try:
                 self.twitter_watcher = TwitterWhaleWatcher()
@@ -280,24 +286,24 @@ class WhaleAlertManager:
         elif not WHALE_TWITTER_WHALE_ENABLED:
             logger.info("[WhaleManager] Twitter whale source disabled — Twitter can remain sentiment-only")
 
-        # ── Telegram watcher ──────────────────────────────────────────────
+    def _init_telegram_watcher(self) -> None:
         if TelegramWhaleWatcher:
             try:
                 self.telegram_watcher = TelegramWhaleWatcher()
             except Exception as e:
                 logger.warning(f"[WhaleManager] TelegramWhaleWatcher init failed: {e}")
 
-        # ── Reddit watcher ────────────────────────────────────────────────
+    def _init_reddit_watcher(self) -> None:
         if WHALE_REDDIT_WHALE_ENABLED and RedditWatcher:
             try:
-                rw = RedditWatcher()
-                self.reddit = rw
+                self.reddit = RedditWatcher()
                 logger.info("[WhaleManager] Reddit whale source enabled")
             except Exception as e:
                 logger.warning(f"[WhaleManager] RedditWatcher init failed: {e}")
         elif not WHALE_REDDIT_WHALE_ENABLED:
             logger.info("[WhaleManager] Reddit whale source disabled — Reddit remains available for sentiment")
 
+    def _log_source_summary(self) -> None:
         logger.info(
             f"[WhaleManager] "
             f"API={'on' if self.whale_api else 'off'}  "
@@ -306,6 +312,175 @@ class WhaleAlertManager:
             f"Reddit={'on' if self.reddit else 'off'}  "
             f"DB={'on' if self.db.enabled else 'off'}"
         )
+
+    @staticmethod
+    def _unique_alerts(alerts: List[Dict], key_fn: Callable[[Dict], object]) -> List[Dict]:
+        seen = set()
+        unique = []
+        for alert in alerts:
+            key = key_fn(alert)
+            if key not in seen:
+                seen.add(key)
+                unique.append(alert)
+        return unique
+
+    @staticmethod
+    def _sort_alerts_by_value(alerts: List[Dict]) -> List[Dict]:
+        return sorted(alerts, key=lambda x: x.get("value_usd", 0), reverse=True)
+
+    def _collect_api_alerts(self) -> List[Dict]:
+        alerts: List[Dict] = []
+        if self.whale_api:
+            try:
+                alerts.extend(self.whale_api.fetch_transactions())
+            except Exception as e:
+                logger.warning(f"[WhaleManager] API collect error: {e}")
+        return alerts
+
+    def _collect_twitter_alerts(self) -> List[Dict]:
+        alerts: List[Dict] = []
+        if not self.twitter_watcher:
+            return alerts
+        try:
+            for a in self.twitter_watcher.get_recent_alerts():
+                if "whale_info" not in a:
+                    continue
+                info = a["whale_info"]
+                raw_text = a.get("text", "")
+                sentiment = _score_whale_text(raw_text) if raw_text else 0.1
+                direction = "BUY" if sentiment >= 0 else "SELL"
+                alerts.append(
+                    {
+                        "title": f"🐋 {info['amount']} {info['symbol']} (${info['value_usd']/1e6:.1f}M)",
+                        "value_usd": info["value_usd"],
+                        "symbol": info["symbol"],
+                        "asset": info["symbol"],
+                        "direction": direction,
+                        "alert_time": a.get("created_at", datetime.utcnow()),
+                        "source": f"Twitter @{a['account']}",
+                        "sentiment": sentiment,
+                        "raw_text": raw_text,
+                        "external_id": a.get("external_id", ""),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"[WhaleManager] Twitter collect error: {e}")
+        return alerts
+
+    def _collect_telegram_alerts(self) -> List[Dict]:
+        alerts: List[Dict] = []
+        if not (self.telegram_watcher and getattr(self.telegram_watcher, "bot_token", None)):
+            return alerts
+        try:
+            for a in self.telegram_watcher.get_recent_alerts():
+                alert_time = a["date"]
+                if isinstance(alert_time, str):
+                    try:
+                        alert_time = datetime.fromisoformat(alert_time)
+                    except Exception:
+                        alert_time = datetime.utcnow()
+                if hasattr(alert_time, "tzinfo") and alert_time.tzinfo is not None:
+                    alert_time = alert_time.replace(tzinfo=None)
+                sentiment = a.get("sentiment")
+                if sentiment is None or sentiment == 0.1:
+                    sentiment = _score_whale_text(a.get("title", ""))
+                direction = "BUY" if sentiment >= 0 else "SELL"
+                alerts.append(
+                    {
+                        "title": a["title"],
+                        "value_usd": a["value_usd"],
+                        "symbol": a["symbol"],
+                        "asset": a["symbol"],
+                        "direction": direction,
+                        "alert_time": alert_time,
+                        "source": a["source"],
+                        "sentiment": sentiment,
+                        "raw_text": a.get("raw_text", a.get("title", "")),
+                        "external_id": a.get("external_id", ""),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"[WhaleManager] Telegram collect error: {e}")
+        return alerts
+
+    def _collect_reddit_alerts(self) -> List[Dict]:
+        alerts: List[Dict] = []
+        if not self.reddit:
+            return alerts
+        try:
+            for a in self.reddit.get_whale_alerts():
+                alert_time = a["created"]
+                if hasattr(alert_time, "tzinfo") and alert_time.tzinfo is not None:
+                    alert_time = alert_time.replace(tzinfo=None)
+                sentiment = _score_whale_text(a.get("title", ""))
+                direction = "BUY" if sentiment >= 0 else "SELL"
+                alerts.append(
+                    {
+                        "title": a["title"],
+                        "value_usd": a["value_usd"],
+                        "symbol": a["symbol"],
+                        "asset": a["symbol"],
+                        "direction": direction,
+                        "alert_time": alert_time,
+                        "source": a["source"],
+                        "sentiment": sentiment,
+                        "raw_text": a.get("raw_text", a.get("title", "")),
+                        "external_id": a.get("external_id", a.get("url", "")),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"[WhaleManager] Reddit collect error: {e}")
+        return alerts
+
+    def _dispatch_alerts(self, alerts: List[Dict]) -> None:
+        if self.on_alert:
+            for alert in alerts:
+                try:
+                    self.on_alert(alert)
+                except Exception as e:
+                    logger.warning(f"[WhaleManager] on_alert callback error: {e}")
+
+    def _store_collected_alerts(self, alerts: List[Dict]) -> None:
+        if self.db.enabled:
+            saved = self.db.save_alerts(alerts)
+            if saved:
+                logger.info(f"[WhaleManager] Saved {saved} new alerts to DB")
+        self.all_alerts = (alerts + self.all_alerts)[: self.max_alerts]
+
+    def _collect_store_alerts(self, hours: int, min_value_usd: float) -> List[Dict]:
+        alerts: List[Dict] = []
+        try:
+            if _whale_store and len(_whale_store) > 0:
+                for a in _whale_store.format_for_dashboard(hours=hours):
+                    if a.get("value_usd", 0) >= min_value_usd:
+                        alerts.append(a)
+        except Exception as e:
+            logger.warning(f"[WhaleManager] Telethon store error: {e}")
+        return alerts
+
+    def _collect_db_alerts(self, hours: int, min_value_usd: float) -> List[Dict]:
+        try:
+            if self.db.enabled:
+                return self.db.get_alerts(hours=hours, min_value=int(min_value_usd))
+        except Exception as e:
+            logger.warning(f"[WhaleManager] DB get alerts error: {e}")
+        return []
+
+    def _collect_memory_alerts(self, hours: int, min_value_usd: float) -> List[Dict]:
+        alerts: List[Dict] = []
+        try:
+            cutoff = datetime.utcnow().replace(tzinfo=None) - timedelta(hours=hours)
+            for a in self.all_alerts:
+                if a.get("value_usd", 0) < min_value_usd:
+                    continue
+                alert_time = a.get("alert_time", datetime.utcnow())
+                if hasattr(alert_time, "tzinfo") and alert_time.tzinfo is not None:
+                    alert_time = alert_time.replace(tzinfo=None)
+                if alert_time > cutoff:
+                    alerts.append(a)
+        except Exception as e:
+            logger.warning(f"[WhaleManager] In-memory get alerts error: {e}")
+        return alerts
 
     # ── Monitoring ────────────────────────────────────────────────────────
 
@@ -347,171 +522,29 @@ class WhaleAlertManager:
 
     def _collect_once(self):
         all_new: List[Dict] = []
-
-        # 1. Authenticated API
-        if self.whale_api:
-            try:
-                all_new.extend(self.whale_api.fetch_transactions())
-            except Exception as e:
-                logger.warning(f"[WhaleManager] API collect error: {e}")
-
-        # 2. Twitter
-        if self.twitter_watcher:
-            try:
-                for a in self.twitter_watcher.get_recent_alerts():
-                    if "whale_info" in a:
-                        info     = a["whale_info"]
-                        raw_text = a.get("text", "")
-                        # Score the actual tweet text — not a hardcoded constant
-                        sentiment = _score_whale_text(raw_text) if raw_text else 0.1
-                        direction = "BUY" if sentiment >= 0 else "SELL"
-                        all_new.append({
-                            "title":      f"🐋 {info['amount']} {info['symbol']} (${info['value_usd']/1e6:.1f}M)",
-                            "value_usd":  info["value_usd"],
-                            "symbol":     info["symbol"],
-                            "asset":      info["symbol"],
-                            "direction":  direction,
-                            "alert_time": a.get("created_at", datetime.utcnow()),
-                            "source":     f"Twitter @{a['account']}",
-                            "sentiment":  sentiment,
-                            "raw_text":   raw_text,
-                            "external_id": a.get("external_id", ""),
-                        })
-            except Exception as e:
-                logger.warning(f"[WhaleManager] Twitter collect error: {e}")
-
-        # 3. Telegram
-        if self.telegram_watcher and getattr(self.telegram_watcher, "bot_token", None):
-            try:
-                for a in self.telegram_watcher.get_recent_alerts():
-                    alert_time = a["date"]
-                    if isinstance(alert_time, str):
-                        try:
-                            alert_time = datetime.fromisoformat(alert_time)
-                        except Exception:
-                            alert_time = datetime.utcnow()
-                    # Normalise to naive datetime
-                    if hasattr(alert_time, "tzinfo") and alert_time.tzinfo is not None:
-                        alert_time = alert_time.replace(tzinfo=None)
-                    # Use pre-scored sentiment from TelegramWhaleWatcher if available,
-                    # otherwise score the raw title text directly
-                    sentiment = a.get("sentiment")
-                    if sentiment is None or sentiment == 0.1:
-                        sentiment = _score_whale_text(a.get("title", ""))
-                    direction = "BUY" if sentiment >= 0 else "SELL"
-                    all_new.append({
-                        "title":      a["title"],
-                        "value_usd":  a["value_usd"],
-                        "symbol":     a["symbol"],
-                        "asset":      a["symbol"],
-                        "direction":  direction,
-                        "alert_time": alert_time,
-                        "source":     a["source"],
-                        "sentiment":  sentiment,
-                        "raw_text":   a.get("raw_text", a.get("title", "")),
-                        "external_id": a.get("external_id", ""),
-                    })
-            except Exception as e:
-                logger.warning(f"[WhaleManager] Telegram collect error: {e}")
-
-        # 4. Reddit
-        if self.reddit:
-            try:
-                for a in self.reddit.get_whale_alerts():
-                    alert_time = a["created"]
-                    if hasattr(alert_time, "tzinfo") and alert_time.tzinfo is not None:
-                        alert_time = alert_time.replace(tzinfo=None)
-                    # Score the Reddit post title through the financial keyword scorer
-                    sentiment = _score_whale_text(a.get("title", ""))
-                    direction = "BUY" if sentiment >= 0 else "SELL"
-                    all_new.append({
-                        "title":      a["title"],
-                        "value_usd":  a["value_usd"],
-                        "symbol":     a["symbol"],
-                        "asset":      a["symbol"],
-                        "direction":  direction,
-                        "alert_time": alert_time,
-                        "source":     a["source"],
-                        "sentiment":  sentiment,
-                        "raw_text":   a.get("raw_text", a.get("title", "")),
-                        "external_id": a.get("external_id", a.get("url", "")),
-                    })
-            except Exception as e:
-                logger.warning(f"[WhaleManager] Reddit collect error: {e}")
-
+        all_new.extend(self._collect_api_alerts())
+        all_new.extend(self._collect_twitter_alerts())
+        all_new.extend(self._collect_telegram_alerts())
+        all_new.extend(self._collect_reddit_alerts())
         if not all_new:
             return
 
-        # Fire callback (feeds Layer 6)
-        if self.on_alert:
-            for alert in all_new:
-                try:
-                    self.on_alert(alert)
-                except Exception as e:
-                    logger.warning(f"[WhaleManager] on_alert callback error: {e}")
-
-        # Deduplicate and store
-        seen   = set()
-        unique = []
-        for a in all_new:
-            key = a.get("title", "")
-            if key not in seen:
-                seen.add(key)
-                unique.append(a)
-        unique.sort(key=lambda x: x.get("value_usd", 0), reverse=True)
-
-        if self.db.enabled:
-            saved = self.db.save_alerts(unique)
-            if saved:
-                logger.info(f"[WhaleManager] Saved {saved} new alerts to DB")
-
-        self.all_alerts = (unique + self.all_alerts)[: self.max_alerts]
+        self._dispatch_alerts(all_new)
+        unique = self._sort_alerts_by_value(self._unique_alerts(all_new, lambda a: a.get("title", "")))
+        self._store_collected_alerts(unique)
 
     # ── Public API ────────────────────────────────────────────────────────
 
     def get_alerts(self, min_value_usd: float = 1_000_000, hours: int = 24) -> List[Dict]:
         results: List[Dict] = []
-
-        # Telethon real-time store
-        try:
-            if _whale_store and len(_whale_store) > 0:
-                for a in _whale_store.format_for_dashboard(hours=hours):
-                    if a.get("value_usd", 0) >= min_value_usd:
-                        results.append(a)
-        except Exception as e:
-            logger.warning(f"[WhaleManager] Telethon store error: {e}")
-
-        # DB (fresh session per call — thread safe)
-        try:
-            if self.db.enabled:
-                results.extend(self.db.get_alerts(hours=hours, min_value=int(min_value_usd)))
-        except Exception as e:
-            logger.warning(f"[WhaleManager] DB get alerts error: {e}")
-
-        # In-memory
-        try:
-            cutoff = datetime.utcnow().replace(tzinfo=None) - timedelta(hours=hours)
-            for a in self.all_alerts:
-                if a.get("value_usd", 0) < min_value_usd:
-                    continue
-                alert_time = a.get("alert_time", datetime.utcnow())
-                if hasattr(alert_time, "tzinfo") and alert_time.tzinfo is not None:
-                    alert_time = alert_time.replace(tzinfo=None)
-                if alert_time > cutoff:
-                    results.append(a)
-        except Exception as e:
-            logger.warning(f"[WhaleManager] In-memory get alerts error: {e}")
-
-        # Deduplicate
-        seen    = set()
-        deduped = []
-        for a in results:
-            key = (a.get("title", ""), str(a.get("alert_time", "")))
-            if key not in seen:
-                seen.add(key)
-                deduped.append(a)
-        deduped.sort(key=lambda x: x.get("value_usd", 0), reverse=True)
-        return deduped[: self.max_alerts]
+        results.extend(self._collect_store_alerts(hours, min_value_usd))
+        results.extend(self._collect_db_alerts(hours, min_value_usd))
+        results.extend(self._collect_memory_alerts(hours, min_value_usd))
+        deduped = self._unique_alerts(
+            results,
+            lambda a: (a.get("title", ""), str(a.get("alert_time", ""))),
+        )
+        return self._sort_alerts_by_value(deduped)[: self.max_alerts]
 
     def get_alerts_for_symbol(self, symbol: str,
                                min_value_usd: float = 1_000_000,

@@ -412,63 +412,18 @@ class DerivBridge:
             try:
                 response = self._request_locked(payload)
                 candles = response.get("candles") or ((response.get("history") or {}).get("candles") or [])
-                if candles:
-                    rows = []
-                    for candle in candles:
-                        timestamp = _try_parse_datetime(candle.get("epoch"))
-                        if timestamp is None:
-                            continue
-                        rows.append({
-                            "timestamp": timestamp,
-                            "open": _safe_float(candle.get("open")),
-                            "high": _safe_float(candle.get("high")),
-                            "low": _safe_float(candle.get("low")),
-                            "close": _safe_float(candle.get("close")),
-                            "volume": _safe_float(candle.get("volume")) or 0.0,
-                        })
-                    if rows:
-                        df = pd.DataFrame(rows).set_index("timestamp")
-                        df.index = pd.to_datetime(df.index, utc=True)
-                        if cutoff is not None:
-                            if closed_only:
-                                df = df[df.index < cutoff]
-                            else:
-                                df = df[df.index <= cutoff]
-                        df = df.tail(int(max(2, periods)))
-                        keep = ["open", "high", "low", "close", "volume"]
-                        return df[keep].astype(float), self._metadata(resolved, source_class="primary_api")
+                rows = self._ohlcv_rows_from_candles(candles)
+                if rows:
+                    df = self._finalise_ohlcv_rows(rows, periods=periods, cutoff=cutoff, closed_only=closed_only)
+                    if df is not None:
+                        return df, self._metadata(resolved, source_class="primary_api")
 
                 history = response.get("history") or {}
-                prices = history.get("prices") or []
-                times = history.get("times") or []
-                if prices and times and len(prices) == len(times):
-                    rows = []
-                    for raw_time, raw_price in zip(times, prices):
-                        timestamp = _try_parse_datetime(raw_time)
-                        price = _safe_float(raw_price)
-                        if timestamp is None or price is None:
-                            continue
-                        rows.append({
-                            "timestamp": timestamp,
-                            "open": price,
-                            "high": price,
-                            "low": price,
-                            "close": price,
-                            "volume": 0.0,
-                        })
-                    if rows:
-                        df = pd.DataFrame(rows).set_index("timestamp")
-                        df.index = pd.to_datetime(df.index, utc=True)
-                        if cutoff is not None:
-                            if closed_only:
-                                df = df[df.index < cutoff]
-                            else:
-                                df = df[df.index <= cutoff]
-                        df = df.tail(int(max(2, periods)))
-                        return df[["open", "high", "low", "close", "volume"]].astype(float), self._metadata(
-                            resolved,
-                            source_class="primary_api",
-                        )
+                rows = self._ohlcv_rows_from_history(history)
+                if rows:
+                    df = self._finalise_ohlcv_rows(rows, periods=periods, cutoff=cutoff, closed_only=closed_only)
+                    if df is not None:
+                        return df, self._metadata(resolved, source_class="primary_api")
             except Exception as exc:
                 logger.debug(f"[DerivBridge] ohlcv {asset}: {exc}")
 
@@ -1018,6 +973,81 @@ class DerivBridge:
             pass
         return float(price), spread, meta
 
+    @staticmethod
+    def _ohlcv_row_from_candle(candle: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(candle, dict):
+            return None
+
+        timestamp = _try_parse_datetime(candle.get("epoch"))
+        if timestamp is None:
+            return None
+
+        return {
+            "timestamp": timestamp,
+            "open": _safe_float(candle.get("open")),
+            "high": _safe_float(candle.get("high")),
+            "low": _safe_float(candle.get("low")),
+            "close": _safe_float(candle.get("close")),
+            "volume": _safe_float(candle.get("volume")) or 0.0,
+        }
+
+    @staticmethod
+    def _ohlcv_rows_from_candles(candles: Any) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        if not isinstance(candles, list):
+            return rows
+
+        for candle in candles:
+            row = DerivBridge._ohlcv_row_from_candle(candle)
+            if row is not None:
+                rows.append(row)
+        return rows
+
+    @staticmethod
+    def _ohlcv_rows_from_history(history: Dict[str, Any]) -> List[Dict[str, Any]]:
+        prices = history.get("prices") or []
+        times = history.get("times") or []
+        if not prices or not times or len(prices) != len(times):
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        for raw_time, raw_price in zip(times, prices):
+            timestamp = _try_parse_datetime(raw_time)
+            price = _safe_float(raw_price)
+            if timestamp is None or price is None:
+                continue
+            rows.append(
+                {
+                    "timestamp": timestamp,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": 0.0,
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _finalise_ohlcv_rows(
+        rows: List[Dict[str, Any]],
+        periods: int,
+        cutoff: Optional[datetime],
+        closed_only: bool,
+    ) -> Optional[pd.DataFrame]:
+        if not rows:
+            return None
+
+        df = pd.DataFrame(rows).set_index("timestamp")
+        df.index = pd.to_datetime(df.index, utc=True)
+        if cutoff is not None:
+            if closed_only:
+                df = df[df.index < cutoff]
+            else:
+                df = df[df.index <= cutoff]
+        df = df.tail(int(max(2, periods)))
+        return df[["open", "high", "low", "close", "volume"]].astype(float)
+
     def _get_trading_times_locked(self, day) -> Dict[str, Any]:
         day_key = day.isoformat()
         cached = self._trading_times_cache.get(day_key)
@@ -1034,52 +1064,66 @@ class DerivBridge:
 
     def _status_from_trading_times(self, trading_times: Dict[str, Any], deriv_symbol: str) -> Optional[Tuple[bool, str]]:
         now = datetime.now(timezone.utc)
+        symbol_key = deriv_symbol.lower()
         markets = trading_times.get("markets") or []
 
         for market in markets:
             for submarket in market.get("submarkets") or []:
                 for symbol in submarket.get("symbols") or []:
                     symbol_code = str(symbol.get("underlying_symbol") or symbol.get("symbol", "")).strip().lower()
-                    if symbol_code != deriv_symbol.lower():
+                    if symbol_code != symbol_key:
                         continue
 
-                    opens = []
-                    closes = []
-                    times_payload = symbol.get("times")
-                    if isinstance(times_payload, dict):
-                        opens = times_payload.get("open") or times_payload.get("opens") or []
-                        closes = times_payload.get("close") or times_payload.get("closes") or []
-                    else:
-                        opens = symbol.get("open") or symbol.get("opens") or []
-                        closes = symbol.get("close") or symbol.get("closes") or []
-
-                    if not isinstance(opens, list):
-                        opens = [opens]
-                    if not isinstance(closes, list):
-                        closes = [closes]
-
-                    sessions = []
-                    for raw_open, raw_close in zip(opens, closes):
-                        if not raw_open or not raw_close or raw_open == "--" or raw_close == "--":
-                            continue
-                        try:
-                            open_dt = datetime.fromisoformat(f"{trading_times.get('date')}T{raw_open}+00:00")
-                            close_dt = datetime.fromisoformat(f"{trading_times.get('date')}T{raw_close}+00:00")
-                        except Exception:
-                            continue
-                        sessions.append((open_dt, close_dt))
-
-                    for open_dt, close_dt in sessions:
-                        if open_dt <= now <= close_dt:
-                            return True, f"Open on Deriv until {close_dt.strftime('%H:%M UTC')}"
-
-                    if sessions:
-                        next_open = min((open_dt for open_dt, _ in sessions if open_dt > now), default=None)
-                        if next_open is not None:
-                            return False, f"Closed on Deriv until {next_open.strftime('%H:%M UTC')}"
-                        return False, "Closed on Deriv"
+                    sessions = self._trading_times_sessions(trading_times, symbol)
+                    if not sessions:
+                        continue
+                    return self._status_from_sessions(sessions, now)
 
         return None
+
+    @staticmethod
+    def _trading_times_sessions(trading_times: Dict[str, Any], symbol: Dict[str, Any]) -> List[Tuple[datetime, datetime]]:
+        opens = []
+        closes = []
+        times_payload = symbol.get("times")
+        if isinstance(times_payload, dict):
+            opens = times_payload.get("open") or times_payload.get("opens") or []
+            closes = times_payload.get("close") or times_payload.get("closes") or []
+        else:
+            opens = symbol.get("open") or symbol.get("opens") or []
+            closes = symbol.get("close") or symbol.get("closes") or []
+
+        if not isinstance(opens, list):
+            opens = [opens]
+        if not isinstance(closes, list):
+            closes = [closes]
+
+        sessions: List[Tuple[datetime, datetime]] = []
+        trading_day = trading_times.get("date")
+        if not trading_day:
+            return sessions
+
+        for raw_open, raw_close in zip(opens, closes):
+            if not raw_open or not raw_close or raw_open == "--" or raw_close == "--":
+                continue
+            try:
+                open_dt = datetime.fromisoformat(f"{trading_day}T{raw_open}+00:00")
+                close_dt = datetime.fromisoformat(f"{trading_day}T{raw_close}+00:00")
+            except Exception:
+                continue
+            sessions.append((open_dt, close_dt))
+        return sessions
+
+    @staticmethod
+    def _status_from_sessions(sessions: List[Tuple[datetime, datetime]], now: datetime) -> Tuple[bool, str]:
+        for open_dt, close_dt in sessions:
+            if open_dt <= now <= close_dt:
+                return True, f"Open on Deriv until {close_dt.strftime('%H:%M UTC')}"
+
+        next_open = min((open_dt for open_dt, _ in sessions if open_dt > now), default=None)
+        if next_open is not None:
+            return False, f"Closed on Deriv until {next_open.strftime('%H:%M UTC')}"
+        return False, "Closed on Deriv"
 
     @staticmethod
     def _normalise_active_symbol(item: Dict[str, Any]) -> Dict[str, Any]:

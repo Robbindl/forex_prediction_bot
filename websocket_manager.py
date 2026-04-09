@@ -3,7 +3,7 @@ import json
 import threading
 import time
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import websockets
 
@@ -281,12 +281,89 @@ class WebSocketManager:
             except Exception as exc:
                 logger.error(f"[WSManager] callback error for {asset}: {exc}")
 
-    async def _handle_message(self, message: str):
+    @staticmethod
+    def _parse_message_payload(message: str) -> Optional[Dict[str, Any]]:
+        try:
+            return json.loads(message)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _tick_price(tick: Dict[str, Any]) -> Optional[float]:
+        price = tick.get("quote")
+        try:
+            if price is None:
+                bid = float(tick.get("bid", 0) or 0)
+                ask = float(tick.get("ask", 0) or 0)
+                price = (bid + ask) / 2.0 if bid > 0 and ask > 0 else None
+            if price is None:
+                return None
+            return float(price)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _tick_timestamp(tick: Dict[str, Any]) -> datetime:
+        ts = datetime.now()
+        epoch = tick.get("epoch")
+        try:
+            if epoch:
+                ts = datetime.fromtimestamp(float(epoch))
+        except Exception:
+            pass
+        return ts
+
+    @staticmethod
+    def _tick_bid_ask(tick: Dict[str, Any]) -> Tuple[float, float]:
+        try:
+            return float(tick.get("bid", 0) or 0), float(tick.get("ask", 0) or 0)
+        except Exception:
+            return 0.0, 0.0
+
+    def _emit_deriv_tick(self, asset: str, price: float, bid: float, ask: float, ts: datetime) -> None:
         from websocket_dashboard import set_connected
 
         try:
-            data = json.loads(message)
+            from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+            get_live_microstructure_service().record_quote(
+                "deriv",
+                asset,
+                bid=bid if bid > 0 else None,
+                ask=ask if ask > 0 else None,
+                price=price,
+                timestamp=ts,
+            )
         except Exception:
+            pass
+
+        set_connected("deriv", True, len(self._asset_to_symbol))
+        for callback in list(self._callbacks):
+            try:
+                callback("deriv", asset, price, None, None, ts)
+            except Exception as exc:
+                logger.error(f"[WSManager] callback error for {asset}: {exc}")
+
+    async def _handle_deriv_tick(self, tick: Dict[str, Any]) -> None:
+        deriv_symbol = str(tick.get("symbol", "")).strip()
+        asset = self._symbol_to_asset.get(deriv_symbol)
+        if not asset:
+            return
+
+        price = self._tick_price(tick)
+        if price is None:
+            return
+
+        if price <= 0:
+            return
+
+        bid, ask = self._tick_bid_ask(tick)
+        ts = self._tick_timestamp(tick)
+        self._emit_deriv_tick(asset, price, bid, ask, ts)
+
+    async def _handle_message(self, message: str):
+        data = self._parse_message_payload(message)
+        if data is None:
             return
 
         if data.get("error"):
@@ -298,60 +375,7 @@ class WebSocketManager:
             return
 
         if msg_type == "tick":
-            tick = data.get("tick") or {}
-            deriv_symbol = str(tick.get("symbol", "")).strip()
-            asset = self._symbol_to_asset.get(deriv_symbol)
-            if not asset:
-                return
-
-            price = tick.get("quote")
-            try:
-                if price is None:
-                    bid = float(tick.get("bid", 0) or 0)
-                    ask = float(tick.get("ask", 0) or 0)
-                    price = (bid + ask) / 2.0 if bid > 0 and ask > 0 else None
-                price = float(price)
-            except Exception:
-                return
-
-            if price <= 0:
-                return
-
-            ts = datetime.now()
-            epoch = tick.get("epoch")
-            try:
-                if epoch:
-                    ts = datetime.fromtimestamp(float(epoch))
-            except Exception:
-                pass
-
-            try:
-                bid = float(tick.get("bid", 0) or 0)
-                ask = float(tick.get("ask", 0) or 0)
-            except Exception:
-                bid = 0.0
-                ask = 0.0
-
-            try:
-                from services.live_microstructure_service import get_service as get_live_microstructure_service
-
-                get_live_microstructure_service().record_quote(
-                    "deriv",
-                    asset,
-                    bid=bid if bid > 0 else None,
-                    ask=ask if ask > 0 else None,
-                    price=price,
-                    timestamp=ts,
-                )
-            except Exception:
-                pass
-
-            set_connected("deriv", True, len(self._asset_to_symbol))
-            for callback in list(self._callbacks):
-                try:
-                    callback("deriv", asset, price, None, None, ts)
-                except Exception as exc:
-                    logger.error(f"[WSManager] callback error for {asset}: {exc}")
+            await self._handle_deriv_tick(data.get("tick") or {})
 
     @staticmethod
     def _connect_socket(url: str, headers: Optional[Dict[str, str]] = None):

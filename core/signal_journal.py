@@ -181,21 +181,30 @@ class SignalJournal:
                 return e
         return None
 
-    def _extract_factor_attribution(self, signal=None) -> Dict[str, float]:
+    def _signal_context(self, signal=None) -> Dict[str, Any]:
         metadata = dict(getattr(signal, "metadata", {}) or {})
-        sign = _direction_sign(self.direction)
-
         market = self._latest_entry("market")
         intelligence = self._latest_entry("intelligence")
         execution = self._latest_entry("execution")
         policy = self._latest_named("policy", "agent")
         governance = self._latest_named("governance", "data_integrity")
+        memory = self._latest_entry("memory")
 
         structure_data = metadata.get("market_structure")
         if not isinstance(structure_data, dict):
             structure_data = {}
         if not structure_data and market and isinstance(market.data.get("market_structure"), dict):
             structure_data = dict(market.data.get("market_structure") or {})
+
+        broker_quality = metadata.get("broker_quality")
+        if not isinstance(broker_quality, dict):
+            broker_quality = {}
+        market_microstructure = metadata.get("market_microstructure")
+        if not isinstance(market_microstructure, dict):
+            market_microstructure = {}
+        breakdown = metadata.get("opportunity_breakdown")
+        if not isinstance(breakdown, dict):
+            breakdown = {}
 
         structure_bias = str(
             metadata.get("structure_bias")
@@ -219,25 +228,7 @@ class SignalJournal:
             0.0,
         ) or 0.0
         setup_signal = breakout_score if abs(breakout_score) >= abs(pullback_score) else pullback_score
-
-        bias_factor = 0.0
-        if structure_bias == "buy":
-            bias_factor = 1.0 if sign > 0 else -1.0
-        elif structure_bias == "sell":
-            bias_factor = 1.0 if sign < 0 else -1.0
-        setup_factor = _clip11(setup_signal * sign)
-        market_structure = _clip11(bias_factor * alignment_score * 0.7 + setup_factor * 0.3)
-
         ml_confidence = _safe_float(metadata.get("ml_confidence"), 0.0) or 0.0
-        ml_prediction = _safe_float(metadata.get("ml_prediction"), None)
-        ml_direction = 0.0
-        if ml_prediction is not None:
-            if ml_prediction > 0.5:
-                ml_direction = 1.0
-            elif ml_prediction < 0.5:
-                ml_direction = -1.0
-        ml = _clip11(ml_direction * sign * min(1.0, ml_confidence))
-
         sentiment_score = _safe_float(
             metadata.get(
                 "sentiment_score",
@@ -245,7 +236,6 @@ class SignalJournal:
             ),
             0.0,
         ) or 0.0
-        sentiment = _clip11(sentiment_score * sign)
 
         whale_dominant = str(
             metadata.get("whale_dominant")
@@ -264,11 +254,6 @@ class SignalJournal:
             _safe_float(metadata.get("whale_bear_weight"), 0.0) or 0.0,
         )
         whale_ratio = max(0.0, min(1.0, whale_ratio or 0.0))
-        whale = 0.0
-        if whale_dominant in {"BUY", "SELL"}:
-            whale_sign = 1.0 if whale_dominant == "BUY" else -1.0
-            whale = _clip11(whale_sign * sign * whale_ratio)
-
         orderflow_imbalance = _safe_float(
             metadata.get(
                 "orderflow_imbalance",
@@ -276,21 +261,76 @@ class SignalJournal:
             ),
             0.0,
         ) or 0.0
-        order_flow = (
-            _clip11(orderflow_imbalance * sign)
-            if metadata.get("orderflow_applicable") is not False
-            else 0.0
-        )
+        return {
+            "metadata": metadata,
+            "market": market,
+            "intelligence": intelligence,
+            "execution": execution,
+            "policy": policy,
+            "governance": governance,
+            "memory": memory,
+            "structure_data": structure_data,
+            "broker_quality": broker_quality,
+            "market_microstructure": market_microstructure,
+            "breakdown": breakdown,
+            "sign": _direction_sign(self.direction),
+            "structure_bias": structure_bias,
+            "alignment_score": alignment_score,
+            "setup_quality": setup_quality,
+            "pullback_score": pullback_score,
+            "breakout_score": breakout_score,
+            "setup_signal": setup_signal,
+            "ml_confidence": ml_confidence,
+            "sentiment_score": sentiment_score,
+            "whale_dominant": whale_dominant,
+            "whale_ratio": whale_ratio,
+            "orderflow_imbalance": orderflow_imbalance,
+        }
 
-        breakdown = metadata.get("opportunity_breakdown")
-        if not isinstance(breakdown, dict):
-            breakdown = {}
-        broker_quality = metadata.get("broker_quality")
-        if not isinstance(broker_quality, dict):
-            broker_quality = {}
-        market_microstructure = metadata.get("market_microstructure")
-        if not isinstance(market_microstructure, dict):
-            market_microstructure = {}
+    @staticmethod
+    def _factor_market_structure(ctx: Dict[str, Any]) -> float:
+        bias_factor = 0.0
+        if ctx["structure_bias"] == "buy":
+            bias_factor = 1.0 if ctx["sign"] > 0 else -1.0
+        elif ctx["structure_bias"] == "sell":
+            bias_factor = 1.0 if ctx["sign"] < 0 else -1.0
+        setup_factor = _clip11(ctx["setup_signal"] * ctx["sign"])
+        market_structure = bias_factor * ctx["alignment_score"] * 0.7 + setup_factor * 0.3
+        return round(_clip11(market_structure), 4)
+
+    @staticmethod
+    def _factor_ml(ctx: Dict[str, Any]) -> float:
+        ml_prediction = _safe_float(ctx["metadata"].get("ml_prediction"), None)
+        ml_direction = 0.0
+        if ml_prediction is not None:
+            if ml_prediction > 0.5:
+                ml_direction = 1.0
+            elif ml_prediction < 0.5:
+                ml_direction = -1.0
+        return round(_clip11(ml_direction * ctx["sign"] * min(1.0, ctx["ml_confidence"])), 4)
+
+    @staticmethod
+    def _factor_sentiment(ctx: Dict[str, Any]) -> float:
+        return round(_clip11(ctx["sentiment_score"] * ctx["sign"]), 4)
+
+    @staticmethod
+    def _factor_whales(ctx: Dict[str, Any]) -> float:
+        if ctx["whale_dominant"] in {"BUY", "SELL"}:
+            whale_sign = 1.0 if ctx["whale_dominant"] == "BUY" else -1.0
+            return round(_clip11(whale_sign * ctx["sign"] * ctx["whale_ratio"]), 4)
+        return 0.0
+
+    @staticmethod
+    def _factor_order_flow(ctx: Dict[str, Any]) -> float:
+        if ctx["metadata"].get("orderflow_applicable") is False:
+            return 0.0
+        return round(_clip11(ctx["orderflow_imbalance"] * ctx["sign"]), 4)
+
+    @staticmethod
+    def _factor_risk(ctx: Dict[str, Any]) -> float:
+        breakdown = ctx["breakdown"]
+        market = ctx["market"]
+        execution = ctx["execution"]
         risk_components: List[float] = []
         if breakdown:
             for key in ("risk_reward", "spread", "portfolio_fit"):
@@ -306,219 +346,196 @@ class SignalJournal:
             liq_penalty = _safe_float((execution.data or {}).get("liq_penalty") if execution else None, None)
             if liq_penalty is not None:
                 risk_components.append(_clip11(1.0 - min(1.5, liq_penalty / 0.05)))
-        risk = round(sum(risk_components) / len(risk_components), 4) if risk_components else 0.0
+        return round(sum(risk_components) / len(risk_components), 4) if risk_components else 0.0
 
-        broker_factor = 0.0
+    @staticmethod
+    def _factor_broker_quality(ctx: Dict[str, Any]) -> float:
+        breakdown = ctx["breakdown"]
         if "broker_quality" in breakdown:
-            broker_factor = _signed_quality(breakdown.get("broker_quality"))
-        else:
-            broker_score = _safe_float(
-                metadata.get("broker_quality_score", broker_quality.get("score")),
-                None,
-            )
-            if broker_score is not None:
-                broker_factor = _signed_quality(broker_score)
+            return _signed_quality(breakdown.get("broker_quality"))
+        broker_score = _safe_float(
+            ctx["metadata"].get("broker_quality_score", ctx["broker_quality"].get("score")),
+            None,
+        )
+        if broker_score is not None:
+            return _signed_quality(broker_score)
+        return 0.0
 
-        micro_factor = 0.0
-        micro_alignment = _safe_float(metadata.get("microstructure_alignment"), None)
+    @staticmethod
+    def _factor_microstructure(ctx: Dict[str, Any]) -> float:
+        micro_alignment = _safe_float(ctx["metadata"].get("microstructure_alignment"), None)
         if micro_alignment is not None:
-            micro_factor = round(_clip11(micro_alignment), 4)
-        elif "microstructure" in breakdown:
-            micro_factor = _signed_quality(breakdown.get("microstructure"))
-        else:
-            micro_score = _safe_float(
-                metadata.get("microstructure_score", market_microstructure.get("score")),
-                None,
-            )
-            if micro_score is not None:
-                micro_factor = round(_clip11(micro_score * sign), 4)
+            return round(_clip11(micro_alignment), 4)
+        if "microstructure" in ctx["breakdown"]:
+            return _signed_quality(ctx["breakdown"].get("microstructure"))
+        micro_score = _safe_float(
+            ctx["metadata"].get("microstructure_score", ctx["market_microstructure"].get("score")),
+            None,
+        )
+        if micro_score is not None:
+            return round(_clip11(micro_score * ctx["sign"]), 4)
+        return 0.0
 
-        cross_asset_factor = 0.0
-        cross_alignment = _safe_float(metadata.get("cross_asset_alignment"), None)
+    @staticmethod
+    def _factor_cross_asset(ctx: Dict[str, Any]) -> float:
+        cross_alignment = _safe_float(ctx["metadata"].get("cross_asset_alignment"), None)
         if cross_alignment is not None:
-            cross_asset_factor = round(_clip11(cross_alignment), 4)
-        elif "cross_asset" in breakdown:
-            cross_asset_factor = _signed_quality(breakdown.get("cross_asset"))
+            return round(_clip11(cross_alignment), 4)
+        if "cross_asset" in ctx["breakdown"]:
+            return _signed_quality(ctx["breakdown"].get("cross_asset"))
+        return 0.0
 
+    @staticmethod
+    def _factor_policy(ctx: Dict[str, Any]) -> float:
         agent_score = _safe_float(
-            metadata.get("agent_score", (policy.data or {}).get("agent_score") if policy else None),
+            ctx["metadata"].get("agent_score", (ctx["policy"].data or {}).get("agent_score") if ctx["policy"] else None),
             None,
         )
-        policy_factor = _signed_quality(agent_score) if agent_score is not None else 0.0
+        return _signed_quality(agent_score) if agent_score is not None else 0.0
 
+    @staticmethod
+    def _factor_governance(ctx: Dict[str, Any]) -> float:
         governance_score = _safe_float(
-            metadata.get(
+            ctx["metadata"].get(
                 "governance_score",
-                (governance.data or {}).get("score") if governance else None,
+                (ctx["governance"].data or {}).get("score") if ctx["governance"] else None,
             ),
             None,
         )
-        governance_factor = 0.0
-        if governance_score is not None:
-            governance_factor = _clip11((governance_score - 50.0) / 50.0)
-            if governance and governance.decision == KILLED:
-                governance_factor = min(governance_factor, -0.3)
+        if governance_score is None:
+            return 0.0
+        governance_factor = _clip11((governance_score - 50.0) / 50.0)
+        if ctx["governance"] and ctx["governance"].decision == KILLED:
+            governance_factor = min(governance_factor, -0.3)
+        return round(governance_factor, 4)
 
-        memory = self._latest_entry("memory")
+    @staticmethod
+    def _factor_memory(ctx: Dict[str, Any]) -> float:
         memory_edge = _safe_float(
-            metadata.get(
+            ctx["metadata"].get(
                 "memory_edge",
-                (memory.data or {}).get("memory_edge") if memory else None,
+                (ctx["memory"].data or {}).get("memory_edge") if ctx["memory"] else None,
             ),
             None,
         )
-        memory_factor = round(_clip11(memory_edge), 4) if memory_edge is not None else 0.0
+        return round(_clip11(memory_edge), 4) if memory_edge is not None else 0.0
 
+    def _extract_factor_attribution(self, signal=None) -> Dict[str, float]:
+        ctx = self._signal_context(signal)
         return {
-            "market_structure": round(market_structure, 4),
-            "ml": round(ml, 4),
-            "sentiment": round(sentiment, 4),
-            "whales": round(whale, 4),
-            "order_flow": round(order_flow, 4),
-            "broker_quality": round(broker_factor, 4),
-            "microstructure": round(micro_factor, 4),
-            "cross_asset": round(cross_asset_factor, 4),
-            "memory": round(memory_factor, 4),
-            "policy": round(policy_factor, 4),
-            "governance": round(governance_factor, 4),
-            "risk": round(risk, 4),
+            "market_structure": self._factor_market_structure(ctx),
+            "ml": self._factor_ml(ctx),
+            "sentiment": self._factor_sentiment(ctx),
+            "whales": self._factor_whales(ctx),
+            "order_flow": self._factor_order_flow(ctx),
+            "broker_quality": self._factor_broker_quality(ctx),
+            "microstructure": self._factor_microstructure(ctx),
+            "cross_asset": self._factor_cross_asset(ctx),
+            "memory": self._factor_memory(ctx),
+            "policy": self._factor_policy(ctx),
+            "governance": self._factor_governance(ctx),
+            "risk": self._factor_risk(ctx),
         }
 
-    def _extract_setup_fingerprint(self, signal=None) -> Dict[str, Any]:
-        metadata = dict(getattr(signal, "metadata", {}) or {})
-        market = self._latest_entry("market")
-        intelligence = self._latest_entry("intelligence")
-        broker_quality = metadata.get("broker_quality")
-        if not isinstance(broker_quality, dict):
-            broker_quality = {}
-        market_microstructure = metadata.get("market_microstructure")
-        if not isinstance(market_microstructure, dict):
-            market_microstructure = {}
-
-        structure_data = metadata.get("market_structure")
-        if not isinstance(structure_data, dict):
-            structure_data = {}
-        if not structure_data and market and isinstance(market.data.get("market_structure"), dict):
-            structure_data = dict(market.data.get("market_structure") or {})
-
-        sentiment_score = _safe_float(
-            metadata.get(
-                "sentiment_score",
-                (intelligence.data or {}).get("sentiment_score") if intelligence else 0.0,
-            ),
-            0.0,
-        ) or 0.0
-        whale_dominant = str(
-            metadata.get("whale_dominant")
-            or ((intelligence.data or {}).get("whale_dominant") if intelligence else "")
-            or ""
-        ).upper()
-        whale_ratio = _safe_float(
-            metadata.get(
-                "whale_ratio",
-                (intelligence.data or {}).get("whale_ratio") if intelligence else None,
-            ),
-            0.0,
-        ) or 0.0
-        orderflow_imbalance = _safe_float(
-            metadata.get(
-                "orderflow_imbalance",
-                (market.data or {}).get("orderflow_imbalance") if market else None,
-            ),
-            0.0,
-        ) or 0.0
-
-        pullback_score = _safe_float(
-            metadata.get("pullback_score", structure_data.get("pullback_score")),
-            0.0,
-        ) or 0.0
-        breakout_score = _safe_float(
-            metadata.get("breakout_score", structure_data.get("breakout_score")),
-            0.0,
-        ) or 0.0
-
+    @staticmethod
+    def _setup_style(ctx: Dict[str, Any]) -> str:
+        pullback_score = ctx["pullback_score"]
+        breakout_score = ctx["breakout_score"]
         if abs(breakout_score) >= abs(pullback_score) and abs(breakout_score) >= 0.2:
-            setup_style = "breakout"
-        elif abs(pullback_score) >= 0.2:
-            setup_style = "pullback"
-        else:
-            setup_style = "mixed"
+            return "breakout"
+        if abs(pullback_score) >= 0.2:
+            return "pullback"
+        return "mixed"
 
-        if sentiment_score >= 0.2:
-            sentiment_bucket = "bullish"
-        elif sentiment_score <= -0.2:
-            sentiment_bucket = "bearish"
-        else:
-            sentiment_bucket = "neutral"
+    @staticmethod
+    def _setup_sentiment_bucket(ctx: Dict[str, Any]) -> str:
+        if ctx["sentiment_score"] >= 0.2:
+            return "bullish"
+        if ctx["sentiment_score"] <= -0.2:
+            return "bearish"
+        return "neutral"
 
-        if whale_dominant in {"BUY", "SELL"} and whale_ratio >= 0.55:
-            whale_bucket = whale_dominant.lower()
-        else:
-            whale_bucket = "neutral"
+    @staticmethod
+    def _setup_whale_bucket(ctx: Dict[str, Any]) -> str:
+        if ctx["whale_dominant"] in {"BUY", "SELL"} and ctx["whale_ratio"] >= 0.55:
+            return ctx["whale_dominant"].lower()
+        return "neutral"
 
-        if orderflow_imbalance >= 0.2:
-            orderflow_bucket = "buy_pressure"
-        elif orderflow_imbalance <= -0.2:
-            orderflow_bucket = "sell_pressure"
-        else:
-            orderflow_bucket = "balanced"
+    @staticmethod
+    def _setup_orderflow_bucket(ctx: Dict[str, Any]) -> str:
+        if ctx["orderflow_imbalance"] >= 0.2:
+            return "buy_pressure"
+        if ctx["orderflow_imbalance"] <= -0.2:
+            return "sell_pressure"
+        return "balanced"
 
-        regime = str(metadata.get("regime") or "")
-        if not regime and market:
-            regime = str((market.data or {}).get("regime") or "")
+    @staticmethod
+    def _setup_regime(ctx: Dict[str, Any]) -> str:
+        regime = str(ctx["metadata"].get("regime") or "")
+        if not regime and ctx["market"]:
+            regime = str((ctx["market"].data or {}).get("regime") or "")
+        return regime
 
-        session = str(metadata.get("session") or "")
-        if not session and market:
-            session = str((market.data or {}).get("session") or "")
+    @staticmethod
+    def _setup_session(ctx: Dict[str, Any]) -> str:
+        session = str(ctx["metadata"].get("session") or "")
+        if not session and ctx["market"]:
+            session = str((ctx["market"].data or {}).get("session") or "")
+        return session
 
-        depth_mode = "top_of_book"
-        if bool(metadata.get("depth_available", market_microstructure.get("depth_available"))):
-            depth_mode = "true_depth"
-        elif bool(metadata.get("synthetic_depth_available", market_microstructure.get("synthetic_depth_available"))):
-            depth_mode = "synthetic_depth"
+    @staticmethod
+    def _setup_depth_mode(ctx: Dict[str, Any]) -> str:
+        if bool(ctx["metadata"].get("depth_available", ctx["market_microstructure"].get("depth_available"))):
+            return "true_depth"
+        if bool(ctx["metadata"].get("synthetic_depth_available", ctx["market_microstructure"].get("synthetic_depth_available"))):
+            return "synthetic_depth"
+        return "top_of_book"
+
+    def _extract_setup_fingerprint(self, signal=None) -> Dict[str, Any]:
+        ctx = self._signal_context(signal)
 
         return {
-            "regime": regime,
+            "regime": self._setup_regime(ctx),
             "structure_bias": str(
-                metadata.get("structure_bias")
-                or structure_data.get("structure_bias")
+                ctx["metadata"].get("structure_bias")
+                or ctx["structure_data"].get("structure_bias")
                 or "neutral"
             ).lower(),
             "alignment_score": round(
-                _safe_float(metadata.get("alignment_score", structure_data.get("alignment_score")), 0.0) or 0.0,
+                _safe_float(ctx["metadata"].get("alignment_score", ctx["structure_data"].get("alignment_score")), 0.0) or 0.0,
                 4,
             ),
             "setup_quality": round(
-                _safe_float(metadata.get("setup_quality", structure_data.get("setup_quality")), 0.0) or 0.0,
+                _safe_float(ctx["metadata"].get("setup_quality", ctx["structure_data"].get("setup_quality")), 0.0) or 0.0,
                 4,
             ),
             "volatility_state": str(
-                metadata.get("volatility_state")
-                or structure_data.get("volatility_state")
+                ctx["metadata"].get("volatility_state")
+                or ctx["structure_data"].get("volatility_state")
                 or "unknown"
             ),
-            "setup_style": setup_style,
-            "sentiment_bucket": sentiment_bucket,
-            "whale_bucket": whale_bucket,
-            "orderflow_bucket": orderflow_bucket,
-            "session": session,
-            "primary_provider": str(broker_quality.get("primary_provider", "") or ""),
-            "comparison_provider": str(broker_quality.get("comparison_provider", "") or ""),
+            "setup_style": self._setup_style(ctx),
+            "sentiment_bucket": self._setup_sentiment_bucket(ctx),
+            "whale_bucket": self._setup_whale_bucket(ctx),
+            "orderflow_bucket": self._setup_orderflow_bucket(ctx),
+            "session": self._setup_session(ctx),
+            "primary_provider": str(ctx["broker_quality"].get("primary_provider", "") or ""),
+            "comparison_provider": str(ctx["broker_quality"].get("comparison_provider", "") or ""),
             "broker_agreement_state": str(
-                metadata.get("broker_agreement_state", broker_quality.get("quote_agreement_state", "")) or ""
+                ctx["metadata"].get("broker_agreement_state", ctx["broker_quality"].get("quote_agreement_state", "")) or ""
             ),
             "quote_quality_state": str(
-                metadata.get("broker_quote_quality_state", broker_quality.get("quote_quality_state", "")) or ""
+                ctx["metadata"].get("broker_quote_quality_state", ctx["broker_quality"].get("quote_quality_state", "")) or ""
             ),
             "spread_regime": str(
-                metadata.get("broker_spread_regime", broker_quality.get("spread_regime", "")) or ""
+                ctx["metadata"].get("broker_spread_regime", ctx["broker_quality"].get("spread_regime", "")) or ""
             ),
-            "depth_mode": depth_mode,
+            "depth_mode": self._setup_depth_mode(ctx),
             "microstructure_source": str(
-                metadata.get("microstructure_source", market_microstructure.get("microstructure_source", "")) or ""
+                ctx["metadata"].get("microstructure_source", ctx["market_microstructure"].get("microstructure_source", "")) or ""
             ),
             "microstructure_pressure": str(
-                market_microstructure.get("pressure_direction", metadata.get("micro_pressure_direction", "")) or ""
+                ctx["market_microstructure"].get("pressure_direction", ctx["metadata"].get("micro_pressure_direction", "")) or ""
             ).upper(),
         }
 
@@ -1080,27 +1097,8 @@ class SignalJournal:
         label = self._sentence(self._humanize_token(entry.name) or "review")
         return f"- {label}: {self._sentence(reason)}."
 
-    def to_telegram(self, signal=None) -> str:
-        """
-        Format the full journal as a Telegram Markdown message.
-        Called by the signal reporter after the decision cycle completes.
-        """
-        survived = self.final_decision() == "SURVIVED"
-        direction = self._escape_markdown(self.direction)
-        asset = self._escape_markdown(self.asset)
-
-        if survived:
-            header = f"🔔 *NEW SIGNAL — {asset} {direction}*"
-        else:
-            kill   = self.kill_entry()
-            reason = self._escape_markdown(kill.reason if kill else 'unknown')
-            header = (
-                f"💀 *SIGNAL KILLED — {asset} {direction}*\n"
-                f"_Reason: {reason}_"
-            )
-
-        summary = self.summary(signal)
-        lines = [header, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+    def _telegram_markdown_summary_lines(self, summary: Dict[str, Any], survived: bool) -> List[str]:
+        lines: List[str] = []
 
         if summary.get("real_sources_valid") is not None and summary.get("real_sources_required") is not None:
             lines.append(
@@ -1156,11 +1154,14 @@ class SignalJournal:
         if factor_parts:
             lines.append(f"*Factors:* `{'  '.join(factor_parts)}`")
 
+        return lines
+
+    def _telegram_markdown_entry_lines(self) -> List[str]:
+        lines: List[str] = []
         for entry in self.entries:
             emoji = entry.emoji()
-            name  = self._escape_markdown(entry.name.upper().replace("_", " "))
+            name = self._escape_markdown(entry.name.upper().replace("_", " "))
 
-            # Confidence delta display
             if entry.conf_delta > 0:
                 conf_str = f"conf {entry.conf_before:.2f} → {entry.conf_after:.2f} ⬆"
             elif entry.conf_delta < 0:
@@ -1171,9 +1172,8 @@ class SignalJournal:
             reason_str = f"  _{self._escape_markdown(entry.reason)}_" if entry.reason else ""
             lines.append(f"{emoji} *{name}*   {conf_str}{reason_str}")
 
-            # Show phase data inline if available
             if entry.data:
-                data_parts = []
+                data_parts: List[str] = []
                 for k, v in entry.data.items():
                     if isinstance(v, float):
                         data_parts.append(f"{self._escape_markdown(k)}={v:.3f}")
@@ -1181,72 +1181,43 @@ class SignalJournal:
                         data_parts.append(f"{self._escape_markdown(k)}={self._escape_markdown(v)}")
                 if data_parts:
                     lines.append(f"   `{'  '.join(data_parts[:4])}`")
+        return lines
 
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    def _telegram_markdown_execution_lines(self, signal: Any) -> List[str]:
+        if signal is None:
+            return []
 
-        # Execution details for surviving signals
-        if survived and signal:
-            snapshot = self._execution_snapshot(signal)
-            entry_p = float(snapshot["entry_price"])
-            sl = float(snapshot["stop_loss"])
-            conf = float(snapshot["confidence"])
-            size = float(snapshot["position_size"])
-            rr = float(snapshot["risk_reward"])
-            first_target = float(snapshot["first_target"])
-            runner_target = float(snapshot["runner_target"])
-            first_rr = float(snapshot["first_rr"])
-            runner_rr = float(snapshot["runner_rr"])
+        snapshot = self._execution_snapshot(signal)
+        entry_p = float(snapshot["entry_price"])
+        sl = float(snapshot["stop_loss"])
+        conf = float(snapshot["confidence"])
+        size = float(snapshot["position_size"])
+        rr = float(snapshot["risk_reward"])
+        first_target = float(snapshot["first_target"])
+        runner_target = float(snapshot["runner_target"])
+        first_rr = float(snapshot["first_rr"])
+        runner_rr = float(snapshot["runner_rr"])
 
-            executing_lines = [
-                "🚀 *EXECUTING*",
-                f"   Entry: `{entry_p:.5f}`",
-                f"   SL:    `{sl:.5f}`",
-            ]
-            if first_target:
-                label = "TP1" if runner_target and abs(runner_target - first_target) > 1e-9 else "TP"
-                executing_lines.append(f"   {label}:    `{first_target:.5f}`")
-            if runner_target and abs(runner_target - first_target) > 1e-9:
-                executing_lines.append(f"   Run:   `{runner_target:.5f}`")
-                executing_lines.append(f"   R:R:   TP1 {first_rr:.1f}:1 | Run {runner_rr:.1f}:1")
-            else:
-                executing_lines.append(f"   R:R:   {rr:.1f}:1")
-            executing_lines.extend([
-                f"   Conf:  {conf:.0%}",
-                f"   Size:  {size:.4f}",
-            ])
-            lines.append("\n".join(executing_lines))
-
-        lines.append(f"\n_Decision engine: {self.total_elapsed_ms():.0f}ms_")
-        return "\n".join(lines)
-
-    def to_telegram_plain(self, signal=None) -> str:
-        """Plain-text Telegram rendering for runtime alerts.
-        This avoids Markdown entity failures in long journal messages.
-        """
-        survived = self.final_decision() == "SURVIVED"
-        summary = self.summary(signal)
-        side = "BUY" if str(self.direction or "").upper() == "BUY" else "SELL"
-        header = f"{self.asset} {side} setup"
-        direction_word = side.lower()
-        lines = [header]
-
-        confidence = summary.get("final_confidence")
-        if survived:
-            entry_p = self._format_price(getattr(signal, "entry_price", 0.0) if signal else 0.0)
-            intro = f"The bot is preparing a {direction_word} trade on {self.asset}"
-            if entry_p:
-                intro += f" near {entry_p}"
-            intro += "."
-            lines.append(intro)
-            if confidence is not None:
-                lines.append(f"Overall confidence is {self._format_pct(confidence)}, and the setup passed all live checks.")
-            else:
-                lines.append("The setup passed all live checks and is ready to execute.")
+        executing_lines = [
+            "🚀 *EXECUTING*",
+            f"   Entry: `{entry_p:.5f}`",
+            f"   SL:    `{sl:.5f}`",
+        ]
+        if first_target:
+            label = "TP1" if runner_target and abs(runner_target - first_target) > 1e-9 else "TP"
+            executing_lines.append(f"   {label}:    `{first_target:.5f}`")
+        if runner_target and abs(runner_target - first_target) > 1e-9:
+            executing_lines.append(f"   Run:   `{runner_target:.5f}`")
+            executing_lines.append(f"   R:R:   TP1 {first_rr:.1f}:1 | Run {runner_rr:.1f}:1")
         else:
-            lines.append("The bot reviewed this setup, but it was blocked before execution.")
-            if confidence is not None:
-                lines.append(f"Final reviewed confidence was {self._format_pct(confidence)}.")
+            executing_lines.append(f"   R:R:   {rr:.1f}:1")
+        executing_lines.extend([
+            f"   Conf:  {conf:.0%}",
+            f"   Size:  {size:.4f}",
+        ])
+        return ["\n".join(executing_lines)]
 
+    def _telegram_plain_factor_notes(self, summary: Dict[str, Any]) -> str:
         factor_notes: List[str] = []
         positive_factor = str(summary.get("top_positive_factor") or "").strip()
         negative_factor = str(summary.get("top_negative_factor") or "").strip()
@@ -1255,8 +1226,49 @@ class SignalJournal:
         if negative_factor:
             factor_notes.append(f"the main caution came from {self._factor_label(negative_factor)}")
         if factor_notes:
-            lines.append(f"{self._sentence(self._join_clauses(factor_notes))}.")
+            return f"{self._sentence(self._join_clauses(factor_notes))}."
+        return ""
 
+    def _telegram_plain_intro_lines(
+        self,
+        signal: Any,
+        summary: Dict[str, Any],
+        survived: bool,
+        side: str,
+        direction_word: str,
+    ) -> List[str]:
+        lines = [f"{self.asset} {side} setup"]
+        confidence = summary.get("final_confidence")
+
+        if survived:
+            entry_p = self._format_price(getattr(signal, "entry_price", 0.0) if signal else 0.0)
+            intro = f"The bot is preparing a {direction_word} trade on {self.asset}"
+            if entry_p:
+                intro += f" near {entry_p}"
+            intro += "."
+            lines.append(intro)
+            if confidence is not None:
+                lines.append(
+                    f"Overall confidence is {self._format_pct(confidence)}, and the setup passed all live checks."
+                )
+            else:
+                lines.append("The setup passed all live checks and is ready to execute.")
+        else:
+            lines.append("The bot reviewed this setup, but it was blocked before execution.")
+            if confidence is not None:
+                lines.append(f"Final reviewed confidence was {self._format_pct(confidence)}.")
+
+        factor_note = self._telegram_plain_factor_notes(summary)
+        if factor_note:
+            lines.append(factor_note)
+        return lines
+
+    def _telegram_plain_stage_groups(
+        self,
+        signal=None,
+        summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, List[str]]:
+        summary = summary or {}
         context_lines: List[str] = []
         trust_lines: List[str] = []
         execution_lines: List[str] = []
@@ -1270,58 +1282,124 @@ class SignalJournal:
                     context_lines.append(stage_line)
                 elif name in {"policy", "governance", "research_validation"}:
                     trust_lines.append(stage_line)
-                elif name in {"execution"}:
+                elif name == "execution":
                     execution_lines.append(stage_line)
                 else:
                     other_lines.append(stage_line)
 
+        return {
+            "context_lines": context_lines,
+            "trust_lines": trust_lines,
+            "execution_lines": execution_lines,
+            "other_lines": other_lines,
+        }
+
+    def _telegram_plain_section_lines(
+        self,
+        survived: bool,
+        summary: Dict[str, Any],
+        groups: Dict[str, List[str]],
+    ) -> List[str]:
+        context_lines = groups["context_lines"]
+        trust_lines = groups["trust_lines"]
+        other_lines = groups["other_lines"]
+
         if survived:
+            lines: List[str] = []
             if context_lines:
                 lines.extend(["", "What the bot is seeing right now:"])
                 lines.extend(context_lines)
             if trust_lines:
                 lines.extend(["", "Why the bot trusts this setup:"])
                 lines.extend(trust_lines)
-        else:
-            lines.extend(["", "Why it was blocked:"])
-            if summary.get("kill_reason"):
-                lines.append(f"- Main reason: {self._sentence(self._humanize_reason(summary['kill_reason']))}.")
-            if context_lines or trust_lines or other_lines:
-                lines.extend(context_lines + trust_lines + other_lines)
+            return lines
 
-        if survived and signal:
-            snapshot = self._execution_snapshot(signal)
-            entry_p = float(snapshot["entry_price"])
-            sl = float(snapshot["stop_loss"])
-            conf = float(snapshot["confidence"])
-            size = float(snapshot["position_size"])
-            rr = float(snapshot["risk_reward"])
-            first_target = float(snapshot["first_target"])
-            runner_target = float(snapshot["runner_target"])
-            first_rr = float(snapshot["first_rr"])
-            runner_rr = float(snapshot["runner_rr"])
+        lines = ["", "Why it was blocked:"]
+        if summary.get("kill_reason"):
+            lines.append(f"- Main reason: {self._sentence(self._humanize_reason(summary['kill_reason']))}.")
+        if context_lines or trust_lines or other_lines:
+            lines.extend(context_lines + trust_lines + other_lines)
+        return lines
 
-            lines.extend([
-                "",
-                "How the trade will be managed:",
-            ])
-            lines.extend(execution_lines)
-            lines.append(f"- Planned entry: {self._format_price(entry_p)}")
-            lines.append(f"- Protective stop: {self._format_price(sl)}")
-            if first_target:
-                lines.append(f"- First main target: {self._format_price(first_target)}")
-            if runner_target and abs(runner_target - first_target) > 1e-9:
-                lines.append(f"- Runner target: {self._format_price(runner_target)}")
-                lines.append(f"- Reward to risk: TP1 {first_rr:.1f}:1 | Runner {runner_rr:.1f}:1")
-            else:
-                lines.append(f"- Reward to risk: {rr:.1f}:1")
-            lines.append(f"- Position size: {size:.4f}")
-            lines.append(f"- Confidence at execution: {conf:.0%}")
+    def _telegram_plain_execution_block(
+        self,
+        signal: Any,
+        groups: Dict[str, List[str]],
+    ) -> List[str]:
+        if signal is None:
+            return []
 
-        lines.extend([
+        snapshot = self._execution_snapshot(signal)
+        entry_p = float(snapshot["entry_price"])
+        sl = float(snapshot["stop_loss"])
+        conf = float(snapshot["confidence"])
+        size = float(snapshot["position_size"])
+        rr = float(snapshot["risk_reward"])
+        first_target = float(snapshot["first_target"])
+        runner_target = float(snapshot["runner_target"])
+        first_rr = float(snapshot["first_rr"])
+        runner_rr = float(snapshot["runner_rr"])
+
+        lines = [
             "",
-            f"Review time: {self.total_elapsed_ms() / 1000.0:.1f}s",
-        ])
+            "How the trade will be managed:",
+        ]
+        lines.extend(groups["execution_lines"])
+        lines.append(f"- Planned entry: {self._format_price(entry_p)}")
+        lines.append(f"- Protective stop: {self._format_price(sl)}")
+        if first_target:
+            lines.append(f"- First main target: {self._format_price(first_target)}")
+        if runner_target and abs(runner_target - first_target) > 1e-9:
+            lines.append(f"- Runner target: {self._format_price(runner_target)}")
+            lines.append(f"- Reward to risk: TP1 {first_rr:.1f}:1 | Runner {runner_rr:.1f}:1")
+        else:
+            lines.append(f"- Reward to risk: {rr:.1f}:1")
+        lines.append(f"- Position size: {size:.4f}")
+        lines.append(f"- Confidence at execution: {conf:.0%}")
+        return lines
+
+    def to_telegram(self, signal=None) -> str:
+        """
+        Format the full journal as a Telegram Markdown message.
+        Called by the signal reporter after the decision cycle completes.
+        """
+        survived = self.final_decision() == "SURVIVED"
+        direction = self._escape_markdown(self.direction)
+        asset = self._escape_markdown(self.asset)
+
+        if survived:
+            header = f"🔔 *NEW SIGNAL — {asset} {direction}*"
+        else:
+            kill = self.kill_entry()
+            reason = self._escape_markdown(kill.reason if kill else 'unknown')
+            header = (
+                f"💀 *SIGNAL KILLED — {asset} {direction}*\n"
+                f"_Reason: {reason}_"
+            )
+
+        summary = self.summary(signal)
+        lines = [header, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        lines.extend(self._telegram_markdown_summary_lines(summary, survived))
+        lines.extend(self._telegram_markdown_entry_lines())
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.extend(self._telegram_markdown_execution_lines(signal) if survived else [])
+        lines.append(f"\n_Decision engine: {self.total_elapsed_ms():.0f}ms_")
+        return "\n".join(lines)
+
+    def to_telegram_plain(self, signal=None) -> str:
+        """Plain-text Telegram rendering for runtime alerts.
+        This avoids Markdown entity failures in long journal messages.
+        """
+        survived = self.final_decision() == "SURVIVED"
+        summary = self.summary(signal)
+        side = "BUY" if str(self.direction or "").upper() == "BUY" else "SELL"
+        direction_word = side.lower()
+        lines = self._telegram_plain_intro_lines(signal, summary, survived, side, direction_word)
+        groups = self._telegram_plain_stage_groups(signal=signal, summary=summary)
+        lines.extend(self._telegram_plain_section_lines(survived, summary, groups))
+        if survived and signal:
+            lines.extend(self._telegram_plain_execution_block(signal, groups))
+        lines.extend(["", f"Review time: {self.total_elapsed_ms() / 1000.0:.1f}s"])
         return "\n".join(lines)
 
     def to_dict(self, signal=None) -> Dict[str, Any]:

@@ -141,124 +141,138 @@ def _post_run_failure_message(
 
 
 def _normalise_many(exchange: str, data: dict) -> List[dict]:
-    events: List[dict] = []
     try:
         if exchange == "binance":
-            # Binance wraps in {"stream":"...","data":{...}} for combined streams
-            inner = data.get("data", data)
-            ev = inner.get("e", "")
-            if ev == "24hrTicker":
-                events.append(
-                    {
-                        "type":     "MARKET_DATA_UPDATE",
-                        "exchange": exchange,
-                        "asset":    inner["s"],
-                        "price":    float(inner["c"]),
-                        "volume":   float(inner["v"]),
-                        "change":   float(inner["P"]),
-                        "ts":       inner["E"],
-                    }
-                )
-            elif ev == "depthUpdate" or (not ev and "lastUpdateId" in inner):
-                events.append(
-                    {
-                        "type":     "ORDER_BOOK_UPDATE",
-                        "exchange": exchange,
-                        "asset":    inner["s"],
-                        "bids":     inner.get("b", []),
-                        "asks":     inner.get("a", []),
-                        "ts":       inner["E"],
-                    }
-                )
-            elif ev == "aggTrade":
-                events.append(
-                    {
-                        "type":     "TRADE_UPDATE",
-                        "exchange": exchange,
-                        "asset":    inner["s"],
-                        "price":    float(inner["p"]),
-                        "qty":      float(inner["q"]),
-                        "side":     "SELL" if inner.get("m") else "BUY",
-                        "ts":       inner["T"],
-                    }
-                )
-
+            return _normalise_binance_events(data, exchange)
         elif exchange == "bybit":
-            topic = data.get("topic", "")
-            d = data.get("data", {})
-
-            if topic.startswith("tickers."):
-                events.append(
-                    {
-                        "type":     "MARKET_DATA_UPDATE",
-                        "exchange": exchange,
-                        "asset":    d.get("symbol", ""),
-                        "price":    float(d.get("lastPrice", 0) or 0),
-                        "volume":   float(d.get("volume24h", 0) or 0),
-                        "change":   float(d.get("price24hPcnt", 0) or 0),
-                        "ts":       int(time.time() * 1000),
-                    }
-                )
-            elif topic.startswith("orderbook."):
-                events.append(
-                    {
-                        "type":     "ORDER_BOOK_UPDATE",
-                        "exchange": exchange,
-                        "asset":    d.get("s", ""),
-                        "bids":     d.get("b", []),
-                        "asks":     d.get("a", []),
-                        "ts":       int(time.time() * 1000),
-                    }
-                )
-            elif topic.startswith("allLiquidation."):
-                rows = d if isinstance(d, list) else [d]
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    events.append(
-                        {
-                            "type":     "LIQUIDATION_EVENT",
-                            "exchange": exchange,
-                            "asset":    row.get("s", ""),
-                            "side":     row.get("S", ""),
-                            "qty":      float(row.get("v", 0) or 0),
-                            "price":    float(row.get("p", 0) or 0),
-                            "ts":       int(row.get("T", 0) or int(time.time() * 1000)),
-                        }
-                    )
-
+            return _normalise_bybit_events(data, exchange)
         elif exchange == "okx":
-            arg = data.get("arg", {})
-            rows = data.get("data", [{}])
-            ch = arg.get("channel", "")
-            if ch == "tickers" and rows:
-                r = rows[0]
-                events.append(
-                    {
-                        "type":     "MARKET_DATA_UPDATE",
-                        "exchange": exchange,
-                        "asset":    r.get("instId", ""),
-                        "price":    float(r.get("last", 0) or 0),
-                        "volume":   float(r.get("vol24h", 0) or 0),
-                        "change":   float(r.get("sodUtc8", 0) or 0),
-                        "ts":       int(time.time() * 1000),
-                    }
-                )
-            elif ch == "books5" and rows:
-                r = rows[0]
-                events.append(
-                    {
-                        "type":     "ORDER_BOOK_UPDATE",
-                        "exchange": exchange,
-                        "asset":    arg.get("instId", ""),
-                        "bids":     r.get("bids", []),
-                        "asks":     r.get("asks", []),
-                        "ts":       int(time.time() * 1000),
-                    }
-                )
+            return _normalise_okx_events(data, exchange)
     except Exception as exc:
         logger.debug(f"[ExStream] Normalise error ({exchange}): {exc}")
+    return []
 
+
+def _normalise_binance_events(data: dict, exchange: str) -> List[dict]:
+    events: List[dict] = []
+    # Binance wraps combined streams in {"stream":"...","data":{...}}.
+    inner = data.get("data", data)
+    ev = inner.get("e", "")
+    if ev == "24hrTicker":
+        events.append(
+            {
+                "type": "MARKET_DATA_UPDATE",
+                "exchange": exchange,
+                "asset": inner["s"],
+                "price": float(inner["c"]),
+                "volume": float(inner["v"]),
+                "change": float(inner["P"]),
+                "ts": inner["E"],
+            }
+        )
+    elif ev == "depthUpdate" or (not ev and "lastUpdateId" in inner):
+        events.append(
+            {
+                "type": "ORDER_BOOK_UPDATE",
+                "exchange": exchange,
+                "asset": inner["s"],
+                "bids": inner.get("b", []),
+                "asks": inner.get("a", []),
+                "ts": inner["E"],
+            }
+        )
+    elif ev == "aggTrade":
+        events.append(
+            {
+                "type": "TRADE_UPDATE",
+                "exchange": exchange,
+                "asset": inner["s"],
+                "price": float(inner["p"]),
+                "qty": float(inner["q"]),
+                "side": "SELL" if inner.get("m") else "BUY",
+                "ts": inner["T"],
+            }
+        )
+    return events
+
+
+def _normalise_bybit_events(data: dict, exchange: str) -> List[dict]:
+    events: List[dict] = []
+    topic = data.get("topic", "")
+    d = data.get("data", {})
+
+    if topic.startswith("tickers."):
+        events.append(
+            {
+                "type": "MARKET_DATA_UPDATE",
+                "exchange": exchange,
+                "asset": d.get("symbol", ""),
+                "price": float(d.get("lastPrice", 0) or 0),
+                "volume": float(d.get("volume24h", 0) or 0),
+                "change": float(d.get("price24hPcnt", 0) or 0),
+                "ts": int(time.time() * 1000),
+            }
+        )
+    elif topic.startswith("orderbook."):
+        events.append(
+            {
+                "type": "ORDER_BOOK_UPDATE",
+                "exchange": exchange,
+                "asset": d.get("s", ""),
+                "bids": d.get("b", []),
+                "asks": d.get("a", []),
+                "ts": int(time.time() * 1000),
+            }
+        )
+    elif topic.startswith("allLiquidation."):
+        rows = d if isinstance(d, list) else [d]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            events.append(
+                {
+                    "type": "LIQUIDATION_EVENT",
+                    "exchange": exchange,
+                    "asset": row.get("s", ""),
+                    "side": row.get("S", ""),
+                    "qty": float(row.get("v", 0) or 0),
+                    "price": float(row.get("p", 0) or 0),
+                    "ts": int(row.get("T", 0) or int(time.time() * 1000)),
+                }
+            )
+    return events
+
+
+def _normalise_okx_events(data: dict, exchange: str) -> List[dict]:
+    events: List[dict] = []
+    arg = data.get("arg", {})
+    rows = data.get("data", [{}])
+    channel = arg.get("channel", "")
+    if channel == "tickers" and rows:
+        row = rows[0]
+        events.append(
+            {
+                "type": "MARKET_DATA_UPDATE",
+                "exchange": exchange,
+                "asset": row.get("instId", ""),
+                "price": float(row.get("last", 0) or 0),
+                "volume": float(row.get("vol24h", 0) or 0),
+                "change": float(row.get("sodUtc8", 0) or 0),
+                "ts": int(time.time() * 1000),
+            }
+        )
+    elif channel == "books5" and rows:
+        row = rows[0]
+        events.append(
+            {
+                "type": "ORDER_BOOK_UPDATE",
+                "exchange": exchange,
+                "asset": arg.get("instId", ""),
+                "bids": row.get("bids", []),
+                "asks": row.get("asks", []),
+                "ts": int(time.time() * 1000),
+            }
+        )
     return events
 
 
@@ -322,76 +336,33 @@ class _ExchangeConnection:
         sub = SUBSCRIPTIONS[self.exchange]
         heartbeat_payload = _APP_HEARTBEAT_PAYLOADS.get(self.exchange)
         heartbeat_interval = _APP_HEARTBEAT_INTERVALS.get(self.exchange, 20)
-        session_started_at = 0.0
+        session_started_at = {"value": 0.0}
         last_error: Dict[str, Optional[str]] = {"message": None}
         close_state: Dict[str, object] = {"code": None, "msg": None}
         heartbeat_stop = threading.Event()
-        heartbeat_thread: Optional[threading.Thread] = None
-
-        def _start_heartbeat(ws) -> None:
-            nonlocal heartbeat_thread
-            if not heartbeat_payload or heartbeat_thread is not None:
-                return
-
-            def _loop() -> None:
-                while self._running.is_set() and not heartbeat_stop.wait(heartbeat_interval):
-                    sock = getattr(ws, "sock", None)
-                    if not sock or not getattr(sock, "connected", False):
-                        return
-                    try:
-                        ws.send(json.dumps(heartbeat_payload))
-                    except Exception as exc:
-                        last_error["message"] = f"heartbeat failed: {exc}"
-                        try:
-                            ws.close()
-                        except Exception:
-                            pass
-                        return
-
-            heartbeat_thread = threading.Thread(
-                target=_loop,
-                name=f"ExStreamHeartbeat-{self.exchange}",
-                daemon=True,
-            )
-            heartbeat_thread.start()
+        heartbeat_thread: Dict[str, Optional[threading.Thread]] = {"value": None}
 
         def on_open(ws):
-            nonlocal session_started_at
-            self._degraded = False
-            self._delay = _RECONNECT_DELAY_SECS
-            session_started_at = time.monotonic()
-            logger.info(f"[ExStream] {self.exchange} connected")
-            ws.send(json.dumps(sub))
-            _start_heartbeat(ws)
+            self._ws_on_open(
+                ws,
+                self.exchange,
+                sub,
+                heartbeat_payload,
+                heartbeat_interval,
+                heartbeat_stop,
+                heartbeat_thread,
+                session_started_at,
+                last_error,
+            )
 
         def on_message(ws, raw):
-            try:
-                data = json.loads(raw)
-                stream_error = _stream_error(self.exchange, data)
-                if stream_error:
-                    last_error["message"] = stream_error
-                    ws.close()
-                    return
-                if _is_control_message(self.exchange, data):
-                    return
-                for event in _normalise_many(self.exchange, data):
-                    self._on_event(event)
-            except Exception as e:
-                logger.debug(f"[ExStream] {self.exchange} parse: {e}")
+            self._ws_on_message(ws, raw, last_error)
 
         def on_error(ws, err):
-            message = str(err)
-            last_error["message"] = message
-            if "ping/pong timed out" in message:
-                logger.debug(f"[ExStream] {self.exchange} WS ping timeout — reconnecting")
-            else:
-                logger.debug(f"[ExStream] {self.exchange} WS error: {message}")
+            self._ws_on_error(err, last_error)
 
         def on_close(ws, code, msg):
-            close_state["code"] = code
-            close_state["msg"] = msg
-            heartbeat_stop.set()
-            logger.info(f"[ExStream] {self.exchange} closed (code={code})")
+            self._ws_on_close(code, msg, heartbeat_stop, close_state)
 
         ws = websocket.WebSocketApp(
             url,
@@ -402,19 +373,107 @@ class _ExchangeConnection:
         )
         ws.run_forever(**_RUN_FOREVER_KWARGS.get(self.exchange, {}))
         heartbeat_stop.set()
-        if heartbeat_thread is not None:
-            heartbeat_thread.join(timeout=1.0)
+        thread = heartbeat_thread["value"]
+        if thread is not None:
+            thread.join(timeout=1.0)
 
         failure_message = _post_run_failure_message(
             running=self._running.is_set(),
             last_error=last_error["message"],
-            session_age=(time.monotonic() - session_started_at) if session_started_at else 0.0,
+            session_age=(time.monotonic() - session_started_at["value"]) if session_started_at["value"] else 0.0,
             close_code=close_state["code"],
             close_msg=close_state["msg"],
         )
         if failure_message:
             raise RuntimeError(failure_message)
 
+    def _start_heartbeat(
+        self,
+        ws,
+        heartbeat_payload,
+        heartbeat_interval: int,
+        heartbeat_stop: threading.Event,
+        heartbeat_thread: Dict[str, Optional[threading.Thread]],
+        last_error: Dict[str, Optional[str]],
+    ) -> None:
+        if not heartbeat_payload or heartbeat_thread["value"] is not None:
+            return
+
+        def _loop() -> None:
+            while self._running.is_set() and not heartbeat_stop.wait(heartbeat_interval):
+                sock = getattr(ws, "sock", None)
+                if not sock or not getattr(sock, "connected", False):
+                    return
+                try:
+                    ws.send(json.dumps(heartbeat_payload))
+                except Exception as exc:
+                    last_error["message"] = f"heartbeat failed: {exc}"
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+                    return
+
+        heartbeat_thread["value"] = threading.Thread(
+            target=_loop,
+            name=f"ExStreamHeartbeat-{self.exchange}",
+            daemon=True,
+        )
+        heartbeat_thread["value"].start()
+
+    def _ws_on_open(
+        self,
+        ws,
+        exchange: str,
+        sub: dict,
+        heartbeat_payload,
+        heartbeat_interval: int,
+        heartbeat_stop: threading.Event,
+        heartbeat_thread: Dict[str, Optional[threading.Thread]],
+        session_started_at: Dict[str, float],
+        last_error: Dict[str, Optional[str]],
+    ) -> None:
+        self._degraded = False
+        self._delay = _RECONNECT_DELAY_SECS
+        session_started_at["value"] = time.monotonic()
+        logger.info(f"[ExStream] {exchange} connected")
+        ws.send(json.dumps(sub))
+        self._start_heartbeat(ws, heartbeat_payload, heartbeat_interval, heartbeat_stop, heartbeat_thread, last_error)
+
+    def _ws_on_message(self, ws, raw, last_error: Dict[str, Optional[str]]) -> None:
+        try:
+            data = json.loads(raw)
+            stream_error = _stream_error(self.exchange, data)
+            if stream_error:
+                last_error["message"] = stream_error
+                ws.close()
+                return
+            if _is_control_message(self.exchange, data):
+                return
+            for event in _normalise_many(self.exchange, data):
+                self._on_event(event)
+        except Exception as exc:
+            logger.debug(f"[ExStream] {self.exchange} parse: {exc}")
+
+    def _ws_on_error(self, err, last_error: Dict[str, Optional[str]]) -> None:
+        message = str(err)
+        last_error["message"] = message
+        if "ping/pong timed out" in message:
+            logger.debug(f"[ExStream] {self.exchange} WS ping timeout — reconnecting")
+        else:
+            logger.debug(f"[ExStream] {self.exchange} WS error: {message}")
+
+    def _ws_on_close(
+        self,
+        code,
+        msg,
+        heartbeat_stop: threading.Event,
+        close_state: Dict[str, object],
+    ) -> None:
+        close_state["code"] = code
+        close_state["msg"] = msg
+        heartbeat_stop.set()
+        logger.info(f"[ExStream] {self.exchange} closed (code={code})")
 
 # ── Normalisation ──────────────────────────────────────────────────────────────
 
@@ -530,3 +589,4 @@ class ExchangeStreamManager:
 
 # ── Module-level singleton ────────────────────────────────────────────────────
 stream_manager = ExchangeStreamManager()       
+

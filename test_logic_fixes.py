@@ -5629,6 +5629,41 @@ def test_order_flow_update_pings_health(monkeypatch) -> None:
 
     assert seen == ["order_book"]
 
+def test_liquidity_wall_detector_scans_once_per_cooldown(monkeypatch) -> None:
+    import json
+
+    wall_mod = importlib.import_module("order_flow.liquidity_wall_detector")
+    published = []
+
+    monkeypatch.setattr(
+        wall_mod,
+        "logger",
+        SimpleNamespace(info=lambda *args, **kwargs: None, debug=lambda *args, **kwargs: None),
+        raising=False,
+    )
+
+    class _Pub:
+        def publish(self, channel, payload):
+            published.append((channel, json.loads(payload)))
+
+    detector = wall_mod.LiquidityWallDetector("BTCUSDT")
+    detector._pub = _Pub()
+    detector._cooldown.clear()
+
+    bids = [[100.0, 25.0], [99.5, 1.0], [99.0, 1.0], [98.5, 1.0], [98.0, 1.0], [97.5, 1.0]]
+    asks = [[100.5, 1.0], [101.0, 1.0], [101.5, 1.0], [102.0, 1.0], [102.5, 1.0], [103.0, 1.0]]
+
+    first = detector.scan(bids, asks, mid_price=100.0)
+    second = detector.scan(bids, asks, mid_price=100.0)
+
+    assert len(first) == 1
+    assert second == []
+    assert len(published) == 1
+    assert published[0][0] == "LIQUIDITY_WALL_DETECTED"
+    assert published[0][1]["asset"] == "BTCUSDT"
+    assert published[0][1]["side"] == "BID"
+    assert published[0][1]["strength"] == "MODERATE"
+
 def test_market_intelligence_record_whale_alert_pings_health_once_per_new_event(monkeypatch) -> None:
     market_mod = importlib.import_module("services.market_intelligence_service")
     monitor_mod = importlib.import_module("monitoring.system_health_service")
@@ -5702,6 +5737,38 @@ def test_sentiment_news_get_pings_health_only_on_recompute(monkeypatch) -> None:
     assert sentiment_mod._NewsSentiment.get("EUR/USD") == -0.18
     assert sentiment_mod._NewsSentiment.get("EUR/USD") == -0.18
     assert seen == ["sentiment"]
+
+def test_sentiment_dashboard_articles_prefers_newsapi_and_caches(monkeypatch) -> None:
+    sentiment_mod = importlib.import_module("services.sentiment_sources")
+    sentiment_mod._NewsSentiment._cache.clear()
+    calls = {"newsapi": 0}
+
+    def _newsapi(limit):
+        calls["newsapi"] += 1
+        return [
+            {
+                "title": "Markets rally on softer inflation",
+                "source": "NewsAPI",
+                "date": "2026-04-01",
+                "url": "https://example.com/article",
+                "sentiment": 0.52,
+            }
+        ]
+
+    def _unexpected(limit):
+        raise AssertionError("fallback source should not be called")
+
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_dashboard_newsapi_articles", _newsapi, raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_dashboard_gnews_articles", _unexpected, raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_dashboard_rss_articles", _unexpected, raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_dashboard_reddit_articles", _unexpected, raising=False)
+
+    first = sentiment_mod._NewsSentiment.get_articles_for_dashboard(limit=1)
+    second = sentiment_mod._NewsSentiment.get_articles_for_dashboard(limit=1)
+
+    assert first == second
+    assert first[0]["title"] == "Markets rally on softer inflation"
+    assert calls["newsapi"] == 1
 
 def test_macro_data_collector_process_pings_health_even_without_threshold_break(monkeypatch) -> None:
     macro_mod = importlib.import_module("data_ingestion.macro_data_collector")
@@ -6347,6 +6414,44 @@ def test_websocket_manager_does_not_start_for_ig_only_assets(monkeypatch) -> Non
     assert manager._stream_started is False
     assert scheduled == []
     assert any("No Deriv/Binance stream assets" in str(message) for message in infos)
+
+def test_websocket_manager_dispatches_deriv_ticks(monkeypatch) -> None:
+    import asyncio
+    import json
+    from types import ModuleType
+
+    ws_mod = importlib.import_module("websocket_manager")
+    dashboard_mod = ModuleType("websocket_dashboard")
+    dashboard_mod.set_connected = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "websocket_dashboard", dashboard_mod)
+
+    seen = []
+    manager = ws_mod.WebSocketManager()
+    manager._asset_to_symbol = {"EUR/USD": "frxEURUSD"}
+    manager._symbol_to_asset = {"frxEURUSD": "EUR/USD"}
+    manager._callbacks = [lambda *args: seen.append(args)]
+
+    asyncio.run(
+        manager._handle_message(
+            json.dumps(
+                {
+                    "msg_type": "tick",
+                    "tick": {
+                        "symbol": "frxEURUSD",
+                        "quote": 1.2345,
+                        "bid": 1.2344,
+                        "ask": 1.2346,
+                        "epoch": 1_700_000_000,
+                    },
+                }
+            )
+        )
+    )
+
+    assert seen
+    assert seen[0][0] == "deriv"
+    assert seen[0][1] == "EUR/USD"
+    assert seen[0][2] == 1.2345
 
 def test_exchange_stream_repeated_disconnects_are_downgraded(monkeypatch) -> None:
     import threading
@@ -9012,6 +9117,74 @@ def test_config_database_url_requires_explicit_env(monkeypatch) -> None:
         else:
             os.environ["DATABASE_URL"] = original_db_url
         importlib.reload(config_mod)
+
+def test_api_validation_raises_for_placeholder_required_values(monkeypatch) -> None:
+    validation_mod = importlib.import_module("config.api_validation")
+
+    monkeypatch.setattr(
+        validation_mod,
+        "logger",
+        SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        raising=False,
+    )
+    monkeypatch.setenv("NEWSAPI_KEY", "your_newsapi_key")
+    monkeypatch.setenv("GNEWS_KEY", "placeholder-gnews")
+    monkeypatch.setenv("DATABASE_URL", "postgres://user:password@localhost/db")
+
+    try:
+        validation_mod.validate_apis()
+    except RuntimeError as exc:
+        assert "API validation failed" in str(exc)
+    else:
+        raise AssertionError("validate_apis() did not raise")
+
+def test_reset_bot_state_clears_files_and_temp_state(monkeypatch, tmp_path) -> None:
+    reset_mod = importlib.import_module("reset_bot_state")
+
+    log_dir = tmp_path / "logs"
+    trade_dir = tmp_path / "trade_logs"
+    reports_dir = tmp_path / "portfolio_reports"
+    state_dir = tmp_path / "data"
+    log_dir.mkdir()
+    trade_dir.mkdir()
+    reports_dir.mkdir()
+    state_dir.mkdir()
+
+    (log_dir / "app.log").write_text("log", encoding="utf-8")
+    (trade_dir / "trade.log").write_text("trade", encoding="utf-8")
+    (reports_dir / "report.log").write_text("report", encoding="utf-8")
+    telegram_log = tmp_path / "telegram_bot.log"
+    startup_log = tmp_path / "startup_test.log"
+    telegram_pid = tmp_path / "telegram_bot.pid"
+    paper_trades = tmp_path / "paper_trades.json"
+    state_tmp = state_dir / "state_1.tmp"
+    telegram_log.write_text("telegram", encoding="utf-8")
+    startup_log.write_text("startup", encoding="utf-8")
+    telegram_pid.write_text("pid", encoding="utf-8")
+    paper_trades.write_text("paper", encoding="utf-8")
+    state_tmp.write_text("tmp", encoding="utf-8")
+
+    monkeypatch.setattr(reset_mod, "LOG_DIR", log_dir, raising=False)
+    monkeypatch.setattr(reset_mod, "TRADE_LOG_DIR", trade_dir, raising=False)
+    monkeypatch.setattr(reset_mod, "PORTFOLIO_REPORTS_DIR", reports_dir, raising=False)
+    monkeypatch.setattr(reset_mod, "TELEGRAM_LOG_FILE", telegram_log, raising=False)
+    monkeypatch.setattr(reset_mod, "STARTUP_TEST_LOG", startup_log, raising=False)
+    monkeypatch.setattr(reset_mod, "TELEGRAM_PID_FILE", telegram_pid, raising=False)
+    monkeypatch.setattr(reset_mod, "PAPER_TRADES_FILE", paper_trades, raising=False)
+    monkeypatch.setattr(reset_mod, "STATE_FILE", state_dir / "system_state.json", raising=False)
+
+    summary = reset_mod._clear_files()
+
+    assert summary == {"files_deleted": 6, "files_cleared": 2, "files_locked": 0}
+    assert telegram_log.read_text(encoding="utf-8") == ""
+    assert startup_log.read_text(encoding="utf-8") == ""
+    assert not telegram_pid.exists()
+    assert not paper_trades.exists()
+    assert not state_tmp.exists()
 
 def test_telegram_manager_uses_configured_debug_flag_and_pid_file(monkeypatch) -> None:
     config_mod = importlib.import_module("config.config")

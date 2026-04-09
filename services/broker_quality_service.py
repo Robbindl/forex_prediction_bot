@@ -327,7 +327,43 @@ class BrokerQualityService:
             primary_meta,
             fallback_status=market_status,
         )
+        comparison = self._comparison_snapshot(fetcher, asset, category, comparison_provider)
+        agreement_profile = self._agreement_profile(price, comparison["comparison_price"], category)
+        broker_score = self._broker_score(spread_profile, freshness_profile, state_profile, agreement_profile)
+        notes = self._broker_notes(
+            expected_primary,
+            actual_provider,
+            spread_profile,
+            freshness_profile,
+            state_profile,
+            agreement_profile,
+            comparison["comparison_status"],
+        )
 
+        return {
+            "expected_primary_provider": _provider_label(expected_primary),
+            "primary_provider": _provider_label(actual_provider),
+            "comparison_provider": _provider_label(comparison_provider) if comparison_provider else "",
+            "fallback_active": actual_provider != expected_primary,
+            "price": round(price, 8) if price > 0 else 0.0,
+            "comparison_price": round(float(comparison["comparison_price"]), 8) if comparison["comparison_price"] is not None else None,
+            "comparison_spread": round(float(comparison["comparison_spread"] or 0.0), 8) if comparison["comparison_spread"] is not None else None,
+            "score": round(broker_score, 4),
+            **spread_profile,
+            **freshness_profile,
+            **state_profile,
+            **agreement_profile,
+            "comparison_meta": dict(comparison["comparison_meta"] or {}),
+            "notes": notes,
+        }
+
+    def _comparison_snapshot(
+        self,
+        fetcher: Any,
+        asset: str,
+        category: str,
+        comparison_provider: Optional[str],
+    ) -> Dict[str, Any]:
         comparison_price = None
         comparison_spread = None
         comparison_meta: Dict[str, Any] = {}
@@ -343,14 +379,20 @@ class BrokerQualityService:
                 comparison_status = fetcher.get_provider_market_status(asset, category, comparison_provider)
             except Exception:
                 comparison_status = None
+        return {
+            "comparison_price": comparison_price,
+            "comparison_spread": comparison_spread,
+            "comparison_meta": comparison_meta,
+            "comparison_status": comparison_status,
+        }
 
-        agreement_profile = self._agreement_profile(price, comparison_price, category)
-
-        available_scores = [
-            freshness_profile["quote_quality_score"],
-            spread_profile["spread_quality_score"],
-            state_profile["market_state_quality"],
-        ]
+    @staticmethod
+    def _broker_score(
+        spread_profile: Dict[str, Any],
+        freshness_profile: Dict[str, Any],
+        state_profile: Dict[str, Any],
+        agreement_profile: Dict[str, Any],
+    ) -> float:
         weighted_score = (
             freshness_profile["quote_quality_score"] * 0.35
             + spread_profile["spread_quality_score"] * 0.25
@@ -361,7 +403,6 @@ class BrokerQualityService:
         if agreement_score is not None:
             weighted_score += float(agreement_score) * 0.25
             weight_total += 0.25
-            available_scores.append(float(agreement_score))
 
         broker_score = _clip(weighted_score / max(weight_total, 1e-9))
         if agreement_profile.get("quote_agreement_state") == "severe_divergence":
@@ -370,7 +411,18 @@ class BrokerQualityService:
             broker_score = min(broker_score, 0.42)
         if state_profile.get("market_transition_risk", 0.0) >= 0.80:
             broker_score = min(broker_score, 0.35)
+        return broker_score
 
+    @staticmethod
+    def _broker_notes(
+        expected_primary: str,
+        actual_provider: str,
+        spread_profile: Dict[str, Any],
+        freshness_profile: Dict[str, Any],
+        state_profile: Dict[str, Any],
+        agreement_profile: Dict[str, Any],
+        comparison_status: Optional[Dict[str, Any]],
+    ) -> List[str]:
         notes = []
         if actual_provider != expected_primary:
             notes.append("provider_fallback_active")
@@ -394,27 +446,11 @@ class BrokerQualityService:
             comparison_open = comparison_status.get("market_open")
             if comparison_open is not None and bool(comparison_open) != bool(state_profile.get("market_open")):
                 notes.append("cross_broker_market_state_mismatch")
-
-        return {
-            "expected_primary_provider": _provider_label(expected_primary),
-            "primary_provider": _provider_label(actual_provider),
-            "comparison_provider": _provider_label(comparison_provider) if comparison_provider else "",
-            "fallback_active": actual_provider != expected_primary,
-            "price": round(price, 8) if price > 0 else 0.0,
-            "comparison_price": round(float(comparison_price), 8) if comparison_price is not None else None,
-            "comparison_spread": round(float(comparison_spread or 0.0), 8) if comparison_spread is not None else None,
-            "score": round(broker_score, 4),
-            **spread_profile,
-            **freshness_profile,
-            **state_profile,
-            **agreement_profile,
-            "comparison_meta": dict(comparison_meta or {}),
-            "notes": notes,
-        }
-
+        return notes
 
 _service = BrokerQualityService()
 
 
 def get_service() -> BrokerQualityService:
     return _service
+

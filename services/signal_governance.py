@@ -27,6 +27,7 @@ from config.config import (
     GOVERNANCE_VALIDATION_HORIZON,
     PLAYBOOK_ONLY_RUNTIME,
 )
+from core.assets import registry
 from risk.forex_filter import ForexFilter
 from utils.logger import get_logger
 
@@ -105,6 +106,25 @@ _PAPER_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
 class SignalGovernance:
     def evaluate(self, signal, context: Dict[str, Any] | None = None) -> Dict[str, Any]:
         context = context or {}
+        state = self._build_evaluation_state(signal, context)
+        violations: list[str] = []
+        warnings: list[str] = []
+        if state["research_warning"]:
+            warnings.append(state["research_warning"])
+
+        self._apply_core_governance_rules(state, violations, warnings)
+        self._apply_market_governance_rules(state, violations, warnings)
+        self._apply_validation_governance_rules(state, violations, warnings)
+
+        score = self._score_governance(state, violations, warnings)
+        score = max(0, min(100, round(score)))
+        grade = "A" if score >= 90 else "B" if score >= 80 else "C" if score >= 70 else "D"
+
+        approved = not violations
+        reason = self._governance_reason(approved, violations, score)
+        return self._finalize_evaluation(state, violations, warnings, score, grade, approved, reason)
+
+    def _build_evaluation_state(self, signal, context: Dict[str, Any]) -> Dict[str, Any]:
         asset = signal.canonical_asset or signal.asset
         category = str(signal.category or "").strip().lower()
         model_key = str(
@@ -122,12 +142,6 @@ class SignalGovernance:
         adaptive_policy = context.get("adaptive_policy") or signal.metadata.get("adaptive_policy") or {}
         min_risk_reward = self._effective_min_risk_reward(adaptive_policy, category=category)
         min_ml_confidence = self._effective_min_ml_confidence(category)
-
-        violations = []
-        warnings = []
-        if research_warning:
-            warnings.append(research_warning)
-
         valid_sources = int(signal.metadata.get("valid_sources_count", 0) or 0)
         market_intel_score = float(signal.metadata.get("market_intelligence_score", 0.0) or 0.0)
         market_intel_sources = list(signal.metadata.get("market_intelligence_sources") or [])
@@ -149,33 +163,77 @@ class SignalGovernance:
             model_meta,
             category=category,
         )
+        return {
+            "signal": signal,
+            "context": context,
+            "asset": asset,
+            "category": category,
+            "model_key": model_key,
+            "research_model_key": research_model_key,
+            "model_meta": model_meta,
+            "research_warning": research_warning,
+            "research_ok": research_ok,
+            "research_note": research_note,
+            "market_data": market_data,
+            "price_meta": price_meta,
+            "ohlcv_meta": ohlcv_meta,
+            "live_validation": live_validation,
+            "registry_validation": registry_validation,
+            "expectancy_validation": expectancy_validation,
+            "adaptive_policy": adaptive_policy,
+            "min_risk_reward": min_risk_reward,
+            "min_ml_confidence": min_ml_confidence,
+            "valid_sources": valid_sources,
+            "market_intel_score": market_intel_score,
+            "market_intel_sources": market_intel_sources,
+            "ml_conf": ml_conf,
+            "seed_source": seed_source,
+            "playbook_action": playbook_action,
+            "playbook_confidence": playbook_confidence,
+            "effective_seed_confidence": effective_seed_confidence,
+            "live_total": live_total,
+            "live_accuracy": live_accuracy,
+            "price_score": price_score,
+            "ohlcv_score": ohlcv_score,
+            "data_quality_score": data_quality_score,
+            "delayed_data": delayed_data,
+        }
 
-        if valid_sources < GOVERNANCE_MIN_REAL_SOURCES:
-            violations.append(f"real_sources={valid_sources} below minimum {GOVERNANCE_MIN_REAL_SOURCES}")
+    def _apply_core_governance_rules(self, state: Dict[str, Any], violations: list[str], warnings: list[str]) -> None:
+        if state["valid_sources"] < GOVERNANCE_MIN_REAL_SOURCES:
+            violations.append(f"real_sources={state['valid_sources']} below minimum {GOVERNANCE_MIN_REAL_SOURCES}")
 
-        if effective_seed_confidence < min_ml_confidence:
-            if seed_source == "playbook" or playbook_action in {"seed", "override"}:
+        if state["effective_seed_confidence"] < state["min_ml_confidence"]:
+            if state["seed_source"] == "playbook" or state["playbook_action"] in {"seed", "override"}:
                 violations.append(
-                    f"seed_confidence={effective_seed_confidence:.3f} below minimum {min_ml_confidence:.3f} "
-                    f"(ml={ml_conf:.3f}, playbook={playbook_confidence:.3f})"
+                    f"seed_confidence={state['effective_seed_confidence']:.3f} below minimum "
+                    f"{state['min_ml_confidence']:.3f} "
+                    f"(ml={state['ml_conf']:.3f}, playbook={state['playbook_confidence']:.3f})"
                 )
             else:
                 violations.append(
-                    f"ml_confidence={ml_conf:.3f} below minimum {min_ml_confidence:.3f}"
+                    f"ml_confidence={state['ml_conf']:.3f} below minimum {state['min_ml_confidence']:.3f}"
                 )
 
-        if float(signal.risk_reward or 0.0) < min_risk_reward:
+        if float(state["signal"].risk_reward or 0.0) < state["min_risk_reward"]:
             violations.append(
-                f"risk_reward={float(signal.risk_reward or 0.0):.2f} below minimum {min_risk_reward:.2f}"
+                f"risk_reward={float(state['signal'].risk_reward or 0.0):.2f} below minimum "
+                f"{state['min_risk_reward']:.2f}"
             )
 
-        if GOVERNANCE_REQUIRE_MODEL_RESEARCH and not research_ok:
-            violations.append(research_note)
-        elif research_note:
-            warnings.append(research_note)
+        if GOVERNANCE_REQUIRE_MODEL_RESEARCH and not state["research_ok"]:
+            violations.append(state["research_note"])
+        elif state["research_note"]:
+            warnings.append(state["research_note"])
 
+    def _apply_market_governance_rules(
+        self,
+        state: Dict[str, Any],
+        violations: list[str],
+        warnings: list[str],
+    ) -> None:
         price_ok, price_reason = self._check_market_source(
-            price_meta,
+            state["price_meta"],
             require_non_delayed=GOVERNANCE_REQUIRE_NON_DELAYED_PRICE,
             label="price",
         )
@@ -183,111 +241,141 @@ class SignalGovernance:
             violations.append(price_reason)
 
         ohlcv_ok, ohlcv_reason = self._check_market_source(
-            ohlcv_meta,
+            state["ohlcv_meta"],
             require_non_delayed=GOVERNANCE_REQUIRE_NON_DELAYED_OHLCV,
             label="ohlcv",
         )
         if not ohlcv_ok:
             violations.append(ohlcv_reason)
 
-        if signal.category == "crypto":
-            crypto_price_ok, crypto_price_note = self._check_crypto_price_source(price_meta)
+        if state["category"] == "crypto":
+            crypto_price_ok, crypto_price_note = self._check_crypto_price_source(state["price_meta"])
             if not crypto_price_ok:
                 violations.append(crypto_price_note)
             elif crypto_price_note:
                 warnings.append(crypto_price_note)
 
-        registry_violation, registry_warning = self._assess_registry_validation(registry_validation)
+        if state["price_meta"].get("from_cache"):
+            warnings.append(f"price source cached via {state['price_meta'].get('source', 'unknown')}")
+        if state["ohlcv_meta"].get("from_cache"):
+            warnings.append(f"ohlcv source cached via {state['ohlcv_meta'].get('source', 'unknown')}")
+
+    def _apply_validation_governance_rules(
+        self,
+        state: Dict[str, Any],
+        violations: list[str],
+        warnings: list[str],
+    ) -> None:
+        registry_violation, registry_warning = self._assess_registry_validation(state["registry_validation"])
         if registry_violation:
             violations.append(registry_violation)
         elif registry_warning:
             warnings.append(registry_warning)
 
-        live_violation, live_warning = self._assess_live_validation(live_validation, category=category)
+        live_violation, live_warning = self._assess_live_validation(
+            state["live_validation"],
+            category=state["category"],
+        )
         if live_violation:
             violations.append(live_violation)
         elif live_warning:
             warnings.append(live_warning)
 
         expectancy_violation, expectancy_warning = self._assess_expectancy_validation(
-            expectancy_validation,
-            category=category,
+            state["expectancy_validation"],
+            category=state["category"],
         )
         if expectancy_violation:
             violations.append(expectancy_violation)
         elif expectancy_warning:
             warnings.append(expectancy_warning)
 
-        if signal.category == "forex" and GOVERNANCE_ENABLE_FOREX_FILTER:
-            passed, reason = self._run_forex_filter(signal, {**context, "live_validation": live_validation})
+        if state["category"] == "forex" and GOVERNANCE_ENABLE_FOREX_FILTER:
+            passed, reason = self._run_forex_filter(
+                state["signal"],
+                {**state["context"], "live_validation": state["live_validation"]},
+            )
             if not passed:
                 violations.append(f"forex quality: {reason}")
 
-        if price_meta.get("from_cache"):
-            warnings.append(f"price source cached via {price_meta.get('source', 'unknown')}")
-        if ohlcv_meta.get("from_cache"):
-            warnings.append(f"ohlcv source cached via {ohlcv_meta.get('source', 'unknown')}")
-
-        score = data_quality_score
-        if bool(model_meta.get("research_approved")):
+    def _score_governance(
+        self,
+        state: Dict[str, Any],
+        violations: list[str],
+        warnings: list[str],
+    ) -> float:
+        score = state["data_quality_score"]
+        if bool(state["model_meta"].get("research_approved")):
             score += 10
-        elif research_ok:
+        elif state["research_ok"]:
             score += 6
-        elif float(model_meta.get("holdout_accuracy", 0.0) or 0.0) >= 0.52:
+        elif float(state["model_meta"].get("holdout_accuracy", 0.0) or 0.0) >= 0.52:
             score += 4
-        if registry_validation.get("exact_match"):
+        if state["registry_validation"].get("exact_match"):
             score += 12
-        elif registry_validation.get("matched"):
+        elif state["registry_validation"].get("matched"):
             score += 6
-        if live_total >= max(1, GOVERNANCE_MIN_LIVE_SAMPLES):
-            score += max(-12, min(12, live_accuracy - 50.0))
-        elif live_total > 0:
+        if state["live_total"] >= max(1, GOVERNANCE_MIN_LIVE_SAMPLES):
+            score += max(-12, min(12, state["live_accuracy"] - 50.0))
+        elif state["live_total"] > 0:
             score += 2
-        expectancy_samples = int(expectancy_validation.get("sample_count", 0) or 0)
-        expectancy_avg_r = float(expectancy_validation.get("avg_rr_realized", 0.0) or 0.0)
+        expectancy_samples = int(state["expectancy_validation"].get("sample_count", 0) or 0)
+        expectancy_avg_r = float(state["expectancy_validation"].get("avg_rr_realized", 0.0) or 0.0)
         if expectancy_samples >= max(1, GOVERNANCE_EXPECTANCY_MIN_SAMPLES):
             score += max(-10, min(10, expectancy_avg_r * 14.0))
         elif expectancy_samples > 0:
             score += 2
-        score += min(8, valid_sources * 2)
-        score += min(10, effective_seed_confidence * 20)
-        if seed_source == "playbook" and playbook_action in {"seed", "override"}:
-            score += min(4, max(0.0, playbook_confidence - 0.5) * 10)
-        if market_intel_sources:
-            score += min(6, max(1, len(market_intel_sources)))
-            score += min(5, abs(market_intel_score) * 5)
-        if delayed_data:
+        score += min(8, state["valid_sources"] * 2)
+        score += min(10, state["effective_seed_confidence"] * 20)
+        if state["seed_source"] == "playbook" and state["playbook_action"] in {"seed", "override"}:
+            score += min(4, max(0.0, state["playbook_confidence"] - 0.5) * 10)
+        if state["market_intel_sources"]:
+            score += min(6, max(1, len(state["market_intel_sources"])))
+            score += min(5, abs(state["market_intel_score"]) * 5)
+        if state["delayed_data"]:
             score -= 10
         score -= min(16, len(warnings) * 2)
         score -= min(30, len(violations) * 6)
-        score = max(0, min(100, round(score)))
-        grade = "A" if score >= 90 else "B" if score >= 80 else "C" if score >= 70 else "D"
+        return score
 
-        approved = not violations
-        reason = "deriv governance passed" if approved else "; ".join(violations) or f"score {score} below floor"
+    @staticmethod
+    def _governance_reason(approved: bool, violations: list[str], score: int) -> str:
+        if approved:
+            return "deriv governance passed"
+        return "; ".join(violations) or f"score {score} below floor"
+
+    def _finalize_evaluation(
+        self,
+        state: Dict[str, Any],
+        violations: list[str],
+        warnings: list[str],
+        score: int,
+        grade: str,
+        approved: bool,
+        reason: str,
+    ) -> Dict[str, Any]:
         return {
             "approved": approved,
             "reason": reason,
             "mode": MODE_NAME,
             "grade": grade,
             "score": score,
-            "data_quality_score": data_quality_score,
+            "data_quality_score": state["data_quality_score"],
             "violations": violations,
             "warnings": warnings,
-            "model_key": model_key,
-            "research_model_key": research_model_key,
-            "model_research": model_meta,
-            "live_validation": live_validation,
-            "registry_validation": registry_validation,
-            "expectancy_validation": expectancy_validation,
+            "model_key": state["model_key"],
+            "research_model_key": state["research_model_key"],
+            "model_research": state["model_meta"],
+            "live_validation": state["live_validation"],
+            "registry_validation": state["registry_validation"],
+            "expectancy_validation": state["expectancy_validation"],
             "market_data": {
-                "price": price_meta,
-                "ohlcv": ohlcv_meta,
+                "price": state["price_meta"],
+                "ohlcv": state["ohlcv_meta"],
             },
-            "min_risk_reward": round(min_risk_reward, 2),
-            "effective_seed_confidence": round(effective_seed_confidence, 4),
+            "min_risk_reward": round(state["min_risk_reward"], 2),
+            "effective_seed_confidence": round(state["effective_seed_confidence"], 4),
         }
-
     @staticmethod
     def _category_profile(category: str) -> Dict[str, float | bool]:
         base: Dict[str, float | bool] = {
@@ -357,14 +445,59 @@ class SignalGovernance:
     @classmethod
     def _resolve_research_model(cls, signal, decision_model_key: str) -> tuple[str, Dict[str, Any], str]:
         decision_model_key = str(decision_model_key or "").strip() or "playbook_runtime"
-        decision_meta = dict(signal.metadata.get("playbook_research") or {})
-        if not cls._has_research_metadata(decision_meta):
-            decision_meta = {
+        policy_model = str(signal.metadata.get("policy_model") or "").strip()
+        seed_model = str(signal.metadata.get("seed_model") or "").strip()
+        policy_status = str(signal.metadata.get("agent_policy_status", "ok") or "ok").strip().lower()
+        try:
+            agent_score = float(signal.metadata.get("agent_score", 0.5) or 0.5)
+        except Exception:
+            agent_score = 0.5
+        direction = str(signal.direction or "").strip().upper()
+        policy_support = agent_score if direction != "SELL" else 1.0 - agent_score
+
+        def _registry_meta(model_name: str) -> Dict[str, Any]:
+            if not model_name:
+                return {}
+            getter = getattr(registry, "get_metadata", None)
+            if not callable(getter):
+                return {}
+            try:
+                return dict(getter(model_name) or {})
+            except Exception:
+                return {}
+
+        policy_meta = _registry_meta(policy_model)
+        seed_meta = _registry_meta(seed_model)
+        playbook_meta = dict(signal.metadata.get("playbook_research") or {})
+        if (
+            not cls._has_research_metadata(policy_meta)
+            and not cls._has_research_metadata(seed_meta)
+            and not cls._has_research_metadata(playbook_meta)
+        ):
+            return decision_model_key, {
                 "research_approved": True,
                 "research_status": "playbook_runtime",
                 "research_grade": "runtime",
-            }
-        return decision_model_key, decision_meta, ""
+            }, ""
+        use_policy = bool(policy_model) and (
+            policy_status == "ok"
+            or policy_support >= 0.58
+            or not seed_model
+        )
+        if use_policy and policy_model:
+            warning = ""
+            if policy_status != "ok" and policy_model != seed_model and policy_support >= 0.58:
+                warning = f"using aligned {policy_model} research metadata"
+            return policy_model, policy_meta or playbook_meta, warning
+        if seed_model:
+            return seed_model, seed_meta or playbook_meta, ""
+        if cls._has_research_metadata(playbook_meta):
+            return decision_model_key, playbook_meta, ""
+        return decision_model_key, {
+            "research_approved": True,
+            "research_status": "playbook_runtime",
+            "research_grade": "runtime",
+        }, ""
 
     @classmethod
     def _assess_model_research(
@@ -749,3 +882,4 @@ class SignalGovernance:
 
 
 signal_governance = SignalGovernance()
+

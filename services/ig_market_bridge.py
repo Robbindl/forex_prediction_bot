@@ -430,34 +430,7 @@ class IGMarketBridge:
                     epic=epic,
                 )
 
-            rows = []
-            for item in prices:
-                if not isinstance(item, dict):
-                    continue
-                ts = pd.to_datetime(item.get("snapshotTimeUTC") or item.get("snapshotTime"), utc=True, errors="coerce")
-                if pd.isna(ts):
-                    continue
-                open_price = _mid_price(item.get("openPrice") or {})
-                high_price = _mid_price(item.get("highPrice") or {})
-                low_price = _mid_price(item.get("lowPrice") or {})
-                close_price = _mid_price(item.get("closePrice") or {})
-                open_price = _normalize_ig_commodity_price(canonical, open_price)
-                high_price = _normalize_ig_commodity_price(canonical, high_price)
-                low_price = _normalize_ig_commodity_price(canonical, low_price)
-                close_price = _normalize_ig_commodity_price(canonical, close_price)
-                if None in (open_price, high_price, low_price, close_price):
-                    continue
-                rows.append(
-                    {
-                        "timestamp": pd.Timestamp(ts),
-                        "open": float(open_price),
-                        "high": float(high_price),
-                        "low": float(low_price),
-                        "close": float(close_price),
-                        "volume": float(_safe_float(item.get("lastTradedVolume")) or 0.0),
-                    }
-                )
-
+            rows = self._normalize_ohlcv_rows(canonical, prices)
             if not rows:
                 return None, self._error_metadata(
                     canonical,
@@ -468,16 +441,7 @@ class IGMarketBridge:
                 )
 
             frame = pd.DataFrame(rows).set_index("timestamp").sort_index()
-            if cutoff is not None and not pd.isna(cutoff):
-                cutoff_ts = pd.Timestamp(cutoff)
-                if cutoff_ts.tzinfo is None:
-                    cutoff_ts = cutoff_ts.tz_localize("UTC")
-                else:
-                    cutoff_ts = cutoff_ts.tz_convert("UTC")
-                if closed_only:
-                    frame = frame[frame.index < cutoff_ts]
-                else:
-                    frame = frame[frame.index <= cutoff_ts]
+            frame = self._apply_ohlcv_cutoff(frame, cutoff, closed_only)
             frame = frame.tail(int(max(2, periods)))
             if frame.empty:
                 return None, self._error_metadata(
@@ -514,6 +478,49 @@ class IGMarketBridge:
                 epic=epic,
             )
 
+    @staticmethod
+    def _normalize_ohlcv_rows(canonical: str, prices: list) -> list[dict[str, Any]]:
+        rows = []
+        for item in prices:
+            if not isinstance(item, dict):
+                continue
+            ts = pd.to_datetime(item.get("snapshotTimeUTC") or item.get("snapshotTime"), utc=True, errors="coerce")
+            if pd.isna(ts):
+                continue
+            open_price = _mid_price(item.get("openPrice") or {})
+            high_price = _mid_price(item.get("highPrice") or {})
+            low_price = _mid_price(item.get("lowPrice") or {})
+            close_price = _mid_price(item.get("closePrice") or {})
+            open_price = _normalize_ig_commodity_price(canonical, open_price)
+            high_price = _normalize_ig_commodity_price(canonical, high_price)
+            low_price = _normalize_ig_commodity_price(canonical, low_price)
+            close_price = _normalize_ig_commodity_price(canonical, close_price)
+            if None in (open_price, high_price, low_price, close_price):
+                continue
+            rows.append(
+                {
+                    "timestamp": pd.Timestamp(ts),
+                    "open": float(open_price),
+                    "high": float(high_price),
+                    "low": float(low_price),
+                    "close": float(close_price),
+                    "volume": float(_safe_float(item.get("lastTradedVolume")) or 0.0),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _apply_ohlcv_cutoff(frame: pd.DataFrame, cutoff: Any, closed_only: bool) -> pd.DataFrame:
+        if cutoff is None or pd.isna(cutoff):
+            return frame
+        cutoff_ts = pd.Timestamp(cutoff)
+        if cutoff_ts.tzinfo is None:
+            cutoff_ts = cutoff_ts.tz_localize("UTC")
+        else:
+            cutoff_ts = cutoff_ts.tz_convert("UTC")
+        if closed_only:
+            return frame[frame.index < cutoff_ts]
+        return frame[frame.index <= cutoff_ts]
     def get_market_status(self, asset: str, category: str = "") -> Optional[Dict[str, Any]]:
         canonical = _canonical_asset(asset)
         if not self._supports_asset(canonical, category=category) or not self._credentials_ready():
@@ -1198,3 +1205,4 @@ class IGMarketBridge:
 
 
 ig_market_bridge = IGMarketBridge()
+

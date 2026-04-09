@@ -495,6 +495,58 @@ class TelegramCommander:
 
         return text
 
+    def _schedule_message_send(self, text: str, parse_mode: str, reply_markup):
+        async def _send():
+            await self.application.bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
+
+        return asyncio.run_coroutine_threadsafe(_send(), self._loop)
+
+    @staticmethod
+    def _is_shutdown_send_error(error: Exception) -> bool:
+        msg = str(error).lower()
+        return "cannot schedule new futures after shutdown" in msg or "event loop is closed" in msg
+
+    @staticmethod
+    def _is_parse_send_error(error: Exception) -> bool:
+        msg = str(error).lower()
+        return "can't parse entities" in msg or "parse entities" in msg
+
+    def _send_plain_message(self, text: str, reply_markup) -> bool:
+        try:
+            future = self._schedule_message_send(text, None, reply_markup)
+            future.result(timeout=15)
+            return True
+        except Exception as e:
+            logger.error(f"[Telegram] send fallback plain text error: {e}")
+            return False
+
+    def _handle_send_message_error(
+        self,
+        error: Exception,
+        text: str,
+        reply_markup,
+        *,
+        network_error: bool = False,
+    ) -> bool:
+        if self._is_shutdown_send_error(error):
+            logger.debug(f"[Telegram] send skipped during shutdown: {error}")
+            return False
+        if self._is_parse_send_error(error):
+            logger.warning(f"[Telegram] parse error: {error}. Retrying without markdown")
+            return self._send_plain_message(text, reply_markup)
+        if network_error:
+            logger.warning(f"[Telegram] network error: {error}")
+        else:
+            msg = str(error).lower()
+            if "unauthorized" not in msg and "401" not in msg:
+                logger.error(f"[Telegram] send error ({type(error).__name__}): {error}")
+        return False
+
     def send_message(self, text: str, parse_mode: str = ParseMode.MARKDOWN,
                      reply_markup=None) -> bool:
         if not str(text or "").strip():
@@ -509,16 +561,8 @@ class TelegramCommander:
         if parse_mode == ParseMode.MARKDOWN:
             text = self._sanitise_markdown(text)
 
-        async def _send():
-            await self.application.bot.send_message(
-                chat_id=self.chat_id,
-                text=text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-            )
-
         try:
-            future = asyncio.run_coroutine_threadsafe(_send(), self._loop)
+            future = self._schedule_message_send(text, parse_mode, reply_markup)
             future.result(timeout=15)
             return True
         except FutureTimeoutError:
@@ -531,50 +575,11 @@ class TelegramCommander:
             wait = e.retry_after if isinstance(e.retry_after, (int, float)) else 30
             logger.warning(f"[Telegram] flood control — retry in {wait}s")
         except (TimedOut, NetworkError) as e:
-            msg = str(e).lower()
-            if "cannot schedule new futures after shutdown" in msg or "event loop is closed" in msg:
-                logger.debug(f"[Telegram] send skipped during shutdown: {e}")
-                return False
-            if "can't parse entities" in msg or "parse entities" in msg:
-                logger.warning(f"[Telegram] parse error: {e}. Retrying without markdown")
-                try:
-                    async def _send_plain():
-                        await self.application.bot.send_message(
-                            chat_id=self.chat_id,
-                            text=text,
-                            parse_mode=None,
-                            reply_markup=reply_markup,
-                        )
-                    future = asyncio.run_coroutine_threadsafe(_send_plain(), self._loop)
-                    future.result(timeout=15)
-                    return True
-                except Exception as e2:
-                    logger.error(f"[Telegram] send fallback plain text error: {e2}")
-                    return False
-            logger.warning(f"[Telegram] network error: {e}")
+            if self._handle_send_message_error(e, text, reply_markup, network_error=True):
+                return True
         except Exception as e:
-            msg = str(e).lower()
-            if "cannot schedule new futures after shutdown" in msg or "event loop is closed" in msg:
-                logger.debug(f"[Telegram] send skipped during shutdown: {e}")
-                return False
-            if "can't parse entities" in msg or "parse entities" in msg:
-                logger.warning(f"[Telegram] parse error: {e}. Retrying without markdown")
-                try:
-                    async def _send_plain():
-                        await self.application.bot.send_message(
-                            chat_id=self.chat_id,
-                            text=text,
-                            parse_mode=None,
-                            reply_markup=reply_markup,
-                        )
-                    future = asyncio.run_coroutine_threadsafe(_send_plain(), self._loop)
-                    future.result(timeout=15)
-                    return True
-                except Exception as e2:
-                    logger.error(f"[Telegram] send fallback plain text error: {e2}")
-                    return False
-            if "unauthorized" not in msg and "401" not in msg:
-                logger.error(f"[Telegram] send error ({type(e).__name__}): {e}")
+            if self._handle_send_message_error(e, text, reply_markup):
+                return True
         return False
 
     def _rate_ok(self) -> bool:
@@ -912,74 +917,59 @@ class TelegramCommander:
     # Inline button router
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _resolve_button_action(self, data: str):
+        exact_actions = {
+            "menu": (self._btn_menu, ()),
+            "status": (self._btn_status, ()),
+            "positions": (self._btn_positions, ()),
+            "balance": (self._btn_balance, ()),
+            "signals": (self._btn_signals, ()),
+            "ask": (self._btn_ask, ()),
+            "mood": (self._btn_mood, ()),
+            "diary": (self._btn_diary, ()),
+            "market": (self._btn_market, ()),
+            "pause": (self._btn_pause, ()),
+            "resume": (self._btn_resume, ()),
+            "reprice_weak": (self._btn_reprice_weak, ()),
+            "reduce_weak": (self._btn_reduce_weak, ()),
+            "top_setups": (self._btn_top_setups, ()),
+            "close_menu": (self._btn_close_menu, ()),
+            "history": (self._btn_history, ()),
+            "close_losing": (self._btn_close_filter, ("losing",)),
+            "close_winning": (self._btn_close_filter, ("winning",)),
+            "close_all_confirm": (self._btn_close_all_confirm, ()),
+            "close_all_execute": (self._btn_close_all_execute, ()),
+        }
+        if data in exact_actions:
+            return exact_actions[data]
+
+        prefix_actions = (
+            ("cat:", self._btn_category, 4),
+            ("sig:", self._btn_signal, 4),
+            ("why:", self._btn_why, 4),
+            ("close:", self._btn_close_confirm, 6),
+            ("close_ok:", self._btn_close_execute, 9),
+            ("askcat:", self._btn_ask_category, 7),
+            ("askasset:", self._btn_ask_asset, 9),
+            ("askq:", self._btn_ask_question, 5),
+            ("history_filter:", self._btn_history, 15),
+            ("close_cat:", self._btn_close_category, 10),
+        )
+        for prefix, handler, offset in prefix_actions:
+            if data.startswith(prefix):
+                return handler, (data[offset:],)
+
+        return None, ()
+
     async def _on_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()               # acknowledge tap immediately
-        data  = query.data or ""
-
-        # Routing table
-        if data == "menu":
-            await self._btn_menu(query)
-        elif data == "status":
-            await self._btn_status(query)
-        elif data == "positions":
-            await self._btn_positions(query)
-        elif data == "balance":
-            await self._btn_balance(query)
-        elif data == "signals":
-            await self._btn_signals(query)
-        elif data.startswith("cat:"):
-            await self._btn_category(query, data[4:])
-        elif data.startswith("sig:"):
-            await self._btn_signal(query, data[4:])
-        elif data.startswith("why:"):
-            await self._btn_why(query, data[4:])
-        elif data.startswith("close:"):
-            await self._btn_close_confirm(query, data[6:])
-        elif data.startswith("close_ok:"):
-            await self._btn_close_execute(query, data[9:])
-        elif data == "ask":
-            await self._btn_ask(query)
-        elif data.startswith("askcat:"):
-            await self._btn_ask_category(query, data[7:])
-        elif data.startswith("askasset:"):
-            await self._btn_ask_asset(query, data[9:])
-        elif data.startswith("askq:"):
-            await self._btn_ask_question(query, data[5:])
-        elif data == "mood":
-            await self._btn_mood(query)
-        elif data == "diary":
-            await self._btn_diary(query)
-        elif data == "market":
-            await self._btn_market(query)
-        elif data == "pause":
-            await self._btn_pause(query)
-        elif data == "resume":
-            await self._btn_resume(query)
-        elif data == "reprice_weak":
-            await self._btn_reprice_weak(query)
-        elif data == "reduce_weak":
-            await self._btn_reduce_weak(query)
-        elif data == "top_setups":
-            await self._btn_top_setups(query)
-        elif data == "close_menu":
-            await self._btn_close_menu(query)
-        elif data == "history":
-            await self._btn_history(query)
-        elif data.startswith("history_filter:"):
-            await self._btn_history(query, data[15:])
-        elif data.startswith("close_cat:"):
-            await self._btn_close_category(query, data[10:])
-        elif data == "close_losing":
-            await self._btn_close_filter(query, "losing")
-        elif data == "close_winning":
-            await self._btn_close_filter(query, "winning")
-        elif data == "close_all_confirm":
-            await self._btn_close_all_confirm(query)
-        elif data == "close_all_execute":
-            await self._btn_close_all_execute(query)
-        else:
+        data = query.data or ""
+        handler, args = self._resolve_button_action(data)
+        if handler is None:
             await query.edit_message_text("⚠️ Unknown action.")
+            return
+        await handler(query, *args)
 
     # ── Button implementations ────────────────────────────────────────────────
 
@@ -1581,6 +1571,92 @@ class TelegramCommander:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _trade_execution_summary_parts(
+        outcome: str,
+        rr_realized: float,
+        quality_score: float,
+        target_capture: float,
+        memory_score: float,
+    ) -> List[str]:
+        parts: List[str] = []
+        if outcome:
+            parts.append(f"Outcome `{outcome}`")
+        parts.append(f"Realized `{rr_realized:+.2f}R`")
+        if quality_score > 0.0:
+            parts.append(f"Quality `{quality_score:.1f}/100`")
+        if target_capture > 0.0:
+            parts.append(f"Capture `{target_capture * 100:.0f}%`")
+        if memory_score > 0.0:
+            parts.append(f"Memory `{memory_score:.0f}`")
+        return parts
+
+    @staticmethod
+    def _trade_execution_entry_parts(
+        provider: str,
+        agreement: str,
+        spread_regime: str,
+        quote_quality: str,
+        broker_context: str,
+        transition_risk: float,
+    ) -> List[str]:
+        parts: List[str] = []
+        if broker_context:
+            parts.append(f"State `{broker_context}`")
+        if provider:
+            parts.append(f"Provider `{provider}`")
+        if agreement:
+            parts.append(f"Agreement `{agreement}`")
+        if quote_quality:
+            parts.append(f"Quote `{quote_quality}`")
+        if spread_regime:
+            parts.append(f"Spread `{spread_regime}`")
+        if transition_risk >= 0.15:
+            parts.append(f"Transition `{transition_risk:.2f}`")
+        return parts
+
+    @staticmethod
+    def _trade_execution_flow_parts(
+        depth_mode: str,
+        micro_context: str,
+        stop_hunt_risk: float,
+        exhaustion_risk: float,
+    ) -> List[str]:
+        parts: List[str] = []
+        if depth_mode:
+            parts.append(f"Depth `{depth_mode}`")
+        if micro_context:
+            parts.append(f"Flow `{micro_context}`")
+        risk_parts: List[str] = []
+        if stop_hunt_risk >= 0.20:
+            risk_parts.append(f"stop-hunt {stop_hunt_risk:.2f}")
+        if exhaustion_risk >= 0.20:
+            risk_parts.append(f"exhaustion {exhaustion_risk:.2f}")
+        if risk_parts:
+            parts.append("Risk `" + " | ".join(risk_parts) + "`")
+        return parts
+
+    @staticmethod
+    def _trade_execution_cross_parts(
+        cross_context: str,
+        cross_peer: str,
+        cross_relation: str,
+        cross_alignment: float,
+        cross_confidence: float,
+    ) -> List[str]:
+        if cross_context and cross_peer:
+            parts = [f"Cross-market `{cross_context}` via `{cross_peer}`"]
+            if cross_relation:
+                parts.append(f"Relation `{cross_relation}`")
+            if cross_alignment > 0.0:
+                parts.append(f"Align `{cross_alignment:.2f}`")
+            if cross_confidence > 0.0:
+                parts.append(f"Conf `{cross_confidence:.2f}`")
+            return parts
+        if cross_context:
+            return [f"Cross-market `{cross_context}`"]
+        return []
+
     @classmethod
     def _format_trade_execution_block(cls, trade: Dict[str, Any], prefix: str = "") -> str:
         review = cls._trade_review(trade)
@@ -1619,61 +1695,45 @@ class TelegramCommander:
 
         lines: List[str] = []
 
-        summary_parts = []
-        if outcome:
-            summary_parts.append(f"Outcome `{outcome}`")
-        summary_parts.append(f"Realized `{rr_realized:+.2f}R`")
-        if quality_score > 0.0:
-            summary_parts.append(f"Quality `{quality_score:.1f}/100`")
-        if target_capture > 0.0:
-            summary_parts.append(f"Capture `{target_capture * 100:.0f}%`")
-        if memory_score > 0.0:
-            summary_parts.append(f"Memory `{memory_score:.0f}`")
+        summary_parts = cls._trade_execution_summary_parts(
+            outcome,
+            rr_realized,
+            quality_score,
+            target_capture,
+            memory_score,
+        )
         if summary_parts:
             lines.append(f"{prefix}{' | '.join(summary_parts)}")
 
-        entry_parts = []
-        if broker_context:
-            entry_parts.append(f"State `{broker_context}`")
-        if provider:
-            entry_parts.append(f"Provider `{provider}`")
-        if agreement:
-            entry_parts.append(f"Agreement `{agreement}`")
-        if quote_quality:
-            entry_parts.append(f"Quote `{quote_quality}`")
-        if spread_regime:
-            entry_parts.append(f"Spread `{spread_regime}`")
-        if transition_risk >= 0.15:
-            entry_parts.append(f"Transition `{transition_risk:.2f}`")
+        entry_parts = cls._trade_execution_entry_parts(
+            provider,
+            agreement,
+            spread_regime,
+            quote_quality,
+            broker_context,
+            transition_risk,
+        )
         if entry_parts:
             lines.append(f"{prefix}{' | '.join(entry_parts)}")
 
-        flow_parts = []
-        if depth_mode:
-            flow_parts.append(f"Depth `{depth_mode}`")
-        if micro_context:
-            flow_parts.append(f"Flow `{micro_context}`")
-        risk_parts = []
-        if stop_hunt_risk >= 0.20:
-            risk_parts.append(f"stop-hunt {stop_hunt_risk:.2f}")
-        if exhaustion_risk >= 0.20:
-            risk_parts.append(f"exhaustion {exhaustion_risk:.2f}")
-        if risk_parts:
-            flow_parts.append("Risk `" + " | ".join(risk_parts) + "`")
+        flow_parts = cls._trade_execution_flow_parts(
+            depth_mode,
+            micro_context,
+            stop_hunt_risk,
+            exhaustion_risk,
+        )
         if flow_parts:
             lines.append(f"{prefix}{' | '.join(flow_parts)}")
 
-        if cross_context and cross_peer:
-            cross_parts = [f"Cross-market `{cross_context}` via `{cross_peer}`"]
-            if cross_relation:
-                cross_parts.append(f"Relation `{cross_relation}`")
-            if cross_alignment > 0.0:
-                cross_parts.append(f"Align `{cross_alignment:.2f}`")
-            if cross_confidence > 0.0:
-                cross_parts.append(f"Conf `{cross_confidence:.2f}`")
+        cross_parts = cls._trade_execution_cross_parts(
+            cross_context,
+            cross_peer,
+            cross_relation,
+            cross_alignment,
+            cross_confidence,
+        )
+        if cross_parts:
             lines.append(f"{prefix}{' | '.join(cross_parts)}")
-        elif cross_context:
-            lines.append(f"{prefix}Cross-market `{cross_context}`")
 
         if continuation_summary:
             lines.append(f"{prefix}Continuation `{continuation_summary}`")
@@ -1753,6 +1813,69 @@ class TelegramCommander:
         )
         return text, _main_menu_keyboard(summary)
 
+    def _position_price_context(
+        self,
+        core: Any,
+        position: Dict[str, Any],
+        asset: str,
+        entry: float,
+        size: float,
+        direction: str,
+    ) -> tuple[float, str]:
+        display_current = float(position.get("current_price", entry) or entry)
+        pnl_str = ""
+        try:
+            fetcher = core.fetcher
+            if fetcher:
+                cat = position.get("category", "forex")
+                price, _ = fetcher.get_real_time_price(asset, cat)
+                if price:
+                    display_current = float(price)
+                    try:
+                        from risk.position_sizer import PositionSizer as _PS
+                        pnl = _PS.pnl(asset, cat, entry, price, size, direction)
+                    except Exception:
+                        pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
+                    pnl_str = f"  P&L: `${pnl:+.2f}`\n"
+        except Exception:
+            pass
+        return display_current, pnl_str
+
+    @staticmethod
+    def _position_open_time_text(position: Dict[str, Any]) -> str:
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            ot = position.get("open_time", "")
+            if ot:
+                opened = _dt.fromisoformat(str(ot))
+                if opened.tzinfo is None:
+                    opened = opened.replace(tzinfo=_tz.utc)
+                else:
+                    opened = opened.astimezone(_tz.utc)
+                elapsed = _dt.now(_tz.utc) - opened
+                mins = int(elapsed.total_seconds() / 60)
+                if mins < 60:
+                    duration = f"{mins}m ago"
+                elif mins < 1440:
+                    duration = f"{mins//60}h {mins%60}m ago"
+                else:
+                    duration = f"{mins//1440}d {(mins%1440)//60}h ago"
+                return f"  ⏱ Opened: `{opened.strftime('%b %d %H:%M')} UTC` ({duration})\n"
+        except Exception:
+            pass
+        return ""
+
+    def _position_target_text(self, position: Dict[str, Any], asset: str, sl: float, tp: float) -> str:
+        target_plan = self._target_snapshot(position)
+        primary_tp = float(target_plan.get("primary_target", 0.0) or 0.0)
+        runner_tp = float(target_plan.get("runner_target", 0.0) or 0.0)
+        if runner_tp > 0 and abs(runner_tp - primary_tp) > 1e-9:
+            return (
+                f"  Stop:  `{self._fmt_price(sl, asset)}` | TP1: `{self._fmt_price(primary_tp, asset)}`\n"
+                f"  Run:   `{self._fmt_price(runner_tp, asset)}`\n"
+            )
+        return f"  Stop:  `{self._fmt_price(sl, asset)}` | Target: `{self._fmt_price(primary_tp or tp, asset)}`\n"
+
     async def _build_positions(self):
         core = self.trading_system
         if not core:
@@ -1778,63 +1901,14 @@ class TelegramCommander:
             size      = float(p.get("position_size", 0))
             conf      = float(p.get("confidence", 0))
             tid       = p.get("trade_id", "")
-            display_current = float(p.get("current_price", entry) or entry)
-
-            # Try live P&L
-            pnl_str   = ""
-            try:
-                fetcher = core.fetcher
-                if fetcher:
-                    cat = p.get("category", "forex")
-                    price, _ = fetcher.get_real_time_price(asset, cat)
-                    if price:
-                        display_current = float(price)
-                        try:
-                            from risk.position_sizer import PositionSizer as _PS
-                            pnl = _PS.pnl(asset, cat, entry, price, size, direction)
-                        except Exception:
-                            pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
-                        pnl_str = f"  P&L: `${pnl:+.2f}`\n"
-            except Exception:
-                pass
-
-            # Format open time
-            open_time_str = ""
-            try:
-                from datetime import datetime as _dt, timezone as _tz
-                ot = p.get("open_time", "")
-                if ot:
-                    opened = _dt.fromisoformat(ot)
-                    if opened.tzinfo is None:
-                        opened = opened.replace(tzinfo=_tz.utc)
-                    else:
-                        opened = opened.astimezone(_tz.utc)
-                    elapsed = _dt.now(_tz.utc) - opened
-                    mins = int(elapsed.total_seconds() / 60)
-                    if mins < 60:
-                        duration = f"{mins}m ago"
-                    elif mins < 1440:
-                        duration = f"{mins//60}h {mins%60}m ago"
-                    else:
-                        duration = f"{mins//1440}d {(mins%1440)//60}h ago"
-                    open_time_str = f"  ⏱ Opened: `{opened.strftime('%b %d %H:%M')} UTC` ({duration})\n"
-            except Exception:
-                pass
+            display_current, pnl_str = self._position_price_context(core, p, asset, entry, size, direction)
+            open_time_str = self._position_open_time_text(p)
 
             diagnostics_block = self._format_runtime_diagnostics_block(p, prefix="  ")
             diagnostics_text = f"{diagnostics_block}\n" if diagnostics_block else ""
             playbook_block = self._format_playbook_runtime_block(p, prefix="  ")
             playbook_text = f"{playbook_block}\n" if playbook_block else ""
-            target_plan = self._target_snapshot(p)
-            primary_tp = float(target_plan.get("primary_target", 0.0) or 0.0)
-            runner_tp = float(target_plan.get("runner_target", 0.0) or 0.0)
-            if runner_tp > 0 and abs(runner_tp - primary_tp) > 1e-9:
-                target_line = (
-                    f"  Stop:  `{self._fmt_price(sl, asset)}` | TP1: `{self._fmt_price(primary_tp, asset)}`\n"
-                    f"  Run:   `{self._fmt_price(runner_tp, asset)}`\n"
-                )
-            else:
-                target_line = f"  Stop:  `{self._fmt_price(sl, asset)}` | Target: `{self._fmt_price(primary_tp or tp, asset)}`\n"
+            target_line = self._position_target_text(p, asset, sl, tp)
 
             lines.append(
                 f"{emoji} *{asset}* ({direction})\n"
@@ -1890,51 +1964,124 @@ class TelegramCommander:
         text, kb = self._build_top_setups(refresh=True)
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
+    @staticmethod
+    def _history_trade_get(trade: Any, key: str, default=None):
+        if isinstance(trade, dict):
+            return trade.get(key, default)
+        return getattr(trade, key, default)
+
+    @staticmethod
+    def _history_normalize_trade(trade: Any) -> Dict[str, Any]:
+        if isinstance(trade, dict):
+            row = dict(trade)
+        elif hasattr(trade, "to_dict"):
+            row = dict(trade.to_dict())
+        else:
+            row = {}
+        entry_time = row.get("entry_time") or row.get("open_time")
+        if entry_time:
+            row["entry_time"] = entry_time
+            row.setdefault("open_time", entry_time)
+        return row
+
+    @classmethod
+    def _history_load_recent_trades(cls, limit: int = 120) -> List[Dict[str, Any]]:
+        raw_trades: List[Dict[str, Any]] = []
+        try:
+            from services.db_pool import get_db
+
+            raw_trades = [cls._history_normalize_trade(t) for t in (get_db().get_recent_trades(limit=limit) or [])]
+        except Exception:
+            raw_trades = []
+
+        if not raw_trades:
+            from core.state import state as runtime_state
+
+            raw_trades = [cls._history_normalize_trade(t) for t in runtime_state.get_closed_positions(limit=limit)]
+        return raw_trades
+
+    @classmethod
+    def _history_trade_lines(
+        cls,
+        trade: Dict[str, Any],
+        cat_emojis: Dict[str, str],
+        reason_emojis: Dict[str, str],
+    ) -> List[str]:
+        pnl = float(cls._history_trade_get(trade, "pnl", 0) or 0)
+        category = str(cls._history_trade_get(trade, "category", "") or "")
+        em = cat_emojis.get(category, "📊")
+        pnl_em = "🟢" if pnl >= 0 else "🔴"
+        dir_ = str(cls._history_trade_get(trade, "direction", "BUY") or "BUY").upper()
+
+        open_t_raw = cls._history_trade_get(trade, "entry_time") or cls._history_trade_get(trade, "open_time")
+        close_t_raw = cls._history_trade_get(trade, "exit_time")
+        open_t = None
+        close_t = None
+        try:
+            if open_t_raw:
+                open_t = datetime.fromisoformat(str(open_t_raw).replace("Z", "+00:00"))
+            if close_t_raw:
+                close_t = datetime.fromisoformat(str(close_t_raw).replace("Z", "+00:00"))
+        except Exception:
+            open_t = None
+            close_t = None
+
+        duration_minutes = cls._history_trade_get(trade, "duration_minutes")
+        if duration_minutes not in (None, ""):
+            mins = max(0, int(float(duration_minutes)))
+        elif open_t and close_t:
+            mins = max(0, int((close_t - open_t).total_seconds() / 60))
+        else:
+            mins = None
+
+        dur_str = ""
+        if mins is not None:
+            if mins < 60:
+                dur_str = f"{mins}m"
+            elif mins < 1440:
+                dur_str = f"{mins//60}h {mins%60}m"
+            else:
+                dur_str = f"{mins//1440}d"
+
+        open_str = open_t.strftime("%d %b %H:%M") if open_t else "—"
+        close_str = close_t.strftime("%d %b %H:%M") if close_t else "—"
+        reason = str(cls._history_trade_get(trade, "display_exit_reason", cls._history_trade_get(trade, "exit_reason", "")) or "")
+        r_em = next((v for k, v in reason_emojis.items() if k in reason), "📌")
+        continuation_summary = str(cls._history_trade_get(trade, "continuation_summary", "") or "")
+        asset = cls._history_trade_get(trade, "asset", "UNKNOWN")
+
+        lines = [
+            f"{em} *{asset}* {dir_}\n"
+            f"  🕐 {open_str} → {close_str} ({dur_str})\n"
+            f"  {r_em} {reason or '—'} | {pnl_em} ${pnl:+.2f}\n"
+        ]
+        if continuation_summary:
+            lines.append(f"  ↪ {continuation_summary}")
+        review_context = TelegramCommander._format_trade_history_context(trade)
+        if review_context:
+            lines.append(review_context)
+        return lines
+
     async def _show_history(self, send_fn, filter_cat: str = "all") -> None:
         """Render last 10 closed trades with open/close times and P&L."""
         try:
             from core.state import rollup_closed_trade_history
 
-            def _trade_get(trade, key: str, default=None):
-                if isinstance(trade, dict):
-                    return trade.get(key, default)
-                return getattr(trade, key, default)
-
-            def _normalize_trade(trade):
-                if isinstance(trade, dict):
-                    row = dict(trade)
-                elif hasattr(trade, "to_dict"):
-                    row = dict(trade.to_dict())
-                else:
-                    row = {}
-                entry_time = row.get("entry_time") or row.get("open_time")
-                if entry_time:
-                    row["entry_time"] = entry_time
-                    row.setdefault("open_time", entry_time)
-                return row
-
-            raw_trades = []
-            try:
-                from services.db_pool import get_db
-
-                raw_trades = [_normalize_trade(t) for t in (get_db().get_recent_trades(limit=120) or [])]
-            except Exception:
-                raw_trades = []
-
-            if not raw_trades:
-                from core.state import state as runtime_state
-
-                raw_trades = [_normalize_trade(t) for t in runtime_state.get_closed_positions(limit=120)]
+            raw_trades = TelegramCommander._history_load_recent_trades(limit=120)
 
             category_filter = filter_cat if filter_cat in ("forex", "crypto", "commodities", "indices") else ""
             pnl_filter = filter_cat if filter_cat in ("won", "lost") else "all"
             trades = rollup_closed_trade_history(raw_trades, limit=30)
             if category_filter:
-                trades = [t for t in trades if str(_trade_get(t, "category", "") or "") == category_filter]
+                trades = [
+                    t
+                    for t in trades
+                    if str(TelegramCommander._history_trade_get(t, "category", "") or "") == category_filter
+                ]
             if pnl_filter == "won":
-                trades = [t for t in trades if float(_trade_get(t, "pnl", 0) or 0) > 0]
+                trades = [t for t in trades if float(TelegramCommander._history_trade_get(t, "pnl", 0) or 0) > 0]
             elif pnl_filter == "lost":
-                trades = [t for t in trades if float(_trade_get(t, "pnl", 0) or 0) < 0]
+                trades = [t for t in trades if float(TelegramCommander._history_trade_get(t, "pnl", 0) or 0) < 0]
 
             if not trades:
                 await send_fn(
@@ -1957,62 +2104,13 @@ class TelegramCommander:
             }
 
             lines = [f"📋 *TRADE HISTORY* ({filter_cat.upper()})\n"]
-            total_pnl = sum(float(_trade_get(t, "pnl", 0) or 0) for t in trades[:10])
-            won  = sum(1 for t in trades[:10] if float(_trade_get(t, "pnl", 0) or 0) > 0)
-            lost = sum(1 for t in trades[:10] if float(_trade_get(t, "pnl", 0) or 0) < 0)
+            total_pnl = sum(float(TelegramCommander._history_trade_get(t, "pnl", 0) or 0) for t in trades[:10])
+            won  = sum(1 for t in trades[:10] if float(TelegramCommander._history_trade_get(t, "pnl", 0) or 0) > 0)
+            lost = sum(1 for t in trades[:10] if float(TelegramCommander._history_trade_get(t, "pnl", 0) or 0) < 0)
             lines.append(f"Last {min(10,len(trades))} trades | 🟢 {won} won | 🔴 {lost} lost | Net: ${total_pnl:+.2f}\n")
 
             for t in trades[:10]:
-                pnl  = float(_trade_get(t, "pnl", 0) or 0)
-                category = str(_trade_get(t, "category", "") or "")
-                em   = cat_emojis.get(category, "📊")
-                pnl_em = "🟢" if pnl >= 0 else "🔴"
-                dir_  = str(_trade_get(t, "direction", "BUY") or "BUY").upper()
-
-                # Times and duration
-                open_t_raw = _trade_get(t, "entry_time") or _trade_get(t, "open_time")
-                close_t_raw = _trade_get(t, "exit_time")
-                open_t = None
-                close_t = None
-                try:
-                    if open_t_raw:
-                        open_t = datetime.fromisoformat(str(open_t_raw).replace("Z", "+00:00"))
-                    if close_t_raw:
-                        close_t = datetime.fromisoformat(str(close_t_raw).replace("Z", "+00:00"))
-                except Exception:
-                    open_t = None
-                    close_t = None
-                dur_str = ""
-                duration_minutes = _trade_get(t, "duration_minutes")
-                if duration_minutes not in (None, ""):
-                    mins = max(0, int(float(duration_minutes)))
-                elif open_t and close_t:
-                    mins = max(0, int((close_t - open_t).total_seconds() / 60))
-                else:
-                    mins = None
-                if mins is not None:
-                    if mins < 60:    dur_str = f"{mins}m"
-                    elif mins < 1440: dur_str = f"{mins//60}h {mins%60}m"
-                    else:             dur_str = f"{mins//1440}d"
-
-                open_str  = open_t.strftime("%d %b %H:%M")  if open_t  else "—"
-                close_str = close_t.strftime("%d %b %H:%M") if close_t else "—"
-
-                # Exit reason emoji
-                reason = str(_trade_get(t, "display_exit_reason", _trade_get(t, "exit_reason", "")) or "")
-                r_em = next((v for k, v in reason_emojis.items() if k in reason), "📌")
-                continuation_summary = str(_trade_get(t, "continuation_summary", "") or "")
-
-                lines.append(
-                    f"{em} *{_trade_get(t, 'asset', 'UNKNOWN')}* {dir_}\n"
-                    f"  🕐 {open_str} → {close_str} ({dur_str})\n"
-                    f"  {r_em} {reason or '—'} | {pnl_em} ${pnl:+.2f}\n"
-                )
-                if continuation_summary:
-                    lines.append(f"  ↪ {continuation_summary}")
-                review_context = TelegramCommander._format_trade_history_context(t)
-                if review_context:
-                    lines.append(review_context)
+                lines.extend(TelegramCommander._history_trade_lines(t, cat_emojis, reason_emojis))
 
             await send_fn(
                 "\n".join(lines),

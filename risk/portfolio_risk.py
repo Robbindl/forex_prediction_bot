@@ -54,6 +54,98 @@ def _signal_exposure(signal: dict, asset: str, category: str) -> float:
     )
 
 
+def _portfolio_asset_exposure(open_positions: List[dict], asset: str) -> float:
+    return sum(
+        _lot_exposure(
+            p.get("asset", ""),
+            p.get("category", "forex"),
+            float(p.get("position_size", 0)),
+            float(p.get("entry_price", 0)),
+        )
+        for p in open_positions
+        if p.get("asset") == asset
+    )
+
+
+def _portfolio_category_exposure(open_positions: List[dict], category: str) -> float:
+    return sum(
+        _lot_exposure(
+            p.get("asset", ""),
+            p.get("category", "forex"),
+            float(p.get("position_size", 0)),
+            float(p.get("entry_price", 0)),
+        )
+        for p in open_positions
+        if p.get("category") == category
+    )
+
+
+def _portfolio_scale_to_limit(
+    signal: dict,
+    *,
+    asset: str,
+    category: str,
+    balance: float,
+    current_exposure: float,
+    limit_pct: float,
+    label: str,
+    exposure: float,
+    adjustments: List[str],
+) -> tuple[bool, str, float]:
+    if balance <= 0:
+        return False, "balance unavailable", exposure
+    allowed_total = balance * limit_pct / 100.0
+    allowed_new = allowed_total - current_exposure
+    if allowed_new <= 0:
+        return False, f"{label} already fully allocated", exposure
+    if exposure <= allowed_new:
+        return True, "", exposure
+    current_size = float(signal.get("position_size", 0) or 0)
+    if current_size <= 0 or exposure <= 0:
+        return False, f"{label} position size invalid", exposure
+    scale = max(0.0, min(1.0, allowed_new / exposure))
+    new_size = current_size * scale
+    if new_size <= 0:
+        return False, f"{label} position size reduced below tradable minimum", exposure
+    signal["position_size"] = new_size
+    new_exposure = _signal_exposure(signal, asset, category)
+    adjustments.append(f"{label} scaled to {scale:.0%} of initial size")
+    logger.info(
+        f"[PortfolioRisk] Resized {asset} to fit {label}: "
+        f"size {current_size:.6f} -> {new_size:.6f}, exposure={new_exposure / balance * 100:.1f}%"
+    )
+    return True, "", new_exposure
+
+
+def _portfolio_apply_drawdown_limits(
+    engine: "PortfolioRiskEngine",
+    signal: dict,
+    *,
+    asset: str,
+    category: str,
+    balance: float,
+    exposure: float,
+    adjustments: List[str],
+) -> tuple[bool, str, float]:
+    if engine._peak_balance <= 0:
+        return True, "", exposure
+    drawdown_pct = (engine._peak_balance - balance) / engine._peak_balance * 100
+    if drawdown_pct >= engine._dd_halt:
+        return False, f"Portfolio drawdown {drawdown_pct:.1f}% >= halt threshold {engine._dd_halt}%", exposure
+    if drawdown_pct >= engine._dd_reduce:
+        gap = max(0.1, engine._dd_halt - engine._dd_reduce)
+        scale = 1.0 - (drawdown_pct - engine._dd_reduce) / gap
+        current_size = float(signal.get("position_size", 0) or 0)
+        signal["position_size"] = current_size * max(0.25, scale)
+        new_exposure = _signal_exposure(signal, asset, category)
+        logger.info(
+            f"[PortfolioRisk] Scaling position to {scale:.0%} due to drawdown {drawdown_pct:.1f}%"
+        )
+        adjustments.append(f"drawdown scaled to {max(0.25, scale):.0%}")
+        return True, "", new_exposure
+    return True, "", exposure
+
+
 class PortfolioRiskEngine:
     """
     Evaluates a proposed signal against the current portfolio state
@@ -103,64 +195,34 @@ class PortfolioRiskEngine:
             exposure = _signal_exposure(signal, asset, category)
             adjustments: List[str] = []
 
-            def _scale_to_limit(current_exposure: float, limit_pct: float, label: str) -> Tuple[bool, str]:
-                nonlocal exposure
-                if balance <= 0:
-                    return False, "balance unavailable"
-                allowed_total = balance * limit_pct / 100.0
-                allowed_new = allowed_total - current_exposure
-                if allowed_new <= 0:
-                    return False, f"{label} already fully allocated"
-                if exposure <= allowed_new:
-                    return True, ""
-                current_size = float(signal.get("position_size", 0) or 0)
-                if current_size <= 0 or exposure <= 0:
-                    return False, f"{label} position size invalid"
-                scale = max(0.0, min(1.0, allowed_new / exposure))
-                new_size = current_size * scale
-                if new_size <= 0:
-                    return False, f"{label} position size reduced below tradable minimum"
-                signal["position_size"] = new_size
-                exposure = _signal_exposure(signal, asset, category)
-                adjustments.append(f"{label} scaled to {scale:.0%} of initial size")
-                logger.info(
-                    f"[PortfolioRisk] Resized {asset} to fit {label}: "
-                    f"size {current_size:.6f} -> {new_size:.6f}, exposure={exposure / balance * 100:.1f}%"
-                )
-                return True, ""
-
-            # ── 1. Drawdown halt ──────────────────────────────────────────
-            if self._peak_balance > 0:
-                drawdown_pct = (self._peak_balance - balance) / self._peak_balance * 100
-                if drawdown_pct >= self._dd_halt:
-                    return False, (
-                        f"Portfolio drawdown {drawdown_pct:.1f}% >= "
-                        f"halt threshold {self._dd_halt}%"
-                    )
-                if drawdown_pct >= self._dd_reduce:
-                    # Allow but scale down
-                    gap = max(0.1, self._dd_halt - self._dd_reduce)
-                    scale = 1.0 - (drawdown_pct - self._dd_reduce) / gap
-                    current_size = float(signal.get("position_size", 0) or 0)
-                    signal["position_size"] = current_size * max(0.25, scale)
-                    exposure = _signal_exposure(signal, asset, category)
-                    logger.info(
-                        f"[PortfolioRisk] Scaling position to {scale:.0%} "
-                        f"due to drawdown {drawdown_pct:.1f}%"
-                    )
-                    adjustments.append(f"drawdown scaled to {max(0.25, scale):.0%}")
+            ok, reason, exposure = _portfolio_apply_drawdown_limits(
+                self,
+                signal,
+                asset=asset,
+                category=category,
+                balance=balance,
+                exposure=exposure,
+                adjustments=adjustments,
+            )
+            if not ok:
+                return False, reason
 
             # ── 2. Single-asset exposure ──────────────────────────────────
-            asset_exposure = sum(
-                _lot_exposure(p.get("asset",""), p.get("category","forex"),
-                              float(p.get("position_size", 0)), float(p.get("entry_price", 0)))
-                for p in open_positions
-                if p.get("asset") == asset
-            )
+            asset_exposure = _portfolio_asset_exposure(open_positions, asset)
             if balance > 0:
                 asset_pct = (asset_exposure + exposure) / balance * 100
                 if asset_pct > self._max_asset:
-                    ok, reason = _scale_to_limit(asset_exposure, self._max_asset, f"asset {asset}")
+                    ok, reason, exposure = _portfolio_scale_to_limit(
+                        signal,
+                        asset=asset,
+                        category=category,
+                        balance=balance,
+                        current_exposure=asset_exposure,
+                        limit_pct=self._max_asset,
+                        label=f"asset {asset}",
+                        exposure=exposure,
+                        adjustments=adjustments,
+                    )
                     if not ok:
                         return False, (
                             f"Asset exposure {asset_pct:.1f}% > max {self._max_asset}% "
@@ -168,16 +230,21 @@ class PortfolioRiskEngine:
                         )
 
             # ── 3. Category exposure ──────────────────────────────────────
-            cat_exposure = sum(
-                _lot_exposure(p.get("asset",""), p.get("category","forex"),
-                              float(p.get("position_size", 0)), float(p.get("entry_price", 0)))
-                for p in open_positions
-                if p.get("category") == category
-            )
+            cat_exposure = _portfolio_category_exposure(open_positions, category)
             if balance > 0:
                 cat_pct = (cat_exposure + exposure) / balance * 100
                 if cat_pct > self._max_cat:
-                    ok, reason = _scale_to_limit(cat_exposure, self._max_cat, f"category {category}")
+                    ok, reason, exposure = _portfolio_scale_to_limit(
+                        signal,
+                        asset=asset,
+                        category=category,
+                        balance=balance,
+                        current_exposure=cat_exposure,
+                        limit_pct=self._max_cat,
+                        label=f"category {category}",
+                        exposure=exposure,
+                        adjustments=adjustments,
+                    )
                     if not ok:
                         return False, (
                             f"Category {category} exposure {cat_pct:.1f}% > max {self._max_cat}%: {reason}"
@@ -189,7 +256,17 @@ class PortfolioRiskEngine:
                 target      = self._targets[category]
                 if new_cat_pct > target + _ALLOCATION_TOLERANCE:
                     limit_pct = target + _ALLOCATION_TOLERANCE
-                    ok, reason = _scale_to_limit(cat_exposure, limit_pct, f"allocation {category}")
+                    ok, reason, exposure = _portfolio_scale_to_limit(
+                        signal,
+                        asset=asset,
+                        category=category,
+                        balance=balance,
+                        current_exposure=cat_exposure,
+                        limit_pct=limit_pct,
+                        label=f"allocation {category}",
+                        exposure=exposure,
+                        adjustments=adjustments,
+                    )
                     if not ok:
                         return False, (
                             f"Category {category} would be {new_cat_pct:.1f}% "

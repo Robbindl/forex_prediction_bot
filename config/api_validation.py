@@ -14,29 +14,16 @@ def _is_placeholder(value: str) -> bool:
     return not v or any(v.startswith(p) for p in _PLACEHOLDER_PREFIXES)
 
 
-def validate_apis() -> None:
-    """
-    Validate all API keys at startup.
-
-    Required keys: raises RuntimeError if missing.
-    Optional keys: logs a warning if missing (never raises).
-    """
+def _collect_required_errors() -> List[str]:
     errors:   List[str] = []
-    warnings: List[str] = []
 
-    # ── Required for news sentiment ───────────────────────────────────────
-    required_news = {
-        "NEWSAPI_KEY": os.getenv("NEWSAPI_KEY", ""),
-        "GNEWS_KEY":   os.getenv("GNEWS_KEY", ""),
-    }
-    for name, val in required_news.items():
-        if _is_placeholder(val):
+    for name in ("NEWSAPI_KEY", "GNEWS_KEY"):
+        if _is_placeholder(os.getenv(name, "")):
             errors.append(
                 f"{name} is missing or a placeholder.  "
                 "News sentiment will not work.  Get a key from the respective provider."
             )
 
-    # ── Required for DB ───────────────────────────────────────────────────
     db_url = os.getenv("DATABASE_URL", "")
     if "user:password" in db_url or _is_placeholder(db_url):
         errors.append(
@@ -44,17 +31,18 @@ def validate_apis() -> None:
             "Set a real PostgreSQL connection string in .env."
         )
 
-    # ── Optional: AlphaVantage ────────────────────────────────────────────
+    return errors
+
+
+def _collect_optional_warnings() -> List[str]:
+    warnings: List[str] = []
+
     av_key = os.getenv("ALPHA_VANTAGE_KEY", "")
     if _is_placeholder(av_key):
         warnings.append(
             "ALPHA_VANTAGE_KEY not set.  "
             "AlphaVantage sentiment disabled."
         )
-
-    # Reddit — no credentials needed (uses public JSON endpoints)
-
-    # ── Optional: FMP history/backfill ────────────────────────────────────
     fmp_key = os.getenv("FMP_API_KEY", "")
     if _is_placeholder(fmp_key):
         warnings.append(
@@ -112,7 +100,10 @@ def validate_apis() -> None:
             "IG_IDENTIFIER / IG_PASSWORD not set.  IG commodity routing is configured, but IG market data cannot authenticate yet."
         )
 
-    # ── Report ────────────────────────────────────────────────────────────
+    return warnings
+
+
+def _report_validation_results(errors: List[str], warnings: List[str]) -> None:
     for w in warnings:
         logger.warning(f"[APIValidation] ⚠  {w}")
 
@@ -129,3 +120,13 @@ def validate_apis() -> None:
         f"[APIValidation] ✓ Validation complete — "
         f"{len(warnings)} warning(s), 0 errors"
     )
+
+
+def validate_apis() -> None:
+    """
+    Validate all API keys at startup.
+
+    Required keys: raises RuntimeError if missing.
+    Optional keys: logs a warning if missing (never raises).
+    """
+    _report_validation_results(_collect_required_errors(), _collect_optional_warnings())

@@ -196,6 +196,50 @@ class RiskManager:
             return entry
         return entry + dist * ratio if direction == "BUY" else entry - dist * ratio
 
+    @staticmethod
+    def _structure_level(structure: Dict[str, Any], direction: str) -> float:
+        target_key = "resistance" if direction == "BUY" else "support"
+        levels_key = "resistance_levels" if direction == "BUY" else "support_levels"
+        structure_level = _safe_float(structure.get(target_key), 0.0)
+        if structure_level <= 0:
+            levels = structure.get(levels_key)
+            if isinstance(levels, list) and levels:
+                structure_level = _safe_float(levels[0], 0.0)
+        return structure_level
+
+    @staticmethod
+    def _structure_reward_cap(
+        structure_reward: float,
+        breakout_alignment: float,
+        regime: str,
+        volatility_state: str,
+        alignment_score: float,
+        setup_quality: float,
+        confidence: float,
+        atr: float,
+    ) -> float:
+        structure_cap = structure_reward * 0.94
+
+        if regime in {"trending_up", "trending_down"}:
+            structure_cap = structure_reward * 0.98
+
+        if breakout_alignment >= 0.55 and regime in {"trending_up", "trending_down"}:
+            extension = 0.04
+            extension += max(0.0, alignment_score - 0.55) * 0.14
+            extension += max(0.0, setup_quality - 0.55) * 0.18
+            extension += max(0.0, min(0.35, confidence - 0.60)) * 0.20
+            if volatility_state == "expansion":
+                extension += 0.04
+            elif volatility_state == "extreme":
+                extension -= 0.08
+            structure_cap = structure_reward * (1.0 + max(0.0, min(0.22, extension)))
+            if atr > 0:
+                structure_cap += atr * (0.18 + breakout_alignment * 0.28)
+        elif volatility_state == "extreme":
+            structure_cap = structure_reward * 0.88
+
+        return structure_cap
+
     def align_take_profit_to_structure(
         self,
         entry: float,
@@ -217,13 +261,7 @@ class RiskManager:
         if direction not in {"BUY", "SELL"}:
             return proposed_take_profit
 
-        target_key = "resistance" if direction == "BUY" else "support"
-        levels_key = "resistance_levels" if direction == "BUY" else "support_levels"
-        structure_level = _safe_float(structure.get(target_key), 0.0)
-        if structure_level <= 0:
-            levels = structure.get(levels_key)
-            if isinstance(levels, list) and levels:
-                structure_level = _safe_float(levels[0], 0.0)
+        structure_level = self._structure_level(structure, direction)
         if structure_level <= 0:
             return proposed_take_profit
 
@@ -240,28 +278,16 @@ class RiskManager:
 
         sign = 1.0 if direction == "BUY" else -1.0
         breakout_alignment = max(0.0, breakout_score * sign)
-
-        # Default posture is to respect nearby structure and take profit just inside it.
-        structure_cap = structure_reward * 0.94
-
-        # Strong aligned breakouts are allowed to stretch beyond the visible level,
-        # but only by a measured amount and only when volatility supports it.
-        if regime in {"trending_up", "trending_down"}:
-            structure_cap = structure_reward * 0.98
-        if breakout_alignment >= 0.55 and regime in {"trending_up", "trending_down"}:
-            extension = 0.04
-            extension += max(0.0, alignment_score - 0.55) * 0.14
-            extension += max(0.0, setup_quality - 0.55) * 0.18
-            extension += max(0.0, min(0.35, confidence - 0.60)) * 0.20
-            if volatility_state == "expansion":
-                extension += 0.04
-            elif volatility_state == "extreme":
-                extension -= 0.08
-            structure_cap = structure_reward * (1.0 + max(0.0, min(0.22, extension)))
-            if atr > 0:
-                structure_cap += atr * (0.18 + breakout_alignment * 0.28)
-        elif volatility_state == "extreme":
-            structure_cap = structure_reward * 0.88
+        structure_cap = self._structure_reward_cap(
+            structure_reward,
+            breakout_alignment,
+            regime,
+            volatility_state,
+            alignment_score,
+            setup_quality,
+            confidence,
+            atr,
+        )
 
         # Do not force a far lower target if the current plan is already safely inside structure.
         if proposed_reward <= structure_reward * 0.85:

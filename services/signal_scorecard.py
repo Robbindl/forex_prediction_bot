@@ -277,27 +277,15 @@ class SignalScorecard:
                 score -= 0.10
             elif volatility_ratio > 1.40:
                 score -= 0.05
-        try:
-            if signal.direction == "BUY" and support_proximity is not None:
-                has_signal = True
-                proximity = float(support_proximity)
-                if proximity < 0.15:
-                    score += 0.12
-                elif proximity > 0.85:
-                    score -= 0.08
-                if distance_to_resistance <= 0.0025:
-                    score -= 0.12
-            if signal.direction == "SELL" and resistance_proximity is not None:
-                has_signal = True
-                proximity = float(resistance_proximity)
-                if proximity < 0.15:
-                    score += 0.12
-                elif proximity > 0.85:
-                    score -= 0.08
-                if distance_to_support <= 0.0025:
-                    score -= 0.12
-        except Exception:
-            return _clip(score) if has_signal else None
+        score, has_signal = SignalScorecard._entry_quality_directional_adjustment(
+            signal,
+            score=score,
+            has_signal=has_signal,
+            support_proximity=support_proximity,
+            resistance_proximity=resistance_proximity,
+            distance_to_resistance=distance_to_resistance,
+            distance_to_support=distance_to_support,
+        )
         if rr_gap > 0.0:
             has_signal = True
             score -= min(0.20, rr_gap * 0.20)
@@ -347,6 +335,86 @@ class SignalScorecard:
         if ensemble is None:
             return policy
         return _clip(policy * 0.70 + _clip(_maybe_float(ensemble, 0.5)) * 0.30)
+
+    @staticmethod
+    def _entry_quality_directional_adjustment(
+        signal,
+        *,
+        score: float,
+        has_signal: bool,
+        support_proximity,
+        resistance_proximity,
+        distance_to_resistance: float,
+        distance_to_support: float,
+    ) -> tuple[float, bool]:
+        try:
+            if signal.direction == "BUY" and support_proximity is not None:
+                has_signal = True
+                proximity = float(support_proximity)
+                if proximity < 0.15:
+                    score += 0.12
+                elif proximity > 0.85:
+                    score -= 0.08
+                if distance_to_resistance <= 0.0025:
+                    score -= 0.12
+            if signal.direction == "SELL" and resistance_proximity is not None:
+                has_signal = True
+                proximity = float(resistance_proximity)
+                if proximity < 0.15:
+                    score += 0.12
+                elif proximity > 0.85:
+                    score -= 0.08
+                if distance_to_support <= 0.0025:
+                    score -= 0.12
+        except Exception:
+            return score, has_signal
+        return score, has_signal
+
+    @staticmethod
+    def _scorecard_notes(signal, live_payload: Dict[str, Any], seed_source: str, rr_gap: float) -> list[str]:
+        notes: list[str] = []
+        if live_payload.get("scope") == "asset":
+            notes.append(
+                f"live {live_payload.get('accuracy_pct', 0.0):.1f}% over {int(live_payload.get('samples', 0) or 0)} samples"
+            )
+        elif live_payload.get("scope") == "bootstrap":
+            notes.append("live validation still bootstrapping")
+        if signal.metadata.get("ml_prediction_real") is True and signal.metadata.get("ml_direction_agrees") is False:
+            notes.append("ml direction conflicts with trade direction")
+        if seed_source == "playbook":
+            notes.append(
+                f"playbook {signal.metadata.get('playbook_name', 'setup')} seeded the trade"
+            )
+        if signal.metadata.get("seed_below_floor"):
+            notes.append("seed score started below minimum floor")
+        if rr_gap > 0.0:
+            notes.append(f"risk/reward is {rr_gap:.2f} below adaptive minimum")
+        broker = signal.metadata.get("broker_quality") or {}
+        if isinstance(broker, dict) and broker:
+            agreement_state = str(broker.get("quote_agreement_state", "") or "")
+            quote_quality_state = str(broker.get("quote_quality_state", "") or "")
+            spread_regime = str(broker.get("spread_regime", "") or "")
+            if agreement_state == "severe_divergence":
+                notes.append("brokers materially disagree on price")
+            elif agreement_state == "divergent":
+                notes.append("brokers are showing mild price divergence")
+            if quote_quality_state in {"stale", "delayed"}:
+                notes.append(f"quote quality is {quote_quality_state}")
+            if spread_regime in {"stressed", "extreme"}:
+                notes.append(f"spread regime is {spread_regime}")
+        cross_alignment = _maybe_float(signal.metadata.get("cross_asset_alignment"), None)
+        cross_peer = str(signal.metadata.get("cross_asset_primary_peer", "") or "")
+        cross_relation = str(signal.metadata.get("cross_asset_primary_relation", "") or "")
+        if cross_alignment is not None:
+            if cross_alignment >= 0.25:
+                notes.append(
+                    f"cross-asset spillover supports the trade"
+                    f"{f' via {cross_peer}' if cross_peer else ''}"
+                )
+            elif cross_alignment <= -0.25:
+                detail = cross_peer or cross_relation or "related markets"
+                notes.append(f"cross-asset spillover conflicts with direction ({detail})")
+        return notes
 
     def score(self, signal, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         context = context or {}
@@ -435,49 +503,8 @@ class SignalScorecard:
             final_score = min(final_score, live_cap)
         final_score = _clip(final_score, 0.0, MAX_SIGNAL_CONFIDENCE)
 
-        notes = []
-        if live_payload.get("scope") == "asset":
-            notes.append(
-                f"live {live_payload.get('accuracy_pct', 0.0):.1f}% over {int(live_payload.get('samples', 0) or 0)} samples"
-            )
-        elif live_payload.get("scope") == "bootstrap":
-            notes.append("live validation still bootstrapping")
-        if signal.metadata.get("ml_prediction_real") is True and signal.metadata.get("ml_direction_agrees") is False:
-            notes.append("ml direction conflicts with trade direction")
-        if seed_source == "playbook":
-            notes.append(
-                f"playbook {signal.metadata.get('playbook_name', 'setup')} seeded the trade"
-            )
-        if signal.metadata.get("seed_below_floor"):
-            notes.append("seed score started below minimum floor")
         rr_gap = max(0.0, _maybe_float(signal.metadata.get("adaptive_rr_gap"), 0.0))
-        if rr_gap > 0.0:
-            notes.append(f"risk/reward is {rr_gap:.2f} below adaptive minimum")
-        broker = signal.metadata.get("broker_quality") or {}
-        if isinstance(broker, dict) and broker:
-            agreement_state = str(broker.get("quote_agreement_state", "") or "")
-            quote_quality_state = str(broker.get("quote_quality_state", "") or "")
-            spread_regime = str(broker.get("spread_regime", "") or "")
-            if agreement_state == "severe_divergence":
-                notes.append("brokers materially disagree on price")
-            elif agreement_state == "divergent":
-                notes.append("brokers are showing mild price divergence")
-            if quote_quality_state in {"stale", "delayed"}:
-                notes.append(f"quote quality is {quote_quality_state}")
-            if spread_regime in {"stressed", "extreme"}:
-                notes.append(f"spread regime is {spread_regime}")
-        cross_alignment = _maybe_float(signal.metadata.get("cross_asset_alignment"), None)
-        cross_peer = str(signal.metadata.get("cross_asset_primary_peer", "") or "")
-        cross_relation = str(signal.metadata.get("cross_asset_primary_relation", "") or "")
-        if cross_alignment is not None:
-            if cross_alignment >= 0.25:
-                notes.append(
-                    f"cross-asset spillover supports the trade"
-                    f"{f' via {cross_peer}' if cross_peer else ''}"
-                )
-            elif cross_alignment <= -0.25:
-                detail = cross_peer or cross_relation or "related markets"
-                notes.append(f"cross-asset spillover conflicts with direction ({detail})")
+        notes = self._scorecard_notes(signal, live_payload, seed_source, rr_gap)
 
         return {
             "raw_score": round(raw_score, 4),

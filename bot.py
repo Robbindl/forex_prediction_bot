@@ -93,6 +93,73 @@ def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.3) -> bool
         return False
 
 
+def _gateway_node_binary() -> str | None:
+    node = shutil.which("node") or shutil.which("node.exe")
+    if not node:
+        logger.warning(
+            "[Gateway] Node.js not found — WebSocket gateway disabled.\n"
+            "          Install Node.js from https://nodejs.org to enable it."
+        )
+    return node
+
+
+def _gateway_ensure_dependencies(gateway_dir: Path) -> bool:
+    node_modules = gateway_dir / "node_modules"
+    if node_modules.exists():
+        return True
+
+    npm = shutil.which("npm") or shutil.which("npm.cmd")
+    if not npm:
+        logger.warning("[Gateway] npm not found — cannot install dependencies")
+        return False
+
+    logger.info("[Gateway] node_modules missing — running npm install...")
+    try:
+        result = subprocess.run(
+            [npm, "install"],
+            cwd=str(gateway_dir),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            logger.warning(f"[Gateway] npm install failed:\n{result.stderr[:300]}")
+            return False
+        logger.info("[Gateway] npm install complete")
+        return True
+    except subprocess.TimeoutExpired:
+        logger.warning("[Gateway] npm install timed out after 120s")
+    except Exception as e:
+        logger.warning(f"[Gateway] npm install error: {e}")
+    return False
+
+
+def _launch_gateway_process(node: str) -> subprocess.Popen | None:
+    try:
+        proc = subprocess.Popen(
+            [node, "server.js"],
+            cwd=str(_GATEWAY_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        for _ in range(30):
+            time.sleep(0.1)
+            if _port_open(_GATEWAY_PORT):
+                logger.info(f"[Gateway] Started — ws://localhost:{_GATEWAY_PORT}  (PID {proc.pid})")
+                return proc
+
+        if proc.poll() is None:
+            logger.info(f"[Gateway] Launched (PID {proc.pid}) — port not yet open")
+            return proc
+
+        logger.warning("[Gateway] Process exited immediately — check Redis/Node setup")
+        return None
+    except Exception as e:
+        logger.warning(f"[Gateway] Failed to start: {e}")
+        return None
+
+
 def start_gateway(force: bool = False) -> subprocess.Popen | None:
     global _gateway_proc
 
@@ -109,66 +176,16 @@ def start_gateway(force: bool = False) -> subprocess.Popen | None:
         logger.info(f"[Gateway] Port {_GATEWAY_PORT} already in use — assuming gateway is running")
         return None
 
-    node = shutil.which("node") or shutil.which("node.exe")
+    node = _gateway_node_binary()
     if not node:
-        logger.warning(
-            "[Gateway] Node.js not found — WebSocket gateway disabled.\n"
-            "          Install Node.js from https://nodejs.org to enable it."
-        )
         return None
 
-    node_modules = _GATEWAY_DIR / "node_modules"
-    if not node_modules.exists():
-        npm = shutil.which("npm") or shutil.which("npm.cmd")
-        if not npm:
-            logger.warning("[Gateway] npm not found — cannot install dependencies")
-            return None
-        logger.info("[Gateway] node_modules missing — running npm install...")
-        try:
-            result = subprocess.run(
-                [npm, "install"],
-                cwd=str(_GATEWAY_DIR),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if result.returncode != 0:
-                logger.warning(f"[Gateway] npm install failed:\n{result.stderr[:300]}")
-                return None
-            logger.info("[Gateway] npm install complete")
-        except subprocess.TimeoutExpired:
-            logger.warning("[Gateway] npm install timed out after 120s")
-            return None
-        except Exception as e:
-            logger.warning(f"[Gateway] npm install error: {e}")
-            return None
-
-    try:
-        proc = subprocess.Popen(
-            [node, "server.js"],
-            cwd=str(_GATEWAY_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        _gateway_proc = proc
-
-        for _ in range(30):
-            time.sleep(0.1)
-            if _port_open(_GATEWAY_PORT):
-                logger.info(f"[Gateway] Started — ws://localhost:{_GATEWAY_PORT}  (PID {proc.pid})")
-                return proc
-
-        if proc.poll() is None:
-            logger.info(f"[Gateway] Launched (PID {proc.pid}) — port not yet open")
-            return proc
-
-        logger.warning("[Gateway] Process exited immediately — check Redis/Node setup")
+    if not _gateway_ensure_dependencies(_GATEWAY_DIR):
         return None
 
-    except Exception as e:
-        logger.warning(f"[Gateway] Failed to start: {e}")
-        return None
+    proc = _launch_gateway_process(node)
+    _gateway_proc = proc
+    return proc
 
 
 def stop_gateway() -> None:
@@ -288,30 +305,34 @@ def run_backtest(asset: str, category: str, strategy_name: str = "ema_rsi_crosso
     )
 
 
-def main() -> None:
-    args = parse_args()
+def _run_optional_step(
+    action,
+    success_message: str | None = None,
+    failure_message: str | None = None,
+    *,
+    success_level: str = "info",
+    failure_level: str = "warning",
+) -> bool:
+    try:
+        action()
+        if success_message:
+            getattr(logger, success_level)(success_message)
+        return True
+    except Exception as error:
+        if failure_message:
+            getattr(logger, failure_level)(failure_message.format(error=error))
+        return False
 
-    if args.backtest:
-        run_backtest(args.backtest, args.backtest_cat, args.backtest_strategy)
-        return
 
-    os.environ["BOT_LIVE_RUNTIME"] = "1"
-
-    # ── TradingCore ───────────────────────────────────────────────────────
-    from core.engine import TradingCore
-    engine = TradingCore(
-        balance      = args.balance,
-        no_telegram  = args.no_telegram,
-    )
-
-    # Register engine singleton for cross-module access as early as possible.
+def _register_engine_singleton(engine) -> None:
     try:
         import core.engine as _eng_mod
         _eng_mod._CORE_INSTANCE = engine
     except Exception:
         pass
 
-    # ── Graceful shutdown ─────────────────────────────────────────────────
+
+def _create_shutdown_handler(engine):
     def _shutdown(signum, frame):
         if _shutdown_started.is_set():
             logger.warning("[bot] Forced shutdown requested — exiting immediately")
@@ -335,152 +356,333 @@ def main() -> None:
             daemon=True,
         ).start()
 
-    signal.signal(signal.SIGINT,  _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
+    return _shutdown
 
-    engine.start()
 
-    # ── API key expiry notifications ──────────────────────────────────────
+def _load_api_expiry_alerts():
+    expiry_alerts = []
     try:
-        import threading, datetime as _dt
-        def _check_api_expiry():
-            # Load from config (not hardcoded)
-            expiry_alerts = []
-            try:
-                from config.config import API_KEY_EXPIRY_DATES
-                if API_KEY_EXPIRY_DATES:
-                    expiry_alerts = list(API_KEY_EXPIRY_DATES.items())
-            except (ImportError, AttributeError):
-                logger.debug("[bot] API_KEY_EXPIRY_DATES not configured")
-                pass
-            
-            while True:
-                try:
-                    tc = engine
-                    today = _dt.date.today()
-                    if tc and hasattr(tc, "telegram") and tc.telegram and expiry_alerts and _check_api_expiry.last_checked != today:
-                        today = _dt.date.today()
-                        for name, exp_date in expiry_alerts:
-                            days_left = (exp_date - today).days
-                            if days_left in (7, 3, 1, 0, -1):
-                                if days_left < 0:
-                                    msg = (
-                                        f"🔴 *API KEY EXPIRED*\n\n"
-                                        f"*{name}* expired {abs(days_left)} day{'s' if abs(days_left) != 1 else ''} ago.\n"
-                                        f"Renew immediately to avoid data gaps."
-                                    )
-                                else:
-                                    msg = (
-                                        f"⚠️ *API Key Expiry Alert*\n\n"
-                                        f"*{name}* expires in *{days_left} day{'s' if days_left != 1 else ''}* "
-                                        f"({exp_date.strftime('%B %d, %Y')}).\n\n"
-                                        f"{'🚨 Renew immediately!' if days_left == 0 else 'Please renew soon.'}"
-                                    )
-                                tc.telegram.send_message(msg)
-                        _check_api_expiry.last_checked = today
-                except Exception as e:
-                    logger.debug(f"[APIExpiryChecker] error: {e}")
-                # Retry until the first successful daily check, then back off.
-                import time
-                sleep_seconds = 86400 if _check_api_expiry.last_checked == _dt.date.today() else 300
-                time.sleep(sleep_seconds)
-        _check_api_expiry.last_checked = None
-        threading.Thread(target=_check_api_expiry, name="APIExpiryChecker", daemon=True).start()
-        logger.info("[bot] API expiry checker started")
-    except Exception as e:
-        logger.warning(f"[bot] API expiry checker failed: {e}")
+        from config.config import API_KEY_EXPIRY_DATES
+        if API_KEY_EXPIRY_DATES:
+            expiry_alerts = list(API_KEY_EXPIRY_DATES.items())
+    except (ImportError, AttributeError):
+        logger.debug("[bot] API_KEY_EXPIRY_DATES not configured")
+    return expiry_alerts
 
-    # DataFetcher check moved to after wait_until_ready — see below
 
-    # ── Data feeds ────────────────────────────────────────────────────────
-    try:
+def _api_expiry_worker(engine) -> None:
+    import datetime as _dt
+
+    expiry_alerts = _load_api_expiry_alerts()
+    while True:
+        try:
+            tc = engine
+            today = _dt.date.today()
+            if tc and hasattr(tc, "telegram") and tc.telegram and expiry_alerts and _api_expiry_worker.last_checked != today:
+                today = _dt.date.today()
+                for name, exp_date in expiry_alerts:
+                    days_left = (exp_date - today).days
+                    if days_left in (7, 3, 1, 0, -1):
+                        if days_left < 0:
+                            msg = (
+                                f"🔴 *API KEY EXPIRED*\n\n"
+                                f"*{name}* expired {abs(days_left)} day{'s' if abs(days_left) != 1 else ''} ago.\n"
+                                f"Renew immediately to avoid data gaps."
+                            )
+                        else:
+                            msg = (
+                                f"⚠️ *API Key Expiry Alert*\n\n"
+                                f"*{name}* expires in *{days_left} day{'s' if days_left != 1 else ''}* "
+                                f"({exp_date.strftime('%B %d, %Y')}).\n\n"
+                                f"{'🚨 Renew immediately!' if days_left == 0 else 'Please renew soon.'}"
+                            )
+                        tc.telegram.send_message(msg)
+                _api_expiry_worker.last_checked = today
+        except Exception as error:
+            logger.debug(f"[APIExpiryChecker] error: {error}")
+        import time as _time
+        sleep_seconds = 86400 if _api_expiry_worker.last_checked == _dt.date.today() else 300
+        _time.sleep(sleep_seconds)
+
+
+def _start_api_expiry_checker(engine) -> None:
+    _api_expiry_worker.last_checked = None
+    threading.Thread(target=_api_expiry_worker, args=(engine,), name="APIExpiryChecker", daemon=True).start()
+    logger.info("[bot] API expiry checker started")
+
+
+def _start_pre_bot_services(engine, args) -> None:
+    def _start_data_feeds():
         from data_ingestion import start_all as start_data_feeds
         start_data_feeds(exchanges=["binance", "bybit"])
-        logger.info("[bot] Data feeds started")
-    except Exception as e:
-        logger.warning(f"[bot] Data feeds failed to start: {e}")
 
-    # ── Whale wallet intelligence ────────────────────────────────────────
-    try:
+    def _start_whale_intelligence():
         from whale_intelligence import start_all as start_whale_intelligence
         start_whale_intelligence()
-        logger.info("[bot] Whale wallet intelligence started")
-    except Exception as e:
-        logger.warning(f"[bot] Whale wallet intelligence failed to start: {e}")
 
-    # ── Order flow intelligence ───────────────────────────────────────────
-    try:
+    def _start_order_flow():
         from order_flow import start_all as start_order_flow
         start_order_flow()
-        logger.info("[bot] Order flow intelligence started")
-    except Exception as e:
-        logger.warning(f"[bot] Order flow intelligence failed to start: {e}")
 
-    # ── Narrative AI ──────────────────────────────────────────────────────
-    try:
+    def _load_narrative_ai():
         from narrative_ai import get_narrative_scores, get_dominant_narrative
-        logger.info("[bot] Narrative AI engine ready")
-    except Exception as e:
-        logger.warning(f"[bot] Narrative AI failed to load: {e}")
+        return None
 
-    logger.info("[bot] Playbook-only runtime active — live strategy bridge removed")
-    logger.info("[bot] Playbook-only runtime active — Meta AI overlay removed")
-
-    # ── News event monitor ────────────────────────────────────────────────
-    try:
+    def _start_news_monitor():
         from data_ingestion.news_event_monitor import start_news_monitor
         start_news_monitor()
-        logger.info("[bot] News event monitor started")
-    except Exception as e:
-        logger.warning(f"[bot] News event monitor failed to start: {e}")
 
-    # ── System health monitoring ──────────────────────────────────────────
-    try:
+    def _load_system_monitoring():
         from monitoring import start_monitoring
-        logger.info("[bot] System health monitoring module loaded")
-    except Exception as e:
-        logger.warning(f"[bot] System health monitoring failed to load: {e}")
+        return start_monitoring
 
-    # ── Portfolio risk engine ─────────────────────────────────────────────
-    try:
+    def _start_portfolio_risk():
         from risk.portfolio_risk import PortfolioRiskEngine
         portfolio_risk = PortfolioRiskEngine()
         engine._portfolio_risk = portfolio_risk
         engine.portfolio_risk = portfolio_risk
-        logger.info("[bot] PortfolioRiskEngine attached")
-    except Exception as e:
-        logger.warning(f"[bot] PortfolioRiskEngine failed: {e}")
 
-    # ── Exchange router + paper adapter ──────────────────────────────────
-    try:
+    def _start_exchange_router():
         from execution.exchange_router import ExchangeRouter
-        from execution.paper_adapter   import PaperAdapter
+        from execution.paper_adapter import PaperAdapter
         router = ExchangeRouter()
-        if hasattr(engine, '_paper_trader') and engine._paper_trader:
+        if hasattr(engine, "_paper_trader") and engine._paper_trader:
             router.register("paper", PaperAdapter(engine._paper_trader))
         engine.exchange_router = router
-        logger.info("[bot] ExchangeRouter ready — paper adapter registered")
-    except Exception as e:
-        logger.warning(f"[bot] ExchangeRouter failed: {e}")
 
-    logger.info("[bot] Playbook-only runtime active — ML prediction service removed")
-
-    # ── Redis cache upgrade ───────────────────────────────────────────────
-    try:
+    def _upgrade_redis_cache():
         from config.config import CACHE_TTL
         from services.redis_cache import get_cache
         upgraded_cache = get_cache(default_ttl=CACHE_TTL)
         import data.cache as _cache_mod
         _cache_mod.cache = upgraded_cache
-        logger.info("[bot] Redis shared cache active (market-data cache remains local)")
-    except Exception as e:
-        logger.debug(f"[bot] Redis cache not available ({e}) — using in-process cache")
 
-    # ── Node.js WebSocket gateway ─────────────────────────────────────────
+    _run_optional_step(_start_data_feeds, "[bot] Data feeds started", "[bot] Data feeds failed to start: {error}")
+    _run_optional_step(
+        _start_whale_intelligence,
+        "[bot] Whale wallet intelligence started",
+        "[bot] Whale wallet intelligence failed to start: {error}",
+    )
+    _run_optional_step(_start_order_flow, "[bot] Order flow intelligence started", "[bot] Order flow intelligence failed to start: {error}")
+    _run_optional_step(_load_narrative_ai, "[bot] Narrative AI engine ready", "[bot] Narrative AI failed to load: {error}")
+
+    logger.info("[bot] Playbook-only runtime active — live strategy bridge removed")
+    logger.info("[bot] Playbook-only runtime active — Meta AI overlay removed")
+
+    _run_optional_step(_start_news_monitor, "[bot] News event monitor started", "[bot] News event monitor failed to start: {error}")
+    _run_optional_step(_load_system_monitoring, "[bot] System health monitoring module loaded", "[bot] System health monitoring failed to load: {error}")
+    _run_optional_step(_start_portfolio_risk, "[bot] PortfolioRiskEngine attached", "[bot] PortfolioRiskEngine failed: {error}")
+    _run_optional_step(
+        _start_exchange_router,
+        "[bot] ExchangeRouter ready — paper adapter registered",
+        "[bot] ExchangeRouter failed: {error}",
+    )
+
+    logger.info("[bot] Playbook-only runtime active — ML prediction service removed")
+
+    _run_optional_step(
+        _upgrade_redis_cache,
+        "[bot] Redis shared cache active (market-data cache remains local)",
+        "[bot] Redis cache not available ({error}) — using in-process cache",
+        failure_level="debug",
+    )
+
     if not args.no_gateway:
         start_gateway()
     else:
         logger.info("[bot] Gateway disabled via --no-gateway")
+
+
+def _start_intelligence_bot():
+    try:
+        from intelligence_bot import intelligence_bot as _intel_bot
+        if _intel_bot.is_ready:
+            logger.info("[bot] Intelligence Bot (Bot 2) ready — send-only")
+        else:
+            logger.warning("[bot] Intelligence Bot (Bot 2) not ready — check WHALE_TELEGRAM_TOKEN in .env")
+        return _intel_bot
+    except Exception as error:
+        logger.warning(f"[bot] Intelligence Bot init failed: {error}")
+        return None
+
+
+def _start_bot_services(engine, args) -> None:
+    intel_bot = _start_intelligence_bot()
+
+    _run_optional_step(
+        lambda: __import__("services.intelligence_alerts", fromlist=["start_all"]).start_all(telegram_bot=intel_bot),
+        "[bot] Market intelligence alerts → Bot 2",
+        "[bot] Market intelligence alerts failed: {error}",
+    )
+    _run_optional_step(
+        lambda: __import__("monitoring", fromlist=["start_monitoring"]).start_monitoring(telegram_bot=intel_bot),
+        "[bot] System health monitoring → Bot 2",
+        "[bot] System health monitoring failed: {error}",
+    )
+
+    if not args.no_telegram and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        _start_command_bot(engine)
+
+
+def _start_command_bot(engine) -> None:
+    try:
+        from telegram_manager import telegram_manager
+        started = telegram_manager.start(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, engine)
+        if started:
+            engine.telegram = telegram_manager.bot
+            try:
+                from core.signal_reporter import reporter
+                reporter.wire_telegram(telegram_manager.bot)
+                logger.info("[bot] SignalReporter → Bot 1")
+            except Exception as error:
+                logger.warning(f"[bot] SignalReporter Telegram wire failed: {error}")
+            logger.info("[bot] Command Bot (Bot 1) started and wired to engine")
+        else:
+            logger.warning("[bot] Command Bot (Bot 1) not started — duplicate instance or missing creds")
+    except Exception as error:
+        logger.warning(f"[bot] Command Bot init failed: {error}")
+
+
+def _wait_for_engine_ready(engine) -> None:
+    logger.info("[bot] Waiting for engine to be ready...")
+    ready = engine.wait_until_ready(timeout=60.0)
+    if ready:
+        logger.info(f"[bot] Engine ready — balance=${engine.get_balance():.2f}")
+    else:
+        logger.warning("[bot] Engine did not become ready in 60s — continuing anyway")
+
+
+def _ensure_data_fetcher(engine) -> None:
+    if engine.fetcher:
+        logger.info("[bot] DataFetcher ready (reusing engine singleton)")
+        return
+    try:
+        from data.fetcher import DataFetcher
+        engine.fetcher = DataFetcher()
+        logger.info("[bot] DataFetcher created (engine singleton was None)")
+    except Exception as error:
+        logger.warning(f"[bot] DataFetcher init failed: {error}")
+
+
+def _handle_whale_alert(alert: dict) -> None:
+    try:
+        from services.intelligence_event_utils import canonical_crypto_asset, record_whale_alert_event
+        from core.asset_profiles import is_crypto
+
+        source_name = str(alert.get("source", "") or "").lower()
+        if (
+            source_name.startswith("telegram/")
+            or source_name.startswith("twitter")
+            or source_name.startswith("reddit")
+        ):
+            return
+
+        symbol = str(alert.get("symbol", alert.get("asset", ""))).upper().strip()
+        asset = canonical_crypto_asset(symbol)
+        if not asset or not is_crypto(asset):
+            return
+
+        size_usd = float(alert.get("value_usd", alert.get("usd_amount", 0)))
+        if size_usd < 500_000:
+            return
+
+        record_whale_alert_event(
+            asset=asset,
+            source=alert.get("source", "whale_alert"),
+            value_usd=size_usd,
+            raw_text=alert.get("raw_text", alert.get("title", "")),
+            sentiment=float(alert.get("sentiment", 0.1)),
+            timestamp=alert.get("alert_time") or alert.get("created_at") or alert.get("date"),
+            metadata={
+                "title": alert.get("title", ""),
+                "url": alert.get("url", ""),
+            },
+            external_id=str(alert.get("external_id") or alert.get("url") or ""),
+        )
+    except Exception as error:
+        logger.error(f"[bot] on_whale_alert callback error: {error}")
+
+
+def _start_whale_monitoring() -> None:
+    try:
+        from whale_alert_manager import WhaleAlertManager
+
+        whale_mgr = WhaleAlertManager()
+        whale_mgr.on_alert = _handle_whale_alert
+        whale_mgr.start_monitoring()
+        logger.info("[bot] WhaleAlertManager started — market intelligence feed active")
+    except Exception as error:
+        logger.warning(f"[bot] WhaleAlertManager failed to start: {error}")
+
+
+def _start_dashboard(engine, args) -> None:
+    dashboard_cert = None
+    dashboard_key = None
+    if args.http2:
+        try:
+            dashboard_cert, dashboard_key = _resolve_tls_certificates(args.ssl_cert, args.ssl_key)
+        except Exception as error:
+            logger.warning(f"[bot] HTTP/2 TLS setup failed: {error}; running without HTTPS.")
+            dashboard_cert = None
+            dashboard_key = None
+
+    if args.no_dashboard:
+        logger.info("[bot] Running without dashboard. Ctrl+C to stop.")
+        try:
+            while engine.is_running:
+                time.sleep(10)
+        except KeyboardInterrupt:
+            _create_shutdown_handler(engine)(None, None)
+        return
+
+    try:
+        from dashboard.web_app_live import start_dashboard
+        display_host = "localhost" if args.host in ("0.0.0.0", "127.0.0.1") else args.host
+        scheme = "https" if args.http2 and dashboard_cert and dashboard_key else "http"
+        logger.info(f"[bot] Dashboard → {scheme}://{display_host}:{args.port}")
+        start_dashboard(
+            engine,
+            host=args.host,
+            port=args.port,
+            http2=args.http2,
+            ssl_cert=dashboard_cert,
+            ssl_key=dashboard_key,
+        )  # blocking
+    except Exception as error:
+        logger.error(f"[bot] Dashboard failed: {error}", exc_info=True)
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.backtest:
+        run_backtest(args.backtest, args.backtest_cat, args.backtest_strategy)
+        return
+
+    os.environ["BOT_LIVE_RUNTIME"] = "1"
+
+    # ── TradingCore ───────────────────────────────────────────────────────
+    from core.engine import TradingCore
+    engine = TradingCore(
+        balance      = args.balance,
+        no_telegram  = args.no_telegram,
+    )
+
+    _register_engine_singleton(engine)
+
+    # ── Graceful shutdown ─────────────────────────────────────────────────
+    _shutdown = _create_shutdown_handler(engine)
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    engine.start()
+
+    # ── API key expiry notifications ──────────────────────────────────────
+    _start_api_expiry_checker(engine)
+
+    # DataFetcher check moved to after wait_until_ready — see below
+
+    _start_pre_bot_services(engine, args)
 
     # ── Telegram ──────────────────────────────────────────────────────────
     #
@@ -505,160 +707,25 @@ def main() -> None:
     # it has its own token and does not depend on Bot 1 in any way.
     # ──────────────────────────────────────────────────────────────────────
 
-    # ── Bot 2 — Intelligence Bot (always started first, no polling) ───────
-    _intel_bot = None
-    try:
-        from intelligence_bot import intelligence_bot as _intel_bot
-        if _intel_bot.is_ready:
-            logger.info("[bot] Intelligence Bot (Bot 2) ready — send-only")
-        else:
-            logger.warning("[bot] Intelligence Bot (Bot 2) not ready — check WHALE_TELEGRAM_TOKEN in .env")
-    except Exception as e:
-        logger.warning(f"[bot] Intelligence Bot init failed: {e}")
-
-    # Market intelligence and system health always go to Bot 2
-    try:
-        from services.intelligence_alerts import start_all as start_intel_alerts
-        start_intel_alerts(telegram_bot=_intel_bot)
-        logger.info("[bot] Market intelligence alerts → Bot 2")
-    except Exception as e:
-        logger.warning(f"[bot] Market intelligence alerts failed: {e}")
-
-    try:
-        from monitoring import start_monitoring
-        start_monitoring(telegram_bot=_intel_bot)
-        logger.info("[bot] System health monitoring → Bot 2")
-    except Exception as e:
-        logger.warning(f"[bot] System health monitoring failed: {e}")
-
-    # ── Bot 1 — Command Bot (polling, interactive) ────────────────────────
-    if not args.no_telegram and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        try:
-            from telegram_manager import telegram_manager
-            started = telegram_manager.start(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, engine)
-            if started:
-                # Trade alerts and signal journals → Bot 1 only
-                engine.telegram = telegram_manager.bot
-                try:
-                    from core.signal_reporter import reporter
-                    reporter.wire_telegram(telegram_manager.bot)
-                    logger.info("[bot] SignalReporter → Bot 1")
-                except Exception as e:
-                    logger.warning(f"[bot] SignalReporter Telegram wire failed: {e}")
-                logger.info("[bot] Command Bot (Bot 1) started and wired to engine")
-            else:
-                logger.warning("[bot] Command Bot (Bot 1) not started — duplicate instance or missing creds")
-        except Exception as e:
-            logger.warning(f"[bot] Command Bot init failed: {e}")
+    _start_bot_services(engine, args)
 
     # ── Wait for engine ───────────────────────────────────────────────────
-    logger.info("[bot] Waiting for engine to be ready...")
-    ready = engine.wait_until_ready(timeout=60.0)
-    if ready:
-        logger.info(f"[bot] Engine ready — balance=${engine.get_balance():.2f}")
-    else:
-        logger.warning("[bot] Engine did not become ready in 60s — continuing anyway")
+    _wait_for_engine_ready(engine)
 
     # ── DataFetcher ───────────────────────────────────────────────────────
     # Checked AFTER wait_until_ready so engine._init_subsystems() has
     # completed and engine.fetcher is guaranteed to exist if init succeeded.
-    if engine.fetcher:
-        logger.info("[bot] DataFetcher ready (reusing engine singleton)")
-    else:
-        try:
-            from data.fetcher import DataFetcher
-            engine.fetcher = DataFetcher()
-            logger.info("[bot] DataFetcher created (engine singleton was None)")
-        except Exception as e:
-            logger.warning(f"[bot] DataFetcher init failed: {e}")
+    _ensure_data_fetcher(engine)
 
     logger.info("[bot] Playbook-only runtime active — AutoTrainer removed")
 
     logger.info("[bot] Playbook-only runtime active — auto strategy research removed")
 
     # ── Whale monitoring ──────────────────────────────────────────────────
-    try:
-        from whale_alert_manager import WhaleAlertManager
-        from services.intelligence_event_utils import canonical_crypto_asset, record_whale_alert_event
-        from core.asset_profiles import is_crypto
-
-        _whale_mgr = WhaleAlertManager()
-
-        def _on_whale_alert(alert: dict) -> None:
-            try:
-                source_name = str(alert.get("source", "") or "").lower()
-                if (
-                    source_name.startswith("telegram/")
-                    or source_name.startswith("twitter")
-                    or source_name.startswith("reddit")
-                ):
-                    return  # social watcher already persisted this event upstream
-
-                symbol = str(alert.get("symbol", alert.get("asset", ""))).upper().strip()
-                asset  = canonical_crypto_asset(symbol)
-                if not asset or not is_crypto(asset):
-                    return   # only crypto whale data is valid
-
-                size_usd  = float(alert.get("value_usd", alert.get("usd_amount", 0)))
-                if size_usd < 500_000:
-                    return
-
-                record_whale_alert_event(
-                    asset=asset,
-                    source=alert.get("source", "whale_alert"),
-                    value_usd=size_usd,
-                    raw_text=alert.get("raw_text", alert.get("title", "")),
-                    sentiment=float(alert.get("sentiment", 0.1)),
-                    timestamp=alert.get("alert_time") or alert.get("created_at") or alert.get("date"),
-                    metadata={
-                        "title": alert.get("title", ""),
-                        "url": alert.get("url", ""),
-                    },
-                    external_id=str(alert.get("external_id") or alert.get("url") or ""),
-                )
-            except Exception as e:
-                logger.error(f"[bot] on_whale_alert callback error: {e}")
-
-        _whale_mgr.on_alert = _on_whale_alert
-        _whale_mgr.start_monitoring()
-        logger.info("[bot] WhaleAlertManager started — market intelligence feed active")
-    except Exception as e:
-        logger.warning(f"[bot] WhaleAlertManager failed to start: {e}")
+    _start_whale_monitoring()
 
     # ── Dashboard ─────────────────────────────────────────────────────────
-    dashboard_cert = None
-    dashboard_key = None
-    if args.http2:
-        try:
-            dashboard_cert, dashboard_key = _resolve_tls_certificates(args.ssl_cert, args.ssl_key)
-        except Exception as e:
-            logger.warning(f"[bot] HTTP/2 TLS setup failed: {e}; running without HTTPS.")
-            dashboard_cert = None
-            dashboard_key = None
-
-    if not args.no_dashboard:
-        try:
-            from dashboard.web_app_live import start_dashboard
-            display_host = "localhost" if args.host in ("0.0.0.0", "127.0.0.1") else args.host
-            scheme = "https" if args.http2 and dashboard_cert and dashboard_key else "http"
-            logger.info(f"[bot] Dashboard → {scheme}://{display_host}:{args.port}")
-            start_dashboard(
-                engine,
-                host=args.host,
-                port=args.port,
-                http2=args.http2,
-                ssl_cert=dashboard_cert,
-                ssl_key=dashboard_key,
-            )  # blocking
-        except Exception as e:
-            logger.error(f"[bot] Dashboard failed: {e}", exc_info=True)
-    else:
-        logger.info("[bot] Running without dashboard. Ctrl+C to stop.")
-        try:
-            while engine.is_running:
-                time.sleep(10)
-        except KeyboardInterrupt:
-            _shutdown(None, None)
+    _start_dashboard(engine, args)
 
 
 if __name__ == "__main__":

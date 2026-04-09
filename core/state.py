@@ -242,6 +242,64 @@ class SystemState:
         except Exception as e:
             logger.error(f"[State] DB save_open_position failed: {e}")
 
+    @staticmethod
+    def _close_position_duration_minutes(trade_id: str, entry_time_str: Any, exit_time: str) -> int:
+        open_dt = _coerce_trade_time(entry_time_str)
+        exit_dt = _coerce_trade_time(exit_time)
+        if not open_dt or not exit_dt:
+            return 0
+        try:
+            duration_seconds = (exit_dt - open_dt).total_seconds()
+            duration_minutes = int(duration_seconds / 60)
+            return max(0, duration_minutes)
+        except Exception as e:
+            logger.debug(f"[State] Duration calc failed for {trade_id}: {e} — using 0")
+            return 0
+
+    @staticmethod
+    def _apply_close_updates(pos: Dict[str, Any], extra_updates: Optional[Dict[str, Any]]) -> None:
+        if not extra_updates:
+            return
+        extra = dict(extra_updates)
+        update_meta = extra.pop("metadata", None)
+        if update_meta is None:
+            update_meta = extra.pop("trade_metadata", None)
+        for key, value in extra.items():
+            if value is not None:
+                pos[key] = value
+        if update_meta is not None:
+            pos["metadata"] = _merge_trade_metadata(pos.get("metadata"), update_meta)
+
+    def _finalize_closed_position_state(self, pos: Dict[str, Any], pnl: float) -> tuple[Dict[str, Any], float, str]:
+        self._daily_pnl += pnl
+        self._balance = max(0.0, self._balance + pnl)
+
+        sid = pos.get("strategy_id", "UNKNOWN")
+        session = pos.get("session", "unknown")
+        asset = pos.get("canonical_asset", pos.get("asset", "UNKNOWN"))
+        today = date.today().isoformat()
+
+        for stats_dict, key in [
+            (self._strategy_stats, sid),
+            (self._session_stats, session),
+            (self._asset_stats, asset),
+        ]:
+            s = stats_dict[key]
+            s["pnl"] += pnl
+            if pnl > 0:
+                s["wins"] += 1
+            else:
+                s["losses"] += 1
+
+        self._closed_positions.append(pos)
+        if len(self._closed_positions) > 500:
+            self._closed_positions = self._closed_positions[-500:]
+
+        pos_snapshot = dict(pos)
+        balance_now = self._balance
+        self._persist_json()
+        return pos_snapshot, balance_now, today
+
     def close_position(
         self,
         trade_id: str,
@@ -260,31 +318,8 @@ class SystemState:
                 pos["entry_time"] = entry_time_str
                 pos.setdefault("open_time", entry_time_str)
 
-            # Calculate duration from open_time to exit_time (in minutes)
             exit_time = datetime.now(timezone.utc).isoformat()
-            duration_minutes = 0
-            try:
-                from datetime import datetime as dt_class
-                open_time_str = entry_time_str
-                if open_time_str:
-                    try:
-                        # Try parsing with fromisoformat
-                        open_dt = dt_class.fromisoformat(open_time_str)
-                    except (ValueError, TypeError):
-                        # If that fails, try removing 'Z' suffix and retry
-                        if open_time_str.endswith('Z'):
-                            open_dt = dt_class.fromisoformat(open_time_str[:-1])
-                        else:
-                            raise
-                    
-                    exit_dt = dt_class.fromisoformat(exit_time)
-                    duration_seconds = (exit_dt - open_dt).total_seconds()
-                    duration_minutes = int(duration_seconds / 60)
-                    if duration_minutes < 0:
-                        duration_minutes = 0
-            except Exception as e:
-                logger.debug(f"[State] Duration calc failed for {trade_id}: {e} — using 0")
-                duration_minutes = 0
+            duration_minutes = self._close_position_duration_minutes(trade_id, entry_time_str, exit_time)
 
             pos.update({
                 "exit_price":       exit_price,
@@ -293,51 +328,11 @@ class SystemState:
                 "exit_time":        exit_time,
                 "duration_minutes": duration_minutes,
             })
-            if extra_updates:
-                extra = dict(extra_updates)
-                update_meta = extra.pop("metadata", None)
-                if update_meta is None:
-                    update_meta = extra.pop("trade_metadata", None)
-                for key, value in extra.items():
-                    if value is not None:
-                        pos[key] = value
-                if update_meta is not None:
-                    pos["metadata"] = _merge_trade_metadata(pos.get("metadata"), update_meta)
+            self._apply_close_updates(pos, extra_updates)
 
             pos = _normalize_closed_trade_snapshot(pos)
             _attach_execution_feedback(pos)
-
-            self._daily_pnl  += pnl
-            # FIX: Floor the balance at 0 — without this a single large
-            # offline gap-fill loss can drive _balance deeply negative and
-            # the bot continues trading on a negative account indefinitely.
-            # A zero floor halts new sizing (position_sizer returns 0 on
-            # zero balance) but keeps historical records accurate.
-            self._balance = max(0.0, self._balance + pnl)
-
-            # Stats
-            sid     = pos.get("strategy_id", "UNKNOWN")
-            session = pos.get("session", "unknown")
-            asset   = pos.get("canonical_asset", pos.get("asset", "UNKNOWN"))
-            today   = date.today().isoformat()
-
-            for stats_dict, key in [
-                (self._strategy_stats, sid),
-                (self._session_stats,  session),
-                (self._asset_stats,    asset),
-            ]:
-                s = stats_dict[key]
-                s["pnl"] += pnl
-                if pnl > 0:  s["wins"]   += 1
-                else:        s["losses"] += 1
-
-            self._closed_positions.append(pos)
-            if len(self._closed_positions) > 500:
-                self._closed_positions = self._closed_positions[-500:]
-
-            pos_snapshot = dict(pos)
-            balance_now  = self._balance
-            self._persist_json()
+            pos_snapshot, balance_now, today = self._finalize_closed_position_state(pos, pnl)
 
         # DB writes outside lock
         try:
@@ -725,6 +720,57 @@ class SystemState:
         except Exception as e:
             logger.error(f"[State] JSON load failed: {e} — using defaults")
 
+    def _restore_open_positions_from_db_rows(self, positions: List[Dict[str, Any]]) -> tuple[int, List[str]]:
+        restored = 0
+        closed_trade_ids = {
+            str(pos.get("trade_id", "") or "")
+            for pos in self._closed_positions
+            if pos.get("trade_id")
+        }
+        stale_open_trade_ids: List[str] = []
+
+        for pos in positions:
+            tid = str(pos.get("trade_id", "") or "")
+            if not tid:
+                continue
+            if tid in closed_trade_ids:
+                stale_open_trade_ids.append(tid)
+                continue
+            self._open_positions[tid] = pos
+            restored += 1
+
+        return restored, stale_open_trade_ids
+
+    @staticmethod
+    def _remove_stale_open_positions_from_db(db: Any, stale_open_trade_ids: List[str]) -> None:
+        for trade_id in stale_open_trade_ids:
+            try:
+                db.delete_open_position(trade_id)
+                logger.warning(
+                    f"[State] Removed stale DB open position already marked closed in cache: {trade_id}"
+                )
+            except Exception as e:
+                logger.error(f"[State] failed removing stale open position {trade_id}: {e}")
+
+    def _sync_open_positions_to_db(self, db: Any) -> None:
+        for pos in list(self._open_positions.values()):
+            try:
+                db.save_open_position(pos)
+            except Exception:
+                pass
+
+    def _backfill_cached_open_positions_to_db(self, db: Any) -> None:
+        if not self._open_positions:
+            return
+        logger.info(
+            f"[State] Backfilling {len(self._open_positions)} cached open position(s) into DB"
+        )
+        for pos in list(self._open_positions.values()):
+            try:
+                db.save_open_position(pos)
+            except Exception as e:
+                logger.error(f"[State] failed backfilling open position {pos.get('trade_id')}: {e}")
+
     def _load_positions_from_db(self) -> None:
         """Restore open positions from PostgreSQL on startup."""
         try:
@@ -732,52 +778,13 @@ class SystemState:
             db = get_db()
             positions = db.load_open_positions()
             if positions:
-                restored = 0
-                closed_trade_ids = {
-                    str(pos.get("trade_id", "") or "")
-                    for pos in self._closed_positions
-                    if pos.get("trade_id")
-                }
-                stale_open_trade_ids = []
-                for pos in positions:
-                    tid = pos.get("trade_id")
-                    if tid:
-                        if tid in closed_trade_ids:
-                            stale_open_trade_ids.append(tid)
-                            continue
-                        self._open_positions[tid] = pos
-                        restored += 1
+                restored, stale_open_trade_ids = self._restore_open_positions_from_db_rows(positions)
                 logger.info(f"[State] Restored {restored} open position(s) from DB")
-
-                for trade_id in stale_open_trade_ids:
-                    try:
-                        db.delete_open_position(trade_id)
-                        logger.warning(
-                            f"[State] Removed stale DB open position already marked closed in cache: {trade_id}"
-                        )
-                    except Exception as e:
-                        logger.error(f"[State] failed removing stale open position {trade_id}: {e}")
-
-                # Ensure any JSON cache positions are also reflected in DB (cross-merge)
-                for pos in list(self._open_positions.values()):
-                    try:
-                        db.save_open_position(pos)
-                    except Exception:
-                        pass
-
+                self._remove_stale_open_positions_from_db(db, stale_open_trade_ids)
+                self._sync_open_positions_to_db(db)
             else:
                 logger.info("[State] No open positions found in DB; using cached JSON state fallback if available")
-
-                # Backfill any JSON cached open positions into DB so they survive next restart
-                if self._open_positions:
-                    logger.info(
-                        f"[State] Backfilling {len(self._open_positions)} cached open position(s) into DB"
-                    )
-                    for pos in list(self._open_positions.values()):
-                        try:
-                            db.save_open_position(pos)
-                        except Exception as e:
-                            logger.error(f"[State] failed backfilling open position {pos.get('trade_id')}: {e}")
+                self._backfill_cached_open_positions_to_db(db)
 
         except Exception as e:
             logger.error(f"[State] DB position restore failed: {e}")

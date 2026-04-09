@@ -85,6 +85,302 @@ def _news_direction_sign(raw_direction: Any) -> int:
     return 0
 
 
+def _playbook_direction_sign(direction: str) -> int:
+    label = str(direction or "").strip().upper()
+    if label == "BUY":
+        return 1
+    if label == "SELL":
+        return -1
+    return 0
+
+
+def _candidate_threshold_reason(value: float, floor: float, reason: str, playbook: str) -> str:
+    if value < floor:
+        return f"{reason}:{playbook}"
+    return ""
+
+
+def _candidate_exhaustion_reason(
+    direction: str,
+    upside_exhaustion_score: float,
+    downside_exhaustion_score: float,
+    threshold: float,
+    playbook: str,
+) -> str:
+    if direction == "BUY" and upside_exhaustion_score >= threshold:
+        return f"upside_exhausted:{playbook}"
+    if direction == "SELL" and downside_exhaustion_score >= threshold:
+        return f"downside_exhausted:{playbook}"
+    return ""
+
+
+def _candidate_bias_conflict_reason(structure_bias: str, bias_alignment: bool, strong_break: bool, playbook: str) -> str:
+    if structure_bias in {"buy", "sell"} and not bias_alignment and not strong_break:
+        return f"bias_conflict:{playbook}"
+    return ""
+
+
+def _candidate_trend_misaligned_reason(
+    aligned_trends: int,
+    required_trends: int,
+    strong_break: bool,
+    playbook: str,
+) -> str:
+    if aligned_trends < max(0, int(required_trends or 0)) and not strong_break:
+        return f"trend_misaligned:{playbook}"
+    return ""
+
+
+def _qualify_crypto_orderflow_candidate(
+    *,
+    candidate: Dict[str, Any],
+    profile: _PlaybookProfile,
+    plan: _AssetPlaybookPlan,
+    playbook: str,
+    direction: str,
+    structure_bias: str,
+    alignment_score: float,
+    setup_quality: float,
+    upside_exhaustion_score: float,
+    downside_exhaustion_score: float,
+    aligned_trends: int,
+    bias_alignment: bool,
+) -> tuple[bool, str, bool]:
+    candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
+    imbalance_strength = abs(_safe_float(candidate.get("book_imbalance", 0.0), 0.0))
+    micro_strength = abs(_safe_float(candidate.get("micro_score", 0.0), 0.0))
+    strong_micro_break = (
+        candidate_score >= max(profile.breakout_min_score, 0.60)
+        and imbalance_strength >= 0.38
+        and micro_strength >= 0.28
+    )
+    relaxed_alignment_floor = 0.0 if strong_micro_break else max(0.25, float(plan.min_alignment_score) - 0.18)
+    relaxed_setup_floor = max(0.12, float(plan.min_setup_quality) - (0.42 if strong_micro_break else 0.12))
+
+    reason = _candidate_threshold_reason(alignment_score, relaxed_alignment_floor, "alignment_too_weak", playbook)
+    if reason:
+        return False, reason, strong_micro_break
+    reason = _candidate_threshold_reason(setup_quality, relaxed_setup_floor, "setup_quality_too_weak", playbook)
+    if reason:
+        return False, reason, strong_micro_break
+    reason = _candidate_exhaustion_reason(direction, upside_exhaustion_score, downside_exhaustion_score, 0.72, playbook)
+    if reason:
+        return False, reason, strong_micro_break
+    reason = _candidate_bias_conflict_reason(structure_bias, bias_alignment, strong_micro_break, playbook)
+    if reason:
+        return False, reason, strong_micro_break
+    reason = _candidate_trend_misaligned_reason(aligned_trends, 1, strong_micro_break, playbook)
+    if reason:
+        return False, reason, strong_micro_break
+    return True, "", strong_micro_break
+
+
+def _qualify_impulse_candidate(
+    *,
+    candidate: Dict[str, Any],
+    profile: _PlaybookProfile,
+    plan: _AssetPlaybookPlan,
+    playbook: str,
+    direction: str,
+    structure_bias: str,
+    alignment_score: float,
+    setup_quality: float,
+    upside_exhaustion_score: float,
+    downside_exhaustion_score: float,
+    aligned_trends: int,
+    bias_alignment: bool,
+) -> tuple[bool, str, bool]:
+    candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
+    impulse_floor = {
+        "aggressive_expansion": max(profile.expansion_min_score, 0.68),
+        "breakout_continuation": max(profile.breakout_min_score, 0.66),
+        "news_impulse": max(profile.breakout_min_score, 0.62),
+    }.get(playbook, 0.68)
+    strong_impulse_break = candidate_score >= impulse_floor
+    relaxed_alignment_floor = 0.0 if strong_impulse_break else max(0.25, float(plan.min_alignment_score) - 0.16)
+    relaxed_setup_floor = max(0.12, float(plan.min_setup_quality) - (0.42 if strong_impulse_break else 0.10))
+
+    reason = _candidate_threshold_reason(alignment_score, relaxed_alignment_floor, "alignment_too_weak", playbook)
+    if reason:
+        return False, reason, strong_impulse_break
+    reason = _candidate_threshold_reason(setup_quality, relaxed_setup_floor, "setup_quality_too_weak", playbook)
+    if reason:
+        return False, reason, strong_impulse_break
+    exhaustion_limit = 0.72 if strong_impulse_break else 0.62
+    reason = _candidate_exhaustion_reason(direction, upside_exhaustion_score, downside_exhaustion_score, exhaustion_limit, playbook)
+    if reason:
+        return False, reason, strong_impulse_break
+    reason = _candidate_bias_conflict_reason(structure_bias, bias_alignment, strong_impulse_break, playbook)
+    if reason:
+        return False, reason, strong_impulse_break
+    reason = _candidate_trend_misaligned_reason(aligned_trends, int(plan.min_trend_agreement or 0), strong_impulse_break, playbook)
+    if reason:
+        return False, reason, strong_impulse_break
+    return True, "", strong_impulse_break
+
+
+def _qualify_standard_candidate(
+    *,
+    playbook: str,
+    plan: _AssetPlaybookPlan,
+    alignment_score: float,
+    setup_quality: float,
+) -> tuple[bool, str]:
+    reason = _candidate_threshold_reason(alignment_score, plan.min_alignment_score, "alignment_too_weak", playbook)
+    if reason:
+        return False, reason
+    reason = _candidate_threshold_reason(setup_quality, plan.min_setup_quality, "setup_quality_too_weak", playbook)
+    if reason:
+        return False, reason
+    return True, ""
+
+
+def _qualify_family_rules(
+    *,
+    playbook: str,
+    plan: _AssetPlaybookPlan,
+    structure_bias: str,
+    bias_alignment: bool,
+    aligned_trends: int,
+    opposing_trends: int,
+    upside_exhaustion_score: float,
+    downside_exhaustion_score: float,
+    strong_impulse_break: bool,
+    direction: str,
+) -> str:
+    if playbook in _TREND_PLAYBOOKS and playbook != "crypto_orderflow_continuation":
+        required_trends = int(plan.min_trend_agreement or 0)
+        if required_trends >= 2 and structure_bias in {"buy", "sell"} and aligned_trends < required_trends:
+            return _candidate_trend_misaligned_reason(aligned_trends, required_trends, False, playbook)
+        if not strong_impulse_break:
+            reason = _candidate_exhaustion_reason(direction, upside_exhaustion_score, downside_exhaustion_score, 0.62, playbook)
+            if reason:
+                return reason
+            reason = _candidate_bias_conflict_reason(structure_bias, bias_alignment, False, playbook)
+            if reason:
+                return reason
+            return _candidate_trend_misaligned_reason(aligned_trends, required_trends, False, playbook)
+
+    if playbook in _EARLY_INFLECTION_PLAYBOOKS:
+        if structure_bias in {"buy", "sell"} and bias_alignment:
+            return f"inflection_not_countertrend:{playbook}"
+        if direction == "SELL" and upside_exhaustion_score < 0.42:
+            return f"inflection_not_exhausted:{playbook}"
+        if direction == "BUY" and downside_exhaustion_score < 0.42:
+            return f"inflection_not_exhausted:{playbook}"
+        if opposing_trends < 1:
+            return f"inflection_not_early:{playbook}"
+
+    if playbook in _REVERSAL_PLAYBOOKS:
+        if structure_bias in {"buy", "sell"} and bias_alignment:
+            return f"reversal_not_countertrend:{playbook}"
+        if opposing_trends < max(0, int(plan.reversal_min_opposing_trend_agreement or 0)):
+            return f"reversal_unconfirmed:{playbook}"
+
+    return ""
+
+
+def _build_early_inflection_candidate(
+    *,
+    direction: str,
+    structure_bias: str,
+    latest_open: float,
+    latest_close: float,
+    latest_high: float,
+    latest_low: float,
+    prev_close: float,
+    range_high: float,
+    range_low: float,
+    atr: float,
+    avg_body: float,
+    setup_quality: float,
+    alignment_score: float,
+    regime: str,
+    upside_exhaustion_score: float,
+    downside_exhaustion_score: float,
+    profile: _PlaybookProfile,
+    preferred_interval: str,
+    management: Dict[str, Any],
+    asset: str,
+    category: str,
+    session: str,
+) -> Optional[Dict[str, Any]]:
+    if direction == "SELL":
+        if structure_bias != "buy":
+            return None
+        if latest_close >= latest_open or latest_close >= prev_close:
+            return None
+        if upside_exhaustion_score < 0.34:
+            return None
+        rejection_body = _clip((latest_open - latest_close) / max(avg_body * 1.6, 1e-9))
+        close_off_high = _clip((latest_high - latest_close) / max(atr * 0.95, 1e-9))
+        near_extreme = _clip(1.0 - max(0.0, range_high - latest_high) / max(atr * 0.9, 1e-9))
+        momentum_flip = _clip((prev_close - latest_close) / max(atr * 0.85, 1e-9))
+        regime_bonus = 0.08 if regime in {"trending_up", "volatile"} else 0.03
+        score = (
+            _clip(upside_exhaustion_score) * 0.24
+            + rejection_body * 0.18
+            + close_off_high * 0.18
+            + near_extreme * 0.14
+            + momentum_flip * 0.12
+            + _clip(setup_quality) * 0.08
+            + _clip(alignment_score) * 0.06
+            + regime_bonus
+        )
+        if score < max(profile.reversal_min_score - 0.03, 0.54):
+            return None
+        confidence = _clip(0.41 + score * 0.40, 0.0, 0.92)
+        notes = [
+            "early_inflection",
+            "uptrend_rollover",
+            "early_bearish_turn",
+            f"session={session}",
+        ]
+    else:
+        if structure_bias != "sell":
+            return None
+        if latest_close <= latest_open or latest_close <= prev_close:
+            return None
+        if downside_exhaustion_score < 0.34:
+            return None
+        rejection_body = _clip((latest_close - latest_open) / max(avg_body * 1.6, 1e-9))
+        close_off_low = _clip((latest_close - latest_low) / max(atr * 0.95, 1e-9))
+        near_extreme = _clip(1.0 - max(0.0, latest_low - range_low) / max(atr * 0.9, 1e-9))
+        momentum_flip = _clip((latest_close - prev_close) / max(atr * 0.85, 1e-9))
+        regime_bonus = 0.08 if regime in {"trending_down", "volatile"} else 0.03
+        score = (
+            _clip(downside_exhaustion_score) * 0.24
+            + rejection_body * 0.18
+            + close_off_low * 0.18
+            + near_extreme * 0.14
+            + momentum_flip * 0.12
+            + _clip(setup_quality) * 0.08
+            + _clip(alignment_score) * 0.06
+            + regime_bonus
+        )
+        if score < max(profile.reversal_min_score - 0.03, 0.54):
+            return None
+        confidence = _clip(0.41 + score * 0.40, 0.0, 0.92)
+        notes = [
+            "early_inflection",
+            "downtrend_turn",
+            "early_bullish_turn",
+            f"session={session}",
+        ]
+
+    return {
+        "playbook": "early_inflection",
+        "direction": direction,
+        "score": round(score, 4),
+        "confidence": round(confidence, 4),
+        "entry_style": "early_inflection_turn",
+        "session": session,
+        "preferred_interval": preferred_interval,
+        "management": management,
+        "notes": notes,
+    }
+
+
 @dataclass(frozen=True)
 class _PlaybookProfile:
     breakout_min_score: float
@@ -504,7 +800,7 @@ class PlaybookService:
             return False, f"playbook_not_allowed:{playbook}"
 
         direction = str(candidate.get("direction") or "").upper()
-        direction_sign = 1 if direction == "BUY" else -1 if direction == "SELL" else 0
+        direction_sign = _playbook_direction_sign(direction)
         if direction_sign == 0:
             return False, f"invalid_direction:{playbook}"
 
@@ -523,87 +819,66 @@ class PlaybookService:
             (structure_bias == "buy" and direction == "BUY")
             or (structure_bias == "sell" and direction == "SELL")
         )
+        strong_impulse_break = False
 
         if playbook == "crypto_orderflow_continuation":
-            profile = self._profile(category)
-            candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
-            imbalance_strength = abs(_safe_float(candidate.get("book_imbalance", 0.0), 0.0))
-            micro_strength = abs(_safe_float(candidate.get("micro_score", 0.0), 0.0))
-            strong_micro_break = (
-                candidate_score >= max(profile.breakout_min_score, 0.60)
-                and imbalance_strength >= 0.38
-                and micro_strength >= 0.28
+            ok, reason, _ = _qualify_crypto_orderflow_candidate(
+                candidate=candidate,
+                profile=self._profile(category),
+                plan=plan,
+                playbook=playbook,
+                direction=direction,
+                structure_bias=structure_bias,
+                alignment_score=alignment_score,
+                setup_quality=setup_quality,
+                upside_exhaustion_score=upside_exhaustion_score,
+                downside_exhaustion_score=downside_exhaustion_score,
+                aligned_trends=aligned_trends,
+                bias_alignment=bias_alignment,
             )
-            relaxed_alignment_floor = 0.0 if strong_micro_break else max(0.25, float(plan.min_alignment_score) - 0.18)
-            relaxed_setup_floor = max(0.12, float(plan.min_setup_quality) - (0.42 if strong_micro_break else 0.12))
-
-            if alignment_score < relaxed_alignment_floor:
-                return False, f"alignment_too_weak:{playbook}"
-            if setup_quality < relaxed_setup_floor:
-                return False, f"setup_quality_too_weak:{playbook}"
-            if direction == "BUY" and upside_exhaustion_score >= 0.72:
-                return False, f"upside_exhausted:{playbook}"
-            if direction == "SELL" and downside_exhaustion_score >= 0.72:
-                return False, f"downside_exhausted:{playbook}"
-            if structure_bias in {"buy", "sell"} and not bias_alignment and not strong_micro_break:
-                return False, f"bias_conflict:{playbook}"
-            if aligned_trends < 1 and not strong_micro_break:
-                return False, f"trend_misaligned:{playbook}"
+            if not ok:
+                return False, reason
         elif playbook in {"aggressive_expansion", "breakout_continuation", "news_impulse"}:
-            profile = self._profile(category)
-            candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
-            impulse_floor = {
-                "aggressive_expansion": max(profile.expansion_min_score, 0.68),
-                "breakout_continuation": max(profile.breakout_min_score, 0.66),
-                "news_impulse": max(profile.breakout_min_score, 0.62),
-            }.get(playbook, 0.68)
-            strong_impulse_break = candidate_score >= impulse_floor
-            candidate["_strong_impulse_break"] = strong_impulse_break
-            relaxed_alignment_floor = 0.0 if strong_impulse_break else max(0.25, float(plan.min_alignment_score) - 0.16)
-            relaxed_setup_floor = max(0.12, float(plan.min_setup_quality) - (0.42 if strong_impulse_break else 0.10))
-
-            if alignment_score < relaxed_alignment_floor:
-                return False, f"alignment_too_weak:{playbook}"
-            if setup_quality < relaxed_setup_floor:
-                return False, f"setup_quality_too_weak:{playbook}"
-            exhaustion_limit = 0.72 if strong_impulse_break else 0.62
-            if direction == "BUY" and upside_exhaustion_score >= exhaustion_limit:
-                return False, f"upside_exhausted:{playbook}"
-            if direction == "SELL" and downside_exhaustion_score >= exhaustion_limit:
-                return False, f"downside_exhausted:{playbook}"
-            if structure_bias in {"buy", "sell"} and not bias_alignment and not strong_impulse_break:
-                return False, f"bias_conflict:{playbook}"
-            if aligned_trends < max(0, int(plan.min_trend_agreement or 0)) and not strong_impulse_break:
-                return False, f"trend_misaligned:{playbook}"
+            ok, reason, strong_impulse_break = _qualify_impulse_candidate(
+                candidate=candidate,
+                profile=self._profile(category),
+                plan=plan,
+                playbook=playbook,
+                direction=direction,
+                structure_bias=structure_bias,
+                alignment_score=alignment_score,
+                setup_quality=setup_quality,
+                upside_exhaustion_score=upside_exhaustion_score,
+                downside_exhaustion_score=downside_exhaustion_score,
+                aligned_trends=aligned_trends,
+                bias_alignment=bias_alignment,
+            )
+            if not ok:
+                return False, reason
         else:
-            if alignment_score < plan.min_alignment_score:
-                return False, f"alignment_too_weak:{playbook}"
-            if setup_quality < plan.min_setup_quality:
-                return False, f"setup_quality_too_weak:{playbook}"
+            ok, reason = _qualify_standard_candidate(
+                playbook=playbook,
+                plan=plan,
+                alignment_score=alignment_score,
+                setup_quality=setup_quality,
+            )
+            if not ok:
+                return False, reason
 
-        if playbook in _TREND_PLAYBOOKS and playbook != "crypto_orderflow_continuation" and not bool(candidate.get("_strong_impulse_break")):
-            if direction == "BUY" and upside_exhaustion_score >= 0.62:
-                return False, f"upside_exhausted:{playbook}"
-            if direction == "SELL" and downside_exhaustion_score >= 0.62:
-                return False, f"downside_exhausted:{playbook}"
-            if structure_bias in {"buy", "sell"} and not bias_alignment:
-                return False, f"bias_conflict:{playbook}"
-            if aligned_trends < max(0, int(plan.min_trend_agreement or 0)):
-                return False, f"trend_misaligned:{playbook}"
-        elif playbook in _EARLY_INFLECTION_PLAYBOOKS:
-            if structure_bias in {"buy", "sell"} and bias_alignment:
-                return False, f"inflection_not_countertrend:{playbook}"
-            if direction == "SELL" and upside_exhaustion_score < 0.42:
-                return False, f"inflection_not_exhausted:{playbook}"
-            if direction == "BUY" and downside_exhaustion_score < 0.42:
-                return False, f"inflection_not_exhausted:{playbook}"
-            if opposing_trends < 1:
-                return False, f"inflection_not_early:{playbook}"
-        elif playbook in _REVERSAL_PLAYBOOKS:
-            if structure_bias in {"buy", "sell"} and bias_alignment:
-                return False, f"reversal_not_countertrend:{playbook}"
-            if opposing_trends < max(0, int(plan.reversal_min_opposing_trend_agreement or 0)):
-                return False, f"reversal_unconfirmed:{playbook}"
+        reason = _qualify_family_rules(
+            playbook=playbook,
+            plan=plan,
+            structure_bias=structure_bias,
+            bias_alignment=bias_alignment,
+            aligned_trends=aligned_trends,
+            opposing_trends=opposing_trends,
+            upside_exhaustion_score=upside_exhaustion_score,
+            downside_exhaustion_score=downside_exhaustion_score,
+            strong_impulse_break=strong_impulse_break,
+            direction=direction,
+        )
+        if reason:
+            return False, reason
 
         candidate["asset_plan"] = {
             "allowed_playbooks": list(plan.allowed_playbooks),
@@ -950,88 +1225,58 @@ class PlaybookService:
         regime = str(structure.get("regime", "unknown") or "unknown").lower()
         upside_exhaustion_score = float(structure.get("upside_exhaustion_score", 0.0) or 0.0)
         downside_exhaustion_score = float(structure.get("downside_exhaustion_score", 0.0) or 0.0)
-
-        def _build(direction: str) -> Optional[Dict[str, Any]]:
-            if direction == "SELL":
-                if structure_bias != "buy":
-                    return None
-                if latest_close >= latest_open or latest_close >= prev_close:
-                    return None
-                if upside_exhaustion_score < 0.34:
-                    return None
-                rejection_body = _clip((latest_open - latest_close) / max(avg_body * 1.6, 1e-9))
-                close_off_high = _clip((latest_high - latest_close) / max(atr * 0.95, 1e-9))
-                near_extreme = _clip(1.0 - max(0.0, range_high - latest_high) / max(atr * 0.9, 1e-9))
-                momentum_flip = _clip((prev_close - latest_close) / max(atr * 0.85, 1e-9))
-                regime_bonus = 0.08 if regime in {"trending_up", "volatile"} else 0.03
-                score = (
-                    _clip(upside_exhaustion_score) * 0.24
-                    + rejection_body * 0.18
-                    + close_off_high * 0.18
-                    + near_extreme * 0.14
-                    + momentum_flip * 0.12
-                    + _clip(setup_quality) * 0.08
-                    + _clip(alignment_score) * 0.06
-                    + regime_bonus
-                )
-                if score < max(profile.reversal_min_score - 0.03, 0.54):
-                    return None
-                confidence = _clip(0.41 + score * 0.40, 0.0, 0.92)
-                notes = [
-                    "early_inflection",
-                    "uptrend_rollover",
-                    "early_bearish_turn",
-                    f"session={session}",
-                ]
-            else:
-                if structure_bias != "sell":
-                    return None
-                if latest_close <= latest_open or latest_close <= prev_close:
-                    return None
-                if downside_exhaustion_score < 0.34:
-                    return None
-                rejection_body = _clip((latest_close - latest_open) / max(avg_body * 1.6, 1e-9))
-                close_off_low = _clip((latest_close - latest_low) / max(atr * 0.95, 1e-9))
-                near_extreme = _clip(1.0 - max(0.0, latest_low - range_low) / max(atr * 0.9, 1e-9))
-                momentum_flip = _clip((latest_close - prev_close) / max(atr * 0.85, 1e-9))
-                regime_bonus = 0.08 if regime in {"trending_down", "volatile"} else 0.03
-                score = (
-                    _clip(downside_exhaustion_score) * 0.24
-                    + rejection_body * 0.18
-                    + close_off_low * 0.18
-                    + near_extreme * 0.14
-                    + momentum_flip * 0.12
-                    + _clip(setup_quality) * 0.08
-                    + _clip(alignment_score) * 0.06
-                    + regime_bonus
-                )
-                if score < max(profile.reversal_min_score - 0.03, 0.54):
-                    return None
-                confidence = _clip(0.41 + score * 0.40, 0.0, 0.92)
-                notes = [
-                    "early_inflection",
-                    "downtrend_turn",
-                    "early_bullish_turn",
-                    f"session={session}",
-                ]
-
-            return {
-                "playbook": "early_inflection",
-                "direction": direction,
-                "score": round(score, 4),
-                "confidence": round(confidence, 4),
-                "entry_style": "early_inflection_turn",
-                "session": session,
-                "preferred_interval": preferred_interval,
-                "management": self._management_template(profile, "early_inflection", asset=asset, category=category),
-                "notes": notes,
-            }
-
+        management = self._management_template(profile, "early_inflection", asset=asset, category=category)
         candidates: List[Dict[str, Any]] = []
-        sell_candidate = _build("SELL")
+        sell_candidate = _build_early_inflection_candidate(
+            direction="SELL",
+            structure_bias=structure_bias,
+            latest_open=latest_open,
+            latest_close=latest_close,
+            latest_high=latest_high,
+            latest_low=latest_low,
+            prev_close=prev_close,
+            range_high=range_high,
+            range_low=range_low,
+            atr=atr,
+            avg_body=avg_body,
+            setup_quality=setup_quality,
+            alignment_score=alignment_score,
+            regime=regime,
+            upside_exhaustion_score=upside_exhaustion_score,
+            downside_exhaustion_score=downside_exhaustion_score,
+            profile=profile,
+            preferred_interval=preferred_interval,
+            management=management,
+            asset=asset,
+            category=category,
+            session=session,
+        )
         if sell_candidate:
             candidates.append(sell_candidate)
-        buy_candidate = _build("BUY")
+        buy_candidate = _build_early_inflection_candidate(
+            direction="BUY",
+            structure_bias=structure_bias,
+            latest_open=latest_open,
+            latest_close=latest_close,
+            latest_high=latest_high,
+            latest_low=latest_low,
+            prev_close=prev_close,
+            range_high=range_high,
+            range_low=range_low,
+            atr=atr,
+            avg_body=avg_body,
+            setup_quality=setup_quality,
+            alignment_score=alignment_score,
+            regime=regime,
+            upside_exhaustion_score=upside_exhaustion_score,
+            downside_exhaustion_score=downside_exhaustion_score,
+            profile=profile,
+            preferred_interval=preferred_interval,
+            management=management,
+            asset=asset,
+            category=category,
+            session=session,
+        )
         if buy_candidate:
             candidates.append(buy_candidate)
         if not candidates:

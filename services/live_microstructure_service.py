@@ -115,35 +115,8 @@ class LiveMicrostructureService:
             bucket = self._quotes.setdefault((provider_key, asset_key), deque(maxlen=self._maxlen))
             bucket.append(event)
 
-    def get_snapshot(
-        self,
-        provider: str,
-        asset: str,
-        *,
-        price: Any = None,
-        spread: Any = None,
-        meta: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        provider_key = _normalize_provider(provider)
-        asset_key = str(asset or "").strip()
-        with self._lock:
-            events = list(self._quotes.get((provider_key, asset_key), ()))
-        if not events and price in (None, "", 0):
-            return {}
-
-        latest = events[-1] if events else {}
-        current_price = _safe_float(price, latest.get("price", 0.0))
-        if current_price <= 0.0:
-            return {}
-
-        current_bid = latest.get("bid")
-        current_ask = latest.get("ask")
-        if current_bid in (None, 0.0) and current_ask in (None, 0.0):
-            raw_spread = _safe_float(spread, 0.0)
-        else:
-            raw_spread = max(0.0, _safe_float(current_ask, current_price) - _safe_float(current_bid, current_price))
-        spread_bps = round((raw_spread / current_price) * 10000.0, 3) if current_price > 0 else 0.0
-
+    @staticmethod
+    def _series_metrics(events: List[Dict[str, Any]], current_price: float, spread: Any) -> Dict[str, Any]:
         mids = [float(evt.get("price")) for evt in events if _safe_float(evt.get("price"), 0.0) > 0.0]
         deltas = [curr - prev for prev, curr in zip(mids, mids[1:]) if abs(curr - prev) > 1e-12]
         up_ticks = sum(1 for delta in deltas if delta > 0)
@@ -174,14 +147,33 @@ class LiveMicrostructureService:
                 continue
             spread_history.append(max(0.0, (_safe_float(ask_value) - _safe_float(bid_value)) / price_value * 10000.0))
 
-        baseline_spread_bps = spread_bps
+        baseline_spread_bps = _safe_float(spread, 0.0)
         if spread_history:
             try:
                 baseline_spread_bps = statistics.median(spread_history[:-1] or spread_history)
             except Exception:
                 baseline_spread_bps = spread_history[-1]
-        spread_stress = (spread_bps / max(baseline_spread_bps, 0.01)) if baseline_spread_bps > 0 else 1.0
+        spread_stress = (_safe_float(spread, 0.0) / max(baseline_spread_bps, 0.01)) if baseline_spread_bps > 0 else 1.0
 
+        return {
+            "mids": mids,
+            "deltas": deltas,
+            "tick_imbalance": tick_imbalance,
+            "velocity_bps": velocity_bps,
+            "latest_delta_bps": latest_delta_bps,
+            "spread_history": spread_history,
+            "bid_series": bid_series,
+            "ask_series": ask_series,
+            "baseline_spread_bps": baseline_spread_bps,
+            "spread_stress": spread_stress,
+        }
+
+    @staticmethod
+    def _depth_metrics(
+        latest: Dict[str, Any],
+        bid_series: List[float],
+        ask_series: List[float],
+    ) -> Dict[str, Any]:
         bid_depth = 0.0
         ask_depth = 0.0
         depth_levels = 0
@@ -214,16 +206,31 @@ class LiveMicrostructureService:
                 quote_move_norm = max(abs(last_bid - first_bid) + abs(last_ask - first_ask), 1e-9)
                 quote_skew = (last_bid - first_bid - (last_ask - first_ask)) / quote_move_norm
                 spread_pressure = 0.0
-                if baseline_spread_bps > 0.0:
-                    spread_pressure = (baseline_spread_bps - spread_bps) / baseline_spread_bps
-                velocity_sign = 1.0 if velocity_bps > 0 else (-1.0 if velocity_bps < 0 else (1.0 if latest_delta_bps > 0 else (-1.0 if latest_delta_bps < 0 else 0.0)))
                 synthetic_book_imbalance = _clip11(
-                    tick_imbalance * 0.45
-                    + _clip11(quote_skew) * 0.30
-                    + _clip11(spread_pressure) * velocity_sign * 0.25
+                    quote_skew * 0.30 + spread_pressure * 0.25
                 )
                 book_imbalance = synthetic_book_imbalance
 
+        return {
+            "bid_depth": bid_depth,
+            "ask_depth": ask_depth,
+            "depth_levels": depth_levels,
+            "total_depth": total_depth,
+            "book_imbalance": book_imbalance,
+            "synthetic_depth_available": synthetic_depth_available,
+            "synthetic_book_imbalance": synthetic_book_imbalance,
+        }
+
+    @staticmethod
+    def _risk_metrics(
+        tick_imbalance: float,
+        velocity_bps: float,
+        latest_delta_bps: float,
+        spread_stress: float,
+        book_imbalance: float,
+        total_depth: float,
+        flags: str,
+    ) -> Dict[str, Any]:
         trend_sign = 1.0 if velocity_bps > 0 else (-1.0 if velocity_bps < 0 else (1.0 if latest_delta_bps > 0 else (-1.0 if latest_delta_bps < 0 else 0.0)))
         latest_sign = 1.0 if latest_delta_bps > 0 else (-1.0 if latest_delta_bps < 0 else 0.0)
         reversal = bool(trend_sign and latest_sign and trend_sign != latest_sign)
@@ -241,7 +248,7 @@ class LiveMicrostructureService:
             stop_hunt_risk += 0.18
         elif weak_depth and abs(velocity_bps) >= 2.0:
             stop_hunt_risk += 0.10
-        if "EDIT" in str(latest.get("flags", "")).upper():
+        if "EDIT" in str(flags or "").upper():
             stop_hunt_risk += 0.05
         stop_hunt_risk = _clip(stop_hunt_risk)
 
@@ -272,23 +279,66 @@ class LiveMicrostructureService:
             pressure_direction = "SELL"
 
         return {
+            "stop_hunt_risk": stop_hunt_risk,
+            "exhaustion_risk": exhaustion_risk,
+            "score": score,
+            "pressure_direction": pressure_direction,
+        }
+
+    def get_snapshot(
+        self,
+        provider: str,
+        asset: str,
+        *,
+        price: Any = None,
+        spread: Any = None,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        provider_key = _normalize_provider(provider)
+        asset_key = str(asset or "").strip()
+        with self._lock:
+            events = list(self._quotes.get((provider_key, asset_key), ()))
+        if not events and price in (None, "", 0):
+            return {}
+
+        latest = events[-1] if events else {}
+        current_price = _safe_float(price, latest.get("price", 0.0))
+        if current_price <= 0.0:
+            return {}
+
+        current_bid = latest.get("bid")
+        current_ask = latest.get("ask")
+        spread_bps = round((_safe_float(spread, 0.0) / current_price) * 10000.0, 3) if current_price > 0 else 0.0
+        series = self._series_metrics(events, current_price, spread)
+        depth = self._depth_metrics(latest, series["bid_series"], series["ask_series"])
+        risk = self._risk_metrics(
+            series["tick_imbalance"],
+            series["velocity_bps"],
+            series["latest_delta_bps"],
+            series["spread_stress"],
+            depth["book_imbalance"],
+            depth["total_depth"],
+            str(latest.get("flags", "")),
+        )
+
+        return {
             "provider": provider_key,
             "spread_bps": round(spread_bps, 3),
-            "tick_imbalance": round(_clip11(tick_imbalance), 4),
-            "book_imbalance": round(_clip11(book_imbalance), 4),
-            "synthetic_book_imbalance": round(_clip11(synthetic_book_imbalance), 4),
-            "velocity_bps": round(velocity_bps, 4),
-            "latest_delta_bps": round(latest_delta_bps, 4),
-            "spread_stress": round(max(0.0, spread_stress), 4),
-            "stop_hunt_risk": round(stop_hunt_risk, 4),
-            "exhaustion_risk": round(exhaustion_risk, 4),
-            "pressure_direction": pressure_direction,
-            "depth_available": bool(total_depth > 0),
-            "synthetic_depth_available": bool(synthetic_depth_available),
-            "depth_levels": int(depth_levels),
+            "tick_imbalance": round(_clip11(series["tick_imbalance"]), 4),
+            "book_imbalance": round(_clip11(depth["book_imbalance"]), 4),
+            "synthetic_book_imbalance": round(_clip11(depth["synthetic_book_imbalance"]), 4),
+            "velocity_bps": round(series["velocity_bps"], 4),
+            "latest_delta_bps": round(series["latest_delta_bps"], 4),
+            "spread_stress": round(max(0.0, series["spread_stress"]), 4),
+            "stop_hunt_risk": round(risk["stop_hunt_risk"], 4),
+            "exhaustion_risk": round(risk["exhaustion_risk"], 4),
+            "pressure_direction": risk["pressure_direction"],
+            "depth_available": bool(depth["total_depth"] > 0),
+            "synthetic_depth_available": bool(depth["synthetic_depth_available"]),
+            "depth_levels": int(depth["depth_levels"]),
             "quote_updates": int(len(events)),
-            "score": round(score, 4),
-            "microstructure_source": "live_store_depth" if total_depth > 0 else ("live_store_synthetic_depth" if synthetic_depth_available else "live_store"),
+            "score": round(risk["score"], 4),
+            "microstructure_source": "live_store_depth" if depth["total_depth"] > 0 else ("live_store_synthetic_depth" if depth["synthetic_depth_available"] else "live_store"),
         }
 
     def clear(self) -> None:

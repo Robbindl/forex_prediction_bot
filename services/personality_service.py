@@ -505,24 +505,7 @@ class RobbieExplainer:
         sess      = meta.get("session", "")
         rr        = signal.get("risk_reward", signal.get("rr_ratio", 0))
 
-        parts = []
-
-        # ── Greeting (mood-driven) ───────────────────────────────────────────
-        greeting = _mood_greeting(mood, report["name"])
-        parts.append(greeting)
-
-        # ── Main call ────────────────────────────────────────────────────────
-        if direction in ("BUY", "UP"):
-            phrase = random.choice(_BULLISH_PHRASES)
-            parts.append(f"\n{_conf_emoji(confidence)} *{asset}* is {phrase}!")
-        elif direction in ("SELL", "DOWN"):
-            phrase = random.choice(_BEARISH_PHRASES)
-            parts.append(f"\n{_conf_emoji(confidence)} *{asset}* is {phrase}.")
-        else:
-            parts.append(f"\n⚖️ *{asset}* — no clear edge right now.")
-
-        # ── Signal score line ────────────────────────────────────────────────
-        parts.append(_confidence_line(confidence, mood))
+        parts = _explanation_headline(asset, direction, confidence, mood, report["name"])
 
         # ── Technical reasons from indicators ────────────────────────────────
         if df is not None and not df.empty:
@@ -549,28 +532,15 @@ class RobbieExplainer:
             )
 
         # ── Trade levels ─────────────────────────────────────────────────────
-        if entry:
-            parts.append(f"\n💰 *Price:* `{entry:.5f}`")
-            if sl:   parts.append(f"🛑 *Stop:*  `{sl:.5f}`")
-            if tp:   parts.append(f"🎯 *Target:*`{tp:.5f}`")
-            if rr:   parts.append(f"📐 *R:R:* {float(rr):.2f}:1")
+        parts.extend(_explanation_trade_levels(entry, sl, tp, rr))
 
         # ── Context ──────────────────────────────────────────────────────────
-        context_parts = []
-        if regime and regime not in ("unknown", ""):
-            context_parts.append(f"Regime: {regime.replace('_', ' ')}")
-        if sess:
-            context_parts.append(f"Session: {sess}")
-        if context_parts:
-            parts.append("  \n_" + " · ".join(context_parts) + "_")
+        context_line = _explanation_context_line(regime, sess)
+        if context_line:
+            parts.append(context_line)
 
         # ── News ─────────────────────────────────────────────────────────────
-        if news:
-            parts.append("\n📰 *In the news:*")
-            for article in news[:2]:
-                headline = str(article.get("title", ""))[:80]
-                if headline:
-                    parts.append(f"  • \"{headline}\"")
+        parts.extend(_explanation_news_lines(news))
 
         # ── Sign-off ─────────────────────────────────────────────────────────
         parts.append("\n" + _signoff(mood))
@@ -1062,77 +1032,145 @@ def _signoff(mood: str) -> str:
     return random.choice(signoffs.get(mood, signoffs["neutral"]))
 
 
+def _explanation_headline(asset: str, direction: str, confidence: float, mood: str, name: str) -> List[str]:
+    parts = [_mood_greeting(mood, name)]
+    if direction in ("BUY", "UP"):
+        phrase = random.choice(_BULLISH_PHRASES)
+        parts.append(f"\n{_conf_emoji(confidence)} *{asset}* is {phrase}!")
+    elif direction in ("SELL", "DOWN"):
+        phrase = random.choice(_BEARISH_PHRASES)
+        parts.append(f"\n{_conf_emoji(confidence)} *{asset}* is {phrase}.")
+    else:
+        parts.append(f"\n⚖️ *{asset}* — no clear edge right now.")
+    parts.append(_confidence_line(confidence, mood))
+    return parts
+
+
+def _explanation_trade_levels(entry: float, sl: float, tp: float, rr: Any) -> List[str]:
+    parts: List[str] = []
+    if entry:
+        parts.append(f"\n💰 *Price:* `{entry:.5f}`")
+        if sl:
+            parts.append(f"🛑 *Stop:*  `{sl:.5f}`")
+        if tp:
+            parts.append(f"🎯 *Target:*`{tp:.5f}`")
+        if rr:
+            parts.append(f"📐 *R:R:* {float(rr):.2f}:1")
+    return parts
+
+
+def _explanation_context_line(regime: str, sess: str) -> str:
+    context_parts = []
+    if regime and regime not in ("unknown", ""):
+        context_parts.append(f"Regime: {regime.replace('_', ' ')}")
+    if sess:
+        context_parts.append(f"Session: {sess}")
+    if context_parts:
+        return "  \n_" + " · ".join(context_parts) + "_"
+    return ""
+
+
+def _explanation_news_lines(news: Optional[List[Dict]]) -> List[str]:
+    if not news:
+        return []
+    parts = ["\n📰 *In the news:*"]
+    for article in news[:2]:
+        headline = str(article.get("title", ""))[:80]
+        if headline:
+            parts.append(f"  • \"{headline}\"")
+    return parts
+
+
+def _technical_rsi_reasons(df: pd.DataFrame, latest, prev) -> List[str]:
+    reasons: List[str] = []
+    if "rsi" in df.columns:
+        rsi = float(latest["rsi"])
+        prev_rsi = float(prev["rsi"])
+        if rsi < 30:
+            reasons.append(f"RSI is *oversold* at {rsi:.1f} — bounce territory 📉")
+        elif rsi < 40:
+            reasons.append(f"RSI recovering from {prev_rsi:.1f} → {rsi:.1f}")
+        elif rsi > 70:
+            reasons.append(f"RSI is *overbought* at {rsi:.1f} — pullback risk 📈")
+        elif rsi > 60:
+            reasons.append(f"RSI showing strength at {rsi:.1f}")
+        if abs(rsi - prev_rsi) > 10:
+            moved = "jumped" if rsi > prev_rsi else "dropped"
+            reasons.append(f"RSI just {moved} {abs(rsi - prev_rsi):.0f} points — momentum shift")
+    return reasons
+
+
+def _technical_volume_reasons(df: pd.DataFrame, latest) -> List[str]:
+    reasons: List[str] = []
+    if "volume" in df.columns and df["volume"].sum() > 0:
+        cur_vol = float(latest["volume"])
+        avg_vol = float(df["volume"].rolling(20).mean().iloc[-1])
+        if avg_vol > 0:
+            ratio = cur_vol / avg_vol
+            if ratio > 2.5:
+                reasons.append(f"Volume is *MASSIVE* ({ratio:.1f}x normal) — big money moving 🐋")
+            elif ratio > 1.8:
+                reasons.append(f"Strong volume ({ratio:.1f}x average) — confirms the move")
+            elif ratio > 1.3:
+                reasons.append(f"Above-average volume ({ratio:.1f}x normal)")
+    return reasons
+
+
+def _technical_trend_reasons(df: pd.DataFrame, latest, prev) -> List[str]:
+    reasons: List[str] = []
+    if "sma_20" in df.columns and "sma_50" in df.columns:
+        price = float(latest["close"])
+        s20 = float(latest["sma_20"])
+        s50 = float(latest["sma_50"])
+        if price > s20 > s50:
+            reasons.append("Price above both 20 & 50 MAs — bulls in control ✅")
+        elif price < s20 < s50:
+            reasons.append("Price below both MAs — bears have the upper hand ⚠️")
+
+    if "macd" in df.columns and "macd_signal" in df.columns:
+        macd = float(latest["macd"])
+        macd_sig = float(latest["macd_signal"])
+        prev_macd = float(prev["macd"])
+        prev_sig = float(prev["macd_signal"])
+        if macd > macd_sig and prev_macd <= prev_sig:
+            reasons.append("MACD just crossed bullish — fresh momentum 📈")
+        elif macd < macd_sig and prev_macd >= prev_sig:
+            reasons.append("MACD just crossed bearish — momentum turning 📉")
+
+    if "adx" in df.columns:
+        adx = float(latest["adx"])
+        if adx > 40:
+            reasons.append(f"Strong trend (ADX {adx:.0f}) — momentum is real 💪")
+        elif adx > 25:
+            reasons.append(f"Trend developing (ADX {adx:.0f})")
+        elif adx < 15:
+            reasons.append("Market is ranging — low trend strength ↔️")
+    return reasons
+
+
+def _technical_meta_reasons(signal: Dict) -> List[str]:
+    reasons: List[str] = []
+    meta = signal.get("metadata", {}) or {}
+    if meta.get("sentiment_score"):
+        s = float(meta["sentiment_score"])
+        if s > 0.3:
+            reasons.append(f"Sentiment is bullish ({s:+.2f}) — news flow positive")
+        elif s < -0.3:
+            reasons.append(f"Sentiment is bearish ({s:+.2f}) — negative news flow")
+    if meta.get("whale_alert"):
+        reasons.append("Whale activity detected — large money moving 🐋")
+    return reasons
+
+
 def _technical_reasons(df: pd.DataFrame, signal: Dict) -> List[str]:
-    reasons = []
+    reasons: List[str] = []
     try:
         latest   = df.iloc[-1]
         prev     = df.iloc[-2] if len(df) > 1 else latest
-
-        if "rsi" in df.columns:
-            rsi      = float(latest["rsi"])
-            prev_rsi = float(prev["rsi"])
-            if rsi < 30:
-                reasons.append(f"RSI is *oversold* at {rsi:.1f} — bounce territory 📉")
-            elif rsi < 40:
-                reasons.append(f"RSI recovering from {prev_rsi:.1f} → {rsi:.1f}")
-            elif rsi > 70:
-                reasons.append(f"RSI is *overbought* at {rsi:.1f} — pullback risk 📈")
-            elif rsi > 60:
-                reasons.append(f"RSI showing strength at {rsi:.1f}")
-            if abs(rsi - prev_rsi) > 10:
-                moved = "jumped" if rsi > prev_rsi else "dropped"
-                reasons.append(f"RSI just {moved} {abs(rsi - prev_rsi):.0f} points — momentum shift")
-
-        if "volume" in df.columns and df["volume"].sum() > 0:
-            cur_vol  = float(latest["volume"])
-            avg_vol  = float(df["volume"].rolling(20).mean().iloc[-1])
-            if avg_vol > 0:
-                ratio = cur_vol / avg_vol
-                if ratio > 2.5:
-                    reasons.append(f"Volume is *MASSIVE* ({ratio:.1f}x normal) — big money moving 🐋")
-                elif ratio > 1.8:
-                    reasons.append(f"Strong volume ({ratio:.1f}x average) — confirms the move")
-                elif ratio > 1.3:
-                    reasons.append(f"Above-average volume ({ratio:.1f}x normal)")
-
-        if "sma_20" in df.columns and "sma_50" in df.columns:
-            price = float(latest["close"])
-            s20   = float(latest["sma_20"])
-            s50   = float(latest["sma_50"])
-            if price > s20 > s50:
-                reasons.append("Price above both 20 & 50 MAs — bulls in control ✅")
-            elif price < s20 < s50:
-                reasons.append("Price below both MAs — bears have the upper hand ⚠️")
-
-        if "macd" in df.columns and "macd_signal" in df.columns:
-            macd     = float(latest["macd"])
-            macd_sig = float(latest["macd_signal"])
-            prev_macd= float(prev["macd"])
-            prev_sig = float(prev["macd_signal"])
-            if macd > macd_sig and prev_macd <= prev_sig:
-                reasons.append("MACD just crossed bullish — fresh momentum 📈")
-            elif macd < macd_sig and prev_macd >= prev_sig:
-                reasons.append("MACD just crossed bearish — momentum turning 📉")
-
-        if "adx" in df.columns:
-            adx = float(latest["adx"])
-            if adx > 40:
-                reasons.append(f"Strong trend (ADX {adx:.0f}) — momentum is real 💪")
-            elif adx > 25:
-                reasons.append(f"Trend developing (ADX {adx:.0f})")
-            elif adx < 15:
-                reasons.append("Market is ranging — low trend strength ↔️")
-
-        meta = signal.get("metadata", {}) or {}
-        if meta.get("sentiment_score"):
-            s = float(meta["sentiment_score"])
-            if s > 0.3:
-                reasons.append(f"Sentiment is bullish ({s:+.2f}) — news flow positive")
-            elif s < -0.3:
-                reasons.append(f"Sentiment is bearish ({s:+.2f}) — negative news flow")
-
-        if meta.get("whale_alert"):
-            reasons.append("Whale activity detected — large money moving 🐋")
+        reasons.extend(_technical_rsi_reasons(df, latest, prev))
+        reasons.extend(_technical_volume_reasons(df, latest))
+        reasons.extend(_technical_trend_reasons(df, latest, prev))
+        reasons.extend(_technical_meta_reasons(signal))
 
     except Exception as e:
         logger.debug(f"[Personality] _technical_reasons error: {e}")

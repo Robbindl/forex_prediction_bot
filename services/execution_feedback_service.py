@@ -73,6 +73,43 @@ class ExecutionFeedbackService:
         self._lock = threading.RLock()
 
     def analyze_trade(self, trade: Dict[str, Any]) -> Dict[str, Any]:
+        context = self._trade_context(trade)
+        motion = self._trade_motion_profile(context)
+        flags = self._trade_exit_flags(context, motion)
+        execution = self._trade_execution_profile(context, motion)
+        quality = self._trade_quality_profile(context, motion, flags)
+
+        notes = list(flags["notes"])
+        notes.extend(execution["notes"])
+
+        return {
+            "version": 1,
+            "asset": context["asset"],
+            "category": context["category"],
+            "direction": context["direction"],
+            "exit_family": context["exit_family"],
+            "exit_reason": context["exit_reason"],
+            "partial_close": context["partial_close"],
+            "duration_minutes": context["duration_minutes"],
+            "duration_bucket": self._duration_bucket(context["duration_minutes"]),
+            **motion,
+            **flags["values"],
+            **quality,
+            "pnl": round(context["pnl"], 6),
+            "regime": str(context["metadata"].get("regime") or context["metadata"].get("market_structure", {}).get("regime") or "unknown"),
+            "structure_bias": str(context["metadata"].get("structure_bias") or context["metadata"].get("market_structure", {}).get("structure_bias") or "neutral"),
+            "setup_quality": round(_safe_float(context["metadata"].get("setup_quality"), 0.0), 4),
+            "opportunity_score": round(_safe_float(context["metadata"].get("opportunity_score"), 0.0), 4),
+            "memory_score": round(_safe_float(context["metadata"].get("memory_score"), 0.0), 4),
+            "adaptive_posture": quality["adaptive_posture"],
+            "target_rr_multiplier": round(_safe_float(context["feedback_policy"].get("target_rr_multiplier"), 1.0), 4),
+            "stop_buffer_multiplier": round(_safe_float(context["feedback_policy"].get("stop_buffer_multiplier"), 1.0), 4),
+            "sample_count": _safe_int(context["feedback_policy"].get("sample_count"), 0),
+            **execution,
+            "notes": notes,
+        }
+
+    def _trade_context(self, trade: Dict[str, Any]) -> Dict[str, Any]:
         metadata = _parse_metadata(trade.get("metadata") or trade.get("trade_metadata"))
         feedback_policy = metadata.get("execution_feedback_policy") or {}
         if not isinstance(feedback_policy, dict):
@@ -92,31 +129,46 @@ class ExecutionFeedbackService:
             trade.get("take_profit"),
             _safe_float(metadata.get("take_profit"), 0.0),
         )
-        highest_price = _safe_float(trade.get("highest_price"), entry_price)
-        lowest_price = _safe_float(trade.get("lowest_price"), entry_price)
-        highest_price = max(highest_price, entry_price, exit_price)
-        lowest_price = min(lowest_price, entry_price, exit_price)
+        highest_price = max(_safe_float(trade.get("highest_price"), entry_price), entry_price, exit_price)
+        lowest_price = min(_safe_float(trade.get("lowest_price"), entry_price), entry_price, exit_price)
 
-        pnl = _safe_float(trade.get("pnl"), 0.0)
-        duration_minutes = max(0, _safe_int(trade.get("duration_minutes"), 0))
-        exit_reason = str(trade.get("exit_reason") or "").strip()
-        exit_family = self._classify_exit(exit_reason, bool(trade.get("is_partial_close")))
+        return {
+            "trade": trade,
+            "metadata": metadata,
+            "feedback_policy": feedback_policy,
+            "paper_execution": paper_execution,
+            "asset": asset,
+            "category": category,
+            "direction": direction,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "stop_loss": stop_loss,
+            "original_sl": original_sl,
+            "take_profit": take_profit,
+            "highest_price": highest_price,
+            "lowest_price": lowest_price,
+            "pnl": _safe_float(trade.get("pnl"), 0.0),
+            "duration_minutes": max(0, _safe_int(trade.get("duration_minutes"), 0)),
+            "exit_reason": str(trade.get("exit_reason") or "").strip(),
+            "exit_family": self._classify_exit(str(trade.get("exit_reason") or "").strip(), bool(trade.get("is_partial_close"))),
+            "partial_close": bool(trade.get("is_partial_close")),
+        }
 
-        sign = 1.0 if direction == "BUY" else -1.0
-        initial_risk = abs(entry_price - (original_sl or stop_loss))
-        target_distance = abs(take_profit - entry_price)
-        realized_move = sign * (exit_price - entry_price)
+    def _trade_motion_profile(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        sign = 1.0 if context["direction"] == "BUY" else -1.0
+        initial_risk = abs(context["entry_price"] - (context["original_sl"] or context["stop_loss"]))
+        target_distance = abs(context["take_profit"] - context["entry_price"])
+        realized_move = sign * (context["exit_price"] - context["entry_price"])
         favorable_move = (
-            max(0.0, highest_price - entry_price)
-            if direction == "BUY"
-            else max(0.0, entry_price - lowest_price)
+            max(0.0, context["highest_price"] - context["entry_price"])
+            if context["direction"] == "BUY"
+            else max(0.0, context["entry_price"] - context["lowest_price"])
         )
         adverse_move = (
-            max(0.0, entry_price - lowest_price)
-            if direction == "BUY"
-            else max(0.0, highest_price - entry_price)
+            max(0.0, context["entry_price"] - context["lowest_price"])
+            if context["direction"] == "BUY"
+            else max(0.0, context["highest_price"] - context["entry_price"])
         )
-
         rr_realized = realized_move / initial_risk if initial_risk > 0 else 0.0
         mfe_rr = favorable_move / initial_risk if initial_risk > 0 else 0.0
         mae_rr = adverse_move / initial_risk if initial_risk > 0 else 0.0
@@ -131,24 +183,38 @@ class ExecutionFeedbackService:
             else 0.0
         )
 
-        stop_like = exit_family in {"stop_loss", "stop_loss_offline", "trailing_stop"}
-        target_like = exit_family in {"take_profit", "take_profit_offline", "partial_tp"}
-        full_target = exit_family in {"take_profit", "take_profit_offline"} and target_capture >= 0.95
-        premature_stop = stop_like and mfe_rr >= 0.75 and rr_realized < 0.25
+        return {
+            "initial_risk": round(initial_risk, 6),
+            "target_distance": round(target_distance, 6),
+            "realized_move": round(realized_move, 6),
+            "favorable_move": round(favorable_move, 6),
+            "adverse_move": round(adverse_move, 6),
+            "rr_realized": round(rr_realized, 4),
+            "mfe_rr": round(mfe_rr, 4),
+            "mae_rr": round(mae_rr, 4),
+            "target_capture": round(target_capture, 4),
+            "giveback_ratio": round(giveback_ratio, 4),
+        }
+
+    def _trade_exit_flags(self, context: Dict[str, Any], motion: Dict[str, Any]) -> Dict[str, Any]:
+        stop_like = context["exit_family"] in {"stop_loss", "stop_loss_offline", "trailing_stop"}
+        target_like = context["exit_family"] in {"take_profit", "take_profit_offline", "partial_tp"}
+        full_target = context["exit_family"] in {"take_profit", "take_profit_offline"} and motion["target_capture"] >= 0.95
+        premature_stop = stop_like and motion["mfe_rr"] >= 0.75 and motion["rr_realized"] < 0.25
         late_entry = (
             stop_like
-            and duration_minutes <= self._late_entry_threshold_minutes(metadata)
-            and mae_rr >= 0.85
-            and mfe_rr <= 0.35
+            and context["duration_minutes"] <= self._late_entry_threshold_minutes(context["metadata"])
+            and motion["mae_rr"] >= 0.85
+            and motion["mfe_rr"] <= 0.35
         )
         target_miss = (
-            target_distance > 0
-            and favorable_move >= target_distance * 0.90
-            and max(0.0, realized_move) < target_distance * 0.55
+            motion["target_distance"] > 0
+            and motion["favorable_move"] >= motion["target_distance"] * 0.90
+            and max(0.0, motion["realized_move"]) < motion["target_distance"] * 0.55
             and not target_like
         )
-        stop_too_wide = stop_like and favorable_move <= initial_risk * 0.15 and mae_rr >= 1.0
-        stop_too_tight = stop_like and favorable_move >= initial_risk * 0.60 and rr_realized <= 0.10
+        stop_too_wide = stop_like and motion["favorable_move"] <= motion["initial_risk"] * 0.15 and motion["mae_rr"] >= 1.0
+        stop_too_tight = stop_like and motion["favorable_move"] >= motion["initial_risk"] * 0.60 and motion["rr_realized"] <= 0.10
 
         notes: List[str] = []
         if premature_stop:
@@ -163,103 +229,47 @@ class ExecutionFeedbackService:
             notes.append("stop_too_tight")
         if full_target:
             notes.append("full_target")
-        if exit_family == "partial_tp":
+        if context["exit_family"] == "partial_tp":
             notes.append("partial_take_profit")
 
-        requested_entry_price = _safe_float(paper_execution.get("requested_entry_price"), entry_price)
-        requested_exit_price = _safe_float(paper_execution.get("requested_exit_price"), exit_price)
+        return {
+            "values": {
+                "premature_stop": premature_stop,
+                "late_entry": late_entry,
+                "target_miss": target_miss,
+                "stop_too_wide": stop_too_wide,
+                "stop_too_tight": stop_too_tight,
+                "full_target": full_target,
+            },
+            "notes": notes,
+            "stop_like": stop_like,
+            "target_like": target_like,
+        }
+
+    def _trade_execution_profile(self, context: Dict[str, Any], motion: Dict[str, Any]) -> Dict[str, Any]:
+        requested_entry_price = _safe_float(context["paper_execution"].get("requested_entry_price"), context["entry_price"])
+        requested_exit_price = _safe_float(context["paper_execution"].get("requested_exit_price"), context["exit_price"])
         entry_fill_delta_pct = (
-            abs(entry_price - requested_entry_price) / requested_entry_price
+            abs(context["entry_price"] - requested_entry_price) / requested_entry_price
             if requested_entry_price > 0
             else 0.0
         )
         exit_fill_delta_pct = (
-            abs(exit_price - requested_exit_price) / requested_exit_price
+            abs(context["exit_price"] - requested_exit_price) / requested_exit_price
             if requested_exit_price > 0
             else 0.0
         )
-        entry_commission = _safe_float(paper_execution.get("entry_commission"), 0.0)
-        exit_commission = _safe_float(paper_execution.get("exit_commission"), 0.0)
+        entry_commission = _safe_float(context["paper_execution"].get("entry_commission"), 0.0)
+        exit_commission = _safe_float(context["paper_execution"].get("exit_commission"), 0.0)
         total_commission = _safe_float(
-            paper_execution.get("total_commission"),
+            context["paper_execution"].get("total_commission"),
             entry_commission + exit_commission,
         )
-        execution_drag_rr = total_commission / initial_risk if initial_risk > 0 else 0.0
+        execution_drag_rr = total_commission / motion["initial_risk"] if motion["initial_risk"] > 0 else 0.0
+        notes: List[str] = []
         if execution_drag_rr > 0.08:
             notes.append("execution_drag_high")
-
-        quality_score = 50.0
-        quality_score += rr_realized * 14.0
-        quality_score += target_capture * 10.0
-        quality_score += (1.0 - giveback_ratio) * 8.0
-        quality_score += 5.0 if target_like else 0.0
-        quality_score += 3.0 if bool(trade.get("is_partial_close")) else 0.0
-        quality_score -= 14.0 if premature_stop else 0.0
-        quality_score -= 10.0 if late_entry else 0.0
-        quality_score -= 8.0 if stop_too_wide else 0.0
-        quality_score -= 6.0 if stop_too_tight else 0.0
-        quality_score = round(_clip(quality_score, 0.0, 100.0), 1)
-
-        if rr_realized >= 1.5:
-            outcome_class = "strong_win"
-        elif rr_realized > 0.15:
-            outcome_class = "win"
-        elif rr_realized > -0.15:
-            outcome_class = "scratch"
-        elif rr_realized > -1.0:
-            outcome_class = "loss"
-        else:
-            outcome_class = "hard_loss"
-
-        adaptive_policy = metadata.get("adaptive_policy") or {}
-        if not isinstance(adaptive_policy, dict):
-            adaptive_policy = {}
-        risk_multiplier = _safe_float(adaptive_policy.get("risk_multiplier"), 1.0)
-        if risk_multiplier >= 1.12:
-            adaptive_posture = "aggressive"
-        elif risk_multiplier <= 0.88:
-            adaptive_posture = "defensive"
-        else:
-            adaptive_posture = "neutral"
-
         return {
-            "version": 1,
-            "asset": asset,
-            "category": category,
-            "direction": direction,
-            "exit_family": exit_family,
-            "exit_reason": exit_reason,
-            "partial_close": bool(trade.get("is_partial_close")),
-            "duration_minutes": duration_minutes,
-            "duration_bucket": self._duration_bucket(duration_minutes),
-            "initial_risk": round(initial_risk, 6),
-            "target_distance": round(target_distance, 6),
-            "realized_move": round(realized_move, 6),
-            "favorable_move": round(favorable_move, 6),
-            "adverse_move": round(adverse_move, 6),
-            "rr_realized": round(rr_realized, 4),
-            "mfe_rr": round(mfe_rr, 4),
-            "mae_rr": round(mae_rr, 4),
-            "target_capture": round(target_capture, 4),
-            "giveback_ratio": round(giveback_ratio, 4),
-            "premature_stop": premature_stop,
-            "late_entry": late_entry,
-            "target_miss": target_miss,
-            "stop_too_wide": stop_too_wide,
-            "stop_too_tight": stop_too_tight,
-            "full_target": full_target,
-            "quality_score": quality_score,
-            "outcome_class": outcome_class,
-            "pnl": round(pnl, 6),
-            "regime": str(metadata.get("regime") or metadata.get("market_structure", {}).get("regime") or "unknown"),
-            "structure_bias": str(metadata.get("structure_bias") or metadata.get("market_structure", {}).get("structure_bias") or "neutral"),
-            "setup_quality": round(_safe_float(metadata.get("setup_quality"), 0.0), 4),
-            "opportunity_score": round(_safe_float(metadata.get("opportunity_score"), 0.0), 4),
-            "memory_score": round(_safe_float(metadata.get("memory_score"), 0.0), 4),
-            "adaptive_posture": adaptive_posture,
-            "target_rr_multiplier": round(_safe_float(feedback_policy.get("target_rr_multiplier"), 1.0), 4),
-            "stop_buffer_multiplier": round(_safe_float(feedback_policy.get("stop_buffer_multiplier"), 1.0), 4),
-            "sample_count": _safe_int(feedback_policy.get("sample_count"), 0),
             "entry_fill_delta_pct": round(entry_fill_delta_pct, 6),
             "exit_fill_delta_pct": round(exit_fill_delta_pct, 6),
             "entry_commission": round(entry_commission, 6),
@@ -269,6 +279,49 @@ class ExecutionFeedbackService:
             "notes": notes,
         }
 
+    def _trade_quality_profile(
+        self,
+        context: Dict[str, Any],
+        motion: Dict[str, Any],
+        flags: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        flag_values = flags["values"]
+        quality_score = 50.0
+        quality_score += motion["rr_realized"] * 14.0
+        quality_score += motion["target_capture"] * 10.0
+        quality_score += (1.0 - motion["giveback_ratio"]) * 8.0
+        quality_score += 5.0 if flags["target_like"] else 0.0
+        quality_score += 3.0 if context["partial_close"] else 0.0
+        quality_score -= 14.0 if flag_values["premature_stop"] else 0.0
+        quality_score -= 10.0 if flag_values["late_entry"] else 0.0
+        quality_score -= 8.0 if flag_values["stop_too_wide"] else 0.0
+        quality_score -= 6.0 if flag_values["stop_too_tight"] else 0.0
+        quality_score = round(_clip(quality_score, 0.0, 100.0), 1)
+
+        if motion["rr_realized"] >= 1.5:
+            outcome_class = "strong_win"
+        elif motion["rr_realized"] > 0.15:
+            outcome_class = "win"
+        elif motion["rr_realized"] > -0.15:
+            outcome_class = "scratch"
+        elif motion["rr_realized"] > -1.0:
+            outcome_class = "loss"
+        else:
+            outcome_class = "hard_loss"
+
+        risk_multiplier = _safe_float(context["metadata"].get("adaptive_policy", {}).get("risk_multiplier"), 1.0)
+        if risk_multiplier >= 1.12:
+            adaptive_posture = "aggressive"
+        elif risk_multiplier <= 0.88:
+            adaptive_posture = "defensive"
+        else:
+            adaptive_posture = "neutral"
+
+        return {
+            "quality_score": quality_score,
+            "outcome_class": outcome_class,
+            "adaptive_posture": adaptive_posture,
+        }
     def summarize_history(
         self,
         asset: str = "",
@@ -585,3 +638,4 @@ _service = ExecutionFeedbackService()
 
 def get_service() -> ExecutionFeedbackService:
     return _service
+

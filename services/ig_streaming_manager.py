@@ -300,62 +300,17 @@ class IGStreamingManager:
         logger.warning(f"[IGStream] subscription error {code}: {message}")
 
     def _handle_item_update(self, update: ItemUpdate) -> None:
-        item_name = str(update.getItemName() or "")
-        parts = item_name.split(":", 2)
-        if len(parts) < 3:
-            return
-        epic = parts[2]
-        with self._lock:
-            asset = self._epic_to_asset.get(epic)
-            callbacks = list(self._callbacks)
-            symbol_count = len(self._asset_to_epic)
-        if not asset:
+        resolved = self._resolve_item_update(update)
+        if not resolved:
             return
 
-        fields = update.getFields() or {}
-        bid = _safe_float(fields.get("BIDPRICE1") or fields.get("BID"))
-        ask = _safe_float(fields.get("ASKPRICE1") or fields.get("OFFER"))
-        bid_size = _safe_float(fields.get("BIDSIZE1"))
-        ask_size = _safe_float(fields.get("ASKSIZE1"))
-        bid = _normalize_ig_commodity_price(asset, bid)
-        ask = _normalize_ig_commodity_price(asset, ask)
-        if bid is None and ask is None:
-            return
-        if bid is not None and ask is not None:
-            price = (bid + ask) / 2.0
-        else:
-            price = ask if ask is not None else bid
-        if price is None or price <= 0:
+        asset, callbacks, symbol_count, fields = resolved
+        quote = self._extract_quote(fields, asset)
+        if not quote:
             return
 
-        timestamp = fields.get("TIMESTAMP") or fields.get("UTM")
-        as_of = datetime.utcnow()
-        try:
-            if timestamp not in (None, ""):
-                numeric = float(timestamp)
-                if numeric > 10_000_000_000:
-                    numeric /= 1000.0
-                as_of = datetime.fromtimestamp(numeric)
-        except Exception:
-            pass
-
-        levels = []
-        for level in (1, 2, 3):
-            level_bid = _safe_float(fields.get(f"BIDPRICE{level}"))
-            level_ask = _safe_float(fields.get(f"ASKPRICE{level}"))
-            level_bid_size = _safe_float(fields.get(f"BIDSIZE{level}"))
-            level_ask_size = _safe_float(fields.get(f"ASKSIZE{level}"))
-            level_bid = _normalize_ig_commodity_price(asset, level_bid)
-            level_ask = _normalize_ig_commodity_price(asset, level_ask)
-            if any(value is not None for value in (level_bid, level_ask, level_bid_size, level_ask_size)):
-                levels.append(
-                    {
-                        "bid": level_bid,
-                        "ask": level_ask,
-                        "bid_size": level_bid_size,
-                        "ask_size": level_ask_size,
-                    }
-                )
+        bid, ask, price, bid_size, ask_size, as_of = quote
+        levels = self._extract_levels(fields, asset)
 
         try:
             from services.live_microstructure_service import get_service as get_live_microstructure_service
@@ -388,5 +343,69 @@ class IGStreamingManager:
             except Exception as exc:
                 logger.error(f"[IGStream] callback error for {asset}: {exc}")
 
+    def _resolve_item_update(self, update: ItemUpdate) -> Optional[tuple[str, list, int, dict]]:
+        item_name = str(update.getItemName() or "")
+        parts = item_name.split(":", 2)
+        if len(parts) < 3:
+            return None
+        epic = parts[2]
+        with self._lock:
+            asset = self._epic_to_asset.get(epic)
+            callbacks = list(self._callbacks)
+            symbol_count = len(self._asset_to_epic)
+        if not asset:
+            return None
+        return asset, callbacks, symbol_count, update.getFields() or {}
+
+    @staticmethod
+    def _extract_quote(fields: dict, asset: str) -> Optional[tuple[float | None, float | None, float, float, float, datetime]]:
+        bid = _safe_float(fields.get("BIDPRICE1") or fields.get("BID"))
+        ask = _safe_float(fields.get("ASKPRICE1") or fields.get("OFFER"))
+        bid_size = _safe_float(fields.get("BIDSIZE1"))
+        ask_size = _safe_float(fields.get("ASKSIZE1"))
+        bid = _normalize_ig_commodity_price(asset, bid)
+        ask = _normalize_ig_commodity_price(asset, ask)
+        if bid is None and ask is None:
+            return None
+        if bid is not None and ask is not None:
+            price = (bid + ask) / 2.0
+        else:
+            price = ask if ask is not None else bid
+        if price is None or price <= 0:
+            return None
+
+        timestamp = fields.get("TIMESTAMP") or fields.get("UTM")
+        as_of = datetime.utcnow()
+        try:
+            if timestamp not in (None, ""):
+                numeric = float(timestamp)
+                if numeric > 10_000_000_000:
+                    numeric /= 1000.0
+                as_of = datetime.fromtimestamp(numeric)
+        except Exception:
+            pass
+        return bid, ask, float(price), bid_size, ask_size, as_of
+
+    @staticmethod
+    def _extract_levels(fields: dict, asset: str) -> List[dict]:
+        levels = []
+        for level in (1, 2, 3):
+            level_bid = _safe_float(fields.get(f"BIDPRICE{level}"))
+            level_ask = _safe_float(fields.get(f"ASKPRICE{level}"))
+            level_bid_size = _safe_float(fields.get(f"BIDSIZE{level}"))
+            level_ask_size = _safe_float(fields.get(f"ASKSIZE{level}"))
+            level_bid = _normalize_ig_commodity_price(asset, level_bid)
+            level_ask = _normalize_ig_commodity_price(asset, level_ask)
+            if any(value is not None for value in (level_bid, level_ask, level_bid_size, level_ask_size)):
+                levels.append(
+                    {
+                        "bid": level_bid,
+                        "ask": level_ask,
+                        "bid_size": level_bid_size,
+                        "ask_size": level_ask_size,
+                    }
+                )
+        return levels
 
 ig_streaming_manager = IGStreamingManager()
+

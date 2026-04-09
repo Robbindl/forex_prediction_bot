@@ -308,6 +308,115 @@ class TradingCore:
         )
         return candidates[: max(1, int(limit or 5))]
 
+    def _build_reprice_snapshot(
+        self,
+        pos: Dict[str, Any],
+        *,
+        tighten_only: bool,
+    ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+        trade_id = str(pos.get("trade_id", "") or "")
+        asset = str(pos.get("asset", "") or "")
+        category = str(pos.get("category", "") or "")
+        direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+        entry = float(pos.get("entry_price", 0) or 0)
+        current_sl = float(pos.get("stop_loss", 0) or 0)
+        current_tp = float(pos.get("take_profit", 0) or 0)
+        current_original_sl = float(pos.get("original_sl", current_sl) or current_sl)
+
+        if not trade_id or not asset or entry <= 0 or direction not in {"BUY", "SELL"}:
+            return None
+
+        price_data = self._fetch_price_data(asset, category)
+        atr = self._estimate_atr(price_data)
+        execution_feedback_policy = self._load_execution_feedback_policy(
+            asset=asset,
+            category=category,
+            context={"position": pos},
+        )
+        stop_buffer_multiplier, target_rr_multiplier = self._execution_feedback_multipliers(
+            execution_feedback_policy
+        )
+        proposed_sl = self._resolve_stop_loss(
+            entry_price=entry,
+            direction=direction,
+            category=category,
+            atr=atr,
+            stop_buffer_multiplier=stop_buffer_multiplier,
+        )
+        effective_sl = self._tighten_stop_loss(
+            current_stop_loss=current_sl,
+            proposed_stop_loss=proposed_sl,
+            direction=direction,
+            tighten_only=tighten_only,
+        )
+        pos_meta = pos.get("metadata")
+        structure = pos_meta.get("market_structure") if isinstance(pos_meta, dict) else {}
+        effective_tp = self._resolve_take_profit(
+            entry_price=entry,
+            stop_loss=effective_sl,
+            direction=direction,
+            category=category,
+            atr=atr,
+            target_rr_multiplier=target_rr_multiplier,
+        )
+        effective_tp, structure_target_alignment = self._align_take_profit_to_structure(
+            asset=asset,
+            entry_price=entry,
+            take_profit=effective_tp,
+            direction=direction,
+            category=category,
+            structure=structure if isinstance(structure, dict) else {},
+            atr=atr,
+            confidence=float(pos.get("confidence", 0.0) or 0.0),
+        )
+
+        snapshot = dict(pos)
+        snapshot["stop_loss"] = float(round(effective_sl, 6))
+        snapshot["take_profit"] = float(round(effective_tp, 6))
+        snapshot["take_profit_levels"] = self._build_take_profit_levels(entry, effective_tp, direction)
+        snapshot["risk_reward"] = round(
+            abs(snapshot["take_profit"] - entry) / max(abs(entry - snapshot["stop_loss"]), 1e-9),
+            4,
+        )
+        if not current_original_sl or abs(current_original_sl - current_sl) < 1e-9:
+            snapshot["original_sl"] = float(round(effective_sl, 6))
+        snapshot["metadata"] = self._build_reprice_metadata(
+            snapshot=snapshot,
+            atr=atr,
+            execution_feedback_policy=execution_feedback_policy,
+            target_rr_multiplier=target_rr_multiplier,
+            stop_buffer_multiplier=stop_buffer_multiplier,
+            structure_target_alignment=structure_target_alignment,
+        )
+
+        sl_changed = abs(snapshot["stop_loss"] - current_sl) > 1e-9
+        tp_changed = abs(snapshot["take_profit"] - current_tp) > 1e-9
+        if not (sl_changed or tp_changed):
+            return None
+
+        update = self._build_reprice_update(
+            trade_id=trade_id,
+            asset=asset,
+            category=category,
+            direction=direction,
+            entry_price=entry,
+            current_stop_loss=current_sl,
+            current_take_profit=current_tp,
+            snapshot=snapshot,
+            atr=atr,
+            execution_feedback_policy=execution_feedback_policy,
+            target_rr_multiplier=target_rr_multiplier,
+            stop_buffer_multiplier=stop_buffer_multiplier,
+        )
+        return trade_id, snapshot, update
+
+    def _sync_repriced_snapshot(self, trade_id: str, snapshot: Dict[str, Any]) -> None:
+        self.state.sync_open_position(snapshot)
+        if self._paper_trader is not None:
+            with self._paper_trader._lock:
+                if trade_id in self._paper_trader.open_positions:
+                    self._paper_trader.open_positions[trade_id].update(snapshot)
+
     def reprice_open_positions(
         self,
         tighten_only: bool = True,
@@ -321,172 +430,14 @@ class TradingCore:
         updates: List[Dict[str, Any]] = []
         for pos in self.state.get_open_positions():
             trade_id = str(pos.get("trade_id", "") or "")
-            asset = str(pos.get("asset", "") or "")
-            category = str(pos.get("category", "") or "")
-            direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
-            entry = float(pos.get("entry_price", 0) or 0)
-            current_sl = float(pos.get("stop_loss", 0) or 0)
-            current_tp = float(pos.get("take_profit", 0) or 0)
-            current_original_sl = float(pos.get("original_sl", current_sl) or current_sl)
-
-            if not trade_id or not asset or entry <= 0 or direction not in {"BUY", "SELL"}:
-                continue
             if trade_id_filter and trade_id not in trade_id_filter:
                 continue
-
-            price_data = self._fetch_price_data(asset, category)
-            atr = self._estimate_atr(price_data)
-            execution_feedback_policy: Dict[str, Any] = {}
-            try:
-                from services.execution_feedback_service import get_service as get_execution_feedback_service
-
-                execution_feedback_policy = get_execution_feedback_service().get_exit_adjustment(
-                    asset,
-                    category,
-                    {"position": pos},
-                )
-            except Exception as exc:
-                logger.debug(f"[TradingCore] Reprice execution feedback unavailable for {asset}: {exc}")
-
-            stop_buffer_multiplier = float(
-                execution_feedback_policy.get("stop_buffer_multiplier", 1.0) or 1.0
-            )
-            target_rr_multiplier = float(
-                execution_feedback_policy.get("target_rr_multiplier", 1.0) or 1.0
-            )
-            scaled_stop_fn = getattr(self._risk_manager, "get_stop_loss_scaled", None)
-            proposed_sl = None
-            if callable(scaled_stop_fn):
-                try:
-                    scaled_stop_callable = cast(Callable[..., Any], scaled_stop_fn)
-                    _scaled_sl = scaled_stop_callable(
-                        entry,
-                        direction,
-                        category,
-                        atr=atr,
-                        distance_multiplier=stop_buffer_multiplier,
-                    )
-                    if isinstance(_scaled_sl, (int, float)):
-                        proposed_sl = float(_scaled_sl)
-                except Exception:
-                    proposed_sl = None
-            if proposed_sl is None:
-                proposed_sl = self._risk_manager.get_stop_loss(entry, direction, category, atr=atr)
-
-            if tighten_only and current_sl > 0:
-                if direction == "BUY":
-                    effective_sl = max(current_sl, proposed_sl)
-                else:
-                    effective_sl = min(current_sl, proposed_sl)
-            else:
-                effective_sl = proposed_sl
-
-            try:
-                effective_tp = self._risk_manager.get_take_profit(
-                    entry,
-                    effective_sl,
-                    direction,
-                    category=category,
-                    rr_multiplier=target_rr_multiplier,
-                )
-            except TypeError:
-                effective_tp = self._risk_manager.get_take_profit(
-                    entry,
-                    effective_sl,
-                    direction,
-                    category=category,
-                )
-            structure = {}
-            pos_meta = pos.get("metadata")
-            if isinstance(pos_meta, dict):
-                structure = pos_meta.get("market_structure") or {}
-            align_tp_fn = getattr(self._risk_manager, "align_take_profit_to_structure", None)
-            if callable(align_tp_fn):
-                try:
-                    base_effective_tp = float(effective_tp)
-                    align_tp_callable = cast(Callable[..., Any], align_tp_fn)
-                    aligned_tp = align_tp_callable(
-                        entry,
-                        effective_tp,
-                        direction,
-                        category=category,
-                        structure=structure if isinstance(structure, dict) else {},
-                        atr=atr,
-                        confidence=float(pos.get("confidence", 0.0) or 0.0),
-                    )
-                    if isinstance(aligned_tp, (int, float)) and aligned_tp > 0:
-                        effective_tp = float(aligned_tp)
-                        if abs(effective_tp - base_effective_tp) > 1e-9:
-                            structure = structure if isinstance(structure, dict) else {}
-                            structure_target_alignment = {
-                                "applied": True,
-                                "base_take_profit": round(base_effective_tp, 6),
-                                "aligned_take_profit": round(effective_tp, 6),
-                                "regime": str(structure.get("regime") or ""),
-                                "structure_bias": str(structure.get("structure_bias") or ""),
-                            }
-                        else:
-                            structure_target_alignment = {}
-                    else:
-                        structure_target_alignment = {}
-                except Exception as exc:
-                    structure_target_alignment = {}
-                    logger.debug(f"[TradingCore] Structure target alignment unavailable for {asset}: {exc}")
-            else:
-                structure_target_alignment = {}
-            tp_levels = self._build_take_profit_levels(entry, effective_tp, direction)
-
-            snapshot = dict(pos)
-            snapshot["stop_loss"] = float(round(effective_sl, 6))
-            snapshot["take_profit"] = float(round(effective_tp, 6))
-            snapshot["take_profit_levels"] = tp_levels
-            snapshot["risk_reward"] = round(
-                abs(snapshot["take_profit"] - entry) / max(abs(entry - snapshot["stop_loss"]), 1e-9),
-                4,
-            )
-            if not current_original_sl or abs(current_original_sl - current_sl) < 1e-9:
-                snapshot["original_sl"] = float(round(effective_sl, 6))
-            snapshot["metadata"] = {
-                **dict(snapshot.get("metadata") or {}),
-                "atr": round(atr, 6) if atr > 0 else 0.0,
-                "exit_model": "atr" if atr > 0 else "category_fallback",
-                "repriced_at_utc": datetime.utcnow().isoformat(),
-                "execution_feedback_policy": execution_feedback_policy,
-                "execution_quality_score": round(float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0), 1),
-                "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
-                "target_rr_multiplier": round(target_rr_multiplier, 4),
-                "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
-                "structure_target_alignment": structure_target_alignment,
-            }
-
-            sl_changed = abs(snapshot["stop_loss"] - current_sl) > 1e-9
-            tp_changed = abs(snapshot["take_profit"] - current_tp) > 1e-9
-            if not (sl_changed or tp_changed):
+            priced = self._build_reprice_snapshot(pos, tighten_only=tighten_only)
+            if priced is None:
                 continue
-
-            self.state.sync_open_position(snapshot)
-            if self._paper_trader is not None:
-                with self._paper_trader._lock:
-                    if trade_id in self._paper_trader.open_positions:
-                        self._paper_trader.open_positions[trade_id].update(snapshot)
-
-            updates.append(
-                {
-                    "trade_id": trade_id,
-                    "asset": asset,
-                    "category": category,
-                    "direction": direction,
-                    "entry_price": entry,
-                    "old_stop_loss": current_sl,
-                    "new_stop_loss": snapshot["stop_loss"],
-                    "old_take_profit": current_tp,
-                    "new_take_profit": snapshot["take_profit"],
-                    "atr": round(atr, 6) if atr > 0 else 0.0,
-                    "execution_quality_score": round(float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0), 1),
-                    "target_rr_multiplier": round(target_rr_multiplier, 4),
-                    "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
-                }
-            )
+            trade_id, snapshot, update = priced
+            self._sync_repriced_snapshot(trade_id, snapshot)
+            updates.append(update)
 
         return updates
 
@@ -2020,6 +1971,303 @@ class TradingCore:
             return []
         return levels
 
+    def _load_execution_feedback_policy(
+        self,
+        *,
+        asset: str,
+        category: str,
+        context: Dict[str, Any],
+        policy_asset: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+            return get_execution_feedback_service().get_exit_adjustment(
+                policy_asset or asset,
+                category,
+                context,
+            )
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Execution feedback policy unavailable for {asset}: {exc}")
+            return {}
+
+    @staticmethod
+    def _execution_feedback_multipliers(execution_feedback_policy: Dict[str, Any]) -> Tuple[float, float]:
+        stop_buffer_multiplier = float(
+            execution_feedback_policy.get("stop_buffer_multiplier", 1.0) or 1.0
+        )
+        target_rr_multiplier = float(
+            execution_feedback_policy.get("target_rr_multiplier", 1.0) or 1.0
+        )
+        return stop_buffer_multiplier, target_rr_multiplier
+
+    def _resolve_stop_loss(
+        self,
+        *,
+        entry_price: float,
+        direction: str,
+        category: str,
+        atr: float,
+        stop_buffer_multiplier: float,
+    ) -> float:
+        if self._risk_manager is not None:
+            scaled_stop_fn = getattr(self._risk_manager, "get_stop_loss_scaled", None)
+            stop_loss = None
+            if callable(scaled_stop_fn):
+                try:
+                    scaled_stop = self._call_optional_stop_scaler(
+                        cast(Callable[..., Any], scaled_stop_fn),
+                        entry_price,
+                        direction,
+                        category,
+                        atr=atr,
+                        distance_multiplier=stop_buffer_multiplier,
+                    )
+                    if isinstance(scaled_stop, (int, float)):
+                        stop_loss = float(scaled_stop)
+                except Exception:
+                    stop_loss = None
+            if stop_loss is None:
+                stop_loss = self._risk_manager.get_stop_loss(
+                    entry_price,
+                    direction,
+                    category,
+                    atr=atr,
+                )
+            return float(stop_loss)
+
+        distance = (atr * 1.5 if atr > 0 else entry_price * 0.006) * max(
+            0.75,
+            min(1.25, stop_buffer_multiplier),
+        )
+        if direction == "BUY":
+            return float(entry_price - distance)
+        return float(entry_price + distance)
+
+    @staticmethod
+    def _tighten_stop_loss(
+        *,
+        current_stop_loss: float,
+        proposed_stop_loss: float,
+        direction: str,
+        tighten_only: bool,
+    ) -> float:
+        if not (tighten_only and current_stop_loss > 0):
+            return float(proposed_stop_loss)
+        if direction == "BUY":
+            return float(max(current_stop_loss, proposed_stop_loss))
+        return float(min(current_stop_loss, proposed_stop_loss))
+
+    def _resolve_take_profit(
+        self,
+        *,
+        entry_price: float,
+        stop_loss: float,
+        direction: str,
+        category: str,
+        atr: float,
+        target_rr_multiplier: float,
+    ) -> float:
+        if self._risk_manager is not None:
+            try:
+                take_profit = self._risk_manager.get_take_profit(
+                    entry_price,
+                    stop_loss,
+                    direction,
+                    category=category,
+                    rr_multiplier=target_rr_multiplier,
+                )
+            except TypeError:
+                take_profit = self._risk_manager.get_take_profit(
+                    entry_price,
+                    stop_loss,
+                    direction,
+                    category=category,
+                )
+            return float(take_profit)
+
+        distance = abs(entry_price - stop_loss)
+        reward_distance = distance * 1.5 * max(0.80, min(1.20, target_rr_multiplier))
+        if direction == "BUY":
+            return float(entry_price + reward_distance)
+        return float(entry_price - reward_distance)
+
+    @staticmethod
+    def _structure_target_alignment_payload(
+        *,
+        base_take_profit: float,
+        aligned_take_profit: float,
+        structure: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "applied": True,
+            "base_take_profit": round(float(base_take_profit), 6),
+            "aligned_take_profit": round(float(aligned_take_profit), 6),
+            "regime": str((structure or {}).get("regime") or ""),
+            "structure_bias": str((structure or {}).get("structure_bias") or ""),
+        }
+
+    def _align_take_profit_to_structure(
+        self,
+        *,
+        asset: str,
+        entry_price: float,
+        take_profit: float,
+        direction: str,
+        category: str,
+        structure: Dict[str, Any],
+        atr: float,
+        confidence: float,
+    ) -> Tuple[float, Dict[str, Any]]:
+        if self._risk_manager is None:
+            return float(take_profit), {}
+        align_tp_fn = getattr(self._risk_manager, "align_take_profit_to_structure", None)
+        if not callable(align_tp_fn):
+            return float(take_profit), {}
+        try:
+            aligned_take_profit = self._call_optional_tp_aligner(
+                cast(Callable[..., Any], align_tp_fn),
+                entry_price,
+                take_profit,
+                direction,
+                category=category,
+                structure=structure if isinstance(structure, dict) else {},
+                atr=atr,
+                confidence=confidence,
+            )
+            if not isinstance(aligned_take_profit, (int, float)) or aligned_take_profit <= 0:
+                return float(take_profit), {}
+            aligned_take_profit = float(aligned_take_profit)
+            if abs(aligned_take_profit - float(take_profit)) <= 1e-9:
+                return float(aligned_take_profit), {}
+            return aligned_take_profit, self._structure_target_alignment_payload(
+                base_take_profit=float(take_profit),
+                aligned_take_profit=aligned_take_profit,
+                structure=structure if isinstance(structure, dict) else {},
+            )
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Structure target alignment unavailable for {asset}: {exc}")
+            return float(take_profit), {}
+
+    @staticmethod
+    def _build_reprice_metadata(
+        *,
+        snapshot: Dict[str, Any],
+        atr: float,
+        execution_feedback_policy: Dict[str, Any],
+        target_rr_multiplier: float,
+        stop_buffer_multiplier: float,
+        structure_target_alignment: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            **dict(snapshot.get("metadata") or {}),
+            "atr": round(atr, 6) if atr > 0 else 0.0,
+            "exit_model": "atr" if atr > 0 else "category_fallback",
+            "repriced_at_utc": datetime.utcnow().isoformat(),
+            "execution_feedback_policy": execution_feedback_policy,
+            "execution_quality_score": round(
+                float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0),
+                1,
+            ),
+            "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
+            "target_rr_multiplier": round(target_rr_multiplier, 4),
+            "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
+            "structure_target_alignment": structure_target_alignment,
+        }
+
+    @staticmethod
+    def _build_reprice_update(
+        *,
+        trade_id: str,
+        asset: str,
+        category: str,
+        direction: str,
+        entry_price: float,
+        current_stop_loss: float,
+        current_take_profit: float,
+        snapshot: Dict[str, Any],
+        atr: float,
+        execution_feedback_policy: Dict[str, Any],
+        target_rr_multiplier: float,
+        stop_buffer_multiplier: float,
+    ) -> Dict[str, Any]:
+        return {
+            "trade_id": trade_id,
+            "asset": asset,
+            "category": category,
+            "direction": direction,
+            "entry_price": entry_price,
+            "old_stop_loss": current_stop_loss,
+            "new_stop_loss": snapshot["stop_loss"],
+            "old_take_profit": current_take_profit,
+            "new_take_profit": snapshot["take_profit"],
+            "atr": round(atr, 6) if atr > 0 else 0.0,
+            "execution_quality_score": round(
+                float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0),
+                1,
+            ),
+            "target_rr_multiplier": round(target_rr_multiplier, 4),
+            "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
+        }
+
+    @staticmethod
+    def _build_playbook_trade_management_plan(
+        *,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+        playbook_direction: str,
+        playbook_action: str,
+        playbook_management_template: Dict[str, Any],
+        playbook_interval: str,
+        playbook_entry_style: str,
+        playbook_pick: Dict[str, Any],
+        playbook_primary: Dict[str, Any],
+    ) -> Tuple[float, List[float], Dict[str, Any]]:
+        trade_management_plan: Dict[str, Any] = {}
+        take_profit_levels = TradingCore._build_take_profit_levels(entry_price, take_profit, direction)
+        risk_distance = abs(entry_price - stop_loss)
+        if not (
+            playbook_direction == direction
+            and playbook_action in {"seed", "override", "support"}
+            and risk_distance > 0.0
+            and playbook_management_template
+        ):
+            return take_profit, take_profit_levels, trade_management_plan
+
+        partial_rrs: List[float] = []
+        for raw_rr in list(playbook_management_template.get("partial_take_profit_rr") or []):
+            try:
+                rr_value = float(raw_rr)
+            except Exception:
+                continue
+            if rr_value > 0.0:
+                partial_rrs.append(rr_value)
+
+        runner_target_rr = float(playbook_management_template.get("runner_target_rr", 0.0) or 0.0)
+        current_rr = abs(float(take_profit) - float(entry_price)) / max(risk_distance, 1e-9)
+        if runner_target_rr > 0.0:
+            runner_target_rr = max(runner_target_rr, current_rr)
+            reward_distance = risk_distance * runner_target_rr
+            take_profit = entry_price + reward_distance if direction == "BUY" else entry_price - reward_distance
+            take_profit_levels = []
+            level_rrs = sorted({round(rr, 4) for rr in partial_rrs + [runner_target_rr] if rr > 0.0})
+            for level_rr in level_rrs:
+                reward = risk_distance * level_rr
+                level_price = entry_price + reward if direction == "BUY" else entry_price - reward
+                take_profit_levels.append(round(level_price, 6))
+
+        trade_management_plan = {
+            **playbook_management_template,
+            "partial_take_profit_rr": [round(float(rr), 4) for rr in partial_rrs],
+            "runner_target_rr": round(runner_target_rr or current_rr, 4),
+            "preferred_interval": playbook_interval or playbook_management_template.get("preferred_interval") or "",
+            "entry_style": playbook_entry_style,
+            "session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
+        }
+        return take_profit, take_profit_levels, trade_management_plan
+
     def _resolve_playbook_seed(
         self,
         asset: str,
@@ -2090,131 +2338,53 @@ class TradingCore:
         playbook_primary: Dict[str, Any],
     ) -> Dict[str, Any]:
         atr = self._estimate_atr(price_data)
-        structure_target_alignment: Dict[str, Any] = {}
-        execution_feedback_policy: Dict[str, Any] = {}
-        try:
-            from services.execution_feedback_service import get_service as get_execution_feedback_service
-
-            execution_feedback_policy = get_execution_feedback_service().get_exit_adjustment(
-                canonical,
-                category,
-                context,
-            )
-        except Exception as exc:
-            logger.debug(f"[TradingCore] Execution feedback policy unavailable for {asset}: {exc}")
-
-        stop_buffer_multiplier = float(
-            execution_feedback_policy.get("stop_buffer_multiplier", 1.0) or 1.0
+        execution_feedback_policy = self._load_execution_feedback_policy(
+            asset=asset,
+            policy_asset=canonical,
+            category=category,
+            context=context,
         )
-        target_rr_multiplier = float(
-            execution_feedback_policy.get("target_rr_multiplier", 1.0) or 1.0
+        stop_buffer_multiplier, target_rr_multiplier = self._execution_feedback_multipliers(
+            execution_feedback_policy
         )
-        if self._risk_manager is not None:
-            scaled_stop_fn = getattr(self._risk_manager, "get_stop_loss_scaled", None)
-            stop_loss = None
-            if callable(scaled_stop_fn):
-                try:
-                    _scaled_sl = cast(Callable[..., Any], scaled_stop_fn)(
-                        entry_price,
-                        direction,
-                        category,
-                        atr=atr,
-                        distance_multiplier=stop_buffer_multiplier,
-                    )
-                    if isinstance(_scaled_sl, (int, float)):
-                        stop_loss = float(_scaled_sl)
-                except Exception:
-                    stop_loss = None
-            if stop_loss is None:
-                stop_loss = self._risk_manager.get_stop_loss(
-                    entry_price,
-                    direction,
-                    category,
-                    atr=atr,
-                )
-            try:
-                take_profit = self._risk_manager.get_take_profit(
-                    entry_price,
-                    stop_loss,
-                    direction,
-                    category=category,
-                    rr_multiplier=target_rr_multiplier,
-                )
-            except TypeError:
-                take_profit = self._risk_manager.get_take_profit(
-                    entry_price,
-                    stop_loss,
-                    direction,
-                    category=category,
-                )
-            align_tp_fn = getattr(self._risk_manager, "align_take_profit_to_structure", None)
-            if callable(align_tp_fn):
-                try:
-                    aligned_take_profit = cast(Callable[..., Any], align_tp_fn)(
-                        entry_price,
-                        take_profit,
-                        direction,
-                        category=category,
-                        structure=structure if isinstance(structure, dict) else {},
-                        atr=atr,
-                        confidence=seed_confidence,
-                    )
-                    if isinstance(aligned_take_profit, (int, float)) and aligned_take_profit > 0:
-                        aligned_take_profit = float(aligned_take_profit)
-                        if abs(aligned_take_profit - float(take_profit)) > 1e-9:
-                            structure_target_alignment = {
-                                "applied": True,
-                                "base_take_profit": round(float(take_profit), 6),
-                                "aligned_take_profit": round(aligned_take_profit, 6),
-                                "regime": str((structure or {}).get("regime") or ""),
-                                "structure_bias": str((structure or {}).get("structure_bias") or ""),
-                            }
-                        take_profit = aligned_take_profit
-                except Exception as exc:
-                    logger.debug(f"[TradingCore] Structure target alignment unavailable for {asset}: {exc}")
-        else:
-            dist = (atr * 1.5 if atr > 0 else entry_price * 0.006) * max(0.75, min(1.25, stop_buffer_multiplier))
-            stop_loss = entry_price - dist if direction == "BUY" else entry_price + dist
-            reward_dist = dist * 1.5 * max(0.80, min(1.20, target_rr_multiplier))
-            take_profit = entry_price + reward_dist if direction == "BUY" else entry_price - reward_dist
-
-        trade_management_plan: Dict[str, Any] = {}
-        take_profit_levels: List[float] = self._build_take_profit_levels(entry_price, take_profit, direction)
-        risk_distance = abs(entry_price - stop_loss)
-        if (
-            playbook_direction == direction
-            and playbook_action in {"seed", "override", "support"}
-            and risk_distance > 0.0
-            and playbook_management_template
-        ):
-            partial_rrs = []
-            for raw_rr in list(playbook_management_template.get("partial_take_profit_rr") or []):
-                try:
-                    rr_value = float(raw_rr)
-                except Exception:
-                    continue
-                if rr_value > 0.0:
-                    partial_rrs.append(rr_value)
-            runner_target_rr = float(playbook_management_template.get("runner_target_rr", 0.0) or 0.0)
-            current_rr = abs(float(take_profit) - float(entry_price)) / max(risk_distance, 1e-9)
-            if runner_target_rr > 0.0:
-                runner_target_rr = max(runner_target_rr, current_rr)
-                reward_distance = risk_distance * runner_target_rr
-                take_profit = entry_price + reward_distance if direction == "BUY" else entry_price - reward_distance
-                take_profit_levels = []
-                level_rrs = sorted({round(rr, 4) for rr in partial_rrs + [runner_target_rr] if rr > 0.0})
-                for level_rr in level_rrs:
-                    reward = risk_distance * level_rr
-                    level_price = entry_price + reward if direction == "BUY" else entry_price - reward
-                    take_profit_levels.append(round(level_price, 6))
-            trade_management_plan = {
-                **playbook_management_template,
-                "partial_take_profit_rr": [round(float(rr), 4) for rr in partial_rrs],
-                "runner_target_rr": round(runner_target_rr or current_rr, 4),
-                "preferred_interval": playbook_interval or playbook_management_template.get("preferred_interval") or "",
-                "entry_style": playbook_entry_style,
-                "session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
-            }
+        stop_loss = self._resolve_stop_loss(
+            entry_price=entry_price,
+            direction=direction,
+            category=category,
+            atr=atr,
+            stop_buffer_multiplier=stop_buffer_multiplier,
+        )
+        take_profit = self._resolve_take_profit(
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            direction=direction,
+            category=category,
+            atr=atr,
+            target_rr_multiplier=target_rr_multiplier,
+        )
+        take_profit, structure_target_alignment = self._align_take_profit_to_structure(
+            asset=asset,
+            entry_price=entry_price,
+            take_profit=take_profit,
+            direction=direction,
+            category=category,
+            structure=structure if isinstance(structure, dict) else {},
+            atr=atr,
+            confidence=seed_confidence,
+        )
+        take_profit, take_profit_levels, trade_management_plan = self._build_playbook_trade_management_plan(
+            direction=direction,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            playbook_direction=playbook_direction,
+            playbook_action=playbook_action,
+            playbook_management_template=playbook_management_template,
+            playbook_interval=playbook_interval,
+            playbook_entry_style=playbook_entry_style,
+            playbook_pick=playbook_pick,
+            playbook_primary=playbook_primary,
+        )
         return {
             "atr": atr,
             "stop_loss": stop_loss,
@@ -2257,6 +2427,46 @@ class TradingCore:
         if not items:
             return "n/a"
         return ",".join(items[: max(1, int(limit or 1))])
+
+    @staticmethod
+    def _call_optional_stop_scaler(
+        scaled_stop_fn: Callable[..., Any],
+        entry: float,
+        direction: str,
+        category: str,
+        *,
+        atr: float,
+        distance_multiplier: float,
+    ) -> Any:
+        return scaled_stop_fn(
+            entry,
+            direction,
+            category,
+            atr=atr,
+            distance_multiplier=distance_multiplier,
+        )
+
+    @staticmethod
+    def _call_optional_tp_aligner(
+        align_tp_fn: Callable[..., Any],
+        entry: float,
+        take_profit: float,
+        direction: str,
+        *,
+        category: str,
+        structure: Dict[str, Any],
+        atr: float,
+        confidence: float,
+    ) -> Any:
+        return align_tp_fn(
+            entry,
+            take_profit,
+            direction,
+            category=category,
+            structure=structure,
+            atr=atr,
+            confidence=confidence,
+        )
 
     def _log_seed_decision(self, asset: str, context: Dict[str, Any], reason: str) -> None:
         seed_decision = dict(context.get("seed_decision") or {})
@@ -3288,6 +3498,271 @@ class TradingCore:
             return None
         return df
 
+    @staticmethod
+    def _gapfill_take_profit_targets(pos: Dict[str, Any]) -> Tuple[float, List[float]]:
+        take_profit = float(pos.get("take_profit", 0) or 0)
+        tp_levels: List[float] = []
+        for raw_level in list(pos.get("take_profit_levels", []) or []):
+            try:
+                level = float(raw_level)
+            except Exception:
+                continue
+            if level > 0:
+                tp_levels.append(round(level, 6))
+        if tp_levels:
+            take_profit = float(tp_levels[-1])
+        return take_profit, tp_levels
+
+    @staticmethod
+    def _gapfill_management_runtime(
+        metadata: Dict[str, Any],
+        management: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        atr_value = float(metadata.get("atr", 0.0) or 0.0)
+        try:
+            trail_activation_rr = max(0.5, float(management.get("trail_activation_rr", 1.0) or 1.0))
+        except Exception:
+            trail_activation_rr = 1.0
+        try:
+            trail_atr_multiple = max(0.4, float(management.get("trail_atr_multiple", 0.8) or 0.8))
+        except Exception:
+            trail_atr_multiple = 0.8
+        return {
+            "atr_value": atr_value,
+            "trail_activation_rr": trail_activation_rr,
+            "trail_atr_multiple": trail_atr_multiple,
+            "break_even_after_partial": bool(management.get("break_even_after_partial", False)),
+        }
+
+    def _build_gapfill_runtime(self, pos: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        trade_id = str(pos.get("trade_id", "") or "")
+        asset = str(pos.get("asset", "") or "")
+        category = str(pos.get("category", "forex") or "forex")
+        direction = str(pos.get("direction", pos.get("signal", "BUY")) or "BUY")
+        entry = float(pos.get("entry_price", 0) or 0)
+        stop_loss = float(pos.get("stop_loss", 0) or 0)
+        take_profit, tp_levels = self._gapfill_take_profit_targets(pos)
+        open_time = str(pos.get("open_time", "") or "")
+        size = float(pos.get("position_size", 0) or 0)
+        metadata = dict(pos.get("metadata") or {})
+        management = (
+            metadata.get("trade_management_plan")
+            if isinstance(metadata.get("trade_management_plan"), dict)
+            else {}
+        )
+        if not entry or not stop_loss or not asset:
+            return None
+
+        dt_open = self._parse_gapfill_open_time(open_time, asset)
+        if dt_open is None:
+            return None
+        minutes_offline = (datetime.now(tz=timezone.utc) - dt_open).total_seconds() / 60
+        if minutes_offline < 5:
+            return None
+        df = self._load_gapfill_history(
+            asset=asset,
+            category=category,
+            dt_open=dt_open,
+            minutes_offline=minutes_offline,
+        )
+        if df is None:
+            return None
+
+        current_pos = dict(pos)
+        current_pos["take_profit"] = take_profit
+        if tp_levels:
+            current_pos["take_profit_levels"] = list(tp_levels)
+        current_pos["metadata"] = metadata
+        return {
+            "trade_id": trade_id,
+            "asset": asset,
+            "category": category,
+            "direction": direction,
+            "entry": entry,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "tp_levels": tp_levels,
+            "open_time": open_time,
+            "size": size,
+            "metadata": metadata,
+            "management": management,
+            "dt_open": dt_open,
+            "df": df,
+            "current_pos": current_pos,
+            "initial_risk": abs(entry - float(current_pos.get("original_sl", stop_loss) or stop_loss)),
+            **self._gapfill_management_runtime(metadata, management),
+        }
+
+    @staticmethod
+    def _gapfill_update_extremes(
+        current_pos: Dict[str, Any],
+        *,
+        entry: float,
+        bar_low: float,
+        bar_high: float,
+    ) -> None:
+        current_pos["highest_price"] = max(float(current_pos.get("highest_price", entry) or entry), bar_high)
+        current_pos["lowest_price"] = min(float(current_pos.get("lowest_price", entry) or entry), bar_low)
+
+    def _record_gapfill_partial_from_runtime(
+        self,
+        runtime: Dict[str, Any],
+        *,
+        tp_level: float,
+        tp_idx: int,
+        bar_time: Any,
+    ) -> None:
+        self._record_gapfill_partial_take_profit(
+            current_pos=runtime["current_pos"],
+            trade_id=runtime["trade_id"],
+            asset=runtime["asset"],
+            category=runtime["category"],
+            direction=runtime["direction"],
+            entry=runtime["entry"],
+            tp_level=tp_level,
+            tp_idx=tp_idx,
+            total_tiers=len(runtime["tp_levels"]),
+            size=runtime["size"],
+            bar_time=bar_time,
+            dt_open=runtime["dt_open"],
+            df=runtime["df"],
+            break_even_after_partial=runtime["break_even_after_partial"],
+            management=runtime["management"],
+            stop_loss=runtime["stop_loss"],
+            initial_risk=runtime["initial_risk"],
+            atr_value=runtime["atr_value"],
+            trail_activation_rr=runtime["trail_activation_rr"],
+            trail_atr_multiple=runtime["trail_atr_multiple"],
+        )
+
+    @staticmethod
+    def _gapfill_close_result(
+        breach_price: float,
+        breach_reason: str,
+        breach_time: Any,
+    ) -> Dict[str, Any]:
+        return {
+            "status": "close",
+            "breach_price": float(breach_price),
+            "breach_reason": str(breach_reason),
+            "breach_time": breach_time,
+        }
+
+    def _handle_gapfill_buy_bar(
+        self,
+        runtime: Dict[str, Any],
+        *,
+        bar_time: Any,
+        bar_low: float,
+        bar_high: float,
+    ) -> Optional[Dict[str, Any]]:
+        current_stop = float(runtime["current_pos"].get("stop_loss", runtime["stop_loss"]) or runtime["stop_loss"])
+        if bar_low <= current_stop:
+            return self._gapfill_close_result(current_stop, "Stop Loss (offline)", bar_time)
+
+        tp_idx = max(0, int(runtime["current_pos"].get("tp_hit", 0) or 0))
+        if runtime["tp_levels"] and tp_idx < len(runtime["tp_levels"]):
+            tp_level = float(runtime["tp_levels"][tp_idx])
+            if bar_high < tp_level:
+                return None
+            if tp_idx + 1 >= len(runtime["tp_levels"]):
+                return self._gapfill_close_result(tp_level, "Take Profit (offline)", bar_time)
+            self._record_gapfill_partial_from_runtime(runtime, tp_level=tp_level, tp_idx=tp_idx, bar_time=bar_time)
+            return {"status": "partial"}
+
+        if runtime["take_profit"] and bar_high >= runtime["take_profit"]:
+            return self._gapfill_close_result(runtime["take_profit"], "Take Profit (offline)", bar_time)
+        return None
+
+    def _handle_gapfill_sell_bar(
+        self,
+        runtime: Dict[str, Any],
+        *,
+        bar_time: Any,
+        bar_low: float,
+        bar_high: float,
+    ) -> Optional[Dict[str, Any]]:
+        current_stop = float(runtime["current_pos"].get("stop_loss", runtime["stop_loss"]) or runtime["stop_loss"])
+        if bar_high >= current_stop:
+            return self._gapfill_close_result(current_stop, "Stop Loss (offline)", bar_time)
+
+        tp_idx = max(0, int(runtime["current_pos"].get("tp_hit", 0) or 0))
+        if runtime["tp_levels"] and tp_idx < len(runtime["tp_levels"]):
+            tp_level = float(runtime["tp_levels"][tp_idx])
+            if bar_low > tp_level:
+                return None
+            if tp_idx + 1 >= len(runtime["tp_levels"]):
+                return self._gapfill_close_result(tp_level, "Take Profit (offline)", bar_time)
+            self._record_gapfill_partial_from_runtime(runtime, tp_level=tp_level, tp_idx=tp_idx, bar_time=bar_time)
+            return {"status": "partial"}
+
+        if runtime["take_profit"] and bar_low <= runtime["take_profit"]:
+            return self._gapfill_close_result(runtime["take_profit"], "Take Profit (offline)", bar_time)
+        return None
+
+    def _scan_gapfill_history(self, runtime: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        for bar_time, bar in runtime["df"].iterrows():
+            bar_low = float(bar["low"])
+            bar_high = float(bar["high"])
+            self._gapfill_update_extremes(
+                runtime["current_pos"],
+                entry=runtime["entry"],
+                bar_low=bar_low,
+                bar_high=bar_high,
+            )
+            if runtime["direction"] == "BUY":
+                action = self._handle_gapfill_buy_bar(
+                    runtime,
+                    bar_time=bar_time,
+                    bar_low=bar_low,
+                    bar_high=bar_high,
+                )
+            else:
+                action = self._handle_gapfill_sell_bar(
+                    runtime,
+                    bar_time=bar_time,
+                    bar_low=bar_low,
+                    bar_high=bar_high,
+                )
+            if action and action.get("status") == "close":
+                return action
+            if action and action.get("status") == "partial":
+                continue
+
+            self._apply_gapfill_trailing_snapshot(
+                runtime["current_pos"],
+                management=runtime["management"],
+                direction=runtime["direction"],
+                entry=runtime["entry"],
+                stop_loss=runtime["stop_loss"],
+                initial_risk=runtime["initial_risk"],
+                atr_value=runtime["atr_value"],
+                trail_activation_rr=runtime["trail_activation_rr"],
+                trail_atr_multiple=runtime["trail_atr_multiple"],
+            )
+        return None
+
+    def _process_gapfill_runtime(self, runtime: Dict[str, Any]) -> None:
+        breach = self._scan_gapfill_history(runtime)
+        if breach is None:
+            self._sync_gapfill_open_position(runtime["trade_id"], runtime["current_pos"])
+            logger.debug(f"[GapFill] {runtime['asset']}: no breach found — position remains open")
+            return
+
+        self._close_gapfill_breached_position(
+            pos=runtime["current_pos"],
+            trade_id=runtime["trade_id"],
+            asset=runtime["asset"],
+            category=runtime["category"],
+            direction=runtime["direction"],
+            entry=runtime["entry"],
+            size=runtime["size"],
+            breach_price=float(breach["breach_price"]),
+            breach_reason=str(breach["breach_reason"]),
+            breach_time=breach["breach_time"],
+            df=runtime["df"],
+        )
+
     def _check_offline_sl_tp(self) -> None:
         """
         Runs once on startup after positions are restored.
@@ -3303,260 +3778,74 @@ class TradingCore:
         logger.info(f"[TradingCore] Offline gap-fill: checking {len(positions)} position(s)")
 
         for pos in positions:
-            trade_id    = pos.get("trade_id", "")
-            asset       = pos.get("asset", "")
-            category    = pos.get("category", "forex")
-            direction   = pos.get("direction", pos.get("signal", "BUY"))
-            entry       = float(pos.get("entry_price", 0))
-            stop_loss   = float(pos.get("stop_loss", 0))
-            take_profit = float(pos.get("take_profit", 0))
-            tp_levels   = []
-            for raw_level in list(pos.get("take_profit_levels", []) or []):
-                try:
-                    level = float(raw_level)
-                except Exception:
-                    continue
-                if level > 0:
-                    tp_levels.append(round(level, 6))
-            if tp_levels:
-                take_profit = float(tp_levels[-1])
-            open_time   = pos.get("open_time", "")
-            size        = float(pos.get("position_size", 0))
-            metadata    = dict(pos.get("metadata") or {})
-            management  = (
-                metadata.get("trade_management_plan")
-                if isinstance(metadata.get("trade_management_plan"), dict)
-                else {}
-            )
-
-            if not entry or not stop_loss or not asset:
-                continue
-
+            asset = str(pos.get("asset", "") or "")
             try:
-                dt_open = self._parse_gapfill_open_time(open_time, asset)
-                if dt_open is None:
+                runtime = self._build_gapfill_runtime(pos)
+                if runtime is None:
                     continue
-
-                dt_now = datetime.now(tz=timezone.utc)
-                minutes_offline = (dt_now - dt_open).total_seconds() / 60
-
-                # No gap to check — bot just started
-                if minutes_offline < 5:
-                    continue
-
-                df = self._load_gapfill_history(
-                    asset=asset,
-                    category=category,
-                    dt_open=dt_open,
-                    minutes_offline=minutes_offline,
-                )
-                if df is None:
-                    continue
-
-                current_pos = dict(pos)
-                current_pos["take_profit"] = take_profit
-                if tp_levels:
-                    current_pos["take_profit_levels"] = list(tp_levels)
-                current_pos["metadata"] = metadata
-                initial_risk = abs(entry - float(current_pos.get("original_sl", stop_loss) or stop_loss))
-                atr_value = float(metadata.get("atr", 0.0) or 0.0)
-                try:
-                    trail_activation_rr = max(0.5, float(management.get("trail_activation_rr", 1.0) or 1.0))
-                except Exception:
-                    trail_activation_rr = 1.0
-                try:
-                    trail_atr_multiple = max(0.4, float(management.get("trail_atr_multiple", 0.8) or 0.8))
-                except Exception:
-                    trail_atr_multiple = 0.8
-                break_even_after_partial = bool(management.get("break_even_after_partial", False))
-
-                # Scan each bar chronologically — first breach wins
-                breach_price  = None
-                breach_reason = None
-                breach_time   = None
-
-                for bar_time, bar in df.iterrows():
-                    bar_low  = float(bar["low"])
-                    bar_high = float(bar["high"])
-                    current_pos["highest_price"] = max(float(current_pos.get("highest_price", entry) or entry), bar_high)
-                    current_pos["lowest_price"] = min(float(current_pos.get("lowest_price", entry) or entry), bar_low)
-
-                    current_stop = float(current_pos.get("stop_loss", stop_loss) or stop_loss)
-                    tp_idx = max(0, int(current_pos.get("tp_hit", 0) or 0))
-
-                    if direction == "BUY":
-                        if bar_low <= current_stop:
-                            breach_price  = current_stop
-                            breach_reason = "Stop Loss (offline)"
-                            breach_time   = bar_time
-                            break
-                        if tp_levels and tp_idx < len(tp_levels):
-                            tp_level = float(tp_levels[tp_idx])
-                            if bar_high >= tp_level:
-                                if tp_idx + 1 >= len(tp_levels):
-                                    breach_price = tp_level
-                                    breach_reason = "Take Profit (offline)"
-                                    breach_time = bar_time
-                                    break
-                                self._record_gapfill_partial_take_profit(
-                                    current_pos=current_pos,
-                                    trade_id=trade_id,
-                                    asset=asset,
-                                    category=category,
-                                    direction=direction,
-                                    entry=entry,
-                                    tp_level=tp_level,
-                                    tp_idx=tp_idx,
-                                    total_tiers=len(tp_levels),
-                                    size=size,
-                                    bar_time=bar_time,
-                                    dt_open=dt_open,
-                                    df=df,
-                                    break_even_after_partial=break_even_after_partial,
-                                    management=management,
-                                    stop_loss=stop_loss,
-                                    initial_risk=initial_risk,
-                                    atr_value=atr_value,
-                                    trail_activation_rr=trail_activation_rr,
-                                    trail_atr_multiple=trail_atr_multiple,
-                                )
-                                continue
-                        elif take_profit and bar_high >= take_profit:
-                            breach_price  = take_profit
-                            breach_reason = "Take Profit (offline)"
-                            breach_time   = bar_time
-                            break
-                    else:  # SELL
-                        if bar_high >= current_stop:
-                            breach_price  = current_stop
-                            breach_reason = "Stop Loss (offline)"
-                            breach_time   = bar_time
-                            break
-                        if tp_levels and tp_idx < len(tp_levels):
-                            tp_level = float(tp_levels[tp_idx])
-                            if bar_low <= tp_level:
-                                if tp_idx + 1 >= len(tp_levels):
-                                    breach_price = tp_level
-                                    breach_reason = "Take Profit (offline)"
-                                    breach_time = bar_time
-                                    break
-                                self._record_gapfill_partial_take_profit(
-                                    current_pos=current_pos,
-                                    trade_id=trade_id,
-                                    asset=asset,
-                                    category=category,
-                                    direction=direction,
-                                    entry=entry,
-                                    tp_level=tp_level,
-                                    tp_idx=tp_idx,
-                                    total_tiers=len(tp_levels),
-                                    size=size,
-                                    bar_time=bar_time,
-                                    dt_open=dt_open,
-                                    df=df,
-                                    break_even_after_partial=break_even_after_partial,
-                                    management=management,
-                                    stop_loss=stop_loss,
-                                    initial_risk=initial_risk,
-                                    atr_value=atr_value,
-                                    trail_activation_rr=trail_activation_rr,
-                                    trail_atr_multiple=trail_atr_multiple,
-                                )
-                                continue
-                        elif take_profit and bar_low <= take_profit:
-                            breach_price  = take_profit
-                            breach_reason = "Take Profit (offline)"
-                            breach_time   = bar_time
-                            break
-
-                    self._apply_gapfill_trailing_snapshot(
-                        current_pos,
-                        management=management,
-                        direction=direction,
-                        entry=entry,
-                        stop_loss=stop_loss,
-                        initial_risk=initial_risk,
-                        atr_value=atr_value,
-                        trail_activation_rr=trail_activation_rr,
-                        trail_atr_multiple=trail_atr_multiple,
-                    )
-
-                if breach_price is None:
-                    self._sync_gapfill_open_position(trade_id, current_pos)
-                    logger.debug(f"[GapFill] {asset}: no breach found — position remains open")
-                    continue
-
-                self._close_gapfill_breached_position(
-                    pos=pos,
-                    trade_id=trade_id,
-                    asset=asset,
-                    category=category,
-                    direction=direction,
-                    entry=entry,
-                    size=size,
-                    breach_price=float(breach_price),
-                    breach_reason=str(breach_reason),
-                    breach_time=breach_time,
-                    df=df,
-                )
-
+                self._process_gapfill_runtime(runtime)
             except Exception as e:
                 logger.error(f"[GapFill] {asset} gap-fill error: {e}")
 
-    def close_position_manually(self, trade_id: str) -> Optional[Dict]:
-        pos = self.state.get_open_position(trade_id)
-        if not pos:
-            return None
-        entry     = float(pos.get("entry_price", 0))
-        direction = pos.get("direction", pos.get("signal", "BUY"))
-        size      = float(pos.get("position_size", 0))
-        pnl       = 0.0
-        exit_price = entry
+    @staticmethod
+    def _manual_close_exit_updates(pos: Dict[str, Any], entry: float, exit_price: float) -> Dict[str, Any]:
+        return {
+            "highest_price": max(float(pos.get("highest_price", entry) or entry), float(exit_price)),
+            "lowest_price": min(float(pos.get("lowest_price", entry) or entry), float(exit_price)),
+            "metadata": dict(pos.get("metadata") or {}),
+        }
 
-        if self.fetcher:
-            try:
-                price, _ = self.fetcher.get_real_time_price(
-                    pos.get("asset", ""), pos.get("category", "forex")
+    @staticmethod
+    def _manual_close_pnl(
+        pos: Dict[str, Any],
+        entry: float,
+        exit_price: float,
+        size: float,
+        direction: str,
+    ) -> float:
+        try:
+            from risk.position_sizer import PositionSizer as _PS
+
+            return float(
+                _PS.pnl(
+                    pos.get("asset", ""),
+                    pos.get("category", "forex"),
+                    entry,
+                    exit_price,
+                    size,
+                    direction,
                 )
-                if price:
-                    exit_price = price
-                    try:
-                        from risk.position_sizer import PositionSizer as _PS
-                        pnl = _PS.pnl(
-                            pos.get("asset", ""),
-                            pos.get("category", "forex"),
-                            entry, price, size, direction
-                        )
-                    except Exception:
-                        pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
-            except Exception:
-                pass
+            )
+        except Exception:
+            return float((exit_price - entry) * size if direction == "BUY" else (entry - exit_price) * size)
 
-        # 1. Close in SystemState + DB
-        closed = self.state.close_position(
-            trade_id,
-            exit_price,
-            "Manual Close",
-            pnl,
-            extra_updates={
-                "highest_price": max(float(pos.get("highest_price", entry) or entry), float(exit_price)),
-                "lowest_price": min(float(pos.get("lowest_price", entry) or entry), float(exit_price)),
-                "metadata": dict(pos.get("metadata") or {}),
-            },
-        )
-        if not closed:
-            return None
+    def _manual_close_exit_price(
+        self,
+        pos: Dict[str, Any],
+        entry: float,
+        size: float,
+        direction: str,
+    ) -> Tuple[float, float]:
+        exit_price = entry
+        pnl = 0.0
+        if not self.fetcher:
+            return exit_price, pnl
+        try:
+            price, _ = self.fetcher.get_real_time_price(
+                pos.get("asset", ""), pos.get("category", "forex")
+            )
+            if price:
+                exit_price = float(price)
+                pnl = self._manual_close_pnl(pos, entry, exit_price, size, direction)
+        except Exception:
+            pass
+        return exit_price, pnl
 
-        # 2. Remove from PaperTrader so it stops monitoring this ghost position.
-        #    Without this the position stays in PaperTrader.open_positions forever,
-        #    and when SL/TP eventually triggers it fires on_trade_closed a second time.
+    def _finalize_manual_close(self, closed: Dict[str, Any], pnl: float, trade_id: str) -> None:
         if self._paper_trader:
             with self._paper_trader._lock:
                 self._paper_trader.open_positions.pop(trade_id, None)
 
-        # 3. Set cooldown so the asset is not immediately re-scanned and re-opened.
-        #    Without this the next 45-second scan cycle treats the asset as a fresh
-        #    candidate and re-opens the position the user just closed.
         try:
             canonical = self.registry.canonical(closed.get("asset", ""))
             self.state.set_cooldown(canonical, TRADE_CLOSE_COOLDOWN_MINUTES)
@@ -3567,10 +3856,8 @@ class TradingCore:
         except Exception as e:
             logger.debug(f"[TradingCore] Manual close cooldown error: {e}")
 
-        # 4. Telegram close alert
         self._notify_telegram_close(closed)
 
-        # 5. Personality + monitoring — same side effects as automatic close
         try:
             from services.personality_service import personality as _personality
             _personality.record_trade(closed)
@@ -3583,10 +3870,33 @@ class TradingCore:
             pass
 
         logger.log_trade(
-            "CLOSE", trade_id=trade_id,
+            "CLOSE",
+            trade_id=trade_id,
             asset=closed.get("asset", ""),
-            pnl=round(pnl, 4), reason="Manual Close",
+            pnl=round(pnl, 4),
+            reason="Manual Close",
         )
+
+    def close_position_manually(self, trade_id: str) -> Optional[Dict]:
+        pos = self.state.get_open_position(trade_id)
+        if not pos:
+            return None
+        entry = float(pos.get("entry_price", 0))
+        direction = pos.get("direction", pos.get("signal", "BUY"))
+        size = float(pos.get("position_size", 0))
+        exit_price, pnl = self._manual_close_exit_price(pos, entry, size, direction)
+
+        closed = self.state.close_position(
+            trade_id,
+            exit_price,
+            "Manual Close",
+            pnl,
+            extra_updates=self._manual_close_exit_updates(pos, entry, exit_price),
+        )
+        if not closed:
+            return None
+
+        self._finalize_manual_close(closed, pnl, trade_id)
         return closed
 
     def __repr__(self) -> str:

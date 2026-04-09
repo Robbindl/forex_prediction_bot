@@ -85,7 +85,7 @@ def _active_session() -> str:
     now = _utc_now()
     hour = now.hour
     weekday = now.weekday()
-    if weekday == 5 or weekday == 6:
+    if weekday in (5, 6):
         if weekday == 6 and hour >= 22:
             return "asia"
         return "off"
@@ -606,7 +606,8 @@ class SignalDecisionEngine:
         )
         return True
 
-    def _apply_intelligence_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _apply_intelligence_review(signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence
         sentiment = apply_sentiment_review(signal, context)
         whale = apply_whale_review(signal, context)
@@ -780,19 +781,8 @@ class SignalDecisionEngine:
             logger.debug(f"[DecisionEngine] Spread gate failed for {signal.asset}: {exc}")
         return True
 
-    def _apply_execution_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
-        conf_before = signal.confidence
-        price = signal.entry_price
-        spread = context.get("spread")
-        category = context.get("category", signal.category or "forex")
-        data: Dict[str, Any] = {}
-        notes: List[str] = []
-        engine = context.get("engine")
-        management_plan = (
-            signal.metadata.get("trade_management_plan")
-            if isinstance(signal.metadata.get("trade_management_plan"), dict)
-            else {}
-        )
+    @staticmethod
+    def _execution_staged_targets(signal: Signal) -> List[float]:
         staged_targets: List[float] = []
         for raw_level in list(getattr(signal, "take_profit_levels", []) or []):
             try:
@@ -801,6 +791,227 @@ class SignalDecisionEngine:
                 continue
             if level > 0:
                 staged_targets.append(round(level, 6))
+        return staged_targets
+
+    @staticmethod
+    def _execution_entry_quality(
+        signal: Signal,
+        df: Any,
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> None:
+        if df is None or len(df) < 20:
+            return
+        try:
+            high = df["high"].astype(float)
+            low = df["low"].astype(float)
+            recent_low = low.iloc[-20:].min()
+            recent_high = high.iloc[-20:].max()
+            entry_range = recent_high - recent_low
+            current_range = high.iloc[-1] - low.iloc[-1]
+            recent_avg_range = (high.iloc[-20:-1] - low.iloc[-20:-1]).mean()
+            if recent_avg_range > 0:
+                volatility_ratio = current_range / recent_avg_range
+                signal.metadata["volatility_ratio"] = round(float(volatility_ratio), 4)
+                data["volatility_ratio"] = round(float(volatility_ratio), 3)
+                if volatility_ratio < 0.60:
+                    notes.append("compressed_volatility")
+                elif volatility_ratio > 1.40:
+                    notes.append("expanded_volatility")
+            if entry_range <= 0:
+                return
+            if signal.direction == "BUY":
+                proximity = (signal.entry_price - recent_low) / entry_range
+                signal.metadata["support_proximity"] = round(float(proximity), 4)
+                data["support_proximity"] = round(float(proximity), 3)
+                if proximity < 0.15:
+                    notes.append("buy_near_support")
+            else:
+                proximity = (recent_high - signal.entry_price) / entry_range
+                signal.metadata["resistance_proximity"] = round(float(proximity), 4)
+                data["resistance_proximity"] = round(float(proximity), 3)
+                if proximity < 0.15:
+                    notes.append("sell_near_resistance")
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Entry quality check failed for {signal.asset}: {exc}")
+
+    @staticmethod
+    def _execution_align_structure_target(
+        signal: Signal,
+        risk_manager: Any,
+        category: str,
+        structure: Dict[str, Any],
+        has_managed_target_plan: bool,
+        data: Dict[str, Any],
+    ) -> None:
+        align_tp_fn = getattr(risk_manager, "align_take_profit_to_structure", None)
+        if not (
+            callable(align_tp_fn)
+            and signal.entry_price
+            and signal.stop_loss
+            and signal.take_profit
+            and not has_managed_target_plan
+        ):
+            return
+        try:
+            aligned_tp = align_tp_fn(
+                float(signal.entry_price),
+                float(signal.take_profit),
+                signal.direction,
+                category=category,
+                structure=structure if isinstance(structure, dict) else {},
+                atr=float(signal.metadata.get("atr", 0.0) or 0.0),
+                confidence=float(signal.confidence or 0.0),
+            )
+            if not isinstance(aligned_tp, (int, float)) or aligned_tp <= 0:
+                return
+            aligned_tp = float(aligned_tp)
+            previous_tp = float(signal.take_profit)
+            if abs(aligned_tp - previous_tp) <= 1e-9:
+                return
+            risk = abs(float(signal.entry_price) - float(signal.stop_loss))
+            adjusted_rr = (
+                abs(aligned_tp - float(signal.entry_price)) / risk
+                if risk > 0
+                else float(signal.risk_reward or 0.0)
+            )
+            signal.take_profit = round(aligned_tp, 6)
+            signal.risk_reward = round(adjusted_rr, 2)
+            structure_alignment = {
+                "base_take_profit": round(previous_tp, 6),
+                "aligned_take_profit": round(aligned_tp, 6),
+                "adjusted_rr": round(adjusted_rr, 4),
+                "regime": str((structure or {}).get("regime") or ""),
+                "structure_bias": str((structure or {}).get("structure_bias") or ""),
+            }
+            signal.metadata["structure_target_alignment"] = structure_alignment
+            data["structure_target_alignment"] = structure_alignment
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Structure target alignment failed for {signal.asset}: {exc}")
+
+    @staticmethod
+    def _execution_apply_rr_floor(
+        signal: Signal,
+        adaptive_min_rr: float,
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> None:
+        if adaptive_min_rr <= 0 or float(signal.risk_reward or 0.0) >= adaptive_min_rr:
+            return
+        rr_gap = max(0.0, adaptive_min_rr - float(signal.risk_reward or 0.0))
+        signal.metadata["adaptive_rr_gap"] = round(rr_gap, 4)
+        data["adaptive_rr_gap"] = round(rr_gap, 4)
+        notes.append("rr_below_policy")
+
+    @staticmethod
+    def _execution_apply_scorecard(signal: Signal, context: Dict[str, Any], data: Dict[str, Any]) -> None:
+        try:
+            from services.signal_scorecard import get_service as get_signal_scorecard_service
+
+            scorecard = get_signal_scorecard_service().score(signal, context)
+            signal.confidence = float(scorecard.get("final_score", signal.confidence) or signal.confidence)
+            signal.metadata["scorecard"] = scorecard
+            signal.metadata["live_validation_profile"] = dict(scorecard.get("live_validation") or {})
+            data["scorecard"] = {
+                "raw_score": scorecard.get("raw_score"),
+                "reliability": scorecard.get("reliability"),
+                "breakdown": dict(scorecard.get("breakdown") or {}),
+                "notes": list(scorecard.get("notes") or []),
+            }
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Signal scorecard unavailable for {signal.asset}: {exc}")
+
+    @staticmethod
+    def _execution_confidence_gate(
+        signal: Signal,
+        conf_before: float,
+        min_final_conf: float,
+        data: Dict[str, Any],
+    ) -> bool:
+        if signal.confidence > min_final_conf:
+            return True
+        reason = f"final score {signal.confidence:.3f} below floor {min_final_conf:.3f}"
+        signal.kill(reason, STEP_EXECUTION)
+        signal.journal.record(
+            layer=STEP_EXECUTION,
+            name="execution",
+            decision=KILLED,
+            reason=reason,
+            conf_before=conf_before,
+            conf_after=signal.confidence,
+            data=data,
+        )
+        return False
+
+    @staticmethod
+    def _execution_apply_position_sizing(
+        signal: Signal,
+        risk_manager: Any,
+        adaptive_risk_multiplier: float,
+        data: Dict[str, Any],
+    ) -> None:
+        if not risk_manager:
+            return
+        try:
+            sizing_confidence = min(
+                MAX_SIGNAL_CONFIDENCE,
+                max(MIN_CONFIDENCE_SCORE, signal.confidence * adaptive_risk_multiplier),
+            )
+            size = risk_manager.calculate_position_size(
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                category=signal.category,
+                confidence=sizing_confidence,
+                asset=signal.asset,
+            )
+            signal.position_size = size
+            signal.risk_parameters["position_size"] = size
+            signal.risk_parameters["adaptive_risk_multiplier"] = round(adaptive_risk_multiplier, 4)
+            data["position_size"] = round(size, 6)
+            data["sizing_confidence"] = round(sizing_confidence, 4)
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] Position sizing failed for {signal.asset}: {exc}")
+
+    @staticmethod
+    def _execution_ensure_take_profit_levels(signal: Signal) -> None:
+        if not (signal.entry_price and signal.take_profit) or signal.take_profit_levels:
+            return
+        try:
+            entry = signal.entry_price
+            tp1 = signal.take_profit
+            dist = abs(tp1 - entry)
+            if dist <= 0:
+                return
+            if signal.direction == "BUY":
+                signal.take_profit_levels = [
+                    round(entry + dist * 0.5, 6),
+                    round(entry + dist, 6),
+                    round(entry + dist * 1.5, 6),
+                ]
+            else:
+                signal.take_profit_levels = [
+                    round(entry - dist * 0.5, 6),
+                    round(entry - dist, 6),
+                    round(entry - dist * 1.5, 6),
+                ]
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] TP level calculation failed for {signal.asset}: {exc}")
+
+    def _apply_execution_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
+        conf_before = signal.confidence
+        price = signal.entry_price
+        spread = context.get("spread")
+        category = context.get("category", signal.category or "forex")
+        data: Dict[str, Any] = {}
+        notes: List[str] = []
+        engine = context.get("engine")
+        risk_manager = getattr(engine, "_risk_manager", None) if engine else None
+        management_plan = (
+            signal.metadata.get("trade_management_plan")
+            if isinstance(signal.metadata.get("trade_management_plan"), dict)
+            else {}
+        )
+        staged_targets = self._execution_staged_targets(signal)
         has_managed_target_plan = bool(management_plan and staged_targets)
         adaptive_policy = self._execution_adaptive_policy(signal, context, data, engine, category)
         max_spread_pct = float(adaptive_policy["max_spread_pct"])
@@ -822,79 +1033,17 @@ class SignalDecisionEngine:
             )
 
         self._execution_apply_target_rr(signal, adaptive_target_rr_multiplier, has_managed_target_plan, data)
-
-        df = context.get("price_data")
-        if df is not None and len(df) >= 20:
-            try:
-                high = df["high"].astype(float)
-                low = df["low"].astype(float)
-                recent_low = low.iloc[-20:].min()
-                recent_high = high.iloc[-20:].max()
-                entry_range = recent_high - recent_low
-                current_range = high.iloc[-1] - low.iloc[-1]
-                recent_avg_range = (high.iloc[-20:-1] - low.iloc[-20:-1]).mean()
-                if recent_avg_range > 0:
-                    volatility_ratio = current_range / recent_avg_range
-                    signal.metadata["volatility_ratio"] = round(float(volatility_ratio), 4)
-                    data["volatility_ratio"] = round(float(volatility_ratio), 3)
-                    if volatility_ratio < 0.60:
-                        notes.append("compressed_volatility")
-                    elif volatility_ratio > 1.40:
-                        notes.append("expanded_volatility")
-                if entry_range > 0:
-                    if signal.direction == "BUY":
-                        proximity = (signal.entry_price - recent_low) / entry_range
-                        signal.metadata["support_proximity"] = round(float(proximity), 4)
-                        data["support_proximity"] = round(float(proximity), 3)
-                        if proximity < 0.15:
-                            notes.append("buy_near_support")
-                    else:
-                        proximity = (recent_high - signal.entry_price) / entry_range
-                        signal.metadata["resistance_proximity"] = round(float(proximity), 4)
-                        data["resistance_proximity"] = round(float(proximity), 3)
-                        if proximity < 0.15:
-                            notes.append("sell_near_resistance")
-            except Exception as exc:
-                logger.debug(f"[DecisionEngine] Entry quality check failed for {signal.asset}: {exc}")
+        self._execution_entry_quality(signal, context.get("price_data"), data, notes)
 
         structure = context.get("market_structure") or signal.metadata.get("market_structure") or {}
-        align_tp_fn = getattr(getattr(engine, "_risk_manager", None), "align_take_profit_to_structure", None) if engine else None
-        if (
-            callable(align_tp_fn)
-            and signal.entry_price
-            and signal.stop_loss
-            and signal.take_profit
-            and not has_managed_target_plan
-        ):
-            try:
-                aligned_tp = align_tp_fn(
-                    float(signal.entry_price),
-                    float(signal.take_profit),
-                    signal.direction,
-                    category=category,
-                    structure=structure if isinstance(structure, dict) else {},
-                    atr=float(signal.metadata.get("atr", 0.0) or 0.0),
-                    confidence=float(signal.confidence or 0.0),
-                )
-                if isinstance(aligned_tp, (int, float)) and aligned_tp > 0:
-                    aligned_tp = float(aligned_tp)
-                    previous_tp = float(signal.take_profit)
-                    if abs(aligned_tp - previous_tp) > 1e-9:
-                        risk = abs(float(signal.entry_price) - float(signal.stop_loss))
-                        adjusted_rr = abs(aligned_tp - float(signal.entry_price)) / risk if risk > 0 else float(signal.risk_reward or 0.0)
-                        signal.take_profit = round(aligned_tp, 6)
-                        signal.risk_reward = round(adjusted_rr, 2)
-                        structure_alignment = {
-                            "base_take_profit": round(previous_tp, 6),
-                            "aligned_take_profit": round(aligned_tp, 6),
-                            "adjusted_rr": round(adjusted_rr, 4),
-                            "regime": str((structure or {}).get("regime") or ""),
-                            "structure_bias": str((structure or {}).get("structure_bias") or ""),
-                        }
-                        signal.metadata["structure_target_alignment"] = structure_alignment
-                        data["structure_target_alignment"] = structure_alignment
-            except Exception as exc:
-                logger.debug(f"[DecisionEngine] Structure target alignment failed for {signal.asset}: {exc}")
+        self._execution_align_structure_target(
+            signal,
+            risk_manager,
+            category,
+            structure if isinstance(structure, dict) else {},
+            has_managed_target_plan,
+            data,
+        )
 
         if has_managed_target_plan:
             self._execution_sync_managed_targets(signal, staged_targets, data)
@@ -902,75 +1051,18 @@ class SignalDecisionEngine:
         if not self._execution_spread_gate(signal, spread, price, max_spread_pct, conf_before, data, notes):
             return False
 
-        if adaptive_min_rr > 0 and float(signal.risk_reward or 0.0) < adaptive_min_rr:
-            rr_gap = max(0.0, adaptive_min_rr - float(signal.risk_reward or 0.0))
-            signal.metadata["adaptive_rr_gap"] = round(rr_gap, 4)
-            data["adaptive_rr_gap"] = round(rr_gap, 4)
-            notes.append("rr_below_policy")
+        self._execution_apply_rr_floor(signal, adaptive_min_rr, data, notes)
 
         signal.metadata["execution_review_notes"] = list(notes)
         data["notes"] = list(notes)
 
-        try:
-            from services.signal_scorecard import get_service as get_signal_scorecard_service
+        self._execution_apply_scorecard(signal, context, data)
 
-            scorecard = get_signal_scorecard_service().score(signal, context)
-            signal.confidence = float(scorecard.get("final_score", signal.confidence) or signal.confidence)
-            signal.metadata["scorecard"] = scorecard
-            signal.metadata["live_validation_profile"] = dict(scorecard.get("live_validation") or {})
-            data["scorecard"] = {
-                "raw_score": scorecard.get("raw_score"),
-                "reliability": scorecard.get("reliability"),
-                "breakdown": dict(scorecard.get("breakdown") or {}),
-                "notes": list(scorecard.get("notes") or []),
-            }
-        except Exception as exc:
-            logger.debug(f"[DecisionEngine] Signal scorecard unavailable for {signal.asset}: {exc}")
-
-        if signal.confidence <= min_final_conf:
-            reason = f"final score {signal.confidence:.3f} below floor {min_final_conf:.3f}"
-            signal.kill(reason, STEP_EXECUTION)
-            signal.journal.record(
-                layer=STEP_EXECUTION,
-                name="execution",
-                decision=KILLED,
-                reason=reason,
-                conf_before=conf_before,
-                conf_after=signal.confidence,
-                data=data,
-            )
+        if not self._execution_confidence_gate(signal, conf_before, min_final_conf, data):
             return False
 
-        if engine and getattr(engine, "_risk_manager", None):
-            try:
-                sizing_confidence = min(MAX_SIGNAL_CONFIDENCE, max(MIN_CONFIDENCE_SCORE, signal.confidence * adaptive_risk_multiplier))
-                size = engine._risk_manager.calculate_position_size(
-                    entry_price=signal.entry_price,
-                    stop_loss=signal.stop_loss,
-                    category=signal.category,
-                    confidence=sizing_confidence,
-                    asset=signal.asset,
-                )
-                signal.position_size = size
-                signal.risk_parameters["position_size"] = size
-                signal.risk_parameters["adaptive_risk_multiplier"] = round(adaptive_risk_multiplier, 4)
-                data["position_size"] = round(size, 6)
-                data["sizing_confidence"] = round(sizing_confidence, 4)
-            except Exception as exc:
-                logger.debug(f"[DecisionEngine] Position sizing failed for {signal.asset}: {exc}")
-
-        if signal.entry_price and signal.take_profit and not signal.take_profit_levels:
-            try:
-                entry = signal.entry_price
-                tp1 = signal.take_profit
-                dist = abs(tp1 - entry)
-                if dist > 0:
-                    if signal.direction == "BUY":
-                        signal.take_profit_levels = [round(entry + dist * 0.5, 6), round(entry + dist, 6), round(entry + dist * 1.5, 6)]
-                    else:
-                        signal.take_profit_levels = [round(entry - dist * 0.5, 6), round(entry - dist, 6), round(entry - dist * 1.5, 6)]
-            except Exception as exc:
-                logger.debug(f"[DecisionEngine] TP level calculation failed for {signal.asset}: {exc}")
+        self._execution_apply_position_sizing(signal, risk_manager, adaptive_risk_multiplier, data)
+        self._execution_ensure_take_profit_levels(signal)
 
         signal.step_reached = STEP_EXECUTION
         signal.journal.record(
@@ -984,7 +1076,8 @@ class SignalDecisionEngine:
         )
         return True
 
-    def _apply_memory_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _apply_memory_review(signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence
         try:
             from services.setup_memory_service import get_service as get_setup_memory_service
@@ -1037,7 +1130,8 @@ class SignalDecisionEngine:
         )
         return True
 
-    def _apply_policy_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _apply_policy_review(signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence
         policy_status = "playbook_only" if PLAYBOOK_ONLY_RUNTIME else "policy_retired"
         advisory = (
@@ -1063,7 +1157,8 @@ class SignalDecisionEngine:
         )
         return True
 
-    def _apply_governance_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _apply_governance_review(signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence
         profile = get_profile(signal.asset)
         valid_sources = count_valid_sources(signal)
@@ -1170,7 +1265,8 @@ class SignalDecisionEngine:
             )
             return False
 
-    def _finalize(self, signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
+    @staticmethod
+    def _finalize(signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
         elapsed_ms = (time.monotonic() - context.get("decision_start", time.monotonic())) * 1000
 
         if os.getenv("DEBUG_FORCE_SURVIVE", "0") == "1" and not signal.alive:
