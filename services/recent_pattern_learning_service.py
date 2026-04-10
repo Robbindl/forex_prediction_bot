@@ -421,6 +421,10 @@ def _pattern_learning_apply_block_rules(adjustments: Dict[str, Any], rates: Dict
     relation_label = current_cross_relation.replace("_", " ").strip() or "related-market"
     for condition, reason in [
         (
+            rates["late_entry_rate"] >= 0.48 and rates["hard_loss_rate"] >= 0.30 and rates["avg_quality"] <= 48.0,
+            "recent similar setups keep failing from late entries",
+        ),
+        (
             rates["late_entry_rate"] >= 0.62 and rates["hard_loss_rate"] >= 0.45,
             "recent similar setups keep failing from late entries",
         ),

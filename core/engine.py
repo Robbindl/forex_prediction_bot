@@ -1233,12 +1233,26 @@ class TradingCore:
         except Exception:
             pass
 
-    def _set_post_close_cooldown(self, asset: str) -> None:
+    @staticmethod
+    def _resolve_post_close_cooldown_minutes(trade: Optional[Dict[str, Any]] = None) -> int:
+        metadata = {}
+        if isinstance((trade or {}).get("metadata"), dict):
+            metadata = dict((trade or {}).get("metadata") or {})
+        adaptive_policy = metadata.get("adaptive_policy") if isinstance(metadata.get("adaptive_policy"), dict) else {}
+        adaptive_minutes = adaptive_policy.get("cooldown_minutes")
+        try:
+            adaptive_value = int(float(adaptive_minutes or 0))
+        except Exception:
+            adaptive_value = 0
+        return adaptive_value if adaptive_value > 0 else int(TRADE_CLOSE_COOLDOWN_MINUTES)
+
+    def _set_post_close_cooldown(self, asset: str, trade: Optional[Dict[str, Any]] = None) -> None:
         try:
             canonical = self.registry.canonical(asset)
-            self.state.set_cooldown(canonical, TRADE_CLOSE_COOLDOWN_MINUTES)
+            cooldown_minutes = self._resolve_post_close_cooldown_minutes(trade)
+            self.state.set_cooldown(canonical, cooldown_minutes)
             logger.info(
-                f"[TradingCore] Set cooldown {TRADE_CLOSE_COOLDOWN_MINUTES}m "
+                f"[TradingCore] Set cooldown {cooldown_minutes}m "
                 f"for {canonical} after close"
             )
         except Exception:
@@ -1298,7 +1312,7 @@ class TradingCore:
             pnl=round(pnl, 4),
             reason=exit_reason,
         )
-        self._set_post_close_cooldown(str(closed.get("asset", "") or ""))
+        self._set_post_close_cooldown(str(closed.get("asset", "") or ""), closed)
 
     def _handle_trade_closed_callback(self, trade: Dict[str, Any]) -> None:
         try:
@@ -3459,7 +3473,7 @@ class TradingCore:
                 self._paper_trader.open_positions.pop(trade_id, None)
 
         self._record_trade_close_side_effects(closed, pnl)
-        self._set_post_close_cooldown(asset)
+        self._set_post_close_cooldown(asset, closed)
         logger.info(
             f"[GapFill] {asset} {direction} closed offline — "
             f"{breach_reason} @ {breach_price:.5f}  "
@@ -3848,9 +3862,10 @@ class TradingCore:
 
         try:
             canonical = self.registry.canonical(closed.get("asset", ""))
-            self.state.set_cooldown(canonical, TRADE_CLOSE_COOLDOWN_MINUTES)
+            cooldown_minutes = self._resolve_post_close_cooldown_minutes(closed)
+            self.state.set_cooldown(canonical, cooldown_minutes)
             logger.info(
-                f"[TradingCore] Manual close — set cooldown {TRADE_CLOSE_COOLDOWN_MINUTES}m "
+                f"[TradingCore] Manual close — set cooldown {cooldown_minutes}m "
                 f"for {canonical}"
             )
         except Exception as e:

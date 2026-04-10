@@ -33,9 +33,9 @@ CONTRACT_SPECS = {
     "GC=F":    {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
     "XAG/USD": {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.002,  "min_lot": 0.01, "lot_step": 0.01},
     "SI=F":    {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.002,  "min_lot": 0.01, "lot_step": 0.01},
-    "WTI":     {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 0.010,  "min_lot": 0.01, "lot_step": 0.01},
-    "WTI/USD": {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 0.010,  "min_lot": 0.01, "lot_step": 0.01},
-    "CL=F":    {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 0.010,  "min_lot": 0.01, "lot_step": 0.01},
+    "WTI":     {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},
+    "WTI/USD": {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},
+    "CL=F":    {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},
 
     # ── INDICES ───────────────────────────────────────────────────────────────
     "US500": {"contract":  50,  "pip": 0.25, "pip_val": 12.50, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
@@ -51,8 +51,12 @@ CONTRACT_SPECS = {
     "BTC-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
     "ETH-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
     "BNB-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "SOL-USD": {"contract": 100,     "pip": 0.01,   "pip_val":  1.00, "base_lots": 0.10,  "min_lot": 0.01, "lot_step": 0.01},
-    "XRP-USD": {"contract": 1_000,   "pip": 0.0001, "pip_val":  0.10, "base_lots": 0.010, "min_lot": 0.01, "lot_step": 0.01},
+    # Keep SOL in the same crypto output band as BTC/ETH/BNB/XRP so the
+    # crypto block scales consistently off the same reference style.
+    "SOL-USD": {"contract": 100,     "pip": 0.01,   "pip_val":  1.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
+    # XRP needs a materially larger reference lot to produce output that is
+    # comparable to gold-style position sizing on the same account scale.
+    "XRP-USD": {"contract": 1_000,   "pip": 0.0001, "pip_val":  0.10, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
 }
 
 # Category defaults for any unlisted asset
@@ -110,7 +114,9 @@ def _confidence_lots(base_lots: float, confidence: float) -> float:
         factor = 0.8 + ((confidence - MIN_CONF) / max(1e-9, (BASE_CONF - MIN_CONF))) * 0.2
     else:
         factor = 1.0 + ((confidence - BASE_CONF) / max(1e-9, (MAX_CONF - BASE_CONF)))
-    return round(base_lots * factor, 3)
+    # Keep extra precision here so small-reference assets like XRP do not
+    # collapse back to a coarse 0.01 lot after confidence scaling.
+    return round(base_lots * factor, 6)
 
 
 class PositionSizer:

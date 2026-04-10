@@ -1098,7 +1098,7 @@ async function loadHistory(){
         if(n>=1) return n.toFixed(2);
         return n.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
       };
-      const dur=t.duration_str||'—';  // pre-calculated server-side in UTC
+      const dur=t.duration_str||'—';  // pre-calculated server-side
       const catEmoji={forex:'💱',crypto:'₿',commodities:'🥇',indices:'📈'}[t.category]||'📊';
       const execTags=[];
       if(execQ>0) execTags.push(`Exec ${execQ.toFixed(0)}`);
@@ -1289,7 +1289,7 @@ function renderPositions(pos){
     };
     const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
     const tid=p.trade_id||'';
-    // Open time + duration — force UTC parsing
+    // Open time + duration — parse stored timestamps and render in EAT
     let openStr='—';
     try{
       const raw=p.open_time||'';

@@ -219,7 +219,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <div class="state-grid" id="pressureGrid">
             <div class="state-card"><div class="state-kicker">Broker</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
             <div class="state-card"><div class="state-kicker">Depth</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
-            <div class="state-card"><div class="state-kicker">Spillover</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
+            <div class="state-card"><div class="state-kicker">Cross-market</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
             <div class="state-card"><div class="state-kicker">Pattern</div><div class="state-value">—</div><div class="state-note">Loading…</div></div>
           </div>
         </div>
@@ -493,9 +493,9 @@ async function load(){
       klass: trueDepthCount ? 'gn' : syntheticDepthCount ? 'am' : 'cy',
     },
     {
-      kicker: 'Spillover',
+      kicker: 'Cross-market',
       value: `${crossSupportCount}/${crossConflictCount}`,
-      note: posCount ? `Open spillover ${signedMetricText(qualitySnapshot.avg_cross_asset_alignment||0,2)}` : 'No open spillover exposure yet',
+      note: posCount ? `Open cross-market ${signedMetricText(qualitySnapshot.avg_cross_asset_alignment||0,2)}` : 'No open cross-market exposure yet',
       klass: crossConflictCount ? 'rd' : crossSupportCount ? 'gn' : 'cy',
     },
     {
@@ -597,7 +597,7 @@ async function load(){
     ['Open Opportunity', qualitySnapshot.avg_opportunity_score ? Number(qualitySnapshot.avg_opportunity_score).toFixed(3) : '—'],
     ['Open Broker Quality', posCount ? metricText(qualitySnapshot.avg_broker_quality, 3) : '—'],
     ['Open Micro Score', posCount ? signedMetricText(qualitySnapshot.avg_microstructure_score, 3) : '—'],
-    ['Open Spillover', posCount ? signedMetricText(qualitySnapshot.avg_cross_asset_alignment, 3) : '—'],
+    ['Open Cross-market', posCount ? signedMetricText(qualitySnapshot.avg_cross_asset_alignment, 3) : '—'],
     ['Broker Support / Fragile', (signalDiagnostics.count||0) ? (Number(signalDiagnostics.broker_supportive_count||0)+' / '+Number(signalDiagnostics.broker_fragile_count||0)) : '—'],
     ['True Depth / Synthetic', (signalDiagnostics.count||0) ? (Number(signalDiagnostics.true_depth_count||0)+' / '+Number(signalDiagnostics.synthetic_depth_count||0)) : '—'],
     ['Cross Support / Conflict', (signalDiagnostics.count||0) ? (Number(signalDiagnostics.cross_support_count||0)+' / '+Number(signalDiagnostics.cross_conflict_count||0)) : '—'],

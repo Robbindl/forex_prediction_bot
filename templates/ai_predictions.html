@@ -715,6 +715,10 @@ function renderPredictions(overview){
         p.cross_asset_primary_relation ? `· ${humanToken(p.cross_asset_primary_relation, '')}` : '',
         Number.isFinite(Number(p.cross_asset_alignment)) ? ` · ${Number(p.cross_asset_alignment || 0).toFixed(2)}` : '',
       ].join('');
+      const entry = Number(p.entry_price ?? p.entry ?? 0);
+      const stop = Number(p.stop_loss ?? p.sl ?? 0);
+      const target = Number(p.take_profit ?? p.tp ?? 0);
+      const rr = Number(p.risk_reward ?? p.rr ?? 0);
       const fmt=n=>n?(n<10?n.toFixed(5):n.toFixed(2)):'—';
       return`<div class="pred-card pc-${isBuy?'buy':'sell'}">
         <div class="pc-header">
@@ -727,11 +731,11 @@ function renderPredictions(overview){
           <div class="pc-bar"><div class="pc-bar-fill" style="width:${Math.min(100,conf)}%;background:${barCol}"></div></div>
         </div>
         <div class="pc-levels">
-          <div class="pc-level"><div class="pc-level-l">Entry</div><div class="pc-level-v">${fmt(p.entry)}</div></div>
-          <div class="pc-level"><div class="pc-level-l">Stop</div><div class="pc-level-v" style="color:var(--rd)">${fmt(p.sl)}</div></div>
-          <div class="pc-level"><div class="pc-level-l">Target</div><div class="pc-level-v" style="color:var(--gr)">${fmt(p.tp)}</div></div>
+          <div class="pc-level"><div class="pc-level-l">Entry</div><div class="pc-level-v">${fmt(entry)}</div></div>
+          <div class="pc-level"><div class="pc-level-l">Stop</div><div class="pc-level-v" style="color:var(--rd)">${fmt(stop)}</div></div>
+          <div class="pc-level"><div class="pc-level-l">Target</div><div class="pc-level-v" style="color:var(--gr)">${fmt(target)}</div></div>
         </div>
-        <div class="pc-footer"><span>${playbook}</span><span class="rr-badge">R:R ${p.rr||'—'}</span></div>
+        <div class="pc-footer"><span>${playbook}</span><span class="rr-badge">R:R ${rr||'—'}</span></div>
         <div class="pc-footer"><span>${style}</span><span>${session}</span></div>
         <div class="pc-footer"><span>Memory ${memoryScore?memoryScore.toFixed(0):'—'}${memSamples?` · n${memSamples}`:''}</span><span>Exec ${execQ?execQ.toFixed(0):'—'}${execSamples?` · n${execSamples}`:''}</span></div>
         <div class="pc-footer"><span>${oppScore?`Opp ${oppScore.toFixed(3)}`:'Opportunity pending'}</span><span>${p.opportunity_rank?`Rank #${p.opportunity_rank}`:(p.memory_regime||p.category||'')}</span></div>

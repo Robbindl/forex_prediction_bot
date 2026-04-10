@@ -27,6 +27,12 @@ from telegram.ext import (
 )
 
 from core.assets import registry
+from utils.display_time import (
+    display_timezone_label,
+    format_display_datetime,
+    now_in_display_timezone,
+    to_display_datetime,
+)
 from utils.logger import logger
 
 # ── Conversation state ────────────────────────────────────────────────────────
@@ -595,7 +601,6 @@ class TelegramCommander:
 
     def alert_trade_opened(self, trade: Dict) -> None:
         try:
-            from datetime import datetime as _dt, timezone as _tz
             d     = trade.get("direction", trade.get("signal", "BUY"))
             emoji = "🟢" if d == "BUY" else "🔴"
             entry = float(trade.get("entry_price", 0))
@@ -607,18 +612,7 @@ class TelegramCommander:
             runner_rr = float(target_plan.get("runner_rr", 0.0) or 0.0)
             _a    = trade.get('asset', '?')
             open_raw = trade.get("open_time") or trade.get("entry_time")
-            if open_raw:
-                try:
-                    open_dt = _dt.fromisoformat(str(open_raw).replace("Z", "+00:00"))
-                    if open_dt.tzinfo is None:
-                        open_dt = open_dt.replace(tzinfo=_tz.utc)
-                    else:
-                        open_dt = open_dt.astimezone(_tz.utc)
-                    opened_at = open_dt.strftime("%d %b %Y %H:%M:%S UTC")
-                except Exception:
-                    opened_at = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
-            else:
-                opened_at = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
+            opened_at = format_display_datetime(open_raw or now_in_display_timezone())
             playbook_block = self._format_playbook_runtime_block(trade)
             playbook_text = f"\n🧭 *Playbook*\n{playbook_block}" if playbook_block else ""
             diagnostics_block = self._format_runtime_diagnostics_block(trade)
@@ -653,7 +647,6 @@ class TelegramCommander:
 
     def alert_trade_closed(self, trade: Dict) -> None:
         try:
-            from datetime import datetime as _dt, timezone as _tz
             pnl   = float(trade.get("pnl", 0))
             icon  = "✅" if pnl >= 0 else "❌"
             sign  = "+" if pnl >= 0 else ""
@@ -666,7 +659,8 @@ class TelegramCommander:
             r_emoji = {"Take Profit":"🎯","Stop Loss":"🛑","Trailing":"📈","Manual":"👆","Break":"⚖️"}
             r_em = next((v for k, v in r_emoji.items() if k in reason), "📌")
             # Times
-            now_str = _dt.now(_tz.utc).strftime("%d %b %Y %H:%M:%S UTC")
+            now_dt = now_in_display_timezone()
+            now_str = format_display_datetime(now_dt)
             open_str = "—"
             close_str = now_str
             dur_str  = "—"
@@ -675,31 +669,24 @@ class TelegramCommander:
                 exit_t = trade.get("exit_time")
                 close_dt = None
                 if exit_t:
-                    close_dt = _dt.fromisoformat(str(exit_t).replace("Z","+00:00"))
-                    if close_dt.tzinfo is None:
-                        close_dt = close_dt.replace(tzinfo=_tz.utc)
-                    else:
-                        close_dt = close_dt.astimezone(_tz.utc)
-                    close_str = close_dt.strftime("%d %b %Y %H:%M:%S UTC")
+                    close_dt = to_display_datetime(exit_t)
+                    close_str = format_display_datetime(close_dt)
                 if open_t:
-                    ot = _dt.fromisoformat(str(open_t).replace("Z","+00:00"))
-                    if ot.tzinfo is None:
-                        ot = ot.replace(tzinfo=_tz.utc)
-                    else:
-                        ot = ot.astimezone(_tz.utc)
-                    open_str = ot.strftime("%d %b %Y %H:%M:%S UTC")
-                    duration_minutes = trade.get("duration_minutes")
-                    if duration_minutes is not None:
-                        mins = max(0, int(float(duration_minutes)))
-                    else:
-                        ref_close = close_dt or _dt.now(_tz.utc)
-                        mins = max(0, int((ref_close - ot).total_seconds() / 60))
-                    if mins < 60:
-                        dur_str = f"{mins}m"
-                    elif mins < 1440:
-                        dur_str = f"{mins//60}h {mins%60}m"
-                    else:
-                        dur_str = f"{mins//1440}d {(mins%1440)//60}h"
+                    ot = to_display_datetime(open_t)
+                    if ot is not None:
+                        open_str = format_display_datetime(ot)
+                        duration_minutes = trade.get("duration_minutes")
+                        if duration_minutes is not None:
+                            mins = max(0, int(float(duration_minutes)))
+                        else:
+                            ref_close = close_dt or now_dt
+                            mins = max(0, int((ref_close - ot).total_seconds() / 60))
+                        if mins < 60:
+                            dur_str = f"{mins}m"
+                        elif mins < 1440:
+                            dur_str = f"{mins//60}h {mins%60}m"
+                        else:
+                            dur_str = f"{mins//1440}d {(mins%1440)//60}h"
             except Exception:
                 pass
             playbook_block = self._format_playbook_runtime_block(trade)
@@ -1227,7 +1214,7 @@ class TelegramCommander:
             f"{routing_text}"
             f"{ig_text}"
             f"{diagnostics_text}"
-            f"_Updated: {datetime.now().strftime('%H:%M:%S')}_"
+            f"_Updated: {now_in_display_timezone().strftime('%H:%M:%S')} {display_timezone_label()}_"
         )
         kb = _kb(
             [("🔄 Refresh", "status"),   ("📈 Positions", "positions")],
@@ -1809,7 +1796,7 @@ class TelegramCommander:
             f"• `Ask Robbie` explains one asset in plain English.\n"
             f"• `Positions` manages active trades.\n"
             f"• {history_line}\n\n"
-            f"_{datetime.now().strftime('%H:%M:%S')}_"
+            f"_{now_in_display_timezone().strftime('%H:%M:%S')} {display_timezone_label()}_"
         )
         return text, _main_menu_keyboard(summary)
 
@@ -1844,15 +1831,12 @@ class TelegramCommander:
     @staticmethod
     def _position_open_time_text(position: Dict[str, Any]) -> str:
         try:
-            from datetime import datetime as _dt, timezone as _tz
             ot = position.get("open_time", "")
             if ot:
-                opened = _dt.fromisoformat(str(ot))
-                if opened.tzinfo is None:
-                    opened = opened.replace(tzinfo=_tz.utc)
-                else:
-                    opened = opened.astimezone(_tz.utc)
-                elapsed = _dt.now(_tz.utc) - opened
+                opened = to_display_datetime(ot)
+                if opened is None:
+                    return ""
+                elapsed = now_in_display_timezone() - opened
                 mins = int(elapsed.total_seconds() / 60)
                 if mins < 60:
                     duration = f"{mins}m ago"
@@ -1860,7 +1844,7 @@ class TelegramCommander:
                     duration = f"{mins//60}h {mins%60}m ago"
                 else:
                     duration = f"{mins//1440}d {(mins%1440)//60}h ago"
-                return f"  ⏱ Opened: `{opened.strftime('%b %d %H:%M')} UTC` ({duration})\n"
+                return f"  ⏱ Opened: `{opened.strftime('%b %d %H:%M')} {display_timezone_label()}` ({duration})\n"
         except Exception:
             pass
         return ""
@@ -2043,8 +2027,10 @@ class TelegramCommander:
             else:
                 dur_str = f"{mins//1440}d"
 
-        open_str = open_t.strftime("%d %b %H:%M") if open_t else "—"
-        close_str = close_t.strftime("%d %b %H:%M") if close_t else "—"
+        open_display = to_display_datetime(open_t) if open_t else None
+        close_display = to_display_datetime(close_t) if close_t else None
+        open_str = open_display.strftime("%d %b %H:%M") if open_display else "—"
+        close_str = close_display.strftime("%d %b %H:%M") if close_display else "—"
         reason = str(cls._history_trade_get(trade, "display_exit_reason", cls._history_trade_get(trade, "exit_reason", "")) or "")
         r_em = next((v for k, v in reason_emojis.items() if k in reason), "📌")
         continuation_summary = str(cls._history_trade_get(trade, "continuation_summary", "") or "")
@@ -2598,7 +2584,7 @@ class TelegramCommander:
                         f"because {category} markets are closed on weekends.\n\n"
                         f"Your position will remain open and SL/TP will resume "
                         f"automatically when the market reopens:\n"
-                        f"• *Forex & Commodities* — Sunday 22:00 UTC\n"
+                        f"• *Forex & Commodities* — Monday 01:00 {display_timezone_label()}\n"
                         f"• *Indices* — Monday market open\n\n"
                         f"_Only crypto positions can be closed on weekends._",
                         _kb([("📈 Positions", "positions"), ("🏠 Menu", "menu")])
@@ -2814,6 +2800,7 @@ def _build_market_text() -> str:
     utc_h = datetime.now(tz=timezone.utc).hour
     dow   = datetime.now(tz=timezone.utc).weekday()
     wd    = dow < 5
+    local_now = now_in_display_timezone()
 
     def _s(open_: bool) -> str:
         return "🟢 Open" if open_ else "🔴 Closed"
@@ -2825,7 +2812,7 @@ def _build_market_text() -> str:
     if not sessions:                        sessions.append("😴 Off-hours")
 
     return (
-        f"📡 *Market Status* _(UTC {utc_h:02d}:xx)_\n"
+        f"📡 *Market Status* _({display_timezone_label()} {local_now:%H}:xx)_\n"
         f"{'─' * 24}\n"
         f"🪙 Crypto:      {_s(True)}\n"
         f"💱 Forex:       {_s(wd and (utc_h < 21 or utc_h >= 22))}\n"

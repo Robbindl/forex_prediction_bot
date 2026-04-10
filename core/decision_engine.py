@@ -835,6 +835,131 @@ class SignalDecisionEngine:
         except Exception as exc:
             logger.debug(f"[DecisionEngine] Entry quality check failed for {signal.asset}: {exc}")
 
+    def _execution_late_entry_risk_gate(
+        self,
+        signal: Signal,
+        *,
+        adaptive_policy: Dict[str, Any],
+        conf_before: float,
+        structure: Dict[str, Any],
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> bool:
+        support_proximity = signal.metadata.get("support_proximity")
+        resistance_proximity = signal.metadata.get("resistance_proximity")
+        volatility_ratio = float(signal.metadata.get("volatility_ratio", 0.0) or 0.0)
+        exhaustion_risk = float(signal.metadata.get("exhaustion_risk", 0.0) or 0.0)
+        dominant_exhaustion = float(structure.get("dominant_exhaustion_score", 0.0) or 0.0)
+        bias_exhausted = bool(structure.get("bias_exhausted"))
+        setup_quality = float(structure.get("setup_quality", signal.metadata.get("setup_quality", 0.0)) or 0.0)
+        raw_policy = adaptive_policy.get("raw") if isinstance(adaptive_policy, dict) else {}
+        recent_review = (
+            raw_policy.get("recent_review_profile")
+            if isinstance(raw_policy, dict) and isinstance(raw_policy.get("recent_review_profile"), dict)
+            else {}
+        )
+        late_entry_rate = float(recent_review.get("late_entry_rate", 0.0) or 0.0)
+        hard_loss_rate = float(recent_review.get("hard_loss_rate", 0.0) or 0.0)
+
+        distance_to_resistance = structure.get("distance_to_resistance")
+        distance_to_support = structure.get("distance_to_support")
+        try:
+            opposing_distance = (
+                float(distance_to_resistance)
+                if signal.direction == "BUY" and distance_to_resistance is not None
+                else float(distance_to_support)
+                if signal.direction == "SELL" and distance_to_support is not None
+                else 1.0
+            )
+        except Exception:
+            opposing_distance = 1.0
+
+        try:
+            directional_extension = (
+                float(support_proximity)
+                if signal.direction == "BUY" and support_proximity is not None
+                else float(resistance_proximity)
+                if signal.direction == "SELL" and resistance_proximity is not None
+                else 0.0
+            )
+        except Exception:
+            directional_extension = 0.0
+
+        risk_score = 0.0
+        reasons: List[str] = []
+        if directional_extension >= 0.88:
+            risk_score += 0.42
+            reasons.append("entry already stretched away from the supportive side")
+        elif directional_extension >= 0.80:
+            risk_score += 0.28
+            reasons.append("entry is extended")
+
+        if opposing_distance <= 0.0025:
+            risk_score += 0.34
+            reasons.append("entry is too close to the opposing level")
+        elif opposing_distance <= 0.0045:
+            risk_score += 0.20
+            reasons.append("entry is close to the opposing level")
+
+        if volatility_ratio >= 1.80:
+            risk_score += 0.22
+            reasons.append("volatility is already expanded")
+        elif volatility_ratio >= 1.45:
+            risk_score += 0.14
+            reasons.append("volatility is running hot")
+
+        if exhaustion_risk >= 0.42:
+            risk_score += 0.24
+            reasons.append("microstructure already shows exhaustion")
+        elif dominant_exhaustion >= 0.60 or bias_exhausted:
+            risk_score += 0.18
+            reasons.append("structure is already exhausted")
+
+        if setup_quality <= 0.35:
+            risk_score += 0.08
+            reasons.append("setup quality is thin")
+
+        if late_entry_rate >= 0.34:
+            risk_score += 0.12
+            reasons.append("recent similar setups have been late")
+        if late_entry_rate >= 0.45 and hard_loss_rate >= 0.30:
+            risk_score += 0.16
+            reasons.append("recent similar setups are losing from late timing")
+
+        hard_combo = directional_extension >= 0.80 and opposing_distance <= 0.0045 and (
+            volatility_ratio >= 1.45 or exhaustion_risk >= 0.42 or dominant_exhaustion >= 0.60 or bias_exhausted
+        )
+        learned_combo = late_entry_rate >= 0.45 and hard_loss_rate >= 0.30 and directional_extension >= 0.78
+
+        signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
+        signal.metadata["late_entry_risk_reasons"] = list(reasons)
+        data["late_entry_risk"] = {
+            "score": round(risk_score, 4),
+            "directional_extension": round(directional_extension, 4),
+            "opposing_distance": round(opposing_distance, 6),
+            "volatility_ratio": round(volatility_ratio, 4),
+            "exhaustion_risk": round(exhaustion_risk, 4),
+            "dominant_exhaustion": round(dominant_exhaustion, 4),
+            "late_entry_rate": round(late_entry_rate, 4),
+            "hard_loss_rate": round(hard_loss_rate, 4),
+            "reasons": list(reasons),
+        }
+        if risk_score >= 0.74 or hard_combo or learned_combo:
+            direction_label = "buy" if signal.direction == "BUY" else "sell"
+            summary = "; ".join(reasons[:3]) if reasons else "entry is already too late"
+            return self._kill_review(
+                signal,
+                step=STEP_EXECUTION,
+                name="execution",
+                reason=f"late entry risk on {direction_label}: {summary}",
+                conf_before=conf_before,
+                data=data,
+            )
+
+        if risk_score >= 0.46:
+            notes.append("late_entry_risk")
+        return True
+
     @staticmethod
     def _execution_align_structure_target(
         signal: Signal,
@@ -1036,11 +1161,21 @@ class SignalDecisionEngine:
         self._execution_entry_quality(signal, context.get("price_data"), data, notes)
 
         structure = context.get("market_structure") or signal.metadata.get("market_structure") or {}
+        structure = structure if isinstance(structure, dict) else {}
+        if not self._execution_late_entry_risk_gate(
+            signal,
+            adaptive_policy=adaptive_policy,
+            conf_before=conf_before,
+            structure=structure,
+            data=data,
+            notes=notes,
+        ):
+            return False
         self._execution_align_structure_target(
             signal,
             risk_manager,
             category,
-            structure if isinstance(structure, dict) else {},
+            structure,
             has_managed_target_plan,
             data,
         )

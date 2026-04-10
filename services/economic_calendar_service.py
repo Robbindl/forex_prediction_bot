@@ -16,6 +16,7 @@ from config.config import (
     TRADING_ECONOMICS_CREDENTIALS,
 )
 from services.deriv_bridge import deriv_bridge
+from utils.display_time import format_display_datetime
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -304,7 +305,7 @@ class EconomicCalendarService:
 
             rows.append(
                 {
-                    "date": event_dt.strftime("%Y-%m-%d %H:%M UTC"),
+                    "date": format_display_datetime(event_dt, "%Y-%m-%d %H:%M"),
                     "event": str(item.get("Event") or item.get("Category") or ""),
                     "impact": impact,
                     "actual": item.get("Actual"),
@@ -350,7 +351,7 @@ class EconomicCalendarService:
                 continue
             result.append(
                 {
-                    "date": event_dt.strftime("%Y-%m-%d %H:%M UTC"),
+                    "date": format_display_datetime(event_dt, "%Y-%m-%d %H:%M"),
                     "event": str(item.get("event") or ""),
                     "impact": impact,
                     "actual": item.get("actual"),
@@ -463,4 +464,3 @@ class EconomicCalendarService:
 
 
 economic_calendar_service = EconomicCalendarService()
-

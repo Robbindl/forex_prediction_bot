@@ -16,6 +16,7 @@ from core.asset_profiles import (
     US_INDEX_ASSETS, UK_INDEX_ASSETS,
     get_profile,
 )
+from utils.display_time import display_timezone_label, now_in_display_timezone, to_display_datetime
 
 
 def _now_in(tz_name: str) -> datetime:
@@ -49,9 +50,9 @@ def _forex_open() -> Tuple[bool, str]:
     if wd == 5:  # Saturday
         return False, "Weekend (closed)"
     if wd == 6 and h < 22:  # Sunday before 22:00
-        return False, "Weekend (opens Sunday 22:00 UTC)"
+        return False, f"Weekend (opens Monday 01:00 {display_timezone_label()})"
     if wd == 4 and h >= 22:  # Friday after 22:00
-        return False, "Weekend (closed Friday 22:00)"
+        return False, f"Weekend (closed Saturday 01:00 {display_timezone_label()})"
     return True, "Forex 24/5 open"
 
 
@@ -70,12 +71,13 @@ def _us_index_open(asset: str) -> Tuple[bool, str]:
     market_open  = time(9, 30)
     market_close = time(16, 0)
     t = et.time()
+    local = to_display_datetime(et) or et
 
     if market_open <= t < market_close:
-        return True, f"US market open ({et.strftime('%H:%M ET')})"
+        return True, f"US market open ({local.strftime('%H:%M')} {display_timezone_label()})"
     if t < market_open:
-        return False, f"Pre-market (opens 09:30 ET, now {et.strftime('%H:%M ET')})"
-    return False, f"After hours (closed at 16:00 ET, now {et.strftime('%H:%M ET')})"
+        return False, f"Pre-market (now {local.strftime('%H:%M')} {display_timezone_label()})"
+    return False, f"After hours (closed, now {local.strftime('%H:%M')} {display_timezone_label()})"
 
 
 def _uk_index_open(asset: str) -> Tuple[bool, str]:
@@ -91,12 +93,13 @@ def _uk_index_open(asset: str) -> Tuple[bool, str]:
     market_open  = time(8, 0)
     market_close = time(16, 30)
     t = lon.time()
+    local = to_display_datetime(lon) or lon
 
     if market_open <= t < market_close:
-        return True, f"LSE open ({lon.strftime('%H:%M GMT')})"
+        return True, f"LSE open ({local.strftime('%H:%M')} {display_timezone_label()})"
     if t < market_open:
-        return False, f"Pre-market (opens 08:00 GMT, now {lon.strftime('%H:%M')})"
-    return False, f"After hours (closed at 16:30 GMT, now {lon.strftime('%H:%M')})"
+        return False, f"Pre-market (now {local.strftime('%H:%M')} {display_timezone_label()})"
+    return False, f"After hours (now {local.strftime('%H:%M')} {display_timezone_label()})"
 
 
 def _commodity_open(asset: str) -> Tuple[bool, str]:
@@ -120,12 +123,13 @@ def _commodity_open(asset: str) -> Tuple[bool, str]:
         et = _now_in("America/New_York")
     except Exception:
         et = (_utc_now() - timedelta(hours=5)).replace(tzinfo=timezone.utc)
+    local = to_display_datetime(et) or et
 
     t = et.time()
     # Daily break 17:00–18:00 ET
     if time(17, 0) <= t < time(18, 0):
-        return False, "Daily break (17:00-18:00 ET)"
-    return True, f"Futures open ({et.strftime('%H:%M ET')})"
+        return False, f"Daily break (now {local.strftime('%H:%M')} {display_timezone_label()})"
+    return True, f"Futures open ({local.strftime('%H:%M')} {display_timezone_label()})"
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -195,6 +199,8 @@ def market_status(asset: str) -> Dict:
         "market_open": open_,
         "reason":      reason,
         "utc_now":     _utc_now().strftime("%Y-%m-%d %H:%M UTC"),
+        "display_now": now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M {display_timezone_label()}"),
+        "display_timezone": display_timezone_label(),
     }
     if provider_status is not None:
         payload["source"] = source or "market_data_router"

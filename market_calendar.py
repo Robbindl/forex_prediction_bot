@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List
 from services.economic_calendar_service import economic_calendar_service as deriv_bridge
+from utils.display_time import format_display_datetime
 from utils.logger import get_logger
 logger = get_logger()
 
@@ -26,7 +27,7 @@ def get_high_impact_events(days: int = 3) -> List[Dict]:
                 continue
             ev_time = ev.get("time")
             result.append({
-                "date":     ev_time.strftime("%Y-%m-%d %H:%M UTC") if ev_time else "",
+                "date":     format_display_datetime(ev_time, "%Y-%m-%d %H:%M", default="") if ev_time else "",
                 "event":    ev.get("name", ""),
                 "impact":   ev.get("impact", ""),
                 "actual":   ev.get("actual"),

@@ -276,9 +276,17 @@ def test_position_sizer_keeps_wti_and_xrp_proportional_on_small_balances(monkeyp
         confidence=0.70,
         asset="XRP-USD",
     )
+    sol_size = PositionSizer(1_500.0).calculate(
+        entry_price=80.0,
+        stop_loss=79.0,
+        category="crypto",
+        confidence=0.70,
+        asset="SOL-USD",
+    )
 
-    assert PositionSizer.lots_from_size("WTI", "commodities", wti_size) == 0.002
-    assert PositionSizer.lots_from_size("XRP-USD", "crypto", xrp_size) == 0.002
+    assert PositionSizer.lots_from_size("WTI", "commodities", wti_size) == 0.03
+    assert PositionSizer.lots_from_size("XRP-USD", "crypto", xrp_size) == 0.3
+    assert PositionSizer.lots_from_size("SOL-USD", "crypto", sol_size) == 0.3
 
 
 def test_fetcher_pings_technicals_on_cache_hit(monkeypatch) -> None:
@@ -10230,6 +10238,24 @@ def test_engine_uses_configured_trade_close_cooldown() -> None:
 
     assert "TRADE_CLOSE_COOLDOWN_MINUTES = CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES" in source
 
+
+def test_engine_prefers_adaptive_post_close_cooldown_when_present() -> None:
+    engine_mod = importlib.import_module("core.engine")
+
+    minutes = engine_mod.TradingCore._resolve_post_close_cooldown_minutes(
+        {"metadata": {"adaptive_policy": {"cooldown_minutes": 12}}}
+    )
+
+    assert minutes == 12
+
+
+def test_engine_post_close_cooldown_falls_back_to_configured_default() -> None:
+    engine_mod = importlib.import_module("core.engine")
+
+    minutes = engine_mod.TradingCore._resolve_post_close_cooldown_minutes({"metadata": {}})
+
+    assert minutes == engine_mod.TRADE_CLOSE_COOLDOWN_MINUTES == 60
+
 def test_execute_signal_treats_category_caps_as_soft(monkeypatch) -> None:
     engine_mod = importlib.import_module("core.engine")
     config_mod = importlib.import_module("config.config")
@@ -12547,6 +12573,76 @@ def test_recent_pattern_learning_service_blocks_repeated_late_entry_failures() -
     assert profile["block_new_entries"] is True
     assert "late entries" in profile["block_reason"]
 
+def test_recent_pattern_learning_service_blocks_moderate_late_entry_clusters_earlier() -> None:
+    learning_mod = importlib.import_module("services.recent_pattern_learning_service")
+    memory_mod = importlib.import_module("services.setup_memory_service")
+
+    service = learning_mod.RecentPatternLearningService()
+    signal = Signal(
+        asset="ETH-USD",
+        canonical_asset="ETH-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.72,
+        risk_reward=1.7,
+    )
+    signal.metadata.update(
+        {
+            "regime": "trending_up",
+            "session": "us",
+            "structure_bias": "buy",
+            "alignment_score": 0.71,
+            "setup_quality": 0.63,
+            "pullback_score": 0.38,
+            "breakout_score": 0.46,
+            "volatility_state": "expansion",
+            "sentiment_score": 0.19,
+            "whale_dominant": "BUY",
+            "orderflow_imbalance": 0.21,
+            "opportunity_score": 0.74,
+        }
+    )
+
+    fp = memory_mod.get_service().build_fingerprint(signal, {"timeframe": "5m"})
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for idx in range(6):
+        late = idx < 3
+        rr_realized = -0.95 if idx < 2 else -0.20 if late else 0.18
+        quality_score = 38.0 if late else 52.0
+        rows.append(
+            {
+                "asset": "ETH-USD",
+                "canonical_asset": "ETH-USD",
+                "category": "crypto",
+                "direction": "BUY",
+                "entry_time": now,
+                "exit_time": now,
+                "metadata": {
+                    "setup_memory_fingerprint": fp,
+                    "execution_feedback": {
+                        "exit_family": "stop_loss" if late else "take_profit",
+                        "late_entry": late,
+                        "premature_stop": False,
+                        "target_miss": False,
+                        "stop_too_tight": False,
+                        "stop_too_wide": False,
+                        "rr_realized": rr_realized,
+                        "quality_score": quality_score,
+                    },
+                },
+            }
+        )
+
+    service._fetch_rows = lambda asset, category, days_back, limit: rows
+    profile = service.get_profile("ETH-USD", "crypto", signal, {"timeframe": "5m"})
+
+    assert profile["sample_count"] == 6
+    assert profile["late_entry_rate"] >= 0.48
+    assert profile["hard_loss_rate"] >= 0.30
+    assert profile["block_new_entries"] is True
+    assert "late entries" in profile["block_reason"]
+
 def test_recent_pattern_learning_service_boosts_clean_winner_clusters() -> None:
     learning_mod = importlib.import_module("services.recent_pattern_learning_service")
     memory_mod = importlib.import_module("services.setup_memory_service")
@@ -13286,6 +13382,77 @@ def test_execution_review_blocks_signal_when_recent_pattern_learning_flags_setup
     assert "late entries" in signal.kill_reason.lower()
     assert signal.journal.entries[-1].decision == "KILLED"
     assert signal.journal.entries[-1].data["adaptive_policy"]["block_new_entries"] is True
+
+def test_execution_review_blocks_structurally_late_entries_before_open(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    adaptive_mod = importlib.import_module("services.adaptive_policy_service")
+    engine = decision_mod.SignalDecisionEngine()
+
+    monkeypatch.setattr(
+        adaptive_mod.get_service(),
+        "get_thresholds",
+        lambda asset, category, context=None, signal=None, state=None: {
+            "min_final_confidence": 0.55,
+            "max_spread": 0.003,
+            "risk_multiplier": 1.0,
+            "cooldown_minutes": 20,
+            "min_rr": 1.2,
+            "target_rr_multiplier": 1.0,
+            "block_new_entries": False,
+            "block_reason": "",
+            "recent_review_profile": {
+                "sample_count": 6,
+                "late_entry_rate": 0.42,
+                "hard_loss_rate": 0.33,
+            },
+            "notes": ["recent_pattern_late_entry"],
+        },
+        raising=False,
+    )
+
+    signal = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.69,
+        entry_price=101.8,
+        stop_loss=99.8,
+        take_profit=105.8,
+        risk_reward=2.0,
+    )
+    signal.metadata["exhaustion_risk"] = 0.47
+
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.76,
+        "setup_quality": 0.58,
+        "pullback_score": 0.31,
+        "breakout_score": 0.51,
+        "regime": "trending_up",
+        "volatility_state": "expansion",
+        "distance_to_resistance": 0.0019,
+        "distance_to_support": 0.0210,
+        "dominant_exhaustion_score": 0.67,
+        "bias_exhausted": True,
+    }
+
+    approved = engine._apply_execution_review(
+        signal,
+        {
+            "category": "commodities",
+            "spread": 0.05,
+            "price_data": _build_trend_frame(90.0, 0.3, rows=40),
+            "market_structure": structure,
+        },
+    )
+
+    assert approved is False
+    assert signal.alive is False
+    assert "late entry risk" in signal.kill_reason.lower()
+    assert signal.metadata["late_entry_risk_score"] >= 0.74
+    assert signal.journal.entries[-1].decision == "KILLED"
+    assert signal.journal.entries[-1].data["late_entry_risk"]["opposing_distance"] == 0.0019
 
 def test_risk_manager_uses_asset_class_target_rr_overrides() -> None:
     risk_mod = importlib.import_module("risk.manager")

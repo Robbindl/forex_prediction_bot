@@ -2809,10 +2809,21 @@ def _live_signal_payload_from_position(pos: Dict[str, Any], filt: str) -> Option
     direction = str(pos.get("direction") or pos.get("signal", "BUY")).upper()
     confidence = float(pos.get("confidence", 0) or 0)
     metadata = dict(pos.get("metadata") or {})
+    entry_price = float(pos.get("entry_price", 0) or 0)
+    stop_loss = float(pos.get("stop_loss", 0) or 0)
+    take_profit = float(pos.get("take_profit", 0) or 0)
+    risk_reward = float(pos.get("risk_reward", 0) or 0)
+    if not risk_reward and entry_price and stop_loss and take_profit:
+        risk_reward = round(abs(take_profit - entry_price) / max(0.0001, abs(entry_price - stop_loss)), 2)
     payload = {
-        "entry_price": float(pos.get("entry_price", 0)),
-        "stop_loss": float(pos.get("stop_loss", 0)),
-        "take_profit": float(pos.get("take_profit", 0)),
+        "entry_price": entry_price,
+        "entry": entry_price,
+        "stop_loss": stop_loss,
+        "sl": stop_loss,
+        "take_profit": take_profit,
+        "tp": take_profit,
+        "risk_reward": risk_reward,
+        "rr": risk_reward,
         "position_size": float(pos.get("position_size", 0)),
         "strategy_id": pos.get("strategy_id", ""),
         "pnl": float(pos.get("pnl", 0)),
@@ -2838,7 +2849,23 @@ def _live_signal_payload_from_store_item(item: Dict[str, Any], filt: str) -> Opt
     direction = str(item.get("signal", "BUY")).upper()
     confidence = float(item.get("confidence", 0) or 0)
     metadata = dict(item.get("metadata") or {})
+    entry_price = float(item.get("entry_price", item.get("entry", 0)) or 0)
+    stop_loss = float(item.get("stop_loss", item.get("sl", 0)) or 0)
+    take_profit = float(item.get("take_profit", item.get("tp", 0)) or 0)
+    risk_reward = float(item.get("risk_reward", item.get("rr", 0)) or 0)
+    if not risk_reward and entry_price and stop_loss and take_profit:
+        risk_reward = round(abs(take_profit - entry_price) / max(0.0001, abs(entry_price - stop_loss)), 2)
     payload = dict(item)
+    payload.update({
+        "entry_price": entry_price,
+        "entry": entry_price,
+        "stop_loss": stop_loss,
+        "sl": stop_loss,
+        "take_profit": take_profit,
+        "tp": take_profit,
+        "risk_reward": risk_reward,
+        "rr": risk_reward,
+    })
     current_price = _live_signal_current_price(asset, category)
     return _live_signal_payload(
         payload,

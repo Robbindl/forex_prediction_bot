@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
+from utils.display_time import display_timezone_label, to_display_datetime
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -557,8 +558,9 @@ class MarketIntelligenceService:
     def _format_market_event(event: Dict[str, Any]) -> Dict[str, Any]:
         when = event.get("date")
         if isinstance(when, datetime):
-            date_text = when.strftime("%Y-%m-%d")
-            time_text = when.strftime("%H:%M UTC")
+            display_when = to_display_datetime(when)
+            date_text = display_when.strftime("%Y-%m-%d") if display_when else when.strftime("%Y-%m-%d")
+            time_text = f"{display_when.strftime('%H:%M')} {display_timezone_label()}" if display_when else ""
         else:
             raw = str(when or "")
             if " " in raw:

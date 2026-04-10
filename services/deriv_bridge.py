@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from config.config import DERIV_APP_ID, DERIV_ENABLED, DERIV_SYMBOL_MAP
+from utils.display_time import format_display_datetime
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -1118,11 +1119,11 @@ class DerivBridge:
     def _status_from_sessions(sessions: List[Tuple[datetime, datetime]], now: datetime) -> Tuple[bool, str]:
         for open_dt, close_dt in sessions:
             if open_dt <= now <= close_dt:
-                return True, f"Open on Deriv until {close_dt.strftime('%H:%M UTC')}"
+                return True, f"Open on Deriv until {format_display_datetime(close_dt, '%H:%M')}"
 
         next_open = min((open_dt for open_dt, _ in sessions if open_dt > now), default=None)
         if next_open is not None:
-            return False, f"Closed on Deriv until {next_open.strftime('%H:%M UTC')}"
+            return False, f"Closed on Deriv until {format_display_datetime(next_open, '%H:%M')}"
         return False, "Closed on Deriv"
 
     @staticmethod
@@ -1189,7 +1190,7 @@ class DerivBridge:
                 continue
 
             items.append({
-                "date": event_dt.strftime("%Y-%m-%d %H:%M UTC"),
+                "date": format_display_datetime(event_dt, "%Y-%m-%d %H:%M"),
                 "event": str(event.get("title") or event.get("description") or event.get("name") or event.get("event") or ""),
                 "impact": impact,
                 "actual": event.get("actual"),
