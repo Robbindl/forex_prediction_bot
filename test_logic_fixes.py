@@ -253,8 +253,8 @@ def test_position_sizer_keeps_xag_proportional_below_broker_floor(monkeypatch) -
         asset="XAG/USD",
     )
 
-    assert round(size, 6) == 10.0
-    assert PositionSizer.lots_from_size("XAG/USD", "commodities", size) == 0.002
+    assert round(size, 6) == 200.0
+    assert PositionSizer.lots_from_size("XAG/USD", "commodities", size) == 0.04
 
 
 def test_position_sizer_keeps_wti_and_xrp_proportional_on_small_balances(monkeypatch) -> None:
@@ -3072,6 +3072,35 @@ def test_deriv_bridge_falls_back_to_history_when_market_closed(monkeypatch) -> N
     assert meta["delayed"] is True
     assert meta["realtime"] is False
     assert meta["market_open"] is False
+
+def test_deriv_bridge_uses_one_shot_tick_requests(monkeypatch) -> None:
+    deriv_mod = importlib.import_module("services.deriv_bridge")
+    bridge = deriv_mod.DerivBridge()
+    resolved = {
+        "symbol": "frxEURUSD",
+        "display_name": "EUR/USD",
+        "market": "forex",
+        "submarket": "major_pairs",
+        "pip": 0.00001,
+        "exchange_is_open": 1,
+    }
+
+    requests_seen = []
+
+    def _fake_request(payload):
+        requests_seen.append(dict(payload))
+        return {"tick": {"quote": 1.15123, "bid": 1.15120, "ask": 1.15126}}
+
+    monkeypatch.setattr(bridge, "_ensure_session_locked", lambda: True, raising=False)
+    monkeypatch.setattr(bridge, "_resolve_symbol_locked", lambda asset, category="": resolved, raising=False)
+    monkeypatch.setattr(bridge, "_request_locked", _fake_request, raising=False)
+
+    price, spread, meta = bridge.get_quote("EUR/USD", category="forex")
+
+    assert price == 1.15123
+    assert abs(spread - 0.00006) < 1e-9
+    assert meta["source"] == "Deriv"
+    assert requests_seen == [{"ticks": "frxEURUSD", "subscribe": 0}]
 
 def test_deriv_bridge_disables_unsupported_economic_calendar(monkeypatch) -> None:
     deriv_mod = importlib.import_module("services.deriv_bridge")

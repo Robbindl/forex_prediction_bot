@@ -330,19 +330,16 @@ class DerivBridge:
                 return self._history_quote_fallback(resolved)
 
             try:
-                response = self._request_locked({"ticks": resolved["symbol"], "subscribe": 1})
+                # Use a single-tick snapshot rather than a live subscription.
+                # Deriv supports subscribe=0 for one-shot tick reads; this keeps
+                # the bridge from creating and forgetting a stream for every quote.
+                response = self._request_locked({"ticks": resolved["symbol"], "subscribe": 0})
                 tick = response.get("tick") or {}
                 bid = _safe_float(tick.get("bid"))
                 ask = _safe_float(tick.get("ask"))
                 quote = _safe_float(tick.get("quote"))
                 price = quote
                 spread = 0.0
-                subscription_id = str((response.get("subscription") or {}).get("id") or tick.get("id") or "").strip()
-                if subscription_id:
-                    try:
-                        self._request_locked({"forget": subscription_id})
-                    except Exception:
-                        pass
 
                 if bid is not None and ask is not None and ask >= bid:
                     price = quote if quote is not None else (bid + ask) / 2.0

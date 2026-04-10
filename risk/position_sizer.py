@@ -31,8 +31,12 @@ CONTRACT_SPECS = {
     # ── COMMODITIES ───────────────────────────────────────────────────────────
     "XAU/USD": {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
     "GC=F":    {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
-    "XAG/USD": {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.002,  "min_lot": 0.01, "lot_step": 0.01},
-    "SI=F":    {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.002,  "min_lot": 0.01, "lot_step": 0.01},
+    # Silver should sit on the same commodity output band as gold.  The old
+    # 0.002 reference lot made live P&L collapse into cents on a $10k account.
+    # Keep silver aligned with the commodity default so its output scales like
+    # the rest of the book instead of being floor-snapped.
+    "XAG/USD": {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
+    "SI=F":    {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
     "WTI":     {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},
     "WTI/USD": {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},
     "CL=F":    {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},

@@ -25,13 +25,13 @@ def _ping_health(source: str) -> None:
 # ── API key imports ───────────────────────────────────────────────────────────
 try:
     from config.config import (
-        NEWSAPI_KEY, GNEWS_KEY, RAPIDAPI_KEY,
+        NEWSAPI_KEY, GNEWS_KEY,
         ALPHA_VANTAGE_API_KEY, FINNHUB_API_KEY,
         NEWS_RSS_ENABLED, NEWS_REDDIT_ENABLED,
         SENTIMENT_MAX_AGE_HOURS,
     )
 except ImportError:
-    NEWSAPI_KEY = GNEWS_KEY = RAPIDAPI_KEY = ALPHA_VANTAGE_API_KEY = FINNHUB_API_KEY = ""
+    NEWSAPI_KEY = GNEWS_KEY = ALPHA_VANTAGE_API_KEY = FINNHUB_API_KEY = ""
     NEWS_RSS_ENABLED = False
     NEWS_REDDIT_ENABLED = False
 
