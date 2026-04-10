@@ -2204,9 +2204,13 @@ def pg_command_center():
 def pg_market_intelligence():
     return _render_cached_template("market_intelligence.html", ttl=15)
 
+@app.route("/playbook-intel")
+def pg_playbook_intel():
+    return _render_cached_template("playbook_intel.html", ttl=15)
+
 @app.route("/ai-predictions")
 def pg_ai_predictions():
-    return _render_cached_template("ai_predictions.html", ttl=15)
+    return redirect("/playbook-intel")
 
 @app.route("/whale-intelligence")
 def pg_whale_intelligence():
@@ -2236,7 +2240,7 @@ def pg_intelligence_alerts():
 @app.route("/chart")
 def _r_chart():    return redirect("/market-intelligence")
 @app.route("/accuracy")
-def _r_accuracy(): return redirect("/ai-predictions")
+def _r_accuracy(): return redirect("/playbook-intel")
 @app.route("/sentiment")
 def _r_sentiment():return redirect("/sentiment-intelligence")
 @app.route("/backtest")
@@ -4059,6 +4063,7 @@ def api_predictions_summary():
     except Exception as e:
         return handle_api_error(e, "/api/predictions/summary", 500)
 
+@app.route("/api/playbook-intel/overview")
 @app.route("/api/ai-predictions/overview")
 @_check_api_auth
 @_check_rate_limit
@@ -5528,7 +5533,8 @@ def api_page_overview():
         risk = _response_to_dict(_call_view(api_risk_portfolio))
         payload = {"success": True, "page": page, "status": status, "risk": risk}
         ttl = 10
-    elif page == "ai_predictions":
+    elif page in {"ai_predictions", "playbook_intel"}:
+        page = "playbook_intel"
         payload = _response_to_dict(_call_view(api_ai_predictions_overview))
         payload["status"] = _response_to_dict(_call_view(api_status))
         ttl = 10
