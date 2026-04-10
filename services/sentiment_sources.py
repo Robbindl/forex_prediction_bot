@@ -27,10 +27,13 @@ try:
     from config.config import (
         NEWSAPI_KEY, GNEWS_KEY, RAPIDAPI_KEY,
         ALPHA_VANTAGE_API_KEY, FINNHUB_API_KEY,
+        NEWS_RSS_ENABLED, NEWS_REDDIT_ENABLED,
         SENTIMENT_MAX_AGE_HOURS,
     )
 except ImportError:
     NEWSAPI_KEY = GNEWS_KEY = RAPIDAPI_KEY = ALPHA_VANTAGE_API_KEY = FINNHUB_API_KEY = ""
+    NEWS_RSS_ENABLED = False
+    NEWS_REDDIT_ENABLED = False
 
 # ── QUOTA MANAGEMENT ──────────────────────────────────────────────────────────
 # Track daily API usage to avoid hitting quotas. Reset at midnight UTC.
@@ -486,11 +489,9 @@ class _NewsSentiment:
     def _compute(cls, asset: str) -> Optional[float]:
         """
         Compute sentiment score for an asset.
-        Combines traditional news sources with Reddit as a live news feed.
-        Reddit posts are scored by the same financial keyword system — not TextBlob.
-        High-engagement posts get more weight (engagement-weighted average).
-        Macro events detected from Reddit are stored cross-asset and exposed
-        separately at the category sentiment layer.
+        Combines traditional news sources with optional Reddit as a live feed.
+        Reddit is disabled by default because it is noisy and redundant with
+        the structured news/calendar layers.
         """
         # ── Standard news sources ─────────────────────────────────────────
         std_articles = cls._fetch_articles(asset)
@@ -508,7 +509,7 @@ class _NewsSentiment:
             pass  # narrative_ai is optional enhancement
 
         # ── Reddit as live news feed ──────────────────────────────────────
-        reddit_weighted = cls._fetch_reddit_scored(asset)
+        reddit_weighted = cls._fetch_reddit_scored(asset) if NEWS_REDDIT_ENABLED else []
 
         # ── Combine ───────────────────────────────────────────────────────
         all_scores: List[float] = []
@@ -539,6 +540,8 @@ class _NewsSentiment:
 
         Also detects macro events and stores cross-asset signals.
         """
+        if not NEWS_REDDIT_ENABLED:
+            return []
         results: List[Tuple[float, float]] = []
         try:
             from reddit_watcher import RedditWatcher
@@ -990,6 +993,8 @@ class _NewsSentiment:
 
     @classmethod
     def _dashboard_rss_articles(cls, limit: int) -> List[Dict]:
+        if not NEWS_RSS_ENABLED:
+            return []
         articles_out: List[Dict] = []
         try:
             import feedparser
@@ -1035,6 +1040,8 @@ class _NewsSentiment:
 
     @classmethod
     def _dashboard_reddit_articles(cls, limit: int) -> List[Dict]:
+        if not NEWS_REDDIT_ENABLED:
+            return []
         articles_out: List[Dict] = []
         try:
             headers = {"User-Agent": "Mozilla/5.0 TradingBot/1.0"}
@@ -1075,8 +1082,8 @@ class _NewsSentiment:
         Priority:
           1. NewsAPI 'everything' endpoint (free tier — top-headlines is paid)
           2. GNews search endpoint (free tier)
-          3. RSS feeds via feedparser — no API key, always works
-          4. Reddit public search — no credentials needed
+          3. RSS feeds via feedparser — optional fallback, disabled by default
+          4. Reddit public search — optional fallback, disabled by default
         """
         cache_key = f"dashboard_articles:{max(1, int(limit or 20))}"
         with cls._lock:
@@ -1094,15 +1101,19 @@ class _NewsSentiment:
             cls._cache_dashboard_articles(cache_key, articles_out)
             return articles_out[:limit]
 
-        articles_out = cls._dashboard_rss_articles(limit)
-        if articles_out:
-            cls._cache_dashboard_articles(cache_key, articles_out)
+        if NEWS_RSS_ENABLED:
+            articles_out = cls._dashboard_rss_articles(limit)
+            if articles_out:
+                cls._cache_dashboard_articles(cache_key, articles_out)
+                return articles_out[:limit]
+
+        if NEWS_REDDIT_ENABLED:
+            articles_out = cls._dashboard_reddit_articles(limit)
+            if articles_out:
+                cls._cache_dashboard_articles(cache_key, articles_out)
             return articles_out[:limit]
 
-        articles_out = cls._dashboard_reddit_articles(limit)
-        if articles_out:
-            cls._cache_dashboard_articles(cache_key, articles_out)
-        return articles_out[:limit]
+        return []
 
 
 class _CryptoSignals:
@@ -1149,6 +1160,8 @@ class _CryptoSignals:
     @classmethod
     def reddit(cls, asset: str) -> Optional[float]:
         """Reddit sentiment from public pushshift/reddit search."""
+        if not NEWS_REDDIT_ENABLED:
+            return None
         try:
             canonical_asset = _canon_asset(asset)
             kws = _ASSET_KEYWORDS.get(canonical_asset, [canonical_asset.lower().replace("-usd", "")])
@@ -1181,6 +1194,8 @@ def _reddit_score(asset: str) -> Optional[float]:
     Falls back to _CryptoSignals.reddit() for crypto if RedditWatcher returns nothing.
     Cached inside RedditWatcher's own 5-minute cache so repeated calls are free.
     """
+    if not NEWS_REDDIT_ENABLED:
+        return None
     try:
         from reddit_watcher import RedditWatcher
         rw     = RedditWatcher()

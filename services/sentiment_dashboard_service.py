@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 
 from services.sentiment_service import SentimentService, get_service as get_sentiment_service
 from services.sentiment_sources import _CryptoSignals, _MarketInstruments, _NewsSentiment
+from config.config import NEWS_REDDIT_ENABLED
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -76,9 +77,13 @@ class SentimentDashboardService:
             return []
 
     def get_reddit_sentiment_for_asset(self, asset: str) -> Optional[Dict]:
+        if not NEWS_REDDIT_ENABLED:
+            return None
         return self._service.get_reddit_sentiment_for_asset(asset)
 
     def get_reddit_sentiment(self) -> Dict:
+        if not NEWS_REDDIT_ENABLED:
+            return {"score": 0.0, "total_posts": 0}
         return {"score": 0.0, "total_posts": 0}
 
     def get_best_sentiment(self, asset: str, days: int = 1) -> Optional[Dict]:

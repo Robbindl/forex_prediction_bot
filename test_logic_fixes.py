@@ -5778,6 +5778,42 @@ def test_sentiment_dashboard_articles_prefers_newsapi_and_caches(monkeypatch) ->
     assert first[0]["title"] == "Markets rally on softer inflation"
     assert calls["newsapi"] == 1
 
+
+def test_sentiment_dashboard_articles_skip_rss_and_reddit_when_disabled(monkeypatch) -> None:
+    sentiment_mod = importlib.import_module("services.sentiment_sources")
+    sentiment_mod._NewsSentiment._cache.clear()
+    monkeypatch.setattr(sentiment_mod, "NEWS_RSS_ENABLED", False, raising=False)
+    monkeypatch.setattr(sentiment_mod, "NEWS_REDDIT_ENABLED", False, raising=False)
+
+    def _empty(limit):
+        return []
+
+    def _unexpected(limit):
+        raise AssertionError("noisy fallback should be disabled")
+
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_dashboard_newsapi_articles", _empty, raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_dashboard_gnews_articles", _empty, raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_dashboard_rss_articles", _unexpected, raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "_dashboard_reddit_articles", _unexpected, raising=False)
+
+    assert sentiment_mod._NewsSentiment.get_articles_for_dashboard(limit=5) == []
+
+
+def test_sentiment_service_ignores_reddit_when_disabled(monkeypatch) -> None:
+    sentiment_service_mod = importlib.import_module("services.sentiment_service")
+    monkeypatch.setattr(sentiment_service_mod, "NEWS_REDDIT_ENABLED", False, raising=False)
+    monkeypatch.setattr(
+        sentiment_service_mod,
+        "_reddit_score",
+        lambda asset: (_ for _ in ()).throw(AssertionError("reddit should be disabled")),
+        raising=False,
+    )
+
+    service = sentiment_service_mod.SentimentService()
+    result = service.get_comprehensive_sentiment("BTC-USD")
+
+    assert "reddit" not in (result.get("components") or {})
+
 def test_macro_data_collector_process_pings_health_even_without_threshold_break(monkeypatch) -> None:
     macro_mod = importlib.import_module("data_ingestion.macro_data_collector")
     monitor_mod = importlib.import_module("monitoring.system_health_service")

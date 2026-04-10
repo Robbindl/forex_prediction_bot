@@ -55,6 +55,8 @@ GNEWS_KEY       = os.getenv("GNEWS_KEY", "")
 RAPIDAPI_KEY    = os.getenv("RAPIDAPI_KEY", "")
 MARKETAUX_TOKEN = os.getenv("MARKETAUX_TOKEN", "")
 APIFY_TOKEN     = os.getenv("APIFY_TOKEN", "")
+NEWS_RSS_ENABLED = os.getenv("NEWS_RSS_ENABLED", "false").lower() == "true"
+NEWS_REDDIT_ENABLED = os.getenv("NEWS_REDDIT_ENABLED", "false").lower() == "true"
 WHALE_ALERT_KEY = os.getenv("WHALE_ALERT_KEY", "")
 FRED_API_KEY    = os.getenv("FRED_API_KEY", "")
 BLS_API_KEY     = os.getenv("BLS_API_KEY", "")

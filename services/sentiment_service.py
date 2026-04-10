@@ -15,6 +15,7 @@ from services.sentiment_sources import (
     _clamp,
     _reddit_score,
 )
+from config.config import NEWS_REDDIT_ENABLED
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -96,10 +97,11 @@ class SentimentService:
             weights["news"]    = 0.20
 
         # 4. Reddit — uses new public-JSON watcher (all subreddits per asset)
-        rd = _reddit_score(asset)
-        if rd is not None:
-            components["reddit"] = rd
-            weights["reddit"]    = 0.20
+        if NEWS_REDDIT_ENABLED:
+            rd = _reddit_score(asset)
+            if rd is not None:
+                components["reddit"] = rd
+                weights["reddit"]    = 0.20
 
         macro = _NewsSentiment.macro_impact(asset)
         if macro is not None:
@@ -126,10 +128,11 @@ class SentimentService:
             weights["news"]    = 0.30
 
         # 3. Reddit — metals-focused subreddits via public JSON
-        rd = _reddit_score(asset)
-        if rd is not None:
-            components["reddit"] = rd
-            weights["reddit"]    = 0.15
+        if NEWS_REDDIT_ENABLED:
+            rd = _reddit_score(asset)
+            if rd is not None:
+                components["reddit"] = rd
+                weights["reddit"]    = 0.15
 
         macro = _NewsSentiment.macro_impact(asset)
         if macro is not None:
@@ -175,10 +178,11 @@ class SentimentService:
             weights["news"]    = 0.30
 
         # 3. Reddit — r/Forex, r/Forexstrategy, r/trading via public JSON
-        rd = _reddit_score(asset)
-        if rd is not None:
-            components["reddit"] = rd
-            weights["reddit"]    = 0.15
+        if NEWS_REDDIT_ENABLED:
+            rd = _reddit_score(asset)
+            if rd is not None:
+                components["reddit"] = rd
+                weights["reddit"]    = 0.15
 
         macro = _NewsSentiment.macro_impact(asset)
         if macro is not None:
@@ -204,10 +208,11 @@ class SentimentService:
             weights["price_momentum"]    = 0.20
 
         # 2. Reddit — equity-index subreddits via public JSON
-        rd = _reddit_score(asset)
-        if rd is not None:
-            components["reddit"] = rd
-            weights["reddit"]    = 0.10
+        if NEWS_REDDIT_ENABLED:
+            rd = _reddit_score(asset)
+            if rd is not None:
+                components["reddit"] = rd
+                weights["reddit"]    = 0.10
 
         # 3. VIX (primary fear gauge for equities)
         vix = _MarketInstruments.vix()

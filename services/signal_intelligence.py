@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from config.config import NEWS_REDDIT_ENABLED
 from core.asset_profiles import get_profile
 from utils.logger import get_logger
 
@@ -184,7 +185,7 @@ def _sentiment_review_signal_adjustments(
             elif pc_aligned < -0.3:
                 adjustments.append("put_call_conflict")
 
-    if profile.use_reddit:
+    if profile.use_reddit and NEWS_REDDIT_ENABLED:
         reddit_score = components.get("reddit")
         if reddit_score is None:
             reddit_score = _fetch_reddit_sentiment(signal.asset)

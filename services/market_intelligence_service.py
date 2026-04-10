@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 from utils.display_time import display_timezone_label, to_display_datetime
+from config.config import NEWS_REDDIT_ENABLED
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -142,6 +143,8 @@ class MarketIntelligenceService:
         return None
 
     def get_reddit_sentiment_score(self, asset: str) -> Optional[float]:
+        if not NEWS_REDDIT_ENABLED:
+            return None
         try:
             details = self.get_sentiment_details(asset)
             score = (details.get("components") or {}).get("reddit")
