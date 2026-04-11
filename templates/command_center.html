@@ -240,25 +240,25 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       <div class="metric-card mc-green" style="animation-delay:.05s">
         <div class="mc-label">Balance</div>
         <div class="mc-value gn" id="mBal">—</div>
-        <div class="mc-sub" id="mBalSub">Account value</div>
+        <div class="mc-sub" id="mBalSub">Live equity</div>
         <span class="mc-icon">💰</span>
       </div>
       <div class="metric-card mc-blue" style="animation-delay:.1s">
         <div class="mc-label">Today P&L</div>
         <div class="mc-value" id="mDPnl">—</div>
-        <div class="mc-sub" id="mDTrades">— trades</div>
+        <div class="mc-sub" id="mDTrades">Realized + floating</div>
         <span class="mc-icon">📅</span>
       </div>
       <div class="metric-card mc-cyan" style="animation-delay:.15s">
         <div class="mc-label">Win Rate</div>
         <div class="mc-value cy" id="mWr">—</div>
-        <div class="mc-sub" id="mWrSub">— total trades</div>
+        <div class="mc-sub" id="mWrSub">Closed + open</div>
         <span class="mc-icon">🎯</span>
       </div>
       <div class="metric-card mc-purple" style="animation-delay:.2s">
         <div class="mc-label">Open Positions</div>
         <div class="mc-value pu" id="mPos">—</div>
-        <div class="mc-sub">Active trades</div>
+        <div class="mc-sub" id="mPosSub">Active trades</div>
         <span class="mc-icon">📊</span>
       </div>
 
@@ -679,6 +679,12 @@ function renderTopOpportunities(items){
 }
 
 let _commandCenterCache = null;
+let _commandCenterPending = null;
+let _commandCenterStreamAbort = null;
+let _commandCenterStreamReconnect = null;
+let _commandCenterStreamActive = false;
+let _commandCenterStreamDisabled = false;
+let _commandCenterLastClosedTradeCount = null;
 function setCommandCenterUnavailable(message){
   const msg = message || 'Command center data unavailable';
   document.getElementById('signalsPanel').innerHTML = `<div class="empty">${msg}</div>`;
@@ -701,30 +707,147 @@ function setCommandCenterUnavailable(message){
   document.getElementById('lifecyclePanel').innerHTML = `<div class="empty" style="grid-column:1/-1">${msg}</div>`;
   document.getElementById('tradeTapeBadge').textContent = 'Unavailable';
   document.getElementById('tradeTapePanel').innerHTML = `<div class="empty">${msg}</div>`;
+  const pnlStatsEl = document.getElementById('pnlStats');
+  if(pnlStatsEl) pnlStatsEl.textContent = 'P&L history unavailable';
+  if(_pnlChart){
+    _pnlChart.destroy();
+    _pnlChart = null;
+  }
 }
+
+function renderWhalePanel(d){
+  document.getElementById('whaleCount').textContent=d.alert_count_24h||0;
+  const wEl=document.getElementById('whalePanel');
+  const alerts=d.recent||[];
+  if(!alerts.length){
+    wEl.innerHTML='<div class="empty">No whale alerts</div>';
+    return;
+  }
+  wEl.innerHTML=alerts.slice(0,4).map(a=>`
+    <div class="whale-item">
+      <div class="whale-icon">🐋</div>
+      <div class="whale-info">
+        <div class="whale-title">${a.symbol||a.asset||'?'}</div>
+        <div class="whale-meta">${a.source||''}</div>
+      </div>
+      <div class="whale-amount">$${((a.value_usd||0)/1e6).toFixed(1)}M</div>
+    </div>`).join('');
+}
+
 async function fetchCommandCenterOverview(){
   const now = Date.now();
-  if(_commandCenterCache && now - _commandCenterCache.fetched < 10000){
+  if(_commandCenterCache && now - _commandCenterCache.fetched < 1000){
     return _commandCenterCache.data;
   }
-  let page = await window.dashboardFetchJson('/api/page-overview?page=command_center', {timeoutMs: 15000});
-  if(!page.success){
-    const commandCenter = await window.dashboardFetchJson('/api/command-center', {timeoutMs: 12000});
-    const whale = await window.dashboardFetchJson('/api/whale/summary', {timeoutMs: 12000});
-    if(commandCenter.success || whale.success){
-      page = {
-        success: true,
-        command_center: commandCenter.success ? commandCenter : {success:false},
-        whale: whale.success ? whale : {success:false},
-        partial: true,
-      };
+  if(_commandCenterPending){
+    return _commandCenterPending;
+  }
+  _commandCenterPending = (async () => {
+    try{
+      const page = await fetchProtectedJson(`/api/command-center?live=1&_=${Date.now()}`, {timeoutMs: 15000});
+      if(page && page.success){
+        _commandCenterCache = {fetched: Date.now(), data: page};
+        return page;
+      }
+      return {success:false};
+    } finally {
+      _commandCenterPending = null;
+    }
+  })();
+  return _commandCenterPending;
+}
+
+function stopCommandCenterStream(){
+  if(_commandCenterStreamReconnect){
+    clearTimeout(_commandCenterStreamReconnect);
+    _commandCenterStreamReconnect = null;
+  }
+  if(_commandCenterStreamAbort){
+    _commandCenterStreamAbort.abort();
+    _commandCenterStreamAbort = null;
+  }
+  _commandCenterStreamActive = false;
+}
+
+function scheduleCommandCenterStreamReconnect(delayMs = 3000){
+  if(document.hidden || _commandCenterStreamDisabled){
+    return;
+  }
+  if(_commandCenterStreamReconnect){
+    clearTimeout(_commandCenterStreamReconnect);
+  }
+  _commandCenterStreamReconnect = setTimeout(() => {
+    _commandCenterStreamReconnect = null;
+    startCommandCenterStream();
+  }, delayMs);
+}
+
+async function startCommandCenterStream(){
+  if(_commandCenterStreamDisabled || _commandCenterStreamActive || _commandCenterStreamAbort){
+    return;
+  }
+  if(typeof window.fetch !== 'function'){
+    _commandCenterStreamDisabled = true;
+    return;
+  }
+  const controller = new AbortController();
+  _commandCenterStreamAbort = controller;
+  try{
+    const response = await window.fetch(`/api/command-center/stream?_=${Date.now()}`, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: {'Accept': 'application/x-ndjson'},
+      signal: controller.signal,
+    });
+    if(!response.ok){
+      throw new Error(`HTTP ${response.status}`);
+    }
+    if(!response.body || typeof response.body.getReader !== 'function'){
+      _commandCenterStreamDisabled = true;
+      _commandCenterStreamActive = false;
+      return;
+    }
+    _commandCenterStreamActive = true;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while(true){
+      const {value, done} = await reader.read();
+      if(done){
+        break;
+      }
+      buffer += decoder.decode(value, {stream:true});
+      let newlineIndex = buffer.indexOf('\n');
+      while(newlineIndex >= 0){
+        const rawLine = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if(rawLine){
+          try{
+            const msg = JSON.parse(rawLine);
+            if(msg && msg.type === 'refresh'){
+              loadMain();
+            }
+          }catch(err){
+            console.warn('[CC stream] parse error', err);
+          }
+        }
+        newlineIndex = buffer.indexOf('\n');
+      }
+    }
+  }catch(err){
+    if(err && err.name === 'AbortError'){
+      return;
+    }
+    console.warn('[CC stream]', err);
+  }finally{
+    if(_commandCenterStreamAbort === controller){
+      _commandCenterStreamAbort = null;
+    }
+    _commandCenterStreamActive = false;
+    if(!document.hidden && !_commandCenterStreamDisabled){
+      scheduleCommandCenterStreamReconnect();
     }
   }
-  if(page.success){
-    _commandCenterCache = {fetched: now, data: page};
-    return page;
-  }
-  return {success:false};
 }
 
 async function loadMain(){
@@ -732,7 +855,7 @@ async function loadMain(){
   try{
     const page = await fetchCommandCenterOverview();
     if(page.success){
-      d = page.command_center || {};
+      d = page || {};
     } else {
       setCommandCenterUnavailable('Command center timed out');
       return;
@@ -749,16 +872,37 @@ async function loadMain(){
 
   // ── Metrics + engine status ──────────────────────────────────────────────
   try{
-    document.getElementById('mBal').textContent=fmtMoney(d.balance);
-    document.getElementById('topBalance').textContent=fmtMoney(d.balance);
-    const dp=Number(d.daily_pnl||0);
+    const live=d.live_summary||{};
+    const closedTradeCount=Number(live.closed_trades??d.total_trades??0);
+    if(_commandCenterLastClosedTradeCount===null){
+      _commandCenterLastClosedTradeCount=closedTradeCount;
+    }else if(closedTradeCount!==_commandCenterLastClosedTradeCount){
+      _commandCenterLastClosedTradeCount=closedTradeCount;
+      if(!document.hidden){
+        loadHistory();
+      }
+    }
+    const realizedBalance=Number(d.balance||0);
+    const liveBalance=Number(live.balance??d.balance??0);
+    const balanceDelta=Number(live.balance_delta??(liveBalance-Number(live.initial_balance??d.initial_balance??realizedBalance)));
+    const balanceEl=document.getElementById('mBal');
+    balanceEl.textContent=fmtMoney(liveBalance);
+    balanceEl.className='mc-value '+(balanceDelta>=0?'gn':'rd');
+    document.getElementById('topBalance').textContent=fmtMoney(liveBalance);
+    document.getElementById('topBalance').style.color=balanceDelta>=0?'var(--gr)':'var(--rd)';
+    document.getElementById('mBalSub').textContent=`Realized ${fmtMoney(realizedBalance)} · Open ${fmtMoney(live.open_pnl||0)}`;
+    const dp=Number(live.daily_pnl??d.daily_pnl??0);
     const dpEl=document.getElementById('mDPnl');
     dpEl.textContent=fmtNum(dp);dpEl.className='mc-value '+(dp>=0?'gn':'rd');
-    document.getElementById('mDTrades').textContent=(d.daily_trades||0)+' trades today';
-    document.getElementById('mWr').textContent=(d.win_rate||0).toFixed(1)+'%';
-    document.getElementById('mWrSub').textContent=(d.total_trades||0)+' total trades';
+    document.getElementById('mDTrades').textContent=`Realized ${fmtMoney(d.daily_pnl||0)} · Floating ${fmtMoney(live.open_pnl||0)}`;
+    const liveWr=Number(live.win_rate??d.win_rate??0);
+    const wrEl=document.getElementById('mWr');
+    wrEl.textContent=liveWr.toFixed(1)+'%';
+    wrEl.className='mc-value '+(liveWr>=60?'gn':liveWr<=40?'rd':'am');
+    document.getElementById('mWrSub').textContent=`${Number(live.closed_trades??d.total_trades??0)} closed · ${Number(live.open_positions??0)} open`;
     const posLen=(d.positions||[]).length;
     document.getElementById('mPos').textContent=posLen;
+    document.getElementById('mPosSub').textContent=`BUY ${Number(live.buy_count||0)} · SELL ${Number(live.sell_count||0)}`;
     document.getElementById('posCount').textContent=posLen;
     const running=d.engine_running;
     const ready=!!d.engine_ready;
@@ -802,7 +946,7 @@ async function loadMain(){
         value: posLen ? `${posLen} open` : 'Flat',
         valueClass: posLen ? 'pu' : 'mu',
         label: 'Book State',
-        sub: leadCategory ? `${leadCategory[0]} leads with ${leadCategory[1]} positions` : 'No open exposure in the book',
+        sub: live.book_bias ? `${live.book_bias} · ${live.open_state||'Flat'}` : (leadCategory ? `${leadCategory[0]} leads with ${leadCategory[1]} positions` : 'No open exposure in the book'),
       },
       {
         value: `${supportiveCount}/${fragileCount}`,
@@ -938,6 +1082,8 @@ async function loadMain(){
     ],'No lifecycle data');
 
     renderTradeTape(d.trade_tape||[]);
+    renderPnlChart(d.pnl_curve||[], d.pnl_curve_stats||{});
+    renderWhalePanel(d);
   }catch(e){console.error('[CC] desk panels:',e);}
 
   // ── Sentiment ────────────────────────────────────────────────────────────
@@ -968,8 +1114,12 @@ async function loadMain(){
     const pos=d.positions||[];
     document.getElementById('posCount').textContent=pos.length||0;
     _allPositions = pos;
-    const pf=document.getElementById('posFilter'); if(pf) pf.value='all';
-    renderPositions(pos);
+    const pf=document.getElementById('posFilter');
+    if(pf && pf.value && pf.value !== 'all'){
+      filterPositions();
+    }else{
+      renderPositions(pos);
+    }
   }catch(e){console.error('[CC] positions:',e);}
 }
 
@@ -980,7 +1130,7 @@ async function loadWhales(){
       document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';
       return;
     }
-    const d = page.whale || {};
+    const d = page || {};
     if(!d||!d.success){
       document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';
       return;
@@ -1026,15 +1176,24 @@ async function bootCommandCenter(){
   await Promise.allSettled([
     loadMain(),
     loadHistory(),
-    loadPnlChart(),
-    loadTopOpportunities(false),
-    loadWhales(),
   ]);
+  startCommandCenterStream();
 }
 
 bootCommandCenter();
 
-setInterval(loadMain,15000);setInterval(loadWhales,30000);setInterval(loadHistory,60000);
+setInterval(() => { if(!document.hidden && !_commandCenterStreamActive){ loadMain(); } }, 5000);
+setInterval(loadHistory,60000);
+document.addEventListener('visibilitychange', () => {
+  if(!document.hidden){
+    loadMain();
+    if(!_commandCenterStreamActive && !_commandCenterStreamDisabled){
+      startCommandCenterStream();
+    }
+  }
+});
+window.addEventListener('pagehide', stopCommandCenterStream);
+window.addEventListener('beforeunload', stopCommandCenterStream);
 
 
 // ── Trade History ─────────────────────────────────────────────────────────
@@ -1157,90 +1316,113 @@ let _pnlChart = null;
 
 async function loadPnlChart(){
   try{
-    const d=await fetchProtectedJson(`/api/trade-history?limit=200&no_cache=1&_=${Date.now()}`, {timeoutMs: 12000});
-    if(!d.success || !d.trades){
+    const page=await fetchCommandCenterOverview();
+    if(!page.success){
       document.getElementById('pnlStats').textContent = 'P&L history unavailable';
       return;
     }
-    
-    const trades = (d.trades || []).sort((a,b) => {
-      const ta = new Date(a.exit_time || a.entry_time || 0);
-      const tb = new Date(b.exit_time || b.entry_time || 0);
-      return ta - tb;
-    });
-    
-    let cumPnl = 0;
-    const labels = [];
-    const data = [];
-    let maxDrawdown = 0;
-    let peak = 0;
-    
-    trades.forEach(t => {
-      const pnl = Number(t.pnl || 0);
-      cumPnl += pnl;
-      data.push(cumPnl);
-      if(cumPnl > peak) peak = cumPnl;
-      maxDrawdown = Math.min(maxDrawdown, cumPnl - peak);
-      const d = new Date(t.exit_time || t.entry_time || 0);
-      labels.push(d.toLocaleDateString('en-US', {month:'short', day:'numeric'}));
-    });
-    
-    document.getElementById('pnlStats').textContent = 
-      `Peak: $${peak.toFixed(2)} | Drawdown: $${Math.abs(maxDrawdown).toFixed(2)}`;
-    
-    const ctx = document.getElementById('pnlChart');
-    if(!ctx)return;
-    if(_pnlChart)_pnlChart.destroy();
-    
-    _pnlChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: labels,
-        datasets: [{
-          label: 'Cumulative P&L',
-          data: data,
-          borderColor: '#00d084',
-          backgroundColor: 'rgba(0, 208, 132, 0.1)',
-          fill: true,
-          tension: 0.3,
-          pointRadius: 2,
-          pointBackgroundColor: '#00d084',
-          pointBorderColor: 'transparent'
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: {display: false},
-          tooltip: {
-            backgroundColor: 'rgba(13, 17, 23, 0.9)',
-            borderColor: '#1e2635',
-            borderWidth: 1,
-            titleColor: '#c9d1e0',
-            bodyColor: '#c9d1e0',
-            padding: 10
-          }
-        },
-        scales: {
-          y: {
-            beginAtZero: true,
-            grid: {color: 'rgba(30, 38, 53, 0.3)'},
-            ticks: {color: '#7a8899', font: {size: 10}},
-            title: {display: false}
-          },
-          x: {
-            grid: {color: 'transparent'},
-            ticks: {color: '#7a8899', font: {size: 10}, maxTicksLimit: 8}
-          }
-        }
-      }
-    });
+    renderPnlChart(page.pnl_curve||[], page.pnl_curve_stats||{});
   }catch(e){console.error('[PnlChart]',e);}
 }
 
-// Re-render P&L chart when history updates
-setInterval(loadPnlChart, 60000);
+function renderPnlChart(curve, stats = {}){
+  const ctx=document.getElementById('pnlChart');
+  const statsEl=document.getElementById('pnlStats');
+  if(!ctx||!statsEl)return;
+  const points=Array.isArray(curve)?curve:[];
+  if(!points.length){
+    statsEl.textContent='P&L history unavailable';
+    if(_pnlChart){
+      _pnlChart.destroy();
+      _pnlChart=null;
+    }
+    return;
+  }
+
+  const labels=points.map(p=>p.label||'');
+  const data=points.map(p=>Number(p.cumulative_pnl??p.pnl??0));
+  const current=Number(data[data.length-1]||0);
+  let peak=Number(stats.peak ?? data[0] ?? 0);
+  let maxDrawdown=Number(stats.drawdown ?? 0);
+  if(!stats.peak && !stats.drawdown){
+    let runningPeak = data[0] ?? 0;
+    let worstDrawdown = 0;
+    data.forEach(v => {
+      runningPeak = Math.max(runningPeak, v);
+      worstDrawdown = Math.min(worstDrawdown, v - runningPeak);
+    });
+    peak = runningPeak;
+    maxDrawdown = Math.abs(worstDrawdown);
+  }
+
+  statsEl.textContent = `Live ${fmtMoney(current)} | Peak ${fmtMoney(peak)} | Drawdown ${fmtMoney(maxDrawdown)} | ${stats.interval_minutes||30}m intervals`;
+  statsEl.style.color=current>=0?'var(--gr)':'var(--rd)';
+
+  const borderColor=current>=0?'#00d084':'#ff5964';
+  const fillColor=current>=0?'rgba(0, 208, 132, 0.12)':'rgba(255, 69, 96, 0.12)';
+  if(_pnlChart)_pnlChart.destroy();
+
+  _pnlChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Cumulative P&L',
+        data,
+        borderColor,
+        backgroundColor: fillColor,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 2,
+        pointBackgroundColor: borderColor,
+        pointBorderColor: 'transparent',
+        pointHoverRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {display: false},
+        tooltip: {
+          backgroundColor: 'rgba(13, 17, 23, 0.9)',
+          borderColor: '#1e2635',
+          borderWidth: 1,
+          titleColor: '#c9d1e0',
+          bodyColor: '#c9d1e0',
+          padding: 10,
+          callbacks: {
+            title(items){
+              const item=items&&items[0];
+              return item ? `${item.label || ''}` : '';
+            },
+            label(context){
+              return `P&L: ${fmtMoney(Number(context.raw||0))}`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: false,
+          grid: {color: 'rgba(30, 38, 53, 0.3)'},
+          ticks: {
+            color: '#7a8899',
+            font: {size: 10},
+            callback(value){
+              return '$' + Number(value).toFixed(0);
+            }
+          },
+          title: {display: false}
+        },
+        x: {
+          grid: {color: 'transparent'},
+          ticks: {color: '#7a8899', font: {size: 10}, maxTicksLimit: 8, autoSkip: true}
+        }
+      }
+    }
+  });
+}
 
 // ── Position filter + close dropdown functions ───────────────────────────────
 let _allPositions = [];

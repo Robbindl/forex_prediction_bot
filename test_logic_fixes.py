@@ -8006,6 +8006,60 @@ def test_sentiment_dashboard_exposes_macro_news_context(monkeypatch) -> None:
     assert payload["sentiment_context"]["mode"] == "contrarian_rebound"
     assert payload["sentiment_context"]["display_label"] == "Bullish Rebound Bias"
 
+
+def test_sentiment_dashboard_keeps_empty_news_neutral(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    class _FakeSentimentService:
+        class _NewsIntegrator:
+            @staticmethod
+            def fetch_all_sources():
+                return []
+
+        news_integrator = _NewsIntegrator()
+
+        @staticmethod
+        def get_comprehensive_sentiment():
+            return {
+                "score": 0.42,
+                "interpretation": "Strongly Bullish",
+                "components": {
+                    "fear_greed": 0.54,
+                    "vix": 0.18,
+                },
+            }
+
+        @staticmethod
+        def fetch_fear_greed_index():
+            return {"value": 12, "classification": "Extreme Fear", "score": 0.54}
+
+        @staticmethod
+        def fetch_vix():
+            return {"value": 25.1, "classification": "Elevated", "score": 0.18}
+
+        @staticmethod
+        def fetch_whale_alerts(min_value_usd: float = 1_000_000):
+            return []
+
+    monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: _FakeSentimentService(), raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/sentiment/dashboard"):
+        response = dashboard_mod.api_sentiment_dashboard()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["article_count"] == 0
+    assert payload["sentiment_distribution"] == {"bullish": 0, "neutral": 1, "bearish": 0}
+    assert payload["news_sentiment"]["article_count"] == 0
+    assert payload["news_sentiment"]["distribution"] == {"bullish": 0, "neutral": 1, "bearish": 0}
+    assert payload["sentiment_context"]["mode"] == "macro_only"
+
 def test_command_center_survives_live_price_wait_timeout(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
     futures_mod = importlib.import_module("concurrent.futures")
@@ -8096,6 +8150,155 @@ def test_command_center_survives_live_price_wait_timeout(monkeypatch) -> None:
     assert payload["signal_quality"]["avg_memory_score"] == 71.0
     assert payload["signal_quality"]["avg_execution_quality"] == 64.0
     assert payload["signal_quality"]["top_signal_asset"] == "BTC-USD"
+
+
+def test_command_center_includes_live_summary_and_intraday_curve(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+
+    class _FakeCore:
+        is_running = True
+        is_ready = True
+
+        def get_performance(self):
+            return {
+                "balance": 1000.0,
+                "initial_balance": 1000.0,
+                "total_pnl": 0.0,
+                "win_rate": 0.0,
+                "total_trades": 0,
+            }
+
+        def get_daily_stats(self):
+            return {"daily_pnl": 0.0, "daily_trades": 0}
+
+        def get_positions(self):
+            return [
+                {
+                    "trade_id": "t1",
+                    "asset": "BTC-USD",
+                    "category": "crypto",
+                    "direction": "BUY",
+                    "confidence": 0.8,
+                    "entry_price": 100.0,
+                    "stop_loss": 95.0,
+                    "take_profit": 110.0,
+                    "position_size": 1.0,
+                    "strategy_id": "playbook_breakout_continuation",
+                    "open_time": "2026-04-10T03:00:00+00:00",
+                    "pnl": 0.0,
+                    "metadata": {},
+                }
+            ]
+
+        def health_report(self):
+            return {"is_running": True, "engine_ready": True}
+
+    class _FakeFetcher:
+        @staticmethod
+        def get_real_time_price(asset, category):
+            return 110.0, {"source": "IG"}
+
+    fixed_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone(timedelta(hours=3)))
+
+    monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_dashboard_now_local", lambda: fixed_now, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/command-center"):
+        response = dashboard_mod.api_command_center()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["live_summary"]["open_pnl"] == 10.0
+    assert payload["live_summary"]["balance"] == 1010.0
+    assert payload["live_summary"]["win_rate"] == 100.0
+    assert payload["live_summary"]["buy_count"] == 1
+    assert payload["live_summary"]["sell_count"] == 0
+    assert payload["live_summary"]["book_bias"] == "BUY-heavy"
+    assert payload["live_summary"]["open_state"] == "Winning"
+    assert payload["pnl_curve"][0]["label"] == "00:00"
+    assert payload["pnl_curve"][0]["cumulative_pnl"] == 0.0
+    assert next(point for point in payload["pnl_curve"] if point["label"] == "06:00")["cumulative_pnl"] == 10.0
+    assert payload["pnl_curve_stats"]["current_pnl"] == 10.0
+    assert payload["pnl_curve_stats"]["peak"] == 10.0
+
+
+def test_command_center_stream_emits_refresh_signal(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+
+    class _FakeCore:
+        is_running = True
+        is_ready = True
+
+        def get_performance(self):
+            return {
+                "balance": 1000.0,
+                "initial_balance": 1000.0,
+                "total_pnl": 0.0,
+                "win_rate": 0.0,
+                "total_trades": 0,
+            }
+
+        def get_daily_stats(self):
+            return {"daily_pnl": 0.0, "daily_trades": 0}
+
+        def get_positions(self):
+            return [
+                {
+                    "trade_id": "t1",
+                    "asset": "BTC-USD",
+                    "category": "crypto",
+                    "direction": "BUY",
+                    "confidence": 0.8,
+                    "entry_price": 100.0,
+                    "stop_loss": 95.0,
+                    "take_profit": 110.0,
+                    "position_size": 1.0,
+                    "strategy_id": "playbook_breakout_continuation",
+                    "open_time": "2026-04-10T03:00:00+00:00",
+                    "pnl": 0.0,
+                    "metadata": {},
+                }
+            ]
+
+        def health_report(self):
+            return {"is_running": True, "engine_ready": True}
+
+    class _FakeFetcher:
+        @staticmethod
+        def get_real_time_price(asset, category):
+            return 110.0, {"source": "IG"}
+
+    monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_dashboard_now_local", lambda: datetime(2026, 4, 10, 12, 0, tzinfo=timezone(timedelta(hours=3))), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/command-center/stream"):
+        response = dashboard_mod.api_command_center_stream()
+
+    import itertools
+
+    text = "".join(
+        chunk.decode() if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+        for chunk in itertools.islice(response.response, 2)
+    )
+    assert '"type": "connected"' in text
+    assert '"type": "refresh"' in text
 
 def test_command_center_includes_top_opportunities_and_weak_positions(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")

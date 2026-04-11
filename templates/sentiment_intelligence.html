@@ -498,14 +498,15 @@ async function load(){
       <div class="translation-card">
         <div class="translation-label">${item.label} drift</div>
         <div class="translation-value" style="color:${sColor(item.score)}">${fmtScore(item.score)}</div>
-        <div class="translation-note">${item.count} headlines in this window · ${sBucket(item.score)}</div>
+        <div class="translation-note">${item.count > 0 ? `${item.count} headlines in this window · ${sBucket(item.score)}` : 'No headlines in this window'}</div>
       </div>
     `).join('');
 
     // Distribution
+    const articleCount = Number(news.article_count || d.article_count || 0);
     const dist=d.sentiment_distribution||{bullish:0,neutral:0,bearish:0};
     const total=Math.max(1,dist.bullish+dist.neutral+dist.bearish);
-    document.getElementById('distPanel').innerHTML=`<div class="panel-note">Recent article tone only. This can disagree with the macro composite because the macro score includes contrarian fear/greed and VIX inputs.</div>`+['Bullish','Neutral','Bearish'].map((lbl,i)=>{
+    document.getElementById('distPanel').innerHTML=`<div class="panel-note">${articleCount > 0 ? 'Recent article tone only. This can disagree with the macro composite because the macro score includes contrarian fear/greed and VIX inputs.' : 'No recent headlines were available, so this bar is neutral fallback rather than a true tone split.'}</div>`+['Bullish','Neutral','Bearish'].map((lbl,i)=>{
       const val=[dist.bullish,dist.neutral,dist.bearish][i];
       const pct=(val/total*100).toFixed(0);
       const col=['var(--gr)','var(--am)','var(--rd)'][i];

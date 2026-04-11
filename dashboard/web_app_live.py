@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import traceback
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2436,7 +2437,7 @@ def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, 
         daily = core.get_daily_stats()
         positions = core.get_positions()
         health = core.health_report()
-        closed_trades = _load_authoritative_closed_trades(limit=40)
+        closed_trades = _load_authoritative_closed_trades(limit=240)
     return perf, daily, positions, health, closed_trades
 
 
@@ -2507,10 +2508,13 @@ def _fetch_command_center_slow_data() -> Dict[str, Any]:
     }
 
 
-def _fetch_command_center_live_prices(positions: Any, *, limit: int = 8) -> Dict[str, float]:
+def _fetch_command_center_live_prices(positions: Any, *, limit: Optional[int] = None) -> Dict[str, float]:
     assets: List[Tuple[str, str]] = []
     live_prices: Dict[str, float] = {}
-    for position in list(positions or [])[: max(1, int(limit or 8))]:
+    position_list = list(positions or [])
+    if limit is not None:
+        position_list = position_list[: max(1, int(limit or 0))]
+    for position in position_list:
         asset = str(position.get("asset", "") or "")
         category = str(position.get("category", "forex") or "forex")
         if asset and asset not in live_prices:
@@ -2550,7 +2554,7 @@ def _fetch_command_center_live_prices(positions: Any, *, limit: int = 8) -> Dict
 
 def _build_command_center_enriched_positions(positions: Any, live_prices: Dict[str, float]) -> List[Dict[str, Any]]:
     enriched_positions: List[Dict[str, Any]] = []
-    for position in list(positions or [])[:8]:
+    for position in list(positions or []):
         current_price = live_prices.get(position.get("asset", ""), 0.0)
         entry_price = float(position.get("entry_price", 0) or 0)
         position_size = float(position.get("position_size", 0) or 0)
@@ -2657,11 +2661,323 @@ def _command_center_signal_quality(signals: Any) -> Dict[str, Any]:
                 key=lambda item: (
                     float(item.get("opportunity_score", 0.0) or 0.0),
                     float(item.get("confidence", 0.0) or 0.0),
-                ),
-            ).get("asset", "")
+        ),
+        ).get("asset", "")
             if signal_list else ""
         ),
     }
+
+
+def _dashboard_local_timezone():
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo("Africa/Nairobi")
+    except Exception:
+        return timezone(timedelta(hours=3))
+
+
+def _dashboard_now_local() -> datetime:
+    return datetime.now(_dashboard_local_timezone())
+
+
+def _build_command_center_live_summary(perf: Dict[str, Any], daily: Dict[str, Any], positions: Any) -> Dict[str, Any]:
+    position_list = [pos for pos in list(positions or []) if isinstance(pos, dict)]
+    balance = float(perf.get("balance", _args.balance) or _args.balance)
+    initial_balance = float(perf.get("initial_balance", balance) or balance)
+    total_pnl = float(perf.get("total_pnl", 0) or 0)
+    realized_daily_pnl = float(daily.get("daily_pnl", 0) or 0)
+    closed_total = int(perf.get("total_trades", 0) or 0)
+
+    raw_win_rate = float(perf.get("win_rate", 0) or 0)
+    closed_win_rate = raw_win_rate * 100.0 if raw_win_rate <= 1.0 else raw_win_rate
+    closed_wins = perf.get("winning_trades")
+    if closed_wins in (None, ""):
+        closed_wins = int(round(closed_total * (closed_win_rate / 100.0))) if closed_total else 0
+    else:
+        closed_wins = int(closed_wins or 0)
+    closed_losses = perf.get("losing_trades")
+    if closed_losses in (None, ""):
+        closed_losses = max(0, closed_total - closed_wins)
+    else:
+        closed_losses = int(closed_losses or 0)
+
+    open_pnl = round(sum(float(pos.get("pnl", 0.0) or 0.0) for pos in position_list), 2)
+    open_count = len(position_list)
+    buy_count = sum(1 for pos in position_list if str(pos.get("direction") or pos.get("signal") or "").upper() == "BUY")
+    sell_count = sum(1 for pos in position_list if str(pos.get("direction") or pos.get("signal") or "").upper() == "SELL")
+    profitable_open = sum(1 for pos in position_list if float(pos.get("pnl", 0.0) or 0.0) > 0)
+    losing_open = sum(1 for pos in position_list if float(pos.get("pnl", 0.0) or 0.0) < 0)
+    live_total_trades = closed_total + open_count
+    live_wins = closed_wins + profitable_open
+    live_win_rate = round((live_wins / live_total_trades) * 100.0, 1) if live_total_trades else round(closed_win_rate, 1)
+    live_balance = round(balance + open_pnl, 2)
+    live_total_pnl = round(total_pnl + open_pnl, 2)
+    live_daily_pnl = round(realized_daily_pnl + open_pnl, 2)
+    equity_delta = round(live_balance - initial_balance, 2)
+    book_bias = "BUY-heavy" if buy_count > sell_count else "SELL-heavy" if sell_count > buy_count else "Balanced"
+    open_state = "Winning" if open_pnl > 0 else "Losing" if open_pnl < 0 else "Flat"
+
+    return {
+        "balance": live_balance,
+        "realized_balance": round(balance, 2),
+        "initial_balance": round(initial_balance, 2),
+        "balance_delta": equity_delta,
+        "total_pnl": live_total_pnl,
+        "realized_total_pnl": round(total_pnl, 2),
+        "daily_pnl": live_daily_pnl,
+        "realized_daily_pnl": round(realized_daily_pnl, 2),
+        "open_pnl": open_pnl,
+        "win_rate": live_win_rate,
+        "realized_win_rate": round(closed_win_rate, 1),
+        "closed_trades": closed_total,
+        "open_positions": open_count,
+        "total_trades": live_total_trades,
+        "winning_trades": live_wins,
+        "losing_trades": closed_losses + losing_open,
+        "open_winners": profitable_open,
+        "open_losers": losing_open,
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "book_bias": book_bias,
+        "open_state": open_state,
+    }
+
+
+def _build_command_center_pnl_curve(
+    positions: Any,
+    closed_trades: Any,
+    *,
+    interval_minutes: int = 30,
+) -> Dict[str, Any]:
+    tz = _dashboard_local_timezone()
+    now_local = _dashboard_now_local()
+    today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    bucket_minutes = max(5, int(interval_minutes or 30))
+    bucket_times: List[datetime] = []
+    cursor = today_start
+    while cursor <= now_local:
+        bucket_times.append(cursor)
+        cursor += timedelta(minutes=bucket_minutes)
+    if not bucket_times or bucket_times[-1] < now_local:
+        bucket_times.append(now_local)
+
+    try:
+        from websocket_dashboard import get_live_price_history
+    except Exception:
+        get_live_price_history = None
+
+    history_map: Dict[str, Dict[str, List[float]]] = {}
+    position_rows = [pos for pos in list(positions or []) if isinstance(pos, dict)]
+    for pos in position_rows:
+        asset = str(pos.get("asset") or "")
+        if not asset or asset in history_map:
+            continue
+        history_points: List[Tuple[float, float]] = []
+        if get_live_price_history is not None:
+            try:
+                for item in get_live_price_history(asset, limit=2000) or []:
+                    ts = float(item.get("timestamp", 0.0) or 0.0)
+                    price = float(item.get("price", 0.0) or 0.0)
+                    if ts > 0 and price > 0:
+                        history_points.append((ts, price))
+            except Exception:
+                history_points = []
+        history_points.sort(key=lambda item: item[0])
+        history_map[asset] = {
+            "timestamps": [point[0] for point in history_points],
+            "prices": [point[1] for point in history_points],
+        }
+
+    def _price_at(asset: str, bucket_ts: float, fallback_price: float) -> float:
+        series = history_map.get(asset) or {}
+        timestamps = series.get("timestamps") or []
+        prices = series.get("prices") or []
+        if timestamps and prices:
+            idx = bisect_right(timestamps, bucket_ts) - 1
+            if idx >= 0:
+                return float(prices[idx])
+        return float(fallback_price or 0.0)
+
+    closed_events: List[Tuple[datetime, float]] = []
+    for trade in list(closed_trades or []):
+        if not isinstance(trade, dict):
+            continue
+        exit_dt = _coerce_utc_datetime(trade.get("exit_time") or trade.get("entry_time"))
+        if not exit_dt:
+            continue
+        local_exit = exit_dt.astimezone(tz)
+        if local_exit < today_start:
+            continue
+        closed_events.append((local_exit, float(trade.get("pnl", 0.0) or 0.0)))
+
+    closed_events.sort(key=lambda item: item[0])
+
+    open_positions: List[Dict[str, Any]] = []
+    for pos in position_rows:
+        entry_dt = _coerce_utc_datetime(pos.get("open_time") or pos.get("entry_time"))
+        open_positions.append(
+            {
+                "asset": str(pos.get("asset") or ""),
+                "category": str(pos.get("category") or "forex"),
+                "direction": str(pos.get("direction") or pos.get("signal") or "BUY").upper(),
+                "entry_price": float(pos.get("entry_price", 0) or 0),
+                "position_size": float(pos.get("position_size", 0) or 0),
+                "open_time": entry_dt.astimezone(tz) if entry_dt else None,
+                "fallback_price": float(pos.get("current_price", 0) or 0),
+            }
+        )
+
+    def _mark_to_market(pos: Dict[str, Any], bucket: datetime) -> float:
+        if pos["open_time"] and pos["open_time"] > bucket:
+            return 0.0
+        price = _price_at(pos["asset"], bucket.timestamp(), pos["fallback_price"])
+        if not price or not pos["entry_price"] or not pos["position_size"]:
+            return 0.0
+        try:
+            from risk.position_sizer import PositionSizer as _PS
+
+            return float(
+                _PS.pnl(
+                    pos["asset"],
+                    pos["category"],
+                    pos["entry_price"],
+                    price,
+                    pos["position_size"],
+                    pos["direction"],
+                )
+            )
+        except Exception:
+            if pos["direction"] == "BUY":
+                return (price - pos["entry_price"]) * pos["position_size"]
+            return (pos["entry_price"] - price) * pos["position_size"]
+
+    curve: List[Dict[str, Any]] = []
+    realized_cum = 0.0
+    realized_idx = 0
+    running_peak = 0.0
+    max_drawdown = 0.0
+    for bucket in bucket_times:
+        while realized_idx < len(closed_events) and closed_events[realized_idx][0] <= bucket:
+            realized_cum += closed_events[realized_idx][1]
+            realized_idx += 1
+        open_pnl = sum(_mark_to_market(pos, bucket) for pos in open_positions)
+        cumulative_pnl = round(realized_cum + open_pnl, 2)
+        running_peak = max(running_peak, cumulative_pnl)
+        max_drawdown = min(max_drawdown, cumulative_pnl - running_peak)
+        curve.append(
+            {
+                "time": bucket.isoformat(),
+                "label": bucket.strftime("%H:%M"),
+                "realized_pnl": round(realized_cum, 2),
+                "open_pnl": round(open_pnl, 2),
+                "cumulative_pnl": cumulative_pnl,
+            }
+        )
+
+    return {
+        "points": curve,
+        "interval_minutes": bucket_minutes,
+        "timezone": "Africa/Nairobi",
+        "current_pnl": curve[-1]["cumulative_pnl"] if curve else 0.0,
+        "peak": round(running_peak, 2),
+        "drawdown": round(abs(max_drawdown), 2),
+        "start_time": bucket_times[0].isoformat() if bucket_times else now_local.isoformat(),
+        "end_time": bucket_times[-1].isoformat() if bucket_times else now_local.isoformat(),
+    }
+
+
+def _build_command_center_payload() -> Dict[str, Any]:
+    core = _core()
+    perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core)
+    journals = _command_center_journals()
+
+    # Slow external calls cached 5 minutes
+    _cc_slow = _cache_get("cc_slow")
+    if _cc_slow is None:
+        _cc_slow = _fetch_command_center_slow_data()
+    whale_recent = list((_cc_slow or {}).get("recent") or [])
+    whale_count = int((_cc_slow or {}).get("alert_count_24h", 0) or 0)
+    sent_score = float((_cc_slow or {}).get("sentiment_score", 0.0) or 0.0)
+    _cache_set("cc_slow", _cc_slow, ttl=600 if whale_recent or whale_count or sent_score else 45)
+
+    live_prices = _fetch_command_center_live_prices(positions)
+    enriched_positions = _build_command_center_enriched_positions(positions, live_prices)
+    live_summary = _build_command_center_live_summary(perf, daily, enriched_positions)
+    signals = _build_command_center_signals(enriched_positions)
+    signal_quality = _command_center_signal_quality(signals)
+    signal_diagnostics = _summarize_signal_diagnostics(enriched_positions)
+    pnl_curve = _build_command_center_pnl_curve(enriched_positions, closed_trades, interval_minutes=30)
+    top_opportunities = _cache_get("cc_top_opportunities")
+    weak_positions = _cache_get("cc_weak_positions")
+    if core and (top_opportunities is None or weak_positions is None):
+        if top_opportunities is None:
+            try:
+                top_opportunities = _get_command_center_top_opportunities(core, limit=5)
+            except Exception as exc:
+                logger.debug(f"[dashboard] command-center top_opportunities error: {exc}")
+                top_opportunities = []
+        if weak_positions is None:
+            try:
+                weak_positions = _get_command_center_weak_positions(core, limit=5)
+            except Exception as exc:
+                logger.debug(f"[dashboard] command-center weak_positions error: {exc}")
+                weak_positions = []
+
+    if top_opportunities is None:
+        top_opportunities = []
+    if weak_positions is None:
+        weak_positions = []
+
+    _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
+    _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
+    near_misses = _summarize_near_misses(journals, limit=8)
+    session_radar = _build_session_radar(limit=12)
+    why_not_traded = _summarize_why_not_traded(journals, near_misses, limit=6)
+    watchlist_ladder = _build_watchlist_ladder(top_opportunities, near_misses, session_radar, enriched_positions)
+    trade_tape = _build_trade_tape(enriched_positions, closed_trades, limit=12)
+    trade_lifecycle = _build_trade_lifecycle(enriched_positions, closed_trades, journals)
+
+    return {
+        "success":           True,
+        "balance":           float(perf.get("balance", _args.balance) or _args.balance),
+        "total_pnl":         float(perf.get("total_pnl", 0) or 0),
+        "daily_pnl":         float(daily.get("daily_pnl", 0) or 0),
+        "daily_trades":      int(daily.get("daily_trades", 0) or 0),
+        "win_rate":          _wr(perf.get("win_rate", 0)),
+        "open_positions":    len(enriched_positions),
+        "total_trades":      int(perf.get("total_trades", 0) or 0),
+        "engine_running":    health.get("is_running", core.is_running if core else False),
+        "engine_ready":      health.get("engine_ready", core.is_ready if core else False),
+        "sentiment_score":   _cc_slow["sentiment_score"],
+        "whale_alerts_24h":  _cc_slow["whale_alerts_24h"],
+        "alert_count_24h":   _cc_slow["alert_count_24h"],
+        "recent":            _cc_slow["recent"],
+        "latest_signals":    signals,
+        "signal_quality":    signal_quality,
+        "top_opportunities": top_opportunities,
+        "weak_positions":    weak_positions,
+        "near_misses":       near_misses,
+        "why_not_traded":    why_not_traded,
+        "session_radar":     session_radar,
+        "watchlist_ladder":  watchlist_ladder,
+        "trade_tape":        trade_tape,
+        "trade_lifecycle":   trade_lifecycle,
+        "positions":         enriched_positions,
+        "live_summary":      live_summary,
+        "pnl_curve":         pnl_curve.get("points", []),
+        "pnl_curve_stats":   {k: v for k, v in pnl_curve.items() if k != "points"},
+        "provider_routing":  _provider_routing_summary(),
+        "signal_diagnostics": signal_diagnostics,
+        "timestamp":         datetime.now().isoformat(),
+    }
+
+
+def _command_center_payload_signature(payload: Dict[str, Any]) -> str:
+    signature_payload = dict(payload or {})
+    signature_payload.pop("timestamp", None)
+    raw = json.dumps(signature_payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @app.route("/api/command-center")
@@ -2669,88 +2985,52 @@ def _command_center_signal_quality(signals: Any) -> Dict[str, Any]:
 @_check_rate_limit
 def api_command_center():
     try:
-        core = _core()
-        perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core)
-        journals = _command_center_journals()
-
-        # Slow external calls cached 5 minutes
-        _cc_slow = _cache_get("cc_slow")
-        if _cc_slow is None:
-            _cc_slow = _fetch_command_center_slow_data()
-        whale_recent = list((_cc_slow or {}).get("recent") or [])
-        whale_count = int((_cc_slow or {}).get("alert_count_24h", 0) or 0)
-        sent_score = float((_cc_slow or {}).get("sentiment_score", 0.0) or 0.0)
-        _cache_set("cc_slow", _cc_slow, ttl=600 if whale_recent or whale_count or sent_score else 45)
-
-        live_prices = _fetch_command_center_live_prices(positions, limit=8)
-        enriched_positions = _build_command_center_enriched_positions(positions, live_prices)
-        signals = _build_command_center_signals(enriched_positions)
-        signal_quality = _command_center_signal_quality(signals)
-        signal_diagnostics = _summarize_signal_diagnostics(enriched_positions)
-        top_opportunities = _cache_get("cc_top_opportunities")
-        weak_positions = _cache_get("cc_weak_positions")
-        if core and (top_opportunities is None or weak_positions is None):
-            if top_opportunities is None:
-                try:
-                    top_opportunities = _get_command_center_top_opportunities(core, limit=5)
-                except Exception as exc:
-                    logger.debug(f"[dashboard] command-center top_opportunities error: {exc}")
-                    top_opportunities = []
-            if weak_positions is None:
-                try:
-                    weak_positions = _get_command_center_weak_positions(core, limit=5)
-                except Exception as exc:
-                    logger.debug(f"[dashboard] command-center weak_positions error: {exc}")
-                    weak_positions = []
-
-        if top_opportunities is None:
-            top_opportunities = []
-        if weak_positions is None:
-            weak_positions = []
-
-        _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
-        _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
-        near_misses = _summarize_near_misses(journals, limit=8)
-        session_radar = _build_session_radar(limit=12)
-        why_not_traded = _summarize_why_not_traded(journals, near_misses, limit=6)
-        watchlist_ladder = _build_watchlist_ladder(top_opportunities, near_misses, session_radar, enriched_positions)
-        trade_tape = _build_trade_tape(enriched_positions, closed_trades, limit=12)
-        trade_lifecycle = _build_trade_lifecycle(enriched_positions, closed_trades, journals)
-
-        return jsonify({
-            "success":          True,
-            "balance":          float(perf.get("balance", _args.balance) or _args.balance),
-            "total_pnl":        float(perf.get("total_pnl", 0) or 0),
-            "daily_pnl":        float(daily.get("daily_pnl", 0) or 0),
-            "daily_trades":     int(daily.get("daily_trades", 0) or 0),
-            "win_rate":         _wr(perf.get("win_rate", 0)),
-            "open_positions":   len(enriched_positions),
-            "total_trades":     int(perf.get("total_trades", 0) or 0),
-            "engine_running":   health.get("is_running", core.is_running if core else False),
-            "engine_ready":     health.get("engine_ready", core.is_ready if core else False),
-            "sentiment_score":  _cc_slow["sentiment_score"],
-            "whale_alerts_24h": _cc_slow["whale_alerts_24h"],
-            "alert_count_24h":  _cc_slow["alert_count_24h"],
-            "recent":           _cc_slow["recent"],
-            "latest_signals":   signals,
-            "signal_quality":   signal_quality,
-            "top_opportunities": top_opportunities,
-            "weak_positions":   weak_positions,
-            "near_misses":      near_misses,
-            "why_not_traded":   why_not_traded,
-            "session_radar":    session_radar,
-            "watchlist_ladder": watchlist_ladder,
-            "trade_tape":       trade_tape,
-            "trade_lifecycle":  trade_lifecycle,
-            "positions":        enriched_positions,
-            "provider_routing": _provider_routing_summary(),
-            "signal_diagnostics": signal_diagnostics,
-            "timestamp":        datetime.now().isoformat(),
-        })
+        return jsonify(_build_command_center_payload())
     except APIError as e:
         return handle_api_error(e, "/api/command-center", e.status_code)
     except Exception as e:
         return handle_api_error(e, "/api/command-center", 500)
+
+
+@app.route("/api/command-center/stream")
+@_check_api_auth
+@_check_rate_limit
+def api_command_center_stream():
+    def _gen():
+        last_signature = None
+        last_emit = 0.0
+        # Initial event tells the client the stream is alive and forces an
+        # immediate refresh so reconnects recover the full dashboard state.
+        yield f"{json.dumps({'type': 'connected', 'ts': int(time.time())})}\n"
+
+        while True:
+            try:
+                payload = _build_command_center_payload()
+                signature = _command_center_payload_signature(payload)
+                now = time.time()
+                if last_signature is None or signature != last_signature:
+                    last_signature = signature
+                    last_emit = now
+                    yield f"{json.dumps({'type': 'refresh', 'ts': int(now), 'signature': signature})}\n"
+                elif now - last_emit >= 15.0:
+                    last_emit = now
+                    yield f"{json.dumps({'type': 'heartbeat', 'ts': int(now)})}\n"
+            except GeneratorExit:
+                raise
+            except Exception as exc:
+                logger.debug(f"[dashboard] command-center stream error: {exc}")
+                yield f"{json.dumps({'type': 'heartbeat', 'ts': int(time.time())})}\n"
+            time.sleep(1.0)
+
+    return Response(
+        stream_with_context(_gen()),
+        mimetype="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API — SIGNALS
@@ -4340,13 +4620,17 @@ def _apply_sentiment_dashboard_task_result(result: Dict[str, Any], key: str, pay
 
 def _finalize_sentiment_dashboard_result(result: Dict[str, Any]) -> None:
     if result["sentiment_distribution"] == {"bullish": 0, "neutral": 0, "bearish": 0}:
-        score = float(result.get("score", 0) or 0)
-        if score > 0.05:
-            result["sentiment_distribution"] = {"bullish": 1, "neutral": 0, "bearish": 0}
-        elif score < -0.05:
-            result["sentiment_distribution"] = {"bullish": 0, "neutral": 0, "bearish": 1}
-        else:
+        article_count = int(result.get("article_count", 0) or 0)
+        if article_count <= 0:
             result["sentiment_distribution"] = {"bullish": 0, "neutral": 1, "bearish": 0}
+        else:
+            score = float(result.get("score", 0) or 0)
+            if score > 0.05:
+                result["sentiment_distribution"] = {"bullish": 1, "neutral": 0, "bearish": 0}
+            elif score < -0.05:
+                result["sentiment_distribution"] = {"bullish": 0, "neutral": 0, "bearish": 1}
+            else:
+                result["sentiment_distribution"] = {"bullish": 0, "neutral": 1, "bearish": 0}
 
     if result["news_sentiment"]["article_count"] == 0:
         result["news_sentiment"] = {
