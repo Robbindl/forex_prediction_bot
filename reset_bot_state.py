@@ -8,7 +8,12 @@ from typing import Iterable
 
 from sqlalchemy import text
 
-from config.config import DEFAULT_BALANCE, LOCAL_CANDLE_STORE_PATH
+from config.config import (
+    DEFAULT_BALANCE,
+    LOCAL_CANDLE_STORE_PATH,
+    TELEGRAM_PID_FILE as CONFIG_TELEGRAM_PID_FILE,
+    PAPER_TRADES_FILE as CONFIG_PAPER_TRADES_FILE,
+)
 from config.database import SessionLocal
 
 
@@ -17,10 +22,10 @@ STATE_FILE = ROOT / "data" / "system_state.json"
 LOG_DIR = ROOT / "logs"
 TRADE_LOG_DIR = ROOT / "trade_logs"
 PORTFOLIO_REPORTS_DIR = ROOT / "portfolio_reports"
-TELEGRAM_PID_FILE = ROOT / "telegram_bot.pid"
-TELEGRAM_LOG_FILE = ROOT / "telegram_bot.log"
-STARTUP_TEST_LOG = ROOT / "startup_test.log"
-PAPER_TRADES_FILE = ROOT / "paper_trades.json"
+TELEGRAM_PID_FILE = CONFIG_TELEGRAM_PID_FILE
+TELEGRAM_LOG_FILE = LOG_DIR / "telegram_bot.log"
+STARTUP_TEST_LOG = LOG_DIR / "startup_test.log"
+PAPER_TRADES_FILE = CONFIG_PAPER_TRADES_FILE
 
 RESET_TABLES = (
     "trading_diary",

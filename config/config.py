@@ -92,6 +92,7 @@ COMMAND_BOT_TOKEN   = os.getenv("COMMAND_BOT_TOKEN", "").strip()
 COMMAND_BOT_CHAT_ID = os.getenv("COMMAND_BOT_CHAT_ID", "").strip()
 DEBUG_FORCE_TELEGRAM = os.getenv("DEBUG_FORCE_TELEGRAM", "false").lower() == "true"
 TELEGRAM_PID_FILE    = Path(os.getenv("TELEGRAM_PID_FILE", "telegram_bot.pid"))
+PAPER_TRADES_FILE    = Path(os.getenv("PAPER_TRADES_FILE", "data/paper_trades.json"))
 # Export compatibility aliases for runtime code, but keep COMMAND_BOT_* as
 # the single source of truth in .env.
 TELEGRAM_TOKEN   = COMMAND_BOT_TOKEN
@@ -164,6 +165,7 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     ""
 ).strip()
+DATABASE_SSLMODE = os.getenv("DATABASE_SSLMODE", "").strip()
 DB_CONNECT_RETRIES = int(os.getenv("DB_CONNECT_RETRIES", "5"))
 DB_RETRY_DELAY_SECONDS = int(os.getenv("DB_RETRY_DELAY_SECONDS", "3"))
 DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))

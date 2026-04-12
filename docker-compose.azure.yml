@@ -3,28 +3,27 @@ version: '3.8'
 services:
   trading-bot:
     build: .
-    command: python bot.py --balance 30 --no-dashboard --no-gateway
+    restart: unless-stopped
+    command: python bot.py --balance 30 --no-gateway
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/trading_bot
+      DATABASE_SSLMODE: ""
+      DB_CONNECT_RETRIES: 20
+      DB_RETRY_DELAY_SECONDS: 5
+      PAPER_TRADES_FILE: data/paper_trades.json
+      TELEGRAM_SESSION: state/whale_session
+      TELEGRAM_PID_FILE: state/telegram_bot.pid
+    ports:
+      - "5000:5000"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     volumes:
       - ./data:/app/data
-      - ./telegram_bot.pid:/app/telegram_bot.pid
-      - ./history_session.session:/app/history_session.session
-      - ./whale_session.session:/app/whale_session.session
-
-  web-dashboard:
-    build: .
-    environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/trading_bot
-    depends_on:
-      - postgres
-    volumes:
-      - ./data:/app/data
-      - ./telegram_bot.pid:/app/telegram_bot.pid
-      - ./history_session.session:/app/history_session.session
-      - ./whale_session.session:/app/whale_session.session
+      - ./logs:/app/logs
+      - ./state:/app/state
 
   postgres:
     image: postgres:16-alpine

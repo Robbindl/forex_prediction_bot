@@ -9394,6 +9394,63 @@ def test_config_database_url_requires_explicit_env(monkeypatch) -> None:
             os.environ["DATABASE_URL"] = original_db_url
         importlib.reload(config_mod)
 
+def _load_real_database_module(monkeypatch):
+    import importlib.util
+    import sqlalchemy
+
+    class _FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def execute(self, *args, **kwargs):
+            return SimpleNamespace(first=lambda: None)
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConnection()
+
+    monkeypatch.setattr(
+        sqlalchemy,
+        "create_engine",
+        lambda *args, **kwargs: _FakeEngine(),
+        raising=True,
+    )
+
+    module_path = Path(__file__).resolve().parent / "config" / "database.py"
+    spec = importlib.util.spec_from_file_location("config_database_real_for_tests", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_database_url_adds_sslmode_for_azure_postgres(monkeypatch) -> None:
+    db_mod = _load_real_database_module(monkeypatch)
+    monkeypatch.setattr(db_mod, "DATABASE_SSLMODE", "", raising=False)
+
+    url = "postgresql://user:password@tenant.postgres.database.azure.com:5432/trading_bot"
+    normalized = db_mod._normalize_database_url(url)
+
+    assert normalized == (
+        "postgresql://user:password@tenant.postgres.database.azure.com:5432/"
+        "trading_bot?sslmode=require"
+    )
+
+
+def test_database_url_preserves_explicit_sslmode(monkeypatch) -> None:
+    db_mod = _load_real_database_module(monkeypatch)
+    monkeypatch.setattr(db_mod, "DATABASE_SSLMODE", "", raising=False)
+
+    url = (
+        "postgresql://user:password@tenant.postgres.database.azure.com:5432/"
+        "trading_bot?sslmode=verify-full"
+    )
+
+    assert db_mod._normalize_database_url(url) == url
+
 def test_api_validation_raises_for_placeholder_required_values(monkeypatch) -> None:
     validation_mod = importlib.import_module("config.api_validation")
 

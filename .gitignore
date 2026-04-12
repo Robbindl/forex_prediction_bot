@@ -102,6 +102,7 @@ redis_dump.rdb
 # TRADING DATA
 # ------------------------------------------------
 paper_trades.json
+data/paper_trades.json
 paper_trades_backup_*.json
 historical_data/
 cache/

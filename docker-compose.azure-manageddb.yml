@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    restart: unless-stopped
+    command: python bot.py --balance 30 --no-gateway
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_SSLMODE: require
+      DB_CONNECT_RETRIES: 20
+      DB_RETRY_DELAY_SECONDS: 5
+      PAPER_TRADES_FILE: data/paper_trades.json
+      TELEGRAM_SESSION: state/whale_session
+      TELEGRAM_PID_FILE: state/telegram_bot.pid
+    ports:
+      - "5000:5000"
+    volumes:
+      - bot_data:/app/data
+      - bot_logs:/app/logs
+      - bot_state:/app/state
+
+volumes:
+  bot_data:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//${AZURE_STORAGE_ACCOUNT_NAME}.file.core.windows.net/${AZURE_DATA_SHARE}"
+      o: "username=${AZURE_STORAGE_ACCOUNT_NAME},password=${AZURE_STORAGE_ACCOUNT_KEY},vers=3.1.1,dir_mode=0777,file_mode=0777,serverino,noperm"
+  bot_logs:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//${AZURE_STORAGE_ACCOUNT_NAME}.file.core.windows.net/${AZURE_LOGS_SHARE}"
+      o: "username=${AZURE_STORAGE_ACCOUNT_NAME},password=${AZURE_STORAGE_ACCOUNT_KEY},vers=3.1.1,dir_mode=0777,file_mode=0777,serverino,noperm"
+  bot_state:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//${AZURE_STORAGE_ACCOUNT_NAME}.file.core.windows.net/${AZURE_STATE_SHARE}"
+      o: "username=${AZURE_STORAGE_ACCOUNT_NAME},password=${AZURE_STORAGE_ACCOUNT_KEY},vers=3.1.1,dir_mode=0777,file_mode=0777,serverino,noperm"

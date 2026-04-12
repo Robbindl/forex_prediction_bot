@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from utils.logger import get_logger
 from config.config import (
     DATABASE_URL,
+    DATABASE_SSLMODE,
     DB_CONNECT_RETRIES,
     DB_MAX_OVERFLOW,
     DB_POOL_RECYCLE_SECONDS,
@@ -74,6 +75,33 @@ def _database_target(url: str) -> str:
         return "<invalid target>"
 
 
+def _normalize_database_url(url: str) -> str:
+    """
+    Return a connection string with a safe SSL mode when the database target
+    is Azure PostgreSQL and the caller did not specify one explicitly.
+    """
+    try:
+        parsed = make_url(url)
+    except Exception:
+        return url
+
+    query = dict(parsed.query or {})
+    sslmode = (DATABASE_SSLMODE or query.get("sslmode") or "").strip()
+    host = (parsed.host or "").lower()
+
+    if not sslmode and host.endswith(".postgres.database.azure.com"):
+        sslmode = "require"
+
+    if not sslmode:
+        return url
+
+    if query.get("sslmode") == sslmode:
+        return url
+
+    query["sslmode"] = sslmode
+    return parsed.set(query=query).render_as_string(hide_password=False)
+
+
 def create_db_engine(
     max_retries: int = DB_CONNECT_RETRIES,
     retry_delay: int = DB_RETRY_DELAY_SECONDS,
@@ -89,11 +117,12 @@ def create_db_engine(
             "Bot cannot start without a database connection."
         )
 
-    db_target = _database_target(DATABASE_URL)
+    normalized_database_url = _normalize_database_url(DATABASE_URL)
+    db_target = _database_target(normalized_database_url)
     for attempt in range(1, max_retries + 1):
         try:
             engine = create_engine(
-                DATABASE_URL,
+                normalized_database_url,
                 pool_size=DB_POOL_SIZE,
                 max_overflow=DB_MAX_OVERFLOW,
                 pool_pre_ping=True,
