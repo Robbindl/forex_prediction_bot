@@ -2767,14 +2767,52 @@ def _build_command_center_pnl_curve(
     except Exception:
         get_live_price_history = None
 
+    try:
+        from services.local_candle_store import local_candle_store
+    except Exception:
+        local_candle_store = None
+
     history_map: Dict[str, Dict[str, List[float]]] = {}
     position_rows = [pos for pos in list(positions or []) if isinstance(pos, dict)]
     for pos in position_rows:
         asset = str(pos.get("asset") or "")
+        category = str(pos.get("category") or "forex")
         if not asset or asset in history_map:
             continue
+
         history_points: List[Tuple[float, float]] = []
-        if get_live_price_history is not None:
+        if local_candle_store is not None and getattr(local_candle_store, "enabled", None):
+            try:
+                if local_candle_store.enabled():
+                    periods = max(60, int(((now_local - today_start).total_seconds() / 60.0)) + bucket_minutes + 5)
+                    frame, _meta = local_candle_store.get_ohlcv(
+                        asset,
+                        category,
+                        "1m",
+                        periods,
+                        end_time=now_local.astimezone(timezone.utc),
+                        closed_only=False,
+                    )
+                    if frame is not None and not frame.empty and "close" in frame.columns:
+                        try:
+                            import pandas as pd
+                        except Exception:
+                            pd = None
+                        for idx, row in frame.iterrows():
+                            try:
+                                if pd is not None:
+                                    ts = float(pd.Timestamp(idx).timestamp())
+                                else:
+                                    ts = float(idx.timestamp())
+                            except Exception:
+                                ts = 0.0
+                            price = float(row.get("close", 0.0) or 0.0)
+                            if ts > 0 and price > 0:
+                                history_points.append((ts, price))
+            except Exception:
+                history_points = []
+
+        if not history_points and get_live_price_history is not None:
             try:
                 for item in get_live_price_history(asset, limit=2000) or []:
                     ts = float(item.get("timestamp", 0.0) or 0.0)
@@ -2783,13 +2821,14 @@ def _build_command_center_pnl_curve(
                         history_points.append((ts, price))
             except Exception:
                 history_points = []
+
         history_points.sort(key=lambda item: item[0])
         history_map[asset] = {
             "timestamps": [point[0] for point in history_points],
             "prices": [point[1] for point in history_points],
         }
 
-    def _price_at(asset: str, bucket_ts: float, fallback_price: float) -> float:
+    def _price_at(asset: str, bucket_ts: float) -> Optional[float]:
         series = history_map.get(asset) or {}
         timestamps = series.get("timestamps") or []
         prices = series.get("prices") or []
@@ -2797,7 +2836,7 @@ def _build_command_center_pnl_curve(
             idx = bisect_right(timestamps, bucket_ts) - 1
             if idx >= 0:
                 return float(prices[idx])
-        return float(fallback_price or 0.0)
+        return None
 
     closed_events: List[Tuple[datetime, float]] = []
     for trade in list(closed_trades or []):
@@ -2824,15 +2863,14 @@ def _build_command_center_pnl_curve(
                 "entry_price": float(pos.get("entry_price", 0) or 0),
                 "position_size": float(pos.get("position_size", 0) or 0),
                 "open_time": entry_dt.astimezone(tz) if entry_dt else None,
-                "fallback_price": float(pos.get("current_price", 0) or 0),
             }
         )
 
     def _mark_to_market(pos: Dict[str, Any], bucket: datetime) -> float:
         if pos["open_time"] and pos["open_time"] > bucket:
             return 0.0
-        price = _price_at(pos["asset"], bucket.timestamp(), pos["fallback_price"])
-        if not price or not pos["entry_price"] or not pos["position_size"]:
+        price = _price_at(pos["asset"], bucket.timestamp())
+        if price is None or not pos["entry_price"] or not pos["position_size"]:
             return 0.0
         try:
             from risk.position_sizer import PositionSizer as _PS
@@ -5812,10 +5850,18 @@ def api_page_overview():
     if cached:
         return jsonify(_response_to_dict(cached))
 
+    def _command_center_snapshot() -> Dict[str, Any]:
+        try:
+            return _response_to_dict(_call_view(api_command_center))
+        except Exception:
+            # Keep lightweight overview pages functional even when the richer
+            # command-center payload is unavailable in a partial test or render.
+            return {}
+
     if page == "risk_dashboard":
         status = _response_to_dict(_call_view(api_status))
         risk = _response_to_dict(_call_view(api_risk_portfolio))
-        payload = {"success": True, "page": page, "status": status, "risk": risk}
+        payload = {"success": True, "page": page, "status": status, "risk": risk, "command_center": _command_center_snapshot()}
         ttl = 10
     elif page in {"ai_predictions", "playbook_intel"}:
         page = "playbook_intel"
@@ -5825,13 +5871,16 @@ def api_page_overview():
     elif page == "intelligence_alerts":
         payload = _response_to_dict(_call_view(api_intelligence_alerts_overview))
         payload["status"] = _response_to_dict(_call_view(api_status))
+        payload["command_center"] = _command_center_snapshot()
         ttl = 10
     elif page == "system_monitor":
         payload = _response_to_dict(_call_view(api_system_monitor_overview))
+        payload["command_center"] = _command_center_snapshot()
         ttl = 10
     elif page == "whale_intelligence":
         payload = _response_to_dict(_call_view(api_whale_summary))
         payload["status"] = _response_to_dict(_call_view(api_status))
+        payload["command_center"] = _command_center_snapshot()
         ttl = 30
     elif page == "sentiment_intelligence":
         payload = {
@@ -5841,6 +5890,7 @@ def api_page_overview():
             "by_asset": _response_to_dict(_call_view(api_sentiment_by_asset)),
             "events": _response_to_dict(_call_view(api_market_events)),
             "heatmap": _response_to_dict(_call_view(api_market_heatmap)),
+            "command_center": _command_center_snapshot(),
         }
         ttl = 30
     elif page == "order_flow":
@@ -5850,6 +5900,7 @@ def api_page_overview():
             "imbalance": _response_to_dict(_call_view(api_phase3_imbalance)),
             "walls": _response_to_dict(_call_view(api_phase3_walls)),
             "hunts": _response_to_dict(_call_view(api_phase3_stop_hunts)),
+            "command_center": _command_center_snapshot(),
         }
         ttl = 15
     elif page == "command_center":
@@ -5871,6 +5922,7 @@ def api_page_overview():
             "status": _response_to_dict(_call_view(api_status)),
             "assets": _response_to_dict(_call_view(api_chart_assets)),
             "events": _response_to_dict(_call_view(api_market_events)),
+            "command_center": _command_center_snapshot(),
         }
         ttl = 30
     else:

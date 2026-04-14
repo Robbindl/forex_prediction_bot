@@ -653,6 +653,15 @@ class SignalJournal:
             metadata.get("exhaustion_risk", market_microstructure.get("exhaustion_risk")),
             None,
         )
+        adaptive_policy = metadata.get("adaptive_policy")
+        if not isinstance(adaptive_policy, dict):
+            adaptive_policy = {}
+        recent_review_profile = adaptive_policy.get("recent_review_profile")
+        if not isinstance(recent_review_profile, dict):
+            recent_review_profile = {}
+        execution_feedback = metadata.get("execution_feedback")
+        if not isinstance(execution_feedback, dict):
+            execution_feedback = {}
 
         return {
             "final_policy_decision": policy.decision if policy else "",
@@ -691,6 +700,20 @@ class SignalJournal:
             "memory_score": round(memory_score, 1) if memory_score is not None else None,
             "memory_edge": round(memory_edge, 4) if memory_edge is not None else None,
             "memory_sample_count": memory_sample_count,
+            "late_entry_risk_score": round(_safe_float(metadata.get("late_entry_risk_score"), 0.0) or 0.0, 4),
+            "late_entry_risk_reasons": list(metadata.get("late_entry_risk_reasons") or []),
+            "blocked_recent_pattern": bool(recent_review_profile.get("block_new_entries")),
+            "blocked_recent_pattern_reason": str(recent_review_profile.get("block_reason") or ""),
+            "recent_pattern_late_entry_rate": round(_safe_float(recent_review_profile.get("late_entry_rate"), 0.0) or 0.0, 4),
+            "recent_pattern_win_rate": round(_safe_float(recent_review_profile.get("win_rate"), 0.0) or 0.0, 4),
+            "recent_pattern_avg_rr_realized": round(_safe_float(recent_review_profile.get("avg_rr_realized"), 0.0) or 0.0, 4),
+            "exit_quality_score": round(_safe_float(execution_feedback.get("quality_score"), 0.0) or 0.0, 1) if execution_feedback else None,
+            "exit_outcome_class": str(execution_feedback.get("outcome_class") or ""),
+            "exit_notes": list(execution_feedback.get("notes") or []),
+            "exit_full_target": bool(execution_feedback.get("full_target")),
+            "exit_target_miss": bool(execution_feedback.get("target_miss")),
+            "exit_premature_stop": bool(execution_feedback.get("premature_stop")),
+            "exit_giveback_ratio": round(_safe_float(execution_feedback.get("giveback_ratio"), 0.0) or 0.0, 4) if execution_feedback else None,
             **factor_extremes,
         }
 
@@ -1020,10 +1043,29 @@ class SignalJournal:
                 clauses.append(f"microstructure pressure leans {pressure.lower()}, so the tape is not fully aligned")
         stop_hunt_risk = _safe_float(summary.get("stop_hunt_risk"), None)
         if stop_hunt_risk is not None and stop_hunt_risk >= 0.45:
-            clauses.append("stop-hunt risk is elevated")
+            clauses.append(f"stop-hunt risk is elevated at {stop_hunt_risk:.2f}")
         exhaustion_risk = _safe_float(summary.get("exhaustion_risk"), None)
         if exhaustion_risk is not None and exhaustion_risk >= 0.42:
-            clauses.append("exhaustion risk is elevated")
+            clauses.append(f"exhaustion risk is elevated at {exhaustion_risk:.2f}")
+        late_entry_risk_score = _safe_float(summary.get("late_entry_risk_score"), None)
+        if late_entry_risk_score is not None and late_entry_risk_score >= 0.52:
+            clauses.append(f"late-entry risk was elevated at {late_entry_risk_score:.2f}")
+        late_entry_risk_reasons = [self._humanize_reason(reason) for reason in list(summary.get("late_entry_risk_reasons") or [])[:2]]
+        if late_entry_risk_reasons:
+            clauses.append("late-entry pressure came from " + self._join_clauses(late_entry_risk_reasons))
+        if summary.get("blocked_recent_pattern") and summary.get("blocked_recent_pattern_reason"):
+            clauses.append("recent pattern learning is blocking new entries because " + self._humanize_reason(summary.get("blocked_recent_pattern_reason")))
+        recent_pattern_late_entry_rate = _safe_float(summary.get("recent_pattern_late_entry_rate"), None)
+        if recent_pattern_late_entry_rate is not None and recent_pattern_late_entry_rate >= 0.35:
+            clauses.append(f"recent similar setups have been late about {recent_pattern_late_entry_rate * 100:.0f}% of the time")
+        recent_pattern_win_rate = _safe_float(summary.get("recent_pattern_win_rate"), None)
+        recent_pattern_avg_rr = _safe_float(summary.get("recent_pattern_avg_rr_realized"), None)
+        if recent_pattern_win_rate is not None and recent_pattern_avg_rr is not None and (
+            recent_pattern_win_rate > 0 or recent_pattern_avg_rr != 0
+        ):
+            clauses.append(
+                f"recent pattern stats are {recent_pattern_win_rate * 100:.0f}% wins with {recent_pattern_avg_rr:+.2f}R average realized"
+            )
         position_size = _safe_float(data.get("position_size"), _safe_float(getattr(signal, "position_size", 0.0), None))
         if position_size is not None and position_size > 0:
             clauses.append(f"position size is {position_size:.4f}")
@@ -1294,6 +1336,42 @@ class SignalJournal:
             "other_lines": other_lines,
         }
 
+    def _telegram_plain_exit_review_lines(self, summary: Dict[str, Any]) -> List[str]:
+        if not summary.get("exit_outcome_class") and not summary.get("exit_notes"):
+            return []
+        lines = ["", "How the last trade was managed:"]
+        outcome = self._humanize_token(summary.get("exit_outcome_class"))
+        quality = _safe_float(summary.get("exit_quality_score"), None)
+        giveback = _safe_float(summary.get("exit_giveback_ratio"), None)
+        clauses: List[str] = []
+        if outcome:
+            clauses.append(f"the exit outcome classified as {outcome}")
+        if quality is not None and quality > 0:
+            clauses.append(f"exit quality scored {quality:.1f} out of 100")
+        if giveback is not None and giveback >= 0.25:
+            clauses.append(f"it gave back about {giveback * 100:.0f}% of peak progress before closing")
+        if clauses:
+            lines.append(f"- Exit summary: {self._sentence(self._join_clauses(clauses))}.")
+        notes = [self._humanize_token(note) for note in list(summary.get("exit_notes") or [])]
+        if notes:
+            lines.append(f"- Exit tags: {self._sentence(self._join_clauses(notes))}.")
+        if summary.get("exit_full_target"):
+            lines.append("- Exit read: It reached and secured the full target.")
+        elif summary.get("exit_target_miss"):
+            lines.append("- Exit read: Price got close enough to target that the exit left money on the table.")
+        elif summary.get("exit_premature_stop"):
+            lines.append("- Exit read: The stop likely cut the trade before the move had fully matured.")
+        if outcome:
+            if outcome == "premature stop":
+                lines.append("- Exit class: Premature stop; the trade structure was probably right, but the management lost the move.")
+            elif outcome == "full target":
+                lines.append("- Exit class: Full target; management allowed the edge to fully pay.")
+            elif outcome == "target miss":
+                lines.append("- Exit class: Target miss; the idea worked, but exit handling left profit behind.")
+            elif outcome == "late entry":
+                lines.append("- Exit class: Late entry; timing degraded the setup before management even had room to work.")
+        return lines
+
     def _telegram_plain_section_lines(
         self,
         survived: bool,
@@ -1399,6 +1477,7 @@ class SignalJournal:
         lines.extend(self._telegram_plain_section_lines(survived, summary, groups))
         if survived and signal:
             lines.extend(self._telegram_plain_execution_block(signal, groups))
+        lines.extend(self._telegram_plain_exit_review_lines(summary))
         lines.extend(["", f"Review time: {self.total_elapsed_ms() / 1000.0:.1f}s"])
         return "\n".join(lines)
 

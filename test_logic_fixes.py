@@ -950,6 +950,45 @@ def test_duplicate_full_close_callback_stops_side_effects(monkeypatch) -> None:
     engine._risk_manager.update_balance.assert_not_called()
     engine.telegram.bot.alert_trade_closed.assert_not_called()
 
+def test_init_subsystems_flattens_positions_before_close(monkeypatch) -> None:
+    class FakeState:
+        def __init__(self) -> None:
+            self.balance = 10_000.0
+
+        def init_db(self):
+            return None
+
+        def open_position_count(self):
+            return 0
+
+        def set_balance(self, balance, reason="init"):
+            self.balance = balance
+
+        def get_open_positions(self):
+            return []
+
+    class DummyFetcher:
+        def get_ohlcv(self, *args, **kwargs):
+            return None
+
+    fake_state = FakeState()
+
+    core_state_module = importlib.import_module("core.state")
+    data_fetcher_module = importlib.import_module("data.fetcher")
+
+    flatten_mock = MagicMock(return_value=1)
+
+    monkeypatch.setattr(core_state_module, "state", fake_state, raising=False)
+    monkeypatch.setattr(data_fetcher_module, "DataFetcher", DummyFetcher, raising=False)
+    monkeypatch.setattr(TradingCore, "_check_offline_sl_tp", lambda self: None)
+    monkeypatch.setattr(TradingCore, "_flatten_positions_before_close", flatten_mock)
+
+    engine = TradingCore(balance=10_000.0)
+    engine.telegram = SimpleNamespace(bot=SimpleNamespace(alert_trade_closed=MagicMock()))
+
+    assert engine._init_subsystems() is True
+    flatten_mock.assert_called_once()
+
 def test_check_exit_uses_asset_and_category_for_mt5_pnl(monkeypatch) -> None:
     called = {}
 
@@ -4886,6 +4925,84 @@ def test_trading_core_market_hours_prefers_routed_provider_status(monkeypatch) -
 
     assert is_open is True
     assert reason == "Metals open on IG"
+
+def test_market_hours_guard_blocks_last_hour_before_close_windows() -> None:
+    guard_mod = importlib.import_module("services.market_hours_guard")
+
+    cases = [
+        ("EUR/USD", "forex", datetime(2026, 4, 10, 21, 30, tzinfo=timezone.utc)),
+        ("US30", "indices", datetime(2026, 4, 13, 19, 30, tzinfo=timezone.utc)),
+        ("XAU/USD", "commodities", datetime(2026, 4, 13, 20, 15, tzinfo=timezone.utc)),
+    ]
+
+    for asset, category, now_utc in cases:
+        status = guard_mod.build_market_status(asset, category, now_utc=now_utc)
+        assert status["market_open"] is False
+        assert "close buffer" in status["reason"].lower()
+
+    crypto_status = guard_mod.build_market_status(
+        "BTC-USD",
+        "crypto",
+        now_utc=datetime(2026, 4, 10, 21, 30, tzinfo=timezone.utc),
+    )
+    assert crypto_status["market_open"] is True
+    assert crypto_status["reason"] == "crypto_24x7"
+
+def test_trading_core_market_hours_blocks_close_buffer_even_if_provider_reports_open(monkeypatch) -> None:
+    guard_mod = importlib.import_module("services.market_hours_guard")
+    router_mod = importlib.import_module("services.market_data_router")
+    frozen = datetime(2026, 4, 10, 21, 30, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(guard_mod, "_utc_now", lambda now_utc=None: frozen, raising=False)
+    monkeypatch.setattr(
+        router_mod,
+        "get_market_status",
+        lambda asset, category="": {
+            "asset": asset,
+            "market_open": True,
+            "reason": "open",
+            "source": "IG",
+        },
+        raising=False,
+    )
+
+    is_open, reason = TradingCore._market_hours_status("EUR/USD", "forex")
+
+    assert is_open is False
+    assert "close buffer" in reason.lower()
+
+def test_trading_core_flatten_positions_before_close_only_closes_buffered_assets(monkeypatch) -> None:
+    guard_mod = importlib.import_module("services.market_hours_guard")
+
+    core = object.__new__(TradingCore)
+    closed: list[tuple[str, str]] = []
+
+    def _fake_status(asset: str, category: str = "") -> dict:
+        return {
+            "asset": asset,
+            "category": category,
+            "market_open": asset != "EUR/USD",
+            "reason": "open",
+            "close_buffer_active": asset == "EUR/USD",
+            "close_buffer_reason": "Close buffer: last hour before Friday 22:00 UTC close",
+        }
+
+    monkeypatch.setattr(guard_mod, "build_market_status", _fake_status, raising=False)
+    core.state = SimpleNamespace(
+        get_open_positions=lambda: [
+            {"trade_id": "fx1", "asset": "EUR/USD", "category": "forex"},
+            {"trade_id": "gold1", "asset": "XAU/USD", "category": "commodities"},
+        ]
+    )
+
+    def _close_position_manually(trade_id: str, *, reason: str = "Manual Close") -> dict:
+        closed.append((trade_id, reason))
+        return {"trade_id": trade_id}
+
+    core.close_position_manually = _close_position_manually
+
+    assert core._flatten_positions_before_close() == 1
+    assert closed == [("fx1", "Pre-close flatten")]
 
 def test_market_data_router_filters_ig_routed_commodities_from_deriv_streams() -> None:
     router_mod = importlib.import_module("services.market_data_router")

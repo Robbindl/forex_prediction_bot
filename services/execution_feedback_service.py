@@ -491,7 +491,7 @@ class ExecutionFeedbackService:
                     0.08,
                     max(0.0, avg_mae_rr - 1.05) * 0.08 + max(0.0, stop_like_rate - 0.60) * 0.08,
                 )
-                stop_buffer_multiplier -= delta
+                stop_buffer_multiplier += delta
                 notes.append("losses_extend_without_progress")
 
             if late_entry_rate > 0.30 and avg_mae_rr > 0.90:
@@ -511,7 +511,7 @@ class ExecutionFeedbackService:
                 notes.append("execution_quality_soft_reduce")
 
         target_rr_multiplier = round(_clip(target_rr_multiplier, 0.82, 1.18), 4)
-        stop_buffer_multiplier = round(_clip(stop_buffer_multiplier, 0.88, 1.15), 4)
+        stop_buffer_multiplier = round(_clip(stop_buffer_multiplier, 1.0, 1.18), 4)
 
         return {
             "version": 1,
@@ -638,4 +638,3 @@ _service = ExecutionFeedbackService()
 
 def get_service() -> ExecutionFeedbackService:
     return _service
-

@@ -100,7 +100,16 @@ def _active_session() -> str:
     return "off"
 
 
-def _is_market_open(category: str) -> bool:
+def _is_market_open(asset: str, category: str) -> bool:
+    try:
+        from services.market_hours_guard import build_market_status
+
+        status = build_market_status(asset, category)
+        if status and "market_open" in status:
+            return bool(status["market_open"])
+    except Exception:
+        pass
+
     hour = _utc_hour()
     weekday = _utc_now().weekday() < 5
     if not weekday:
@@ -130,12 +139,26 @@ def _market_status_for_signal(signal: Signal, context: Dict[str, Any]) -> tuple[
 
             status = get_market_status(asset, category=signal.category)
             if status and "market_open" in status:
-                return bool(status["market_open"]), str(status.get("reason", "market status"))
+                try:
+                    from services.market_hours_guard import build_market_status
+
+                    normalized = build_market_status(asset, signal.category, provider_status=status)
+                    return bool(normalized["market_open"]), str(normalized.get("reason", "market status"))
+                except Exception:
+                    return bool(status["market_open"]), str(status.get("reason", "market status"))
         except Exception:
             pass
 
+    try:
+        from services.market_hours_guard import build_market_status
+
+        fallback_status = build_market_status(asset, signal.category)
+        return bool(fallback_status.get("market_open")), str(fallback_status.get("reason", "market status unavailable"))
+    except Exception:
+        pass
+
     utc_hour = _utc_hour()
-    if _is_market_open(signal.category):
+    if _is_market_open(asset, signal.category):
         return True, "open"
     return False, f"market closed for {signal.category} at UTC {utc_hour:02d}:xx"
 
@@ -414,12 +437,52 @@ class SignalDecisionEngine:
         volatility_state = str(structure.get("volatility_state", "unknown"))
         distance_to_support = structure.get("distance_to_support")
         distance_to_resistance = structure.get("distance_to_resistance")
+        vwap_distance_atr = float(structure.get("vwap_distance_atr", 0.0) or 0.0)
+        session_quality_score = float(structure.get("session_quality_score", 0.0) or 0.0)
+        candle_quality_score = float(structure.get("candle_quality_score", 0.0) or 0.0)
+        extension_score = float(structure.get("extension_score", 0.0) or 0.0)
+        target_efficiency_score = float(structure.get("target_efficiency_score", 0.0) or 0.0)
+        impulse_age_bars = int(structure.get("impulse_age_bars", 0) or 0)
+        breakout_retest_ready = bool(structure.get("breakout_retest_ready"))
+        first_pullback_ready = bool(structure.get("first_pullback_ready"))
+        liquidity_sweep_buy = bool(structure.get("liquidity_sweep_buy"))
+        liquidity_sweep_sell = bool(structure.get("liquidity_sweep_sell"))
+        failed_opposite_move_confirmed = bool(structure.get("failed_opposite_move_confirmed"))
+        entry_confirmation_bars_required = int(structure.get("entry_confirmation_bars_required", 0) or 0)
+        entry_confirmation_count = int(structure.get("entry_confirmation_count", 0) or 0)
+        entry_confirmation_ready = bool(structure.get("entry_confirmation_ready"))
+        pattern_family = str(structure.get("pattern_family", "unknown") or "unknown")
+        elite_pattern_rank = float(structure.get("elite_pattern_rank", 0.0) or 0.0)
+        cluster_penalty = float(structure.get("cluster_penalty", 0.0) or 0.0)
+        regime_entry_policy = (
+            dict(structure.get("regime_entry_policy"))
+            if isinstance(structure.get("regime_entry_policy"), dict)
+            else {}
+        )
 
         signal.metadata["market_structure"] = dict(structure)
         signal.metadata["structure_bias"] = structure_bias
         signal.metadata["alignment_score"] = round(alignment_score, 4)
         signal.metadata["setup_quality"] = round(setup_quality, 4)
         signal.metadata["volatility_state"] = volatility_state
+        signal.metadata["vwap_distance_atr"] = round(vwap_distance_atr, 4)
+        signal.metadata["session_quality_score"] = round(session_quality_score, 4)
+        signal.metadata["candle_quality_score"] = round(candle_quality_score, 4)
+        signal.metadata["extension_score"] = round(extension_score, 4)
+        signal.metadata["target_efficiency_score"] = round(target_efficiency_score, 4)
+        signal.metadata["impulse_age_bars"] = int(impulse_age_bars)
+        signal.metadata["breakout_retest_ready"] = breakout_retest_ready
+        signal.metadata["first_pullback_ready"] = first_pullback_ready
+        signal.metadata["liquidity_sweep_buy"] = liquidity_sweep_buy
+        signal.metadata["liquidity_sweep_sell"] = liquidity_sweep_sell
+        signal.metadata["failed_opposite_move_confirmed"] = failed_opposite_move_confirmed
+        signal.metadata["entry_confirmation_bars_required"] = int(entry_confirmation_bars_required)
+        signal.metadata["entry_confirmation_count"] = int(entry_confirmation_count)
+        signal.metadata["entry_confirmation_ready"] = entry_confirmation_ready
+        signal.metadata["pattern_family"] = pattern_family
+        signal.metadata["elite_pattern_rank"] = round(elite_pattern_rank, 4)
+        signal.metadata["cluster_penalty"] = round(cluster_penalty, 4)
+        signal.metadata["regime_entry_policy"] = regime_entry_policy
 
         direction_sign = 1 if signal.direction == "BUY" else -1
         dominant_setup = breakout_score if abs(breakout_score) >= abs(pullback_score) else pullback_score
@@ -434,6 +497,24 @@ class SignalDecisionEngine:
             "volatility_state": volatility_state,
             "distance_to_support": distance_to_support,
             "distance_to_resistance": distance_to_resistance,
+            "vwap_distance_atr": round(vwap_distance_atr, 4),
+            "session_quality_score": round(session_quality_score, 4),
+            "candle_quality_score": round(candle_quality_score, 4),
+            "extension_score": round(extension_score, 4),
+            "target_efficiency_score": round(target_efficiency_score, 4),
+            "impulse_age_bars": int(impulse_age_bars),
+            "breakout_retest_ready": breakout_retest_ready,
+            "first_pullback_ready": first_pullback_ready,
+            "liquidity_sweep_buy": liquidity_sweep_buy,
+            "liquidity_sweep_sell": liquidity_sweep_sell,
+            "failed_opposite_move_confirmed": failed_opposite_move_confirmed,
+            "entry_confirmation_bars_required": int(entry_confirmation_bars_required),
+            "entry_confirmation_count": int(entry_confirmation_count),
+            "entry_confirmation_ready": entry_confirmation_ready,
+            "pattern_family": pattern_family,
+            "elite_pattern_rank": round(elite_pattern_rank, 4),
+            "cluster_penalty": round(cluster_penalty, 4),
+            "regime_entry_policy": regime_entry_policy,
         }
 
         if structure_bias in {"buy", "sell"}:
@@ -451,6 +532,26 @@ class SignalDecisionEngine:
 
         if setup_quality < 0.25:
             notes.append("weak_setup_quality")
+        if extension_score >= 1.10 or abs(vwap_distance_atr) >= 1.40:
+            notes.append("extended_from_value")
+        if candle_quality_score <= 0.32:
+            notes.append("weak_trigger_candle")
+        if session_quality_score <= 0.40:
+            notes.append("weak_session_quality")
+        if target_efficiency_score <= 0.30:
+            notes.append("thin_target_path")
+        if impulse_age_bars >= 5:
+            notes.append("late_after_impulse")
+        if failed_opposite_move_confirmed:
+            notes.append("failed_opposite_reclaim")
+        if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+            notes.append("needs_entry_confirmation")
+        if elite_pattern_rank >= 0.75:
+            notes.append("elite_pattern_rank")
+        elif elite_pattern_rank <= 0.22 and pattern_family != "unknown":
+            notes.append("weak_pattern_rank")
+        if cluster_penalty >= 0.18:
+            notes.append("trade_cluster_risk")
 
         if volatility_state == "extreme":
             notes.append("extreme_volatility")
@@ -797,6 +898,7 @@ class SignalDecisionEngine:
     def _execution_entry_quality(
         signal: Signal,
         df: Any,
+        structure: Dict[str, Any],
         data: Dict[str, Any],
         notes: List[str],
     ) -> None:
@@ -820,18 +922,41 @@ class SignalDecisionEngine:
                     notes.append("expanded_volatility")
             if entry_range <= 0:
                 return
+            support_distance = None
+            resistance_distance = None
+            try:
+                support_distance = structure.get("distance_to_support") if isinstance(structure, dict) else None
+                resistance_distance = structure.get("distance_to_resistance") if isinstance(structure, dict) else None
+            except Exception:
+                support_distance = None
+                resistance_distance = None
+
             if signal.direction == "BUY":
                 proximity = (signal.entry_price - recent_low) / entry_range
                 signal.metadata["support_proximity"] = round(float(proximity), 4)
                 data["support_proximity"] = round(float(proximity), 3)
                 if proximity < 0.15:
                     notes.append("buy_near_support")
+                if support_distance is not None:
+                    try:
+                        supportive_distance = float(support_distance)
+                        signal.metadata["supportive_structure_distance"] = round(supportive_distance, 6)
+                        data["supportive_structure_distance"] = round(supportive_distance, 6)
+                    except Exception:
+                        pass
             else:
                 proximity = (recent_high - signal.entry_price) / entry_range
                 signal.metadata["resistance_proximity"] = round(float(proximity), 4)
                 data["resistance_proximity"] = round(float(proximity), 3)
                 if proximity < 0.15:
                     notes.append("sell_near_resistance")
+                if resistance_distance is not None:
+                    try:
+                        supportive_distance = float(resistance_distance)
+                        signal.metadata["supportive_structure_distance"] = round(supportive_distance, 6)
+                        data["supportive_structure_distance"] = round(supportive_distance, 6)
+                    except Exception:
+                        pass
         except Exception as exc:
             logger.debug(f"[DecisionEngine] Entry quality check failed for {signal.asset}: {exc}")
 
@@ -852,6 +977,16 @@ class SignalDecisionEngine:
         dominant_exhaustion = float(structure.get("dominant_exhaustion_score", 0.0) or 0.0)
         bias_exhausted = bool(structure.get("bias_exhausted"))
         setup_quality = float(structure.get("setup_quality", signal.metadata.get("setup_quality", 0.0)) or 0.0)
+        vwap_distance_atr = float(structure.get("vwap_distance_atr", signal.metadata.get("vwap_distance_atr", 0.0)) or 0.0)
+        session_quality_score = float(structure.get("session_quality_score", signal.metadata.get("session_quality_score", 0.0)) or 0.0)
+        candle_quality_score = float(structure.get("candle_quality_score", signal.metadata.get("candle_quality_score", 0.0)) or 0.0)
+        extension_score = float(structure.get("extension_score", signal.metadata.get("extension_score", 0.0)) or 0.0)
+        target_efficiency_score = float(structure.get("target_efficiency_score", signal.metadata.get("target_efficiency_score", 0.0)) or 0.0)
+        impulse_age_bars = int(structure.get("impulse_age_bars", signal.metadata.get("impulse_age_bars", 0)) or 0)
+        breakout_retest_ready = bool(structure.get("breakout_retest_ready", signal.metadata.get("breakout_retest_ready")))
+        first_pullback_ready = bool(structure.get("first_pullback_ready", signal.metadata.get("first_pullback_ready")))
+        liquidity_sweep_buy = bool(structure.get("liquidity_sweep_buy", signal.metadata.get("liquidity_sweep_buy")))
+        liquidity_sweep_sell = bool(structure.get("liquidity_sweep_sell", signal.metadata.get("liquidity_sweep_sell")))
         raw_policy = adaptive_policy.get("raw") if isinstance(adaptive_policy, dict) else {}
         recent_review = (
             raw_policy.get("recent_review_profile")
@@ -860,6 +995,41 @@ class SignalDecisionEngine:
         )
         late_entry_rate = float(recent_review.get("late_entry_rate", 0.0) or 0.0)
         hard_loss_rate = float(recent_review.get("hard_loss_rate", 0.0) or 0.0)
+        avg_rr_realized = float(recent_review.get("avg_rr_realized", 0.0) or 0.0)
+        avg_quality_score = float(recent_review.get("avg_quality_score", 50.0) or 50.0)
+        blocked_recent_pattern = bool(recent_review.get("block_new_entries"))
+        blocked_recent_pattern_reason = str(recent_review.get("block_reason") or "").strip()
+        confirmation_needed = bool(recent_review.get("confirmation_needed"))
+        elite_pattern_rank = max(
+            float(recent_review.get("pattern_rank_score", 0.0) or 0.0),
+            float(structure.get("elite_pattern_rank", signal.metadata.get("elite_pattern_rank", 0.0)) or 0.0),
+        )
+        cluster_penalty = max(
+            float(recent_review.get("trade_cluster_penalty", 0.0) or 0.0),
+            float(structure.get("cluster_penalty", signal.metadata.get("cluster_penalty", 0.0)) or 0.0),
+        )
+        failed_opposite_move_confirmed = bool(
+            structure.get("failed_opposite_move_confirmed", signal.metadata.get("failed_opposite_move_confirmed"))
+        )
+        entry_confirmation_bars_required = int(
+            structure.get("entry_confirmation_bars_required", signal.metadata.get("entry_confirmation_bars_required", 0)) or 0
+        )
+        entry_confirmation_count = int(
+            structure.get("entry_confirmation_count", signal.metadata.get("entry_confirmation_count", 0)) or 0
+        )
+        entry_confirmation_ready = bool(
+            structure.get("entry_confirmation_ready", signal.metadata.get("entry_confirmation_ready"))
+        )
+        pattern_family = str(structure.get("pattern_family", signal.metadata.get("pattern_family", "unknown")) or "unknown")
+        regime_entry_policy = (
+            dict(structure.get("regime_entry_policy"))
+            if isinstance(structure.get("regime_entry_policy"), dict)
+            else (
+                dict(signal.metadata.get("regime_entry_policy"))
+                if isinstance(signal.metadata.get("regime_entry_policy"), dict)
+                else {}
+            )
+        )
 
         distance_to_resistance = structure.get("distance_to_resistance")
         distance_to_support = structure.get("distance_to_support")
@@ -885,66 +1055,256 @@ class SignalDecisionEngine:
         except Exception:
             directional_extension = 0.0
 
+        broker_agreement_state = str(signal.metadata.get("broker_agreement_state", "") or "").lower()
+        broker_spread_regime = str(signal.metadata.get("broker_spread_regime", "") or "").lower()
+        broker_quote_quality_state = str(signal.metadata.get("broker_quote_quality_state", "") or "").lower()
+        synthetic_depth_only = bool(signal.metadata.get("synthetic_depth_available")) and not bool(signal.metadata.get("depth_available"))
+        cross_asset_alignment = float(signal.metadata.get("cross_asset_alignment", 0.0) or 0.0)
+        cross_asset_confidence = float(signal.metadata.get("cross_asset_confidence", 0.0) or 0.0)
+        supportive_structure_distance = float(signal.metadata.get("supportive_structure_distance", 0.0) or 0.0)
+
         risk_score = 0.0
         reasons: List[str] = []
-        if directional_extension >= 0.88:
-            risk_score += 0.42
+        hard_blocks: List[str] = []
+
+        if directional_extension >= 0.90:
+            risk_score += 0.48
             reasons.append("entry already stretched away from the supportive side")
-        elif directional_extension >= 0.80:
-            risk_score += 0.28
+        elif directional_extension >= 0.82:
+            risk_score += 0.32
             reasons.append("entry is extended")
 
+        if extension_score >= 1.25 or abs(vwap_distance_atr) >= 1.65:
+            risk_score += 0.26
+            reasons.append("price is too far extended from fair value")
+        elif extension_score >= 1.05 or abs(vwap_distance_atr) >= 1.25:
+            risk_score += 0.16
+            reasons.append("price is extended from value")
+
         if opposing_distance <= 0.0025:
-            risk_score += 0.34
+            risk_score += 0.38
             reasons.append("entry is too close to the opposing level")
         elif opposing_distance <= 0.0045:
-            risk_score += 0.20
+            risk_score += 0.24
             reasons.append("entry is close to the opposing level")
 
-        if volatility_ratio >= 1.80:
-            risk_score += 0.22
+        if volatility_ratio >= 1.75:
+            risk_score += 0.26
             reasons.append("volatility is already expanded")
         elif volatility_ratio >= 1.45:
-            risk_score += 0.14
+            risk_score += 0.16
             reasons.append("volatility is running hot")
 
-        if exhaustion_risk >= 0.42:
-            risk_score += 0.24
+        if exhaustion_risk >= 0.45:
+            risk_score += 0.28
             reasons.append("microstructure already shows exhaustion")
         elif dominant_exhaustion >= 0.60 or bias_exhausted:
-            risk_score += 0.18
+            risk_score += 0.20
             reasons.append("structure is already exhausted")
 
+        stop_hunt_risk = float(signal.metadata.get("stop_hunt_risk", 0.0) or 0.0)
+        if stop_hunt_risk >= 0.48:
+            risk_score += 0.20
+            reasons.append("stop-hunt risk is elevated")
+
         if setup_quality <= 0.35:
-            risk_score += 0.08
+            risk_score += 0.12
             reasons.append("setup quality is thin")
 
-        if late_entry_rate >= 0.34:
+        if candle_quality_score <= 0.22:
+            risk_score += 0.24
+            reasons.append("trigger candle quality is poor")
+        elif candle_quality_score <= 0.34:
+            risk_score += 0.14
+            reasons.append("trigger candle quality is weak")
+
+        if session_quality_score <= 0.32:
+            risk_score += 0.18
+            reasons.append("session quality is poor")
+        elif session_quality_score <= 0.45:
+            risk_score += 0.10
+            reasons.append("session quality is only mediocre")
+
+        if target_efficiency_score <= 0.18:
+            risk_score += 0.22
+            reasons.append("path to target is inefficient")
+        elif target_efficiency_score <= 0.30:
+            risk_score += 0.12
+            reasons.append("path to target is tight")
+
+        if impulse_age_bars >= 6:
+            risk_score += 0.22
+            reasons.append("setup is too old after the initial impulse")
+        elif impulse_age_bars >= 4:
+            risk_score += 0.12
+            reasons.append("setup is aging after the initial impulse")
+
+        if confirmation_needed:
+            risk_score += 0.10
+            reasons.append("recent pattern history suggests waiting for extra confirmation")
+
+        if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+            risk_score += 0.22
+            reasons.append("entry confirmation delay has not completed yet")
+        elif entry_confirmation_bars_required > 0 and entry_confirmation_count >= entry_confirmation_bars_required:
+            risk_score -= 0.04
+
+        if failed_opposite_move_confirmed:
+            risk_score -= 0.06
+
+        policy_min_setup_quality = float(regime_entry_policy.get("min_setup_quality", 0.0) or 0.0)
+        policy_min_candle_quality = float(regime_entry_policy.get("min_candle_quality", 0.0) or 0.0)
+        policy_max_extension = float(regime_entry_policy.get("max_extension_score", 99.0) or 99.0)
+        policy_min_target_efficiency = float(regime_entry_policy.get("min_target_efficiency", 0.0) or 0.0)
+        policy_max_impulse_age = int(regime_entry_policy.get("max_impulse_age_bars", 99) or 99)
+
+        if setup_quality < policy_min_setup_quality:
+            risk_score += 0.14
+            reasons.append("setup falls below regime-specific quality policy")
+        if candle_quality_score < policy_min_candle_quality:
+            risk_score += 0.12
+            reasons.append("trigger candle falls below regime-specific quality policy")
+        if extension_score > policy_max_extension:
+            risk_score += 0.16
+            reasons.append("entry exceeds regime-specific extension policy")
+        if target_efficiency_score < policy_min_target_efficiency:
+            risk_score += 0.12
+            reasons.append("target path falls below regime-specific efficiency policy")
+        if impulse_age_bars > policy_max_impulse_age:
+            risk_score += 0.12
+            reasons.append("setup is too old for the current regime policy")
+
+        if cluster_penalty >= 0.18:
+            risk_score += min(0.20, cluster_penalty)
+            reasons.append("similar setups have clustered too tightly")
+
+        if elite_pattern_rank <= 0.22 and int(recent_review.get("sample_count", 0) or 0) >= 5:
+            risk_score += 0.18
+            reasons.append("this setup family ranks poorly versus recent alternatives")
+        elif elite_pattern_rank >= 0.72 and int(recent_review.get("sample_count", 0) or 0) >= 5:
+            risk_score -= 0.06
+
+        entry_style = str(signal.metadata.get("playbook_entry_style") or "").strip().lower()
+        wants_retest = "retest" in entry_style or "pullback" in entry_style or bool(signal.metadata.get("retest_entry_preferred"))
+        if wants_retest and not (breakout_retest_ready or first_pullback_ready):
+            risk_score += 0.20
+            reasons.append("retest quality is not confirmed yet")
+
+        if signal.direction == "BUY" and liquidity_sweep_buy:
+            risk_score -= 0.05
+        elif signal.direction == "SELL" and liquidity_sweep_sell:
+            risk_score -= 0.05
+
+        if supportive_structure_distance > 0 and supportive_structure_distance <= 0.0018:
+            risk_score += 0.14
+            reasons.append("supportive structure is too close to anchor a durable invalidation stop")
+
+        if late_entry_rate >= 0.28:
+            risk_score += 0.08
+            reasons.append("recent similar setups have started to arrive late")
+        if late_entry_rate >= 0.38:
             risk_score += 0.12
             reasons.append("recent similar setups have been late")
         if late_entry_rate >= 0.45 and hard_loss_rate >= 0.30:
-            risk_score += 0.16
+            risk_score += 0.18
             reasons.append("recent similar setups are losing from late timing")
+        if late_entry_rate >= 0.42 and avg_rr_realized <= -0.20:
+            risk_score += 0.10
+            reasons.append("similar setups are failing to earn enough reward after entry")
+        if avg_quality_score <= 46.0 and hard_loss_rate >= 0.28:
+            risk_score += 0.08
+            reasons.append("recent execution quality for this setup family is poor")
 
-        hard_combo = directional_extension >= 0.80 and opposing_distance <= 0.0045 and (
-            volatility_ratio >= 1.45 or exhaustion_risk >= 0.42 or dominant_exhaustion >= 0.60 or bias_exhausted
-        )
-        learned_combo = late_entry_rate >= 0.45 and hard_loss_rate >= 0.30 and directional_extension >= 0.78
+        if broker_agreement_state in {"divergent", "severe_divergence"} and broker_spread_regime in {"stressed", "extreme", "wide"}:
+            hard_blocks.append("broker divergence and spread stress are both active")
+        if extension_score >= 1.25 and candle_quality_score <= 0.26:
+            hard_blocks.append("entry is extended and the trigger candle is weak")
+        if target_efficiency_score <= 0.15 and opposing_distance <= 0.0035:
+            hard_blocks.append("too little clean space remains to the target")
+        if impulse_age_bars >= 6 and directional_extension >= 0.74:
+            hard_blocks.append("setup is too old and already stretched")
+        if wants_retest and not breakout_retest_ready and not first_pullback_ready:
+            hard_blocks.append("breakout entry has not earned a clean retest or first pullback")
+        if directional_extension >= 0.82 and (
+            exhaustion_risk >= 0.45 or dominant_exhaustion >= 0.60 or bias_exhausted
+        ):
+            hard_blocks.append("extended entry is combining with exhaustion risk")
+        if stop_hunt_risk >= 0.48 and synthetic_depth_only:
+            hard_blocks.append("stop-hunt risk is elevated while only synthetic depth is available")
+        if directional_extension >= 0.82 and supportive_structure_distance > 0 and supportive_structure_distance <= 0.0018:
+            hard_blocks.append("late entry profile has poor structure distance")
+        if cross_asset_confidence >= 0.20 and cross_asset_alignment <= -0.20 and setup_quality <= 0.35:
+            hard_blocks.append("cross-asset conflict is present while setup quality is weak")
+        if broker_quote_quality_state in {"stale", "delayed"} and stop_hunt_risk >= 0.48:
+            hard_blocks.append("quote quality is stale while stop-hunt risk is elevated")
+        if blocked_recent_pattern and blocked_recent_pattern_reason:
+            hard_blocks.append(blocked_recent_pattern_reason)
+        if late_entry_rate >= 0.45 and hard_loss_rate >= 0.30 and directional_extension >= 0.74:
+            hard_blocks.append("recent pattern learning shows this entry shape keeps arriving too late")
+        if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+            hard_blocks.append("entry confirmation delay is still pending")
+        if pattern_family != "unknown" and elite_pattern_rank <= 0.12:
+            hard_blocks.append("pattern family ranks below elite threshold")
+        if cluster_penalty >= 0.26:
+            hard_blocks.append("trade clustering risk is too high")
+        if regime_entry_policy:
+            if setup_quality < float(regime_entry_policy.get("min_setup_quality", 0.0) or 0.0) and candle_quality_score <= float(
+                regime_entry_policy.get("min_candle_quality", 0.0) or 0.0
+            ):
+                hard_blocks.append("regime-specific entry policy rejects the setup")
 
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
         signal.metadata["late_entry_risk_reasons"] = list(reasons)
+        signal.metadata["execution_hard_blocks"] = list(hard_blocks)
         data["late_entry_risk"] = {
             "score": round(risk_score, 4),
             "directional_extension": round(directional_extension, 4),
             "opposing_distance": round(opposing_distance, 6),
+            "supportive_structure_distance": round(supportive_structure_distance, 6),
             "volatility_ratio": round(volatility_ratio, 4),
             "exhaustion_risk": round(exhaustion_risk, 4),
             "dominant_exhaustion": round(dominant_exhaustion, 4),
+            "stop_hunt_risk": round(stop_hunt_risk, 4),
             "late_entry_rate": round(late_entry_rate, 4),
             "hard_loss_rate": round(hard_loss_rate, 4),
+            "avg_rr_realized": round(avg_rr_realized, 4),
+            "avg_quality_score": round(avg_quality_score, 2),
+            "blocked_recent_pattern": blocked_recent_pattern,
+            "blocked_recent_pattern_reason": blocked_recent_pattern_reason,
+            "confirmation_needed": confirmation_needed,
+            "pattern_rank_score": round(elite_pattern_rank, 4),
+            "trade_cluster_penalty": round(cluster_penalty, 4),
+            "pattern_family": pattern_family,
+            "failed_opposite_move_confirmed": failed_opposite_move_confirmed,
+            "entry_confirmation_bars_required": int(entry_confirmation_bars_required),
+            "entry_confirmation_count": int(entry_confirmation_count),
+            "entry_confirmation_ready": entry_confirmation_ready,
+            "regime_entry_policy": regime_entry_policy,
+            "vwap_distance_atr": round(vwap_distance_atr, 4),
+            "session_quality_score": round(session_quality_score, 4),
+            "candle_quality_score": round(candle_quality_score, 4),
+            "extension_score": round(extension_score, 4),
+            "target_efficiency_score": round(target_efficiency_score, 4),
+            "impulse_age_bars": int(impulse_age_bars),
+            "breakout_retest_ready": breakout_retest_ready,
+            "first_pullback_ready": first_pullback_ready,
+            "liquidity_sweep_buy": liquidity_sweep_buy,
+            "liquidity_sweep_sell": liquidity_sweep_sell,
+            "hard_blocks": list(hard_blocks),
             "reasons": list(reasons),
         }
-        if risk_score >= 0.74 or hard_combo or learned_combo:
+        if hard_blocks:
+            direction_label = "buy" if signal.direction == "BUY" else "sell"
+            return self._kill_review(
+                signal,
+                step=STEP_EXECUTION,
+                name="execution",
+                reason=f"execution hard block on {direction_label}: {'; '.join(hard_blocks[:2])}",
+                conf_before=conf_before,
+                data=data,
+            )
+
+        if risk_score >= 0.58:
             direction_label = "buy" if signal.direction == "BUY" else "sell"
             summary = "; ".join(reasons[:3]) if reasons else "entry is already too late"
             return self._kill_review(
@@ -956,7 +1316,7 @@ class SignalDecisionEngine:
                 data=data,
             )
 
-        if risk_score >= 0.46:
+        if risk_score >= 0.52:
             notes.append("late_entry_risk")
         return True
 
@@ -1020,13 +1380,16 @@ class SignalDecisionEngine:
         adaptive_min_rr: float,
         data: Dict[str, Any],
         notes: List[str],
-    ) -> None:
+    ) -> bool:
         if adaptive_min_rr <= 0 or float(signal.risk_reward or 0.0) >= adaptive_min_rr:
-            return
+            return True
         rr_gap = max(0.0, adaptive_min_rr - float(signal.risk_reward or 0.0))
         signal.metadata["adaptive_rr_gap"] = round(rr_gap, 4)
         data["adaptive_rr_gap"] = round(rr_gap, 4)
+        data["min_required_rr"] = round(adaptive_min_rr, 4)
+        data["actual_rr"] = round(float(signal.risk_reward or 0.0), 4)
         notes.append("rr_below_policy")
+        return rr_gap <= 0.12
 
     @staticmethod
     def _execution_apply_scorecard(signal: Signal, context: Dict[str, Any], data: Dict[str, Any]) -> None:
@@ -1158,9 +1521,10 @@ class SignalDecisionEngine:
             )
 
         self._execution_apply_target_rr(signal, adaptive_target_rr_multiplier, has_managed_target_plan, data)
-        self._execution_entry_quality(signal, context.get("price_data"), data, notes)
 
         structure = context.get("market_structure") or signal.metadata.get("market_structure") or {}
+        self._execution_entry_quality(signal, context.get("price_data"), structure if isinstance(structure, dict) else {}, data, notes)
+
         structure = structure if isinstance(structure, dict) else {}
         if not self._execution_late_entry_risk_gate(
             signal,
@@ -1186,7 +1550,18 @@ class SignalDecisionEngine:
         if not self._execution_spread_gate(signal, spread, price, max_spread_pct, conf_before, data, notes):
             return False
 
-        self._execution_apply_rr_floor(signal, adaptive_min_rr, data, notes)
+        if not self._execution_apply_rr_floor(signal, adaptive_min_rr, data, notes):
+            return self._kill_review(
+                signal,
+                step=STEP_EXECUTION,
+                name="execution",
+                reason=(
+                    f"rr below adaptive floor: "
+                    f"{float(signal.risk_reward or 0.0):.2f} < {float(adaptive_min_rr):.2f}"
+                ),
+                conf_before=conf_before,
+                data=data,
+            )
 
         signal.metadata["execution_review_notes"] = list(notes)
         data["notes"] = list(notes)

@@ -19,6 +19,7 @@ from config.config import (
     IG_IDENTIFIER,
     IG_PASSWORD,
 )
+from services.market_hours_guard import build_market_status
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -537,14 +538,18 @@ class IGMarketBridge:
             market_status = str(snapshot.get("marketStatus") or resolved.get("market_status") or "").upper()
             market_open = market_status in {"TRADEABLE", "DEAL_NO_EDIT"}
             instrument_name = str((details.get("instrument") or {}).get("name") or resolved.get("instrument_name") or canonical)
-            return {
-                "asset": canonical,
-                "market_open": market_open,
-                "reason": f"{instrument_name} {market_status.lower() or 'status unavailable'} on IG",
-                "source": "IG",
-                "ig_epic": epic,
-                "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            }
+            return build_market_status(
+                canonical,
+                category=category,
+                provider_status={
+                    "asset": canonical,
+                    "market_open": market_open,
+                    "reason": f"{instrument_name} {market_status.lower() or 'status unavailable'} on IG",
+                    "source": "IG",
+                    "ig_epic": epic,
+                    "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                },
+            )
         except Exception:
             return None
 

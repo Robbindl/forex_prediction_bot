@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
+
+import numpy as np
 
 import pandas as pd
 
@@ -38,7 +40,7 @@ def _to_float_series(df: pd.DataFrame, column: str) -> Optional[pd.Series]:
 
 
 def _estimate_atr(df: pd.DataFrame, period: int = 14) -> float:
-    if df is None or len(df) < period + 1:
+    if len(df) < period + 1:
         return 0.0
     high = _to_float_series(df, "high")
     low = _to_float_series(df, "low")
@@ -46,18 +48,133 @@ def _estimate_atr(df: pd.DataFrame, period: int = 14) -> float:
     if high is None or low is None or close is None:
         return 0.0
     prev_close = close.shift(1)
-    tr = pd.concat(
+    tr_components = pd.concat(
         [
             high - low,
             (high - prev_close).abs(),
             (low - prev_close).abs(),
         ],
         axis=1,
-    ).max(axis=1)
+    )
+    tr = pd.Series(tr_components.max(axis=1), index=tr_components.index, dtype=float)
     try:
         return float(tr.tail(period).mean())
     except Exception:
         return 0.0
+
+
+def _estimate_vwap(df: pd.DataFrame, window: int = 30) -> float:
+    if len(df) < 5:
+        return 0.0
+    high = _to_float_series(df, "high")
+    low = _to_float_series(df, "low")
+    close = _to_float_series(df, "close")
+    if high is None or low is None or close is None:
+        return 0.0
+    volume = _to_float_series(df, "volume")
+    if volume is None:
+        volume = pd.Series(np.ones(len(df), dtype=float), index=df.index)
+    tail = df.tail(window)
+    typical = ((high.loc[tail.index] + low.loc[tail.index] + close.loc[tail.index]) / 3.0).astype(float)
+    vol = pd.Series(volume.loc[tail.index].abs().astype(float), index=tail.index, dtype=float)
+    vol = pd.Series(np.where(vol.to_numpy() == 0.0, np.nan, vol.to_numpy()), index=tail.index, dtype=float)
+    try:
+        weighted = float((typical * vol).sum())
+        vol_sum = float(vol.sum())
+        if np.isnan(weighted) or np.isnan(vol_sum) or vol_sum <= 0:
+            return float(typical.iloc[-1])
+        return float(weighted / vol_sum)
+    except Exception:
+        return 0.0
+
+
+def _session_quality(interval: str, atr_pct: float) -> tuple[str, float]:
+    london_intervals = {"5m", "15m", "30m", "1h"}
+    scalp_intervals = {"1m", "5m"}
+    if atr_pct >= 0.020:
+        return "chaotic", 0.26
+    if atr_pct <= 0.0018 and interval in scalp_intervals:
+        return "dead", 0.34
+    if atr_pct <= 0.0025 and interval in london_intervals:
+        return "quiet", 0.52
+    if 0.0025 < atr_pct <= 0.012:
+        return "active", 0.82
+    if 0.012 < atr_pct <= 0.020:
+        return "fast", 0.66
+    return "mixed", 0.58
+
+
+def _bar_metrics(
+    current: float,
+    bar_open: float,
+    bar_high: float,
+    bar_low: float,
+    prev_high: float,
+    prev_low: float,
+    atr_ref: float,
+) -> Dict[str, float]:
+    candle_range = max(bar_high - bar_low, 1e-9)
+    body = abs(current - bar_open)
+    upper_wick = max(0.0, bar_high - max(current, bar_open))
+    lower_wick = max(0.0, min(current, bar_open) - bar_low)
+    close_location = (current - bar_low) / candle_range
+    return {
+        "candle_range_atr": candle_range / max(atr_ref, 1e-9),
+        "body_ratio": body / candle_range,
+        "upper_wick_ratio": upper_wick / candle_range,
+        "lower_wick_ratio": lower_wick / candle_range,
+        "close_location": close_location,
+        "broke_prev_high": float(bar_high > prev_high),
+        "broke_prev_low": float(bar_low < prev_low),
+    }
+
+
+def _pattern_family(
+    trend_state: str,
+    breakout_retest_ready: bool,
+    first_pullback_ready: bool,
+    liquidity_sweep_buy: bool,
+    liquidity_sweep_sell: bool,
+    failed_opposite_move_confirmed: bool,
+) -> str:
+    if failed_opposite_move_confirmed:
+        return f"{trend_state}_failed_opposite_reclaim"
+    if breakout_retest_ready:
+        return f"{trend_state}_breakout_retest"
+    if first_pullback_ready:
+        return f"{trend_state}_first_pullback"
+    if liquidity_sweep_buy or liquidity_sweep_sell:
+        return f"{trend_state}_liquidity_sweep"
+    return f"{trend_state}_generic"
+
+
+def _regime_entry_policy(regime: str) -> Dict[str, float]:
+    if regime in {"trending_up", "trending_down"}:
+        return {
+            "min_setup_quality": 0.32,
+            "min_candle_quality": 0.34,
+            "max_extension_score": 1.28,
+            "min_target_efficiency": 0.26,
+            "max_impulse_age_bars": 5.0,
+            "confirmation_bars": 1.0,
+        }
+    if regime == "volatile":
+        return {
+            "min_setup_quality": 0.42,
+            "min_candle_quality": 0.42,
+            "max_extension_score": 1.05,
+            "min_target_efficiency": 0.36,
+            "max_impulse_age_bars": 4.0,
+            "confirmation_bars": 2.0,
+        }
+    return {
+        "min_setup_quality": 0.40,
+        "min_candle_quality": 0.38,
+        "max_extension_score": 1.00,
+        "min_target_efficiency": 0.34,
+        "max_impulse_age_bars": 4.0,
+        "confirmation_bars": 2.0,
+    }
 
 
 def _frame_state_from_score(score: float) -> str:
@@ -79,13 +196,14 @@ def _volatility_state(atr_pct: float) -> str:
 
 
 def _analyze_frame(interval: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
-    if df is None or len(df) < 30:
+    if len(df) < 30:
         return None
 
     close = _to_float_series(df, "close")
     high = _to_float_series(df, "high")
     low = _to_float_series(df, "low")
-    if close is None or high is None or low is None:
+    open_ = _to_float_series(df, "open")
+    if close is None or high is None or low is None or open_ is None:
         return None
 
     current = float(close.iloc[-1])
@@ -116,6 +234,8 @@ def _analyze_frame(interval: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     recent_window = min(20, len(df))
     recent_high = float(high.tail(recent_window).max())
     recent_low = float(low.tail(recent_window).min())
+    prev_window_high = float(high.iloc[-recent_window:-1].max()) if recent_window > 1 else recent_high
+    prev_window_low = float(low.iloc[-recent_window:-1].min()) if recent_window > 1 else recent_low
     support = recent_low
     resistance = recent_high
     distance_to_support = max(0.0, (current - support) / current)
@@ -165,6 +285,214 @@ def _analyze_frame(interval: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
             + (0.08 if vol_state in {"expansion", "extreme"} else 0.0)
         )
 
+    vwap = _estimate_vwap(df, window=min(36, len(df)))
+    vwap_distance = ((current - vwap) / atr_ref) if vwap > 0 else 0.0
+    session_label, session_quality = _session_quality(interval, atr_pct)
+
+    bar_high = float(high.iloc[-1])
+    bar_low = float(low.iloc[-1])
+    bar_open = float(open_.iloc[-1])
+    candle = _bar_metrics(
+        current=current,
+        bar_open=bar_open,
+        bar_high=bar_high,
+        bar_low=bar_low,
+        prev_high=prev_window_high,
+        prev_low=prev_window_low,
+        atr_ref=atr_ref,
+    )
+    close_location = float(candle["close_location"])
+    prev_close = float(close.iloc[-2]) if len(close) >= 2 else current
+    prev_bar_open = float(open_.iloc[-2]) if len(open_) >= 2 else prev_close
+    prev_bar_high = float(high.iloc[-2]) if len(high) >= 2 else bar_high
+    prev_bar_low = float(low.iloc[-2]) if len(low) >= 2 else bar_low
+    prev_close_location = (
+        (prev_close - prev_bar_low) / max(prev_bar_high - prev_bar_low, 1e-9)
+        if len(close) >= 2
+        else close_location
+    )
+
+    liquidity_sweep_buy = candle["broke_prev_low"] >= 1.0 and close_location >= 0.58
+    liquidity_sweep_sell = candle["broke_prev_high"] >= 1.0 and close_location <= 0.42
+    breakout_retest_ready = False
+    if trend_state == "trending_up":
+        breakout_retest_ready = bool(
+            bar_low <= prev_window_high + atr_ref * 0.18
+            and current >= prev_window_high
+            and close_location >= 0.55
+        )
+    elif trend_state == "trending_down":
+        breakout_retest_ready = bool(
+            bar_high >= prev_window_low - atr_ref * 0.18
+            and current <= prev_window_low
+            and close_location <= 0.45
+        )
+
+    impulse_window = min(9, len(close) - 1)
+    impulse_age_bars = 0
+    if impulse_window > 1:
+        ref_fast = fast.tail(impulse_window + 1).astype(float)
+        ref_close = close.tail(impulse_window + 1).astype(float)
+        for idx in range(len(ref_close) - 1, 0, -1):
+            aligned = (
+                ref_close.iloc[idx] >= ref_fast.iloc[idx]
+                if trend_state == "trending_up"
+                else ref_close.iloc[idx] <= ref_fast.iloc[idx]
+                if trend_state == "trending_down"
+                else False
+            )
+            if aligned:
+                impulse_age_bars += 1
+            else:
+                break
+
+    first_pullback_ready = False
+    if trend_state == "trending_up":
+        first_pullback_ready = bool(
+            pullback_score >= 0.38
+            and close_location >= 0.52
+            and upside_extension_fast <= 0.95
+            and impulse_age_bars <= 4
+        )
+    elif trend_state == "trending_down":
+        first_pullback_ready = bool(
+            abs(pullback_score) >= 0.38
+            and close_location <= 0.48
+            and downside_extension_fast <= 0.95
+            and impulse_age_bars <= 4
+        )
+
+    failed_opposite_move_confirmed = False
+    if trend_state == "trending_up":
+        failed_opposite_move_confirmed = bool(
+            prev_bar_low < prev_window_low
+            and prev_close_location <= 0.42
+            and bar_low >= prev_bar_low
+            and current > prev_close
+            and close_location >= 0.60
+        )
+    elif trend_state == "trending_down":
+        failed_opposite_move_confirmed = bool(
+            prev_bar_high > prev_window_high
+            and prev_close_location >= 0.58
+            and bar_high <= prev_bar_high
+            and current < prev_close
+            and close_location <= 0.40
+        )
+
+    candle_quality_score = 0.0
+    if trend_state == "trending_up":
+        candle_quality_score = _clip(
+            candle["body_ratio"] * 0.45
+            + close_location * 0.35
+            - candle["upper_wick_ratio"] * 0.30
+            - _clip(candle["candle_range_atr"] - 1.55, 0.0, 1.0) * 0.22,
+            0.0,
+            1.0,
+        )
+    elif trend_state == "trending_down":
+        candle_quality_score = _clip(
+            candle["body_ratio"] * 0.45
+            + (1.0 - close_location) * 0.35
+            - candle["lower_wick_ratio"] * 0.30
+            - _clip(candle["candle_range_atr"] - 1.55, 0.0, 1.0) * 0.22,
+            0.0,
+            1.0,
+        )
+    else:
+        candle_quality_score = _clip(
+            candle["body_ratio"] * 0.35
+            + (1.0 - abs(close_location - 0.5) * 2.0) * 0.20
+            - abs(vwap_distance) * 0.08,
+            0.0,
+            1.0,
+        )
+
+    extension_score = max(abs(vwap_distance) / 2.0, upside_extension_fast, downside_extension_fast)
+    target_efficiency = 0.0
+    if trend_state == "trending_up":
+        target_efficiency = _clip((distance_to_resistance * current) / max(atr_ref * 1.2, 1e-9), 0.0, 1.0)
+    elif trend_state == "trending_down":
+        target_efficiency = _clip((distance_to_support * current) / max(atr_ref * 1.2, 1e-9), 0.0, 1.0)
+
+    regime = _frame_state_from_score(trend_score)
+    entry_policy = _regime_entry_policy(regime)
+    confirmation_bars = int(entry_policy["confirmation_bars"])
+    setup_valid_now = bool(
+        candle_quality_score >= entry_policy["min_candle_quality"]
+        and extension_score <= entry_policy["max_extension_score"]
+        and target_efficiency >= entry_policy["min_target_efficiency"]
+        and impulse_age_bars <= int(entry_policy["max_impulse_age_bars"])
+        and (
+            breakout_retest_ready
+            or first_pullback_ready
+            or failed_opposite_move_confirmed
+            or liquidity_sweep_buy
+            or liquidity_sweep_sell
+        )
+    )
+    confirmation_window = min(max(confirmation_bars, 1), len(df))
+    confirmation_count = 0
+    if setup_valid_now:
+        confirmation_count = 1
+        for back in range(2, confirmation_window + 1):
+            idx = -back
+            hist_close = float(close.iloc[idx])
+            hist_fast = float(fast.iloc[idx])
+            hist_slow = float(slow.iloc[idx])
+            hist_atr_ref = max(atr_ref, hist_close * 0.001, 1e-9)
+            if trend_state == "trending_up":
+                hist_valid = bool(
+                    hist_close >= hist_slow
+                    and hist_close >= hist_fast - hist_atr_ref * 0.35
+                )
+            elif trend_state == "trending_down":
+                hist_valid = bool(
+                    hist_close <= hist_slow
+                    and hist_close <= hist_fast + hist_atr_ref * 0.35
+                )
+            else:
+                hist_valid = bool(abs(hist_close - hist_fast) <= hist_atr_ref * 0.75)
+            if hist_valid:
+                confirmation_count += 1
+            else:
+                break
+    confirmation_ready = bool(setup_valid_now and confirmation_count >= confirmation_bars)
+    elite_pattern_rank = 0.0
+    if setup_valid_now:
+        elite_pattern_rank = _clip(
+            setup_quality := (
+                abs(trend_score) * 0.22
+                + abs(pullback_score) * 0.18
+                + abs(breakout_score) * 0.18
+                + candle_quality_score * 0.16
+                + target_efficiency * 0.14
+                + session_quality * 0.08
+                + (0.12 if failed_opposite_move_confirmed else 0.0)
+                + (0.08 if breakout_retest_ready else 0.0)
+                + (0.06 if first_pullback_ready else 0.0)
+                + (0.05 if liquidity_sweep_buy or liquidity_sweep_sell else 0.0)
+                - min(0.18, extension_score * 0.10)
+            ),
+            0.0,
+            1.0,
+        )
+    cluster_penalty = 0.0
+    if impulse_age_bars >= 4:
+        cluster_penalty += 0.10
+    if breakout_retest_ready and first_pullback_ready:
+        cluster_penalty += 0.08
+    if liquidity_sweep_buy or liquidity_sweep_sell:
+        cluster_penalty += 0.04
+    pattern_family = _pattern_family(
+        trend_state=trend_state,
+        breakout_retest_ready=breakout_retest_ready,
+        first_pullback_ready=first_pullback_ready,
+        liquidity_sweep_buy=liquidity_sweep_buy,
+        liquidity_sweep_sell=liquidity_sweep_sell,
+        failed_opposite_move_confirmed=failed_opposite_move_confirmed,
+    )
+
     return {
         "interval": interval,
         "current_price": round(current, 6),
@@ -177,10 +505,42 @@ def _analyze_frame(interval: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         "resistance": round(resistance, 6),
         "distance_to_support": round(distance_to_support, 6),
         "distance_to_resistance": round(distance_to_resistance, 6),
+        "vwap": round(vwap, 6) if vwap > 0 else 0.0,
+        "vwap_distance_atr": round(vwap_distance, 4),
+        "session_quality_label": session_label,
+        "session_quality_score": round(session_quality, 4),
         "pullback_score": round(_clip(pullback_score), 4),
         "breakout_score": round(_clip(breakout_score), 4),
         "upside_exhaustion_score": round(_clip(upside_exhaustion), 4),
         "downside_exhaustion_score": round(_clip(downside_exhaustion), 4),
+        "candle_range_atr": round(float(candle["candle_range_atr"]), 4),
+        "candle_body_ratio": round(float(candle["body_ratio"]), 4),
+        "upper_wick_ratio": round(float(candle["upper_wick_ratio"]), 4),
+        "lower_wick_ratio": round(float(candle["lower_wick_ratio"]), 4),
+        "close_location": round(close_location, 4),
+        "candle_quality_score": round(candle_quality_score, 4),
+        "liquidity_sweep_buy": bool(liquidity_sweep_buy),
+        "liquidity_sweep_sell": bool(liquidity_sweep_sell),
+        "breakout_retest_ready": bool(breakout_retest_ready),
+        "first_pullback_ready": bool(first_pullback_ready),
+        "impulse_age_bars": int(impulse_age_bars),
+        "extension_score": round(_clip(extension_score, 0.0, 2.0), 4),
+        "target_efficiency_score": round(target_efficiency, 4),
+        "failed_opposite_move_confirmed": bool(failed_opposite_move_confirmed),
+        "entry_confirmation_bars_required": int(confirmation_bars),
+        "entry_confirmation_count": int(confirmation_count),
+        "entry_confirmation_ready": bool(confirmation_ready),
+        "pattern_family": pattern_family,
+        "elite_pattern_rank": round(elite_pattern_rank, 4),
+        "cluster_penalty": round(_clip(cluster_penalty, 0.0, 1.0), 4),
+        "regime_entry_policy": {
+            "min_setup_quality": round(entry_policy["min_setup_quality"], 4),
+            "min_candle_quality": round(entry_policy["min_candle_quality"], 4),
+            "max_extension_score": round(entry_policy["max_extension_score"], 4),
+            "min_target_efficiency": round(entry_policy["min_target_efficiency"], 4),
+            "max_impulse_age_bars": int(entry_policy["max_impulse_age_bars"]),
+            "confirmation_bars": int(entry_policy["confirmation_bars"]),
+        },
     }
 
 
@@ -243,6 +603,31 @@ class MarketStructureService:
             "resistance_levels": [primary.get("resistance")] if primary.get("resistance") is not None else [],
             "distance_to_support": primary.get("distance_to_support"),
             "distance_to_resistance": primary.get("distance_to_resistance"),
+            "vwap": primary.get("vwap"),
+            "vwap_distance_atr": primary.get("vwap_distance_atr"),
+            "session_quality_label": primary.get("session_quality_label", "unknown"),
+            "session_quality_score": primary.get("session_quality_score", 0.0),
+            "candle_quality_score": primary.get("candle_quality_score", 0.0),
+            "candle_range_atr": primary.get("candle_range_atr", 0.0),
+            "candle_body_ratio": primary.get("candle_body_ratio", 0.0),
+            "upper_wick_ratio": primary.get("upper_wick_ratio", 0.0),
+            "lower_wick_ratio": primary.get("lower_wick_ratio", 0.0),
+            "close_location": primary.get("close_location", 0.0),
+            "liquidity_sweep_buy": bool(primary.get("liquidity_sweep_buy")),
+            "liquidity_sweep_sell": bool(primary.get("liquidity_sweep_sell")),
+            "breakout_retest_ready": bool(primary.get("breakout_retest_ready")),
+            "first_pullback_ready": bool(primary.get("first_pullback_ready")),
+            "impulse_age_bars": int(primary.get("impulse_age_bars", 0) or 0),
+            "extension_score": primary.get("extension_score", 0.0),
+            "target_efficiency_score": primary.get("target_efficiency_score", 0.0),
+            "failed_opposite_move_confirmed": bool(primary.get("failed_opposite_move_confirmed")),
+            "entry_confirmation_bars_required": int(primary.get("entry_confirmation_bars_required", 0) or 0),
+            "entry_confirmation_count": int(primary.get("entry_confirmation_count", 0) or 0),
+            "entry_confirmation_ready": bool(primary.get("entry_confirmation_ready")),
+            "pattern_family": primary.get("pattern_family", "unknown"),
+            "elite_pattern_rank": primary.get("elite_pattern_rank", 0.0),
+            "cluster_penalty": primary.get("cluster_penalty", 0.0),
+            "regime_entry_policy": primary.get("regime_entry_policy", {}),
             "frame_details": details,
         }
 
@@ -272,6 +657,31 @@ class MarketStructureService:
             "resistance_levels": [],
             "distance_to_support": None,
             "distance_to_resistance": None,
+            "vwap": 0.0,
+            "vwap_distance_atr": 0.0,
+            "session_quality_label": "unknown",
+            "session_quality_score": 0.0,
+            "candle_quality_score": 0.0,
+            "candle_range_atr": 0.0,
+            "candle_body_ratio": 0.0,
+            "upper_wick_ratio": 0.0,
+            "lower_wick_ratio": 0.0,
+            "close_location": 0.0,
+            "liquidity_sweep_buy": False,
+            "liquidity_sweep_sell": False,
+            "breakout_retest_ready": False,
+            "first_pullback_ready": False,
+            "impulse_age_bars": 0,
+            "extension_score": 0.0,
+            "target_efficiency_score": 0.0,
+            "failed_opposite_move_confirmed": False,
+            "entry_confirmation_bars_required": 0,
+            "entry_confirmation_count": 0,
+            "entry_confirmation_ready": False,
+            "pattern_family": "unknown",
+            "elite_pattern_rank": 0.0,
+            "cluster_penalty": 0.0,
+            "regime_entry_policy": {},
         }
 
     @staticmethod
@@ -369,4 +779,3 @@ _service = MarketStructureService()
 
 def get_service() -> MarketStructureService:
     return _service
-

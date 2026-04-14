@@ -151,7 +151,16 @@ class TradingCore:
         return {"daily_trades": self.state.daily_trades, "daily_pnl": self.state.daily_pnl}
 
     @staticmethod
-    def _market_hours_status_fallback(category: str) -> Tuple[bool, str]:
+    def _market_hours_status_fallback(asset: str, category: str) -> Tuple[bool, str]:
+        try:
+            from services.market_hours_guard import build_market_status
+
+            status = build_market_status(asset, category)
+            if status and "market_open" in status:
+                return bool(status["market_open"]), str(status.get("reason", "market status"))
+        except Exception:
+            pass
+
         now_utc = datetime.now(tz=timezone.utc)
         wd = now_utc.weekday()
         hour = now_utc.hour
@@ -230,7 +239,7 @@ class TradingCore:
         if include_market_status:
             market_open, market_reason = self._market_hours_status(asset, category)
         else:
-            market_open, market_reason = self._market_hours_status_fallback(category)
+            market_open, market_reason = self._market_hours_status_fallback(asset, category)
 
         quality_ratio = max(
             0.0,
@@ -336,12 +345,16 @@ class TradingCore:
         stop_buffer_multiplier, target_rr_multiplier = self._execution_feedback_multipliers(
             execution_feedback_policy
         )
+        pos_meta = pos.get("metadata")
+        structure = pos_meta.get("market_structure") if isinstance(pos_meta, dict) else {}
+
         proposed_sl = self._resolve_stop_loss(
             entry_price=entry,
             direction=direction,
             category=category,
             atr=atr,
             stop_buffer_multiplier=stop_buffer_multiplier,
+            structure=structure if isinstance(structure, dict) else {},
         )
         effective_sl = self._tighten_stop_loss(
             current_stop_loss=current_sl,
@@ -349,8 +362,6 @@ class TradingCore:
             direction=direction,
             tighten_only=tighten_only,
         )
-        pos_meta = pos.get("metadata")
-        structure = pos_meta.get("market_structure") if isinstance(pos_meta, dict) else {}
         effective_tp = self._resolve_take_profit(
             entry_price=entry,
             stop_loss=effective_sl,
@@ -1409,10 +1420,16 @@ class TradingCore:
 
             status = get_market_status(asset, category=category)
             if status and "market_open" in status:
-                return bool(status["market_open"]), str(status.get("reason", "market status"))
+                try:
+                    from services.market_hours_guard import build_market_status
+
+                    normalized = build_market_status(asset, category, provider_status=status)
+                    return bool(normalized["market_open"]), str(normalized.get("reason", "market status"))
+                except Exception:
+                    return bool(status["market_open"]), str(status.get("reason", "market status"))
         except Exception:
             pass
-        return TradingCore._market_hours_status_fallback(category)
+        return TradingCore._market_hours_status_fallback(asset, category)
 
     # ── Internal — init ───────────────────────────────────────────────────────
 
@@ -1429,6 +1446,11 @@ class TradingCore:
             # to now and close any position whose SL or TP was breached while
             # the bot was offline. First breach chronologically wins.
             self._check_offline_sl_tp()
+            flattened = self._flatten_positions_before_close()
+            if flattened:
+                logger.info(
+                    f"[TradingCore] Pre-close flatten closed {flattened} position(s) during init"
+                )
 
             logger.info("[TradingCore] Playbook-native runtime active — ML registry load removed")
 
@@ -1485,6 +1507,49 @@ class TradingCore:
         except Exception as e:
             logger.error(f"[TradingCore] Position update error: {e}")
 
+    def _flatten_positions_before_close(self) -> int:
+        positions = list(self.state.get_open_positions() or [])
+        if not positions:
+            return 0
+
+        try:
+            from services.market_hours_guard import build_market_status
+        except Exception:
+            return 0
+
+        closable_trade_ids: List[Tuple[str, str]] = []
+        for pos in positions:
+            asset = str(pos.get("asset", "") or "")
+            category = str(pos.get("category", "") or "")
+            trade_id = str(pos.get("trade_id", "") or "")
+            if not trade_id or not asset:
+                continue
+            status = build_market_status(asset, category)
+            if bool(status.get("close_buffer_active")):
+                closable_trade_ids.append((trade_id, str(status.get("close_buffer_reason") or status.get("reason") or "")))
+
+        if not closable_trade_ids:
+            return 0
+
+        logger.info(
+            "[TradingCore] Pre-close flattening %d position(s): %s",
+            len(closable_trade_ids),
+            ", ".join(trade_id for trade_id, _reason in closable_trade_ids[:8]),
+        )
+
+        closed_count = 0
+        for trade_id, reason in closable_trade_ids:
+            try:
+                closed = self.close_position_manually(trade_id, reason="Pre-close flatten")
+                if closed is not None:
+                    closed_count += 1
+            except Exception as exc:
+                logger.warning(
+                    f"[TradingCore] Pre-close flatten failed for {trade_id}: {exc}"
+                    + (f" ({reason})" if reason else "")
+                )
+        return closed_count
+
     def _evaluate_signal_contexts(
         self,
         signal_ctx_pairs: List[Tuple[Signal, Dict[str, Any]]],
@@ -1536,6 +1601,9 @@ class TradingCore:
             )
 
         self._refresh_live_positions()
+        flattened = self._flatten_positions_before_close()
+        if flattened:
+            logger.info(f"[TradingCore] Pre-close flatten closed {flattened} position(s)")
 
         # Generate signals with per-asset contexts (Issues 2 & 9)
         signal_ctx_pairs = self._generate_signals()
@@ -2023,6 +2091,7 @@ class TradingCore:
         category: str,
         atr: float,
         stop_buffer_multiplier: float,
+        structure: Optional[Dict[str, Any]] = None,
     ) -> float:
         if self._risk_manager is not None:
             scaled_stop_fn = getattr(self._risk_manager, "get_stop_loss_scaled", None)
@@ -2036,6 +2105,7 @@ class TradingCore:
                         category,
                         atr=atr,
                         distance_multiplier=stop_buffer_multiplier,
+                        structure=structure if isinstance(structure, dict) else {},
                     )
                     if isinstance(scaled_stop, (int, float)):
                         stop_loss = float(scaled_stop)
@@ -2367,6 +2437,7 @@ class TradingCore:
             category=category,
             atr=atr,
             stop_buffer_multiplier=stop_buffer_multiplier,
+            structure=structure if isinstance(structure, dict) else {},
         )
         take_profit = self._resolve_take_profit(
             entry_price=entry_price,
@@ -2451,6 +2522,7 @@ class TradingCore:
         *,
         atr: float,
         distance_multiplier: float,
+        structure: Dict[str, Any],
     ) -> Any:
         return scaled_stop_fn(
             entry,
@@ -2458,6 +2530,7 @@ class TradingCore:
             category,
             atr=atr,
             distance_multiplier=distance_multiplier,
+            structure=structure,
         )
 
     @staticmethod
@@ -3855,7 +3928,14 @@ class TradingCore:
             pass
         return exit_price, pnl
 
-    def _finalize_manual_close(self, closed: Dict[str, Any], pnl: float, trade_id: str) -> None:
+    def _finalize_manual_close(
+        self,
+        closed: Dict[str, Any],
+        pnl: float,
+        trade_id: str,
+        *,
+        reason: str = "Manual Close",
+    ) -> None:
         if self._paper_trader:
             with self._paper_trader._lock:
                 self._paper_trader.open_positions.pop(trade_id, None)
@@ -3865,7 +3945,7 @@ class TradingCore:
             cooldown_minutes = self._resolve_post_close_cooldown_minutes(closed)
             self.state.set_cooldown(canonical, cooldown_minutes)
             logger.info(
-                f"[TradingCore] Manual close — set cooldown {cooldown_minutes}m "
+                f"[TradingCore] {reason} — set cooldown {cooldown_minutes}m "
                 f"for {canonical}"
             )
         except Exception as e:
@@ -3889,10 +3969,10 @@ class TradingCore:
             trade_id=trade_id,
             asset=closed.get("asset", ""),
             pnl=round(pnl, 4),
-            reason="Manual Close",
+            reason=reason,
         )
 
-    def close_position_manually(self, trade_id: str) -> Optional[Dict]:
+    def close_position_manually(self, trade_id: str, *, reason: str = "Manual Close") -> Optional[Dict]:
         pos = self.state.get_open_position(trade_id)
         if not pos:
             return None
@@ -3904,14 +3984,14 @@ class TradingCore:
         closed = self.state.close_position(
             trade_id,
             exit_price,
-            "Manual Close",
+            reason,
             pnl,
             extra_updates=self._manual_close_exit_updates(pos, entry, exit_price),
         )
         if not closed:
             return None
 
-        self._finalize_manual_close(closed, pnl, trade_id)
+        self._finalize_manual_close(closed, pnl, trade_id, reason=reason)
         return closed
 
     def __repr__(self) -> str:

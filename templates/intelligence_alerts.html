@@ -374,6 +374,41 @@ async function fetchIntelligenceOverview(){
   return d;
 }
 
+function journalDecision(journal){
+  return String(journal?.final_policy_decision || journal?.decision || journal?.final_decision || '').toUpperCase();
+}
+function journalReason(journal){
+  return String(journal?.final_policy_reason || journal?.kill_reason || journal?.reason || journal?.killed_by || '').trim();
+}
+function journalReviewNotes(journal){
+  return [journal?.market_review_notes, journal?.execution_review_notes, journal?.review_notes, journal?.operator_notes].filter(Boolean).join(' · ');
+}
+function journalGateType(journal){
+  const reason = journalReason(journal).toLowerCase();
+  if(/confirm|confirmation|retest|pullback/.test(reason)) return 'Blocked by confirmation';
+  if(/overextend|extension/.test(reason)) return 'Overextended';
+  if(/quality|candle|session|target/.test(reason)) return 'Weak quality';
+  if(/regime|policy/.test(reason)) return 'Regime blocked';
+  if(/cluster/.test(reason)) return 'Cluster blocked';
+  return journalDecision(journal) === 'PASS' || journalDecision(journal) === 'SURVIVED' ? 'Actionable' : 'Other';
+}
+function journalActionable(journal){
+  const decision = journalDecision(journal);
+  return decision === 'PASS' || decision === 'SURVIVED';
+}
+function journalActionabilityScore(journal){
+  const raw = Number(journal?.final_policy_score || 0);
+  let score = Number.isFinite(raw) ? (raw <= 1 ? raw * 100 : raw) : 0;
+  const gate = journalGateType(journal);
+  if(journalActionable(journal)) score += 8;
+  if(gate === 'Blocked by confirmation') score -= 20;
+  else if(gate === 'Overextended') score -= 18;
+  else if(gate === 'Weak quality') score -= 16;
+  else if(gate === 'Regime blocked') score -= 22;
+  else if(gate === 'Cluster blocked') score -= 14;
+  return Math.max(0, Math.min(100, score));
+}
+
 function renderAlerts() {
   const filtered = activeFilter === 'all' ? allAlerts : allAlerts.filter(a => a.priority === activeFilter);
   if (!filtered.length) { document.getElementById('alertFeed').innerHTML = '<div class="empty">No ' + (activeFilter === 'all' ? '' : activeFilter + ' ') + 'alerts</div>'; return; }
@@ -418,16 +453,25 @@ async function loadJournal() {
     const status = overview.status || {};
     const diagnostics = status.signal_diagnostics || {};
     document.getElementById('journalBadge').textContent = journals.length + ' signals';
-    const executed = journals.filter(j => j.decision === 'SURVIVED').length;
-    const rejected = Math.max(0, journals.length - executed);
+    const actionableCount = journals.filter(journalActionable).length;
+    const rejected = Math.max(0, journals.length - actionableCount);
+    const confirmationBlockedCount = journals.filter(j => journalGateType(j) === 'Blocked by confirmation').length;
+    const qualityBlockedCount = journals.filter(j => journalGateType(j) === 'Weak quality' || journalGateType(j) === 'Overextended').length;
+    const regimeBlockedCount = journals.filter(j => journalGateType(j) === 'Regime blocked').length;
+    const clusterBlockedCount = journals.filter(j => journalGateType(j) === 'Cluster blocked').length;
+    const leadJournal = journals.slice().sort((a, b) => journalActionabilityScore(b) - journalActionabilityScore(a))[0] || null;
+    const leadReason = leadJournal ? journalReason(leadJournal) : '';
+    const leadNotes = leadJournal ? journalReviewNotes(leadJournal) : '';
+    const leadGate = leadJournal ? journalGateType(leadJournal) : 'Idle';
+    const leadScore = leadJournal ? journalActionabilityScore(leadJournal) : 0;
     const sourceJournal = journals.filter(j => Number.isFinite(j.real_sources_valid));
     const avgSources = sourceJournal.length
       ? (sourceJournal.reduce((sum, j) => sum + Number(j.real_sources_valid || 0), 0) / sourceJournal.length).toFixed(1)
       : '—';
-    document.getElementById('oExecuted').textContent = executed;
+    document.getElementById('oExecuted').textContent = actionableCount;
     document.getElementById('oRejected').textContent = rejected;
     document.getElementById('oSources').textContent = avgSources === '—' ? '—' : avgSources;
-    document.getElementById('outcomeBadge').textContent = journals.length ? `${executed} live / ${rejected} rejected` : 'No recent signals';
+    document.getElementById('outcomeBadge').textContent = journals.length ? `${actionableCount} actionable / ${rejected} blocked` : 'No recent signals';
     const fragileCount = Number(diagnostics.broker_fragile_count || 0);
     const trueDepthCount = Number(diagnostics.true_depth_count || 0);
     const syntheticDepthCount = Number(diagnostics.synthetic_depth_count || 0);
@@ -448,10 +492,22 @@ async function loadJournal() {
         klass: trueDepthCount ? 'gn' : syntheticDepthCount ? 'am' : 'cy',
       },
       {
-        kicker: 'Pattern',
-        value: `${conflictCount}/${blockCount}`,
-        note: blockCount ? 'Recent pattern learning is actively blocking repeated weak setups' : 'Pattern memory is observing, not blocking',
-        klass: conflictCount || blockCount ? 'rd' : 'gn',
+        kicker: 'Confirmation',
+        value: `${confirmationBlockedCount}`,
+        note: confirmationBlockedCount ? 'Entries are still waiting on confirmation bars or reclaim proof' : 'No confirmation drag is active in the journal',
+        klass: confirmationBlockedCount ? 'am' : 'gn',
+      },
+      {
+        kicker: 'Quality',
+        value: `${qualityBlockedCount}`,
+        note: qualityBlockedCount ? 'Weak candle, session, target, or overextension filters are active' : 'Quality filters are not the main blocker right now',
+        klass: qualityBlockedCount ? 'rd' : 'gn',
+      },
+      {
+        kicker: 'Policy',
+        value: `${regimeBlockedCount}/${clusterBlockedCount}`,
+        note: regimeBlockedCount || clusterBlockedCount ? 'Regime policy and cluster suppression are visible in the reject mix' : 'Policy layers are not dominating the journal',
+        klass: regimeBlockedCount || clusterBlockedCount ? 'rd' : 'gn',
       },
     ].map(item => `
       <div class="outcome-card">
@@ -471,14 +527,14 @@ async function loadJournal() {
       channelCounts[key] = (channelCounts[key] || 0) + 1;
     });
     const leadChannel = Object.entries(channelCounts).sort((a,b) => b[1] - a[1])[0];
-    const posture = priorityCounts.CRITICAL ? 'Act now' : priorityCounts.HIGH ? 'Watch closely' : journals.length ? 'Routine review' : 'Quiet';
-    const postureClass = priorityCounts.CRITICAL ? 'rd' : priorityCounts.HIGH ? 'am' : journals.length ? 'gn' : 'cy';
+    const posture = actionableCount ? 'Actionable' : journals.length ? 'Blocked' : 'Quiet';
+    const postureClass = actionableCount ? 'gn' : journals.length ? 'am' : 'cy';
     document.getElementById('actionBadge').textContent = posture;
     document.getElementById('actionGrid').innerHTML = [
       {
         kicker: 'Posture',
         value: posture,
-        note: priorityCounts.CRITICAL ? `${priorityCounts.CRITICAL} critical alerts demand immediate attention` : priorityCounts.HIGH ? `${priorityCounts.HIGH} high-priority alerts are active` : 'No high-urgency alert stack right now',
+        note: actionableCount ? `${actionableCount} actionable journals survived elite-entry rules` : 'No journal entries cleared the entry-quality stack',
         klass: postureClass,
       },
       {
@@ -492,6 +548,12 @@ async function loadJournal() {
         value: `${fragileCount + conflictCount + blockCount}`,
         note: fragileCount || conflictCount || blockCount ? `${fragileCount} broker · ${conflictCount} cross · ${blockCount} pattern` : 'The review stack is not showing strong drag right now',
         klass: fragileCount || conflictCount || blockCount ? 'rd' : 'gn',
+      },
+      {
+        kicker: 'Actionable Mix',
+        value: `${actionableCount}/${rejected}`,
+        note: `${confirmationBlockedCount} confirmation · ${qualityBlockedCount} quality · ${regimeBlockedCount + clusterBlockedCount} policy`,
+        klass: rejected ? 'am' : 'gn',
       },
     ].map(item => `
       <div class="outcome-card">
@@ -508,39 +570,39 @@ async function loadJournal() {
     const leadAlert = sortedAlerts[0] || null;
     const leadEvent = leadAlert?.event || {};
     const leadAsset = leadEvent.asset || leadEvent.symbol || leadEvent.label || leadEvent.narrative || '—';
-    const actionability = leadAlert ? (String(leadAlert.priority || '').toUpperCase() === 'CRITICAL' ? 90 : String(leadAlert.priority || '').toUpperCase() === 'HIGH' ? 72 : String(leadAlert.priority || '').toUpperCase() === 'MEDIUM' ? 55 : 35) : 0;
-    document.getElementById('actionabilityBadge').textContent = leadAlert ? `${actionability}` : 'Idle';
-    document.getElementById('actionabilityPanel').innerHTML = leadAlert ? `
+    const actionability = leadJournal ? leadScore : (leadAlert ? (String(leadAlert.priority || '').toUpperCase() === 'CRITICAL' ? 90 : String(leadAlert.priority || '').toUpperCase() === 'HIGH' ? 72 : String(leadAlert.priority || '').toUpperCase() === 'MEDIUM' ? 55 : 35) : 0);
+    document.getElementById('actionabilityBadge').textContent = leadJournal ? `${Math.round(actionability)}` : leadAlert ? `${actionability}` : 'Idle';
+    document.getElementById('actionabilityPanel').innerHTML = (leadJournal || leadAlert) ? `
       <div class="outcome-grid">
         <div class="outcome-card">
-          <div class="outcome-kicker">Lead alert</div>
-          <div class="outcome-value ${actionability >= 70 ? 'rd' : actionability >= 50 ? 'am' : 'cy'}">${actionability}</div>
-          <div class="outcome-note">${leadAlert.channel || 'Unknown'} · ${leadAlert.priority || 'LOW'} priority</div>
+          <div class="outcome-kicker">Lead decision</div>
+          <div class="outcome-value ${leadJournal ? (actionability >= 70 ? 'gn' : actionability >= 50 ? 'am' : 'cy') : (actionability >= 70 ? 'rd' : actionability >= 50 ? 'am' : 'cy')}">${leadJournal ? Math.round(actionability) : actionability}</div>
+          <div class="outcome-note">${leadJournal ? `${journalDecision(leadJournal) || 'UNKNOWN'} · ${leadGate}` : `${leadAlert.channel || 'Unknown'} · ${leadAlert.priority || 'LOW'} priority`}</div>
         </div>
         <div class="outcome-card">
           <div class="outcome-kicker">Current posture</div>
           <div class="outcome-value ${postureClass}">${posture}</div>
-          <div class="outcome-note">${leadAsset}</div>
+          <div class="outcome-note">${leadJournal ? (leadReason || 'No final policy reason published') : leadAsset}</div>
         </div>
         <div class="outcome-card">
-          <div class="outcome-kicker">Alert load</div>
-          <div class="outcome-value cy">${allAlerts.length}</div>
-          <div class="outcome-note">${priorityCounts.CRITICAL} critical · ${priorityCounts.HIGH} high</div>
+          <div class="outcome-kicker">Review notes</div>
+          <div class="outcome-value cy">${leadJournal ? (leadNotes ? 'Live' : '—') : allAlerts.length}</div>
+          <div class="outcome-note">${leadJournal ? (leadNotes || 'No review notes published') : `${priorityCounts.CRITICAL} critical · ${priorityCounts.HIGH} high`}</div>
         </div>
       </div>` : '<div class="empty">No actionable alert stack right now.</div>';
 
-    document.getElementById('mattersBadge').textContent = leadAlert ? (leadAlert.priority || 'Live') : 'Quiet';
-    document.getElementById('mattersPanel').innerHTML = leadAlert ? `
+    document.getElementById('mattersBadge').textContent = leadJournal ? leadGate : (leadAlert ? (leadAlert.priority || 'Live') : 'Quiet');
+    document.getElementById('mattersPanel').innerHTML = (leadJournal || leadAlert) ? `
       <div class="outcome-grid">
         <div class="outcome-card">
           <div class="outcome-kicker">Why it matters</div>
-          <div class="outcome-value ${postureClass}" style="font-size:18px">${leadAsset}</div>
-          <div class="outcome-note">${(leadAlert.message || leadAlert.channel || 'Lead alert').replace(/[*_]/g,' ').slice(0,160)}</div>
+          <div class="outcome-value ${postureClass}" style="font-size:18px">${leadJournal ? leadGate : leadAsset}</div>
+          <div class="outcome-note">${leadJournal ? (leadReason || 'No final decision reason published') : (leadAlert.message || leadAlert.channel || 'Lead alert').replace(/[*_]/g,' ').slice(0,160)}</div>
         </div>
         <div class="outcome-card">
           <div class="outcome-kicker">Desk read</div>
-          <div class="outcome-value ${fragileCount || conflictCount || blockCount ? 'am' : 'gn'}" style="font-size:18px">${fragileCount || conflictCount || blockCount ? 'Review drag' : 'Clean channel'}</div>
-          <div class="outcome-note">${fragileCount || conflictCount || blockCount ? `${fragileCount} broker · ${conflictCount} cross · ${blockCount} pattern drag` : 'The review stack is not heavily resisting this alert flow.'}</div>
+          <div class="outcome-value ${fragileCount || conflictCount || blockCount || confirmationBlockedCount || qualityBlockedCount || regimeBlockedCount || clusterBlockedCount ? 'am' : 'gn'}" style="font-size:18px">${fragileCount || conflictCount || blockCount || confirmationBlockedCount || qualityBlockedCount || regimeBlockedCount || clusterBlockedCount ? 'Review drag' : 'Clean channel'}</div>
+          <div class="outcome-note">${leadJournal ? (leadNotes || 'No review notes published') : (fragileCount || conflictCount || blockCount ? `${fragileCount} broker · ${conflictCount} cross · ${blockCount} pattern drag` : 'The review stack is not heavily resisting this alert flow.')}</div>
         </div>
       </div>` : '<div class="empty">No lead alert to translate yet.</div>';
 
@@ -572,11 +634,12 @@ async function loadJournal() {
       .replace(/\b\w/g, ch => ch.toUpperCase());
     const html = journals.slice(0,15).map(j => {
       const entries  = j.entries || [];
-      const survived = j.decision === 'SURVIVED';
+      const survived = journalActionable(j);
       const sourcesValid = Number.isFinite(j.real_sources_valid) ? j.real_sources_valid : null;
       const sourcesRequired = Number.isFinite(j.real_sources_required) ? j.real_sources_required : null;
-      const finalPolicy = j.final_policy_decision || '';
+      const finalPolicy = journalDecision(j);
       const finalScore = Number.isFinite(j.final_policy_score) ? Number(j.final_policy_score).toFixed(3) : '';
+      const gateType = journalGateType(j);
       const killedBy = j.killed_by || '';
       const opportunityScore = Number.isFinite(j.opportunity_score) ? Number(j.opportunity_score).toFixed(3) : '';
       const opportunityRank = Number.isFinite(j.opportunity_rank) ? Number(j.opportunity_rank) : null;
@@ -586,13 +649,15 @@ async function loadJournal() {
       const topPositiveValue = Number.isFinite(j.top_positive_factor_value) ? Number(j.top_positive_factor_value).toFixed(2) : '';
       const topNegativeFactor = j.top_negative_factor ? formatStepLabel(j.top_negative_factor) : '';
       const topNegativeValue = Number.isFinite(j.top_negative_factor_value) ? Number(j.top_negative_factor_value).toFixed(2) : '';
-      const reason = esc(j.final_policy_reason || j.kill_reason || '');
+      const reason = esc(journalReason(j));
+      const notes = esc(journalReviewNotes(j));
       const steps = entries.filter(e => (e.layer > 0) || e.name).map(e =>
         `<div class="j-layer ${stepClass(e.decision)}" title="${esc(e.reason||'')}">${esc(formatStepLabel(e.name).slice(0,12))}</div>`
       ).join('');
       const chips = [
         sourcesValid !== null && sourcesRequired !== null ? `<div class="j-chip">Sources ${sourcesValid}/${sourcesRequired}</div>` : '',
-        finalPolicy ? `<div class="j-chip ${finalPolicy === 'PASS' ? 'j-chip-good' : 'j-chip-bad'}">Final ${esc(finalPolicy)}</div>` : '',
+        finalPolicy ? `<div class="j-chip ${finalPolicy === 'PASS' || finalPolicy === 'SURVIVED' ? 'j-chip-good' : 'j-chip-bad'}">Final ${esc(finalPolicy)}</div>` : '',
+        gateType ? `<div class="j-chip ${gateType === 'Actionable' ? 'j-chip-good' : 'j-chip-bad'}">${esc(gateType)}</div>` : '',
         finalScore ? `<div class="j-chip">Score ${finalScore}</div>` : '',
         opportunityScore ? `<div class="j-chip">Opportunity ${opportunityScore}</div>` : '',
         opportunityRank !== null ? `<div class="j-chip">Rank #${opportunityRank}</div>` : '',
@@ -610,6 +675,7 @@ async function loadJournal() {
         <div class="j-layers">${steps}</div>
         ${chips ? `<div class="j-meta">${chips}</div>` : ''}
         ${reason ? `<div class="j-note">${reason}</div>` : ''}
+        ${notes ? `<div class="j-note">${notes}</div>` : ''}
       </div>`;
     }).join('');
     document.getElementById('journalFeed').innerHTML = html;

@@ -56,6 +56,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .mini-chip.ok{background:rgba(0,208,132,.12);color:var(--gr)}
 .mini-chip.warn{background:rgba(255,165,0,.15);color:var(--am)}
 .mini-chip.bad{background:rgba(255,69,96,.12);color:var(--rd)}
+.mini-chip.info{background:rgba(41,121,255,.14);color:var(--bl)}
 .pulse-label{font-size:11px;color:var(--tx2)}
 
 /* PANELS */
@@ -67,14 +68,30 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .panel-body{padding:12px 16px}
 
 /* SIGNAL CARDS */
-.sig-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.8)}
+.sig-row{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid rgba(30,38,53,.8)}
 .sig-row:last-child{border:none}
 .sig-dir{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:.5px;flex-shrink:0}
 .sig-buy{background:rgba(0,208,132,.15);color:var(--gr)}.sig-sell{background:rgba(255,69,96,.15);color:var(--rd)}
 .sig-asset{font-size:13px;font-weight:600;flex:1}
-.sig-conf{font-size:12px}.sig-meta{font-size:11px;color:var(--tx3)}
+.sig-conf{font-size:12px}.sig-meta{font-size:11px;color:var(--tx3);margin-top:2px}
 .conf-bar-mini{width:60px;height:3px;background:rgba(255,255,255,.07);border-radius:2px;overflow:hidden;margin-top:3px}
 .cbm-fill{height:100%;border-radius:2px}
+.status-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.45px;text-transform:uppercase}
+.status-pill.ready{background:rgba(0,208,132,.12);color:var(--gr)}
+.status-pill.waiting{background:rgba(255,165,0,.14);color:var(--am)}
+.status-pill.blocked{background:rgba(255,69,96,.12);color:var(--rd)}
+.status-pill.info{background:rgba(41,121,255,.12);color:var(--bl)}
+.status-pill.muted{background:rgba(255,255,255,.06);color:var(--tx2)}
+.note-callout{margin-top:6px;padding:7px 9px;border-radius:8px;background:rgba(255,255,255,.03);border:1px solid rgba(38,48,69,.9);font-size:11px;line-height:1.45;color:var(--tx2)}
+.note-callout.warn{background:rgba(255,165,0,.07);border-color:rgba(255,165,0,.18)}
+.note-callout.bad{background:rgba(255,69,96,.07);border-color:rgba(255,69,96,.18)}
+.note-callout.ok{background:rgba(0,208,132,.06);border-color:rgba(0,208,132,.18)}
+.elite-chip-row{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+.elite-chip{padding:2px 7px;border-radius:999px;font-size:10px;background:var(--s3);color:var(--tx2)}
+.elite-chip.ok{background:rgba(0,208,132,.12);color:var(--gr)}
+.elite-chip.warn{background:rgba(255,165,0,.14);color:var(--am)}
+.elite-chip.bad{background:rgba(255,69,96,.12);color:var(--rd)}
+.elite-chip.info{background:rgba(41,121,255,.13);color:var(--bl)}
 
 /* SENTIMENT GAUGE */
 .gauge-wrap{padding:16px;display:flex;flex-direction:column;align-items:center}
@@ -92,12 +109,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .pnl-pos{color:var(--gr);font-weight:600}.pnl-neg{color:var(--rd);font-weight:600}
 
 /* WHALE ACTIVITY */
-.whale-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.5)}
+.whale-item{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.5)}
 .whale-item:last-child{border:none}
 .whale-icon{font-size:20px;flex-shrink:0}
 .whale-info{flex:1}
 .whale-title{font-size:12px;font-weight:600}
-.whale-meta{font-size:11px;color:var(--tx3);margin-top:1px}
+.whale-meta{font-size:11px;color:var(--tx3);margin-top:1px;line-height:1.45}
 .whale-amount{font-size:13px;font-weight:700;color:var(--cy);white-space:nowrap}
 .pulse-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .pulse-card{background:var(--s2);border-radius:8px;padding:10px 12px}
@@ -163,25 +180,20 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .metric-card,.panel{animation:fadeUp .3s ease both}
 
 /* Scrollable panel bodies */
-#signalsPanel{max-height:300px;overflow-y:auto}
+#signalsPanel{max-height:320px;overflow-y:auto}
 #whalePanel{max-height:300px;overflow-y:auto}
 .pos-table-wrap{max-height:none;overflow-y:visible}
 
 /* ── MOBILE HAMBURGER & SIDEBAR OVERLAY ─────────────────────────────── */
-.hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;
-  width:36px;height:36px;cursor:pointer;padding:6px;border-radius:6px;
-  background:transparent;border:none;flex-shrink:0}
+.hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;width:36px;height:36px;cursor:pointer;padding:6px;border-radius:6px;background:transparent;border:none;flex-shrink:0}
 .hamburger span{display:block;height:2px;background:var(--tx);border-radius:2px;transition:.25s}
 .hamburger.open span:nth-child(1){transform:translateY(7px) rotate(45deg)}
 .hamburger.open span:nth-child(2){opacity:0}
 .hamburger.open span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
-.sb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
-  z-index:49;backdrop-filter:blur(2px)}
+.sb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:49;backdrop-filter:blur(2px)}
 @media(max-width:768px){
   .hamburger{display:flex}
-  .sidebar{position:fixed;left:-240px;top:0;height:100vh;z-index:50;
-    transition:left .25s cubic-bezier(.4,0,.2,1);width:240px;
-    box-shadow:4px 0 24px rgba(0,0,0,.5);overflow-y:auto}
+  .sidebar{position:fixed;left:-240px;top:0;height:100vh;z-index:50;transition:left .25s cubic-bezier(.4,0,.2,1);width:240px;box-shadow:4px 0 24px rgba(0,0,0,.5);overflow-y:auto}
   .sidebar.open{left:0}
   .sb-overlay.open{display:block}
   .topbar{padding:0 12px}
@@ -199,8 +211,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 </head>
 <body>
 <div class="layout">
-  <!-- SIDEBAR -->
-    <nav class="sidebar">
+  <nav class="sidebar">
     <div class="sb-logo">
       <div class="sb-logo-icon">R</div>
       <div class="sb-logo-text">Robbie<span>Trading Platform</span></div>
@@ -222,8 +233,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     </div>
   </nav>
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
-
-  <!-- MAIN -->
   <div class="main">
     <div class="topbar">
       <button class="hamburger" id="menuBtn" aria-label="Menu" onclick="toggleSidebar()"><span></span><span></span><span></span></button>
@@ -236,7 +245,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     </div>
 
     <div class="content">
-      <!-- Row 1: 6 metric cards -->
       <div class="metric-card mc-green" style="animation-delay:.05s">
         <div class="mc-label">Balance</div>
         <div class="mc-value gn" id="mBal">—</div>
@@ -277,6 +285,20 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
+      <div class="panel panel-full" style="animation-delay:.225s">
+        <div class="panel-header">
+          <span class="panel-title">🧠 Elite Entry Summary</span>
+          <span class="panel-badge" id="eliteSummaryBadge">Loading…</span>
+        </div>
+        <div class="panel-body">
+          <div class="board-grid" id="eliteSummaryPanel">
+            <div class="board-card"><div class="board-title">Loading</div><div class="board-value mu">—</div><div class="board-note">Loading…</div></div>
+            <div class="board-card"><div class="board-title">Loading</div><div class="board-value mu">—</div><div class="board-note">Loading…</div></div>
+            <div class="board-card"><div class="board-title">Loading</div><div class="board-value mu">—</div><div class="board-note">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
       <div class="panel panel-full" style="animation-delay:.23s">
         <div class="panel-header">
           <span class="panel-title">🚫 Why Not Traded</span>
@@ -311,7 +333,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
-      <!-- Row 2: signals + positions + sentiment + whale -->
       <div class="panel panel-wide" style="animation-delay:.25s">
         <div class="panel-header" style="justify-content:space-between">
           <div style="display:flex;align-items:center;gap:8px">
@@ -373,7 +394,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
-      <!-- Row 3: open positions full width -->
       <div class="panel panel-full" style="animation-delay:.4s">
         <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between">
           <div style="display:flex;align-items:center;gap:8px">
@@ -381,7 +401,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
             <span class="panel-badge" id="posCount">0</span>
             <a href="/risk-dashboard" style="font-size:11px;color:var(--bl);text-decoration:none">Risk →</a>
           </div>
-          <!-- Always visible — same style as Trade History dropdowns -->
           <div style="display:flex;align-items:center;gap:8px">
             <button class="action-btn primary" onclick="runWeakReprice()">Reprice Weak</button>
             <button class="action-btn warn" onclick="runWeakReduction()">Reduce Weak</button>
@@ -431,8 +450,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
-
-      <!-- ── Cumulative P&L Chart ──────────────────────────────────────── -->
       <div class="panel panel-full" style="margin-top:16px;height:280px">
         <div class="panel-header">
           <span class="panel-title">📈 Cumulative P&L</span>
@@ -443,9 +460,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
-      <!-- ── Trade History Panel ──────────────────────────────────────────── -->
       <div class="panel panel-full" style="margin-top:16px">
-        <!-- Sticky header stays visible while scrolling the table -->
         <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
           <span>📋 TRADE HISTORY</span>
           <div style="display:flex;align-items:center;gap:8px">
@@ -462,7 +477,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
             <span id="historyCount" style="background:var(--s2);padding:2px 8px;border-radius:10px;font-size:11px;color:var(--tx3)">0</span>
           </div>
         </div>
-        <!-- Fixed height container — scrolls internally regardless of number of rows -->
         <div class="panel-body" style="padding:0;height:380px;overflow-y:auto;overflow-x:auto;flex:1">
           <table class="pos-table" id="historyTable" style="width:100%;min-width:800px">
             <thead style="position:sticky;top:0;background:var(--s1);z-index:1">
@@ -487,7 +501,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
-      <!-- Close confirmation modal -->
       <div id="closeModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:999;align-items:center;justify-content:center">
         <div style="background:var(--s1);border:1px solid var(--bd);border-radius:14px;padding:28px;max-width:380px;width:90%;text-align:center">
           <div style="font-size:32px;margin-bottom:12px">⚠️</div>
@@ -505,7 +518,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
 <script src="/static/dashboard_auth.js?v=20260402c"></script>
 <script>
-// Clock
 setInterval(()=>{document.getElementById('clock').textContent=new Date(Date.now()+3*3600000).toUTCString().substring(17,25)+' EAT';},1000);
 
 const DASHBOARD_TIME_ZONE='Africa/Nairobi';
@@ -537,14 +549,7 @@ function parseDashboardTime(raw){
 function fmtDashboardTime(raw){
   const dt=parseDashboardTime(raw);
   if(!dt)return'—';
-  return new Intl.DateTimeFormat('en-GB',{
-    timeZone:DASHBOARD_TIME_ZONE,
-    day:'2-digit',
-    month:'short',
-    hour:'2-digit',
-    minute:'2-digit',
-    hour12:false,
-  }).format(dt);
+  return new Intl.DateTimeFormat('en-GB',{timeZone:DASHBOARD_TIME_ZONE,day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false}).format(dt);
 }
 function depthLabel(item){
   if(item.depth_mode)return humanToken(item.depth_mode)
@@ -563,11 +568,118 @@ function titleToken(value,fallback='—'){
   if(!raw)return fallback;
   return raw.replace(/_/g,' ').replace(/\b\w/g,m=>m.toUpperCase());
 }
+function metricNumber(value, digits=0, fallback='—'){
+  const num=Number(value);
+  return Number.isFinite(num)?num.toFixed(digits):fallback;
+}
+function exactKillReason(item){
+  return titleToken(item.exact_kill_reason || item.execution_kill_reason || item.kill_reason || item.killed_by || item.reason || item.top_blocker || item.lead_blocker || '', 'No kill reason');
+}
+function reviewNotesLine(item){
+  const notes=[item.market_review_notes,item.execution_review_notes].filter(Boolean);
+  return notes.length?notes.join(' · '):'';
+}
 function stageClass(stage){
   const key=String(stage||'').toLowerCase();
   if(key==='open')return 'tape-open';
   if(key==='partial')return 'tape-partial';
   return 'tape-closed';
+}
+function eliteEntryState(item){
+  const confReady=item.entry_confirmation_ready===true;
+  const retestReady=item.breakout_retest_ready===true;
+  const pullbackReady=item.first_pullback_ready===true;
+  const extension=Number(item.extension_score||0);
+  const candle=Number(item.candle_quality_score||0);
+  const session=Number(item.session_quality_score||0);
+  const target=Number(item.target_efficiency_score||0);
+  const cluster=Number(item.cluster_penalty||0);
+  const kill=String(item.exact_kill_reason || item.execution_kill_reason || item.killed_by || item.reason || '').trim();
+  if(confReady && (retestReady || pullbackReady) && extension < 70 && candle >= 55 && session >= 55 && target >= 50 && cluster < 0.45 && !kill){
+    return {label:'Ready', className:'gn', pill:'ready'};
+  }
+  if(kill || extension >= 80 || cluster >= 0.7){
+    return {label:'Blocked', className:'rd', pill:'blocked'};
+  }
+  return {label:'Waiting', className:'am', pill:'waiting'};
+}
+function confirmationLine(item){
+  const ready=item.entry_confirmation_ready===true;
+  const count=Number(item.entry_confirmation_count||0);
+  const required=Number(item.entry_confirmation_bars_required||0);
+  if(ready)return `Confirmation ready${required?` · ${count}/${required} bars`:''}`;
+  if(required)return `Waiting confirmation · ${count}/${required} bars`;
+  return 'Confirmation pending';
+}
+function readinessBits(item){
+  const bits=[];
+  bits.push(item.breakout_retest_ready===true?'Retest ready':item.breakout_retest_ready===false?'Retest missing':'Retest —');
+  bits.push(item.first_pullback_ready===true?'Pullback ready':item.first_pullback_ready===false?'Pullback missing':'Pullback —');
+  bits.push(confirmationLine(item));
+  if(item.failed_opposite_move_confirmed!=null)bits.push(item.failed_opposite_move_confirmed?'Opposite move failed':'Opposite move not failed');
+  return bits;
+}
+function qualityBits(item){
+  const bits=[];
+  if(item.pattern_family)bits.push(`Pattern ${titleToken(item.pattern_family)}`);
+  if(item.elite_pattern_rank!=null)bits.push(`Elite #${item.elite_pattern_rank}`);
+  if(item.impulse_age_bars!=null)bits.push(`Impulse ${item.impulse_age_bars} bars`);
+  if(item.extension_score!=null)bits.push(`Ext ${metricNumber(item.extension_score,0)}`);
+  if(item.candle_quality_score!=null)bits.push(`Candle ${metricNumber(item.candle_quality_score,0)}`);
+  if(item.session_quality_score!=null)bits.push(`Session ${metricNumber(item.session_quality_score,0)}`);
+  if(item.target_efficiency_score!=null)bits.push(`Target ${metricNumber(item.target_efficiency_score,0)}`);
+  if(item.cluster_penalty!=null)bits.push(`Cluster ${metricNumber(item.cluster_penalty,2)}`);
+  return bits;
+}
+function confirmationProgress(item){
+  const count=Number(item.entry_confirmation_count||0);
+  const required=Number(item.entry_confirmation_bars_required||0);
+  if(required>0)return Math.max(0,Math.min(100,(count/required)*100));
+  return item.entry_confirmation_ready===true?100:0;
+}
+function regimeBits(item){
+  return [item.regime_policy_summary,item.regime_policy,item.regime_label].filter(Boolean).map(v=>titleToken(v));
+}
+function buildEliteReason(item){
+  const state=eliteEntryState(item);
+  if(state.label==='Ready'){
+    const path=item.breakout_retest_ready===true?'Retest':'Pullback';
+    return `${path} lane armed · ${confirmationLine(item)}`;
+  }
+  if(state.label==='Blocked'){
+    return exactKillReason(item);
+  }
+  return confirmationLine(item);
+}
+function buildQualityPressure(item){
+  const extension=Number(item.extension_score||0);
+  const candle=Number(item.candle_quality_score||0);
+  const session=Number(item.session_quality_score||0);
+  const target=Number(item.target_efficiency_score||0);
+  const cluster=Number(item.cluster_penalty||0);
+  const issues=[];
+  if(extension>=80)issues.push('overextended');
+  if(candle>0 && candle<55)issues.push('weak candle');
+  if(session>0 && session<55)issues.push('weak session');
+  if(target>0 && target<50)issues.push('poor target');
+  if(cluster>=0.7)issues.push('cluster heavy');
+  return issues.join(' · ');
+}
+function eliteChip(label, cls){return `<span class="elite-chip ${cls||''}">${label}</span>`}
+function eliteChipRow(item){
+  const chips=[];
+  chips.push(eliteChip(item.breakout_retest_ready===true?'Retest ready':item.breakout_retest_ready===false?'Retest missing':'Retest —',item.breakout_retest_ready===true?'ok':item.breakout_retest_ready===false?'warn':''));
+  chips.push(eliteChip(item.first_pullback_ready===true?'Pullback ready':item.first_pullback_ready===false?'Pullback missing':'Pullback —',item.first_pullback_ready===true?'ok':item.first_pullback_ready===false?'warn':''));
+  chips.push(eliteChip(confirmationLine(item),item.entry_confirmation_ready===true?'ok':'warn'));
+  if(item.failed_opposite_move_confirmed!=null)chips.push(eliteChip(item.failed_opposite_move_confirmed?'Opposite move failed':'Opp move live',item.failed_opposite_move_confirmed?'ok':'warn'));
+  if(item.pattern_family)chips.push(eliteChip(`Pattern ${titleToken(item.pattern_family)}`,'info'));
+  if(item.elite_pattern_rank!=null)chips.push(eliteChip(`Elite #${item.elite_pattern_rank}`,'info'));
+  if(item.cluster_penalty!=null)chips.push(eliteChip(`Cluster ${metricNumber(item.cluster_penalty,2)}`,Number(item.cluster_penalty||0)>=0.7?'bad':Number(item.cluster_penalty||0)>=0.45?'warn':''));
+  return `<div class="elite-chip-row">${chips.join('')}</div>`;
+}
+function statusPill(item,labelOverride){
+  const state=eliteEntryState(item);
+  return `<span class="status-pill ${state.pill}">${labelOverride||state.label}</span>`;
 }
 function renderCommandBoardCards(targetId, items, emptyText){
   const el=document.getElementById(targetId);
@@ -576,13 +688,7 @@ function renderCommandBoardCards(targetId, items, emptyText){
     el.innerHTML=`<div class="empty" style="grid-column:1/-1">${emptyText}</div>`;
     return;
   }
-  el.innerHTML=items.map(item=>`
-    <div class="board-card">
-      <div class="board-title">${item.title||'Desk read'}</div>
-      <div class="board-value ${item.valueClass||'mu'}">${item.value??'—'}</div>
-      <div class="board-note">${item.note||''}</div>
-    </div>
-  `).join('');
+  el.innerHTML=items.map(item=>`<div class="board-card"><div class="board-title">${item.title||'Desk read'}</div><div class="board-value ${item.valueClass||'mu'}">${item.value??'—'}</div><div class="board-note">${item.note||''}</div></div>`).join('');
 }
 function renderDeskRows(targetId, items, emptyText){
   const el=document.getElementById(targetId);
@@ -591,15 +697,7 @@ function renderDeskRows(targetId, items, emptyText){
     el.innerHTML=`<div class="empty">${emptyText}</div>`;
     return;
   }
-  el.innerHTML=`<div class="desk-list">${items.map(item=>`
-    <div class="desk-row">
-      <div class="desk-main">
-        <div class="desk-head">${item.head||'—'}</div>
-        <div class="desk-meta">${item.meta||''}</div>
-      </div>
-      <div class="desk-side ${item.sideClass||''}">${item.side||''}</div>
-    </div>
-  `).join('')}</div>`;
+  el.innerHTML=`<div class="desk-list">${items.map(item=>`<div class="desk-row"><div class="desk-main"><div class="desk-head">${item.head||'—'}</div><div class="desk-meta">${item.meta||''}</div></div><div class="desk-side ${item.sideClass||''}">${item.side||''}</div></div>`).join('')}</div>`;
 }
 function renderTradeTape(events){
   const panel=document.getElementById('tradeTapePanel');
@@ -610,38 +708,18 @@ function renderTradeTape(events){
     panel.innerHTML='<div class="empty">No recent trade lifecycle events</div>';
     return;
   }
-  panel.innerHTML=`<div class="desk-list">${events.map(item=>`
-    <div class="desk-row">
-      <span class="tape-stage ${stageClass(item.stage)}">${titleToken(item.stage,'event')}</span>
-      <div class="desk-main">
-        <div class="desk-head">${item.asset||'—'} ${item.direction||''}</div>
-        <div class="desk-meta">${item.note||'No event note'}${item.event_time?` · ${fmtDashboardTime(item.event_time)}`:''}</div>
-      </div>
-      <div class="desk-side ${Number(item.pnl||0)>=0?'gn':'rd'}">${item.pnl==null?'—':fmtMoney(item.pnl)}</div>
-    </div>
-  `).join('')}</div>`;
+  panel.innerHTML=`<div class="desk-list">${events.map(item=>`<div class="desk-row"><span class="tape-stage ${stageClass(item.stage)}">${titleToken(item.stage,'event')}</span><div class="desk-main"><div class="desk-head">${item.asset||'—'} ${item.direction||''} ${statusPill(item)}</div><div class="desk-meta">${item.note||'No event note'}${item.event_time?` · ${fmtDashboardTime(item.event_time)}`:''}</div><div class="desk-meta">${buildEliteReason(item)} · ${qualityBits(item).slice(0,4).join(' · ') || 'Elite metrics pending'}</div>${regimeBits(item).length?`<div class="desk-meta">${regimeBits(item).join(' · ')}</div>`:''}${reviewNotesLine(item)?`<div class="note-callout ${eliteEntryState(item).label==='Blocked'?'bad':eliteEntryState(item).label==='Waiting'?'warn':'ok'}">${reviewNotesLine(item)}</div>`:''}</div><div class="desk-side ${Number(item.pnl||0)>=0?'gn':'rd'}">${item.pnl==null?'—':fmtMoney(item.pnl)}</div></div>`).join('')}</div>`;
 }
-
 function setActionStatus(message,type='info'){
   const el=document.getElementById('positionActionStatus');
   if(!el)return;
-  if(!message){
-    el.className='action-status';
-    el.textContent='';
-    return;
-  }
-  el.className='action-status show '+type;
-  el.textContent=message;
+  if(!message){el.className='action-status';el.textContent='';return;}
+  el.className='action-status show '+type;el.textContent=message;
 }
-
 function renderTopOpportunities(items){
   const panel=document.getElementById('topOpsPanel');
   if(!panel)return;
-  if(!items||!items.length){
-    panel.innerHTML='';
-    panel.style.display='none';
-    return;
-  }
+  if(!items||!items.length){panel.innerHTML='';panel.style.display='none';return;}
   panel.style.display='grid';
   panel.innerHTML=items.slice(0,5).map((item,idx)=>{
     const rank=Number(item.opportunity_rank||idx+1);
@@ -660,21 +738,11 @@ function renderTopOpportunities(items){
     const crossAlign=Number(item.cross_asset_alignment||0);
     const crossLine=crossPeer?`Cross ${crossAlign>=0?'support':'conflict'} via ${crossPeer}${crossRelation?` · ${crossRelation}`:''}`:'';
     const patternLine=recentPatternLine(item);
-    return `<div class="topop-card">
-      <div class="topop-head">
-        <div>
-          <div class="topop-rank">Rank ${rank}</div>
-          <div class="topop-asset">${item.asset||'?'}</div>
-        </div>
-        <div class="topop-score">${opp.toFixed(3)}</div>
-      </div>
-      <div style="font-size:11px;color:${dirCol};font-weight:700">${dir||'—'} · ${(conf*100).toFixed(0)}%</div>
-      <div class="topop-meta">Memory ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'} · Broker ${brokerQ.toFixed(2)}</div>
-      <div class="topop-meta">Micro ${microQ.toFixed(2)} · Depth ${depthLabel(item)}${brokerState?` · ${brokerState}`:''}</div>
-      ${crossLine?`<div class="topop-meta">${crossLine}</div>`:''}
-      ${patternLine?`<div class="topop-meta">${patternLine}</div>`:''}
-      <div class="topop-meta">${source}${item.timeframe?` · ${item.timeframe}`:''}</div>
-    </div>`;
+    const regimeLine=regimeBits(item).join(' · ');
+    const killReason=String(item.exact_kill_reason || item.execution_kill_reason || item.kill_reason || item.killed_by || item.reason || '').trim();
+    const state=eliteEntryState(item);
+    const pressure=buildQualityPressure(item);
+    return `<div class="topop-card"><div class="topop-head"><div><div class="topop-rank">Rank ${rank}</div><div class="topop-asset">${item.asset||'?'}</div></div><div class="topop-score">${opp.toFixed(3)}</div></div><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div style="font-size:11px;color:${dirCol};font-weight:700">${dir||'—'} · ${(conf*100).toFixed(0)}%</div>${statusPill(item,state.label)}</div><div class="topop-meta">Memory ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'} · Broker ${brokerQ.toFixed(2)}</div><div class="topop-meta">Micro ${microQ.toFixed(2)} · Depth ${depthLabel(item)}${brokerState?` · ${brokerState}`:''}</div><div class="topop-meta">${buildEliteReason(item)}</div><div class="topop-meta">${qualityBits(item).slice(0,4).join(' · ') || 'Elite metrics pending'}</div>${regimeLine?`<div class="topop-meta">${regimeLine}</div>`:''}${pressure?`<div class="topop-meta">${pressure}</div>`:''}${crossLine?`<div class="topop-meta">${crossLine}</div>`:''}${patternLine?`<div class="topop-meta">${patternLine}</div>`:''}${reviewNotesLine(item)?`<div class="topop-meta">${reviewNotesLine(item)}</div>`:''}${killReason?`<div class="topop-meta">${exactKillReason(item)}</div>`:''}<div class="topop-meta">${source}${item.timeframe?` · ${item.timeframe}`:''}</div></div>`;
   }).join('');
 }
 
@@ -685,6 +753,7 @@ let _commandCenterStreamReconnect = null;
 let _commandCenterStreamActive = false;
 let _commandCenterStreamDisabled = false;
 let _commandCenterLastClosedTradeCount = null;
+
 function setCommandCenterUnavailable(message){
   const msg = message || 'Command center data unavailable';
   document.getElementById('signalsPanel').innerHTML = `<div class="empty">${msg}</div>`;
@@ -693,6 +762,8 @@ function setCommandCenterUnavailable(message){
   document.getElementById('whalePanel').innerHTML = `<div class="empty">${msg}</div>`;
   document.getElementById('focusBadge').textContent = 'Unavailable';
   document.getElementById('focusPanel').innerHTML = `<div class="empty" style="grid-column:1/-1">${msg}</div>`;
+  document.getElementById('eliteSummaryBadge').textContent = 'Unavailable';
+  document.getElementById('eliteSummaryPanel').innerHTML = `<div class="empty" style="grid-column:1/-1">${msg}</div>`;
   document.getElementById('sentLabel').textContent = 'Unavailable';
   document.getElementById('pulseChips').innerHTML = '<span class="mini-chip bad">API timeout</span>';
   document.getElementById('whyNotBadge').textContent = 'Unavailable';
@@ -709,113 +780,57 @@ function setCommandCenterUnavailable(message){
   document.getElementById('tradeTapePanel').innerHTML = `<div class="empty">${msg}</div>`;
   const pnlStatsEl = document.getElementById('pnlStats');
   if(pnlStatsEl) pnlStatsEl.textContent = 'P&L history unavailable';
-  if(_pnlChart){
-    _pnlChart.destroy();
-    _pnlChart = null;
-  }
+  if(_pnlChart){_pnlChart.destroy();_pnlChart = null;}
 }
-
 function renderWhalePanel(d){
   document.getElementById('whaleCount').textContent=d.alert_count_24h||0;
   const wEl=document.getElementById('whalePanel');
   const alerts=d.recent||[];
-  if(!alerts.length){
-    wEl.innerHTML='<div class="empty">No whale alerts</div>';
-    return;
-  }
-  wEl.innerHTML=alerts.slice(0,4).map(a=>`
-    <div class="whale-item">
-      <div class="whale-icon">🐋</div>
-      <div class="whale-info">
-        <div class="whale-title">${a.symbol||a.asset||'?'}</div>
-        <div class="whale-meta">${a.source||''}</div>
-      </div>
-      <div class="whale-amount">$${((a.value_usd||0)/1e6).toFixed(1)}M</div>
-    </div>`).join('');
+  if(!alerts.length){wEl.innerHTML='<div class="empty">No whale alerts</div>';return;}
+  wEl.innerHTML=alerts.slice(0,4).map(a=>{
+    const state=eliteEntryState(a);
+    return `<div class="whale-item"><div class="whale-icon">🐋</div><div class="whale-info"><div class="whale-title">${a.symbol||a.asset||'?'} ${statusPill(a,state.label)}</div><div class="whale-meta">${a.source||''} · ${confirmationLine(a)}</div><div class="whale-meta">${qualityBits(a).slice(0,4).join(' · ') || 'Execution quality pending'}</div>${regimeBits(a).length?`<div class="whale-meta">${regimeBits(a).join(' · ')}</div>`:''}${(a.exact_kill_reason||a.execution_kill_reason)?`<div class="note-callout bad">${exactKillReason(a)}</div>`:''}${reviewNotesLine(a)?`<div class="note-callout warn">${reviewNotesLine(a)}</div>`:''}</div><div class="whale-amount">$${((a.value_usd||0)/1e6).toFixed(1)}M</div></div>`;
+  }).join('');
 }
-
 async function fetchCommandCenterOverview(){
   const now = Date.now();
-  if(_commandCenterCache && now - _commandCenterCache.fetched < 1000){
-    return _commandCenterCache.data;
-  }
-  if(_commandCenterPending){
-    return _commandCenterPending;
-  }
+  if(_commandCenterCache && now - _commandCenterCache.fetched < 1000)return _commandCenterCache.data;
+  if(_commandCenterPending)return _commandCenterPending;
   _commandCenterPending = (async () => {
     try{
       const page = await fetchProtectedJson(`/api/command-center?live=1&_=${Date.now()}`, {timeoutMs: 15000});
-      if(page && page.success){
-        _commandCenterCache = {fetched: Date.now(), data: page};
-        return page;
-      }
+      if(page && page.success){_commandCenterCache = {fetched: Date.now(), data: page};return page;}
       return {success:false};
-    } finally {
-      _commandCenterPending = null;
-    }
+    } finally {_commandCenterPending = null;}
   })();
   return _commandCenterPending;
 }
-
 function stopCommandCenterStream(){
-  if(_commandCenterStreamReconnect){
-    clearTimeout(_commandCenterStreamReconnect);
-    _commandCenterStreamReconnect = null;
-  }
-  if(_commandCenterStreamAbort){
-    _commandCenterStreamAbort.abort();
-    _commandCenterStreamAbort = null;
-  }
+  if(_commandCenterStreamReconnect){clearTimeout(_commandCenterStreamReconnect);_commandCenterStreamReconnect = null;}
+  if(_commandCenterStreamAbort){_commandCenterStreamAbort.abort();_commandCenterStreamAbort = null;}
   _commandCenterStreamActive = false;
 }
-
 function scheduleCommandCenterStreamReconnect(delayMs = 3000){
-  if(document.hidden || _commandCenterStreamDisabled){
-    return;
-  }
-  if(_commandCenterStreamReconnect){
-    clearTimeout(_commandCenterStreamReconnect);
-  }
-  _commandCenterStreamReconnect = setTimeout(() => {
-    _commandCenterStreamReconnect = null;
-    startCommandCenterStream();
-  }, delayMs);
+  if(document.hidden || _commandCenterStreamDisabled)return;
+  if(_commandCenterStreamReconnect)clearTimeout(_commandCenterStreamReconnect);
+  _commandCenterStreamReconnect = setTimeout(() => {_commandCenterStreamReconnect = null;startCommandCenterStream();}, delayMs);
 }
-
 async function startCommandCenterStream(){
-  if(_commandCenterStreamDisabled || _commandCenterStreamActive || _commandCenterStreamAbort){
-    return;
-  }
-  if(typeof window.fetch !== 'function'){
-    _commandCenterStreamDisabled = true;
-    return;
-  }
+  if(_commandCenterStreamDisabled || _commandCenterStreamActive || _commandCenterStreamAbort)return;
+  if(typeof window.fetch !== 'function'){_commandCenterStreamDisabled = true;return;}
   const controller = new AbortController();
   _commandCenterStreamAbort = controller;
   try{
-    const response = await window.fetch(`/api/command-center/stream?_=${Date.now()}`, {
-      method: 'GET',
-      cache: 'no-store',
-      headers: {'Accept': 'application/x-ndjson'},
-      signal: controller.signal,
-    });
-    if(!response.ok){
-      throw new Error(`HTTP ${response.status}`);
-    }
-    if(!response.body || typeof response.body.getReader !== 'function'){
-      _commandCenterStreamDisabled = true;
-      _commandCenterStreamActive = false;
-      return;
-    }
+    const response = await window.fetch(`/api/command-center/stream?_=${Date.now()}`, {method: 'GET',cache: 'no-store',headers: {'Accept': 'application/x-ndjson'},signal: controller.signal});
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    if(!response.body || typeof response.body.getReader !== 'function'){_commandCenterStreamDisabled = true;_commandCenterStreamActive = false;return;}
     _commandCenterStreamActive = true;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     while(true){
       const {value, done} = await reader.read();
-      if(done){
-        break;
-      }
+      if(done)break;
       buffer += decoder.decode(value, {stream:true});
       let newlineIndex = buffer.indexOf('\n');
       while(newlineIndex >= 0){
@@ -824,64 +839,68 @@ async function startCommandCenterStream(){
         if(rawLine){
           try{
             const msg = JSON.parse(rawLine);
-            if(msg && msg.type === 'refresh'){
-              loadMain();
-            }
-          }catch(err){
-            console.warn('[CC stream] parse error', err);
-          }
+            if(msg && msg.type === 'refresh')loadMain();
+          }catch(err){console.warn('[CC stream] parse error', err);}
         }
         newlineIndex = buffer.indexOf('\n');
       }
     }
   }catch(err){
-    if(err && err.name === 'AbortError'){
-      return;
-    }
+    if(err && err.name === 'AbortError')return;
     console.warn('[CC stream]', err);
   }finally{
-    if(_commandCenterStreamAbort === controller){
-      _commandCenterStreamAbort = null;
-    }
+    if(_commandCenterStreamAbort === controller)_commandCenterStreamAbort = null;
     _commandCenterStreamActive = false;
-    if(!document.hidden && !_commandCenterStreamDisabled){
-      scheduleCommandCenterStreamReconnect();
-    }
+    if(!document.hidden && !_commandCenterStreamDisabled)scheduleCommandCenterStreamReconnect();
   }
 }
-
+function collectElitePool(d){
+  return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]);
+}
+function renderEliteSummary(d){
+  const pool=collectElitePool(d);
+  const ready=pool.filter(item=>eliteEntryState(item).label==='Ready');
+  const waiting=pool.filter(item=>eliteEntryState(item).label==='Waiting');
+  const blocked=pool.filter(item=>eliteEntryState(item).label==='Blocked');
+  const confPending=pool.filter(item=>item.entry_confirmation_ready!==true && Number(item.entry_confirmation_bars_required||0)>0);
+  const retestReady=pool.filter(item=>item.breakout_retest_ready===true);
+  const pullbackReady=pool.filter(item=>item.first_pullback_ready===true);
+  const overextended=pool.filter(item=>Number(item.extension_score||0)>=80);
+  const lowQuality=pool.filter(item=>Number(item.candle_quality_score||100)<55 || Number(item.session_quality_score||100)<55 || Number(item.target_efficiency_score||100)<50);
+  const clusterHeavy=pool.filter(item=>Number(item.cluster_penalty||0)>=0.7);
+  const regimeAware=pool.filter(item=>regimeBits(item).length);
+  const regimeBlocked=pool.filter(item=>{
+    const reason=String(item.exact_kill_reason || item.execution_kill_reason || item.kill_reason || item.killed_by || item.reason || '').toLowerCase();
+    return /regime|policy/.test(reason) || /regime|policy/.test(String(item.regime_policy_summary || item.regime_policy || item.regime_label || '').toLowerCase());
+  });
+  document.getElementById('eliteSummaryBadge').textContent=`${ready.length} ready · ${blocked.length} blocked`;
+  renderCommandBoardCards('eliteSummaryPanel',[
+    {title:'Entry state',value:`${ready.length}/${waiting.length}/${blocked.length}`,valueClass:blocked.length?'am':ready.length?'gn':'mu',note:'Ready / Waiting / Blocked across live queue, near misses, watchlist, and book.'},
+    {title:'Confirmation queue',value:confPending.length?`${confPending.length} waiting`:'Clear',valueClass:confPending.length?'am':'gn',note:confPending.length?'Signals are staged but still need confirmation bars or reclaim proof.':'No visible confirmation backlog right now.'},
+    {title:'Path mix',value:`R ${retestReady.length} · P ${pullbackReady.length}`,valueClass:(retestReady.length||pullbackReady.length)?'cy':'mu',note:'Breakout retest and first-pullback readiness currently visible across the desk.'},
+    {title:'Extension pressure',value:overextended.length?`${overextended.length} hot`:'Contained',valueClass:overextended.length?'rd':'gn',note:overextended.length?'Overextension is actively vetoing or degrading entries.':'Extension pressure is contained.'},
+    {title:'Quality drag',value:lowQuality.length?`${lowQuality.length} weak`:'Stable',valueClass:lowQuality.length?'am':'gn',note:'Weak candle, session, or target efficiency is degrading entry quality.'},
+    {title:'Cluster drag',value:clusterHeavy.length?`${clusterHeavy.length} blocked`:'Light',valueClass:clusterHeavy.length?'rd':'gn',note:'Cluster penalty is suppressing overlapping ideas when too many similar setups stack up.'},
+    {title:'Regime policy',value:regimeBlocked.length?`${regimeBlocked.length} blocked`:regimeAware.length?`${regimeAware.length} tagged`:'Visible',valueClass:regimeBlocked.length?'rd':regimeAware.length?'cy':'mu',note:regimeAware.length?'Regime policy summaries now travel with the live decision stack.':'No regime policy note is visible in the current pool.'},
+  ],'Elite entry summary unavailable');
+}
 async function loadMain(){
   let d;
   try{
     const page = await fetchCommandCenterOverview();
-    if(page.success){
-      d = page || {};
-    } else {
-      setCommandCenterUnavailable('Command center timed out');
-      return;
-    }
-    if(!d||!d.success){
-      setCommandCenterUnavailable('Command center data unavailable');
-      return;
-    }
+    if(page.success){d = page || {};} else {setCommandCenterUnavailable('Command center timed out');return;}
+    if(!d||!d.success){setCommandCenterUnavailable('Command center data unavailable');return;}
   }catch(e){console.error('[CC] fetch:',e);return;}
 
   const providerRouting=d.provider_routing||{};
   const signalQuality=d.signal_quality||{};
   const signalDiagnostics=d.signal_diagnostics||{};
 
-  // ── Metrics + engine status ──────────────────────────────────────────────
   try{
     const live=d.live_summary||{};
     const closedTradeCount=Number(live.closed_trades??d.total_trades??0);
-    if(_commandCenterLastClosedTradeCount===null){
-      _commandCenterLastClosedTradeCount=closedTradeCount;
-    }else if(closedTradeCount!==_commandCenterLastClosedTradeCount){
-      _commandCenterLastClosedTradeCount=closedTradeCount;
-      if(!document.hidden){
-        loadHistory();
-      }
-    }
+    if(_commandCenterLastClosedTradeCount===null){_commandCenterLastClosedTradeCount=closedTradeCount;}
+    else if(closedTradeCount!==_commandCenterLastClosedTradeCount){_commandCenterLastClosedTradeCount=closedTradeCount;if(!document.hidden)loadHistory();}
     const realizedBalance=Number(d.balance||0);
     const liveBalance=Number(live.balance??d.balance??0);
     const balanceDelta=Number(live.balance_delta??(liveBalance-Number(live.initial_balance??d.initial_balance??realizedBalance)));
@@ -917,11 +936,7 @@ async function loadMain(){
     const topOpportunities = d.top_opportunities || [];
     const lead = topOpportunities[0] || null;
     const positions = d.positions || [];
-    const categoryCounts = positions.reduce((acc, item) => {
-      const key = String(item.category || 'unknown');
-      acc[key] = (acc[key] || 0) + 1;
-      return acc;
-    }, {});
+    const categoryCounts = positions.reduce((acc, item) => {const key = String(item.category || 'unknown');acc[key] = (acc[key] || 0) + 1;return acc;}, {});
     const leadCategory = Object.entries(categoryCounts).sort((a,b) => b[1] - a[1])[0];
     const supportiveCount = Number(signalDiagnostics.broker_supportive_count || 0);
     const fragileCount = Number(signalDiagnostics.broker_fragile_count || 0);
@@ -930,40 +945,14 @@ async function loadMain(){
     const focusState = lead ? 'Armed' : posLen ? 'Managing' : 'Quiet';
     document.getElementById('focusBadge').textContent = focusState;
     document.getElementById('focusPanel').innerHTML = [
-      {
-        value: lead ? `${lead.asset || '—'} ${String(lead.direction || lead.signal || '').toUpperCase()}` : 'No queue',
-        valueClass: lead ? (String(lead.direction || lead.signal || '').toUpperCase() === 'SELL' ? 'rd' : 'gn') : 'mu',
-        label: 'Next Candidate',
-        sub: lead ? `Opp ${Number(lead.opportunity_score || 0).toFixed(3)} · Conf ${Math.round(Number(lead.confidence || 0) * 100)}%` : 'No setup is currently strong enough to lead the desk',
-      },
-      {
-        value: providerRouting.summary_label || 'Unavailable',
-        valueClass: providerRouting.summary_label ? 'cy' : 'mu',
-        label: 'Feed Spine',
-        sub: providerRouting.fallback_label ? `Fallback ${providerRouting.fallback_label}` : 'No published fallback split',
-      },
-      {
-        value: posLen ? `${posLen} open` : 'Flat',
-        valueClass: posLen ? 'pu' : 'mu',
-        label: 'Book State',
-        sub: live.book_bias ? `${live.book_bias} · ${live.open_state||'Flat'}` : (leadCategory ? `${leadCategory[0]} leads with ${leadCategory[1]} positions` : 'No open exposure in the book'),
-      },
-      {
-        value: `${supportiveCount}/${fragileCount}`,
-        valueClass: fragileCount ? 'am' : supportiveCount ? 'gn' : 'mu',
-        label: 'Broker Pressure',
-        sub: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : 'No live pressure diagnostics yet',
-      },
-    ].map(item => `
-      <div class="pulse-card">
-        <div class="pulse-val ${item.valueClass}">${item.value}</div>
-        <div class="pulse-lbl">${item.label}</div>
-        <div class="pulse-sub">${item.sub}</div>
-      </div>
-    `).join('');
+      {value: lead ? `${lead.asset || '—'} ${String(lead.direction || lead.signal || '').toUpperCase()}` : 'No queue',valueClass: lead ? (String(lead.direction || lead.signal || '').toUpperCase() === 'SELL' ? 'rd' : 'gn') : 'mu',label: 'Next Candidate',sub: lead ? `Opp ${Number(lead.opportunity_score || 0).toFixed(3)} · ${buildEliteReason(lead)}` : 'No setup is currently strong enough to lead the desk'},
+      {value: providerRouting.summary_label || 'Unavailable',valueClass: providerRouting.summary_label ? 'cy' : 'mu',label: 'Feed Spine',sub: providerRouting.fallback_label ? `Fallback ${providerRouting.fallback_label}` : 'No published fallback split'},
+      {value: posLen ? `${posLen} open` : 'Flat',valueClass: posLen ? 'pu' : 'mu',label: 'Book State',sub: live.book_bias ? `${live.book_bias} · ${live.open_state||'Flat'}` : (leadCategory ? `${leadCategory[0]} leads with ${leadCategory[1]} positions` : 'No open exposure in the book')},
+      {value: `${supportiveCount}/${fragileCount}`,valueClass: fragileCount ? 'am' : supportiveCount ? 'gn' : 'mu',label: 'Broker Pressure',sub: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : 'No live pressure diagnostics yet'},
+    ].map(item => `<div class="pulse-card"><div class="pulse-val ${item.valueClass}">${item.value}</div><div class="pulse-lbl">${item.label}</div><div class="pulse-sub">${item.sub}</div></div>`).join('');
+    renderEliteSummary(d);
   }catch(e){console.error('[CC] metrics:',e);}
 
-  // ── Active signals ───────────────────────────────────────────────────────
   try{
     const sigs=(d.latest_signals||[]).filter(s=>(s.signal||s.direction||'HOLD')!=='HOLD');
     renderTopOpportunities(d.top_opportunities||[]);
@@ -981,6 +970,7 @@ async function loadMain(){
         const opp=Number(s.opportunity_score||0);
         const brokerQ=Number(s.broker_quality_score||0);
         const microQ=Number(s.microstructure_score||0);
+        const entryState=eliteEntryState(s);
         const detail=`Mem ${mem?mem.toFixed(0):'—'} · Exec ${execQ?execQ.toFixed(0):'—'} · Opp ${opp?opp.toFixed(3):'—'}`;
         const brokerState=humanToken(s.broker_agreement_state||s.broker_context||'');
         const provenance=provenanceLine(s);
@@ -989,21 +979,8 @@ async function loadMain(){
         const crossAlign=Number(s.cross_asset_alignment||0);
         const crossLine=crossPeer?`${crossAlign>=0?'Cross support':'Cross conflict'} via ${crossPeer}${crossRelation?` · ${crossRelation}`:''}`:'';
         const patternLine=recentPatternLine(s);
-        return`<div class="sig-row">
-          <span class="sig-dir ${dir==='BUY'?'sig-buy':'sig-sell'}">${dir}</span>
-          <div style="flex:1">
-            <div class="sig-asset">${s.asset||'?'}</div>
-            <div class="sig-meta">${s.category||''} · ${detail}</div>
-            ${provenance?`<div class="sig-meta">${provenance}</div>`:''}
-            <div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>
-            ${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}
-            ${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}
-          </div>
-          <div style="text-align:right">
-            <div class="sig-conf" style="color:${barCol}">${cp}%</div>
-            <div class="conf-bar-mini"><div class="cbm-fill" style="width:${cp}%;background:${barCol}"></div></div>
-          </div>
-        </div>`;
+        const pressure=buildQualityPressure(s);
+        return`<div class="sig-row"><span class="sig-dir ${dir==='BUY'?'sig-buy':'sig-sell'}">${dir}</span><div style="flex:1"><div class="sig-asset">${s.asset||'?'} ${statusPill(s,entryState.label)}</div><div class="sig-meta">${s.category||''} · ${detail}</div>${eliteChipRow(s)}${provenance?`<div class="sig-meta">${provenance}</div>`:''}<div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}<div class="sig-meta">${readinessBits(s).join(' · ')}</div><div class="sig-meta">${qualityBits(s).join(' · ') || 'Elite entry metrics pending'}</div>${pressure?`<div class="note-callout warn">${pressure}</div>`:''}${(s.exact_kill_reason||s.execution_kill_reason)?`<div class="note-callout bad">${exactKillReason(s)}</div>`:''}${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}${reviewNotesLine(s)?`<div class="note-callout ${entryState.label==='Ready'?'ok':entryState.label==='Blocked'?'bad':'warn'}">${reviewNotesLine(s)}</div>`:''}</div><div style="text-align:right"><div class="sig-conf ${entryState.className}" style="color:${barCol}">${cp}%</div><div class="conf-bar-mini"><div class="cbm-fill" style="width:${cp}%;background:${barCol}"></div></div><div class="sig-meta" style="margin-top:6px">${confirmationProgress(s).toFixed(0)}% conf</div></div></div>`;
       }).join('');
     }
   }catch(e){console.error('[CC] signals:',e);}
@@ -1011,73 +988,48 @@ async function loadMain(){
   try{
     const why=d.why_not_traded||{};
     const leadBlocker=titleToken(why.lead_blocker,'No blocker');
+    const policyBlockers=(why.top_blockers||[]).filter(item=>/regime|policy|cluster/i.test(String(item.label||''))).reduce((sum,item)=>sum+Number(item.count||0),0);
     document.getElementById('whyNotBadge').textContent=why.lead_count?`${leadBlocker} · ${why.lead_count}`:'Clear';
     renderCommandBoardCards('whyNotPanel',[
-      {
-        title:'Lead blocker',
-        value:leadBlocker,
-        valueClass:why.lead_count?'am':'gn',
-        note:why.lead_count?`${why.lead_count} recent rejects were dominated by this blocker.`:'No repeated blocker is dominating the journal right now.',
-      },
-      ...((why.top_blockers||[]).slice(0,2).map(item=>({
-        title:titleToken(item.label,'Blocker'),
-        value:String(item.count||0),
-        valueClass:Number(item.count||0)>=3?'rd':'am',
-        note:'Recent reject count across the journal stack.',
-      }))),
-      ...((why.top_assets||[]).slice(0,3).map(item=>({
-        title:item.asset||'—',
-        value:titleToken(item.top_blocker,'Blocked'),
-        valueClass:'cy',
-        note:`${item.count||0} rejects · setup ${(Number(item.setup_quality||0)).toFixed(2)}`,
-      }))),
+      {title:'Lead blocker',value:leadBlocker,valueClass:why.lead_count?'am':'gn',note:why.lead_count?`${why.lead_count} recent rejects were dominated by this blocker.`:'No repeated blocker is dominating the journal right now.'},
+      {title:'Confirmation drag',value:String((why.confirmation_pending_count||why.blocked_by_confirmation_count||0)),valueClass:Number(why.confirmation_pending_count||why.blocked_by_confirmation_count||0)?'am':'gn',note:'Candidates staged by structure but still waiting on confirmation bars or reclaim proof.'},
+      {title:'Extension / cluster',value:`${Number(why.overextended_count||0)} / ${Number(why.cluster_blocked_count||0)}`,valueClass:(Number(why.overextended_count||0)||Number(why.cluster_blocked_count||0))?'rd':'gn',note:'Overextended setups and cluster-suppressed ideas removed before execution.'},
+      {title:'Policy lock',value:String(policyBlockers||0),valueClass:policyBlockers?'rd':'gn',note:policyBlockers?'Regime and cluster policy are visible in the recent reject mix.':'No regime-policy lock is dominating recent rejects.'},
+      ...((why.top_assets||[]).slice(0,3).map(item=>({title:item.asset||'—',value:exactKillReason(item),valueClass:'cy',note:[`${item.count||0} rejects`, confirmationLine(item), qualityBits(item).slice(0,3).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · ')}))),
     ].slice(0,6),'No recurring blockers in the recent journal');
 
     const radar=d.session_radar||{};
     document.getElementById('sessionRadarBadge').textContent=radar.open_count!=null?`${radar.open_count} open / ${radar.blocked_count||0} blocked`:'Unavailable';
-    renderDeskRows('sessionRadarPanel',(radar.rows||[]).slice(0,8).map(item=>({
-      head:`${item.asset} · ${titleToken(item.current_session,'Off')}`,
-      meta:item.session_open
-        ? `${titleToken(item.category)} open now · ${item.preferred_interval||'—'} · ${item.primary_provider||'—'}`
-        : `Allowed ${((item.allowed_sessions||[]).map(v=>titleToken(v))).join(', ') || 'n/a'} · ${item.primary_provider||'—'}`,
-      side:item.session_open?'OPEN':'BLOCKED',
-      sideClass:item.session_open?'gn':'am',
-    })),'Session radar unavailable');
+    renderDeskRows('sessionRadarPanel',(radar.rows||[]).slice(0,8).map(item=>({head:`${item.asset} · ${titleToken(item.current_session,'Off')} ${statusPill(item)}`,meta:item.session_open?`${titleToken(item.category)} open now · ${item.preferred_interval||'—'} · ${item.primary_provider||'—'} · ${buildEliteReason(item)}${regimeBits(item).length?` · ${regimeBits(item).join(' · ')}`:''}`:`Allowed ${((item.allowed_sessions||[]).map(v=>titleToken(v))).join(', ') || 'n/a'} · ${item.primary_provider||'—'} · ${exactKillReason(item)}${regimeBits(item).length?` · ${regimeBits(item).join(' · ')}`:''}`,side:item.session_open?'OPEN':'BLOCKED',sideClass:item.session_open?'gn':'am'})),'Session radar unavailable');
 
     const ladder=d.watchlist_ladder||{};
     const sections=[
-      {label:'Hot', items:ladder.hot||[], cls:'gn', text:item=>`${item.asset||'—'} ${item.direction||''}`, note:item=>`Opp ${(Number(item.opportunity_score||0)).toFixed(3)} · Conf ${(Number(item.confidence||0)).toFixed(0)}%`},
-      {label:'Almost Ready', items:ladder.almost_ready||[], cls:'am', text:item=>`${item.asset||'—'} ${item.direction||''}`, note:item=>`${titleToken(item.reason,'Near miss')} · setup ${(Number(item.setup_quality||0)).toFixed(3)}`},
-      {label:'Blocked', items:ladder.blocked||[], cls:'rd', text:item=>`${item.asset||'—'} · ${titleToken(item.current_session,'Off')}`, note:item=>`Allowed ${((item.allowed_sessions||[]).map(v=>titleToken(v))).join(', ') || 'n/a'}`},
-      {label:'Inactive', items:ladder.inactive||[], cls:'mu', text:item=>`${item.asset||'—'} · ${titleToken(item.category,'Unknown')}`, note:item=>`${item.preferred_interval||'—'} playbook interval`},
+      {label:'Hot',items:ladder.hot||[],cls:'gn',text:item=>`${item.asset||'—'} ${item.direction||''}`,note:item=>[`Opp ${(Number(item.opportunity_score||0)).toFixed(3)} · Conf ${(Number(item.confidence||0)*100).toFixed(0)}%`, buildEliteReason(item), qualityBits(item).slice(0,3).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · ')},
+      {label:'Almost Ready',items:ladder.almost_ready||[],cls:'am',text:item=>`${item.asset||'—'} ${item.direction||''}`,note:item=>[`${titleToken(item.reason,'Near miss')} · setup ${(Number(item.setup_quality||0)).toFixed(3)}`, confirmationLine(item), item.breakout_retest_ready===false?'Retest missing':'', item.first_pullback_ready===false?'Pullback missing':'', qualityBits(item).slice(0,3).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · ')},
+      {label:'Blocked',items:ladder.blocked||[],cls:'rd',text:item=>`${item.asset||'—'} · ${titleToken(item.current_session,'Off')}`,note:item=>[exactKillReason(item), `Allowed ${((item.allowed_sessions||[]).map(v=>titleToken(v))).join(', ') || 'n/a'}`, qualityBits(item).slice(0,3).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · ')},
+      {label:'Inactive',items:ladder.inactive||[],cls:'mu',text:item=>`${item.asset||'—'} · ${titleToken(item.category,'Unknown')}`,note:item=>[`${item.preferred_interval||'—'} playbook interval`, item.pattern_family?`Pattern ${titleToken(item.pattern_family)}`:'', item.elite_pattern_rank!=null?`Elite #${item.elite_pattern_rank}`:''].filter(Boolean).join(' · ')},
     ];
     document.getElementById('watchlistBadge').textContent=sections.reduce((sum,section)=>sum+(section.items?.length||0),0)+' staged';
-    document.getElementById('watchlistPanel').innerHTML='<div class="board-grid">'+sections.map(section=>`
-      <div class="board-card">
-        <div class="board-title">${section.label}</div>
-        ${section.items && section.items.length ? section.items.slice(0,3).map(item=>`
-          <div class="desk-meta" style="margin-top:6px"><span class="${section.cls}" style="font-weight:700">${section.text(item)}</span><br>${section.note(item)}</div>
-        `).join('') : '<div class="board-note">No assets in this ladder state.</div>'}
-      </div>
-    `).join('')+'</div>';
+    document.getElementById('watchlistPanel').innerHTML='<div class="board-grid">'+sections.map(section=>`<div class="board-card"><div class="board-title">${section.label}</div>${section.items && section.items.length ? section.items.slice(0,3).map(item=>`<div class="desk-meta" style="margin-top:6px"><span class="${section.cls}" style="font-weight:700">${section.text(item)}</span> ${statusPill(item)}<br>${section.note(item)}</div>`).join('') : '<div class="board-note">No assets in this ladder state.</div>'}</div>`).join('')+'</div>';
 
     const nearMisses=d.near_misses||[];
     document.getElementById('nearMissBadge').textContent=nearMisses.length?`${nearMisses.length} tracked`:'Clear';
-    renderDeskRows('nearMissPanel',nearMisses.slice(0,6).map(item=>({
-      head:`${item.asset||'—'} ${String(item.direction||'').toUpperCase() || ''}`,
-      meta:`${titleToken(item.reason||item.killed_by||'no candidate')} · Opp ${(Number(item.opportunity_score||0)).toFixed(3)} · Setup ${(Number(item.setup_quality||0)).toFixed(3)}`,
-      side:item.session_label?titleToken(item.session_label):'NEAR',
-      sideClass:'am',
-    })),'No near-miss setups right now');
+    renderDeskRows('nearMissPanel',nearMisses.slice(0,6).map(item=>({head:`${item.asset||'—'} ${String(item.direction||'').toUpperCase() || ''} ${statusPill(item)}`,meta:[`${exactKillReason(item)} · Opp ${(Number(item.opportunity_score||0)).toFixed(3)} · Setup ${(Number(item.setup_quality||0)).toFixed(3)}`, readinessBits(item).join(' · '), qualityBits(item).slice(0,4).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · '),side:item.session_label?titleToken(item.session_label):eliteEntryState(item).label.toUpperCase(),sideClass:eliteEntryState(item).className})),'No near-miss setups right now');
 
     const lifecycle=d.trade_lifecycle||{};
-    document.getElementById('lifecycleBadge').textContent=`${lifecycle.seeded||0} seed → ${lifecycle.closed||0} closed`;
+    const lifecyclePool=collectElitePool(d);
+    const funnelSeeded=Number(lifecycle.seeded||0);
+    const funnelStructure=Number(lifecycle.structure_valid||lifecyclePool.filter(item=>item.breakout_retest_ready===true || item.first_pullback_ready===true || item.entry_confirmation_ready===true).length||0);
+    const funnelConfirm=Number(lifecycle.confirmation_ready||lifecyclePool.filter(item=>item.entry_confirmation_ready===true).length||0);
+    const funnelApproved=Number(lifecycle.approved||0);
+    const funnelExecuted=Number(lifecycle.executed||lifecycle.opened||Number((d.positions||[]).length||0));
+    document.getElementById('lifecycleBadge').textContent=`${funnelSeeded} seed → ${funnelExecuted} exec`;
     renderCommandBoardCards('lifecyclePanel',[
-      {title:'Seeded',value:String(lifecycle.seeded||0),valueClass:'cy',note:'Raw journal signals that reached the seed stage.'},
-      {title:'Approved',value:String(lifecycle.approved||0),valueClass:'gn',note:'Signals that survived the review stack.'},
-      {title:'Opened',value:String(lifecycle.opened||0),valueClass:'pu',note:'Live positions currently running in the book.'},
-      {title:'Partial',value:String(lifecycle.partial||0),valueClass:(lifecycle.partial||0)?'am':'mu',note:'Partial exits recorded in the recent lifecycle.'},
-      {title:'Runner Closed',value:String(lifecycle.runner_closed||0),valueClass:(lifecycle.runner_closed||0)?'bl':'mu',note:'Closed trades that previously scaled out.'},
+      {title:'Seeded',value:String(funnelSeeded),valueClass:'cy',note:'Raw journal signals that reached the seed stage.'},
+      {title:'Structure Valid',value:String(funnelStructure),valueClass:funnelStructure?'bl':'mu',note:'Retest or pullback structure still intact before the confirmation gate.'},
+      {title:'Confirmation Ready',value:String(funnelConfirm),valueClass:funnelConfirm?'am':'mu',note:'Signals that satisfied elite confirmation bars / reclaim checks.'},
+      {title:'Approved',value:String(funnelApproved),valueClass:'gn',note:'Signals that survived the review stack.'},
+      {title:'Executed',value:String(funnelExecuted),valueClass:funnelExecuted?'pu':'mu',note:'Signals that made it from review into a live position.'},
       {title:'Closed',value:String(lifecycle.closed||0),valueClass:(lifecycle.closed||0)?'rd':'mu',note:'Fully closed parent trades in the recent window.'},
     ],'No lifecycle data');
 
@@ -1086,7 +1038,6 @@ async function loadMain(){
     renderWhalePanel(d);
   }catch(e){console.error('[CC] desk panels:',e);}
 
-  // ── Sentiment ────────────────────────────────────────────────────────────
   try{
     const ss=Number(d.sentiment_score||0);
     const ssLabel=ss>0.2?'Bullish':ss<-0.2?'Bearish':'Neutral';
@@ -1096,9 +1047,14 @@ async function loadMain(){
     document.getElementById('sentLabel').textContent=ssLabel;
     document.getElementById('sentBar').style.width=((ss+1)/2*100)+'%';
     document.getElementById('sentBar').style.background=ssColor;
+    const pool=collectElitePool(d);
+    const readyCount=pool.filter(item=>eliteEntryState(item).label==='Ready').length;
+    const waitingCount=pool.filter(item=>eliteEntryState(item).label==='Waiting').length;
+    const blockedCount=pool.filter(item=>eliteEntryState(item).label==='Blocked').length;
     const chips = [
       {label:`Whales ${d.alert_count_24h||0}`, cls:(d.alert_count_24h||0)?'warn':'ok'},
       {label:d.engine_ready?'Ready':'Warming', cls:d.engine_ready?'ok':'warn'},
+      {label:`Elite ${readyCount}/${waitingCount}/${blockedCount}`, cls:blockedCount?'warn':readyCount?'ok':'info'},
       {label:`Feeds ${providerRouting.summary_label||'—'}`, cls:(providerRouting.primary_counts||{}).IG?'ok':''},
       {label:`Memory ${Number(signalQuality.avg_memory_score||0).toFixed(0)}`, cls:Number(signalQuality.avg_memory_score||0)>=60?'ok':'warn'},
       {label:`Exec ${Number(signalQuality.avg_execution_quality||0).toFixed(0)}`, cls:Number(signalQuality.avg_execution_quality||0)>=60?'ok':'warn'},
@@ -1109,138 +1065,59 @@ async function loadMain(){
     document.getElementById('pulseChips').innerHTML = chips.map(c=>`<span class="mini-chip ${c.cls||''}">${c.label}</span>`).join('');
   }catch(e){console.error('[CC] sentiment:',e);}
 
-  // ── Open positions table ─────────────────────────────────────────────────
   try{
     const pos=d.positions||[];
     document.getElementById('posCount').textContent=pos.length||0;
     _allPositions = pos;
     const pf=document.getElementById('posFilter');
-    if(pf && pf.value && pf.value !== 'all'){
-      filterPositions();
-    }else{
-      renderPositions(pos);
-    }
+    if(pf && pf.value && pf.value !== 'all')filterPositions();
+    else renderPositions(pos);
   }catch(e){console.error('[CC] positions:',e);}
 }
 
 async function loadWhales(){
   try{
     const page = await fetchCommandCenterOverview();
-    if(!page.success){
-      document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';
-      return;
-    }
+    if(!page.success){document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';return;}
     const d = page || {};
-    if(!d||!d.success){
-      document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';
-      return;
-    }
-    document.getElementById('whaleCount').textContent=d.alert_count_24h||0;
-    const wEl=document.getElementById('whalePanel');
-    const alerts=d.recent||[];
-    if(!alerts.length){wEl.innerHTML='<div class="empty">No whale alerts</div>';return;}
-    wEl.innerHTML=alerts.slice(0,4).map(a=>`
-      <div class="whale-item">
-        <div class="whale-icon">🐋</div>
-        <div class="whale-info">
-          <div class="whale-title">${a.symbol||a.asset||'?'}</div>
-          <div class="whale-meta">${a.source||''}</div>
-        </div>
-        <div class="whale-amount">$${((a.value_usd||0)/1e6).toFixed(1)}M</div>
-      </div>`).join('');
+    if(!d||!d.success){document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';return;}
+    renderWhalePanel(d);
   }catch(e){}
 }
-
-function apiHeaders(){
-  return {'Content-Type': 'application/json'};
-}
-
+function apiHeaders(){return {'Content-Type': 'application/json'};}
 async function fetchProtectedJson(url, options = {}){
-  return window.dashboardFetchJson(url, {
-    timeoutMs: options.timeoutMs || 12000,
-    init: {
-      method: options.method || 'GET',
-      headers: Object.assign({}, apiHeaders(), options.headers || {}),
-      body: options.body,
-      cache: options.cache || 'no-store',
-    }
-  });
+  return window.dashboardFetchJson(url, {timeoutMs: options.timeoutMs || 12000,init: {method: options.method || 'GET',headers: Object.assign({}, apiHeaders(), options.headers || {}),body: options.body,cache: options.cache || 'no-store'}});
 }
-
 async function bootCommandCenter(){
-  try{
-    if(window.dashboardAuthReady){
-      await window.dashboardAuthReady;
-    }
-  }catch(_){}
-  await Promise.allSettled([
-    loadMain(),
-    loadHistory(),
-  ]);
+  try{if(window.dashboardAuthReady)await window.dashboardAuthReady;}catch(_){}
+  await Promise.allSettled([loadMain(),loadHistory()]);
   startCommandCenterStream();
 }
-
 bootCommandCenter();
-
 setInterval(() => { if(!document.hidden && !_commandCenterStreamActive){ loadMain(); } }, 5000);
 setInterval(loadHistory,60000);
-document.addEventListener('visibilitychange', () => {
-  if(!document.hidden){
-    loadMain();
-    if(!_commandCenterStreamActive && !_commandCenterStreamDisabled){
-      startCommandCenterStream();
-    }
-  }
-});
+document.addEventListener('visibilitychange', () => {if(!document.hidden){loadMain();if(!_commandCenterStreamActive && !_commandCenterStreamDisabled)startCommandCenterStream();}});
 window.addEventListener('pagehide', stopCommandCenterStream);
 window.addEventListener('beforeunload', stopCommandCenterStream);
 
-
-// ── Trade History ─────────────────────────────────────────────────────────
 async function loadHistory(){
   try{
     const filter=document.getElementById('historyFilter')?.value||'all';
     const d=await fetchProtectedJson(`/api/trade-history?limit=50&no_cache=1&_=${Date.now()}`, {timeoutMs: 12000});
-    if(!d.success){
-      document.getElementById('historyBody').innerHTML='<tr><td colspan="11" class="empty">Trade history unavailable</td></tr>';
-      return;
-    }
+    if(!d.success){document.getElementById('historyBody').innerHTML='<tr><td colspan="11" class="empty">Trade history unavailable</td></tr>';return;}
     let trades=d.trades||[];
     trades=trades.filter(t=>!t.is_partial_close);
-
-    // Apply filter
-    if(filter==='forex')      trades=trades.filter(t=>t.category==='forex');
-    else if(filter==='crypto') trades=trades.filter(t=>t.category==='crypto');
-    else if(filter==='commodities') trades=trades.filter(t=>t.category==='commodities');
-    else if(filter==='indices') trades=trades.filter(t=>t.category==='indices');
-    else if(filter==='won')   trades=trades.filter(t=>(t.pnl||0)>0);
-    else if(filter==='lost')  trades=trades.filter(t=>(t.pnl||0)<0);
-
+    if(filter==='forex')trades=trades.filter(t=>t.category==='forex');
+    else if(filter==='crypto')trades=trades.filter(t=>t.category==='crypto');
+    else if(filter==='commodities')trades=trades.filter(t=>t.category==='commodities');
+    else if(filter==='indices')trades=trades.filter(t=>t.category==='indices');
+    else if(filter==='won')trades=trades.filter(t=>(t.pnl||0)>0);
+    else if(filter==='lost')trades=trades.filter(t=>(t.pnl||0)<0);
     document.getElementById('historyCount').textContent=trades.length;
     const tbody=document.getElementById('historyBody');
-    if(!trades.length){
-      tbody.innerHTML='<tr><td colspan="11" class="empty">No closed trades</td></tr>';
-      return;
-    }
-
-    const fmtDur=ms=>{
-      const m=Math.floor(ms/60000);
-      if(m<60)return m+'m';
-      if(m<1440)return Math.floor(m/60)+'h '+m%60+'m';
-      return Math.floor(m/1440)+'d '+Math.floor((m%1440)/60)+'h';
-    };
-    const reasonLabel=r=>{
-      if(!r)return'—';
-      if(r.includes('Partial TP') && r.includes('->'))return r;
-      if(r.includes('Take Profit'))return'Take Profit';
-      if(r.includes('Stop Loss'))return r.includes('offline') ? 'Stop Loss (Offline)' : 'Stop Loss';
-      if(r.includes('Trail'))return'Trailing Exit';
-      if(r.includes('Manual'))return'Manual Close';
-      if(r.includes('Break'))return'Break-Even Exit';
-      return r;
-    };
+    if(!trades.length){tbody.innerHTML='<tr><td colspan="11" class="empty">No closed trades</td></tr>';return;}
+    const reasonLabel=r=>{if(!r)return'—';if(r.includes('Partial TP') && r.includes('->'))return r;if(r.includes('Take Profit'))return'Take Profit';if(r.includes('Stop Loss'))return r.includes('offline') ? 'Stop Loss (Offline)' : 'Stop Loss';if(r.includes('Trail'))return'Trailing Exit';if(r.includes('Manual'))return'Manual Close';if(r.includes('Break'))return'Break-Even Exit';return r;};
     const sm=p=>p>0&&p<10;
-
     tbody.innerHTML=trades.map(t=>{
       const pnl=Number(t.pnl||0);
       const pnlCol=pnl>=0?'var(--gr)':'var(--rd)';
@@ -1252,12 +1129,8 @@ async function loadHistory(){
       const rrRealized=Number(t.rr_realized||0);
       const provenance=provenanceLine(t);
       const fmt=n=>n>0?(sm(n)?n.toFixed(5):n.toFixed(2)):'—';
-      const fmtLot=n=>{
-        if(!(n>0)) return '—';
-        if(n>=1) return n.toFixed(2);
-        return n.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
-      };
-      const dur=t.duration_str||'—';  // pre-calculated server-side
+      const fmtLot=n=>{if(!(n>0)) return '—';if(n>=1) return n.toFixed(2);return n.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');};
+      const dur=t.duration_str||'—';
       const catEmoji={forex:'💱',crypto:'₿',commodities:'🥇',indices:'📈'}[t.category]||'📊';
       const execTags=[];
       if(execQ>0) execTags.push(`Exec ${execQ.toFixed(0)}`);
@@ -1265,80 +1138,31 @@ async function loadHistory(){
       if(t.premature_stop) execTags.push('Premature stop');
       if(t.target_miss) execTags.push('Target missed');
       if(t.late_entry) execTags.push('Late entry');
-      const reasonMeta=execTags.length
-        ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${execTags.slice(0,3).join(' · ')}</div>`
-        : '';
-      const provenanceMeta=provenance
-        ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${provenance}</div>`
-        : '';
-      return`<tr style="opacity:0.9">
-        <td>
-          <strong>${t.asset||'?'}</strong>
-          <span style="font-size:10px;color:var(--tx3);margin-left:4px">${catEmoji}</span>
-        </td>
-        <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
-        <td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td>
-        <td style="font-family:monospace;font-size:11px">${fmt(ep)}</td>
-        <td style="font-family:monospace;font-size:11px">${fmt(xp)}</td>
-        <td style="font-size:11px;color:var(--tx3)">${fmtDashboardTime(t.entry_time)}</td>
-        <td style="font-size:11px;color:var(--tx3)">${fmtDashboardTime(t.exit_time)}</td>
-        <td style="font-size:11px;color:var(--am)">${dur}</td>
-        <td style="font-weight:700;color:${pnlCol}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-        <td style="font-size:10px;color:var(--tx3)">${reasonLabel(t.display_exit_reason||t.exit_reason)}${reasonMeta}${provenanceMeta}${t.continuation_summary?`<div style="font-size:10px;color:var(--am);margin-top:2px">${t.continuation_summary}</div>`:''}</td>
-        <td style="font-size:11px">${t.confidence?Math.round(t.confidence*100)+'%':'—'}</td>
-      </tr>`;
+      const eliteBits=qualityBits(t).slice(0,4);
+      const readinessMeta=`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${readinessBits(t).slice(0,3).join(' · ')}</div>`;
+      const reasonMeta=execTags.length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${execTags.slice(0,3).join(' · ')}</div>`:'';
+      const eliteMeta=eliteBits.length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${eliteBits.join(' · ')}</div>`:'';
+      const regimeMeta=regimeBits(t).length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${regimeBits(t).join(' · ')}</div>`:'';
+      const provenanceMeta=provenance?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${provenance}</div>`:'';
+      return`<tr style="opacity:0.9"><td><strong>${t.asset||'?'}</strong><span style="font-size:10px;color:var(--tx3);margin-left:4px">${catEmoji}</span></td><td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td><td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td><td style="font-family:monospace;font-size:11px">${fmt(ep)}</td><td style="font-family:monospace;font-size:11px">${fmt(xp)}</td><td style="font-size:11px;color:var(--tx3)">${fmtDashboardTime(t.entry_time)}</td><td style="font-size:11px;color:var(--tx3)">${fmtDashboardTime(t.exit_time)}</td><td style="font-size:11px;color:var(--am)">${dur}</td><td style="font-weight:700;color:${pnlCol}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td><td style="font-size:10px;color:var(--tx3)">${statusPill(t)} ${exactKillReason(t)}${reasonMeta}${eliteMeta}${readinessMeta}${regimeMeta}${provenanceMeta}${reviewNotesLine(t)?`<div style="font-size:10px;color:var(--am);margin-top:2px">${reviewNotesLine(t)}</div>`:''}${t.continuation_summary?`<div style="font-size:10px;color:var(--am);margin-top:2px">${t.continuation_summary}</div>`:''}</td><td style="font-size:11px">${t.confidence?Math.round(t.confidence*100)+'%':'—'}</td></tr>`;
     }).join('');
   }catch(e){console.error('[History]',e);}
 }
-
 async function clearTradeHistory(){
   if(!confirm('Clear all closed trade history? This cannot be undone.')) return;
   try{
-    const json = await fetchProtectedJson('/api/trade-history/clear', {
-      method: 'POST',
-      timeoutMs: 12000,
-    });
-    if(!json.success){
-      alert('Failed to clear trade history: '+(json.error||'unknown'));
-      return;
-    }
-    loadHistory();
-    loadMain();
-    alert('Trade history cleared');
-  }catch(e){
-    console.error('[History] clear error', e);
-    alert('Failed to clear trade history');
-  }
+    const json = await fetchProtectedJson('/api/trade-history/clear', {method: 'POST',timeoutMs: 12000});
+    if(!json.success){alert('Failed to clear trade history: '+(json.error||'unknown'));return;}
+    loadHistory();loadMain();alert('Trade history cleared');
+  }catch(e){console.error('[History] clear error', e);alert('Failed to clear trade history');}
 }
-
-// ── Cumulative P&L Chart ────────────────────────────────────────────────────
 let _pnlChart = null;
-
-async function loadPnlChart(){
-  try{
-    const page=await fetchCommandCenterOverview();
-    if(!page.success){
-      document.getElementById('pnlStats').textContent = 'P&L history unavailable';
-      return;
-    }
-    renderPnlChart(page.pnl_curve||[], page.pnl_curve_stats||{});
-  }catch(e){console.error('[PnlChart]',e);}
-}
-
 function renderPnlChart(curve, stats = {}){
   const ctx=document.getElementById('pnlChart');
   const statsEl=document.getElementById('pnlStats');
   if(!ctx||!statsEl)return;
   const points=Array.isArray(curve)?curve:[];
-  if(!points.length){
-    statsEl.textContent='P&L history unavailable';
-    if(_pnlChart){
-      _pnlChart.destroy();
-      _pnlChart=null;
-    }
-    return;
-  }
-
+  if(!points.length){statsEl.textContent='P&L history unavailable';if(_pnlChart){_pnlChart.destroy();_pnlChart=null;}return;}
   const labels=points.map(p=>p.label||'');
   const data=points.map(p=>Number(p.cumulative_pnl??p.pnl??0));
   const current=Number(data[data.length-1]||0);
@@ -1347,93 +1171,21 @@ function renderPnlChart(curve, stats = {}){
   if(!stats.peak && !stats.drawdown){
     let runningPeak = data[0] ?? 0;
     let worstDrawdown = 0;
-    data.forEach(v => {
-      runningPeak = Math.max(runningPeak, v);
-      worstDrawdown = Math.min(worstDrawdown, v - runningPeak);
-    });
-    peak = runningPeak;
-    maxDrawdown = Math.abs(worstDrawdown);
+    data.forEach(v => {runningPeak = Math.max(runningPeak, v);worstDrawdown = Math.min(worstDrawdown, v - runningPeak);});
+    peak = runningPeak;maxDrawdown = Math.abs(worstDrawdown);
   }
-
   statsEl.textContent = `Live ${fmtMoney(current)} | Peak ${fmtMoney(peak)} | Drawdown ${fmtMoney(maxDrawdown)} | ${stats.interval_minutes||30}m intervals`;
   statsEl.style.color=current>=0?'var(--gr)':'var(--rd)';
-
   const borderColor=current>=0?'#00d084':'#ff5964';
   const fillColor=current>=0?'rgba(0, 208, 132, 0.12)':'rgba(255, 69, 96, 0.12)';
   if(_pnlChart)_pnlChart.destroy();
-
-  _pnlChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Cumulative P&L',
-        data,
-        borderColor,
-        backgroundColor: fillColor,
-        fill: true,
-        tension: 0.3,
-        pointRadius: 2,
-        pointBackgroundColor: borderColor,
-        pointBorderColor: 'transparent',
-        pointHoverRadius: 4,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {display: false},
-        tooltip: {
-          backgroundColor: 'rgba(13, 17, 23, 0.9)',
-          borderColor: '#1e2635',
-          borderWidth: 1,
-          titleColor: '#c9d1e0',
-          bodyColor: '#c9d1e0',
-          padding: 10,
-          callbacks: {
-            title(items){
-              const item=items&&items[0];
-              return item ? `${item.label || ''}` : '';
-            },
-            label(context){
-              return `P&L: ${fmtMoney(Number(context.raw||0))}`;
-            }
-          }
-        }
-      },
-      scales: {
-        y: {
-          beginAtZero: false,
-          grid: {color: 'rgba(30, 38, 53, 0.3)'},
-          ticks: {
-            color: '#7a8899',
-            font: {size: 10},
-            callback(value){
-              return '$' + Number(value).toFixed(0);
-            }
-          },
-          title: {display: false}
-        },
-        x: {
-          grid: {color: 'transparent'},
-          ticks: {color: '#7a8899', font: {size: 10}, maxTicksLimit: 8, autoSkip: true}
-        }
-      }
-    }
-  });
+  _pnlChart = new Chart(ctx, {type: 'line',data: {labels,datasets: [{label: 'Cumulative P&L',data,borderColor,backgroundColor: fillColor,fill: true,tension: 0.3,pointRadius: 2,pointBackgroundColor: borderColor,pointBorderColor: 'transparent',pointHoverRadius: 4}]},options: {responsive: true,maintainAspectRatio: false,plugins: {legend: {display: false},tooltip: {backgroundColor: 'rgba(13, 17, 23, 0.9)',borderColor: '#1e2635',borderWidth: 1,titleColor: '#c9d1e0',bodyColor: '#c9d1e0',padding: 10,callbacks: {title(items){const item=items&&items[0];return item ? `${item.label || ''}` : '';},label(context){return `P&L: ${fmtMoney(Number(context.raw||0))}`;}}}},scales: {y: {beginAtZero: false,grid: {color: 'rgba(30, 38, 53, 0.3)'},ticks: {color: '#7a8899',font: {size: 10},callback(value){return '$' + Number(value).toFixed(0);}},title: {display: false}},x: {grid: {color: 'transparent'},ticks: {color: '#7a8899', font: {size: 10}, maxTicksLimit: 8, autoSkip: true}}}}});
 }
-
-// ── Position filter + close dropdown functions ───────────────────────────────
 let _allPositions = [];
-
 function renderPositions(pos){
   const tbody=document.getElementById('posBody');
   if(!tbody)return;
-  if(!pos.length){
-    tbody.innerHTML='<tr><td colspan="11" class="empty">No open positions</td></tr>';
-    return;
-  }
+  if(!pos.length){tbody.innerHTML='<tr><td colspan="11" class="empty">No open positions</td></tr>';return;}
   tbody.innerHTML=pos.map(p=>{
     const dir=(p.direction||p.signal||'BUY').toUpperCase();
     const pnl=Number(p.pnl||0);
@@ -1462,16 +1214,12 @@ function renderPositions(pos){
     const crossPeer=p.cross_asset_primary_peer||'';
     const crossAlign=Number(p.cross_asset_alignment||0);
     const patternLine=recentPatternLine(p);
+    const regimeMeta=regimeBits(p).length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${regimeBits(p).join(' · ')}</div>`:'';
     const sm=e>0&&e<10;
     const fmt=n=>n>0?(sm?n.toFixed(5):n.toFixed(2)):'—';
-    const fmtLot=n=>{
-      if(!(n>0)) return '—';
-      if(n>=1) return n.toFixed(2);
-      return n.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
-    };
+    const fmtLot=n=>{if(!(n>0)) return '—';if(n>=1) return n.toFixed(2);return n.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');};
     const curCol=cur>0?(dir==='BUY'?(cur>=e?'var(--gr)':'var(--rd)'):(cur<=e?'var(--gr)':'var(--rd)')):'var(--tx2)';
     const tid=p.trade_id||'';
-    // Open time + duration — parse stored timestamps and render in EAT
     let openStr='—';
     try{
       const raw=p.open_time||'';
@@ -1486,7 +1234,6 @@ function renderPositions(pos){
         }
       }
     }catch(ex){}
-    // Progress bar toward TP
     let progress=0;
     if(nextTp&&e&&sl){
       const tpDist=Math.abs(nextTp-e);
@@ -1495,6 +1242,8 @@ function renderPositions(pos){
     }
     const pBar=`<div style="height:3px;background:var(--bd);border-radius:2px;margin-top:2px"><div style="height:3px;width:${progress.toFixed(0)}%;background:${progress>80?'var(--gr)':progress>50?'var(--am)':'var(--bl)'};border-radius:2px;transition:width .5s"></div></div>`;
     const execMeta=execSamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Exec ${execQ.toFixed(0)} · n${execSamples}</div>`:'';
+    const eliteMeta=qualityBits(p).length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${qualityBits(p).slice(0,4).join(' · ')}</div>`:'';
+    const readyMeta=`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${readinessBits(p).slice(0,3).join(' · ')}</div>`;
     const memoryMeta=memorySamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Memory ${memoryScore.toFixed(0)} · n${memorySamples}</div>`:'';
     const provenanceMeta=provenance?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${provenance}</div>`:'';
     const brokerMeta=(brokerQ||brokerState)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''}</div>`:'';
@@ -1505,22 +1254,10 @@ function renderPositions(pos){
     const crossMeta=crossPeer?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${crossAlign>=0?'Cross support':'Cross conflict'} via ${crossPeer}</div>`:'';
     const patternMeta=patternLine?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${patternLine}</div>`:'';
     const targetMeta=runnerTp && Math.abs(runnerTp-nextTp)>1e-9 ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">Runner ${fmt(runnerTp)}</div>` : '';
-    return`<tr>
-      <td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${provenanceMeta}${brokerMeta}${microMeta}${crossMeta}${patternMeta}${pBar}</td>
-      <td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td>
-      <td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td>
-      <td style="font-family:monospace">${fmt(e)}</td>
-      <td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td>
-      <td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td>
-      <td style="font-family:monospace;color:var(--gr)">${fmt(nextTp||tp)}${targetMeta}${postureMeta}</td>
-      <td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-      <td>${(Number(p.confidence||0)*100).toFixed(0)}%${rankMeta}${noteMeta}</td>
-      <td style="font-size:11px;white-space:nowrap">${openStr}</td>
-      <td><button onclick="confirmClose('${tid}','${p.asset||'?'}')" style="padding:4px 10px;border-radius:6px;border:none;background:rgba(255,69,96,.15);color:var(--rd);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap" onmouseover="this.style.background='var(--rd)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,69,96,.15)';this.style.color='var(--rd)'">✕ Close</button></td>
-    </tr>`;
+    const state=eliteEntryState(p);
+    return`<tr><td><strong>${p.asset||'?'}</strong> ${statusPill(p,state.label)}<br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${eliteMeta}${readyMeta}${provenanceMeta}${brokerMeta}${microMeta}${crossMeta}${patternMeta}${regimeMeta}${(p.exact_kill_reason||p.execution_kill_reason)?`<div style="font-size:10px;color:var(--rd);margin-top:2px">${exactKillReason(p)}</div>`:''}${reviewNotesLine(p)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${reviewNotesLine(p)}</div>`:''}${pBar}</td><td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td><td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td><td style="font-family:monospace">${fmt(e)}</td><td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td><td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td><td style="font-family:monospace;color:var(--gr)">${fmt(nextTp||tp)}${targetMeta}${postureMeta}</td><td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td><td>${(Number(p.confidence||0)*100).toFixed(0)}%${rankMeta}${noteMeta}</td><td style="font-size:11px;white-space:nowrap">${openStr}</td><td><button onclick="confirmClose('${tid}','${p.asset||'?'}')" style="padding:4px 10px;border-radius:6px;border:none;background:rgba(255,69,96,.15);color:var(--rd);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap" onmouseover="this.style.background='var(--rd)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,69,96,.15)';this.style.color='var(--rd)'">✕ Close</button></td></tr>`;
   }).join('');
 }
-
 async function loadTopOpportunities(forceRefresh=false){
   const panel=document.getElementById('topOpsPanel');
   if(panel) panel.innerHTML='<div class="spinner" style="grid-column:1/-1;padding:18px 0">Refreshing ranked setups…</div>';
@@ -1528,107 +1265,55 @@ async function loadTopOpportunities(forceRefresh=false){
     const qs=new URLSearchParams({limit:'5'});
     if(forceRefresh) qs.set('refresh','1');
     const r=await fetchProtectedJson('/api/opportunities/top?'+qs.toString(), {timeoutMs: 12000});
-    if(!r.success){
-      renderTopOpportunities([]);
-      return;
-    }
+    if(!r.success){renderTopOpportunities([]);return;}
     renderTopOpportunities(r.opportunities||[]);
-  }catch(e){
-    console.error('[TopOpportunities]',e);
-    renderTopOpportunities([]);
-  }
+  }catch(e){console.error('[TopOpportunities]',e);renderTopOpportunities([]);}
 }
-
 async function runWeakReprice(){
   setActionStatus('Repricing weak exits…','info');
   try{
-    const r=await fetchProtectedJson('/api/positions/reprice-weak',{
-      method:'POST',
-      timeoutMs: 15000,
-      body:JSON.stringify({limit:3,tighten_only:true})
-    });
-    if(!r.success){
-      setActionStatus(r.error||'Weak exit repricing failed.','error');
-      return;
-    }
-    if(!r.repriced){
-      setActionStatus('No weak exits needed repricing right now.','warn');
-      return;
-    }
+    const r=await fetchProtectedJson('/api/positions/reprice-weak',{method:'POST',timeoutMs: 15000,body:JSON.stringify({limit:3,tighten_only:true})});
+    if(!r.success){setActionStatus(r.error||'Weak exit repricing failed.','error');return;}
+    if(!r.repriced){setActionStatus('No weak exits needed repricing right now.','warn');return;}
     const first=(r.updates||[])[0]||{};
     _commandCenterCache=null;
     setActionStatus(`Repriced ${r.repriced} weak position(s). ${first.asset||''} ${first.new_stop_loss?'SL updated':''}`.trim(),'success');
     await Promise.all([loadMain(), loadHistory()]);
-  }catch(e){
-    console.error('[WeakReprice]',e);
-    setActionStatus('Weak exit repricing failed.','error');
-  }
+  }catch(e){console.error('[WeakReprice]',e);setActionStatus('Weak exit repricing failed.','error');}
 }
-
 async function runWeakReduction(){
   setActionStatus('Reducing weak positions…','info');
   try{
-    const r=await fetchProtectedJson('/api/positions/reduce-weak',{
-      method:'POST',
-      timeoutMs: 15000,
-      body:JSON.stringify({limit:3,reduction_fraction:0.35})
-    });
-    if(!r.success){
-      setActionStatus(r.error||'Weak position reduction failed.','error');
-      return;
-    }
+    const r=await fetchProtectedJson('/api/positions/reduce-weak',{method:'POST',timeoutMs: 15000,body:JSON.stringify({limit:3,reduction_fraction:0.35})});
+    if(!r.success){setActionStatus(r.error||'Weak position reduction failed.','error');return;}
     const reduced=Number(r.reduced||0);
-    if(!reduced){
-      setActionStatus('No weak positions qualified for reduction right now.','warn');
-      return;
-    }
+    if(!reduced){setActionStatus('No weak positions qualified for reduction right now.','warn');return;}
     const first=(r.actions||[]).find(a=>a.success)||{};
     _commandCenterCache=null;
     setActionStatus(`Reduced ${reduced} weak position(s). ${first.asset||''} realised ${first.realized_pnl!=null?fmtMoney(first.realized_pnl):''}`.trim(),'success');
     await Promise.all([loadMain(), loadHistory(), loadTopOpportunities(false)]);
-  }catch(e){
-    console.error('[WeakReduction]',e);
-    setActionStatus('Weak position reduction failed.','error');
-  }
+  }catch(e){console.error('[WeakReduction]',e);setActionStatus('Weak position reduction failed.','error');}
 }
-
 function filterPositions(){
   const filter = document.getElementById('posFilter')?.value || 'all';
-  if(!_allPositions.length){
-    document.getElementById('posBody').innerHTML='<tr><td colspan="11" class="empty">No open positions</td></tr>';
-    return;
-  }
-  const filtered = filter === 'all' ? _allPositions :
-    filter === 'winning' ? _allPositions.filter(p => Number(p.pnl||0) > 0) :
-    filter === 'losing'  ? _allPositions.filter(p => Number(p.pnl||0) <= 0) :
-    _allPositions.filter(p => (p.category||'').toLowerCase() === filter.toLowerCase());
-  if(!filtered.length){
-    document.getElementById('posBody').innerHTML=`<tr><td colspan="11" class="empty">No ${filter} positions</td></tr>`;
-    return;
-  }
+  if(!_allPositions.length){document.getElementById('posBody').innerHTML='<tr><td colspan="11" class="empty">No open positions</td></tr>';return;}
+  const filtered = filter === 'all' ? _allPositions : filter === 'winning' ? _allPositions.filter(p => Number(p.pnl||0) > 0) : filter === 'losing'  ? _allPositions.filter(p => Number(p.pnl||0) <= 0) : _allPositions.filter(p => (p.category||'').toLowerCase() === filter.toLowerCase());
+  if(!filtered.length){document.getElementById('posBody').innerHTML=`<tr><td colspan="11" class="empty">No ${filter} positions</td></tr>`;return;}
   renderPositions(filtered);
 }
-
 function handleCloseDropdown(sel){
   const val = sel.value;
   if(!val){ return; }
-  sel.value = '';  // reset dropdown
+  sel.value = '';
   const labels = {forex:'Forex',crypto:'Crypto',commodities:'Commodities',indices:'Indices',losing:'Losing',winning:'Winning',all:'ALL'};
-  _pendingClose = val === 'all' ? {mode:'all'} :
-    ['forex','crypto','commodities','indices'].includes(val) ? {mode:'category',cat:val} :
-    {mode:'filter',filter:val};
+  _pendingClose = val === 'all' ? {mode:'all'} : ['forex','crypto','commodities','indices'].includes(val) ? {mode:'category',cat:val} : {mode:'filter',filter:val};
   document.getElementById('closeModalText').textContent = `Close all ${labels[val]} positions?`;
   document.getElementById('closeModalSub').textContent = val === 'all' ? 'All open positions will be closed.' : `All ${labels[val]} positions will be closed.`;
   document.getElementById('closeModalConfirm').onclick = executeClose;
   document.getElementById('closeModal').style.display = 'flex';
 }
-
-// ── Position close functions ──────────────────────────────────────────────
 let _pendingClose=null;
 function confirmClose(tid,asset){_pendingClose={tid,asset,mode:'single'};document.getElementById('closeModalText').textContent=`Close ${asset}?`;document.getElementById('closeModalSub').textContent='This will close at current market price.';document.getElementById('closeModalConfirm').onclick=executeClose;document.getElementById('closeModal').style.display='flex';}
-function closeAllConfirm(){const c=document.getElementById('posCount').textContent||0;_pendingClose={mode:'all'};document.getElementById('closeModalText').textContent=`Close all ${c} positions?`;document.getElementById('closeModalSub').textContent='All open positions will be closed at market price.';document.getElementById('closeModalConfirm').onclick=executeClose;document.getElementById('closeModal').style.display='flex';}
-function closeByCategory(cat){_pendingClose={mode:'category',cat};document.getElementById('closeModalText').textContent=`Close all ${cat} positions?`;document.getElementById('closeModalSub').textContent=`All ${cat} positions will be closed.`;document.getElementById('closeModalConfirm').onclick=executeClose;document.getElementById('closeModal').style.display='flex';}
-function closeFiltered(filter){_pendingClose={mode:'filter',filter};const label=filter==='losing'?'🔴 losing':'🟢 winning';document.getElementById('closeModalText').textContent=`Close all ${label} positions?`;document.getElementById('closeModalSub').textContent=`All ${filter} positions will be closed.`;document.getElementById('closeModalConfirm').onclick=executeClose;document.getElementById('closeModal').style.display='flex';}
 async function executeClose(){
   document.getElementById('closeModal').style.display='none';
   if(!_pendingClose)return;
@@ -1650,7 +1335,6 @@ async function executeClose(){
 }
 function showToast(msg,type){const t=document.createElement('div');t.textContent=msg;t.style.cssText=`position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:10px;background:${type==='success'?'rgba(0,208,132,.9)':'rgba(255,69,96,.9)'};color:#fff;font-weight:600;font-size:13px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.3)`;document.body.appendChild(t);setTimeout(()=>t.remove(),3500);}
 </script>
-
 <script>
 function toggleSidebar(){
   var sb=document.querySelector('.sidebar'),ov=document.getElementById('sbOverlay'),btn=document.getElementById('menuBtn');

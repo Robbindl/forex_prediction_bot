@@ -3,11 +3,12 @@ import sys
 import uuid
 import threading
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from risk.manager import RiskManager
 from utils.logger import get_logger
 
 logger = get_logger()
+TradeDict = Dict[str, Any]
 
 
 class PaperTrader:
@@ -23,14 +24,14 @@ class PaperTrader:
     ):
         self.account_balance      = account_balance
         self._risk_manager        = risk_manager or RiskManager(account_balance)
-        self.open_positions:  Dict[str, Dict] = {}
+        self.open_positions: Dict[str, TradeDict] = {}
         self._lock                = threading.RLock()
-        self.on_trade_closed: Optional[Callable[[Dict], None]] = None
-        self.on_position_updated: Optional[Callable[[Dict], None]] = None
+        self.on_trade_closed: Optional[Callable[[TradeDict], None]] = None
+        self.on_position_updated: Optional[Callable[[TradeDict], None]] = None
 
     # ── Restore persisted positions on restart ────────────────────────────────
 
-    def restore_position(self, pos: Dict) -> None:
+    def restore_position(self, pos: TradeDict) -> None:
         tid = pos.get("trade_id")
         if tid:
             with self._lock:
@@ -45,7 +46,7 @@ class PaperTrader:
 
     @staticmethod
     def _metadata_dict(raw: Any) -> Dict[str, Any]:
-        return dict(raw) if isinstance(raw, dict) else {}
+        return cast(Dict[str, Any], dict(raw) if isinstance(raw, dict) else {})
 
     def _resolve_execution_profile(self, category: str, metadata: Dict[str, Any]) -> Dict[str, float]:
         try:
@@ -194,7 +195,7 @@ class PaperTrader:
 
     def _calculate_net_pnl(
         self,
-        pos: Dict,
+        pos: TradeDict,
         exit_price: float,
         size: float,
         commission_rate: float,
@@ -210,7 +211,7 @@ class PaperTrader:
         net_pnl = gross_pnl - total_commission
         return gross_pnl, net_pnl, entry_commission, exit_commission, total_commission
 
-    def _exit_fill(self, pos: Dict, reference_price: float, phase: str) -> Tuple[float, Dict[str, Any]]:
+    def _exit_fill(self, pos: TradeDict, reference_price: float, phase: str) -> Tuple[float, Dict[str, Any]]:
         metadata = self._metadata_dict(pos.get("metadata"))
         profile = self._resolve_execution_profile(str(pos.get("category", "forex")), metadata)
         direction = str(pos.get("direction", pos.get("signal", "BUY"))).upper()
@@ -232,7 +233,7 @@ class PaperTrader:
 
     # ── Execute a signal ──────────────────────────────────────────────────────
 
-    def execute_signal(self, signal: Dict) -> Optional[Dict]:
+    def execute_signal(self, signal: TradeDict) -> Optional[TradeDict]:
         """
         Open a paper trade from a signal dict.
         Returns trade dict or None if rejected.
@@ -374,7 +375,7 @@ class PaperTrader:
 
     # ── Update open positions with current prices ─────────────────────────────
 
-    def update_positions(self, prices: Dict[str, float]) -> List[Dict]:
+    def update_positions(self, prices: Dict[str, float]) -> List[TradeDict]:
         """
         Check SL/TP for each position. Returns list of closed trades.
         prices = {asset: current_price}
@@ -407,7 +408,7 @@ class PaperTrader:
 
         return closed
 
-    def _check_exit(self, pos: Dict, price: float) -> Optional[Dict]:
+    def _check_exit(self, pos: TradeDict, price: float) -> Optional[TradeDict]:
         asset = pos.get("asset", "")
         category = pos.get("category", "forex")
         direction = pos.get("direction", pos.get("signal", "BUY"))
@@ -473,13 +474,13 @@ class PaperTrader:
             self._notify_position_updated(pos)
         return None
 
-    def _update_exit_extremes(self, pos: Dict, price: float, direction: str, entry: float) -> None:
+    def _update_exit_extremes(self, pos: TradeDict, price: float, direction: str, entry: float) -> None:
         if direction == "BUY":
             pos["highest_price"] = max(float(pos.get("highest_price", entry)), price)
         else:
             pos["lowest_price"] = min(float(pos.get("lowest_price", entry)), price)
 
-    def _mark_to_market_pnl(self, pos: Dict, price: float, size: float) -> tuple[float, Dict[str, Any]]:
+    def _mark_to_market_pnl(self, pos: TradeDict, price: float, size: float) -> tuple[float, Dict[str, Any]]:
         mark_fill, mark_meta = self._exit_fill(pos, price, "mark_to_market")
         asset = pos.get("asset", "")
         category = pos.get("category", "forex")
@@ -504,7 +505,7 @@ class PaperTrader:
 
     def _apply_trailing_stop_rules(
         self,
-        pos: Dict,
+        pos: TradeDict,
         price: float,
         direction: str,
         entry: float,
@@ -534,7 +535,7 @@ class PaperTrader:
 
     def _apply_management_trailing_rules(
         self,
-        pos: Dict,
+        pos: TradeDict,
         price: float,
         direction: str,
         entry: float,
@@ -564,7 +565,7 @@ class PaperTrader:
 
     def _apply_fallback_trailing_rules(
         self,
-        pos: Dict,
+        pos: TradeDict,
         price: float,
         direction: str,
         entry: float,
@@ -575,30 +576,42 @@ class PaperTrader:
         if tp_dist <= 0:
             return stop_loss
 
+        initial_risk = abs(entry - float(pos.get("original_sl", stop_loss)))
+        if initial_risk <= 0:
+            return stop_loss
+
+        progress = ((price - entry) / tp_dist) if direction == "BUY" else ((entry - price) / tp_dist)
+        favorable_move = ((price - entry) if direction == "BUY" else (entry - price))
+        progress_rr = favorable_move / max(initial_risk, 1e-9)
+        partials_taken = int(pos.get("tp_hit", 0) or 0)
+        break_even_buffer = initial_risk * (0.12 if partials_taken > 0 else 0.05)
+
         if direction == "BUY":
-            progress = (price - entry) / tp_dist
-            if progress >= 0.90:
-                atr_approx = float(pos.get("original_sl", stop_loss))
-                atr_approx = abs(entry - atr_approx)
-                trail_sl = float(pos.get("highest_price", price)) - (0.5 * atr_approx)
+            if progress >= 0.95 or progress_rr >= 1.75:
+                trail_sl = float(pos.get("highest_price", price)) - (0.90 * initial_risk)
+                if partials_taken > 0:
+                    trail_sl = max(trail_sl, entry + break_even_buffer)
                 if trail_sl > stop_loss:
                     pos["stop_loss"] = trail_sl
                     stop_loss = trail_sl
-            elif progress >= 0.60 and entry > stop_loss:
-                pos["stop_loss"] = entry
-                stop_loss = entry
+            elif progress >= 0.78 or progress_rr >= 1.15:
+                buffered_be = entry + break_even_buffer
+                if buffered_be > stop_loss:
+                    pos["stop_loss"] = buffered_be
+                    stop_loss = buffered_be
         else:
-            progress = (entry - price) / tp_dist
-            if progress >= 0.90:
-                atr_approx = float(pos.get("original_sl", stop_loss))
-                atr_approx = abs(entry - atr_approx)
-                trail_sl = float(pos.get("lowest_price", price)) + (0.5 * atr_approx)
+            if progress >= 0.95 or progress_rr >= 1.75:
+                trail_sl = float(pos.get("lowest_price", price)) + (0.90 * initial_risk)
+                if partials_taken > 0:
+                    trail_sl = min(trail_sl, entry - break_even_buffer)
                 if trail_sl < stop_loss:
                     pos["stop_loss"] = trail_sl
                     stop_loss = trail_sl
-            elif progress >= 0.60 and entry < stop_loss:
-                pos["stop_loss"] = entry
-                stop_loss = entry
+            elif progress >= 0.78 or progress_rr >= 1.15:
+                buffered_be = entry - break_even_buffer
+                if buffered_be < stop_loss:
+                    pos["stop_loss"] = buffered_be
+                    stop_loss = buffered_be
         return stop_loss
 
     @staticmethod
@@ -606,6 +619,23 @@ class PaperTrader:
         if direction == "BUY":
             return price <= stop_loss
         return price >= stop_loss
+
+    @staticmethod
+    def _is_price_beyond_level(direction: str, price: float, level: float) -> bool:
+        if direction == "BUY":
+            return price >= level
+        return price <= level
+
+    @staticmethod
+    def _closest_level_to_price(direction: str, price: float, levels: List[float]) -> float:
+        valid_levels = [float(level) for level in levels if float(level) > 0]
+        if not valid_levels:
+            return float(price)
+        if direction == "BUY":
+            crossed = [level for level in valid_levels if level <= price]
+            return max(crossed) if crossed else min(valid_levels)
+        crossed = [level for level in valid_levels if level >= price]
+        return min(crossed) if crossed else max(valid_levels)
 
     @staticmethod
     def _is_take_profit_hit(direction: str, price: float, take_profit: float) -> bool:
@@ -647,12 +677,12 @@ class PaperTrader:
 
     def _close_trade(
         self,
-        pos: Dict,
+        pos: TradeDict,
         exit_price: float,
         reason: str,
         size: float,
         metadata: Dict[str, Any],
-    ) -> Dict:
+    ) -> TradeDict:
         close_fill, close_meta = self._exit_fill(pos, exit_price, reason)
         gross_pnl, net_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
             pos,
@@ -679,27 +709,27 @@ class PaperTrader:
 
     def _close_on_stop_loss(
         self,
-        pos: Dict,
+        pos: TradeDict,
         price: float,
         direction: str,
         stop_loss: float,
         size: float,
         metadata: Dict[str, Any],
-    ) -> Optional[Dict]:
+    ) -> Optional[TradeDict]:
         if self._is_stop_loss_hit(direction, price, stop_loss):
             reason = "Trailing Stop" if stop_loss != float(pos.get("original_sl", stop_loss)) else "Stop Loss"
-            return self._close_trade(pos, price, reason, size, metadata)
+            return self._close_trade(pos, stop_loss, reason, size, metadata)
         return None
 
     def _close_partial_take_profit(
         self,
-        pos: Dict,
+        pos: TradeDict,
         tp_level: float,
         tp_idx: int,
         total_tiers: int,
         partial_size: float,
         metadata: Dict[str, Any],
-    ) -> Dict:
+    ) -> TradeDict:
         close_fill, close_meta = self._exit_fill(pos, tp_level, f"Partial TP {tp_idx + 1}/{total_tiers}")
         gross_partial_pnl, partial_pnl, entry_commission, exit_commission, total_commission = self._calculate_net_pnl(
             pos,
@@ -734,55 +764,74 @@ class PaperTrader:
 
     def _process_take_profit_targets(
         self,
-        pos: Dict,
+        pos: TradeDict,
         price: float,
         direction: str,
         entry: float,
         take_profit: float,
-        tp_levels: list,
+        tp_levels: List[float],
         size: float,
         metadata: Dict[str, Any],
-    ) -> Optional[Dict]:
+    ) -> Optional[TradeDict]:
         if tp_levels:
-            tp_idx = int(pos.get("tp_hit", 0))
-            if tp_idx < len(tp_levels):
-                tp_level = tp_levels[tp_idx]
-                if self._is_take_profit_hit(direction, price, tp_level):
-                    pos["tp_hit"] = tp_idx + 1
-                    if tp_idx + 1 >= len(tp_levels):
-                        return self._close_trade(pos, tp_level, f"Take Profit {tp_idx + 1}", size, metadata)
+            total_tiers = len(tp_levels)
+            while True:
+                tp_idx = int(pos.get("tp_hit", 0))
+                if tp_idx >= total_tiers:
+                    break
 
-                    total_tiers = len(tp_levels)
-                    close_fraction = 1.0 / (total_tiers - tp_idx)
-                    original_size = float(pos.get("position_size", size))
-                    partial_size = original_size * close_fraction
-                    remaining_size = original_size - partial_size
-                    partial_trade = self._close_partial_take_profit(
+                tp_level = float(tp_levels[tp_idx])
+                if not self._is_take_profit_hit(direction, price, tp_level):
+                    break
+
+                pos["tp_hit"] = tp_idx + 1
+                if tp_idx + 1 >= total_tiers:
+                    return self._close_trade(
                         pos,
-                        tp_level,
-                        tp_idx,
-                        total_tiers,
-                        partial_size,
+                        self._closest_level_to_price(direction, price, tp_levels),
+                        f"Take Profit {tp_idx + 1}",
+                        float(pos.get("position_size", size)),
                         metadata,
                     )
 
-                    pos["position_size"] = remaining_size
-                    if direction == "BUY" and entry > float(pos.get("stop_loss", 0)):
-                        pos["stop_loss"] = entry
-                    elif direction == "SELL" and entry < float(pos.get("stop_loss", 99e9)):
-                        pos["stop_loss"] = entry
+                original_size = float(pos.get("position_size", size))
+                close_fraction = 1.0 / max(2, total_tiers - tp_idx)
+                partial_size = original_size * close_fraction
+                remaining_size = max(0.0, original_size - partial_size)
+                partial_trade = self._close_partial_take_profit(
+                    pos,
+                    tp_level,
+                    tp_idx,
+                    total_tiers,
+                    partial_size,
+                    metadata,
+                )
 
-                    self._notify_position_updated(pos)
-                    if partial_trade and self.on_trade_closed:
-                        try:
-                            self.on_trade_closed(partial_trade)
-                        except Exception as _e:
-                            logger.error(f"[PaperTrader] partial TP callback error: {_e}")
-                    return None
+                pos["position_size"] = remaining_size
+                initial_risk = abs(entry - float(pos.get("original_sl", pos.get("stop_loss", entry))))
+                be_buffer = initial_risk * 0.05
+                if direction == "BUY":
+                    improved_stop = max(float(pos.get("stop_loss", 0.0)), entry + be_buffer)
+                    pos["stop_loss"] = improved_stop
+                else:
+                    current_stop = float(pos.get("stop_loss", entry))
+                    improved_stop = min(current_stop, entry - be_buffer)
+                    pos["stop_loss"] = improved_stop
+
+                self._notify_position_updated(pos)
+                if partial_trade and self.on_trade_closed:
+                    try:
+                        self.on_trade_closed(partial_trade)
+                    except Exception as _e:
+                        logger.error(f"[PaperTrader] partial TP callback error: {_e}")
+
+                if remaining_size <= 0:
+                    return self._close_trade(pos, tp_level, f"Take Profit {tp_idx + 1}", remaining_size, metadata)
+
         elif take_profit and self._is_take_profit_hit(direction, price, take_profit):
             return self._close_trade(pos, take_profit, "Take Profit", size, metadata)
         return None
-    def _notify_position_updated(self, pos: Dict) -> None:
+    def _notify_position_updated(self, pos: TradeDict) -> None:
         if not self.on_position_updated:
             return
         try:
@@ -791,7 +840,7 @@ class PaperTrader:
             logger.error(f"[PaperTrader] on_position_updated error: {e}")
 
     @staticmethod
-    def _close(pos: Dict, exit_price: float, reason: str, pnl: float, details: Optional[Dict[str, Any]] = None) -> Dict:
+    def _close(pos: TradeDict, exit_price: float, reason: str, pnl: float, details: Optional[Dict[str, Any]] = None) -> TradeDict:
         entry     = float(pos.get("entry_price", exit_price))
         # FIX HIGH: pnl_pct previously always used pos.get("balance", 10000)
         # fallback.  The balance is almost never stored in the position dict,
@@ -862,11 +911,10 @@ class PaperTrader:
 
     # ── Stats ─────────────────────────────────────────────────────────────────
 
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> TradeDict:
         with self._lock:
             return {
                 "open_count":    len(self.open_positions),
                 "open_positions": list(self.open_positions.values()),
                 "balance":        self.account_balance,
             }
-

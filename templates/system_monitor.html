@@ -216,6 +216,14 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div id="execFrictionPanel"><div class="empty">Loading…</div></div>
       </div>
 
+      <div class="panel panel-full">
+        <div class="panel-header">
+          <span class="panel-title">🧭 Decision Funnel</span>
+          <span class="panel-badge" id="funnelBadge">—</span>
+        </div>
+        <div id="funnelPanel"><div class="empty">Loading…</div></div>
+      </div>
+
       <!-- Source freshness -->
       <div class="panel panel-full">
         <div class="panel-header">
@@ -335,6 +343,82 @@ function updateSpark(inst,hist,val){
 }
 
 function barColor(pct){return pct>85?'var(--rd)':pct>70?'var(--am)':'var(--gr)'}
+function signalMeta(signal){return signal && typeof signal.metadata === 'object' && signal.metadata ? signal.metadata : {};}
+function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] !== undefined ? meta[key] : signal ? signal[key] : undefined;}
+function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
+function signalBool(signal,key){return signalValue(signal,key) === true;}
+function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
+function signalEntryState(signal){
+  const kill = signalText(signal, 'exact_kill_reason') || signalText(signal, 'execution_kill_reason') || signalText(signal, 'kill_reason') || signalText(signal, 'killed_by');
+  const ready = signalBool(signal, 'entry_confirmation_ready');
+  const count = signalNum(signal, 'entry_confirmation_count', 0);
+  const required = signalNum(signal, 'entry_confirmation_bars_required', 0);
+  const retest = signalBool(signal, 'breakout_retest_ready');
+  const pullback = signalBool(signal, 'first_pullback_ready');
+  if(kill) return 'blocked';
+  if(ready && (retest || pullback || !required)) return 'ready';
+  if((retest || pullback) || (required && count < required)) return 'waiting';
+  return 'neutral';
+}
+function deriveDecisionGateCounts(signals){
+  const rows = Array.isArray(signals) ? signals : [];
+  let confirmationWait = 0, retestMissing = 0, pullbackMissing = 0, extensionVeto = 0, weakCandle = 0, weakSession = 0, targetVeto = 0, oldImpulse = 0, regimeVeto = 0, clusterVeto = 0, blockedCount = 0;
+  rows.forEach(function(item){
+    const kill = (signalText(item, 'exact_kill_reason') || signalText(item, 'execution_kill_reason') || signalText(item, 'kill_reason') || signalText(item, 'killed_by') || '').toLowerCase();
+    const count = signalNum(item, 'entry_confirmation_count', 0);
+    const required = signalNum(item, 'entry_confirmation_bars_required', 0);
+    const ready = signalBool(item, 'entry_confirmation_ready');
+    const retest = signalBool(item, 'breakout_retest_ready');
+    const pullback = signalBool(item, 'first_pullback_ready');
+    const extension = signalNum(item, 'extension_score', 0);
+    const candle = signalNum(item, 'candle_quality_score', 0);
+    const session = signalNum(item, 'session_quality_score', 0);
+    const target = signalNum(item, 'target_efficiency_score', 0);
+    const impulse = signalNum(item, 'impulse_age_bars', 0);
+    const cluster = signalNum(item, 'cluster_penalty', 0);
+    const policy = (signalText(item, 'regime_policy_summary') || signalText(item, 'regime_policy') || signalText(item, 'regime_label')).toLowerCase();
+    if(!ready && required > 0 && count < required) confirmationWait += 1;
+    if(!retest) retestMissing += 1;
+    if(!pullback) pullbackMissing += 1;
+    if(extension >= 80 || /overextend|extension/.test(kill)) extensionVeto += 1;
+    if((candle > 0 && candle < 55) || /candle/.test(kill)) weakCandle += 1;
+    if((session > 0 && session < 55) || /session/.test(kill)) weakSession += 1;
+    if((target > 0 && target < 50) || /target/.test(kill)) targetVeto += 1;
+    if(impulse >= 12 || /impulse|old/.test(kill)) oldImpulse += 1;
+    if(/regime|policy/.test(kill) || /regime|policy/.test(policy)) regimeVeto += 1;
+    if(cluster >= 0.7 || /cluster/.test(kill)) clusterVeto += 1;
+    if(kill || extension >= 80 || cluster >= 0.7 || ((candle > 0 && candle < 55) || (session > 0 && session < 55) || (target > 0 && target < 50) || (impulse >= 12))) blockedCount += 1;
+  });
+  return {
+    confirmation_wait_count: confirmationWait,
+    retest_missing_count: retestMissing,
+    pullback_missing_count: pullbackMissing,
+    extension_veto_count: extensionVeto,
+    weak_candle_veto_count: weakCandle,
+    weak_session_veto_count: weakSession,
+    target_efficiency_veto_count: targetVeto,
+    old_impulse_veto_count: oldImpulse,
+    regime_veto_count: regimeVeto,
+    cluster_veto_count: clusterVeto,
+    blocked_candidate_count: blockedCount,
+  };
+}
+function deriveDecisionFunnel(signals, tradeLifecycle, openPositions){
+  const rows = Array.isArray(signals) ? signals : [];
+  const seeded = Number(tradeLifecycle?.seeded || rows.length || 0);
+  const structure = Number(tradeLifecycle?.structure_valid || rows.filter(function(item){
+    return signalBool(item, 'breakout_retest_ready') || signalBool(item, 'first_pullback_ready') || signalBool(item, 'entry_confirmation_ready');
+  }).length || 0);
+  const confirm = Number(tradeLifecycle?.confirmation_ready || rows.filter(function(item){
+    return signalBool(item, 'entry_confirmation_ready');
+  }).length || 0);
+  const approved = Number(tradeLifecycle?.approved || rows.filter(function(item){
+    return signalEntryState(item) === 'ready';
+  }).length || 0);
+  const executed = Number(tradeLifecycle?.executed || tradeLifecycle?.opened || openPositions || 0);
+  const closed = Number(tradeLifecycle?.closed || 0);
+  return {seeded, structure, confirm, approved, executed, closed};
+}
 
 let _systemMonitorCache = null;
 async function fetchSystemMonitorOverview(){
@@ -362,6 +446,11 @@ async function load(){
     const overview = await fetchSystemMonitorOverview();
     const d = overview.health || {};
     const snapshot = overview.snapshot || {};
+    const commandCenter = overview.command_center || {};
+    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+    const tradeLifecycle = commandCenter.trade_lifecycle || {};
+    const gateCounts = deriveDecisionGateCounts(liveSignals);
+    const funnel = deriveDecisionFunnel(liveSignals, tradeLifecycle, Number(d.open_positions || 0));
 
     document.getElementById('updateTime').textContent='Updated: '+new Date(new Date(d.timestamp||Date.now()).getTime()+3*3600000).toISOString().substring(11,19)+' EAT';
     document.getElementById('sysDot').style.background=d.processes?.['TradingCore']?'var(--gr)':'var(--rd)';
@@ -449,12 +538,12 @@ async function load(){
           </div>
           <div class="train-card">
             <div class="train-top">
-              <div class="train-name">Telemetry</div>
-              <div class="train-state ${Number(d.recent_error_count || 0) ? 'am' : 'gn'}">${Number(d.recent_error_count || 0) ? 'watch' : 'clean'}</div>
+              <div class="train-name">Decision flow</div>
+              <div class="train-state ${funnel.approved || funnel.executed ? 'gn' : 'am'}">seed ${funnel.seeded} → exec ${funnel.executed}</div>
             </div>
-            <div class="train-meta">Recent errors: ${Number(d.recent_error_count || 0)}</div>
-            <div class="train-meta">Stale sources: ${Number(d.stale_source_count || 0)}</div>
-            <div class="train-meta">Never seen: ${Number(d.never_seen_source_count || 0)}</div>
+            <div class="train-meta">Structure ${funnel.structure} · confirmation ${funnel.confirm} · approved ${funnel.approved}</div>
+            <div class="train-meta">Closed ${funnel.closed} · waits ${gateCounts.confirmation_wait_count}</div>
+            <div class="train-issue">The runtime now exposes the same seed-to-exec funnel the bot uses for entry-quality gating.</div>
           </div>
         </div>`;
     }
@@ -509,7 +598,7 @@ async function load(){
             <div class="train-state ${integrityState === 'Stable' ? 'gn' : integrityState === 'Guarded' ? 'am' : 'bl'}">${integrityState.toLowerCase()}</div>
           </div>
           <div class="train-meta">Mode ${runtimeMode} · balance ${(d.balance || 0).toFixed(2)}</div>
-          <div class="train-issue">${integrityState === 'Stable' ? 'All major runtime surfaces agree with the current monitor view.' : 'Use the freshness, latency, and error panels before trusting the desk blindly.'}</div>
+          <div class="train-issue">${integrityState === 'Stable' ? 'All major runtime surfaces agree with the current monitor view.' : 'Use the freshness, latency, and gate panels before trusting the desk blindly.'}</div>
         </div>
       </div>`;
 
@@ -530,6 +619,14 @@ async function load(){
           </div>
           <div class="train-meta">Decision P95${telegramLatency ? ` · Telegram ${telegramLatency.toFixed(0)}ms` : ''}</div>
           <div class="train-issue">${decisionLatency >= 800 ? 'Decision latency is elevated enough to slow entries.' : 'Latency is not the main desk drag right now.'}</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Gate pressure</div>
+            <div class="train-state ${gateCounts.confirmation_wait_count || gateCounts.extension_veto_count || gateCounts.regime_veto_count || gateCounts.cluster_veto_count ? 'am' : 'gn'}">${gateCounts.confirmation_wait_count + gateCounts.extension_veto_count + gateCounts.weak_candle_veto_count + gateCounts.weak_session_veto_count + gateCounts.target_efficiency_veto_count + gateCounts.regime_veto_count + gateCounts.cluster_veto_count}</div>
+          </div>
+          <div class="train-meta">Conf ${gateCounts.confirmation_wait_count} · Retest ${gateCounts.retest_missing_count} · Pullback ${gateCounts.pullback_missing_count}</div>
+          <div class="train-issue">Ext ${gateCounts.extension_veto_count} · Quality ${gateCounts.weak_candle_veto_count}/${gateCounts.weak_session_veto_count}/${gateCounts.target_efficiency_veto_count} · Policy ${gateCounts.regime_veto_count}/${gateCounts.cluster_veto_count}</div>
         </div>
         <div class="train-card">
           <div class="train-top">
@@ -556,6 +653,40 @@ async function load(){
           <div class="train-issue">${recentErrors ? 'Recent runtime errors are still adding operator noise.' : 'Error tracker is currently quiet.'}</div>
         </div>
       </div>`;
+
+    const funnelBadge = document.getElementById('funnelBadge');
+    if(funnelBadge) funnelBadge.textContent = `${funnel.seeded} → ${funnel.executed}`;
+    const funnelPanel = document.getElementById('funnelPanel');
+    if(funnelPanel){
+      funnelPanel.innerHTML = `
+        <div class="train-grid">
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Seeded</div><div class="train-state cy">${funnel.seeded}</div></div>
+            <div class="train-meta">Raw signals that reached the entry stack</div>
+            <div class="train-issue">Seeded ideas include both live signals and near-miss candidates.</div>
+          </div>
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Structure valid</div><div class="train-state ${funnel.structure ? 'gn' : 'mu'}">${funnel.structure}</div></div>
+            <div class="train-meta">Retest / pullback structure still intact</div>
+            <div class="train-issue">This is the pre-confirmation path the bot is watching.</div>
+          </div>
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Confirmation ready</div><div class="train-state ${funnel.confirm ? 'am' : 'mu'}">${funnel.confirm}</div></div>
+            <div class="train-meta">Bars or reclaim checks satisfied</div>
+            <div class="train-issue">Signals here are past the main waiting gate.</div>
+          </div>
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Approved</div><div class="train-state ${funnel.approved ? 'gn' : 'mu'}">${funnel.approved}</div></div>
+            <div class="train-meta">Reviewed and cleared by the policy stack</div>
+            <div class="train-issue">Approved setups are past quality, regime, and cluster gates.</div>
+          </div>
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Executed</div><div class="train-state ${funnel.executed ? 'gn' : 'mu'}">${funnel.executed}</div></div>
+            <div class="train-meta">Live positions entered from the funnel</div>
+            <div class="train-issue">${funnel.closed} closed in the tracked window</div>
+          </div>
+        </div>`;
+    }
 
     // Data freshness
     const freshEl = document.getElementById('freshnessPanel');
@@ -723,6 +854,11 @@ async function loadSignalPerf(){
     const d = overview || {};
     if(!d.success)return;
     const sigs=d.snapshot || {};
+    const commandCenter = d.command_center || {};
+    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+    const tradeLifecycle = commandCenter.trade_lifecycle || {};
+    const gateCounts = deriveDecisionGateCounts(liveSignals);
+    const funnel = deriveDecisionFunnel(liveSignals, tradeLifecycle, Number(d.health?.open_positions || 0));
     const kills=sigs.signal_kills||{};
     const total=sigs.total_signals||0;
     const wr=((sigs.win_rate||0)*100).toFixed(1);
@@ -737,12 +873,43 @@ async function loadSignalPerf(){
       :'<div style="color:var(--tx3);font-size:12px">No rejects recorded yet</div>';
 
     document.getElementById('signalPerfPanel').innerHTML=`
-      <div style="display:flex;gap:20px;margin-bottom:14px">
-        <div><span style="font-size:24px;font-weight:700;color:var(--cy)">${total}</span><div style="font-size:10px;color:var(--tx3);text-transform:uppercase">Total Signals</div></div>
-        <div><span style="font-size:24px;font-weight:700;color:var(--gr)">${wr}%</span><div style="font-size:10px;color:var(--tx3);text-transform:uppercase">Live Win Rate</div></div>
-        <div style="margin-left:auto;font-size:11px;color:var(--tx3)">Reject breakdown:</div>
+      <div class="train-grid">
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Signal yield</div>
+            <div class="train-state ${Number(wr) >= 55 ? 'gn' : Number(wr) >= 45 ? 'am' : 'rd'}">${wr}%</div>
+          </div>
+          <div class="train-meta">${total} tracked signals</div>
+          <div class="train-issue">Live win rate from the current signal snapshot.</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Decision funnel</div>
+            <div class="train-state ${funnel.executed ? 'gn' : 'am'}">${funnel.seeded} → ${funnel.executed}</div>
+          </div>
+          <div class="train-meta">Seed ${funnel.seeded} · Structure ${funnel.structure} · Confirm ${funnel.confirm}</div>
+          <div class="train-issue">Approved ${funnel.approved} · Closed ${funnel.closed}</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Gate profile</div>
+            <div class="train-state ${gateCounts.confirmation_wait_count || gateCounts.extension_veto_count || gateCounts.regime_veto_count || gateCounts.cluster_veto_count ? 'am' : 'gn'}">${gateCounts.confirmation_wait_count + gateCounts.extension_veto_count + gateCounts.weak_candle_veto_count + gateCounts.weak_session_veto_count + gateCounts.target_efficiency_veto_count + gateCounts.regime_veto_count + gateCounts.cluster_veto_count}</div>
+          </div>
+          <div class="train-meta">Conf ${gateCounts.confirmation_wait_count} · Retest ${gateCounts.retest_missing_count} · Pullback ${gateCounts.pullback_missing_count}</div>
+          <div class="train-issue">Ext ${gateCounts.extension_veto_count} · Candle ${gateCounts.weak_candle_veto_count} · Session ${gateCounts.weak_session_veto_count} · Target ${gateCounts.target_efficiency_veto_count}</div>
+        </div>
+        <div class="train-card">
+          <div class="train-top">
+            <div class="train-name">Policy blocks</div>
+            <div class="train-state ${gateCounts.regime_veto_count || gateCounts.cluster_veto_count ? 'rd' : 'gn'}">${gateCounts.regime_veto_count + gateCounts.cluster_veto_count}</div>
+          </div>
+          <div class="train-meta">Old impulse ${gateCounts.old_impulse_veto_count} · blocked ${gateCounts.blocked_candidate_count}</div>
+          <div class="train-issue">${killEntries.length ? 'Reject breakdown is still surfacing the dominant exact blockers.' : 'No reject breakdown has been recorded yet.'}</div>
+        </div>
       </div>
-      <div class="kill-grid">${killHtml}</div>`;
+      <div style="margin-top:14px">
+        <div class="kill-grid">${killHtml}</div>
+      </div>`;
   }catch(e){}
 }
 

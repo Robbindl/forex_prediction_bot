@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from config.config import IG_ROUTED_CATEGORIES
 from core.asset_profiles import get_profile
+from services.market_hours_guard import build_market_status
 
 
 def is_ig_primary_category(category: str) -> bool:
@@ -43,7 +44,7 @@ def get_market_status(asset: str, category: str = ""):
 
             status = ig_market_bridge.get_market_status(asset, category=resolved_category)
             if status and "market_open" in status:
-                return status
+                return build_market_status(asset, resolved_category, provider_status=status)
         except Exception:
             pass
 
@@ -52,7 +53,7 @@ def get_market_status(asset: str, category: str = ""):
 
         status = deriv_bridge.get_market_status(asset, category=resolved_category)
         if status and "market_open" in status:
-            return status
+            return build_market_status(asset, resolved_category, provider_status=status)
     except Exception:
         pass
 

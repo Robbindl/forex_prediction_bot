@@ -447,6 +447,116 @@ function wallWeight(wall){
   const strengthBase = strength === 'EXTREME' ? 1 : strength === 'STRONG' ? 0.7 : 0.4;
   return strengthBase * Math.min(2, Math.max(0.5, sizeRatio / 2 || 0.5));
 }
+function signalMeta(signal){return signal && typeof signal.metadata === 'object' && signal.metadata ? signal.metadata : {};}
+function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] !== undefined ? meta[key] : signal ? signal[key] : undefined;}
+function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
+function signalBool(signal,key){return signalValue(signal,key) === true;}
+function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
+function normalizeFlowAsset(asset){
+  return String(asset || '')
+    .toUpperCase()
+    .replace('-USD','')
+    .replace('/USD','')
+    .replace('USDT','')
+    .replace('=F','');
+}
+function confirmationState(signal){
+  const ready = signalBool(signal, 'entry_confirmation_ready');
+  const count = signalNum(signal, 'entry_confirmation_count', 0);
+  const required = signalNum(signal, 'entry_confirmation_bars_required', 0);
+  if(ready) return {state:'ready', label:'Ready', detail: count && required ? count + '/' + required + ' bars' : 'confirmed'};
+  if(required && count < required) return {state:'waiting', label:'Waiting', detail: count + '/' + required + ' bars'};
+  return {state:'neutral', label:'Unknown', detail:'confirmation not published'};
+}
+function entryReadiness(signal){
+  const confirm = confirmationState(signal);
+  const retest = signalBool(signal, 'breakout_retest_ready');
+  const pullback = signalBool(signal, 'first_pullback_ready');
+  const kill = exactKillReason(signal);
+  if(kill) return {state:'blocked', label:'Blocked', detail:kill};
+  if((retest || pullback) && confirm.state === 'ready') return {state:'ready', label:'Ready', detail:(retest ? 'retest' : 'pullback') + ' + confirmation'};
+  if(retest || pullback) return {state:'waiting', label:'Waiting', detail:confirm.detail};
+  return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
+}
+function exactKillReason(signal){
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || '').trim();
+}
+function reviewNotesLine(signal){
+  return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
+}
+function regimeBits(signal){
+  const bits = [];
+  const regime = String(signalValue(signal, 'regime_policy_summary') || signalValue(signal, 'regime_policy') || signalValue(signal, 'regime_label') || '').trim();
+  const cluster = Number(signalValue(signal, 'cluster_penalty') || 0);
+  const extension = Number(signalValue(signal, 'extension_score') || 0);
+  if(regime) bits.push('Regime ' + regime);
+  if(cluster) bits.push('Cluster ' + cluster.toFixed(cluster >= 1 ? 0 : 2));
+  if(extension) bits.push('Ext ' + extension.toFixed(extension >= 1 ? 0 : 2));
+  return bits;
+}
+function buildFlowState(imbalance, walls, hunts){
+  const state = {};
+  function ensure(asset){
+    const key = normalizeFlowAsset(asset);
+    if(!key) return null;
+    if(!state[key]){
+      state[key] = {asset:asset, key:key, imbalance:0, wallDelta:0, huntDelta:0, bidWalls:0, askWalls:0, buyHunts:0, sellHunts:0, score:0};
+    }
+    return state[key];
+  }
+  Object.entries((imbalance && imbalance.imbalances) || {}).forEach(([asset, score]) => {
+    const row = ensure(asset);
+    if(row) row.imbalance = Number(score || 0);
+  });
+  (walls || []).forEach((wall) => {
+    const row = ensure(wall.asset);
+    if(!row) return;
+    const weight = wallWeight(wall);
+    if(String(wall.side || '').toUpperCase() === 'BID'){
+      row.bidWalls += 1;
+      row.wallDelta += weight;
+    }else{
+      row.askWalls += 1;
+      row.wallDelta -= weight;
+    }
+  });
+  (hunts || []).forEach((hunt) => {
+    const row = ensure(hunt.asset);
+    if(!row) return;
+    const weight = Math.max(0.2, Number(hunt.confidence || 0) || 0.2);
+    if(String(hunt.implication || '').toUpperCase() === 'SELL'){
+      row.sellHunts += 1;
+      row.huntDelta -= weight;
+    }else{
+      row.buyHunts += 1;
+      row.huntDelta += weight;
+    }
+  });
+  return Object.values(state).map((row) => {
+    row.score = row.imbalance + row.wallDelta * 0.2 + row.huntDelta * 0.25;
+    return row;
+  }).sort((a,b) => Math.abs(b.score) - Math.abs(a.score));
+}
+function buildSignalIndex(signals){
+  const index = new Map();
+  (Array.isArray(signals) ? signals : []).forEach((signal) => {
+    const key = normalizeFlowAsset(signal.asset || signal.symbol);
+    if(key && !index.has(key)) index.set(key, signal);
+  });
+  return index;
+}
+function signalFlowSupport(signal){
+  return {
+    retest: signalBool(signal, 'breakout_retest_ready'),
+    pullback: signalBool(signal, 'first_pullback_ready'),
+    sweep: signalBool(signal, 'liquidity_sweep_reclaim'),
+    failedOpposite: signalBool(signal, 'failed_opposite_move_confirmed'),
+    confirmation: confirmationState(signal),
+    readiness: entryReadiness(signal),
+    policy: regimeBits(signal),
+    notes: reviewNotesLine(signal),
+  };
+}
 
 async function loadFlowBridge() {
   try {
@@ -457,6 +567,11 @@ async function loadFlowBridge() {
     const imbalance = page.imbalance || {};
     const walls = page.walls?.walls || [];
     const hunts = page.hunts?.hunts || [];
+    const commandCenter = page.command_center || {};
+    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+    const signalIndex = buildSignalIndex(liveSignals);
+    const flowRanked = buildFlowState(imbalance, walls, hunts);
+    const flowMap = new Map(flowRanked.map(row => [normalizeFlowAsset(row.asset), row]));
     const bullishCount = Number(imbalance.bullish_count || 0);
     const bearishCount = Number(imbalance.bearish_count || 0);
     const fragileCount = Number(diagnostics.broker_fragile_count || 0);
@@ -465,10 +580,28 @@ async function loadFlowBridge() {
     const syntheticDepthCount = Number(diagnostics.synthetic_depth_count || 0);
     const conflictCount = Number(diagnostics.cross_conflict_count || 0);
     const blockCount = Number(diagnostics.recent_pattern_block_count || 0);
-    const bridgeState = fragileCount || conflictCount || blockCount ? 'Guarded' : diagnostics.count ? 'Aligned' : 'Idle';
+    const supportStats = liveSignals.reduce((acc, signal) => {
+      const flow = flowMap.get(normalizeFlowAsset(signal.asset || signal.symbol));
+      if(!flow) return acc;
+      const support = signalFlowSupport(signal);
+      const flowAligned = flow.score >= 0;
+      if(support.retest) acc.retest += 1;
+      if(support.pullback) acc.pullback += 1;
+      if(support.sweep) acc.sweep += 1;
+      if(support.failedOpposite) acc.failedOpposite += 1;
+      if(support.confirmation.state === 'ready') acc.confirmationReady += 1;
+      if(flowAligned) acc.flowAligned += 1;
+      if(flowAligned && support.readiness.state === 'ready') acc.flowAlignedReady += 1;
+      if(flowAligned && support.readiness.state === 'blocked') acc.flowAlignedBlocked += 1;
+      if(signalNum(signal, 'extension_score', 0) >= 80) acc.overextended += 1;
+      if((signalNum(signal, 'candle_quality_score', 0) > 0 && signalNum(signal, 'candle_quality_score', 0) < 55) || (signalNum(signal, 'session_quality_score', 0) > 0 && signalNum(signal, 'session_quality_score', 0) < 55) || (signalNum(signal, 'target_efficiency_score', 0) > 0 && signalNum(signal, 'target_efficiency_score', 0) < 50)) acc.qualityBlocked += 1;
+      if(/regime|policy/.test(String(signalValue(signal, 'regime_policy_summary') || signalValue(signal, 'regime_policy') || signalValue(signal, 'regime_label') || '').toLowerCase()) || /regime|policy/.test(exactKillReason(signal).toLowerCase())) acc.policyBlocked += 1;
+      return acc;
+    }, {retest:0,pullback:0,sweep:0,failedOpposite:0,confirmationReady:0,flowAligned:0,flowAlignedReady:0,flowAlignedBlocked:0,overextended:0,qualityBlocked:0,policyBlocked:0});
+    const bridgeState = fragileCount || conflictCount || blockCount ? 'Guarded' : diagnostics.count || liveSignals.length ? 'Aligned' : 'Idle';
     document.getElementById('flowBridgeBadge').textContent = bridgeState;
     const list = document.getElementById('flowBridgeList');
-    if(!diagnostics.count && !walls.length && !hunts.length && !Object.keys(imbalance.imbalances || {}).length){
+    if(!diagnostics.count && !walls.length && !hunts.length && !Object.keys(imbalance.imbalances || {}).length && !liveSignals.length){
       list.innerHTML = '<div class="empty">Flow bridge is waiting for live order-flow and active signal diagnostics.</div>';
       return;
     }
@@ -482,10 +615,10 @@ async function loadFlowBridge() {
       },
       {
         title: 'Signal diagnostics',
-        value: diagnostics.summary_label || 'No active diagnostics',
-        meta: `${supportiveCount} supportive · ${fragileCount} fragile`,
+        value: diagnostics.summary_label || (liveSignals.length ? 'Command center live' : 'No active diagnostics'),
+        meta: `${supportiveCount} supportive · ${fragileCount} fragile · ${liveSignals.length} live signals`,
         color: fragileCount ? 'var(--am)' : supportiveCount ? 'var(--gr)' : 'var(--tx2)',
-        sub: 'Whether current flow aligns with live broker-quality checks',
+        sub: 'Whether current flow aligns with live broker-quality checks and command-center signals',
       },
       {
         title: 'Flow balance',
@@ -493,6 +626,20 @@ async function loadFlowBridge() {
         meta: `${walls.length} walls · ${hunts.length} hunts`,
         color: bullishCount > bearishCount ? 'var(--gr)' : bearishCount > bullishCount ? 'var(--rd)' : 'var(--cy)',
         sub: 'Bullish vs bearish pressure in the active flow picture',
+      },
+      {
+        title: 'Entry support',
+        value: `${supportStats.retest}/${supportStats.pullback}`,
+        meta: `${supportStats.sweep} sweep reclaim · ${supportStats.failedOpposite} failed-opposite reclaim`,
+        color: supportStats.retest || supportStats.pullback || supportStats.sweep ? 'var(--gr)' : 'var(--tx2)',
+        sub: 'How often flow is supporting retest and pullback style entries',
+      },
+      {
+        title: 'Gate overlap',
+        value: `${supportStats.flowAlignedReady}/${supportStats.flowAlignedBlocked}`,
+        meta: `${supportStats.flowAligned} flow-aligned setups · ${supportStats.confirmationReady} confirmation-ready`,
+        color: supportStats.flowAlignedBlocked ? 'var(--rd)' : supportStats.flowAlignedReady ? 'var(--gr)' : 'var(--tx2)',
+        sub: 'Flow-aligned ideas that still hit non-flow execution gates',
       },
       {
         title: 'Depth & spillover',
@@ -514,13 +661,13 @@ async function loadFlowBridge() {
     const wallAskLead = walls.length - wallBidLead;
     const huntBuyLead = hunts.filter((hunt) => String(hunt.implication || '').toUpperCase() === 'BUY').length;
     const huntSellLead = hunts.length - huntBuyLead;
-    const frictionState = fragileCount || conflictCount || blockCount ? 'Guarded' : hunts.length || walls.length ? 'Live' : 'Idle';
+    const frictionState = fragileCount || conflictCount || blockCount ? 'Guarded' : hunts.length || walls.length || liveSignals.length ? 'Live' : 'Idle';
     document.getElementById('frictionBridgeBadge').textContent = frictionState;
     document.getElementById('executionFrictionPanel').innerHTML = '<div class="flow-bridge-grid">' + [
       {
         title: 'Execution posture',
         value: frictionState,
-        meta: fragileCount ? `${fragileCount} fragile broker contexts still drag the tape` : 'No active broker fragility pressure',
+        meta: fragileCount ? `${fragileCount} fragile broker contexts still drag the tape` : `${supportStats.flowAlignedBlocked} flow-aligned setups still hit execution gates`,
         color: fragileCount ? 'var(--am)' : diagnostics.count ? 'var(--gr)' : 'var(--tx2)',
         sub: 'Desk view of whether flow can be trusted for execution right now',
       },
@@ -541,7 +688,7 @@ async function loadFlowBridge() {
       {
         title: 'Cross drag',
         value: `${conflictCount}/${blockCount}`,
-        meta: conflictCount || blockCount ? 'Cross-market conflict or pattern memory is still blocking some flow' : 'Cross-market checks are not the main drag right now',
+        meta: conflictCount || blockCount ? `${supportStats.policyBlocked} policy · ${supportStats.qualityBlocked} quality blockers in the live signal set` : 'Cross-market checks are not the main drag right now',
         color: conflictCount || blockCount ? 'var(--rd)' : 'var(--gr)',
         sub: 'Review stack friction beyond the raw order-book read',
       },
@@ -684,6 +831,12 @@ async function loadFlowBridge() {
         meta: leadDepth ? `Score ${(leadDepth.score >= 0 ? '+' : '') + leadDepth.score.toFixed(3)} from combined flow inputs` : 'No accelerating tape leader',
         color: leadDepth ? (leadDepth.score >= 0 ? 'var(--gr)' : 'var(--rd)') : 'var(--tx2)',
       },
+      {
+        title: 'Entry gates',
+        value: `${supportStats.flowAlignedReady}/${supportStats.flowAlignedBlocked}`,
+        meta: `${supportStats.retest} retest · ${supportStats.pullback} pullback · ${supportStats.overextended} overextended`,
+        color: supportStats.flowAlignedBlocked ? 'var(--am)' : supportStats.flowAlignedReady ? 'var(--gr)' : 'var(--tx2)',
+      },
     ];
     document.getElementById('accelerationBadge').textContent = walls.length || hunts.length || bullishCount || bearishCount ? 'Tracking' : 'Idle';
     document.getElementById('accelerationPanel').innerHTML = '<div class="flow-bridge-grid">' + acceleration.map(item => `
@@ -708,9 +861,12 @@ async function loadFlowBridge() {
 async function loadWatchlist() {
   try {
     const page = await fetchOrderFlowOverview();
+    const commandCenter = page.command_center || {};
+    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
     const imbalances = page.imbalance?.imbalances || {};
     const walls = page.walls?.walls || [];
     const hunts = page.hunts?.hunts || [];
+    const signalIndex = buildSignalIndex(liveSignals);
     const state = {};
 
     function ensure(asset){
@@ -782,6 +938,8 @@ async function loadWatchlist() {
 
     document.getElementById('watchList').innerHTML = ranked.slice(0, 8).map((row) => {
       const color = row.score >= 0 ? 'var(--gr)' : 'var(--rd)';
+      const signal = signalIndex.get(normalizeFlowAsset(row.asset));
+      const support = signal ? signalFlowSupport(signal) : null;
       const tags = [
         `<span class="watch-tag ${row.biasClass}">${row.bias}</span>`,
         `<span class="watch-tag">Imbalance ${(row.imbalance >= 0 ? '+' : '') + row.imbalance.toFixed(3)}</span>`,
@@ -792,12 +950,19 @@ async function loadWatchlist() {
       if(row.buyHunts || row.sellHunts){
         tags.push(`<span class="watch-tag">${row.buyHunts} buy / ${row.sellHunts} sell hunts</span>`);
       }
+      if(support){
+        if(support.retest) tags.push(`<span class="watch-tag">Retest</span>`);
+        if(support.pullback) tags.push(`<span class="watch-tag">Pullback</span>`);
+        if(support.sweep) tags.push(`<span class="watch-tag">Sweep reclaim</span>`);
+        if(support.failedOpposite) tags.push(`<span class="watch-tag">Failed opposite</span>`);
+        tags.push(`<span class="watch-tag ${support.readiness.state === 'ready' ? 'buy' : support.readiness.state === 'blocked' ? 'sell' : 'neutral'}">${support.readiness.label}</span>`);
+      }
       return `<div class="watch-item">
         <div class="watch-head">
           <div class="watch-asset">${formatFlowAsset(row.asset)}</div>
           <div class="watch-score" style="color:${color}">${row.score >= 0 ? '+' : ''}${row.score.toFixed(3)}</div>
         </div>
-        <div class="watch-meta">Composite flow blends live imbalance, liquidity walls, and recent hunt signals.</div>
+        <div class="watch-meta">${signal ? `${support.confirmation.label} · ${support.policy[0] || 'No policy note'} · ${reviewNotesLine(signal) || 'No review notes'}` : 'Composite flow blends live imbalance, liquidity walls, and recent hunt signals.'}</div>
         <div class="watch-tags">${tags.join('')}</div>
       </div>`;
     }).join('');

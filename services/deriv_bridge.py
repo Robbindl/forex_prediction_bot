@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from config.config import DERIV_APP_ID, DERIV_ENABLED, DERIV_SYMBOL_MAP
+from services.market_hours_guard import build_market_status
 from utils.display_time import format_display_datetime
 from utils.logger import get_logger
 
@@ -489,22 +490,30 @@ class DerivBridge:
             )
 
             if suspended is True:
-                return {
-                    "asset": asset,
-                    "market_open": False,
-                    "reason": f"{market_display} suspended on Deriv",
-                    "source": "Deriv",
-                    "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                }
+                return build_market_status(
+                    asset,
+                    category=category,
+                    provider_status={
+                        "asset": asset,
+                        "market_open": False,
+                        "reason": f"{market_display} suspended on Deriv",
+                        "source": "Deriv",
+                        "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                    },
+                )
 
             if exchange_open is not None:
-                return {
-                    "asset": asset,
-                    "market_open": bool(exchange_open),
-                    "reason": f"{market_display} {'open' if exchange_open else 'closed'} on Deriv",
-                    "source": "Deriv",
-                    "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                }
+                return build_market_status(
+                    asset,
+                    category=category,
+                    provider_status={
+                        "asset": asset,
+                        "market_open": bool(exchange_open),
+                        "reason": f"{market_display} {'open' if exchange_open else 'closed'} on Deriv",
+                        "source": "Deriv",
+                        "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                    },
+                )
 
             trading_times = self._get_trading_times_locked(datetime.now(timezone.utc).date())
             if not trading_times:
@@ -514,13 +523,17 @@ class DerivBridge:
             if hours_status is None:
                 return None
 
-            return {
-                "asset": asset,
-                "market_open": bool(hours_status[0]),
-                "reason": str(hours_status[1]),
-                "source": "Deriv",
-                "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            }
+            return build_market_status(
+                asset,
+                category=category,
+                provider_status={
+                    "asset": asset,
+                    "market_open": bool(hours_status[0]),
+                    "reason": str(hours_status[1]),
+                    "source": "Deriv",
+                    "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                },
+            )
 
     def get_economic_events(
         self,

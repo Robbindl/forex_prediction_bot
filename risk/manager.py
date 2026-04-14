@@ -1,7 +1,7 @@
 """risk/manager.py — Risk manager. Clean rewrite of advanced_risk_manager.py."""
 from __future__ import annotations
 import threading
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from risk.position_sizer import PositionSizer
 from utils.logger import get_logger
 from config.config import DAILY_LOSS_LIMIT_PERCENT, MAX_RISK_PER_TRADE, MIN_CONFIDENCE_SCORE
@@ -64,6 +64,24 @@ def _clamp_stop_distance(entry: float, category: str, dist: float) -> float:
     min_dist = entry * _STOP_MIN_PCT.get(cat, 0.0025)
     max_dist = entry * _STOP_MAX_PCT.get(cat, 0.0090)
     return max(min_dist, min(max_dist, dist))
+
+
+def _structure_price_candidates(value: Any) -> List[float]:
+    candidates: List[float] = []
+    if isinstance(value, (int, float)):
+        level = float(value)
+        if level > 0:
+            candidates.append(level)
+        return candidates
+    if isinstance(value, list):
+        for item in value:
+            try:
+                level = float(item)
+            except Exception:
+                continue
+            if level > 0:
+                candidates.append(level)
+    return candidates
 
 
 class DailyLossGuard:
@@ -169,13 +187,87 @@ class RiskManager:
         category: str,
         atr: float = 0.0,
         distance_multiplier: float = 1.0,
+        structure: Optional[Dict[str, Any]] = None,
     ) -> float:
         scale = max(0.75, min(1.25, float(distance_multiplier or 1.0)))
         if atr and atr > 0:
             dist = _clamp_stop_distance(entry, category, atr * _stop_atr_multiplier(category) * scale)
         else:
             dist = entry * _STOP_FALLBACK_PCT.get((category or "").lower(), 0.0060) * scale
-        return entry - dist if direction == "BUY" else entry + dist
+
+        base_stop = entry - dist if direction == "BUY" else entry + dist
+        structure_stop = self._structure_invalidation_stop(
+            entry=entry,
+            direction=direction,
+            category=category,
+            structure=structure,
+            fallback_stop=base_stop,
+            atr=atr,
+        )
+        return float(structure_stop if structure_stop > 0 else base_stop)
+
+    def _structure_invalidation_stop(
+        self,
+        entry: float,
+        direction: str,
+        category: str,
+        structure: Optional[Dict[str, Any]],
+        fallback_stop: float,
+        atr: float = 0.0,
+    ) -> float:
+        if entry <= 0:
+            return float(fallback_stop)
+        structure = structure if isinstance(structure, dict) else {}
+        if not structure:
+            return float(fallback_stop)
+
+        cat = (category or "").lower()
+        direction = str(direction or "").upper()
+        support_keys = ["support", "support_levels", "swing_low", "recent_low", "invalid_below"]
+        resistance_keys = ["resistance", "resistance_levels", "swing_high", "recent_high", "invalid_above"]
+
+        raw_levels: List[float] = []
+        for key in support_keys if direction == "BUY" else resistance_keys:
+            raw_levels.extend(_structure_price_candidates(structure.get(key)))
+
+        if not raw_levels:
+            return float(fallback_stop)
+
+        if direction == "BUY":
+            protective_levels = sorted(level for level in raw_levels if level < entry)
+        elif direction == "SELL":
+            protective_levels = sorted((level for level in raw_levels if level > entry), reverse=True)
+        else:
+            return float(fallback_stop)
+
+        if not protective_levels:
+            return float(fallback_stop)
+
+        anchor_level = protective_levels[0]
+        buffer_dist = 0.0
+        if atr and atr > 0:
+            buffer_dist = max(buffer_dist, atr * 0.10)
+        buffer_dist = max(
+            buffer_dist,
+            entry * (_STOP_MIN_PCT.get(cat, 0.0025) * 0.20),
+        )
+
+        candidate_stop = anchor_level - buffer_dist if direction == "BUY" else anchor_level + buffer_dist
+        candidate_dist = abs(entry - candidate_stop)
+        if candidate_dist <= 0:
+            return float(fallback_stop)
+
+        clamped_dist = _clamp_stop_distance(entry, category, candidate_dist)
+        structure_stop = entry - clamped_dist if direction == "BUY" else entry + clamped_dist
+
+        fallback_dist = abs(entry - fallback_stop)
+        if fallback_dist > 0:
+            if direction == "BUY" and structure_stop > fallback_stop:
+                structure_stop = fallback_stop
+            elif direction == "SELL" and structure_stop < fallback_stop:
+                structure_stop = fallback_stop
+
+        return float(structure_stop)
 
     def get_target_rr(self, category: str = "", rr_multiplier: float = 1.0) -> float:
         multiplier = max(0.70, min(1.30, float(rr_multiplier or 1.0)))

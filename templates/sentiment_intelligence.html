@@ -277,6 +277,45 @@ function avg(values){
   if(!values.length)return 0;
   return values.reduce((sum,value)=>sum+value,0)/values.length;
 }
+function signalMeta(signal){return signal && typeof signal.metadata === 'object' && signal.metadata ? signal.metadata : {};}
+function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] !== undefined ? meta[key] : signal ? signal[key] : undefined;}
+function signalBool(signal,key){return signalValue(signal,key) === true;}
+function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
+function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
+function confirmationState(signal){
+  const ready = signalBool(signal, 'entry_confirmation_ready');
+  const count = signalNum(signal, 'entry_confirmation_count', 0);
+  const required = signalNum(signal, 'entry_confirmation_bars_required', 0);
+  if(ready) return {state:'ready', label:'Ready', detail: count && required ? count + '/' + required + ' bars' : 'confirmed'};
+  if(required && count < required) return {state:'waiting', label:'Waiting', detail: count + '/' + required + ' bars'};
+  return {state:'neutral', label:'Unknown', detail:'confirmation not published'};
+}
+function entryReadiness(signal){
+  const confirm = confirmationState(signal);
+  const retest = signalBool(signal, 'breakout_retest_ready');
+  const pullback = signalBool(signal, 'first_pullback_ready');
+  const kill = exactKillReason(signal);
+  if(kill) return {state:'blocked', label:'Blocked', detail:kill};
+  if((retest || pullback) && confirm.state === 'ready') return {state:'ready', label:'Ready', detail:(retest ? 'retest' : 'pullback') + ' + confirmation'};
+  if(retest || pullback) return {state:'waiting', label:'Waiting', detail:confirm.detail};
+  return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
+}
+function exactKillReason(signal){
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || '').trim();
+}
+function reviewNotesLine(signal){
+  return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
+}
+function regimeBits(signal){
+  const bits = [];
+  const regime = String(signalValue(signal, 'regime_policy_summary') || signalValue(signal, 'regime_policy') || signalValue(signal, 'regime_label') || '').trim();
+  const cluster = Number(signalValue(signal, 'cluster_penalty') || 0);
+  const extension = Number(signalValue(signal, 'extension_score') || 0);
+  if(regime) bits.push('Regime ' + regime);
+  if(cluster) bits.push('Cluster ' + cluster.toFixed(cluster >= 1 ? 0 : 2));
+  if(extension) bits.push('Ext ' + extension.toFixed(extension >= 1 ? 0 : 2));
+  return bits;
+}
 let _sentimentOverviewCache = null;
 function renderSentimentUnavailable(message){
   const msg = message || 'Sentiment data unavailable';
@@ -347,6 +386,11 @@ async function load(){
     const status = page.status || {};
     const routing = status.provider_routing || {};
     const diagnostics = status.signal_diagnostics || {};
+    const commandCenter = page.command_center || {};
+    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+    const leadSignal = (Array.isArray(commandCenter.top_opportunities) && commandCenter.top_opportunities.length ? commandCenter.top_opportunities[0] : null) || liveSignals[0] || null;
+    const leadConfirm = leadSignal ? confirmationState(leadSignal) : {state:'neutral', label:'Unknown', detail:'confirmation pending'};
+    const leadReadiness = leadSignal ? entryReadiness(leadSignal) : {state:'neutral', label:'Context only', detail:'signal pending'};
     const market = d.market_composite || {
       score: d.score || 0,
       interpretation: d.overall_sentiment || 'Neutral',
@@ -371,7 +415,7 @@ async function load(){
     document.getElementById('compScore').textContent=(score>=0?'+':'')+score.toFixed(3);
     document.getElementById('compScore').style.color=col;
     document.getElementById('compLabel').textContent=context.display_label||market.interpretation||'Neutral';
-    document.getElementById('compExplain').textContent=drivers ? `${context.summary} Drivers: ${drivers}.` : context.summary;
+    document.getElementById('compExplain').textContent=drivers ? `${context.summary} Drivers: ${drivers}. Sentiment support does not equal execution readiness.` : `${context.summary} Sentiment support does not equal execution readiness.`;
     document.getElementById('compBar').style.cssText=`width:${((score+1)/2*100).toFixed(0)}%;background:${col}`;
 
     // Fear/greed
@@ -439,6 +483,12 @@ async function load(){
         value: riskText,
         note: highImpactCount ? `${highImpactCount} high-impact events in queue` : 'No heavy event stack in the current calendar',
         color: riskColor,
+      },
+      {
+        label: 'Lead signal',
+        value: leadSignal ? leadReadiness.label : '—',
+        note: leadSignal ? `${leadConfirm.detail} · ${exactKillReason(leadSignal) || 'No kill reason published'}` : 'No lead signal is currently attached to the sentiment desk',
+        color: leadSignal ? (leadReadiness.state === 'ready' ? 'var(--gr)' : leadReadiness.state === 'waiting' ? 'var(--am)' : 'var(--rd)') : 'var(--tx2)',
       },
     ].map(item => `
       <div class="translation-card">
@@ -586,6 +636,13 @@ async function load(){
         note: blockCount ? `${blockCount} recent pattern blocks` : `${highImpactCount} macro events queued`,
         color: conflictCount || blockCount ? 'var(--rd)' : 'var(--gr)',
         sub: 'Macro events and cross-asset conflicts affecting trade confidence',
+      },
+      {
+        label: 'Execution readiness',
+        score: leadSignal ? leadReadiness.label : '—',
+        note: leadSignal ? `${leadConfirm.detail} · ${reviewNotesLine(leadSignal) || 'No review notes'}` : 'Sentiment support does not equal execution readiness.',
+        color: leadSignal ? (leadReadiness.state === 'ready' ? 'var(--gr)' : leadReadiness.state === 'waiting' ? 'var(--am)' : 'var(--rd)') : 'var(--tx2)',
+        sub: 'A supportive macro tone can still be blocked by entry-quality gates',
       },
     ].map(item => `
       <div class="translation-card">

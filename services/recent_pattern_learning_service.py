@@ -365,12 +365,14 @@ def _pattern_learning_adjustments() -> Dict[str, Any]:
 
 def _pattern_learning_apply_penalty_rules(adjustments: Dict[str, Any], rates: Dict[str, Any]) -> None:
     for condition, confidence_delta, risk_delta, rr_delta, cooldown_delta, note in [
-        (rates["late_entry_rate"] >= 0.34, 0.014, 0.06, 0.0, 4, "recent_pattern_late_entry"),
-        (rates["premature_stop_rate"] >= 0.28, 0.010, 0.05, 0.0, 3, "recent_pattern_premature_stop"),
-        (rates["target_miss_rate"] >= 0.30, 0.008, 0.00, 0.08, 0, "recent_pattern_target_miss"),
-        (rates["stop_too_tight_rate"] >= 0.28, 0.008, 0.04, 0.0, 0, "recent_pattern_stop_too_tight"),
-        (rates["stop_too_wide_rate"] >= 0.28, 0.008, 0.05, 0.05, 0, "recent_pattern_stop_too_wide"),
-        (rates["hard_loss_rate"] >= 0.38 and rates["avg_rr_realized"] <= -0.40, 0.016, 0.08, 0.0, 5, "recent_pattern_hard_losses"),
+        (rates["late_entry_rate"] >= 0.24, 0.010, 0.05, 0.0, 3, "recent_pattern_late_entry_watch"),
+        (rates["late_entry_rate"] >= 0.32, 0.016, 0.07, 0.0, 4, "recent_pattern_late_entry"),
+        (rates["premature_stop_rate"] >= 0.24, 0.010, 0.05, 0.0, 3, "recent_pattern_premature_stop"),
+        (rates["target_miss_rate"] >= 0.26, 0.010, 0.00, 0.10, 0, "recent_pattern_target_miss"),
+        (rates["stop_too_tight_rate"] >= 0.24, 0.008, 0.04, 0.0, 0, "recent_pattern_stop_too_tight"),
+        (rates["stop_too_wide_rate"] >= 0.24, 0.008, 0.05, 0.05, 0, "recent_pattern_stop_too_wide"),
+        (rates["hard_loss_rate"] >= 0.28 and rates["avg_rr_realized"] <= -0.18, 0.012, 0.06, 0.04, 3, "recent_pattern_negative_expectancy"),
+        (rates["hard_loss_rate"] >= 0.34 and rates["avg_rr_realized"] <= -0.32, 0.018, 0.09, 0.0, 5, "recent_pattern_hard_losses"),
         (rates["broker_divergence_rate"] >= 0.34, 0.010, 0.05, 0.0, 3, "recent_pattern_broker_divergence"),
         (rates["spread_stress_rate"] >= 0.30, 0.008, 0.06, 0.06, 0, "recent_pattern_spread_stress"),
         (rates["quote_stale_rate"] >= 0.28, 0.010, 0.04, 0.0, 2, "recent_pattern_quote_stale"),
@@ -386,6 +388,22 @@ def _pattern_learning_apply_penalty_rules(adjustments: Dict[str, Any], rates: Di
             0.04,
             0,
             "recent_pattern_cross_asset_relation_failures",
+        ),
+        (
+            rates["win_rate"] <= 0.46 and rates["avg_quality"] <= 48.0 and rates["avg_rr_realized"] <= -0.08,
+            0.014,
+            0.07,
+            0.07,
+            4,
+            "recent_pattern_poor_profitability",
+        ),
+        (
+            rates["avg_giveback_ratio"] >= 0.52 and rates["full_target_rate"] <= 0.24,
+            0.008,
+            0.04,
+            0.05,
+            0,
+            "recent_pattern_profit_giveback",
         ),
     ]:
         if condition:
@@ -421,11 +439,11 @@ def _pattern_learning_apply_block_rules(adjustments: Dict[str, Any], rates: Dict
     relation_label = current_cross_relation.replace("_", " ").strip() or "related-market"
     for condition, reason in [
         (
-            rates["late_entry_rate"] >= 0.48 and rates["hard_loss_rate"] >= 0.30 and rates["avg_quality"] <= 48.0,
+            rates["late_entry_rate"] >= 0.42 and rates["hard_loss_rate"] >= 0.28 and rates["avg_quality"] <= 50.0,
             "recent similar setups keep failing from late entries",
         ),
         (
-            rates["late_entry_rate"] >= 0.62 and rates["hard_loss_rate"] >= 0.45,
+            rates["late_entry_rate"] >= 0.56 and rates["hard_loss_rate"] >= 0.40,
             "recent similar setups keep failing from late entries",
         ),
         (
@@ -447,6 +465,19 @@ def _pattern_learning_apply_block_rules(adjustments: Dict[str, Any], rates: Dict
         (
             rates["premature_stop_rate"] >= 0.55 and rates["target_miss_rate"] >= 0.55 and rates["avg_quality"] <= 38.0,
             "recent similar setups keep giving back progress before securing enough profit",
+        ),
+        (
+            rates["sample_count"] >= max(block_samples + 2, 7)
+            and rates["win_rate"] <= 0.42
+            and rates["avg_rr_realized"] <= -0.10
+            and rates["avg_quality"] <= 46.0,
+            "recent similar setups have stayed unprofitable over a meaningful sample",
+        ),
+        (
+            rates["avg_giveback_ratio"] >= 0.60
+            and rates["full_target_rate"] <= 0.22
+            and rates["avg_rr_realized"] <= -0.04,
+            "recent similar setups keep wasting good trade progress before exit",
         ),
     ]:
         if condition:
@@ -523,8 +554,8 @@ def _pattern_learning_build_summary(
 class RecentPatternLearningService:
     _TTL_SECONDS = 180
     _MIN_SAMPLES = 4
-    _BLOCK_SAMPLES = 6
-    _SIMILARITY_FLOOR = 0.52
+    _BLOCK_SAMPLES = 5
+    _SIMILARITY_FLOOR = 0.5
 
     def __init__(self) -> None:
         self._cache: Dict[Tuple[str, str, str, str, str, str, str], Tuple[float, Dict[str, Any]]] = {}

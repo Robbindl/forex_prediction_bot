@@ -16,6 +16,7 @@ from core.asset_profiles import (
     US_INDEX_ASSETS, UK_INDEX_ASSETS,
     get_profile,
 )
+from services.market_hours_guard import build_market_status
 from utils.display_time import display_timezone_label, now_in_display_timezone, to_display_datetime
 
 
@@ -156,22 +157,8 @@ def is_market_open_for_asset(asset: str) -> Tuple[bool, str]:
     Return (is_open: bool, reason: str) for any canonical asset ID.
     Never returns hardcoded True — always computes from current UTC time.
     """
-    provider_status = _provider_market_status(asset)
-    if provider_status is not None:
-        open_, reason, _source = provider_status
-        return open_, reason
-    if is_crypto(asset):
-        return _crypto_open()
-    if is_forex(asset):
-        return _forex_open()
-    if asset in US_INDEX_ASSETS:
-        return _us_index_open(asset)
-    if asset in UK_INDEX_ASSETS:
-        return _uk_index_open(asset)
-    if is_commodity(asset):
-        return _commodity_open(asset)
-    # Unknown asset — conservative default
-    return False, f"Unknown asset type ({asset})"
+    status = market_status(asset)
+    return bool(status.get("market_open")), str(status.get("reason", "market status unavailable"))
 
 
 def market_status(asset: str) -> Dict:
@@ -179,31 +166,26 @@ def market_status(asset: str) -> Dict:
     Return a full status dict suitable for the dashboard API response.
     """
     provider_status = _provider_market_status(asset)
-    if provider_status is not None:
-        open_, reason, source = provider_status
-    else:
-        if is_crypto(asset):
-            open_, reason = _crypto_open()
-        elif is_forex(asset):
-            open_, reason = _forex_open()
-        elif asset in US_INDEX_ASSETS:
-            open_, reason = _us_index_open(asset)
-        elif asset in UK_INDEX_ASSETS:
-            open_, reason = _uk_index_open(asset)
-        elif is_commodity(asset):
-            open_, reason = _commodity_open(asset)
-        else:
-            open_, reason = False, f"Unknown asset type ({asset})"
+    normalized = build_market_status(
+        asset,
+        category=get_profile(asset).category,
+        provider_status=None if provider_status is None else {
+            "asset": asset,
+            "market_open": provider_status[0],
+            "reason": provider_status[1],
+            "source": provider_status[2],
+        },
+    )
     payload = {
         "asset":       asset,
-        "market_open": open_,
-        "reason":      reason,
+        "market_open": bool(normalized.get("market_open")),
+        "reason":      str(normalized.get("reason", "")),
         "utc_now":     _utc_now().strftime("%Y-%m-%d %H:%M UTC"),
         "display_now": now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M {display_timezone_label()}"),
         "display_timezone": display_timezone_label(),
     }
-    if provider_status is not None:
-        payload["source"] = source or "market_data_router"
+    if normalized.get("source"):
+        payload["source"] = str(normalized.get("source") or "market_data_router")
     return payload
 
 
