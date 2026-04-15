@@ -43,24 +43,347 @@ _NYSE_FIXED_HOLIDAYS = frozenset({
     (12, 26),
 })
 
+_SOURCE_FAMILY_FRESHNESS_SECS: Dict[str, int] = {
+    "model": 3600,
+    "regime": 3600,
+    "sentiment": 1800,
+    "macro": 3600,
+    "positioning": 8 * 24 * 3600,
+    "options": 3 * 24 * 3600,
+    "flow": 300,
+    "derivatives": 600,
+}
+
+_MARKET_INTELLIGENCE_FAMILY_MAP: Dict[str, str] = {
+    "fred": "macro",
+    "eia": "macro",
+    "macro": "macro",
+    "dxy": "macro",
+    "rates": "macro",
+    "real_yield": "macro",
+    "yield_curve": "macro",
+    "risk_regime": "macro",
+    "cftc": "positioning",
+    "aaii": "positioning",
+    "client_sentiment": "positioning",
+    "ig_client_sentiment": "positioning",
+    "put_call": "options",
+    "gamma": "options",
+    "options": "options",
+    "orderflow": "flow",
+    "flow": "flow",
+    "microstructure": "flow",
+    "funding": "derivatives",
+    "oi": "derivatives",
+    "open_interest": "derivatives",
+    "whale": "positioning",
+    "onchain": "positioning",
+}
+
+_SENTIMENT_COMPONENT_FAMILY_MAP: Dict[str, str] = {
+    "news": "sentiment",
+    "reddit": "sentiment",
+    "fear_greed": "sentiment",
+    "vix": "sentiment",
+    "price_momentum": "sentiment",
+    "ig_client_sentiment": "positioning",
+    "macro_event": "macro",
+    "aaii": "positioning",
+    "put_call": "options",
+}
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value if value is not None else default)
+    except Exception:
+        return default
+
+
+def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)):
+        raw = float(value)
+        if raw > 1_000_000_000_000:
+            raw /= 1000.0
+        try:
+            return datetime.fromtimestamp(raw, timezone.utc)
+        except Exception:
+            return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
+def _source_age_seconds(*values: Any) -> Optional[float]:
+    ages: List[float] = []
+    now = _utc_now()
+    for value in values:
+        parsed = _parse_optional_datetime(value)
+        if parsed is None:
+            continue
+        ages.append(max(0.0, (now - parsed).total_seconds()))
+    if not ages:
+        return None
+    return min(ages)
+
+
+def _monitor_source_fresh(source: str) -> Optional[bool]:
+    if not _MONITOR_OK:
+        return None
+    try:
+        return bool(_monitor.is_source_fresh(source))
+    except Exception:
+        return None
+
+
+def _family_is_fresh(family: str, *timestamps: Any) -> tuple[bool, Optional[float]]:
+    age_secs = _source_age_seconds(*timestamps)
+
+    if family == "flow":
+        monitor_state = _monitor_source_fresh("order_book")
+        if monitor_state is not None:
+            return monitor_state, age_secs
+
+    if family == "derivatives":
+        monitor_states = [state for state in (_monitor_source_fresh("funding_rate"), _monitor_source_fresh("open_interest")) if state is not None]
+        if monitor_states:
+            return any(monitor_states), age_secs
+
+    threshold = _SOURCE_FAMILY_FRESHNESS_SECS.get(family)
+    if threshold is None or age_secs is None:
+        return True, age_secs
+    return age_secs <= threshold, age_secs
+
+
+def _register_source_family(
+    *,
+    family: str,
+    entries: List[str],
+    timestamps: List[Any],
+    allowed: set[str],
+    valid: set[str],
+    stale: set[str],
+    evidence: Dict[str, List[str]],
+    freshness: Dict[str, Dict[str, Any]],
+) -> None:
+    if family not in allowed:
+        return
+    cleaned = sorted({str(entry).strip() for entry in entries if str(entry).strip()})
+    if not cleaned:
+        return
+    is_fresh, age_secs = _family_is_fresh(family, *timestamps)
+    evidence[family] = cleaned
+    freshness[family] = {
+        "fresh": bool(is_fresh),
+        "age_secs": round(age_secs, 1) if age_secs is not None else None,
+        "threshold_secs": _SOURCE_FAMILY_FRESHNESS_SECS.get(family),
+    }
+    if is_fresh:
+        valid.add(family)
+    else:
+        stale.add(family)
+
+
+def _resolve_source_families(signal: Signal) -> tuple[List[str], List[str], Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
+    profile = get_profile(signal.asset)
+    metadata = signal.metadata if isinstance(signal.metadata, dict) else {}
+    allowed = set(profile.source_families or ())
+    valid: set[str] = set()
+    stale: set[str] = set()
+    evidence: Dict[str, List[str]] = {}
+    freshness: Dict[str, Dict[str, Any]] = {}
+
+    sentiment_sources = [str(item) for item in (metadata.get("sentiment_sources") or []) if str(item).strip()]
+    sentiment_components = metadata.get("sentiment_components") if isinstance(metadata.get("sentiment_components"), dict) else {}
+    market_intelligence_sources = [str(item) for item in (metadata.get("market_intelligence_sources") or []) if str(item).strip()]
+    market_intelligence_details = metadata.get("market_intelligence_details") if isinstance(metadata.get("market_intelligence_details"), dict) else {}
+    market_intelligence_components = metadata.get("market_intelligence_components") if isinstance(metadata.get("market_intelligence_components"), dict) else {}
+    market_microstructure = metadata.get("market_microstructure") if isinstance(metadata.get("market_microstructure"), dict) else {}
+
+    if metadata.get("ml_prediction_real", True):
+        _register_source_family(
+            family="model",
+            entries=["ml_prediction_real"],
+            timestamps=[signal.timestamp],
+            allowed=allowed,
+            valid=valid,
+            stale=stale,
+            evidence=evidence,
+            freshness=freshness,
+        )
+
+    regime = str(metadata.get("regime") or "").strip().lower()
+    if regime and regime != "unknown":
+        _register_source_family(
+            family="regime",
+            entries=[f"regime:{regime}"],
+            timestamps=[signal.timestamp],
+            allowed=allowed,
+            valid=valid,
+            stale=stale,
+            evidence=evidence,
+            freshness=freshness,
+        )
+
+    sentiment_entries: List[str] = [f"source:{src}" for src in sentiment_sources]
+    for component_name, family_name in _SENTIMENT_COMPONENT_FAMILY_MAP.items():
+        if family_name == "sentiment" and component_name in sentiment_components:
+            sentiment_entries.append(f"component:{component_name}")
+    if metadata.get("sentiment_score") is not None:
+        sentiment_entries.append("score:sentiment")
+    _register_source_family(
+        family="sentiment",
+        entries=sentiment_entries,
+        timestamps=[metadata.get("sentiment_timestamp")],
+        allowed=allowed,
+        valid=valid,
+        stale=stale,
+        evidence=evidence,
+        freshness=freshness,
+    )
+
+    macro_entries: List[str] = []
+    positioning_entries: List[str] = []
+    options_entries: List[str] = []
+    for src in market_intelligence_sources:
+        family_name = _MARKET_INTELLIGENCE_FAMILY_MAP.get(src.strip().lower())
+        if family_name == "macro":
+            macro_entries.append(f"source:{src}")
+        elif family_name == "positioning":
+            positioning_entries.append(f"source:{src}")
+        elif family_name == "options":
+            options_entries.append(f"source:{src}")
+
+    if "macro_event" in sentiment_components:
+        macro_entries.append("component:macro_event")
+    if "macro" in market_intelligence_details:
+        macro_entries.append("detail:macro")
+    if "eia" in market_intelligence_details:
+        macro_entries.append("detail:eia")
+    for key in ("usd_macro", "risk_regime", "yield_curve", "real_yield", "eia_inventory"):
+        if key in market_intelligence_components:
+            macro_entries.append(f"component:{key}")
+    _register_source_family(
+        family="macro",
+        entries=macro_entries,
+        timestamps=[metadata.get("market_intelligence_timestamp"), metadata.get("sentiment_timestamp")],
+        allowed=allowed,
+        valid=valid,
+        stale=stale,
+        evidence=evidence,
+        freshness=freshness,
+    )
+
+    if "cftc" in market_intelligence_details:
+        positioning_entries.append("detail:cftc")
+    if "cftc_positioning" in market_intelligence_components:
+        positioning_entries.append("component:cftc_positioning")
+    if "aaii" in sentiment_components:
+        positioning_entries.append("component:aaii")
+    if isinstance(metadata.get("ig_client_sentiment"), dict) and metadata.get("ig_client_sentiment"):
+        positioning_entries.append("component:ig_client_sentiment")
+    if metadata.get("whale_data") == "real":
+        positioning_entries.append("signal:whale_data")
+    _register_source_family(
+        family="positioning",
+        entries=positioning_entries,
+        timestamps=[
+            metadata.get("market_intelligence_timestamp"),
+            metadata.get("sentiment_timestamp"),
+            metadata.get("whale_timestamp"),
+            metadata.get("intelligence_timestamp"),
+        ],
+        allowed=allowed,
+        valid=valid,
+        stale=stale,
+        evidence=evidence,
+        freshness=freshness,
+    )
+
+    if "put_call" in sentiment_components:
+        options_entries.append("component:put_call")
+    if metadata.get("put_call_score") is not None:
+        options_entries.append("signal:put_call_score")
+    _register_source_family(
+        family="options",
+        entries=options_entries,
+        timestamps=[metadata.get("sentiment_timestamp"), metadata.get("market_intelligence_timestamp")],
+        allowed=allowed,
+        valid=valid,
+        stale=stale,
+        evidence=evidence,
+        freshness=freshness,
+    )
+
+    flow_entries: List[str] = []
+    if metadata.get("orderflow_applicable") is True and abs(_safe_float(metadata.get("orderflow_imbalance"), 0.0)) > 0.0:
+        flow_entries.append("signal:orderflow_imbalance")
+    tick_imbalance = _safe_float(market_microstructure.get("tick_imbalance", metadata.get("tick_imbalance")), 0.0)
+    book_imbalance = _safe_float(market_microstructure.get("book_imbalance", metadata.get("book_imbalance")), 0.0)
+    velocity_bps = _safe_float(market_microstructure.get("velocity_bps", metadata.get("velocity_bps")), 0.0)
+    if abs(tick_imbalance) >= 0.01:
+        flow_entries.append("micro:tick_imbalance")
+    if abs(book_imbalance) >= 0.01:
+        flow_entries.append("micro:book_imbalance")
+    if abs(velocity_bps) >= 0.05:
+        flow_entries.append("micro:velocity_bps")
+    if bool(metadata.get("depth_available", market_microstructure.get("depth_available"))):
+        flow_entries.append("micro:true_depth")
+    elif bool(metadata.get("synthetic_depth_available", market_microstructure.get("synthetic_depth_available"))):
+        flow_entries.append("micro:synthetic_depth")
+    _register_source_family(
+        family="flow",
+        entries=flow_entries,
+        timestamps=[signal.timestamp],
+        allowed=allowed,
+        valid=valid,
+        stale=stale,
+        evidence=evidence,
+        freshness=freshness,
+    )
+
+    derivative_entries: List[str] = []
+    funding_bias = str(metadata.get("funding_bias") or "").strip().upper()
+    oi_signal = str(metadata.get("oi_signal") or "").strip().upper()
+    if funding_bias and funding_bias not in {"NEUTRAL", "UNKNOWN", "N/A"}:
+        derivative_entries.append(f"funding:{funding_bias.lower()}")
+    if oi_signal and oi_signal not in {"NEUTRAL", "UNKNOWN", "N/A"}:
+        derivative_entries.append(f"oi:{oi_signal.lower()}")
+    _register_source_family(
+        family="derivatives",
+        entries=derivative_entries,
+        timestamps=[metadata.get("derivatives_timestamp"), metadata.get("intelligence_timestamp")],
+        allowed=allowed,
+        valid=valid,
+        stale=stale,
+        evidence=evidence,
+        freshness=freshness,
+    )
+
+    return sorted(valid), sorted(stale), evidence, freshness
+
 
 def count_valid_sources(signal: Signal) -> int:
-    count = 0
-    if signal.metadata.get("ml_prediction_real", True):
-        count += 1
-    if signal.metadata.get("regime") not in (None, "unknown"):
-        count += 1
-    if signal.metadata.get("sentiment_sources", []):
-        count += 1
-    if signal.metadata.get("market_intelligence_sources", []):
-        count += 1
-    if signal.metadata.get("whale_data") == "real":
-        count += 1
-    if signal.metadata.get("meta_ai_active_engines", 0) > 0:
-        count += 1
-    if signal.metadata.get("orderflow_applicable") is True and signal.metadata.get("orderflow_imbalance", 0.0) != 0.0:
-        count += 1
-    return count
+    valid_families, stale_families, evidence, freshness = _resolve_source_families(signal)
+    signal.metadata["eligible_source_families"] = list(get_profile(signal.asset).source_families or ())
+    signal.metadata["valid_source_families"] = valid_families
+    signal.metadata["stale_source_families"] = stale_families
+    signal.metadata["source_family_evidence"] = evidence
+    signal.metadata["source_family_freshness"] = freshness
+    return len(valid_families)
 
 
 def _utc_now() -> datetime:
@@ -713,6 +1036,15 @@ class SignalDecisionEngine:
         sentiment = apply_sentiment_review(signal, context)
         whale = apply_whale_review(signal, context)
         cross_asset = apply_cross_asset_review(signal, context)
+        intelligence = context.get("market_intelligence") if isinstance(context.get("market_intelligence"), dict) else {}
+        intelligence_timestamp = str(intelligence.get("intelligence_timestamp") or signal.metadata.get("intelligence_timestamp") or "")
+        funding_bias = str(context.get("funding_bias", intelligence.get("funding_bias", "NEUTRAL")) or "NEUTRAL")
+        oi_signal = str(context.get("oi_signal", intelligence.get("oi_signal", "NEUTRAL")) or "NEUTRAL")
+        signal.metadata["funding_bias"] = funding_bias
+        signal.metadata["oi_signal"] = oi_signal
+        if intelligence_timestamp:
+            signal.metadata["intelligence_timestamp"] = intelligence_timestamp
+            signal.metadata["derivatives_timestamp"] = intelligence_timestamp
         signal.step_reached = STEP_INTELLIGENCE
         signal.journal.record(
             layer=STEP_INTELLIGENCE,
@@ -976,6 +1308,7 @@ class SignalDecisionEngine:
         exhaustion_risk = float(signal.metadata.get("exhaustion_risk", 0.0) or 0.0)
         dominant_exhaustion = float(structure.get("dominant_exhaustion_score", 0.0) or 0.0)
         bias_exhausted = bool(structure.get("bias_exhausted"))
+        alignment_score = float(structure.get("alignment_score", signal.metadata.get("alignment_score", 0.0)) or 0.0)
         setup_quality = float(structure.get("setup_quality", signal.metadata.get("setup_quality", 0.0)) or 0.0)
         vwap_distance_atr = float(structure.get("vwap_distance_atr", signal.metadata.get("vwap_distance_atr", 0.0)) or 0.0)
         session_quality_score = float(structure.get("session_quality_score", signal.metadata.get("session_quality_score", 0.0)) or 0.0)
@@ -1062,6 +1395,25 @@ class SignalDecisionEngine:
         cross_asset_alignment = float(signal.metadata.get("cross_asset_alignment", 0.0) or 0.0)
         cross_asset_confidence = float(signal.metadata.get("cross_asset_confidence", 0.0) or 0.0)
         supportive_structure_distance = float(signal.metadata.get("supportive_structure_distance", 0.0) or 0.0)
+        category_label = str(signal.category or signal.metadata.get("category") or "").strip().lower()
+        strong_fx_crypto_candidate = bool(
+            category_label in {"crypto", "forex"}
+            and float(signal.confidence or 0.0) >= 0.64
+            and alignment_score >= 0.68
+            and setup_quality >= 0.62
+            and candle_quality_score >= 0.36
+            and session_quality_score >= 0.40
+        )
+        elite_supported_candidate = bool(
+            strong_fx_crypto_candidate
+            and (
+                elite_pattern_rank >= 0.16
+                or failed_opposite_move_confirmed
+                or breakout_retest_ready
+                or first_pullback_ready
+                or entry_confirmation_ready
+            )
+        )
 
         risk_score = 0.0
         reasons: List[str] = []
@@ -1151,6 +1503,10 @@ class SignalDecisionEngine:
 
         if failed_opposite_move_confirmed:
             risk_score -= 0.06
+        if strong_fx_crypto_candidate and extension_score <= 1.18 and target_efficiency_score >= 0.22 and impulse_age_bars <= 6:
+            risk_score -= 0.04
+        if elite_supported_candidate and cluster_penalty < 0.22:
+            risk_score -= 0.03
 
         policy_min_setup_quality = float(regime_entry_policy.get("min_setup_quality", 0.0) or 0.0)
         policy_min_candle_quality = float(regime_entry_policy.get("min_candle_quality", 0.0) or 0.0)
@@ -1217,11 +1573,17 @@ class SignalDecisionEngine:
 
         if broker_agreement_state in {"divergent", "severe_divergence"} and broker_spread_regime in {"stressed", "extreme", "wide"}:
             hard_blocks.append("broker divergence and spread stress are both active")
-        if extension_score >= 1.25 and candle_quality_score <= 0.26:
+        weak_candle_extension_limit = 1.32 if elite_supported_candidate else 1.25
+        weak_candle_floor = 0.24 if elite_supported_candidate else 0.26
+        if extension_score >= weak_candle_extension_limit and candle_quality_score <= weak_candle_floor:
             hard_blocks.append("entry is extended and the trigger candle is weak")
-        if target_efficiency_score <= 0.15 and opposing_distance <= 0.0035:
+        target_efficiency_hard_floor = 0.11 if elite_supported_candidate else 0.15
+        opposing_distance_hard_floor = 0.0030 if elite_supported_candidate else 0.0035
+        if target_efficiency_score <= target_efficiency_hard_floor and opposing_distance <= opposing_distance_hard_floor:
             hard_blocks.append("too little clean space remains to the target")
-        if impulse_age_bars >= 6 and directional_extension >= 0.74:
+        impulse_age_hard_limit = 7 if elite_supported_candidate else 6
+        directional_extension_hard_limit = 0.80 if elite_supported_candidate else 0.74
+        if impulse_age_bars >= impulse_age_hard_limit and directional_extension >= directional_extension_hard_limit:
             hard_blocks.append("setup is too old and already stretched")
         if wants_retest and not breakout_retest_ready and not first_pullback_ready:
             hard_blocks.append("breakout entry has not earned a clean retest or first pullback")
@@ -1243,9 +1605,11 @@ class SignalDecisionEngine:
             hard_blocks.append("recent pattern learning shows this entry shape keeps arriving too late")
         if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
             hard_blocks.append("entry confirmation delay is still pending")
-        if pattern_family != "unknown" and elite_pattern_rank <= 0.12:
+        pattern_rank_hard_floor = 0.08 if strong_fx_crypto_candidate and setup_quality >= 0.66 and alignment_score >= 0.74 else 0.12
+        if pattern_family != "unknown" and elite_pattern_rank <= pattern_rank_hard_floor:
             hard_blocks.append("pattern family ranks below elite threshold")
-        if cluster_penalty >= 0.26:
+        cluster_hard_limit = 0.30 if elite_supported_candidate else 0.26
+        if cluster_penalty >= cluster_hard_limit:
             hard_blocks.append("trade clustering risk is too high")
         if regime_entry_policy:
             if setup_quality < float(regime_entry_policy.get("min_setup_quality", 0.0) or 0.0) and candle_quality_score <= float(
@@ -1256,6 +1620,10 @@ class SignalDecisionEngine:
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
         signal.metadata["late_entry_risk_reasons"] = list(reasons)
         signal.metadata["execution_hard_blocks"] = list(hard_blocks)
+        signal.metadata["execution_relief_flags"] = {
+            "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
+            "elite_supported_candidate": elite_supported_candidate,
+        }
         data["late_entry_risk"] = {
             "score": round(risk_score, 4),
             "directional_extension": round(directional_extension, 4),
@@ -1290,6 +1658,9 @@ class SignalDecisionEngine:
             "first_pullback_ready": first_pullback_ready,
             "liquidity_sweep_buy": liquidity_sweep_buy,
             "liquidity_sweep_sell": liquidity_sweep_sell,
+            "alignment_score": round(alignment_score, 4),
+            "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
+            "elite_supported_candidate": elite_supported_candidate,
             "hard_blocks": list(hard_blocks),
             "reasons": list(reasons),
         }
@@ -1673,9 +2044,18 @@ class SignalDecisionEngine:
         profile = get_profile(signal.asset)
         valid_sources = count_valid_sources(signal)
         min_required = profile.min_valid_layers
+        valid_families = list(signal.metadata.get("valid_source_families") or [])
+        stale_families = list(signal.metadata.get("stale_source_families") or [])
         signal.metadata["valid_sources_count"] = valid_sources
         signal.metadata["min_sources_required"] = min_required
-        data = {"valid_sources": valid_sources, "min_required": min_required, "category": signal.category}
+        data = {
+            "valid_sources": valid_sources,
+            "min_required": min_required,
+            "category": signal.category,
+            "valid_source_families": valid_families,
+            "stale_source_families": stale_families,
+            "source_family_evidence": dict(signal.metadata.get("source_family_evidence") or {}),
+        }
 
         adaptive_policy_preview: Dict[str, Any] = {}
         try:

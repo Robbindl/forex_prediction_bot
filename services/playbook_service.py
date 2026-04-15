@@ -280,6 +280,20 @@ def _qualify_family_rules(
     return ""
 
 
+def _elite_entry_gate_reason(*, playbook: str, structure: Dict[str, Any]) -> str:
+    breakout_retest_ready = bool(structure.get("breakout_retest_ready"))
+    first_pullback_ready = bool(structure.get("first_pullback_ready"))
+    failed_opposite_move_confirmed = bool(structure.get("failed_opposite_move_confirmed"))
+
+    if playbook == "breakout_retest" and not breakout_retest_ready:
+        return "retest_missing:breakout_retest"
+    if playbook == "trend_pullback" and not first_pullback_ready:
+        return "pullback_missing:trend_pullback"
+    if playbook == "failed_break_reclaim" and not failed_opposite_move_confirmed:
+        return "reclaim_unconfirmed:failed_break_reclaim"
+    return ""
+
+
 def _build_early_inflection_candidate(
     *,
     direction: str,
@@ -477,7 +491,7 @@ _CATEGORY_PLANS: Dict[str, _AssetPlaybookPlan] = {
 _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     "EUR/USD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "news_impulse"),
-        ("europe_open", "europe_core", "us_overlap", "us_open"),
+        ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.60,
         0.58,
         2,
@@ -485,7 +499,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "GBP/USD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "news_impulse"),
-        ("europe_open", "europe_core", "us_overlap", "us_open"),
+        ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.60,
         0.58,
         2,
@@ -493,7 +507,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "USD/JPY": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "news_impulse"),
-        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -501,7 +515,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "EUR/JPY": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion"),
-        ("europe_open", "europe_core", "us_overlap", "us_open"),
+        ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.61,
         0.59,
         2,
@@ -509,7 +523,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "GBP/JPY": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion"),
-        ("europe_open", "europe_core", "us_overlap", "us_open"),
+        ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.62,
         0.60,
         2,
@@ -517,7 +531,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "AUD/USD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion"),
-        ("asia_core", "europe_open", "europe_core", "us_overlap"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.60,
         0.58,
         2,
@@ -557,7 +571,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US30": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "opening_drive"),
-        ("us_overlap", "us_open"),
+        ("us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -565,7 +579,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US100": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "opening_drive"),
-        ("us_overlap", "us_open"),
+        ("us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -573,7 +587,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US500": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "opening_drive"),
-        ("us_overlap", "us_open"),
+        ("us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -604,7 +618,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "BNB-USD": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
         ("europe_core", "us_overlap", "us_open", "us_core"),
         0.62,
         0.60,
@@ -612,7 +626,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "SOL-USD": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
         ("europe_core", "us_overlap", "us_open", "us_core"),
         0.62,
         0.60,
@@ -620,7 +634,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "XRP-USD": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
         ("europe_core", "us_overlap", "us_open", "us_core"),
         0.63,
         0.61,
@@ -880,6 +894,10 @@ class PlaybookService:
         if reason:
             return False, reason
 
+        elite_gate_reason = _elite_entry_gate_reason(playbook=playbook, structure=structure)
+        if elite_gate_reason:
+            return False, elite_gate_reason
+
         candidate["asset_plan"] = {
             "allowed_playbooks": list(plan.allowed_playbooks),
             "allowed_sessions": list(plan.allowed_sessions),
@@ -895,6 +913,131 @@ class PlaybookService:
             "opposing_trends": opposing_trends,
         }
         return True, ""
+
+    def _elite_ready_fallback(
+        self,
+        *,
+        asset: str,
+        category: str,
+        session: str,
+        structure: Dict[str, Any],
+        plan: _AssetPlaybookPlan,
+    ) -> Optional[Dict[str, Any]]:
+        structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
+        if structure_bias not in {"buy", "sell"}:
+            return None
+
+        direction = "BUY" if structure_bias == "buy" else "SELL"
+        direction_sign = 1 if direction == "BUY" else -1
+        alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
+        setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
+        pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
+        breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
+        candle_quality_score = float(structure.get("candle_quality_score", 0.0) or 0.0)
+        session_quality_score = float(structure.get("session_quality_score", 0.0) or 0.0)
+        extension_score = float(structure.get("extension_score", 0.0) or 0.0)
+        target_efficiency_score = float(structure.get("target_efficiency_score", 0.0) or 0.0)
+        impulse_age_bars = int(structure.get("impulse_age_bars", 0) or 0)
+        elite_pattern_rank = float(structure.get("elite_pattern_rank", 0.0) or 0.0)
+        cluster_penalty = float(structure.get("cluster_penalty", 0.0) or 0.0)
+        breakout_retest_ready = bool(structure.get("breakout_retest_ready"))
+        first_pullback_ready = bool(structure.get("first_pullback_ready"))
+        failed_opposite_move_confirmed = bool(structure.get("failed_opposite_move_confirmed"))
+        entry_confirmation_ready = bool(structure.get("entry_confirmation_ready"))
+        entry_confirmation_bars_required = int(structure.get("entry_confirmation_bars_required", 0) or 0)
+        upside_exhaustion_score = float(structure.get("upside_exhaustion_score", 0.0) or 0.0)
+        downside_exhaustion_score = float(structure.get("downside_exhaustion_score", 0.0) or 0.0)
+
+        directional_pullback = pullback_score if direction == "BUY" else -pullback_score
+        directional_breakout = breakout_score if direction == "BUY" else -breakout_score
+
+        if alignment_score < max(0.52, float(plan.min_alignment_score) - 0.02):
+            return None
+        if setup_quality < max(0.50, float(plan.min_setup_quality) - 0.02):
+            return None
+        if candle_quality_score < 0.30 or session_quality_score < 0.34:
+            return None
+        if extension_score > 1.05 or target_efficiency_score < 0.32:
+            return None
+        if impulse_age_bars >= 6 or cluster_penalty >= 0.26:
+            return None
+        if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+            return None
+        if direction == "BUY" and upside_exhaustion_score >= 0.58:
+            return None
+        if direction == "SELL" and downside_exhaustion_score >= 0.58:
+            return None
+
+        playbook = ""
+        entry_style = ""
+        readiness_note = ""
+        if failed_opposite_move_confirmed and "failed_break_reclaim" in plan.allowed_playbooks:
+            playbook = "failed_break_reclaim"
+            entry_style = "failed_move_reclaim"
+            readiness_note = "failed_opposite_move_confirmed"
+        elif breakout_retest_ready and directional_breakout >= 0.18 and "breakout_retest" in plan.allowed_playbooks:
+            playbook = "breakout_retest"
+            entry_style = "elite_retest_ready"
+            readiness_note = "breakout_retest_ready"
+        elif first_pullback_ready and directional_pullback >= 0.18 and "trend_pullback" in plan.allowed_playbooks:
+            playbook = "trend_pullback"
+            entry_style = "elite_pullback_ready"
+            readiness_note = "first_pullback_ready"
+        elif entry_confirmation_ready and directional_breakout >= 0.48 and "breakout_continuation" in plan.allowed_playbooks:
+            playbook = "breakout_continuation"
+            entry_style = "elite_breakout_ready"
+            readiness_note = "entry_confirmation_ready"
+
+        if not playbook:
+            return None
+
+        profile = self._profile(category)
+        preferred_interval = self.preferred_interval(category, asset)
+        score = _clip(
+            abs(directional_breakout) * 0.22
+            + abs(directional_pullback) * 0.18
+            + _clip(setup_quality) * 0.18
+            + _clip(alignment_score) * 0.16
+            + _clip(candle_quality_score) * 0.10
+            + _clip(session_quality_score) * 0.08
+            + _clip(target_efficiency_score) * 0.08
+            + _clip(elite_pattern_rank) * 0.10
+            + (0.06 if failed_opposite_move_confirmed else 0.0)
+            + (0.05 if breakout_retest_ready else 0.0)
+            + (0.04 if first_pullback_ready else 0.0)
+            - min(0.12, extension_score * 0.06)
+            - min(0.08, cluster_penalty * 0.30),
+            0.0,
+            1.0,
+        )
+        if score < 0.56:
+            return None
+
+        confidence = _clip(
+            0.42
+            + score * 0.40
+            + (0.05 if entry_confirmation_ready else 0.0)
+            + (0.03 if playbook in {"breakout_retest", "trend_pullback", "failed_break_reclaim"} else 0.0),
+            0.0,
+            0.93,
+        )
+        return {
+            "playbook": playbook,
+            "direction": direction,
+            "score": round(score, 4),
+            "confidence": round(confidence, 4),
+            "entry_style": entry_style,
+            "session": session,
+            "preferred_interval": preferred_interval,
+            "management": self._management_template(profile, playbook, asset=asset, category=category),
+            "notes": [
+                "elite_ready_fallback",
+                readiness_note,
+                f"session={session}",
+                f"align={alignment_score:.2f}",
+                f"setup={setup_quality:.2f}",
+            ],
+        }
 
     def _breakout_continuation(
         self,
@@ -1103,6 +1246,7 @@ class PlaybookService:
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         profile = self._profile(category)
+        plan = self._asset_plan(asset, category)
         preferred_interval = self.preferred_interval(category, asset)
         structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
         if structure_bias not in {"buy", "sell"}:
@@ -1123,19 +1267,26 @@ class PlaybookService:
         opposing_distance_key = "distance_to_resistance" if direction == "BUY" else "distance_to_support"
         opposing_distance = float(structure.get(opposing_distance_key, 0.02) or 0.02)
         directional_pullback = pullback_score if direction == "BUY" else -pullback_score
+        direction_sign = 1 if direction == "BUY" else -1
+        aligned_trends = sum(
+            1
+            for state in (trend_15m, trend_1h)
+            if self._trend_sign(state) == direction_sign
+        )
+        required_trends = max(1, int(plan.min_trend_agreement or 0))
 
         if directional_pullback <= 0.12:
             return None
 
         if direction == "BUY":
-            if trend_15m != "trending_up" or trend_1h != "trending_up":
+            if aligned_trends < required_trends:
                 return None
             if breakout_score <= -0.10:
                 return None
             if upside_exhaustion_score >= 0.54:
                 return None
         else:
-            if trend_15m != "trending_down" or trend_1h != "trending_down":
+            if aligned_trends < required_trends:
                 return None
             if breakout_score >= 0.10:
                 return None
@@ -1923,6 +2074,27 @@ class PlaybookService:
                 )
                 if approved:
                     candidates.append(candidate)
+                elif reason:
+                    rejected_reasons.append(reason)
+
+        if not candidates:
+            fallback = self._elite_ready_fallback(
+                asset=asset,
+                category=category,
+                session=session,
+                structure=structure,
+                plan=plan,
+            )
+            if fallback:
+                approved, reason = self._qualify_candidate(
+                    fallback,
+                    asset=asset,
+                    category=category,
+                    structure=structure,
+                    plan=plan,
+                )
+                if approved:
+                    candidates.append(fallback)
                 elif reason:
                     rejected_reasons.append(reason)
 

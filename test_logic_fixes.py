@@ -2763,6 +2763,59 @@ def test_decision_engine_counts_market_intelligence_as_extra_source() -> None:
     })
 
     assert count_valid_sources(signal) == 5
+    assert signal.metadata["valid_source_families"] == ["macro", "model", "positioning", "regime", "sentiment"]
+
+
+def test_asset_profiles_expose_category_native_source_families() -> None:
+    assert get_profile("EUR/USD").source_families == ("model", "regime", "sentiment", "macro", "positioning", "flow")
+    assert get_profile("US100").source_families == ("model", "regime", "sentiment", "macro", "positioning", "options", "flow")
+    assert get_profile("XAU/USD").source_families == ("model", "regime", "sentiment", "macro", "positioning", "flow")
+    assert get_profile("BTC-USD").source_families == ("model", "regime", "sentiment", "flow", "derivatives", "positioning")
+
+
+def test_decision_engine_counts_us_index_options_and_positioning_families() -> None:
+    from core.decision_engine import count_valid_sources
+
+    signal = Signal(
+        asset="US100",
+        canonical_asset="US100",
+        category="indices",
+        direction="BUY",
+        confidence=0.8,
+    )
+    signal.metadata.update({
+        "ml_prediction_real": True,
+        "regime": "trending_up",
+        "sentiment_sources": ["comprehensive_sentiment"],
+        "sentiment_components": {"vix": 0.2, "aaii": 0.35, "put_call": 0.41},
+        "sentiment_timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    assert count_valid_sources(signal) == 5
+    assert signal.metadata["valid_source_families"] == ["model", "options", "positioning", "regime", "sentiment"]
+
+
+def test_decision_engine_excludes_stale_sentiment_family() -> None:
+    from core.decision_engine import count_valid_sources
+
+    signal = Signal(
+        asset="EUR/USD",
+        canonical_asset="EUR/USD",
+        category="forex",
+        direction="BUY",
+        confidence=0.8,
+    )
+    signal.metadata.update({
+        "ml_prediction_real": True,
+        "regime": "trending_bull",
+        "sentiment_sources": ["comprehensive_sentiment"],
+        "sentiment_components": {"news": 0.2},
+        "sentiment_timestamp": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+    })
+
+    assert count_valid_sources(signal) == 2
+    assert signal.metadata["valid_source_families"] == ["model", "regime"]
+    assert signal.metadata["stale_source_families"] == ["sentiment"]
 
 def test_market_intelligence_service_builds_asset_snapshot(monkeypatch) -> None:
     intel_mod = importlib.import_module("services.market_intelligence_service")
@@ -7979,6 +8032,49 @@ def test_page_overview_normalizes_cached_response_objects(monkeypatch) -> None:
     assert payload["command_center"]["balance"] == 123.0
     assert payload["whale"]["alert_count_24h"] == 4
 
+def test_page_overview_no_cache_bypasses_cached_payload(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+
+    cache_get_calls = []
+    cache_set_calls = []
+
+    class _FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def get_json(self):
+            return self._payload
+
+    def _fake_cache_get(key):
+        cache_get_calls.append(key)
+        return {"success": True, "command_center": {"balance": 111.0}}
+
+    def _fake_cache_set(key, value, ttl=0):
+        cache_set_calls.append((key, ttl))
+
+    def _fake_call_view(fn):
+        name = getattr(fn, "__name__", "")
+        if name == "api_command_center":
+            return _FakeResponse({"success": True, "balance": 321.0})
+        raise AssertionError(f"Unexpected view {name}")
+
+    monkeypatch.setattr(dashboard_mod, "_cache_get", _fake_cache_get, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", _fake_cache_set, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_call_view", _fake_call_view, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/page-overview?page=command_center&no_cache=1"):
+        response = dashboard_mod.api_page_overview()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["command_center"]["balance"] == 321.0
+    assert cache_get_calls == []
+    assert cache_set_calls == []
+
 def test_page_overview_command_center_reuses_embedded_whale_summary(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -8271,6 +8367,8 @@ def test_command_center_survives_live_price_wait_timeout(monkeypatch) -> None:
 
 def test_command_center_includes_live_summary_and_intraday_curve(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    import sys
+    import types
 
     monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
     monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
@@ -8327,6 +8425,23 @@ def test_command_center_includes_live_summary_and_intraday_curve(monkeypatch) ->
     monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
     monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
     monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "websocket_dashboard",
+        types.SimpleNamespace(
+            get_live_price_history=lambda asset, limit=2000: [
+                {
+                    "timestamp": datetime(2026, 4, 10, 3, 0, tzinfo=timezone.utc).timestamp(),
+                    "price": 110.0,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "services.local_candle_store",
+        types.SimpleNamespace(local_candle_store=types.SimpleNamespace(enabled=lambda: False)),
+    )
 
     with dashboard_mod.app.test_request_context("/api/command-center"):
         response = dashboard_mod.api_command_center()
@@ -8458,7 +8573,9 @@ def test_command_center_includes_top_opportunities_and_weak_positions(monkeypatc
     assert response.status_code == 200
     assert payload["success"] is True
     assert payload["top_opportunities"][0]["asset"] == "BTC-USD"
+    assert payload["top_opportunities"][0]["blocked_reason"] == ""
     assert payload["weak_positions"][0]["asset"] == "ETH-USD"
+    assert payload["weak_positions"][0]["blocked_reason"] == ""
     assert "provider_routing" in payload
     assert "summary_label" in payload["provider_routing"]
 
@@ -8555,6 +8672,106 @@ def test_command_center_includes_signal_diagnostics_fields(monkeypatch) -> None:
     assert payload["signal_diagnostics"]["synthetic_depth_count"] == 1
     assert payload["signal_diagnostics"]["cross_support_count"] == 1
 
+
+def test_command_center_flattens_entry_structure_and_execution_block_fields(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    class _FakeCore:
+        is_running = True
+        is_ready = True
+
+        def get_performance(self):
+            return {"balance": 1000.0, "total_pnl": 10.0, "win_rate": 55.0, "total_trades": 4}
+
+        def get_daily_stats(self):
+            return {"daily_pnl": 2.0, "daily_trades": 1}
+
+        def get_positions(self):
+            return [
+                {
+                    "trade_id": "t1",
+                    "asset": "BTC-USD",
+                    "category": "crypto",
+                    "direction": "BUY",
+                    "confidence": 0.82,
+                    "entry_price": 100.0,
+                    "stop_loss": 95.0,
+                    "take_profit": 112.0,
+                    "position_size": 1.0,
+                    "strategy_id": "playbook_breakout_retest",
+                    "open_time": "2026-04-10T03:00:00+00:00",
+                    "pnl": 4.0,
+                    "metadata": {
+                        "breakout_retest_ready": True,
+                        "first_pullback_ready": False,
+                        "entry_confirmation_ready": False,
+                        "entry_confirmation_count": 1,
+                        "entry_confirmation_bars_required": 2,
+                        "failed_opposite_move_confirmed": True,
+                        "pattern_family": "breakout_retest",
+                        "elite_pattern_rank": 0.74,
+                        "cluster_penalty": 0.18,
+                        "impulse_age_bars": 3,
+                        "extension_score": 0.66,
+                        "candle_quality_score": 0.61,
+                        "session_quality_score": 0.58,
+                        "target_efficiency_score": 0.57,
+                        "blocked_reason": "confirmation_missing:breakout_retest",
+                        "rejected_reasons": [
+                            "confirmation_missing:breakout_retest",
+                            "clustered_signal:breakout_retest",
+                        ],
+                        "late_entry_risk_score": 0.54,
+                        "late_entry_risk_reasons": ["price is too far extended from fair value"],
+                        "execution_hard_blocks": ["entry is extended and the trigger candle is weak"],
+                        "execution_relief_flags": {
+                            "strong_fx_crypto_candidate": True,
+                            "elite_supported_candidate": True,
+                        },
+                        "market_review_notes": ["waiting for second bar close"],
+                        "execution_review_notes": ["cluster pressure is still acceptable"],
+                    },
+                }
+            ]
+
+        def health_report(self):
+            return {"is_running": True, "engine_ready": True}
+
+    class _FakeFetcher:
+        @staticmethod
+        def get_real_time_price(asset, category):
+            return 104.0, {"source": "Deriv"}
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/command-center"):
+        response = dashboard_mod.api_command_center()
+
+    payload = response.get_json()
+    row = payload["latest_signals"][0]
+    pos = payload["positions"][0]
+
+    assert response.status_code == 200
+    assert row["breakout_retest_ready"] is True
+    assert row["entry_confirmation_count"] == 1
+    assert row["entry_confirmation_bars_required"] == 2
+    assert row["pattern_family"] == "breakout_retest"
+    assert row["late_entry_risk_score"] == 0.54
+    assert row["execution_hard_blocks"] == ["entry is extended and the trigger candle is weak"]
+    assert row["strong_fx_crypto_candidate"] is True
+    assert row["elite_supported_candidate"] is True
+    assert row["blocked_reason"] == "confirmation_missing:breakout_retest"
+    assert row["rejected_reason_buckets"] == {"confirmation_missing": 1, "clustered_signal": 1}
+    assert pos["market_review_notes"] == "waiting for second bar close"
+    assert pos["execution_review_notes"] == "cluster pressure is still acceptable"
+
 def test_command_center_uses_fast_ranking_snapshots(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -8598,8 +8815,10 @@ def test_command_center_uses_fast_ranking_snapshots(monkeypatch) -> None:
     payload = response.get_json()
     assert response.status_code == 200
     assert payload["success"] is True
-    assert payload["top_opportunities"] == [{"asset": "BTC-USD"}]
-    assert payload["weak_positions"] == [{"asset": "ETH-USD"}]
+    assert payload["top_opportunities"][0]["asset"] == "BTC-USD"
+    assert payload["top_opportunities"][0]["blocked_reason"] == ""
+    assert payload["weak_positions"][0]["asset"] == "ETH-USD"
+    assert payload["weak_positions"][0]["blocked_reason"] == ""
     assert calls["top"] == (5, False, False)
     assert calls["weak"] == (5, False)
 
@@ -11256,6 +11475,7 @@ def test_playbook_service_detects_breakout_retest_entry(monkeypatch) -> None:
                 "trend_1h": "trending_up",
                 "distance_to_support": 0.0017,
                 "distance_to_resistance": 0.0007,
+                "breakout_retest_ready": True,
             }
         },
     )
@@ -11264,6 +11484,42 @@ def test_playbook_service_detects_breakout_retest_entry(monkeypatch) -> None:
     retest = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "breakout_retest")
     assert retest["direction"] == "BUY"
     assert retest["entry_style"] == "retest_hold"
+
+
+def test_playbook_service_rejects_breakout_retest_without_elite_ready_flag(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "EUR/USD",
+        "forex",
+        _build_breakout_retest_frame(),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.68,
+                "setup_quality": 0.69,
+                "pullback_score": 0.10,
+                "breakout_score": 0.72,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0017,
+                "distance_to_resistance": 0.0007,
+                "breakout_retest_ready": False,
+                "first_pullback_ready": False,
+                "failed_opposite_move_confirmed": False,
+            }
+        },
+    )
+
+    assert not any(candidate["playbook"] == "breakout_retest" for candidate in analysis["candidates"])
+    assert analysis["blocked_reason"] == "retest_missing:breakout_retest"
 
 def test_playbook_service_blocks_long_trend_pullback_when_upside_exhausted(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
@@ -11399,6 +11655,79 @@ def test_playbook_service_requires_dual_trend_confirmation_for_long_pullback(mon
     )
 
     assert candidate is None
+
+def test_playbook_service_allows_crypto_pullback_with_asset_trend_requirement(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 7, 18, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+
+    candidate = service._trend_pullback(
+        _build_trend_frame(100.0, 0.35),
+        asset="BTC-USD",
+        category="crypto",
+        session="us_core",
+        structure={
+            "structure_bias": "buy",
+            "alignment_score": 0.74,
+            "setup_quality": 0.72,
+            "pullback_score": 0.69,
+            "breakout_score": 0.08,
+            "volatility_state": "normal",
+            "regime": "trending_up",
+            "trend_15m": "trending_up",
+            "trend_1h": "ranging",
+            "distance_to_support": 0.0022,
+            "distance_to_resistance": 0.0084,
+            "upside_exhaustion_score": 0.18,
+            "downside_exhaustion_score": 0.0,
+        },
+    )
+
+    assert candidate is not None
+    assert candidate["playbook"] == "trend_pullback"
+    assert candidate["direction"] == "BUY"
+
+
+def test_playbook_service_rejects_pullback_without_first_pullback_ready(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 7, 18, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "BTC-USD",
+        "crypto",
+        _build_trend_frame(100.0, 0.35),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.74,
+                "setup_quality": 0.72,
+                "pullback_score": 0.69,
+                "breakout_score": 0.08,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "ranging",
+                "distance_to_support": 0.0022,
+                "distance_to_resistance": 0.0084,
+                "upside_exhaustion_score": 0.18,
+                "downside_exhaustion_score": 0.0,
+                "breakout_retest_ready": False,
+                "first_pullback_ready": False,
+                "failed_opposite_move_confirmed": False,
+            }
+        },
+    )
+
+    assert not any(candidate["playbook"] == "trend_pullback" for candidate in analysis["candidates"])
+    assert "pullback_missing:trend_pullback" in analysis["rejected_reasons"]
 
 def test_playbook_service_detects_reversal_exhaustion(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
@@ -11568,7 +11897,7 @@ def test_playbook_service_detects_opening_drive_for_us_index(monkeypatch) -> Non
     assert opening_drive["direction"] == "BUY"
     assert opening_drive["entry_style"] == "opening_drive_break"
 
-def test_playbook_service_blocks_us_index_after_open_window(monkeypatch) -> None:
+def test_playbook_service_allows_us_index_during_us_core(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
         svc_mod,
@@ -11599,8 +11928,131 @@ def test_playbook_service_blocks_us_index_after_open_window(monkeypatch) -> None
         ml_confidence=0.03,
     )
 
-    assert pick["action"] == ""
-    assert pick["blocked_reason"].startswith("session_block:us_core")
+    assert pick["action"] == "seed"
+    assert pick["primary"]["direction"] == "BUY"
+
+def test_playbook_service_seeds_elite_ready_fallback_when_structure_is_confirmed(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 18, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+
+    pick = service.pick_seed(
+        "XAU/USD",
+        "commodities",
+        _build_trend_frame(100.0, 0.0),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.78,
+                "setup_quality": 0.75,
+                "pullback_score": 0.10,
+                "breakout_score": 0.28,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0035,
+                "distance_to_resistance": 0.0092,
+                "candle_quality_score": 0.66,
+                "session_quality_score": 0.64,
+                "extension_score": 0.42,
+                "target_efficiency_score": 0.58,
+                "impulse_age_bars": 2,
+                "elite_pattern_rank": 0.74,
+                "cluster_penalty": 0.06,
+                "breakout_retest_ready": True,
+                "first_pullback_ready": False,
+                "failed_opposite_move_confirmed": False,
+                "entry_confirmation_bars_required": 2,
+                "entry_confirmation_ready": True,
+                "upside_exhaustion_score": 0.18,
+                "downside_exhaustion_score": 0.0,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["primary"]["playbook"] == "breakout_retest"
+    assert "elite_ready_fallback" in pick["primary"]["notes"]
+
+def test_market_structure_service_preserves_signed_directional_scores(monkeypatch) -> None:
+    structure_mod = importlib.import_module("services.market_structure_service")
+    service = structure_mod.MarketStructureService()
+    primary = {
+        "trend_state": "trending_down",
+        "volatility_state": "expansion",
+        "support": 99.0,
+        "resistance": 101.0,
+        "distance_to_support": 0.008,
+        "distance_to_resistance": 0.002,
+        "vwap": 100.0,
+        "vwap_distance_atr": 0.42,
+        "session_quality_label": "good",
+        "session_quality_score": 0.62,
+        "candle_quality_score": 0.66,
+        "candle_range_atr": 1.12,
+        "candle_body_ratio": 0.58,
+        "upper_wick_ratio": 0.12,
+        "lower_wick_ratio": 0.18,
+        "close_location": 0.24,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": True,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": True,
+        "impulse_age_bars": 2,
+        "extension_score": 0.44,
+        "target_efficiency_score": 0.61,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 2,
+        "entry_confirmation_count": 2,
+        "entry_confirmation_ready": True,
+        "pattern_family": "pullback_continuation",
+        "elite_pattern_rank": 0.73,
+        "cluster_penalty": 0.04,
+        "regime_entry_policy": {"confirmation_bars": 2},
+        "pullback_score": -0.54,
+        "breakout_score": -0.38,
+        "upside_exhaustion_score": 0.10,
+        "downside_exhaustion_score": 0.44,
+    }
+
+    monkeypatch.setattr(service, "_collect_frame_details", lambda frames: ({"15m": dict(primary)}, ["15m"]), raising=False)
+    monkeypatch.setattr(service, "_primary_interval", lambda ordered, details: "15m", raising=False)
+    monkeypatch.setattr(
+        service,
+        "_trend_summary",
+        lambda details: {
+            "structure_bias": "sell",
+            "alignment_score": 0.74,
+            "weighted_score": -0.68,
+            "weight_total": 1.0,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "_range_summary",
+        lambda details, weight_total: {
+            "pullback_score": -0.54,
+            "breakout_score": -0.38,
+            "upside_exhaustion_score": 0.10,
+            "downside_exhaustion_score": 0.44,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(service, "_setup_quality", lambda *args, **kwargs: 0.71, raising=False)
+
+    result = service.analyze("BTC-USD", "crypto", {"15m": pd.DataFrame({"close": [1.0]})})
+
+    assert result["structure_bias"] == "sell"
+    assert result["pullback_score"] == -0.54
+    assert result["breakout_score"] == -0.38
 
 def test_playbook_service_detects_news_impulse_for_major_forex(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
@@ -13891,10 +14343,103 @@ def test_execution_review_blocks_structurally_late_entries_before_open(monkeypat
 
     assert approved is False
     assert signal.alive is False
-    assert "late entry risk" in signal.kill_reason.lower()
+    assert "late entry risk" in signal.kill_reason.lower() or "execution hard block" in signal.kill_reason.lower()
     assert signal.metadata["late_entry_risk_score"] >= 0.74
     assert signal.journal.entries[-1].decision == "KILLED"
     assert signal.journal.entries[-1].data["late_entry_risk"]["opposing_distance"] == 0.0019
+
+
+def test_execution_late_entry_gate_relaxes_strong_crypto_pattern_rank_and_impulse_age(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.72,
+        entry_price=100.0,
+        stop_loss=98.8,
+        take_profit=102.4,
+        risk_reward=2.0,
+    )
+    signal.metadata.update(
+        {
+            "support_proximity": 0.78,
+            "resistance_proximity": 0.12,
+            "volatility_ratio": 1.18,
+            "exhaustion_risk": 0.18,
+            "playbook_entry_style": "breakout_close",
+        }
+    )
+    data = {}
+    notes = []
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.78,
+        "setup_quality": 0.71,
+        "vwap_distance_atr": 0.88,
+        "session_quality_score": 0.57,
+        "candle_quality_score": 0.49,
+        "extension_score": 0.96,
+        "target_efficiency_score": 0.29,
+        "impulse_age_bars": 6,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": False,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": False,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 1,
+        "entry_confirmation_count": 1,
+        "entry_confirmation_ready": True,
+        "pattern_family": "breakout_continuation",
+        "elite_pattern_rank": 0.09,
+        "cluster_penalty": 0.08,
+        "distance_to_resistance": 0.0068,
+        "distance_to_support": 0.0180,
+        "regime_entry_policy": {
+            "min_setup_quality": 0.32,
+            "min_candle_quality": 0.34,
+            "max_extension_score": 1.28,
+            "min_target_efficiency": 0.24,
+            "max_impulse_age_bars": 5,
+        },
+        "dominant_exhaustion_score": 0.22,
+        "bias_exhausted": False,
+    }
+
+    approved = engine._execution_late_entry_risk_gate(
+        signal,
+        adaptive_policy={"raw": {"recent_review_profile": {"sample_count": 6}}},
+        conf_before=signal.confidence,
+        structure=structure,
+        data=data,
+        notes=notes,
+    )
+
+    assert approved is True
+    assert signal.alive is True
+    assert signal.metadata["execution_relief_flags"]["strong_fx_crypto_candidate"] is True
+    assert signal.metadata["execution_relief_flags"]["elite_supported_candidate"] is True
+    assert signal.metadata["late_entry_risk_score"] < 0.58
+    assert signal.metadata["execution_hard_blocks"] == []
+
+
+def test_trading_core_formats_seed_rejection_buckets() -> None:
+    engine = TradingCore(balance=10_000.0)
+
+    formatted = engine._fmt_reason_buckets(
+        [
+            "trend_misaligned:aggressive_expansion",
+            "trend_misaligned:breakout_continuation",
+            "alignment_too_weak:breakout_retest",
+            "trend_misaligned:trend_pullback",
+        ]
+    )
+
+    assert formatted.startswith("trend_misaligned=3")
+    assert "alignment_too_weak=1" in formatted
 
 def test_risk_manager_uses_asset_class_target_rr_overrides() -> None:
     risk_mod = importlib.import_module("risk.manager")

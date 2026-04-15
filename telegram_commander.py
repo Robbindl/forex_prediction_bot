@@ -614,9 +614,9 @@ class TelegramCommander:
             open_raw = trade.get("open_time") or trade.get("entry_time")
             opened_at = format_display_datetime(open_raw or now_in_display_timezone())
             playbook_block = self._format_playbook_runtime_block(trade)
-            playbook_text = f"\n🧭 *Playbook*\n{playbook_block}" if playbook_block else ""
+            playbook_text = f"\n🧭 *Entry Context*\n{playbook_block}" if playbook_block else ""
             diagnostics_block = self._format_runtime_diagnostics_block(trade)
-            diagnostics_text = f"\n🧪 *Diagnostics*\n{diagnostics_block}" if diagnostics_block else ""
+            diagnostics_text = f"\n🧪 *Market Context*\n{diagnostics_block}" if diagnostics_block else ""
             target_lines = [f"Stop:     `{self._fmt_price(sl, _a)}`"]
             if primary_tp > 0:
                 target_label = "TP1" if runner_tp > 0 and abs(runner_tp - primary_tp) > 1e-9 else "Target"
@@ -690,9 +690,9 @@ class TelegramCommander:
             except Exception:
                 pass
             playbook_block = self._format_playbook_runtime_block(trade)
-            playbook_text = f"\n🧭 *Playbook*\n{playbook_block}" if playbook_block else ""
+            playbook_text = f"\n🧭 *Entry Context*\n{playbook_block}" if playbook_block else ""
             execution_block = self._format_trade_execution_block(trade)
-            execution_text = f"\n🏛️ *Execution Audit*\n{execution_block}" if execution_block else ""
+            execution_text = f"\n🏛️ *Execution Review*\n{execution_block}" if execution_block else ""
             review_block = self._format_trade_review_block(trade)
             review_text = f"\n{review_block}" if review_block else ""
             self.send_message(

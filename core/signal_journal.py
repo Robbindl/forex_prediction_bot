@@ -1284,19 +1284,19 @@ class SignalJournal:
 
         if survived:
             entry_p = self._format_price(getattr(signal, "entry_price", 0.0) if signal else 0.0)
-            intro = f"The bot is preparing a {direction_word} trade on {self.asset}"
+            intro = f"The bot qualified a {direction_word} trade on {self.asset}"
             if entry_p:
                 intro += f" near {entry_p}"
             intro += "."
             lines.append(intro)
             if confidence is not None:
                 lines.append(
-                    f"Overall confidence is {self._format_pct(confidence)}, and the setup passed all live checks."
+                    f"Overall confidence is {self._format_pct(confidence)}, and the entry review stack cleared."
                 )
             else:
-                lines.append("The setup passed all live checks and is ready to execute.")
+                lines.append("The entry review stack cleared this setup for execution.")
         else:
-            lines.append("The bot reviewed this setup, but it was blocked before execution.")
+            lines.append("The bot reviewed this setup, but it did not qualify for entry.")
             if confidence is not None:
                 lines.append(f"Final reviewed confidence was {self._format_pct(confidence)}.")
 
@@ -1392,9 +1392,9 @@ class SignalJournal:
                 lines.extend(trust_lines)
             return lines
 
-        lines = ["", "Why it was blocked:"]
+        lines = ["", "Why entry did not qualify:"]
         if summary.get("kill_reason"):
-            lines.append(f"- Main reason: {self._sentence(self._humanize_reason(summary['kill_reason']))}.")
+            lines.append(f"- Main blocker: {self._sentence(self._humanize_reason(summary['kill_reason']))}.")
         if context_lines or trust_lines or other_lines:
             lines.extend(context_lines + trust_lines + other_lines)
         return lines

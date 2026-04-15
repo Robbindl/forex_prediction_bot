@@ -87,6 +87,8 @@ app = Flask(
     template_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"),
     static_folder  =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"),
 )
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 try:
     from config.config import DASHBOARD_CORS_ORIGINS, TRUST_PROXY_COUNT, PLAYBOOK_ONLY_RUNTIME
 except Exception:
@@ -404,7 +406,13 @@ def _invalidate_cache_prefixes(*prefixes: str) -> None:
 
 
 def _render_cached_template(template_name: str, ttl: int = 30) -> str:
-    cache_key = f"html_template:{template_name}"
+    template_stamp = "na"
+    try:
+        template_path = os.path.join(app.template_folder or "", template_name)
+        template_stamp = str(os.stat(template_path).st_mtime_ns)
+    except OSError:
+        template_stamp = "na"
+    cache_key = f"html_template:{template_name}:{template_stamp}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -725,6 +733,10 @@ def _set_api_cache_headers(response: Response) -> Response:
                 response.headers['X-Cache-Write'] = 'MISS'
             except Exception:
                 logger.exception("Failed to write API response to cache")
+    elif request.method == "GET" and response.mimetype == "text/html":
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return _compress_response(response)
 
 # ── Signal store (background refresh) ────────────────────────────────────────
@@ -977,10 +989,39 @@ def _wr(raw) -> float:
     return round(v * 100, 2) if v <= 1.0 else round(v, 2)
 
 
+def _clean_text_list(values: Any, *, limit: int = 0) -> List[str]:
+    items: List[str] = []
+    if isinstance(values, (list, tuple, set)):
+        source = list(values)
+    elif isinstance(values, str):
+        source = [values]
+    else:
+        source = []
+    for value in source:
+        text = str(value or "").strip()
+        if text:
+            items.append(text)
+    return items[:limit] if limit > 0 else items
+
+
+def _join_text_list(values: Any, *, limit: int = 0) -> str:
+    parts = _clean_text_list(values, limit=limit)
+    return " · ".join(parts)
+
+
+def _reason_bucket_counts(reasons: Any) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for reason in _clean_text_list(reasons):
+        label = reason.split(":", 1)[0].strip() or "unknown"
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
 def _extract_execution_feedback_fields(metadata: Any) -> Dict[str, Any]:
     meta = metadata if isinstance(metadata, dict) else {}
     feedback = meta.get("execution_feedback") if isinstance(meta.get("execution_feedback"), dict) else {}
     policy = meta.get("execution_feedback_policy") if isinstance(meta.get("execution_feedback_policy"), dict) else {}
+    relief_flags = meta.get("execution_relief_flags") if isinstance(meta.get("execution_relief_flags"), dict) else {}
     notes = feedback.get("notes") if isinstance(feedback.get("notes"), list) else []
     policy_notes = policy.get("notes") if isinstance(policy.get("notes"), list) else []
     return {
@@ -1001,6 +1042,12 @@ def _extract_execution_feedback_fields(metadata: Any) -> Dict[str, Any]:
         "premature_stop": bool(feedback.get("premature_stop")),
         "late_entry": bool(feedback.get("late_entry")),
         "target_miss": bool(feedback.get("target_miss")),
+        "late_entry_risk_score": float(meta.get("late_entry_risk_score", 0.0) or 0.0),
+        "late_entry_risk_reasons": _clean_text_list(meta.get("late_entry_risk_reasons"), limit=4),
+        "execution_hard_blocks": _clean_text_list(meta.get("execution_hard_blocks"), limit=4),
+        "execution_relief_flags": relief_flags,
+        "strong_fx_crypto_candidate": bool(relief_flags.get("strong_fx_crypto_candidate")),
+        "elite_supported_candidate": bool(relief_flags.get("elite_supported_candidate")),
     }
 
 
@@ -1137,6 +1184,66 @@ def _extract_signal_intelligence_fields(metadata: Any) -> Dict[str, Any]:
         "recent_pattern_block_new_entries": bool(recent.get("block_new_entries")),
         "recent_pattern_target_rr_multiplier": float(recent.get("target_rr_multiplier", 1.0) or 1.0),
     }
+
+
+def _extract_entry_structure_fields(metadata: Any) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    rejected_reasons = _clean_text_list(meta.get("rejected_reasons"), limit=6)
+    blocked_reason = str(meta.get("blocked_reason") or "").strip()
+    exact_kill_reason = str(
+        meta.get("exact_kill_reason")
+        or meta.get("execution_kill_reason")
+        or meta.get("kill_reason")
+        or blocked_reason
+        or (rejected_reasons[0] if rejected_reasons else "")
+    ).strip()
+    return {
+        "breakout_retest_ready": bool(meta.get("breakout_retest_ready")),
+        "first_pullback_ready": bool(meta.get("first_pullback_ready")),
+        "entry_confirmation_ready": bool(meta.get("entry_confirmation_ready")),
+        "entry_confirmation_count": int(meta.get("entry_confirmation_count", 0) or 0),
+        "entry_confirmation_bars_required": int(meta.get("entry_confirmation_bars_required", 0) or 0),
+        "failed_opposite_move_confirmed": bool(meta.get("failed_opposite_move_confirmed")),
+        "liquidity_sweep_reclaim": bool(meta.get("liquidity_sweep_reclaim")),
+        "pattern_family": str(meta.get("pattern_family") or ""),
+        "elite_pattern_rank": float(meta.get("elite_pattern_rank", 0.0) or 0.0),
+        "cluster_penalty": float(meta.get("cluster_penalty", 0.0) or 0.0),
+        "impulse_age_bars": int(meta.get("impulse_age_bars", 0) or 0),
+        "extension_score": float(meta.get("extension_score", 0.0) or 0.0),
+        "candle_quality_score": float(meta.get("candle_quality_score", 0.0) or 0.0),
+        "session_quality_score": float(meta.get("session_quality_score", 0.0) or 0.0),
+        "target_efficiency_score": float(meta.get("target_efficiency_score", 0.0) or 0.0),
+        "session_label": str(meta.get("session_label") or meta.get("session") or ""),
+        "regime_policy_summary": str(meta.get("regime_policy_summary") or ""),
+        "regime_policy": str(meta.get("regime_policy") or ""),
+        "regime_label": str(meta.get("regime_label") or ""),
+        "market_review_notes": _join_text_list(meta.get("market_review_notes"), limit=4),
+        "execution_review_notes": _join_text_list(meta.get("execution_review_notes"), limit=4),
+        "blocked_reason": blocked_reason,
+        "rejected_reasons": rejected_reasons,
+        "rejected_reason_buckets": _reason_bucket_counts(rejected_reasons),
+        "execution_kill_reason": str(meta.get("execution_kill_reason") or meta.get("kill_reason") or "").strip(),
+        "exact_kill_reason": exact_kill_reason,
+    }
+
+
+def _enrich_signal_like_row(row: Any) -> Dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    item = dict(row)
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    asset = str(item.get("asset") or item.get("canonical_asset") or item.get("symbol") or "")
+    category = str(item.get("category") or "")
+    source = metadata or item
+    if metadata:
+        item["metadata"] = metadata
+    item.update(_extract_entry_structure_fields(source))
+    item.update(_extract_execution_feedback_fields(source))
+    item.update(_extract_memory_fields(source))
+    item.update(_extract_opportunity_fields(source))
+    item.update(_extract_signal_intelligence_fields(source))
+    item.update(_extract_market_data_provenance_fields(source, asset=asset, category=category))
+    return item
 
 
 def _extract_market_data_provenance_fields(
@@ -1452,7 +1559,8 @@ def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, A
             + max(0.0, final_score) * 0.1
         )
         items.append(
-            {
+            _enrich_signal_like_row(
+                {
                 "asset": asset,
                 "direction": str(row.get("direction") or "").upper(),
                 "killed_by": str(row.get("killed_by") or row.get("last_layer") or ""),
@@ -1469,7 +1577,8 @@ def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, A
                 "stop_hunt_risk": round(stop_hunt_risk, 3),
                 "exhaustion_risk": round(exhaustion_risk, 3),
                 "rank_score": round(rank_score, 4),
-            }
+                }
+            )
         )
     items.sort(
         key=lambda item: (
@@ -1547,17 +1656,22 @@ def _build_session_radar(limit: int = 12) -> Dict[str, Any]:
 def _summarize_why_not_traded(journals: Any, near_misses: Any, *, limit: int = 6) -> Dict[str, Any]:
     blocker_counts: Dict[str, int] = {}
     asset_counts: Dict[str, Dict[str, Any]] = {}
+    confirmation_pending_count = 0
+    extension_block_count = 0
+    cluster_blocked_count = 0
+    regime_blocked_count = 0
     for row in list(journals or []):
         if not isinstance(row, dict):
             continue
         if str(row.get("decision") or "").upper() == "SURVIVED":
             continue
+        enriched = _enrich_signal_like_row(row)
         asset = str(row.get("asset") or "").strip()
         if not asset:
             continue
         blocker = str(
             row.get("killed_by")
-            or row.get("blocked_reason")
+            or enriched.get("blocked_reason")
             or row.get("kill_reason")
             or row.get("final_policy_reason")
             or row.get("last_layer")
@@ -1565,12 +1679,22 @@ def _summarize_why_not_traded(journals: Any, near_misses: Any, *, limit: int = 6
         ).strip() or "no_candidate"
         blocker_label = blocker.split(":", 1)[0]
         blocker_counts[blocker_label] = blocker_counts.get(blocker_label, 0) + 1
+        rejected_buckets = dict(enriched.get("rejected_reason_buckets") or {})
+        confirmation_pending_count += int(rejected_buckets.get("confirmation_missing", 0) or 0) + int(rejected_buckets.get("reclaim_unconfirmed", 0) or 0)
+        extension_block_count += int(rejected_buckets.get("extension_too_large", 0) or 0)
+        cluster_blocked_count += int(rejected_buckets.get("clustered_signal", 0) or 0)
+        regime_blocked_count += int(rejected_buckets.get("alignment_too_weak", 0) or 0) + int(rejected_buckets.get("trend_misaligned", 0) or 0)
         bucket = asset_counts.setdefault(
             asset,
             {"asset": asset, "count": 0, "top_blocker": blocker_label, "reason": blocker, "setup_quality": 0.0},
         )
         bucket["count"] += 1
         bucket["setup_quality"] = max(float(bucket.get("setup_quality", 0.0) or 0.0), float(row.get("setup_quality", 0.0) or 0.0))
+        for key, value in enriched.items():
+            if key in {"asset", "count"}:
+                continue
+            if key not in bucket or bucket.get(key) in (None, "", [], {}, 0, 0.0, False):
+                bucket[key] = value
 
     top_blockers = [
         {"label": label, "count": count}
@@ -1591,6 +1715,11 @@ def _summarize_why_not_traded(journals: Any, near_misses: Any, *, limit: int = 6
         "top_assets": top_assets,
         "lead_blocker": top_blockers[0]["label"] if top_blockers else "",
         "lead_count": top_blockers[0]["count"] if top_blockers else 0,
+        "confirmation_pending_count": confirmation_pending_count,
+        "blocked_by_confirmation_count": confirmation_pending_count,
+        "overextended_count": extension_block_count,
+        "cluster_blocked_count": cluster_blocked_count,
+        "regime_blocked_count": regime_blocked_count,
     }
 
 
@@ -1605,12 +1734,16 @@ def _build_watchlist_ladder(
         if not isinstance(item, dict):
             continue
         hot.append(
-            {
+            _enrich_signal_like_row(
+                {
                 "asset": str(item.get("asset") or ""),
                 "direction": str(item.get("direction") or item.get("signal") or "").upper(),
                 "opportunity_score": round(float(item.get("opportunity_score", 0.0) or 0.0), 3),
                 "confidence": round(float(item.get("confidence", 0.0) or 0.0) * 100.0, 1),
-            }
+                "metadata": dict(item.get("metadata") or {}),
+                **item,
+                }
+            )
         )
 
     almost_ready = []
@@ -1618,13 +1751,17 @@ def _build_watchlist_ladder(
         if not isinstance(item, dict):
             continue
         almost_ready.append(
-            {
+            _enrich_signal_like_row(
+                {
                 "asset": str(item.get("asset") or ""),
                 "direction": str(item.get("direction") or "").upper(),
                 "reason": str(item.get("reason") or item.get("killed_by") or ""),
                 "opportunity_score": round(float(item.get("opportunity_score", 0.0) or 0.0), 3),
                 "setup_quality": round(float(item.get("setup_quality", 0.0) or 0.0), 3),
-            }
+                "metadata": dict(item.get("metadata") or {}),
+                **item,
+                }
+            )
         )
 
     blocked = []
@@ -1636,12 +1773,16 @@ def _build_watchlist_ladder(
         if asset in active_assets:
             continue
         blocked.append(
-            {
+            _enrich_signal_like_row(
+                {
                 "asset": asset,
                 "current_session": str(row.get("current_session") or ""),
                 "allowed_sessions": list(row.get("allowed_sessions") or []),
                 "category": str(row.get("category") or ""),
-            }
+                "metadata": dict(row.get("metadata") or {}),
+                **row,
+                }
+            )
         )
         if len(blocked) >= 4:
             break
@@ -1653,11 +1794,15 @@ def _build_watchlist_ladder(
         if asset in occupied or asset in active_assets or not row.get("session_open"):
             continue
         inactive.append(
-            {
+            _enrich_signal_like_row(
+                {
                 "asset": asset,
                 "category": str(row.get("category") or ""),
                 "preferred_interval": str(row.get("preferred_interval") or ""),
-            }
+                "metadata": dict(row.get("metadata") or {}),
+                **row,
+                }
+            )
         )
         if len(inactive) >= 4:
             break
@@ -1677,7 +1822,8 @@ def _build_trade_tape(positions: Any, closed_trades: Any, *, limit: int = 12) ->
             continue
         opened_at = _coerce_utc_datetime(pos.get("open_time") or pos.get("entry_time"))
         events.append(
-            {
+            _enrich_signal_like_row(
+                {
                 "asset": str(pos.get("asset") or ""),
                 "direction": str(pos.get("direction") or pos.get("signal") or "").upper(),
                 "stage": "open",
@@ -1685,7 +1831,9 @@ def _build_trade_tape(positions: Any, closed_trades: Any, *, limit: int = 12) ->
                 "time_sort": opened_at.timestamp() if opened_at else 0.0,
                 "note": str(pos.get("strategy_id") or ""),
                 "pnl": round(float(pos.get("pnl", 0.0) or 0.0), 2),
-            }
+                "metadata": dict(pos.get("metadata") or {}),
+                }
+            )
         )
 
     for trade in list(closed_trades or []):
@@ -1694,7 +1842,8 @@ def _build_trade_tape(positions: Any, closed_trades: Any, *, limit: int = 12) ->
         exit_time = _coerce_utc_datetime(trade.get("exit_time") or trade.get("entry_time"))
         stage = "partial" if _is_partial_close_trade_row(trade) else "closed"
         events.append(
-            {
+            _enrich_signal_like_row(
+                {
                 "asset": str(trade.get("asset") or ""),
                 "direction": str(trade.get("direction") or trade.get("signal") or "").upper(),
                 "stage": stage,
@@ -1702,7 +1851,9 @@ def _build_trade_tape(positions: Any, closed_trades: Any, *, limit: int = 12) ->
                 "time_sort": exit_time.timestamp() if exit_time else 0.0,
                 "note": str(trade.get("exit_reason") or trade.get("continuation_summary") or ""),
                 "pnl": round(float(trade.get("pnl", 0.0) or 0.0), 2),
-            }
+                "metadata": dict(trade.get("metadata") or trade.get("trade_metadata") or {}),
+                }
+            )
         )
 
     events.sort(key=lambda item: float(item.get("time_sort", 0.0) or 0.0), reverse=True)
@@ -2600,6 +2751,7 @@ def _build_command_center_enriched_positions(positions: Any, live_prices: Dict[s
             "open_time": str(position.get("open_time", "") or ""),
             "risk_reward": float(position.get("risk_reward", 0) or 0),
             "metadata": metadata,
+            **_extract_entry_structure_fields(metadata),
             **_extract_execution_feedback_fields(metadata),
             **_extract_memory_fields(metadata),
             **_extract_opportunity_fields(metadata),
@@ -2625,6 +2777,7 @@ def _build_command_center_signals(enriched_positions: Any) -> List[Dict[str, Any
             "strategy_id": position.get("strategy_id", ""),
             "pnl": float(position.get("pnl", 0) or 0),
             "metadata": dict(position.get("metadata") or {}),
+            **_extract_entry_structure_fields(position.get("metadata") or {}),
             **_extract_execution_feedback_fields(position.get("metadata") or {}),
             **_extract_memory_fields(position.get("metadata") or {}),
             **_extract_opportunity_fields(position.get("metadata") or {}),
@@ -2966,6 +3119,8 @@ def _build_command_center_payload() -> Dict[str, Any]:
         top_opportunities = []
     if weak_positions is None:
         weak_positions = []
+    top_opportunities = [_enrich_signal_like_row(item) for item in list(top_opportunities or []) if isinstance(item, dict)]
+    weak_positions = [_enrich_signal_like_row(item) for item in list(weak_positions or []) if isinstance(item, dict)]
 
     _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
     _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
@@ -4936,6 +5091,7 @@ def api_risk_portfolio():
             weak_queue = _get_command_center_weak_positions(core, limit=5)
         except Exception:
             weak_queue = []
+        weak_queue = [_enrich_signal_like_row(item) for item in list(weak_queue or []) if isinstance(item, dict)]
 
         stop_concentration = _summarize_stop_concentration(positions, limit=5)
         scenario_risk = _summarize_scenario_risk(positions)
@@ -5842,13 +5998,15 @@ def api_system_monitor_overview():
 def api_page_overview():
     page = request.args.get("page", "").strip().lower()
     days = min(int(request.args.get("days", 30)), 90)
+    force_refresh = request.args.get("no_cache", "").strip().lower() in {"1", "true", "yes"}
     if not page:
         return handle_api_error(BadRequest("page query required"), "/api/page-overview", 400)
 
     cache_key = f"page_overview:{page}:{days}"
-    cached = _cache_get(cache_key)
-    if cached:
-        return jsonify(_response_to_dict(cached))
+    if not force_refresh:
+        cached = _cache_get(cache_key)
+        if cached:
+            return jsonify(_response_to_dict(cached))
 
     def _command_center_snapshot() -> Dict[str, Any]:
         try:
@@ -5929,7 +6087,8 @@ def api_page_overview():
         return handle_api_error(BadRequest(f"Unknown overview page '{page}'"), "/api/page-overview", 400)
 
     payload = _response_to_dict(payload)
-    _cache_set(cache_key, payload, ttl=ttl)
+    if not force_refresh:
+        _cache_set(cache_key, payload, ttl=ttl)
     return jsonify(payload)
 
 

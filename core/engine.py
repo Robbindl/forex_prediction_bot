@@ -2514,6 +2514,28 @@ class TradingCore:
         return ",".join(items[: max(1, int(limit or 1))])
 
     @staticmethod
+    def _fmt_reason_buckets(value: Any, limit: int = 4) -> str:
+        if isinstance(value, (list, tuple)):
+            items = [str(item).strip() for item in value if str(item).strip()]
+        elif value:
+            items = [str(value).strip()]
+        else:
+            items = []
+        if not items:
+            return "n/a"
+        buckets = Counter()
+        for item in items:
+            bucket = item.split(":", 1)[0].strip().lower() if ":" in item else item.strip().lower()
+            if bucket:
+                buckets[bucket] += 1
+        if not buckets:
+            return "n/a"
+        return "|".join(
+            f"{label}={count}"
+            for label, count in buckets.most_common(max(1, int(limit or 1)))
+        )
+
+    @staticmethod
     def _call_optional_stop_scaler(
         scaled_stop_fn: Callable[..., Any],
         entry: float,
@@ -2570,9 +2592,13 @@ class TradingCore:
         )
         rejected_reasons = playbook_decision.get("rejected_reasons") or seed_decision.get("rejected_reasons") or []
         candidate_count = playbook_decision.get("candidate_count", seed_decision.get("candidate_count", 0))
+        blocked_reason = str(playbook_decision.get("blocked_reason") or seed_decision.get("blocked_reason") or "").strip() or "n/a"
+        confirmation_count = int(structure.get("entry_confirmation_count", 0) or 0)
+        confirmation_required = int(structure.get("entry_confirmation_bars_required", 0) or 0)
         logger.info(
             f"[TradingCore] Decision {asset} no_seed "
             f"reason={reason} "
+            f"blocked={blocked_reason} "
             f"session={session_label} "
             f"tf={current_interval}->{playbook_interval} "
             f"bias={str(structure.get('structure_bias', seed_decision.get('structure_bias', 'neutral'))).lower()} "
@@ -2580,6 +2606,17 @@ class TradingCore:
             f"setup={self._fmt_metric(structure.get('setup_quality', seed_decision.get('setup_quality')))} "
             f"candidates={candidate_count} "
             f"rejected={self._fmt_reason_list(rejected_reasons)} "
+            f"reject_buckets={self._fmt_reason_buckets(rejected_reasons)} "
+            f"family={str(structure.get('pattern_family', 'unknown') or 'unknown').lower()} "
+            f"confirm={confirmation_count}/{confirmation_required} "
+            f"confirm_ready={int(bool(structure.get('entry_confirmation_ready')))} "
+            f"retest={int(bool(structure.get('breakout_retest_ready')))} "
+            f"pullback={int(bool(structure.get('first_pullback_ready')))} "
+            f"reclaim={int(bool(structure.get('failed_opposite_move_confirmed')))} "
+            f"ext={self._fmt_metric(structure.get('extension_score'))} "
+            f"tgt={self._fmt_metric(structure.get('target_efficiency_score'))} "
+            f"rank={self._fmt_metric(structure.get('elite_pattern_rank'))} "
+            f"cluster={self._fmt_metric(structure.get('cluster_penalty'))} "
             f"ml={self._fmt_ml_pair(context.get('ml_prediction'), context.get('ml_confidence'))} "
             f"sent={self._fmt_metric(context.get('sentiment_score'))} "
             f"funding={context.get('funding_bias', 'NEUTRAL')} "
@@ -2597,6 +2634,9 @@ class TradingCore:
             f"oflow={self._fmt_metric(signal.metadata.get('orderflow_imbalance'))} "
             f"agent={self._fmt_metric(signal.metadata.get('agent_score'))} "
             f"final_conf={self._fmt_metric(signal.confidence)} "
+            f"late_risk={self._fmt_metric(signal.metadata.get('late_entry_risk_score'))} "
+            f"blocks={self._fmt_reason_list(signal.metadata.get('execution_hard_blocks'), limit=3)} "
+            f"late_reasons={self._fmt_reason_list(signal.metadata.get('late_entry_risk_reasons'), limit=3)} "
             f"reason={reason}"
         )
 

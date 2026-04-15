@@ -348,8 +348,14 @@ function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] 
 function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
 function signalBool(signal,key){return signalValue(signal,key) === true;}
 function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
+function signalList(signal,key){const value=signalValue(signal,key);if(Array.isArray(value))return value.map(v=>String(v||'').trim()).filter(Boolean);if(typeof value === 'string'){const raw=value.trim();return raw?[raw]:[];}return [];}
+function exactSignalReason(signal){return String(signalText(signal, 'exact_kill_reason') || signalText(signal, 'execution_kill_reason') || signalText(signal, 'blocked_reason') || signalText(signal, 'kill_reason') || signalText(signal, 'killed_by') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();}
+function overextendedSignal(signal){return signalNum(signal, 'extension_score', 0) >= 0.80 || /overextend|extension|late setup|too far/i.test(exactSignalReason(signal).toLowerCase());}
+function weakCandleSignal(signal){const candle=signalNum(signal, 'candle_quality_score', 0);return (candle > 0 && candle < 0.55) || /candle/.test(exactSignalReason(signal).toLowerCase());}
+function weakSessionSignal(signal){const session=signalNum(signal, 'session_quality_score', 0);return (session > 0 && session < 0.55) || /session/.test(exactSignalReason(signal).toLowerCase());}
+function weakTargetSignal(signal){const target=signalNum(signal, 'target_efficiency_score', 0);return (target > 0 && target < 0.50) || /target/.test(exactSignalReason(signal).toLowerCase());}
 function signalEntryState(signal){
-  const kill = signalText(signal, 'exact_kill_reason') || signalText(signal, 'execution_kill_reason') || signalText(signal, 'kill_reason') || signalText(signal, 'killed_by');
+  const kill = exactSignalReason(signal);
   const ready = signalBool(signal, 'entry_confirmation_ready');
   const count = signalNum(signal, 'entry_confirmation_count', 0);
   const required = signalNum(signal, 'entry_confirmation_bars_required', 0);
@@ -364,30 +370,26 @@ function deriveDecisionGateCounts(signals){
   const rows = Array.isArray(signals) ? signals : [];
   let confirmationWait = 0, retestMissing = 0, pullbackMissing = 0, extensionVeto = 0, weakCandle = 0, weakSession = 0, targetVeto = 0, oldImpulse = 0, regimeVeto = 0, clusterVeto = 0, blockedCount = 0;
   rows.forEach(function(item){
-    const kill = (signalText(item, 'exact_kill_reason') || signalText(item, 'execution_kill_reason') || signalText(item, 'kill_reason') || signalText(item, 'killed_by') || '').toLowerCase();
+    const kill = exactSignalReason(item).toLowerCase();
     const count = signalNum(item, 'entry_confirmation_count', 0);
     const required = signalNum(item, 'entry_confirmation_bars_required', 0);
     const ready = signalBool(item, 'entry_confirmation_ready');
     const retest = signalBool(item, 'breakout_retest_ready');
     const pullback = signalBool(item, 'first_pullback_ready');
-    const extension = signalNum(item, 'extension_score', 0);
-    const candle = signalNum(item, 'candle_quality_score', 0);
-    const session = signalNum(item, 'session_quality_score', 0);
-    const target = signalNum(item, 'target_efficiency_score', 0);
     const impulse = signalNum(item, 'impulse_age_bars', 0);
     const cluster = signalNum(item, 'cluster_penalty', 0);
     const policy = (signalText(item, 'regime_policy_summary') || signalText(item, 'regime_policy') || signalText(item, 'regime_label')).toLowerCase();
     if(!ready && required > 0 && count < required) confirmationWait += 1;
     if(!retest) retestMissing += 1;
     if(!pullback) pullbackMissing += 1;
-    if(extension >= 80 || /overextend|extension/.test(kill)) extensionVeto += 1;
-    if((candle > 0 && candle < 55) || /candle/.test(kill)) weakCandle += 1;
-    if((session > 0 && session < 55) || /session/.test(kill)) weakSession += 1;
-    if((target > 0 && target < 50) || /target/.test(kill)) targetVeto += 1;
-    if(impulse >= 12 || /impulse|old/.test(kill)) oldImpulse += 1;
+    if(overextendedSignal(item)) extensionVeto += 1;
+    if(weakCandleSignal(item)) weakCandle += 1;
+    if(weakSessionSignal(item)) weakSession += 1;
+    if(weakTargetSignal(item)) targetVeto += 1;
+    if(impulse >= 6 || /impulse|old/.test(kill)) oldImpulse += 1;
     if(/regime|policy/.test(kill) || /regime|policy/.test(policy)) regimeVeto += 1;
     if(cluster >= 0.7 || /cluster/.test(kill)) clusterVeto += 1;
-    if(kill || extension >= 80 || cluster >= 0.7 || ((candle > 0 && candle < 55) || (session > 0 && session < 55) || (target > 0 && target < 50) || (impulse >= 12))) blockedCount += 1;
+    if(kill || overextendedSignal(item) || cluster >= 0.7 || weakCandleSignal(item) || weakSessionSignal(item) || weakTargetSignal(item) || impulse >= 6) blockedCount += 1;
   });
   return {
     confirmation_wait_count: confirmationWait,

@@ -55,6 +55,9 @@ class AssetProfile:
     # Minimum valid inputs required to emit a signal
     min_valid_layers:  int  = 3
 
+    # Governance source-family lanes that can satisfy the real-source minimum.
+    source_families: tuple[str, ...] = field(default_factory=tuple)
+
     # News keyword filter for this asset type (used by the sentiment service)
     news_keywords: tuple = field(default_factory=tuple)
 
@@ -75,7 +78,8 @@ _FOREX_PROFILE = AssetProfile(
     use_reddit        = False,
     use_session_gates = True,
     use_macro_news    = True,
-    min_valid_layers  = 3,
+    min_valid_layers  = 2,
+    source_families   = ("model", "regime", "sentiment", "macro", "positioning", "flow"),
     news_keywords     = ("fed", "ecb", "boe", "rba", "inflation", "cpi", "interest rate",
                          "central bank", "monetary policy", "forex", "currency"),
     market_hours      = "forex_24_5",
@@ -92,7 +96,8 @@ _US_INDEX_PROFILE = AssetProfile(
     use_reddit        = False,
     use_session_gates = True,
     use_macro_news    = True,
-    min_valid_layers  = 3,
+    min_valid_layers  = 2,
+    source_families   = ("model", "regime", "sentiment", "macro", "positioning", "options", "flow"),
     news_keywords     = ("earnings", "economy", "gdp", "stocks", "s&p", "nasdaq",
                          "dow", "fed", "recession", "market", "equities"),
     market_hours      = "us_equity",
@@ -109,7 +114,8 @@ _UK_INDEX_PROFILE = AssetProfile(
     use_reddit        = False,
     use_session_gates = True,
     use_macro_news    = True,
-    min_valid_layers  = 3,
+    min_valid_layers  = 2,
+    source_families   = ("model", "regime", "sentiment", "macro", "flow"),
     news_keywords     = ("ftse", "boe", "uk economy", "british", "gbp", "earnings",
                          "market", "stocks", "interest rate"),
     market_hours      = "uk_equity",
@@ -126,7 +132,8 @@ _COMMODITY_PROFILE = AssetProfile(
     use_reddit        = False,
     use_session_gates = True,
     use_macro_news    = True,
-    min_valid_layers  = 3,
+    min_valid_layers  = 2,
+    source_families   = ("model", "regime", "sentiment", "macro", "positioning", "flow"),
     news_keywords     = ("oil", "gold", "silver", "commodity", "supply", "demand",
                          "inventory", "opec", "fed", "dollar", "inflation"),
     market_hours      = "futures",
@@ -144,6 +151,7 @@ _CRYPTO_PROFILE = AssetProfile(
     use_session_gates = False,   # Crypto is 24/7
     use_macro_news    = True,
     min_valid_layers  = 2,       # Fewer required layers (crypto is fast-moving)
+    source_families   = ("model", "regime", "sentiment", "flow", "derivatives", "positioning"),
     news_keywords     = ("bitcoin", "ethereum", "crypto", "blockchain", "defi",
                          "altcoin", "btc", "eth", "binance", "solana", "ripple"),
     market_hours      = "crypto_24_7",
@@ -203,6 +211,7 @@ def get_profile(asset: str) -> AssetProfile:
             use_session_gates = True,
             use_macro_news    = True,
             min_valid_layers  = 4,
+            source_families   = ("model", "regime", "sentiment"),
             market_hours      = "unknown",
         )
     )

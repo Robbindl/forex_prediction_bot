@@ -77,7 +77,10 @@ def _get_narrative_data(asset: str) -> Dict[str, Any]:
     return service.get_narrative_snapshot(asset)
 
 
-def _resolve_sentiment_review_context(signal, context: Dict[str, Any]) -> tuple[Dict[str, Any], List[str], Any, Dict[str, Any], Dict[str, Any]]:
+def _resolve_sentiment_review_context(
+    signal,
+    context: Dict[str, Any],
+) -> tuple[Dict[str, Any], List[str], Any, Dict[str, Any], Dict[str, Any], Dict[str, Any], str, str]:
     intelligence = context.get("market_intelligence")
     sentiment_details = context.get("sentiment_details")
     if not isinstance(sentiment_details, dict) and isinstance(intelligence, dict):
@@ -86,9 +89,24 @@ def _resolve_sentiment_review_context(signal, context: Dict[str, Any]) -> tuple[
         sentiment_details = fetch_sentiment_details(signal.asset, signal.category)
 
     if isinstance(intelligence, dict):
+        free_market_intelligence = intelligence.get("free_market_intelligence")
+        if not isinstance(free_market_intelligence, dict):
+            free_market_intelligence = {}
         market_intelligence_sources = list(intelligence.get("market_intelligence_sources") or [])
         market_intelligence_score = intelligence.get("market_intelligence_score")
         market_intelligence_details = dict(intelligence.get("market_intelligence_details") or {})
+        market_intelligence_components = dict(
+            free_market_intelligence.get("components")
+            or intelligence.get("market_intelligence_components")
+            or {}
+        )
+        market_intelligence_timestamp = str(
+            free_market_intelligence.get("timestamp")
+            or intelligence.get("market_intelligence_timestamp")
+            or intelligence.get("intelligence_timestamp")
+            or ""
+        )
+        intelligence_timestamp = str(intelligence.get("intelligence_timestamp") or market_intelligence_timestamp or "")
         narrative_data = {
             "dominant_narrative": intelligence.get("dominant_narrative", ""),
             "narrative_strength": intelligence.get("narrative_strength", 0.0),
@@ -97,6 +115,9 @@ def _resolve_sentiment_review_context(signal, context: Dict[str, Any]) -> tuple[
         market_intelligence_sources = []
         market_intelligence_score = None
         market_intelligence_details = {}
+        market_intelligence_components = {}
+        market_intelligence_timestamp = ""
+        intelligence_timestamp = ""
         narrative_data = _get_narrative_data(signal.asset)
 
     return (
@@ -105,6 +126,9 @@ def _resolve_sentiment_review_context(signal, context: Dict[str, Any]) -> tuple[
         market_intelligence_score,
         market_intelligence_details,
         narrative_data,
+        market_intelligence_components,
+        market_intelligence_timestamp,
+        intelligence_timestamp,
     )
 
 
@@ -142,6 +166,10 @@ def _sentiment_review_attach_metadata(
     market_intelligence_score: Any,
     market_intelligence_sources: List[str],
     market_intelligence_details: Dict[str, Any],
+    market_intelligence_components: Dict[str, Any],
+    sentiment_timestamp: str,
+    market_intelligence_timestamp: str,
+    intelligence_timestamp: str,
 ) -> None:
     signal.metadata["sentiment_score"] = round(score, 3)
     signal.metadata["sentiment_components"] = {str(k): round(float(v), 3) for k, v in components.items()}
@@ -158,6 +186,16 @@ def _sentiment_review_attach_metadata(
         signal.metadata["market_intelligence_sources"] = list(market_intelligence_sources)
     if market_intelligence_details:
         signal.metadata["market_intelligence_details"] = dict(market_intelligence_details)
+    if market_intelligence_components:
+        signal.metadata["market_intelligence_components"] = {
+            str(k): round(float(v), 3) for k, v in market_intelligence_components.items()
+        }
+    if sentiment_timestamp:
+        signal.metadata["sentiment_timestamp"] = str(sentiment_timestamp)
+    if market_intelligence_timestamp:
+        signal.metadata["market_intelligence_timestamp"] = str(market_intelligence_timestamp)
+    if intelligence_timestamp:
+        signal.metadata["intelligence_timestamp"] = str(intelligence_timestamp)
     if "macro_event" in signal.metadata["sentiment_components"]:
         signal.metadata["macro_sentiment_score"] = signal.metadata["sentiment_components"]["macro_event"]
 
@@ -264,6 +302,9 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
         market_intelligence_score,
         market_intelligence_details,
         narrative_data,
+        market_intelligence_components,
+        market_intelligence_timestamp,
+        intelligence_timestamp,
     ) = _resolve_sentiment_review_context(signal, context)
 
     score = sentiment_details.get("composite_score", sentiment_details.get("score", 0.0))
@@ -289,6 +330,10 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
         market_intelligence_score=market_intelligence_score,
         market_intelligence_sources=market_intelligence_sources,
         market_intelligence_details=market_intelligence_details,
+        market_intelligence_components=market_intelligence_components,
+        sentiment_timestamp=str(sentiment_details.get("timestamp", "") or ""),
+        market_intelligence_timestamp=market_intelligence_timestamp,
+        intelligence_timestamp=intelligence_timestamp,
     )
     dominant = narrative_data.get("dominant_narrative", "")
     nar_strength = float(narrative_data.get("narrative_strength", 0.0) or 0.0)
@@ -335,6 +380,12 @@ def apply_whale_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(snapshot, dict):
         service = _get_market_intelligence_service()
         snapshot = service.get_whale_snapshot(signal.asset) if service is not None else {}
+
+    if isinstance(intelligence, dict):
+        intelligence_timestamp = str(intelligence.get("intelligence_timestamp") or "")
+        if intelligence_timestamp:
+            signal.metadata["intelligence_timestamp"] = intelligence_timestamp
+            signal.metadata["whale_timestamp"] = intelligence_timestamp
 
     buy_vol = float(snapshot.get("buy_vol_m", 0.0) or 0.0) * 1_000_000
     sell_vol = float(snapshot.get("sell_vol_m", 0.0) or 0.0) * 1_000_000

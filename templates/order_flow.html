@@ -31,9 +31,9 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .tb-balance{font-size:14px;font-weight:700;color:var(--gr)}
 .tb-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
 .badge-live{background:rgba(0,208,132,.13);color:var(--gr)}
-.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:flex;flex-direction:column;gap:12px;min-height:0}
+.content{flex:1;overflow-y:auto;padding:16px 16px 40px;display:flex;flex-direction:column;gap:12px;min-height:0}
 .metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-.flow-main-grid,.flow-support-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.flow-main-grid,.flow-support-grid,.flow-bridge-stack{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .metric-card{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);padding:16px 18px;position:relative;overflow:hidden;min-height:128px}
 .metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
 .mc-cyan::before{background:var(--cy)}.mc-green::before{background:var(--gr)}.mc-red::before{background:var(--rd)}.mc-purple::before{background:var(--pu)}.mc-amber::before{background:var(--am)}
@@ -45,11 +45,11 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .panel-wide{grid-column:span 2}.panel-full{grid-column:span 4}.panel-3{grid-column:span 3}
 .panel-primary{min-height:260px}
 .panel-secondary{min-height:230px}
-.flow-bridge-panel{min-height:0}
+.flow-bridge-panel{min-height:230px}
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
 .panel-badge{margin-left:auto;font-size:10px;padding:2px 8px;border-radius:20px;background:var(--s3);color:var(--tx3)}
-.panel-body{padding:12px 16px}
+.panel-body{padding:12px 16px;flex:1}
 .gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}.bl{color:var(--bl)}.cy{color:var(--cy)}.pu{color:var(--pu)}.mu{color:var(--tx2)}
 .empty{text-align:center;padding:24px;color:var(--tx3);font-size:13px}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -107,8 +107,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .watch-tag.neutral{background:rgba(41,121,255,.12);color:var(--bl)}
 
 /* FLOW BRIDGE */
-.flow-bridge-body{padding:16px}
-.flow-bridge-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.flow-bridge-body{padding:16px;flex:1}
+.flow-bridge-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
 .flow-bridge-card{background:var(--s2);border:1px solid rgba(38,48,69,.8);border-radius:10px;padding:14px;min-height:118px;display:flex;flex-direction:column;justify-content:space-between;gap:10px}
 .flow-bridge-kicker{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.6px}
 .flow-bridge-value{font-size:24px;font-weight:700;line-height:1.1}
@@ -122,7 +122,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 }
 
 @media(max-width:1100px){
-  .flow-main-grid,.flow-support-grid{grid-template-columns:minmax(0,1fr)}
+  .flow-main-grid,.flow-support-grid,.flow-bridge-stack{grid-template-columns:minmax(0,1fr)}
 }
 
 /* ── MOBILE ──────────────────────────────────────────────────────────── */
@@ -260,58 +260,60 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
       </div>
 
-      <div class="panel flow-bridge-panel" style="animation-delay:.45s">
-        <div class="panel-header">
-          <span>🧩</span>
-          <span class="panel-title">Flow-to-Signal Bridge</span>
-          <span class="panel-badge" id="flowBridgeBadge">Loading…</span>
+      <div class="flow-bridge-stack">
+        <div class="panel flow-bridge-panel" style="animation-delay:.45s">
+          <div class="panel-header">
+            <span>🧩</span>
+            <span class="panel-title">Flow-to-Signal Bridge</span>
+            <span class="panel-badge" id="flowBridgeBadge">Loading…</span>
+          </div>
+          <div class="panel-body flow-bridge-body" id="flowBridgeList">
+            <div class="empty">Loading…</div>
+          </div>
         </div>
-        <div class="panel-body flow-bridge-body" id="flowBridgeList">
-          <div class="empty">Loading…</div>
-        </div>
-      </div>
 
-      <div class="panel flow-bridge-panel" style="animation-delay:.5s">
-        <div class="panel-header">
-          <span>🛠️</span>
-          <span class="panel-title">Execution Friction</span>
-          <span class="panel-badge" id="frictionBridgeBadge">Loading…</span>
+        <div class="panel flow-bridge-panel" style="animation-delay:.5s">
+          <div class="panel-header">
+            <span>🛠️</span>
+            <span class="panel-title">Execution Friction</span>
+            <span class="panel-badge" id="frictionBridgeBadge">Loading…</span>
+          </div>
+          <div class="panel-body flow-bridge-body" id="executionFrictionPanel">
+            <div class="empty">Loading…</div>
+          </div>
         </div>
-        <div class="panel-body flow-bridge-body" id="executionFrictionPanel">
-          <div class="empty">Loading…</div>
-        </div>
-      </div>
 
-      <div class="panel flow-bridge-panel" style="animation-delay:.55s">
-        <div class="panel-header">
-          <span>🌊</span>
-          <span class="panel-title">Depth Quality</span>
-          <span class="panel-badge" id="depthQualityBadge">Loading…</span>
+        <div class="panel flow-bridge-panel" style="animation-delay:.55s">
+          <div class="panel-header">
+            <span>🌊</span>
+            <span class="panel-title">Depth Quality</span>
+            <span class="panel-badge" id="depthQualityBadge">Loading…</span>
+          </div>
+          <div class="panel-body flow-bridge-body" id="depthQualityPanel">
+            <div class="empty">Loading…</div>
+          </div>
         </div>
-        <div class="panel-body flow-bridge-body" id="depthQualityPanel">
-          <div class="empty">Loading…</div>
-        </div>
-      </div>
 
-      <div class="panel flow-bridge-panel" style="animation-delay:.6s">
-        <div class="panel-header">
-          <span>🧽</span>
-          <span class="panel-title">Absorption / Rejection</span>
-          <span class="panel-badge" id="absorptionBadge">Loading…</span>
+        <div class="panel flow-bridge-panel" style="animation-delay:.6s">
+          <div class="panel-header">
+            <span>🧽</span>
+            <span class="panel-title">Absorption / Rejection</span>
+            <span class="panel-badge" id="absorptionBadge">Loading…</span>
+          </div>
+          <div class="panel-body flow-bridge-body" id="absorptionPanel">
+            <div class="empty">Loading…</div>
+          </div>
         </div>
-        <div class="panel-body flow-bridge-body" id="absorptionPanel">
-          <div class="empty">Loading…</div>
-        </div>
-      </div>
 
-      <div class="panel flow-bridge-panel" style="animation-delay:.65s">
-        <div class="panel-header">
-          <span>🚀</span>
-          <span class="panel-title">Flow Acceleration</span>
-          <span class="panel-badge" id="accelerationBadge">Loading…</span>
-        </div>
-        <div class="panel-body flow-bridge-body" id="accelerationPanel">
-          <div class="empty">Loading…</div>
+        <div class="panel flow-bridge-panel" style="animation-delay:.65s">
+          <div class="panel-header">
+            <span>🚀</span>
+            <span class="panel-title">Flow Acceleration</span>
+            <span class="panel-badge" id="accelerationBadge">Loading…</span>
+          </div>
+          <div class="panel-body flow-bridge-body" id="accelerationPanel">
+            <div class="empty">Loading…</div>
+          </div>
         </div>
       </div>
     </div>
@@ -326,17 +328,24 @@ setInterval(() => {
 }, 1000);
 
 let _orderFlowCache = null;
+let _orderFlowPending = null;
 async function fetchOrderFlowOverview(){
   const now = Date.now();
-  if(_orderFlowCache && now - _orderFlowCache.fetched < 10000){
-    return _orderFlowCache.data;
-  }
-  const d = await window.dashboardFetchJson('/api/page-overview?page=order_flow', {timeoutMs: 12000});
-  if(d.success){
-    _orderFlowCache = {fetched: now, data: d};
-    return d;
-  }
-  return {success:false};
+  if(_orderFlowCache && now - _orderFlowCache.fetched < 2000) return _orderFlowCache.data;
+  if(_orderFlowPending) return _orderFlowPending;
+  _orderFlowPending = (async function(){
+    try{
+      const d = await window.dashboardFetchJson('/api/page-overview?page=order_flow&no_cache=1&_=' + Date.now(), {timeoutMs: 12000, init:{cache:'no-store'}});
+      if(d.success){
+        _orderFlowCache = {fetched: Date.now(), data: d};
+        return d;
+      }
+      return {success:false};
+    } finally {
+      _orderFlowPending = null;
+    }
+  })();
+  return _orderFlowPending;
 }
 
 // Engine status
@@ -344,15 +353,19 @@ async function checkStatus() {
   try {
     const page = await fetchOrderFlowOverview();
     const d = page.status || {};
+    const live = page.command_center?.live_summary || {};
     const ok = d.engine_running;
     const providerRouting = d.provider_routing || {};
     document.getElementById('engineDot').className = 'pulse' + (ok ? '' : ' off');
     document.getElementById('engineStatus').textContent = ok ? 'Live' : 'Offline';
     document.getElementById('providerStatus').textContent = providerRouting.summary_label || 'Unavailable';
-    document.getElementById('topBalance').textContent = d.balance ? '$' + Number(d.balance).toLocaleString('en', {minimumFractionDigits:2}) : '—';
+    const liveBalance = Number(live.balance ?? d.balance);
+    const livePnl = Number(live.balance_delta ?? live.daily_pnl ?? 0);
+    const topBalance = document.getElementById('topBalance');
+    topBalance.textContent = Number.isFinite(liveBalance) ? '$' + liveBalance.toLocaleString('en', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    topBalance.style.color = livePnl < 0 ? 'var(--rd)' : 'var(--gr)';
   } catch(e) {}
 }
-checkStatus(); setInterval(checkStatus, 15000);
 
 // Imbalance
 async function loadImbalance() {
@@ -452,6 +465,7 @@ function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] 
 function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
 function signalBool(signal,key){return signalValue(signal,key) === true;}
 function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
+function signalList(signal,key){const value=signalValue(signal,key);if(Array.isArray(value))return value.map(v=>String(v||'').trim()).filter(Boolean);if(typeof value === 'string'){const raw=value.trim();return raw?[raw]:[];}return [];}
 function normalizeFlowAsset(asset){
   return String(asset || '')
     .toUpperCase()
@@ -479,7 +493,7 @@ function entryReadiness(signal){
   return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
 }
 function exactKillReason(signal){
-  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || '').trim();
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();
 }
 function reviewNotesLine(signal){
   return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
@@ -593,8 +607,8 @@ async function loadFlowBridge() {
       if(flowAligned) acc.flowAligned += 1;
       if(flowAligned && support.readiness.state === 'ready') acc.flowAlignedReady += 1;
       if(flowAligned && support.readiness.state === 'blocked') acc.flowAlignedBlocked += 1;
-      if(signalNum(signal, 'extension_score', 0) >= 80) acc.overextended += 1;
-      if((signalNum(signal, 'candle_quality_score', 0) > 0 && signalNum(signal, 'candle_quality_score', 0) < 55) || (signalNum(signal, 'session_quality_score', 0) > 0 && signalNum(signal, 'session_quality_score', 0) < 55) || (signalNum(signal, 'target_efficiency_score', 0) > 0 && signalNum(signal, 'target_efficiency_score', 0) < 50)) acc.qualityBlocked += 1;
+      if(signalNum(signal, 'extension_score', 0) >= 0.80) acc.overextended += 1;
+      if((signalNum(signal, 'candle_quality_score', 0) > 0 && signalNum(signal, 'candle_quality_score', 0) < 0.55) || (signalNum(signal, 'session_quality_score', 0) > 0 && signalNum(signal, 'session_quality_score', 0) < 0.55) || (signalNum(signal, 'target_efficiency_score', 0) > 0 && signalNum(signal, 'target_efficiency_score', 0) < 0.50)) acc.qualityBlocked += 1;
       if(/regime|policy/.test(String(signalValue(signal, 'regime_policy_summary') || signalValue(signal, 'regime_policy') || signalValue(signal, 'regime_label') || '').toLowerCase()) || /regime|policy/.test(exactKillReason(signal).toLowerCase())) acc.policyBlocked += 1;
       return acc;
     }, {retest:0,pullback:0,sweep:0,failedOpposite:0,confirmationReady:0,flowAligned:0,flowAlignedReady:0,flowAlignedBlocked:0,overextended:0,qualityBlocked:0,policyBlocked:0});
@@ -971,16 +985,29 @@ async function loadWatchlist() {
   }
 }
 
-function refresh() {
-  loadImbalance();
-  loadWalls();
-  loadHunts();
-  loadWatchlist();
-  loadFlowBridge();
+async function refresh() {
+  await Promise.allSettled([
+    checkStatus(),
+    loadImbalance(),
+    loadWalls(),
+    loadHunts(),
+    loadWatchlist(),
+    loadFlowBridge(),
+  ]);
 }
 
 refresh();
-setInterval(refresh, 15000);
+setInterval(function(){
+  if(document.hidden) return;
+  _orderFlowCache = null;
+  refresh();
+}, 5000);
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden){
+    _orderFlowCache = null;
+    refresh();
+  }
+});
 </script>
 
 <script>

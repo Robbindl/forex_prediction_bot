@@ -64,21 +64,23 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
 .history-tools{display:none;gap:6px;align-items:center;flex-wrap:wrap}
 .history-tools.on{display:flex}
 .history-tools input[type="date"]{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--tx);outline:none}
-.dp-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,1fr);gap:12px;padding:12px 16px;align-items:start}
-.dp-stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-.dp-stat{background:var(--s2);border-radius:8px;padding:10px 12px;min-height:82px}
+.dp-grid{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(280px,1fr);gap:12px;padding:14px 16px;align-items:start}
+.dp-grid>*{min-width:0}
+.dp-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;align-items:start}
+.dp-stat{background:var(--s2);border-radius:8px;padding:10px 12px;min-height:92px}
 .dp-val{font-size:18px;font-weight:700;margin-bottom:2px}
 .dp-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
 .dp-sub{font-size:11px;color:var(--tx2);margin-top:10px}
 .dp-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .dp-tag{padding:3px 8px;border-radius:999px;background:rgba(41,121,255,.12);color:var(--bl);font-size:10px;letter-spacing:.4px;text-transform:uppercase}
-.event-risk-card{background:var(--s2);border-radius:8px;padding:10px 12px;margin-bottom:10px;min-height:78px}
+.event-risk-card{background:var(--s2);border-radius:8px;padding:10px 12px;margin-bottom:10px;min-height:78px;display:flex;flex-direction:column;gap:8px}
 .event-risk-title{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
 .event-risk-text{font-size:12px;line-height:1.4}
 .event-item{padding:8px 0;border-bottom:1px solid rgba(30,38,53,.5)}
 .event-item:last-child{border:none}
 .event-name{font-size:12px;margin-bottom:3px}
 .event-meta{font-size:10px;color:var(--tx3)}
+.dp-val,.dp-sub,.event-risk-text,.event-meta{overflow-wrap:anywhere}
 .status-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
 .status-ready{background:rgba(0,208,132,.12);color:var(--gr)}
 .status-waiting{background:rgba(255,165,0,.15);color:var(--am)}
@@ -270,6 +272,7 @@ let _currentAssetDescriptor = null;
 let _heatmapItems = [];
 let _chartPricePrecision = 5;
 let _marketIntelligenceCache = null;
+let _marketIntelligencePending = null;
 
 function numValue(){ for(let i=0;i<arguments.length;i++){ const n = Number(arguments[i]); if(Number.isFinite(n)) return n; } return null; }
 function boolValue(){ for(let i=0;i<arguments.length;i++){ const v = arguments[i]; if(v === true || v === false) return v; } return null; }
@@ -408,10 +411,18 @@ function fetchPrimarySignal(page){
 }
 async function fetchMarketIntelligenceOverview(){
   const now = Date.now();
-  if(_marketIntelligenceCache && now - _marketIntelligenceCache.fetched < 10000) return _marketIntelligenceCache.data;
-  const d = await window.dashboardFetchJson('/api/page-overview?page=market_intelligence', {timeoutMs:10000});
-  if(d.success){ _marketIntelligenceCache = {fetched:now,data:d}; return d; }
-  return {success:false};
+  if(_marketIntelligenceCache && now - _marketIntelligenceCache.fetched < 2000) return _marketIntelligenceCache.data;
+  if(_marketIntelligencePending) return _marketIntelligencePending;
+  _marketIntelligencePending = (async function(){
+    try{
+      const d = await window.dashboardFetchJson('/api/page-overview?page=market_intelligence&no_cache=1&_=' + Date.now(), {timeoutMs:10000, init:{cache:'no-store'}});
+      if(d.success){ _marketIntelligenceCache = {fetched:Date.now(),data:d}; return d; }
+      return {success:false};
+    } finally {
+      _marketIntelligencePending = null;
+    }
+  })();
+  return _marketIntelligencePending;
 }
 async function fetchWithTimeout(url, ms=20000){
   const ctrl = new AbortController();
@@ -841,8 +852,9 @@ function _boot(){
 }
 _boot();
 setInterval(() => { if(!_chartBooted){ bootChartSection(); return; } if(_chartMode === 'live'){ const sec = intervalSeconds(currentTf) || 60; const minReloadMs = Math.max(sec * 1000, 15000); if(!_lastLiveReloadAt || (Date.now() - _lastLiveReloadAt) >= minReloadMs) loadCandles(); } }, 15000);
-setInterval(() => { loadDataPlane(); }, 60000);
+setInterval(() => { if(!document.hidden) loadDataPlane(); }, 10000);
 setInterval(() => { loadHeatmap(); }, 60000);
+document.addEventListener('visibilitychange', () => { if(!document.hidden){ _marketIntelligenceCache = null; loadDataPlane(); } });
 </script>
 <script>
 function toggleSidebar(){
