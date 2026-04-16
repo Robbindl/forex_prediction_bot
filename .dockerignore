@@ -148,7 +148,6 @@ config/master.key
 *.rdb
 dump.rdb
 temp/
-tmp/
 *.part
 
 # COVERAGE REPORTS
