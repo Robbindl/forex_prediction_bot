@@ -255,7 +255,6 @@ execution/exchange_routes.local.json
 
 # STATIC / WEB
 # ------------------------------------------------
-static/
 
 # PID FILES
 # ------------------------------------------------
