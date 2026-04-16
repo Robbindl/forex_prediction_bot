@@ -2767,10 +2767,10 @@ def test_decision_engine_counts_market_intelligence_as_extra_source() -> None:
 
 
 def test_asset_profiles_expose_category_native_source_families() -> None:
-    assert get_profile("EUR/USD").source_families == ("model", "regime", "sentiment", "macro", "positioning", "flow")
-    assert get_profile("US100").source_families == ("model", "regime", "sentiment", "macro", "positioning", "options", "flow")
-    assert get_profile("XAU/USD").source_families == ("model", "regime", "sentiment", "macro", "positioning", "flow")
-    assert get_profile("BTC-USD").source_families == ("model", "regime", "sentiment", "flow", "derivatives", "positioning")
+    assert get_profile("EUR/USD").source_families == ("model", "regime", "sentiment", "macro", "positioning", "flow", "cross_asset")
+    assert get_profile("US100").source_families == ("model", "regime", "sentiment", "macro", "positioning", "options", "flow", "cross_asset")
+    assert get_profile("XAU/USD").source_families == ("model", "regime", "sentiment", "macro", "positioning", "flow", "cross_asset")
+    assert get_profile("BTC-USD").source_families == ("model", "regime", "sentiment", "flow", "derivatives", "positioning", "cross_asset")
 
 
 def test_decision_engine_counts_us_index_options_and_positioning_families() -> None:
@@ -2816,6 +2816,40 @@ def test_decision_engine_excludes_stale_sentiment_family() -> None:
     assert count_valid_sources(signal) == 2
     assert signal.metadata["valid_source_families"] == ["model", "regime"]
     assert signal.metadata["stale_source_families"] == ["sentiment"]
+
+
+def test_decision_engine_counts_cross_asset_family_when_peer_confirmation_exists() -> None:
+    from core.decision_engine import count_valid_sources
+
+    signal = Signal(
+        asset="US500",
+        canonical_asset="US500",
+        category="indices",
+        direction="BUY",
+        confidence=0.8,
+    )
+    signal.metadata.update({
+        "ml_prediction_real": True,
+        "regime": "trending_up",
+        "cross_asset_alignment": 0.42,
+        "cross_asset_confidence": 0.67,
+        "cross_asset_state": "buy_support",
+        "cross_asset_primary_peer": "US100",
+        "cross_asset_primary_relation": "tech_breadth",
+        "cross_asset_peer_count": 3,
+        "intelligence_timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    assert count_valid_sources(signal) == 3
+    assert signal.metadata["valid_source_families"] == ["cross_asset", "model", "regime"]
+    assert signal.metadata["source_family_evidence"]["cross_asset"] == [
+        "peer:us100",
+        "peers:3",
+        "relation:tech_breadth",
+        "signal:alignment",
+        "signal:confidence",
+        "state:buy_support",
+    ]
 
 def test_market_intelligence_service_builds_asset_snapshot(monkeypatch) -> None:
     intel_mod = importlib.import_module("services.market_intelligence_service")
@@ -4819,6 +4853,34 @@ def test_sentiment_service_commodity_sentiment_includes_ig_client_sentiment(monk
     assert payload["weights"]["ig_client_sentiment"] == 0.1
     assert payload["ig_client_sentiment"]["bias"] == "BUY"
 
+
+def test_sentiment_service_forex_and_index_sentiment_include_ig_client_sentiment(monkeypatch) -> None:
+    sentiment_mod = importlib.import_module("services.sentiment_service")
+
+    monkeypatch.setattr(sentiment_mod._PriceMomentum, "get", staticmethod(lambda asset: 0.2), raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "get", staticmethod(lambda asset: 0.1), raising=False)
+    monkeypatch.setattr(sentiment_mod._NewsSentiment, "macro_impact", staticmethod(lambda asset: None), raising=False)
+    monkeypatch.setattr(sentiment_mod._MarketInstruments, "vix", staticmethod(lambda: None), raising=False)
+    monkeypatch.setattr(sentiment_mod._MarketInstruments, "fear_greed", staticmethod(lambda: None), raising=False)
+    monkeypatch.setattr(sentiment_mod._MarketInstruments, "aaii", staticmethod(lambda: None), raising=False)
+    monkeypatch.setattr(sentiment_mod._MarketInstruments, "put_call", staticmethod(lambda: None), raising=False)
+    monkeypatch.setattr(sentiment_mod, "_reddit_score", lambda asset: None, raising=False)
+    monkeypatch.setattr(
+        sentiment_mod.SentimentService,
+        "_ig_client_sentiment",
+        staticmethod(lambda asset: {"asset": asset, "bias": "SELL", "long_pct": 32.0, "short_pct": 68.0, "score": -0.36}),
+        raising=False,
+    )
+
+    service = sentiment_mod.SentimentService()
+    forex_payload = service.get_comprehensive_sentiment("EUR/USD")
+    index_payload = service.get_comprehensive_sentiment("US500")
+
+    assert forex_payload["components"]["ig_client_sentiment"] == -0.36
+    assert forex_payload["ig_client_sentiment"]["bias"] == "SELL"
+    assert index_payload["components"]["ig_client_sentiment"] == -0.36
+    assert index_payload["ig_client_sentiment"]["bias"] == "SELL"
+
 def test_fetcher_records_deriv_ohlcv_metadata(monkeypatch) -> None:
     fetcher_mod = importlib.import_module("data.fetcher")
     monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
@@ -5075,20 +5137,16 @@ def test_market_data_router_filters_ig_routed_commodities_from_deriv_streams() -
         "BTC-USD": "crypto",
     }
 
-def test_market_data_router_get_client_sentiment_uses_ig_for_routed_assets(monkeypatch) -> None:
+def test_market_data_router_get_client_sentiment_uses_ig_for_supported_assets(monkeypatch) -> None:
     router_mod = importlib.import_module("services.market_data_router")
     ig_mod = importlib.import_module("services.ig_market_bridge")
 
     monkeypatch.setattr(
-        router_mod,
-        "is_ig_primary_category",
-        lambda category: str(category or "").lower() == "commodities",
-        raising=False,
-    )
-    monkeypatch.setattr(
         ig_mod,
         "ig_market_bridge",
         SimpleNamespace(
+            list_profiles=lambda: ["ig"],
+            supports=lambda asset, category="": asset in {"WTI", "EUR/USD"},
             get_client_sentiment=lambda asset, category="": {
                 "asset": asset,
                 "category": category,
@@ -5104,7 +5162,9 @@ def test_market_data_router_get_client_sentiment_uses_ig_for_routed_assets(monke
     assert payload["asset"] == "WTI"
     assert payload["category"] == "commodities"
     assert payload["score"] == 0.4
-    assert router_mod.get_client_sentiment("EUR/USD", category="forex") is None
+    forex_payload = router_mod.get_client_sentiment("EUR/USD", category="forex")
+    assert forex_payload["asset"] == "EUR/USD"
+    assert forex_payload["category"] == "forex"
 
 def test_market_data_router_get_broker_account_summary_uses_ig_bridge(monkeypatch) -> None:
     router_mod = importlib.import_module("services.market_data_router")
@@ -11238,6 +11298,37 @@ def test_market_structure_service_detects_aligned_buy_setup() -> None:
     assert structure["setup_quality"] > 0.3
     assert structure["trend_15m"] == "trending_up"
 
+
+def test_market_structure_service_promotes_noncrypto_summary_trend_with_external_confirmation() -> None:
+    svc_mod = importlib.import_module("services.market_structure_service")
+    service = svc_mod.get_service()
+
+    structure = service.analyze(
+        "XAU/USD",
+        "commodities",
+        {
+            "5m": _build_trend_frame(100.0, 0.08),
+            "15m": _build_trend_frame(100.0, 0.42),
+            "1h": _build_trend_frame(100.0, 0.96),
+            "4h": _build_trend_frame(100.0, 1.8),
+        },
+        context={
+            "cross_asset_context": {"score": 0.42, "confidence": 0.78},
+            "market_microstructure": {
+                "score": 0.24,
+                "book_imbalance": 0.20,
+                "tick_imbalance": 0.17,
+                "velocity_bps": 1.0,
+            },
+        },
+    )
+
+    assert structure["structure_bias"] == "buy"
+    assert structure["resolved_trend_state"] == "trending_up"
+    assert structure["setup_quality"] >= 0.48
+    assert structure["cross_asset_support_score"] > 0.0
+    assert structure["microstructure_support_score"] > 0.0
+
 def test_market_structure_service_flags_upside_exhaustion_on_extended_buy_move() -> None:
     svc_mod = importlib.import_module("services.market_structure_service")
     service = svc_mod.get_service()
@@ -12178,6 +12269,117 @@ def test_playbook_service_allows_strong_crypto_orderflow_with_neutral_alignment(
     assert orderflow["direction"] == "BUY"
 
 
+def test_playbook_service_detects_intermarket_continuation_for_forex(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 13, 30, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "EUR/USD",
+        "forex",
+        _build_breakout_frame(),
+        context={
+            "cross_asset_context": {
+                "alignment": 0.46,
+                "confidence": 0.72,
+                "state": "buy_support",
+                "supportive_direction": "BUY",
+                "dominant_peer": "GBP/USD",
+                "dominant_relation": "usd_leg_confirmation",
+                "peers": [{"peer_asset": "GBP/USD"}],
+            },
+            "market_microstructure": {
+                "score": 0.29,
+                "book_imbalance": 0.22,
+                "tick_imbalance": 0.18,
+                "velocity_bps": 1.1,
+                "spread_bps": 7.0,
+            },
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.64,
+                "setup_quality": 0.63,
+                "pullback_score": 0.18,
+                "breakout_score": 0.38,
+                "candle_quality_score": 0.62,
+                "session_quality_score": 0.64,
+                "target_efficiency_score": 0.58,
+                "pattern_family": "trending_up_generic",
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "entry_confirmation_ready": True,
+                "distance_to_support": 0.0017,
+                "distance_to_resistance": 0.0007,
+            },
+        },
+    )
+
+    assert any(candidate["playbook"] == "intermarket_continuation" for candidate in analysis["candidates"])
+    candidate = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "intermarket_continuation")
+    assert candidate["direction"] == "BUY"
+    assert candidate["entry_style"] in {"intermarket_confirmed_break", "intermarket_break"}
+
+
+def test_playbook_service_detects_intermarket_continuation_for_commodities(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 13, 30, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "XAU/USD",
+        "commodities",
+        _build_breakout_frame(start=2400.0),
+        context={
+            "cross_asset_context": {
+                "alignment": 0.44,
+                "confidence": 0.74,
+                "state": "buy_support",
+                "supportive_direction": "BUY",
+                "dominant_peer": "XAG/USD",
+                "dominant_relation": "silver_confirmation",
+                "peers": [{"peer_asset": "XAG/USD"}],
+            },
+            "market_microstructure": {
+                "score": 0.26,
+                "book_imbalance": 0.19,
+                "tick_imbalance": 0.16,
+                "velocity_bps": 0.8,
+                "spread_bps": 9.0,
+            },
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.66,
+                "setup_quality": 0.61,
+                "pullback_score": 0.17,
+                "breakout_score": 0.36,
+                "candle_quality_score": 0.60,
+                "session_quality_score": 0.61,
+                "target_efficiency_score": 0.52,
+                "pattern_family": "trending_up_generic",
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "entry_confirmation_ready": True,
+                "distance_to_support": 4.2,
+                "distance_to_resistance": 1.4,
+            },
+        },
+    )
+
+    assert any(candidate["playbook"] == "intermarket_continuation" for candidate in analysis["candidates"])
+    candidate = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "intermarket_continuation")
+    assert candidate["direction"] == "BUY"
+
+
 def test_playbook_service_allows_strong_forex_impulse_with_neutral_alignment(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
@@ -12243,6 +12445,338 @@ def test_playbook_service_blocks_major_forex_without_dual_trend_alignment(monkey
 
     assert pick["action"] == ""
     assert pick["blocked_reason"].startswith("trend_misaligned:")
+
+
+def test_playbook_service_allows_liquidity_sweep_continuation_with_single_htf_alignment(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "EUR/USD",
+        "forex",
+        _build_breakout_frame(),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.64,
+                "setup_quality": 0.63,
+                "pullback_score": 0.21,
+                "breakout_score": 0.61,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "ranging",
+                "pattern_family": "trending_up_liquidity_sweep",
+                "liquidity_sweep_buy": True,
+                "liquidity_sweep_sell": False,
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 1,
+                "entry_confirmation_bars_required": 2,
+                "distance_to_support": 0.0016,
+                "distance_to_resistance": 0.0008,
+            }
+        },
+    )
+
+    assert any(candidate["playbook"] == "breakout_continuation" for candidate in analysis["candidates"])
+    continuation = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "breakout_continuation")
+    assert continuation["direction"] == "BUY"
+    assert continuation["score"] >= 0.54
+
+
+def test_playbook_service_allows_liquidity_sweep_pattern_when_directional_flags_are_missing(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    analysis = service.analyze(
+        "EUR/USD",
+        "forex",
+        _build_breakout_frame(),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.64,
+                "setup_quality": 0.63,
+                "pullback_score": 0.20,
+                "breakout_score": 0.60,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "ranging",
+                "pattern_family": "trending_up_liquidity_sweep",
+                "liquidity_sweep_buy": False,
+                "liquidity_sweep_sell": False,
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 0,
+                "entry_confirmation_bars_required": 2,
+                "distance_to_support": 0.0017,
+                "distance_to_resistance": 0.0008,
+            }
+        },
+    )
+
+    assert any(candidate["playbook"] == "breakout_continuation" for candidate in analysis["candidates"])
+
+
+def test_playbook_service_qualifier_relaxes_trend_requirement_for_live_sweep_case(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    candidate = {
+        "playbook": "breakout_continuation",
+        "direction": "BUY",
+        "score": 0.58,
+        "confidence": 0.69,
+    }
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.55,
+        "setup_quality": 0.535,
+        "pullback_score": 0.0,
+        "breakout_score": 0.57,
+        "volatility_state": "expansion",
+        "regime": "trending_up",
+        "trend_15m": "trending_up",
+        "trend_1h": "ranging",
+        "pattern_family": "trending_up_liquidity_sweep",
+        "liquidity_sweep_buy": True,
+        "liquidity_sweep_sell": False,
+        "entry_confirmation_ready": False,
+        "entry_confirmation_count": 0,
+        "entry_confirmation_bars_required": 2,
+        "upside_exhaustion_score": 0.18,
+        "downside_exhaustion_score": 0.0,
+    }
+    approved, reason = service._qualify_candidate(
+        candidate,
+        asset="EUR/USD",
+        category="forex",
+        structure=structure,
+        plan=service._asset_plan("EUR/USD", "forex"),
+    )
+
+    assert approved is True
+    assert reason == ""
+    assert candidate["qualification"]["allow_early_trend_relief"] is True
+    assert candidate["qualification"]["effective_required_trends"] == 1
+
+
+def test_playbook_service_fallback_allows_emerging_early_continuation(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    pick = service.pick_seed(
+        "EUR/USD",
+        "forex",
+        _build_trend_frame(1.10, 0.00004),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.63,
+                "setup_quality": 0.62,
+                "pullback_score": 0.20,
+                "breakout_score": 0.40,
+                "candle_quality_score": 0.54,
+                "session_quality_score": 0.58,
+                "extension_score": 0.88,
+                "target_efficiency_score": 0.31,
+                "impulse_age_bars": 3,
+                "elite_pattern_rank": 0.46,
+                "cluster_penalty": 0.06,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "ranging",
+                "pattern_family": "trending_up_first_pullback",
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 1,
+                "entry_confirmation_bars_required": 2,
+                "distance_to_support": 0.0018,
+                "distance_to_resistance": 0.0009,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["blocked_reason"] == ""
+    assert pick["primary"] is not None
+    assert pick["primary"]["playbook"] == "breakout_continuation"
+    assert pick["primary"]["entry_style"] in {"elite_early_continuation", "elite_sweep_continuation"}
+
+
+def test_playbook_service_fallback_allows_directional_liquidity_sweep_before_confirmation(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    pick = service.pick_seed(
+        "EUR/USD",
+        "forex",
+        _build_trend_frame(1.10, 0.00004),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.55,
+                "setup_quality": 0.535,
+                "pullback_score": 0.08,
+                "breakout_score": 0.04,
+                "candle_quality_score": 0.44,
+                "session_quality_score": 0.49,
+                "extension_score": 0.58,
+                "target_efficiency_score": 0.0,
+                "impulse_age_bars": 3,
+                "elite_pattern_rank": 0.0,
+                "cluster_penalty": 0.04,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "ranging",
+                "pattern_family": "trending_up_liquidity_sweep",
+                "liquidity_sweep_buy": True,
+                "liquidity_sweep_sell": False,
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 0,
+                "entry_confirmation_bars_required": 2,
+                "upside_exhaustion_score": 0.12,
+                "downside_exhaustion_score": 0.0,
+                "distance_to_support": 0.0017,
+                "distance_to_resistance": 0.0009,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["blocked_reason"] == ""
+    assert pick["primary"] is not None
+    assert pick["primary"]["playbook"] == "breakout_continuation"
+    assert pick["primary"]["entry_style"] == "elite_sweep_continuation"
+
+
+def test_playbook_service_fallback_allows_directional_liquidity_family_without_raw_sweep_flag(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    pick = service.pick_seed(
+        "GBP/USD",
+        "forex",
+        _build_trend_frame(1.28, 0.00005),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.55,
+                "setup_quality": 0.532,
+                "pullback_score": 0.09,
+                "breakout_score": -0.01,
+                "candle_quality_score": 0.43,
+                "session_quality_score": 0.48,
+                "extension_score": 0.60,
+                "target_efficiency_score": 0.0,
+                "impulse_age_bars": 3,
+                "elite_pattern_rank": 0.0,
+                "cluster_penalty": 0.04,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "ranging",
+                "pattern_family": "trending_up_liquidity_sweep",
+                "liquidity_sweep_buy": False,
+                "liquidity_sweep_sell": False,
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 0,
+                "entry_confirmation_bars_required": 2,
+                "upside_exhaustion_score": 0.14,
+                "downside_exhaustion_score": 0.0,
+                "distance_to_support": 0.0016,
+                "distance_to_resistance": 0.0008,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["blocked_reason"] == ""
+    assert pick["primary"] is not None
+    assert pick["primary"]["entry_style"] == "elite_sweep_continuation"
+
+
+def test_playbook_service_fallback_allows_generic_trend_continuation(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    pick = service.pick_seed(
+        "AUD/USD",
+        "forex",
+        _build_trend_frame(0.66, 0.00006),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 1.0,
+                "setup_quality": 0.643,
+                "pullback_score": 0.10,
+                "breakout_score": 0.14,
+                "candle_quality_score": 0.52,
+                "session_quality_score": 0.56,
+                "extension_score": 1.406,
+                "target_efficiency_score": 0.719,
+                "impulse_age_bars": 3,
+                "elite_pattern_rank": 0.0,
+                "cluster_penalty": 0.10,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "pattern_family": "trending_up_generic",
+                "liquidity_sweep_buy": False,
+                "liquidity_sweep_sell": False,
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 0,
+                "entry_confirmation_bars_required": 1,
+                "upside_exhaustion_score": 0.18,
+                "downside_exhaustion_score": 0.0,
+                "distance_to_support": 0.0018,
+                "distance_to_resistance": 0.0010,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["blocked_reason"] == ""
+    assert pick["primary"] is not None
+    assert pick["primary"]["playbook"] == "breakout_continuation"
+    assert pick["primary"]["entry_style"] == "elite_trend_continuation"
 
 def test_playbook_service_limits_alt_crypto_to_liquid_sessions(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
@@ -12479,6 +13013,9 @@ def test_generate_seed_signal_carries_playbook_rejection_details(monkeypatch) ->
                     "alignment_too_weak:breakout_continuation",
                     "trend_misaligned:breakout_retest",
                 ],
+                "rejected_details": [
+                    "breakout_continuation:BUY:reason=alignment_too_weak:breakout_continuation:score=0.410:align=0.220:setup=0.240:trends=0/1:early=0:strong=0:family=ranging_generic:confirm=0/2",
+                ],
                 "allowed_sessions": ["europe_open", "europe_core", "us_overlap", "us_open", "us_core"],
                 "asset_plan": {"min_alignment_score": 0.58, "min_setup_quality": 0.57},
                 "candidates": [],
@@ -12522,7 +13059,13 @@ def test_generate_seed_signal_carries_playbook_rejection_details(monkeypatch) ->
         "alignment_too_weak:breakout_continuation",
         "trend_misaligned:breakout_retest",
     ]
+    assert ctx["seed_decision"]["rejected_details"] == [
+        "breakout_continuation:BUY:reason=alignment_too_weak:breakout_continuation:score=0.410:align=0.220:setup=0.240:trends=0/1:early=0:strong=0:family=ranging_generic:confirm=0/2",
+    ]
     assert ctx["playbook_decision"]["blocked_reason"] == "alignment_too_weak:breakout_continuation"
+    assert ctx["playbook_decision"]["rejected_details"] == [
+        "breakout_continuation:BUY:reason=alignment_too_weak:breakout_continuation:score=0.410:align=0.220:setup=0.240:trends=0/1:early=0:strong=0:family=ranging_generic:confirm=0/2",
+    ]
     assert ctx["playbook_decision"]["allowed_sessions"][-1] == "us_core"
 
 def test_market_review_records_structure_context() -> None:

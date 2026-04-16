@@ -129,10 +129,13 @@ class RedditWatcher:
         # Forex
         "EUR/USD": ["Forex", "Forexstrategy", "trading"],
         "EUR/JPY": ["Forex", "Forexstrategy", "trading"],
+        "EUR/GBP": ["Forex", "Forexstrategy", "trading"],
         "GBP/USD": ["Forex", "Forexstrategy", "trading"],
         "USD/JPY": ["Forex", "Forexstrategy", "trading"],
         "AUD/USD": ["Forex", "Forexstrategy", "trading"],
+        "NZD/USD": ["Forex", "Forexstrategy", "trading"],
         "USD/CAD": ["Forex", "Forexstrategy", "trading"],
+        "USD/CHF": ["Forex", "Forexstrategy", "trading"],
         "GBP/JPY": ["Forex", "Forexstrategy", "trading"],
         
         # Indices
@@ -140,6 +143,9 @@ class RedditWatcher:
         "US100": ["stocks", "investing", "wallstreetbets", "trading"],
         "US500": ["stocks", "investing", "wallstreetbets", "trading"],
         "UK100": ["stocks", "investing", "UKPersonalFinance", "trading"],
+        "GER40": ["stocks", "investing", "trading"],
+        "AUS200": ["stocks", "investing", "trading"],
+        "JPN225": ["stocks", "investing", "trading"],
         
         # Commodities
         "XAU/USD": ["Gold", "Silverbugs", "investing", "commodities"],
@@ -152,15 +158,21 @@ class RedditWatcher:
         "XAG/USD": ["silver", "xag", "silver price"],
         "EUR/USD": ["eur", "euro", "eurusd", "euro dollar"],
         "EUR/JPY": ["eur/jpy", "eurjpy", "euro yen", "euro jpy"],
+        "EUR/GBP": ["eur/gbp", "eurgbp", "euro sterling", "euro pound"],
         "GBP/USD": ["gbp", "pound", "cable", "gbpusd"],
         "USD/JPY": ["usd/jpy", "yen", "usdjpy", "dollar yen"],
         "AUD/USD": ["aud", "aussie", "audusd"],
+        "NZD/USD": ["nzd", "nzdusd", "kiwi", "new zealand dollar"],
         "USD/CAD": ["cad", "loonie", "usdcad"],
+        "USD/CHF": ["usd/chf", "usdchf", "swiss franc", "swissy"],
         "GBP/JPY": ["gbp/jpy", "gpbjpy"],
         "US30": ["dow", "dow jones", "us30", "dji"],
         "US100": ["nasdaq", "us100", "nas100", "ixic"],
         "US500": ["sp500", "s&p", "spx", "sp 500"],
         "UK100": ["ftse", "ftse100", "uk100"],
+        "GER40": ["dax", "germany 40", "ger40", "de40", "german stocks"],
+        "AUS200": ["asx", "asx200", "australia 200", "aus200", "spi 200"],
+        "JPN225": ["nikkei", "nikkei225", "japan 225", "jpn225", "jp225"],
     }
     
     # Whale-specific subreddits and keywords (reduced for rate limiting)

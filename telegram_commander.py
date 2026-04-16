@@ -43,11 +43,12 @@ WAITING_ASK_QUESTION = 2
 _DISPLAY = {
     "BTC-USD": "₿ BTC",  "ETH-USD": "Ξ ETH",   "BNB-USD": "BNB",
     "XRP-USD": "XRP",    "SOL-USD": "SOL",
-    "EUR/USD": "EUR/USD","EUR/JPY": "EUR/JPY",  "GBP/USD": "GBP/USD",  "USD/JPY": "USD/JPY",
-    "AUD/USD": "AUD/USD","USD/CAD": "USD/CAD",  "GBP/JPY": "GBP/JPY",
+    "EUR/USD": "EUR/USD","EUR/JPY": "EUR/JPY",  "EUR/GBP": "EUR/GBP",  "GBP/USD": "GBP/USD",
+    "USD/JPY": "USD/JPY","AUD/USD": "AUD/USD",  "NZD/USD": "NZD/USD",  "USD/CAD": "USD/CAD",
+    "USD/CHF": "USD/CHF", "GBP/JPY": "GBP/JPY",
     "XAU/USD": "Gold",   "XAG/USD": "Silver",    "WTI": "WTI Oil",
     "US500":   "S&P 500","US30":  "Dow Jones",  "US100": "Nasdaq",
-    "UK100":   "FTSE100",
+    "UK100":   "FTSE100","GER40": "Germany 40","AUS200": "Australia 200","JPN225": "Japan 225",
 }
 
 _CATEGORY_ORDER = ["crypto", "forex", "commodities", "indices"]

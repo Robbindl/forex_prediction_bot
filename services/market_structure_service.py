@@ -32,6 +32,13 @@ def _clip(value: float, lo: float = -1.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, float(value)))
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value if value is not None else default)
+    except Exception:
+        return default
+
+
 def _to_float_series(df: pd.DataFrame, column: str) -> Optional[pd.Series]:
     try:
         return df[column].astype(float)
@@ -550,6 +557,7 @@ class MarketStructureService:
         asset: str,
         category: str,
         frames: Mapping[str, pd.DataFrame],
+        context: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         details, ordered_intervals = self._collect_frame_details(frames)
         if not details:
@@ -573,12 +581,110 @@ class MarketStructureService:
             if trend["structure_bias"] == "sell"
             else max(range_scores["upside_exhaustion_score"], range_scores["downside_exhaustion_score"])
         )
+        structure_bias = str(trend["structure_bias"] or "neutral").lower()
+        direction_sign = 1 if structure_bias == "buy" else -1 if structure_bias == "sell" else 0
+        primary_trend_state = str(primary.get("trend_state", "unknown") or "unknown").lower()
+        session_quality_score = float(primary.get("session_quality_score", 0.0) or 0.0)
+        candle_quality_score = float(primary.get("candle_quality_score", 0.0) or 0.0)
+        extension_score = float(primary.get("extension_score", 0.0) or 0.0)
+        target_efficiency_score = float(primary.get("target_efficiency_score", 0.0) or 0.0)
+        impulse_age_bars = int(primary.get("impulse_age_bars", 0) or 0)
+        breakout_retest_ready = bool(primary.get("breakout_retest_ready"))
+        first_pullback_ready = bool(primary.get("first_pullback_ready"))
+        failed_opposite_move_confirmed = bool(primary.get("failed_opposite_move_confirmed"))
+        entry_confirmation_bars_required = int(primary.get("entry_confirmation_bars_required", 0) or 0)
+        entry_confirmation_count = int(primary.get("entry_confirmation_count", 0) or 0)
+        entry_confirmation_ready = bool(primary.get("entry_confirmation_ready"))
+        directional_breakout = range_scores["breakout_score"] * direction_sign if direction_sign else 0.0
+        directional_pullback = range_scores["pullback_score"] * direction_sign if direction_sign else 0.0
+
+        cross = dict((context or {}).get("cross_asset_context") or {})
+        cross_alignment_raw = _safe_float(cross.get("alignment", cross.get("score", 0.0)), 0.0)
+        if abs(cross_alignment_raw) < 1e-9:
+            cross_alignment_raw = _safe_float(cross.get("score", 0.0), 0.0)
+        cross_confidence = _clip(_safe_float(cross.get("confidence", 0.0), 0.0), 0.0, 1.0)
+        cross_support_score = _clip(cross_alignment_raw * direction_sign) if direction_sign else 0.0
+
+        micro = dict((context or {}).get("market_microstructure") or {})
+        micro_score = _safe_float(micro.get("score", 0.0), 0.0) * direction_sign if direction_sign else 0.0
+        book_support = _safe_float(micro.get("book_imbalance", 0.0), 0.0) * direction_sign if direction_sign else 0.0
+        tick_support = _safe_float(micro.get("tick_imbalance", 0.0), 0.0) * direction_sign if direction_sign else 0.0
+        velocity_support = (_safe_float(micro.get("velocity_bps", 0.0), 0.0) * direction_sign / 4.0) if direction_sign else 0.0
+        microstructure_support_score = _clip(max(micro_score, book_support * 0.90, tick_support * 0.75, velocity_support))
+        external_confirmation = _clip(
+            max(
+                cross_support_score * (0.72 + cross_confidence * 0.28),
+                microstructure_support_score,
+            ),
+            0.0,
+            1.0,
+        )
+
+        resolved_trend_state = primary_trend_state
+        structure_promoted = False
+        if primary_trend_state == "ranging" and direction_sign != 0:
+            promoted_by_structure = (
+                trend["alignment_score"] >= 0.55
+                and abs(trend["weighted_score"]) >= 0.12
+                and max(directional_breakout, directional_pullback) >= 0.14
+                and dominant_exhaustion <= 0.58
+            )
+            promoted_by_context = (
+                external_confirmation >= 0.18
+                and session_quality_score >= 0.46
+                and candle_quality_score >= 0.28
+            )
+            if promoted_by_structure or promoted_by_context:
+                resolved_trend_state = "trending_up" if direction_sign > 0 else "trending_down"
+                structure_promoted = True
+
+        if direction_sign != 0 and not first_pullback_ready:
+            if (
+                resolved_trend_state in {"trending_up", "trending_down"}
+                and directional_pullback >= 0.16
+                and candle_quality_score >= 0.30
+                and session_quality_score >= 0.46
+                and extension_score <= 0.96
+                and impulse_age_bars <= 5
+                and external_confirmation >= 0.14
+            ):
+                first_pullback_ready = True
+                structure_promoted = True
+
+        if direction_sign != 0 and not entry_confirmation_ready:
+            if (
+                resolved_trend_state in {"trending_up", "trending_down"}
+                and directional_breakout >= 0.18
+                and candle_quality_score >= 0.30
+                and session_quality_score >= 0.46
+                and target_efficiency_score >= 0.24
+                and extension_score <= 1.18
+                and impulse_age_bars <= 5
+                and external_confirmation >= 0.16
+            ):
+                entry_confirmation_ready = True
+                entry_confirmation_count = max(entry_confirmation_count, max(entry_confirmation_bars_required, 1))
+                structure_promoted = True
+
         setup_quality = self._setup_quality(
             trend["weighted_score"],
             trend["alignment_score"],
             opportunity_score,
             volatility_state,
             dominant_exhaustion,
+            session_quality_score=session_quality_score,
+            candle_quality_score=candle_quality_score,
+            directional_opportunity=max(directional_breakout, directional_pullback, 0.0),
+            external_confirmation=external_confirmation,
+            structure_promoted=structure_promoted,
+        )
+        pattern_family = _pattern_family(
+            trend_state=resolved_trend_state,
+            breakout_retest_ready=breakout_retest_ready,
+            first_pullback_ready=first_pullback_ready,
+            liquidity_sweep_buy=bool(primary.get("liquidity_sweep_buy")),
+            liquidity_sweep_sell=bool(primary.get("liquidity_sweep_sell")),
+            failed_opposite_move_confirmed=failed_opposite_move_confirmed,
         )
 
         return {
@@ -587,7 +693,7 @@ class MarketStructureService:
             "regime": regime,
             "primary_interval": primary_interval,
             "volatility_state": volatility_state,
-            "structure_bias": trend["structure_bias"],
+            "structure_bias": structure_bias,
             "trend_15m": details.get("15m", {}).get("trend_state", "unknown"),
             "trend_1h": details.get("1h", {}).get("trend_state", "unknown"),
             "trend_4h": details.get("4h", {}).get("trend_state", "unknown"),
@@ -606,8 +712,8 @@ class MarketStructureService:
             "vwap": primary.get("vwap"),
             "vwap_distance_atr": primary.get("vwap_distance_atr"),
             "session_quality_label": primary.get("session_quality_label", "unknown"),
-            "session_quality_score": primary.get("session_quality_score", 0.0),
-            "candle_quality_score": primary.get("candle_quality_score", 0.0),
+            "session_quality_score": session_quality_score,
+            "candle_quality_score": candle_quality_score,
             "candle_range_atr": primary.get("candle_range_atr", 0.0),
             "candle_body_ratio": primary.get("candle_body_ratio", 0.0),
             "upper_wick_ratio": primary.get("upper_wick_ratio", 0.0),
@@ -615,16 +721,21 @@ class MarketStructureService:
             "close_location": primary.get("close_location", 0.0),
             "liquidity_sweep_buy": bool(primary.get("liquidity_sweep_buy")),
             "liquidity_sweep_sell": bool(primary.get("liquidity_sweep_sell")),
-            "breakout_retest_ready": bool(primary.get("breakout_retest_ready")),
-            "first_pullback_ready": bool(primary.get("first_pullback_ready")),
-            "impulse_age_bars": int(primary.get("impulse_age_bars", 0) or 0),
-            "extension_score": primary.get("extension_score", 0.0),
-            "target_efficiency_score": primary.get("target_efficiency_score", 0.0),
-            "failed_opposite_move_confirmed": bool(primary.get("failed_opposite_move_confirmed")),
-            "entry_confirmation_bars_required": int(primary.get("entry_confirmation_bars_required", 0) or 0),
-            "entry_confirmation_count": int(primary.get("entry_confirmation_count", 0) or 0),
-            "entry_confirmation_ready": bool(primary.get("entry_confirmation_ready")),
-            "pattern_family": primary.get("pattern_family", "unknown"),
+            "breakout_retest_ready": breakout_retest_ready,
+            "first_pullback_ready": first_pullback_ready,
+            "impulse_age_bars": impulse_age_bars,
+            "extension_score": extension_score,
+            "target_efficiency_score": target_efficiency_score,
+            "failed_opposite_move_confirmed": failed_opposite_move_confirmed,
+            "entry_confirmation_bars_required": entry_confirmation_bars_required,
+            "entry_confirmation_count": entry_confirmation_count,
+            "entry_confirmation_ready": entry_confirmation_ready,
+            "pattern_family": pattern_family,
+            "resolved_trend_state": resolved_trend_state,
+            "structure_promoted": bool(structure_promoted),
+            "cross_asset_support_score": round(cross_support_score, 4),
+            "cross_asset_confidence": round(cross_confidence, 4),
+            "microstructure_support_score": round(microstructure_support_score, 4),
             "elite_pattern_rank": primary.get("elite_pattern_rank", 0.0),
             "cluster_penalty": primary.get("cluster_penalty", 0.0),
             "regime_entry_policy": primary.get("regime_entry_policy", {}),
@@ -679,6 +790,11 @@ class MarketStructureService:
             "entry_confirmation_count": 0,
             "entry_confirmation_ready": False,
             "pattern_family": "unknown",
+            "resolved_trend_state": "unknown",
+            "structure_promoted": False,
+            "cross_asset_support_score": 0.0,
+            "cross_asset_confidence": 0.0,
+            "microstructure_support_score": 0.0,
             "elite_pattern_rank": 0.0,
             "cluster_penalty": 0.0,
             "regime_entry_policy": {},
@@ -764,6 +880,12 @@ class MarketStructureService:
         opportunity_score: float,
         volatility_state: str,
         dominant_exhaustion: float,
+        *,
+        session_quality_score: float = 0.0,
+        candle_quality_score: float = 0.0,
+        directional_opportunity: float = 0.0,
+        external_confirmation: float = 0.0,
+        structure_promoted: bool = False,
     ) -> float:
         setup_quality = (
             abs(weighted_score) * 0.35
@@ -771,6 +893,16 @@ class MarketStructureService:
             + opportunity_score * 0.25
             + _VOLATILITY_FIT.get(volatility_state, 0.5) * 0.15
         )
+        if alignment_score >= 0.55 and abs(weighted_score) >= 0.12:
+            setup_quality += 0.05
+        if directional_opportunity >= 0.16:
+            setup_quality += min(0.05, directional_opportunity * 0.16)
+        if session_quality_score >= 0.52 and candle_quality_score >= 0.30:
+            setup_quality += 0.04
+        if external_confirmation >= 0.16:
+            setup_quality += min(0.06, external_confirmation * 0.18)
+        if structure_promoted:
+            setup_quality += 0.04
         if dominant_exhaustion > 0.0:
             setup_quality -= min(0.22, dominant_exhaustion * 0.22)
         return max(0.0, min(1.0, setup_quality))

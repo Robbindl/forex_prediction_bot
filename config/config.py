@@ -26,7 +26,12 @@ IG_ACCOUNT_ID         = os.getenv("IG_ACCOUNT_ID", "").strip()
 IG_EPIC_MAP           = os.getenv("IG_EPIC_MAP", "").strip()
 IG_ROUTED_CATEGORIES  = [
     item.strip().lower()
-    for item in os.getenv("IG_ROUTED_CATEGORIES", "commodities").split(",")
+    for item in os.getenv("IG_ROUTED_CATEGORIES", "commodities,indices").split(",")
+    if item.strip()
+]
+IG_ROUTED_ASSETS      = [
+    item.strip()
+    for item in os.getenv("IG_ROUTED_ASSETS", "").split(",")
     if item.strip()
 ]
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
@@ -299,9 +304,9 @@ ENABLE_ALERTS             = os.getenv("ENABLE_ALERTS", "true").lower() == "true"
 
 CATEGORY_CAPS: dict = {
     "forex":       int(os.getenv("CAP_FOREX",       "4")),
-    "crypto":      int(os.getenv("CAP_CRYPTO",      "5")),
-    "commodities": int(os.getenv("CAP_COMMODITIES", "2")),
-    "indices":     int(os.getenv("CAP_INDICES",     "2")),
+    "crypto":      int(os.getenv("CAP_CRYPTO",      "4")),
+    "commodities": int(os.getenv("CAP_COMMODITIES", "4")),
+    "indices":     int(os.getenv("CAP_INDICES",     "4")),
 }
 CATEGORY_CAP_SOFT_BUFFER = int(os.getenv("CATEGORY_CAP_SOFT_BUFFER", "2"))
 
@@ -491,15 +496,15 @@ FOREX_FILTER_MAX_SPREAD_BPS = float(os.getenv("FOREX_FILTER_MAX_SPREAD_BPS", "1.
 FOREX_FILTER_BOOTSTRAP_MAX_SPREAD_BPS = float(os.getenv("FOREX_FILTER_BOOTSTRAP_MAX_SPREAD_BPS", "2.0"))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ASSET UNIVERSE — your 19 assets
+# ASSET UNIVERSE — your 25 assets
 # These lists are used by sentiment, intelligence, and other
 # services that need to know which assets to track.
 # The canonical trading registry lives in core/assets.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 FOREX_PAIRS: list = [
-    "EUR/USD", "EUR/JPY", "GBP/JPY", "GBP/USD",
-    "AUD/USD", "USD/JPY", "USD/CAD",
+    "EUR/USD", "EUR/JPY", "EUR/GBP", "GBP/JPY", "GBP/USD",
+    "AUD/USD", "NZD/USD", "USD/JPY", "USD/CAD", "USD/CHF",
 ]
 
 CRYPTOCURRENCIES: list = [
@@ -518,6 +523,9 @@ INDICES: list = [
     "US100",  # US100
     "US500",  # US500
     "UK100",  # FTSE
+    "GER40",  # Germany 40 / DAX
+    "AUS200", # Australia 200 / ASX
+    "JPN225", # Japan 225 / Nikkei
 ]
 
 STOCKS: list = []   # not trading stocks

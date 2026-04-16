@@ -32,7 +32,7 @@ def _build_pool():
         # Each publish/get/set borrows a connection from the pool
         # and releases it immediately after — so 10 connections
         # handles hundreds of concurrent publish calls efficiently.
-        max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", "50"))
+        max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", "10"))
         pool = redis.ConnectionPool.from_url(
             REDIS_URL,
             max_connections=max_connections,

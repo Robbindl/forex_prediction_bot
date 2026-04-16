@@ -2106,7 +2106,7 @@ def _summarize_stop_concentration(positions: Any, *, limit: int = 5) -> List[Dic
 
 def _summarize_scenario_risk(positions: Any) -> List[Dict[str, Any]]:
     scenarios = {
-        "USD spike": {"assets": {"EUR/USD", "GBP/USD", "AUD/USD", "USD/CAD", "USD/JPY", "XAU/USD", "XAG/USD"}},
+        "USD spike": {"assets": {"EUR/USD", "GBP/USD", "AUD/USD", "NZD/USD", "USD/CAD", "USD/CHF", "USD/JPY", "XAU/USD", "XAG/USD"}},
         "Risk-off": {"categories": {"indices", "crypto"}, "assets": {"XAU/USD"}},
         "Oil shock": {"assets": {"WTI", "USD/CAD", "US30", "US100", "US500"}},
         "Rates shock": {"assets": {"USD/JPY", "XAU/USD", "US100", "US500", "US30", "BTC-USD"}},
@@ -3420,9 +3420,9 @@ def _chart_asset_descriptor(asset: str, category: str) -> Dict[str, Any]:
     routing_label = "deriv_primary"
 
     try:
-        from config.config import IG_ENABLED, IG_ROUTED_CATEGORIES
+        from services.market_data_router import is_ig_primary_asset
 
-        ig_primary = bool(IG_ENABLED) and normalized_category in set(IG_ROUTED_CATEGORIES or [])
+        ig_primary = bool(is_ig_primary_asset(normalized_asset, normalized_category))
     except Exception:
         ig_primary = False
 

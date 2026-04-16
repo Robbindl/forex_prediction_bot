@@ -15,17 +15,23 @@ class AssetRegistry:
         # ── Forex ─────────────────────────────────────────────────
         "EUR/USD": "forex",
         "EUR/JPY": "forex",
+        "EUR/GBP": "forex",
         "GBP/JPY": "forex",
         "GBP/USD": "forex",
         "AUD/USD": "forex",
+        "NZD/USD": "forex",
         "USD/JPY": "forex",
         "USD/CAD": "forex",
+        "USD/CHF": "forex",
 
         # ── Indices ───────────────────────────────────────────────
         "US30":   "indices",       # US30  — Dow Jones
         "US100":  "indices",       # US100 — Nasdaq
         "US500":  "indices",       # US500 — S&P 500
         "UK100":  "indices",       # FTSE 100
+        "GER40":  "indices",       # GER40 — Germany 40 / DAX
+        "AUS200": "indices",       # AUS200 — Australia 200 / ASX
+        "JPN225": "indices",       # JPN225 — Japan 225 / Nikkei
 
         # ── Crypto ────────────────────────────────────────────────
         "BTC-USD": "crypto",
@@ -57,6 +63,10 @@ class AssetRegistry:
         "EUR/JPY": "EUR/JPY", "EURJPY": "EUR/JPY",
         "EUROYEN": "EUR/JPY",
 
+        # EUR/GBP
+        "EUR/GBP": "EUR/GBP", "EURGBP": "EUR/GBP",
+        "EUROSTERLING": "EUR/GBP",
+
         # GBP/JPY
         "GBP/JPY": "GBP/JPY", "GBPJPY": "GBP/JPY",
 
@@ -68,6 +78,10 @@ class AssetRegistry:
         "AUD/USD": "AUD/USD", "AUDUSD": "AUD/USD",
         "AUD": "AUD/USD", "AUSSIE": "AUD/USD",
 
+        # NZD/USD
+        "NZD/USD": "NZD/USD", "NZDUSD": "NZD/USD",
+        "NZD": "NZD/USD", "KIWI": "NZD/USD",
+
         # USD/JPY
         "USD/JPY": "USD/JPY", "USDJPY": "USD/JPY",
         "YEN": "USD/JPY", "JPY": "USD/JPY",
@@ -75,6 +89,10 @@ class AssetRegistry:
         # USD/CAD
         "USD/CAD": "USD/CAD", "USDCAD": "USD/CAD",
         "CAD": "USD/CAD", "LOONIE": "USD/CAD",
+
+        # USD/CHF
+        "USD/CHF": "USD/CHF", "USDCHF": "USD/CHF",
+        "CHF": "USD/CHF", "SWISSY": "USD/CHF",
 
         # US30 — Dow Jones
         "US30": "US30", "^DJI": "US30", "DOW": "US30",
@@ -91,6 +109,18 @@ class AssetRegistry:
         # FTSE
         "UK100": "UK100", "^FTSE": "UK100", "FTSE": "UK100",
         "FTSE100": "UK100",
+
+        # GER40 — DAX
+        "GER40": "GER40", "DE40": "GER40", "DAX": "GER40",
+        "DAX40": "GER40", "GERMANY40": "GER40",
+
+        # AUS200 — Australia 200
+        "AUS200": "AUS200", "AU200": "AUS200", "ASX200": "AUS200",
+        "AUSTRALIA200": "AUS200",
+
+        # JPN225 — Japan 225 / Nikkei
+        "JPN225": "JPN225", "JP225": "JPN225", "JAPAN225": "JPN225",
+        "NIKKEI": "JPN225", "NIKKEI225": "JPN225",
 
         # BTC
         "BTC-USD": "BTC-USD", "BTC": "BTC-USD", "BITCOIN": "BTC-USD",
@@ -116,9 +146,9 @@ class AssetRegistry:
     # ── Category → soft target concurrent open positions ──────────────────────
     _CATEGORY_CAPS: Dict[str, int] = {
         "forex":       4,
-        "crypto":      5,
-        "commodities": 2,
-        "indices":     2,
+        "crypto":      4,
+        "commodities": 4,
+        "indices":     4,
     }
 
     def canonical(self, asset: str) -> str:

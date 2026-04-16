@@ -4,10 +4,13 @@ from datetime import datetime, time as dtime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from core.asset_profiles import (
+    is_australia_index,
     get_profile,
     is_commodity,
     is_crypto,
+    is_europe_index,
     is_forex,
+    is_japan_index,
     is_uk_index,
     is_us_index,
 )
@@ -76,6 +79,21 @@ def close_buffer_status(
             if lon.weekday() < 5 and dtime(15, 30) <= lon.time() < dtime(16, 30):
                 return True, "Close buffer: last hour before UK close (16:30 London)"
             return False, ""
+        if is_europe_index(asset):
+            ber = _now_in_tz("Europe/Berlin", now)
+            if ber.weekday() < 5 and dtime(16, 30) <= ber.time() < dtime(17, 30):
+                return True, "Close buffer: last hour before Europe close (17:30 Berlin)"
+            return False, ""
+        if is_australia_index(asset):
+            syd = _now_in_tz("Australia/Sydney", now)
+            if syd.weekday() < 5 and dtime(15, 0) <= syd.time() < dtime(16, 0):
+                return True, "Close buffer: last hour before Australia close (16:00 Sydney)"
+            return False, ""
+        if is_japan_index(asset):
+            tok = _now_in_tz("Asia/Tokyo", now)
+            if tok.weekday() < 5 and dtime(14, 0) <= tok.time() < dtime(15, 0):
+                return True, "Close buffer: last hour before Japan close (15:00 Tokyo)"
+            return False, ""
         return False, ""
 
     if resolved_category == "commodities" or is_commodity(asset):
@@ -139,6 +157,59 @@ def _uk_index_status(asset: str, now_utc: datetime) -> Tuple[bool, str]:
     return True, "UK market open"
 
 
+def _europe_index_status(asset: str, now_utc: datetime) -> Tuple[bool, str]:
+    buffer_active, buffer_reason = close_buffer_status(asset, "indices", now_utc=now_utc)
+    if buffer_active:
+        return False, buffer_reason
+    ber = _now_in_tz("Europe/Berlin", now_utc)
+    wd = ber.weekday()
+    t = ber.time()
+
+    if wd >= 5:
+        return False, "Weekend closed"
+    if t < dtime(9, 0):
+        return False, "Pre-market"
+    if t >= dtime(17, 30):
+        return False, "After hours"
+    return True, "Europe market open"
+
+
+def _australia_index_status(asset: str, now_utc: datetime) -> Tuple[bool, str]:
+    buffer_active, buffer_reason = close_buffer_status(asset, "indices", now_utc=now_utc)
+    if buffer_active:
+        return False, buffer_reason
+    syd = _now_in_tz("Australia/Sydney", now_utc)
+    wd = syd.weekday()
+    t = syd.time()
+
+    if wd >= 5:
+        return False, "Weekend closed"
+    if t < dtime(10, 0):
+        return False, "Pre-market"
+    if t >= dtime(16, 0):
+        return False, "After hours"
+    return True, "Australia market open"
+
+
+def _japan_index_status(asset: str, now_utc: datetime) -> Tuple[bool, str]:
+    buffer_active, buffer_reason = close_buffer_status(asset, "indices", now_utc=now_utc)
+    if buffer_active:
+        return False, buffer_reason
+    tok = _now_in_tz("Asia/Tokyo", now_utc)
+    wd = tok.weekday()
+    t = tok.time()
+
+    if wd >= 5:
+        return False, "Weekend closed"
+    if t < dtime(9, 0):
+        return False, "Pre-market"
+    if dtime(11, 30) <= t < dtime(12, 30):
+        return False, "Lunch break"
+    if t >= dtime(15, 0):
+        return False, "After hours"
+    return True, "Japan market open"
+
+
 def _commodity_status(asset: str, now_utc: datetime) -> Tuple[bool, str]:
     buffer_active, buffer_reason = close_buffer_status(asset, "commodities", now_utc=now_utc)
     if buffer_active:
@@ -189,6 +260,12 @@ def session_market_status(
             return _us_index_status(asset, now)
         if is_uk_index(asset):
             return _uk_index_status(asset, now)
+        if is_europe_index(asset):
+            return _europe_index_status(asset, now)
+        if is_australia_index(asset):
+            return _australia_index_status(asset, now)
+        if is_japan_index(asset):
+            return _japan_index_status(asset, now)
         return False, "Unknown index asset"
     if resolved_category == "commodities" or is_commodity(asset):
         return _commodity_status(asset, now)

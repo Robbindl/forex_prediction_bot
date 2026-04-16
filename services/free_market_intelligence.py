@@ -222,9 +222,9 @@ class FreeMarketIntelligence:
             usd_strength = _clamp(usd_delta * 6 + us2y_delta / 10 - vix_delta * 2)
             risk_on = _clamp((20.0 - vix_level) / 20.0)
 
-            if asset in {"EUR/USD", "GBP/USD", "AUD/USD"}:
+            if asset in {"EUR/USD", "GBP/USD", "AUD/USD", "NZD/USD"}:
                 components["usd_macro"] = -usd_strength
-            elif asset in {"USD/CAD", "USD/JPY"}:
+            elif asset in {"USD/CAD", "USD/JPY", "USD/CHF"}:
                 components["usd_macro"] = usd_strength
             elif asset == "GBP/JPY":
                 components["risk_regime"] = _clamp(risk_on - usd_strength * 0.3)

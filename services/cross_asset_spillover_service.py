@@ -16,8 +16,42 @@ _NORMALIZATION_FLOORS = {
 }
 
 _RELATIONSHIPS: Dict[str, List[Dict[str, Any]]] = {
+    "EUR/USD": [
+        {"peer": "GBP/USD", "mode": "same", "weight": 0.40, "label": "usd_leg_confirmation"},
+        {"peer": "XAU/USD", "mode": "same", "weight": 0.25, "label": "usd_weakness_gold"},
+        {"peer": "USD/CHF", "mode": "inverse", "weight": 0.20, "label": "swissy_usd_inverse"},
+        {"peer": "US500", "mode": "same", "weight": 0.15, "label": "risk_on_usd_softness"},
+    ],
+    "GBP/USD": [
+        {"peer": "EUR/USD", "mode": "same", "weight": 0.40, "label": "usd_leg_confirmation"},
+        {"peer": "EUR/GBP", "mode": "inverse", "weight": 0.25, "label": "sterling_cross_confirmation"},
+        {"peer": "UK100", "mode": "inverse", "weight": 0.20, "label": "ftse_gbp_inverse"},
+        {"peer": "US500", "mode": "same", "weight": 0.15, "label": "risk_on_usd_softness"},
+    ],
+    "AUD/USD": [
+        {"peer": "NZD/USD", "mode": "same", "weight": 0.35, "label": "antipodean_confirmation"},
+        {"peer": "US500", "mode": "same", "weight": 0.30, "label": "risk_on_confirmation"},
+        {"peer": "WTI", "mode": "same", "weight": 0.20, "label": "commodity_complex"},
+        {"peer": "XAU/USD", "mode": "same", "weight": 0.15, "label": "commodity_beta"},
+    ],
+    "NZD/USD": [
+        {"peer": "AUD/USD", "mode": "same", "weight": 0.40, "label": "antipodean_confirmation"},
+        {"peer": "US500", "mode": "same", "weight": 0.25, "label": "risk_on_confirmation"},
+        {"peer": "WTI", "mode": "same", "weight": 0.20, "label": "commodity_complex"},
+        {"peer": "XAU/USD", "mode": "same", "weight": 0.15, "label": "commodity_beta"},
+    ],
+    "EUR/GBP": [
+        {"peer": "EUR/USD", "mode": "same", "weight": 0.45, "label": "euro_strength"},
+        {"peer": "GBP/USD", "mode": "inverse", "weight": 0.35, "label": "sterling_inverse"},
+        {"peer": "UK100", "mode": "same", "weight": 0.20, "label": "ftse_sterling_spillover"},
+    ],
     "USD/CAD": [
         {"peer": "WTI", "mode": "inverse", "weight": 1.00, "label": "oil_cad_link"},
+    ],
+    "USD/CHF": [
+        {"peer": "EUR/USD", "mode": "inverse", "weight": 0.40, "label": "usd_leg_inverse"},
+        {"peer": "XAU/USD", "mode": "inverse", "weight": 0.35, "label": "gold_safe_haven_inverse"},
+        {"peer": "US500", "mode": "same", "weight": 0.25, "label": "risk_on_dollar_chf"},
     ],
     "WTI": [
         {"peer": "USD/CAD", "mode": "inverse", "weight": 0.70, "label": "cad_confirmation"},
@@ -49,9 +83,28 @@ _RELATIONSHIPS: Dict[str, List[Dict[str, Any]]] = {
         {"peer": "XAU/USD", "mode": "inverse", "weight": 0.30, "label": "gold_risk_off"},
     ],
     "UK100": [
+        {"peer": "GER40", "mode": "same", "weight": 0.30, "label": "europe_equity_confirmation"},
         {"peer": "US500", "mode": "same", "weight": 0.45, "label": "global_equity_confirmation"},
         {"peer": "XAU/USD", "mode": "inverse", "weight": 0.25, "label": "gold_risk_off"},
         {"peer": "WTI", "mode": "same", "weight": 0.30, "label": "energy_complex"},
+    ],
+    "GER40": [
+        {"peer": "US500", "mode": "same", "weight": 0.40, "label": "global_equity_confirmation"},
+        {"peer": "US100", "mode": "same", "weight": 0.25, "label": "tech_beta_confirmation"},
+        {"peer": "UK100", "mode": "same", "weight": 0.20, "label": "europe_equity_confirmation"},
+        {"peer": "XAU/USD", "mode": "inverse", "weight": 0.15, "label": "gold_risk_off"},
+    ],
+    "AUS200": [
+        {"peer": "US500", "mode": "same", "weight": 0.35, "label": "global_equity_confirmation"},
+        {"peer": "JPN225", "mode": "same", "weight": 0.25, "label": "asia_equity_confirmation"},
+        {"peer": "WTI", "mode": "same", "weight": 0.20, "label": "commodity_complex"},
+        {"peer": "AUD/USD", "mode": "same", "weight": 0.20, "label": "aussie_domestic_beta"},
+    ],
+    "JPN225": [
+        {"peer": "US500", "mode": "same", "weight": 0.35, "label": "global_equity_confirmation"},
+        {"peer": "US100", "mode": "same", "weight": 0.25, "label": "tech_beta_confirmation"},
+        {"peer": "USD/JPY", "mode": "same", "weight": 0.25, "label": "yen_exporter_link"},
+        {"peer": "AUS200", "mode": "same", "weight": 0.15, "label": "asia_equity_confirmation"},
     ],
     "USD/JPY": [
         {"peer": "US500", "mode": "same", "weight": 0.60, "label": "risk_on_yen"},

@@ -93,11 +93,11 @@ def _collect_optional_warnings() -> List[str]:
     ig_password = os.getenv("IG_PASSWORD", "")
     if ig_enabled and _is_placeholder(ig_api_key):
         warnings.append(
-            "IG_API_KEY not set.  IG-routed commodities will fall back to Deriv when IG market data is unavailable."
+            "IG_API_KEY not set.  IG-routed assets/categories will fall back when IG market data is unavailable."
         )
     if ig_enabled and (_is_placeholder(ig_identifier) or _is_placeholder(ig_password)):
         warnings.append(
-            "IG_IDENTIFIER / IG_PASSWORD not set.  IG commodity routing is configured, but IG market data cannot authenticate yet."
+            "IG_IDENTIFIER / IG_PASSWORD not set.  IG market-data routing is configured, but IG market data cannot authenticate yet."
         )
 
     return warnings

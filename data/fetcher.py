@@ -1,4 +1,4 @@
-"""data/fetcher.py - Hybrid market data fetcher with IG-routed commodities."""
+"""data/fetcher.py - Hybrid market data fetcher with IG-routed assets."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,7 +9,6 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 from config.config import (
-    IG_ROUTED_CATEGORIES,
     LOOKBACK_PERIOD,
     LOCAL_CANDLE_STORE_REQUIRED_COVERAGE,
     MARKET_DATA_OHLCV_CACHE_TTL,
@@ -66,8 +65,8 @@ class DataFetcher:
     Hybrid market data fetcher.
 
     Order of preference:
-      1. Shared live-price cache (Deriv/Binance streams plus IG commodity poller)
-      2. IG direct market data API for routed categories (currently commodities)
+      1. Shared live-price cache (Deriv/Binance streams plus IG routed-asset polling)
+      2. IG direct market data API for routed assets/categories
       3. Deriv direct market data API
       4. Binance public market data for unsupported crypto assets
       5. Short-lived internal cache from recent responses
@@ -223,7 +222,7 @@ class DataFetcher:
                 "_ig_bridge",
                 _ig_bridge,
                 "ig",
-                "[DataFetcher] IG bridge configured for routed commodity market data",
+                "[DataFetcher] IG bridge configured for routed asset market data",
             )
         except Exception as exc:
             logger.debug(f"[DataFetcher] IG bridge unavailable: {exc}")
@@ -269,8 +268,13 @@ class DataFetcher:
         return dict(self._rt_meta.get(f"rt:{asset}", {}))
 
     @staticmethod
-    def _ig_primary_category(category: str) -> bool:
-        return str(category or "").strip().lower() in set(IG_ROUTED_CATEGORIES or [])
+    def _ig_primary_asset(asset: str, category: str) -> bool:
+        try:
+            from services.market_data_router import is_ig_primary_asset
+
+            return bool(is_ig_primary_asset(asset, category))
+        except Exception:
+            return False
 
     @staticmethod
     def _orderflow_symbol(asset: str) -> str:
@@ -493,14 +497,25 @@ class DataFetcher:
             return local_hit
 
         last_error_meta: Optional[Dict[str, Any]] = None
-        ig_bridge = self._ig_bridge if self._ig_primary_category(category) else None
-        for bridge, source, source_class, delayed, realtime, allow_legacy_signature in (
-            (self._dukascopy_bridge, "Dukascopy", "secondary_api", False, False, False),
-            (self._fmp_bridge, "FMP", "secondary_api", False, False, False),
-            (ig_bridge, "IG", "primary_api", False, False, False),
-            (self._deriv_bridge, "Deriv", "primary_api", False, False, True),
-            (self._binance_bridge, "Binance", "secondary_api", False, False, True),
-        ):
+        ig_primary = self._ig_primary_asset(asset, category)
+        ig_bridge = self._ig_bridge if ig_primary else None
+        bridge_order = (
+            (
+                (ig_bridge, "IG", "primary_api", False, False, False),
+                (self._dukascopy_bridge, "Dukascopy", "secondary_api", False, False, False),
+                (self._fmp_bridge, "FMP", "secondary_api", False, False, False),
+                (self._deriv_bridge, "Deriv", "primary_api", False, False, True),
+                (self._binance_bridge, "Binance", "secondary_api", False, False, True),
+            )
+            if ig_primary
+            else (
+                (self._dukascopy_bridge, "Dukascopy", "secondary_api", False, False, False),
+                (self._fmp_bridge, "FMP", "secondary_api", False, False, False),
+                (self._deriv_bridge, "Deriv", "primary_api", False, False, True),
+                (self._binance_bridge, "Binance", "secondary_api", False, False, True),
+            )
+        )
+        for bridge, source, source_class, delayed, realtime, allow_legacy_signature in bridge_order:
             df, error_meta = self._fetch_ohlcv_from_bridge(
                 bridge,
                 asset,
@@ -545,7 +560,7 @@ class DataFetcher:
         meta_key = f"rt:{asset}"
         cache_key = f"fetcher:{meta_key}:{category}"
         last_error_meta: Optional[Dict[str, Any]] = None
-        ig_primary = self._ig_primary_category(category) and self._ig_bridge is not None
+        ig_primary = self._ig_primary_asset(asset, category) and self._ig_bridge is not None
 
         if ig_primary:
             cached = self._cached_real_time_price(cache_key, meta_key)

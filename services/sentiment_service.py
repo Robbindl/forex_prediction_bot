@@ -16,6 +16,7 @@ from services.sentiment_sources import (
     _reddit_score,
 )
 from config.config import NEWS_REDDIT_ENABLED
+from core.asset_profiles import get_profile
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -164,6 +165,7 @@ class SentimentService:
     def _forex_sentiment(self, asset: str) -> Dict:
         components: Dict[str, float] = {}
         weights   : Dict[str, float] = {}
+        ig_client_sentiment: Optional[Dict[str, Any]] = None
 
         # 1. Price momentum
         pm = _PriceMomentum.get(asset)
@@ -194,12 +196,22 @@ class SentimentService:
         if vix:
             components["vix"] = vix["score"]
             weights["vix"]    = 0.20
-        return self._build_result(components, weights)
+
+        ig_client_sentiment = self._ig_client_sentiment(asset)
+        if ig_client_sentiment:
+            components["ig_client_sentiment"] = float(ig_client_sentiment.get("score", 0.0) or 0.0)
+            weights["ig_client_sentiment"] = 0.12
+
+        result = self._build_result(components, weights)
+        if ig_client_sentiment:
+            result["ig_client_sentiment"] = dict(ig_client_sentiment)
+        return result
 
     def _index_sentiment(self, asset: str) -> Dict:
         """US/UK equity indices — VIX and Fear & Greed are most reliable."""
         components: Dict[str, float] = {}
         weights   : Dict[str, float] = {}
+        ig_client_sentiment: Optional[Dict[str, Any]] = None
 
         # 1. Price momentum
         pm = _PriceMomentum.get(asset)
@@ -242,7 +254,16 @@ class SentimentService:
         if pc:
             components["put_call"] = pc["score"]
             weights["put_call"]    = 0.10
-        return self._build_result(components, weights)
+
+        ig_client_sentiment = self._ig_client_sentiment(asset)
+        if ig_client_sentiment:
+            components["ig_client_sentiment"] = float(ig_client_sentiment.get("score", 0.0) or 0.0)
+            weights["ig_client_sentiment"] = 0.12
+
+        result = self._build_result(components, weights)
+        if ig_client_sentiment:
+            result["ig_client_sentiment"] = dict(ig_client_sentiment)
+        return result
 
     @staticmethod
     def _build_result(components: Dict[str, float], weights: Dict[str, float]) -> Dict:
@@ -283,7 +304,10 @@ class SentimentService:
         try:
             from services.market_data_router import get_client_sentiment
 
-            data = get_client_sentiment(asset, category="commodities")
+            category = str(get_profile(asset).category or "").strip().lower()
+            if not category or category == "crypto":
+                return None
+            data = get_client_sentiment(asset, category=category)
             return data if isinstance(data, dict) and data else None
         except Exception:
             return None

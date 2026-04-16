@@ -18,6 +18,8 @@ from config.config import (
     IG_EPIC_MAP,
     IG_IDENTIFIER,
     IG_PASSWORD,
+    IG_ROUTED_ASSETS,
+    IG_ROUTED_CATEGORIES,
 )
 from services.market_hours_guard import build_market_status
 from utils.logger import get_logger
@@ -63,12 +65,185 @@ _SUPPORTED_ASSET_ALIASES = {
     "USOIL": "WTI",
     "CRUDE": "WTI",
     "OIL": "WTI",
+    "EUR/USD": "EUR/USD",
+    "EURUSD": "EUR/USD",
+    "EUR": "EUR/USD",
+    "EURO": "EUR/USD",
+    "GBP/USD": "GBP/USD",
+    "GBPUSD": "GBP/USD",
+    "GBP": "GBP/USD",
+    "POUND": "GBP/USD",
+    "CABLE": "GBP/USD",
+    "AUD/USD": "AUD/USD",
+    "AUDUSD": "AUD/USD",
+    "AUD": "AUD/USD",
+    "AUSSIE": "AUD/USD",
+    "USD/JPY": "USD/JPY",
+    "USDJPY": "USD/JPY",
+    "JPY": "USD/JPY",
+    "YEN": "USD/JPY",
+    "USD/CAD": "USD/CAD",
+    "USDCAD": "USD/CAD",
+    "CAD": "USD/CAD",
+    "LOONIE": "USD/CAD",
+    "EUR/JPY": "EUR/JPY",
+    "EURJPY": "EUR/JPY",
+    "GBP/JPY": "GBP/JPY",
+    "GBPJPY": "GBP/JPY",
+    "NZD/USD": "NZD/USD",
+    "NZDUSD": "NZD/USD",
+    "NZD": "NZD/USD",
+    "KIWI": "NZD/USD",
+    "EUR/GBP": "EUR/GBP",
+    "EURGBP": "EUR/GBP",
+    "USD/CHF": "USD/CHF",
+    "USDCHF": "USD/CHF",
+    "CHF": "USD/CHF",
+    "SWISSY": "USD/CHF",
+    "US30": "US30",
+    "^DJI": "US30",
+    "DOW": "US30",
+    "DOWJONES": "US30",
+    "US100": "US100",
+    "^IXIC": "US100",
+    "NASDAQ": "US100",
+    "NDX": "US100",
+    "US500": "US500",
+    "^GSPC": "US500",
+    "SP500": "US500",
+    "SPX": "US500",
+    "UK100": "UK100",
+    "^FTSE": "UK100",
+    "FTSE": "UK100",
+    "FTSE100": "UK100",
+    "GER40": "GER40",
+    "DE40": "GER40",
+    "DAX": "GER40",
+    "DAX40": "GER40",
+    "GERMANY40": "GER40",
+    "AUS200": "AUS200",
+    "AU200": "AUS200",
+    "ASX200": "AUS200",
+    "AUSTRALIA200": "AUS200",
+    "JPN225": "JPN225",
+    "JP225": "JPN225",
+    "JAPAN225": "JPN225",
+    "NIKKEI": "JPN225",
+    "NIKKEI225": "JPN225",
 }
 
 _SEARCH_TERMS = {
     "XAU/USD": ("spot gold", "gold", "xau"),
     "XAG/USD": ("spot silver", "silver", "xag"),
     "WTI": ("wti", "us crude", "crude oil"),
+    "EUR/USD": ("eur/usd", "eur usd", "euro us dollar"),
+    "GBP/USD": ("gbp/usd", "gbp usd", "sterling us dollar"),
+    "AUD/USD": ("aud/usd", "aud usd", "australian dollar us dollar"),
+    "USD/JPY": ("usd/jpy", "usd jpy", "us dollar japanese yen"),
+    "USD/CAD": ("usd/cad", "usd cad", "us dollar canadian dollar"),
+    "EUR/JPY": ("eur/jpy", "eur jpy", "euro japanese yen"),
+    "GBP/JPY": ("gbp/jpy", "gbp jpy", "sterling japanese yen"),
+    "NZD/USD": ("nzd/usd", "nzd usd", "new zealand dollar us dollar"),
+    "EUR/GBP": ("eur/gbp", "eur gbp", "euro sterling"),
+    "USD/CHF": ("usd/chf", "usd chf", "us dollar swiss franc"),
+    "US30": ("us30", "dow jones", "wall street", "dow"),
+    "US100": ("us100", "nasdaq 100", "nasdaq", "ndx"),
+    "US500": ("us500", "s&p 500", "spx", "s&p"),
+    "UK100": ("uk100", "ftse 100", "ftse"),
+    "GER40": ("ger40", "germany 40", "dax 40", "dax"),
+    "AUS200": ("aus200", "australia 200", "asx 200", "spi 200"),
+    "JPN225": ("jpn225", "japan 225", "nikkei 225", "nikkei"),
+}
+
+_ASSET_CATEGORIES = {
+    "XAU/USD": "commodities",
+    "XAG/USD": "commodities",
+    "WTI": "commodities",
+    "EUR/USD": "forex",
+    "GBP/USD": "forex",
+    "AUD/USD": "forex",
+    "USD/JPY": "forex",
+    "USD/CAD": "forex",
+    "EUR/JPY": "forex",
+    "GBP/JPY": "forex",
+    "NZD/USD": "forex",
+    "EUR/GBP": "forex",
+    "USD/CHF": "forex",
+    "US30": "indices",
+    "US100": "indices",
+    "US500": "indices",
+    "UK100": "indices",
+    "GER40": "indices",
+    "AUS200": "indices",
+    "JPN225": "indices",
+}
+
+_ASSET_INSTRUMENT_TYPE_TOKENS = {
+    "XAU/USD": ("COMMODITIES",),
+    "XAG/USD": ("COMMODITIES",),
+    "WTI": ("COMMODITIES",),
+    "EUR/USD": ("CURRENCIES", "FOREX"),
+    "GBP/USD": ("CURRENCIES", "FOREX"),
+    "AUD/USD": ("CURRENCIES", "FOREX"),
+    "USD/JPY": ("CURRENCIES", "FOREX"),
+    "USD/CAD": ("CURRENCIES", "FOREX"),
+    "EUR/JPY": ("CURRENCIES", "FOREX"),
+    "GBP/JPY": ("CURRENCIES", "FOREX"),
+    "NZD/USD": ("CURRENCIES", "FOREX"),
+    "EUR/GBP": ("CURRENCIES", "FOREX"),
+    "USD/CHF": ("CURRENCIES", "FOREX"),
+    "US30": ("INDICES", "INDICE"),
+    "US100": ("INDICES", "INDICE"),
+    "US500": ("INDICES", "INDICE"),
+    "UK100": ("INDICES", "INDICE"),
+    "GER40": ("INDICES", "INDICE"),
+    "AUS200": ("INDICES", "INDICE"),
+    "JPN225": ("INDICES", "INDICE"),
+}
+
+_ASSET_MATCH_GROUPS = {
+    "XAU/USD": (("gold",), ("xau",)),
+    "XAG/USD": (("silver",), ("xag",)),
+    "WTI": (("wti",), ("us crude",), ("crude", "oil"), ("west texas",)),
+    "EUR/USD": (("eur/usd",), ("eur", "usd"), ("euro", "us", "dollar")),
+    "GBP/USD": (("gbp/usd",), ("gbp", "usd"), ("sterling", "us", "dollar")),
+    "AUD/USD": (("aud/usd",), ("aud", "usd"), ("australian", "dollar", "us", "dollar")),
+    "USD/JPY": (("usd/jpy",), ("usd", "jpy"), ("us", "dollar", "japanese", "yen")),
+    "USD/CAD": (("usd/cad",), ("usd", "cad"), ("us", "dollar", "canadian", "dollar")),
+    "EUR/JPY": (("eur/jpy",), ("eur", "jpy"), ("euro", "japanese", "yen")),
+    "GBP/JPY": (("gbp/jpy",), ("gbp", "jpy"), ("sterling", "japanese", "yen")),
+    "NZD/USD": (("nzd/usd",), ("nzd", "usd"), ("new zealand", "usd")),
+    "EUR/GBP": (("eur/gbp",), ("eur", "gbp"), ("euro", "sterling")),
+    "USD/CHF": (("usd/chf",), ("usd", "chf"), ("us dollar", "swiss franc")),
+    "US30": (("us30",), ("dow",), ("dow", "jones"), ("wall", "street")),
+    "US100": (("us100",), ("nasdaq",), ("nasdaq", "100"), ("ndx",)),
+    "US500": (("us500",), ("s&p", "500"), ("spx",)),
+    "UK100": (("uk100",), ("ftse",), ("ftse", "100")),
+    "GER40": (("ger40",), ("germany", "40"), ("dax", "40"), ("dax",)),
+    "AUS200": (("aus200",), ("australia", "200"), ("asx", "200"), ("spi", "200")),
+    "JPN225": (("jpn225",), ("japan", "225"), ("nikkei", "225"), ("nikkei",)),
+}
+
+_ASSET_REJECT_TERMS = {
+    "XAU/USD": ("silver", "wti", "crude"),
+    "XAG/USD": ("gold", "wti", "crude"),
+    "WTI": ("brent",),
+    "EUR/USD": ("eur/gbp", "eur/jpy", "gbp/usd", "usd/chf", "usd/jpy", "usd/cad"),
+    "GBP/USD": ("gbp/jpy", "eur/gbp", "eur/usd", "usd/cad", "usd/chf"),
+    "AUD/USD": ("aud/jpy", "nzd/usd", "usd/cad", "eur/usd"),
+    "USD/JPY": ("eur/jpy", "gbp/jpy", "usd/cad", "usd/chf"),
+    "USD/CAD": ("usd/jpy", "usd/chf", "eur/usd", "aud/usd"),
+    "EUR/JPY": ("usd/jpy", "eur/usd", "gbp/jpy", "eur/gbp"),
+    "GBP/JPY": ("usd/jpy", "gbp/usd", "eur/jpy", "eur/gbp"),
+    "EUR/GBP": ("eur/usd", "gbp/usd", "usd/chf", "nzd/usd", "eur/jpy", "gbp/jpy"),
+    "USD/CHF": ("usd/cad", "usd/jpy", "eur/gbp", "nzd/usd", "eur/usd"),
+    "US30": ("nasdaq", "s&p", "ftse", "uk 100", "dax", "germany", "nikkei", "japan", "australia", "asx"),
+    "US100": ("dow", "dji", "s&p", "ftse", "uk 100", "dax", "germany", "nikkei", "japan", "australia", "asx"),
+    "US500": ("dow", "dji", "nasdaq", "ndx", "ftse", "uk 100", "dax", "germany", "nikkei", "japan", "australia", "asx"),
+    "UK100": ("dax", "germany", "japan", "nikkei", "australia", "asx", "nasdaq", "dow", "s&p"),
+    "GER40": ("ftse", "uk 100", "japan", "nikkei", "australia", "asx", "nasdaq", "dow", "s&p"),
+    "AUS200": ("dax", "germany", "japan", "nikkei", "ftse", "uk 100", "nasdaq", "dow", "s&p"),
+    "JPN225": ("dax", "germany", "australia", "asx", "ftse", "uk 100", "nasdaq", "dow", "s&p"),
 }
 
 _RESOLUTION_MAP = {
@@ -106,6 +281,39 @@ def _safe_int(value: Any) -> Optional[int]:
 
 def _canonical_asset(asset: str) -> str:
     return _SUPPORTED_ASSET_ALIASES.get(str(asset or "").strip().upper(), str(asset or "").strip())
+
+
+def _asset_category(canonical_asset: str) -> str:
+    return str(_ASSET_CATEGORIES.get(canonical_asset, "") or "")
+
+
+def _default_instrument_type(canonical_asset: str) -> str:
+    tokens = _ASSET_INSTRUMENT_TYPE_TOKENS.get(canonical_asset) or ("MARKETS",)
+    return str(tokens[0] or "MARKETS")
+
+
+def _matches_required_group(haystack: str, canonical_asset: str) -> bool:
+    groups = _ASSET_MATCH_GROUPS.get(canonical_asset) or ()
+    return any(all(token in haystack for token in group) for group in groups)
+
+
+def _configured_routed_assets() -> list[str]:
+    routed = set()
+    routed_categories = {str(item or "").strip().lower() for item in (IG_ROUTED_CATEGORIES or []) if str(item or "").strip()}
+    for asset, category in _ASSET_CATEGORIES.items():
+        if str(category or "").strip().lower() in routed_categories:
+            routed.add(asset)
+    for asset in IG_ROUTED_ASSETS or []:
+        canonical = _canonical_asset(str(asset or ""))
+        if canonical in _ASSET_CATEGORIES:
+            routed.add(canonical)
+    return sorted(routed)
+
+
+def _configured_routed_categories() -> list[str]:
+    categories = {str(item or "").strip().lower() for item in (IG_ROUTED_CATEGORIES or []) if str(item or "").strip()}
+    categories.update(_asset_category(asset) for asset in _configured_routed_assets() if _asset_category(asset))
+    return sorted(categories)
 
 
 def _mid_price(payload: Dict[str, Any]) -> Optional[float]:
@@ -158,10 +366,10 @@ class IGRequestError(RuntimeError):
 
 class IGMarketBridge:
     """
-    IG market-data bridge used as the primary source for routed categories.
+    IG market-data bridge used as the primary source for routed assets.
 
-    In the current bot setup that means commodities use IG first, with Deriv
-    retained only as a fallback when IG is unavailable or not yet fully
+    Routed assets or routed categories use IG first, with other providers
+    retained only as fallbacks when IG is unavailable or not yet fully
     configured. REST authentication uses IG's OAuth-style v3 session flow.
     """
 
@@ -220,7 +428,7 @@ class IGMarketBridge:
                 override_payload: Dict[str, Any] = {
                     "epic": override,
                     "instrumentName": canonical,
-                    "instrumentType": "COMMODITIES",
+                    "instrumentType": _default_instrument_type(canonical),
                     "marketStatus": "",
                     "delayTime": None,
                     "streamingPricesAvailable": False,
@@ -240,7 +448,7 @@ class IGMarketBridge:
                                 "instrumentType": str(
                                     instrument.get("type")
                                     or instrument.get("instrumentType")
-                                    or "COMMODITIES"
+                                    or _default_instrument_type(canonical)
                                 ),
                                 "marketStatus": str(
                                     snapshot.get("marketStatus")
@@ -304,7 +512,7 @@ class IGMarketBridge:
             return None, None, self._error_metadata(
                 canonical,
                 realtime=True,
-                message="IG_IDENTIFIER and IG_PASSWORD are required for IG commodity data.",
+                message="IG_IDENTIFIER and IG_PASSWORD are required for IG routed market data.",
                 code="missing_credentials",
             )
 
@@ -400,7 +608,7 @@ class IGMarketBridge:
             return None, self._error_metadata(
                 canonical,
                 realtime=False,
-                message="IG_IDENTIFIER and IG_PASSWORD are required for IG commodity data.",
+                message="IG_IDENTIFIER and IG_PASSWORD are required for IG routed market data.",
                 code="missing_credentials",
             )
 
@@ -596,7 +804,7 @@ class IGMarketBridge:
                 "provider": "IG",
                 "environment": self._environment,
                 "error_code": "missing_credentials",
-                "error_message": "IG_IDENTIFIER and IG_PASSWORD are required for IG commodity data.",
+                "error_message": "IG_IDENTIFIER and IG_PASSWORD are required for IG routed market data.",
             }
         try:
             accounts = self._get_accounts()
@@ -630,8 +838,8 @@ class IGMarketBridge:
                 "watchlists": watchlists[:5],
                 "recent_activity_count": len(activities),
                 "recent_activities": activities[:5],
-                "routed_categories": ["commodities"],
-                "routed_assets": ["XAU/USD", "XAG/USD", "WTI"],
+                "routed_categories": _configured_routed_categories(),
+                "routed_assets": _configured_routed_assets(),
             }
         except IGRequestError as exc:
             return {
@@ -781,7 +989,7 @@ class IGMarketBridge:
         if not self._enabled or not self._credentials_ready():
             raise IGRequestError(
                 "missing_credentials",
-                "IG_IDENTIFIER and IG_PASSWORD are required for IG commodity streaming.",
+                "IG_IDENTIFIER and IG_PASSWORD are required for IG routed market-data streaming.",
             )
 
         with self._lock:
@@ -865,15 +1073,19 @@ class IGMarketBridge:
     def _supports_asset(self, canonical_asset: str, category: str = "") -> bool:
         if not self._enabled:
             return False
-        if str(category or "").lower() not in {"", "commodities"}:
+        expected_category = _asset_category(canonical_asset)
+        if not expected_category:
             return False
-        return canonical_asset in {"XAU/USD", "XAG/USD", "WTI"}
+        normalized_category = str(category or "").strip().lower()
+        if normalized_category and normalized_category != expected_category:
+            return False
+        return canonical_asset in _ASSET_CATEGORIES
 
     def _credentials_ready(self, *, log_warning: bool = True) -> bool:
         ready = bool(self._identifier and self._password)
         if log_warning and not ready and not self._missing_credentials_logged:
             logger.warning(
-                "[IGBridge] IG commodity routing is enabled, but IG_IDENTIFIER / IG_PASSWORD are not set. "
+                "[IGBridge] IG market-data routing is enabled, but IG_IDENTIFIER / IG_PASSWORD are not set. "
                 "IG will stay unavailable until both are configured."
             )
             self._missing_credentials_logged = True
@@ -886,7 +1098,8 @@ class IGMarketBridge:
 
     def _candidate_score(self, canonical_asset: str, item: Dict[str, Any]) -> int:
         instrument_type = str(item.get("instrumentType") or "").upper()
-        if "COMMODITIES" not in instrument_type:
+        expected_tokens = _ASSET_INSTRUMENT_TYPE_TOKENS.get(canonical_asset) or ()
+        if expected_tokens and not any(token in instrument_type for token in expected_tokens):
             return 0
 
         haystack = " ".join(
@@ -897,22 +1110,17 @@ class IGMarketBridge:
             ]
         ).lower()
 
-        score = 0
-        if canonical_asset == "WTI":
-            if "brent" in haystack:
+        for reject_term in _ASSET_REJECT_TERMS.get(canonical_asset) or ():
+            if reject_term in haystack:
                 return 0
-            if any(token in haystack for token in ("wti", "us crude", "west texas", "crude")):
-                score += 10
-        elif canonical_asset == "XAU/USD":
-            if "silver" in haystack or "wti" in haystack or "crude" in haystack:
-                return 0
-            if any(token in haystack for token in ("gold", "xau")):
-                score += 10
-        elif canonical_asset == "XAG/USD":
-            if "gold" in haystack or "wti" in haystack or "crude" in haystack:
-                return 0
-            if any(token in haystack for token in ("silver", "xag")):
-                score += 10
+        if not _matches_required_group(haystack, canonical_asset):
+            return 0
+
+        score = 6
+        for term in _SEARCH_TERMS.get(canonical_asset, ()):
+            lowered = str(term or "").strip().lower()
+            if lowered and lowered in haystack:
+                score += 4 if "/" in lowered else 2
 
         market_status = str(item.get("marketStatus") or "").upper()
         if market_status == "TRADEABLE":
@@ -932,8 +1140,8 @@ class IGMarketBridge:
             "symbol": str(item.get("epic") or "").strip(),
             "display_name": canonical_asset,
             "instrument_name": str(item.get("instrumentName") or canonical_asset),
-            "instrument_type": str(item.get("instrumentType") or "COMMODITIES"),
-            "market": "commodities",
+            "instrument_type": str(item.get("instrumentType") or _default_instrument_type(canonical_asset)),
+            "market": _asset_category(canonical_asset) or "unknown",
             "exchange": "ig",
             "market_status": str(item.get("marketStatus") or ""),
             "delay_time": _safe_int(item.get("delayTime")),
@@ -995,7 +1203,7 @@ class IGMarketBridge:
 
     def _ensure_session(self) -> None:
         if not self._credentials_ready():
-            raise IGRequestError("missing_credentials", "IG_IDENTIFIER and IG_PASSWORD are required for IG commodity data.")
+            raise IGRequestError("missing_credentials", "IG_IDENTIFIER and IG_PASSWORD are required for IG routed market data.")
 
         with self._lock:
             now = time.monotonic()

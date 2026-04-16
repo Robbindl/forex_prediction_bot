@@ -22,11 +22,14 @@ CONTRACT_SPECS = {
     # feel economically closer to XAUUSD 0.10 as the benchmark instrument.
     "EUR/USD": {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 1.00, "min_lot": 0.01, "lot_step": 0.01},
     "EUR/JPY": {"contract": 100_000, "pip": 0.01,   "pip_val":  6.80, "base_lots": 1.60, "min_lot": 0.01, "lot_step": 0.01},
+    "EUR/GBP": {"contract": 100_000, "pip": 0.0001, "pip_val": 12.50, "base_lots": 1.20, "min_lot": 0.01, "lot_step": 0.01},
     "GBP/USD": {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 1.00, "min_lot": 0.01, "lot_step": 0.01},
     "AUD/USD": {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 1.00, "min_lot": 0.01, "lot_step": 0.01},
+    "NZD/USD": {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 1.00, "min_lot": 0.01, "lot_step": 0.01},
     "GBP/JPY": {"contract": 100_000, "pip": 0.01,   "pip_val":  6.80, "base_lots": 1.60, "min_lot": 0.01, "lot_step": 0.01},
     "USD/JPY": {"contract": 100_000, "pip": 0.01,   "pip_val":  6.80, "base_lots": 1.60, "min_lot": 0.01, "lot_step": 0.01},
     "USD/CAD": {"contract": 100_000, "pip": 0.0001, "pip_val":  7.50, "base_lots": 1.40, "min_lot": 0.01, "lot_step": 0.01},
+    "USD/CHF": {"contract": 100_000, "pip": 0.0001, "pip_val": 11.00, "base_lots": 1.25, "min_lot": 0.01, "lot_step": 0.01},
 
     # ── COMMODITIES ───────────────────────────────────────────────────────────
     "XAU/USD": {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
@@ -50,6 +53,13 @@ CONTRACT_SPECS = {
     "^IXIC": {"contract":  20,  "pip": 0.25, "pip_val":  5.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
     "UK100": {"contract":  10,  "pip": 1.0,  "pip_val": 12.60, "base_lots": 7.60,  "min_lot": 0.01, "lot_step": 0.01},
     "^FTSE": {"contract":  10,  "pip": 1.0,  "pip_val": 12.60, "base_lots": 7.60,  "min_lot": 0.01, "lot_step": 0.01},
+    # IG publishes Germany 40 and Australia 200 at 25 local-currency units per
+    # point and Japan 225 at $5 per point. Base-lot calibration is normalized
+    # to the existing UK100/US30 index sizing band instead of the generic index
+    # fallback so the new indices sit closer to the repo's established sizing.
+    "GER40": {"contract":  25,  "pip": 1.0,  "pip_val": 28.95, "base_lots": 3.25,  "min_lot": 0.01, "lot_step": 0.01},
+    "AUS200": {"contract": 25,  "pip": 1.0,  "pip_val": 17.91, "base_lots": 5.35,  "min_lot": 0.01, "lot_step": 0.01},
+    "JPN225": {"contract":  5,  "pip": 1.0,  "pip_val":  5.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
 
     # ── CRYPTO ────────────────────────────────────────────────────────────────
     "BTC-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},

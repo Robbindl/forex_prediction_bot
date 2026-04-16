@@ -967,15 +967,6 @@ class TradingCore:
         ctx["market_data"] = {"price": price_meta, "ohlcv": ohlcv_meta}
         ctx["timeframe"] = timeframe
         ctx["risk_manager"] = self._risk_manager
-        self._attach_market_structure_context(ctx, canonical, category, price_data)
-        self._attach_broker_quality_context(
-            ctx,
-            canonical,
-            category,
-            price=price,
-            spread=spread,
-            price_meta=price_meta,
-        )
         self._attach_cross_asset_context(
             ctx,
             canonical,
@@ -992,6 +983,15 @@ class TradingCore:
                 ctx["market_microstructure"] = {}
         except Exception:
             ctx["market_microstructure"] = {}
+        self._attach_market_structure_context(ctx, canonical, category, price_data)
+        self._attach_broker_quality_context(
+            ctx,
+            canonical,
+            category,
+            price=price,
+            spread=spread,
+            price_meta=price_meta,
+        )
         try:
             from ml.features import build_features
 
@@ -1752,14 +1752,19 @@ class TradingCore:
         candidates: List[Tuple[str, str]],
     ) -> Tuple[List[Tuple[Signal, Dict]], Counter[str], int]:
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        from config.config import MAX_SCAN_WORKERS
 
         result: List[Tuple[Signal, Dict]] = []
         status_counts: Counter[str] = Counter()
         task_count = 0
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        max_workers = max(1, min(int(MAX_SCAN_WORKERS or 1), len(candidates) or 1))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {pool.submit(self._generate_signal_for_asset_task, candidate): candidate for candidate in candidates}
             task_count = len(futures)
-            logger.debug(f"[TradingCore] Submitted {task_count} asset tasks to thread pool")
+            logger.debug(
+                f"[TradingCore] Submitted {task_count} asset tasks to thread pool "
+                f"(max_workers={max_workers})"
+            )
             for future in as_completed(futures):
                 if self._stop_event.is_set():
                     break
@@ -2591,6 +2596,7 @@ class TradingCore:
             or "n/a"
         )
         rejected_reasons = playbook_decision.get("rejected_reasons") or seed_decision.get("rejected_reasons") or []
+        rejected_details = playbook_decision.get("rejected_details") or seed_decision.get("rejected_details") or []
         candidate_count = playbook_decision.get("candidate_count", seed_decision.get("candidate_count", 0))
         blocked_reason = str(playbook_decision.get("blocked_reason") or seed_decision.get("blocked_reason") or "").strip() or "n/a"
         confirmation_count = int(structure.get("entry_confirmation_count", 0) or 0)
@@ -2607,6 +2613,7 @@ class TradingCore:
             f"candidates={candidate_count} "
             f"rejected={self._fmt_reason_list(rejected_reasons)} "
             f"reject_buckets={self._fmt_reason_buckets(rejected_reasons)} "
+            f"reject_details={self._fmt_reason_list(rejected_details, limit=2)} "
             f"family={str(structure.get('pattern_family', 'unknown') or 'unknown').lower()} "
             f"confirm={confirmation_count}/{confirmation_required} "
             f"confirm_ready={int(bool(structure.get('entry_confirmation_ready')))} "
@@ -2688,6 +2695,7 @@ class TradingCore:
             "candidate_count": len(playbook_pick.get("candidates") or []),
             "blocked_reason": str(playbook_pick.get("blocked_reason") or ""),
             "rejected_reasons": list(playbook_pick.get("rejected_reasons") or []),
+            "rejected_details": list(playbook_pick.get("rejected_details") or []),
             "allowed_sessions": list(playbook_pick.get("allowed_sessions") or []),
             "asset_plan": dict(playbook_pick.get("asset_plan") or {}),
             "notes": list(playbook_primary.get("notes") or []),
@@ -2736,6 +2744,7 @@ class TradingCore:
                 "playbook_timeframe": playbook_interval or str(context.get("timeframe") or ""),
                 "candidate_count": context["playbook_decision"].get("candidate_count", 0),
                 "rejected_reasons": list(context["playbook_decision"].get("rejected_reasons") or []),
+                "rejected_details": list(context["playbook_decision"].get("rejected_details") or []),
                 "structure_bias": structure_bias,
                 "alignment_score": round(alignment_score, 4),
                 "setup_quality": round(setup_quality, 4),
@@ -3200,7 +3209,7 @@ class TradingCore:
         try:
             from services.market_structure_service import get_service as get_market_structure_service
 
-            structure = get_market_structure_service().analyze(asset, category, frames)
+            structure = get_market_structure_service().analyze(asset, category, frames, context=context)
         except Exception as exc:
             logger.debug(f"[TradingCore] Market structure build failed for {asset}: {exc}")
             structure = {}

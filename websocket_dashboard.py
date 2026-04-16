@@ -24,7 +24,7 @@ live_prices_lock = threading.Lock()
 connection_status: dict = {
     'deriv': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Forex, Crypto, Indices'},
     'binance': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'BNB, SOL, XRP'},
-    'ig': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Gold, Silver, WTI'},
+    'ig': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Gold, Silver, WTI, GER40, AUS200, JPN225'},
 }
 
 

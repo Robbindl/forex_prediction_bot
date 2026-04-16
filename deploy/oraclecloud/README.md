@@ -2,6 +2,21 @@
 
 This bot is intended to run as a single long-lived systemd service on an Oracle Cloud VM, with Nginx reverse-proxying the dashboard.
 
+## Recommended Small-VM Profile
+
+For a 2 vCPU / 2 GB RAM starter VM such as your current Kamatera server, start with:
+
+```env
+REDIS_MAX_CONNECTIONS=10
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=5
+MAX_SCAN_WORKERS=4
+MAX_TRAINING_WORKERS=2
+AUTO_RESEARCH_MAX_PARALLEL_ASSETS=1
+```
+
+That profile is intentionally conservative. It keeps the scan loop responsive without oversubscribing CPU or exhausting Redis / DB connections on a small host.
+
 ## 1. Copy the project
 
 Suggested path:
@@ -43,6 +58,7 @@ python3 -m venv venv_tf
   - `COMMAND_BOT_TOKEN` / `COMMAND_BOT_CHAT_ID` are set if you expect command alerts
   - `WHALE_TELEGRAM_TOKEN`, `INTELLIGENCE_CHAT_ID`, and Telegram API credentials are set if you expect intelligence alerts
   - `DERIV_APP_ID` and `DERIV_TOKEN` are set for Deriv-backed data
+  - `IG_ROUTED_ASSETS=GER40,AUS200,JPN225` if you want the new regional indices to stay on IG while the new forex pairs stay on Deriv
   - rotate any secrets that have ever been committed, logged, or shared locally before deployment
 
 ## 5. Install the systemd service
@@ -137,6 +153,7 @@ Core logs:
 - The dashboard now fails closed if `DEVELOPMENT_MODE=false` and `DASHBOARD_API_KEY` is missing.
 - In production mode, the dashboard prefers Hypercorn automatically instead of Flask's built-in development server.
 - The economic calendar will use Deriv if supported, otherwise the ForexFactory fallback.
-- The bot auto-research scheduler is enabled through `config/bot_runtime.json`; verify that the Oracle VM has enough CPU/RAM before shortening its interval.
+- The bot auto-research scheduler is enabled through `config/bot_runtime.json`; on a 2 GB VM keep `AUTO_RESEARCH_MAX_PARALLEL_ASSETS=1` unless you have measured spare CPU/RAM headroom.
+- The trading engine now reads `MAX_SCAN_WORKERS` from env, so tune concurrency in `.env` instead of editing code before moving between machines.
 - Replace `server_name _;` in `deploy/oraclecloud/nginx-forex-bot.conf` with your real domain before turning on TLS.
 - The bundled preflight warns on placeholder `DASHBOARD_API_KEY`, localhost CORS, and template `DATABASE_URL` values before you go live.

@@ -65,6 +65,25 @@ SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 XRPL_RPC_URL=https://s1.ripple.com:51234
 ```
 
+## Recommended for a 2 vCPU / 2 GB VM
+
+Use these as your starting performance profile on the Kamatera box:
+
+```env
+REDIS_MAX_CONNECTIONS=10
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=5
+MAX_SCAN_WORKERS=4
+MAX_TRAINING_WORKERS=2
+AUTO_RESEARCH_MAX_PARALLEL_ASSETS=1
+IG_ROUTED_ASSETS=GER40,AUS200,JPN225
+```
+
+Notes:
+- keep the three new regional indices on IG unless you explicitly want Deriv OTC pricing
+- keep the new forex pairs on Deriv through `DERIV_SYMBOL_MAP`
+- raise scan or research concurrency only after checking CPU, RAM, and Redis headroom on the VPS
+
 ## Optional
 
 These are not deployment blockers:

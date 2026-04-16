@@ -746,13 +746,16 @@ async function load(){
     const derivFeed=feedConnections.deriv||{};
     const binanceFeed=feedConnections.binance||{};
     const igFeed=feedConnections.ig||{};
+    const providerRouting=((overview.command_center||{}).provider_routing)||{};
+    const universeCount=Number(providerRouting.asset_count||0);
     const connItems=[
       {name:'Trading Engine',ok:procs['TradingCore']},
       {name:'Web Dashboard',ok:procs['Web dashboard']},
+      {name:'Asset Universe',ok:universeCount>0, meta:universeCount?`${universeCount} tracked assets across routed feeds`:''},
       {name:'Deriv Stream',ok:!!derivFeed.connected, meta:derivFeed.symbol_count?`${derivFeed.symbol_count} symbols`:derivFeed.assets||''},
       {name:'Binance Fallback',ok:!!binanceFeed.connected, meta:binanceFeed.symbol_count?`${binanceFeed.symbol_count} symbols`:binanceFeed.assets||''},
       {name:'Exchange Feeds',ok:services['phase1_data_feeds']},
-      {name:'IG Commodities',ok:!!igFeed.connected, meta:igFeed.symbol_count?`${igFeed.symbol_count} assets`:igFeed.assets||''},
+      {name:'IG Routed Data',ok:!!igFeed.connected, meta:igFeed.symbol_count?`${igFeed.symbol_count} assets`:igFeed.assets||''},
       {name:'PostgreSQL',ok:procs['PostgreSQL']},
       {name:'Redis',ok:procs['Redis']},
       {name:'Command Bot',ok:procs['Telegram']},

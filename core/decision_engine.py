@@ -52,6 +52,7 @@ _SOURCE_FAMILY_FRESHNESS_SECS: Dict[str, int] = {
     "options": 3 * 24 * 3600,
     "flow": 300,
     "derivatives": 600,
+    "cross_asset": 900,
 }
 
 _MARKET_INTELLIGENCE_FAMILY_MAP: Dict[str, str] = {
@@ -366,6 +367,38 @@ def _resolve_source_families(signal: Signal) -> tuple[List[str], List[str], Dict
         family="derivatives",
         entries=derivative_entries,
         timestamps=[metadata.get("derivatives_timestamp"), metadata.get("intelligence_timestamp")],
+        allowed=allowed,
+        valid=valid,
+        stale=stale,
+        evidence=evidence,
+        freshness=freshness,
+    )
+
+    cross_asset = metadata.get("cross_asset_context") if isinstance(metadata.get("cross_asset_context"), dict) else {}
+    cross_alignment = _safe_float(metadata.get("cross_asset_alignment", cross_asset.get("alignment", cross_asset.get("score"))), 0.0)
+    cross_confidence = _safe_float(metadata.get("cross_asset_confidence", cross_asset.get("confidence")), 0.0)
+    cross_state = str(metadata.get("cross_asset_state", cross_asset.get("state", "")) or "").strip().lower()
+    cross_peer = str(metadata.get("cross_asset_primary_peer", cross_asset.get("dominant_peer", "")) or "").strip()
+    cross_relation = str(metadata.get("cross_asset_primary_relation", cross_asset.get("dominant_relation", "")) or "").strip()
+    raw_cross_peers = metadata.get("cross_asset_peers", cross_asset.get("peers"))
+    peer_count = int(metadata.get("cross_asset_peer_count", len(raw_cross_peers or [])) or 0)
+    cross_entries: List[str] = []
+    if cross_peer:
+        cross_entries.append(f"peer:{cross_peer.lower()}")
+    if cross_relation:
+        cross_entries.append(f"relation:{cross_relation.lower()}")
+    if cross_state:
+        cross_entries.append(f"state:{cross_state}")
+    if abs(cross_alignment) >= 0.12:
+        cross_entries.append("signal:alignment")
+    if cross_confidence >= 0.18:
+        cross_entries.append("signal:confidence")
+    if peer_count > 0:
+        cross_entries.append(f"peers:{peer_count}")
+    _register_source_family(
+        family="cross_asset",
+        entries=cross_entries,
+        timestamps=[metadata.get("intelligence_timestamp"), signal.timestamp],
         allowed=allowed,
         valid=valid,
         stale=stale,
