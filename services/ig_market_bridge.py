@@ -42,7 +42,7 @@ _CLIENT_SENTIMENT_ENDPOINT = "/clientsentiment/{market_id}"
 _DETAIL_TTL_SEC = 5.0
 _ACCOUNTS_TTL_SEC = 30.0
 _WATCHLISTS_TTL_SEC = 60.0
-_CLIENT_SENTIMENT_TTL_SEC = 30.0
+_CLIENT_SENTIMENT_TTL_SEC = 300.0
 _ACTIVITY_TTL_SEC = 30.0
 _MIN_TOKEN_TTL_SEC = 5.0
 _TOKEN_EXPIRY_SKEW_SEC = 15.0
@@ -939,9 +939,11 @@ class IGMarketBridge:
             return None
 
         epic = str(resolved.get("symbol") or "")
-        details = self._get_market_details(epic)
-        instrument = dict(details.get("instrument") or {})
-        market_id = str(instrument.get("marketId") or "").strip()
+        market_id = str(resolved.get("market_id") or "").strip()
+        if not market_id:
+            details = self._get_market_details(epic)
+            instrument = dict(details.get("instrument") or {})
+            market_id = str(instrument.get("marketId") or "").strip()
         if not market_id:
             return None
 
@@ -1140,6 +1142,7 @@ class IGMarketBridge:
             "symbol": str(item.get("epic") or "").strip(),
             "display_name": canonical_asset,
             "instrument_name": str(item.get("instrumentName") or canonical_asset),
+            "market_id": str(item.get("marketId") or "").strip(),
             "instrument_type": str(item.get("instrumentType") or _default_instrument_type(canonical_asset)),
             "market": _asset_category(canonical_asset) or "unknown",
             "exchange": "ig",

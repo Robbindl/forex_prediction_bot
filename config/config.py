@@ -34,7 +34,7 @@ IG_ACCOUNT_ID         = os.getenv("IG_ACCOUNT_ID", "").strip()
 IG_EPIC_MAP           = os.getenv("IG_EPIC_MAP", "").strip()
 IG_ROUTED_CATEGORIES  = [
     item.strip().lower()
-    for item in os.getenv("IG_ROUTED_CATEGORIES", "commodities,indices").split(",")
+    for item in os.getenv("IG_ROUTED_CATEGORIES", "commodities").split(",")
     if item.strip()
 ]
 IG_ROUTED_ASSETS      = [
@@ -43,7 +43,7 @@ IG_ROUTED_ASSETS      = [
     if item.strip()
 ]
 IG_ROUTE_TO_DERIV_BY_DEFAULT = os.getenv("IG_ROUTE_TO_DERIV_BY_DEFAULT", "false").lower() == "true"
-IG_MAX_ROUTED_ASSETS = _parse_int(os.getenv("IG_MAX_ROUTED_ASSETS", "5"), 5)
+IG_MAX_ROUTED_ASSETS = _parse_int(os.getenv("IG_MAX_ROUTED_ASSETS", "6"), 6)
 IG_STREAMING_HOLDOFF_SEC = _parse_int(os.getenv("IG_STREAMING_HOLDOFF_SEC", "300"), 300)
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
 DUKASCOPY_HISTORY_ENABLED = os.getenv("DUKASCOPY_HISTORY_ENABLED", "true").lower() == "true"

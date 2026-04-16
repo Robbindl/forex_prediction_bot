@@ -76,14 +76,18 @@ DB_MAX_OVERFLOW=5
 MAX_SCAN_WORKERS=4
 MAX_TRAINING_WORKERS=2
 AUTO_RESEARCH_MAX_PARALLEL_ASSETS=1
+IG_ROUTED_CATEGORIES=commodities
 IG_ROUTED_ASSETS=GER40,AUS200,JPN225
+IG_ROUTE_TO_DERIV_BY_DEFAULT=false
+IG_MAX_ROUTED_ASSETS=6
 ```
 
 Notes:
 - keep the three new regional indices on IG unless you explicitly want Deriv OTC pricing
 - keep the new forex pairs on Deriv through `DERIV_SYMBOL_MAP`
+- do not add `indices` to `IG_ROUTED_CATEGORIES` unless you intentionally want the full index category on IG
 - use `IG_ROUTE_TO_DERIV_BY_DEFAULT=true` when you need IG primary assets to route through Deriv by default instead of exhausting IG allowance
-- use `IG_MAX_ROUTED_ASSETS=<n>` to cap how many IG-routed assets are kept on IG; excess assets will fall through to Deriv proactively. The default is `5`, and setting `0` disables the cap.
+- use `IG_MAX_ROUTED_ASSETS=<n>` to cap how many IG-routed assets are kept on IG; excess assets will fall through to Deriv proactively. The default is `6`, and setting `0` disables the cap.
 - use `IG_STREAMING_HOLDOFF_SEC=<seconds>` to keep IG streaming disabled for a while after an allowance limit error, avoiding repeated retries
 - raise scan or research concurrency only after checking CPU, RAM, and Redis headroom on the VPS
 

@@ -67,6 +67,7 @@ def test_market_hours_guard_recognises_new_regional_indices() -> None:
 
 def test_market_data_router_uses_explicit_ig_assets(monkeypatch) -> None:
     router = importlib.import_module("services.market_data_router")
+    monkeypatch.setattr(router, "IG_ROUTE_TO_DERIV_BY_DEFAULT", False, raising=False)
     monkeypatch.setattr(router, "IG_ROUTED_CATEGORIES", ["commodities"], raising=False)
     monkeypatch.setattr(
         router,
@@ -198,6 +199,90 @@ def test_market_data_router_caps_ig_routed_assets_when_configured(monkeypatch) -
         "EUR/USD": "forex",
         "US100": "indices",
     }
+
+
+def test_market_data_router_prioritises_explicit_ig_assets_over_broad_categories(monkeypatch) -> None:
+    router = importlib.import_module("services.market_data_router")
+    monkeypatch.setattr(router, "IG_ROUTE_TO_DERIV_BY_DEFAULT", False, raising=False)
+    monkeypatch.setattr(router, "IG_MAX_ROUTED_ASSETS", 3, raising=False)
+    monkeypatch.setattr(router, "IG_ROUTED_CATEGORIES", ["commodities", "indices"], raising=False)
+    monkeypatch.setattr(router, "IG_ROUTED_ASSETS", ["GER40", "AUS200", "JPN225"], raising=False)
+    router._configured_ig_routed_assets.cache_clear()
+
+    fake_module = ModuleType("services.ig_market_bridge")
+    fake_module.ig_market_bridge = SimpleNamespace(
+        list_profiles=lambda: ["ig"],
+        supports=lambda asset, category="": True,
+    )
+    monkeypatch.setitem(sys.modules, "services.ig_market_bridge", fake_module)
+
+    assets = {
+        "UK100": "indices",
+        "US100": "indices",
+        "GER40": "indices",
+        "WTI": "commodities",
+        "AUS200": "indices",
+        "JPN225": "indices",
+    }
+
+    assert router.filter_ig_primary_assets(assets) == {
+        "GER40": "indices",
+        "AUS200": "indices",
+        "JPN225": "indices",
+    }
+    assert router.filter_deriv_stream_assets(assets) == {
+        "UK100": "indices",
+        "US100": "indices",
+        "WTI": "commodities",
+    }
+
+
+def test_market_data_router_splits_deriv_fallback_assets_from_ig_rest_poll(monkeypatch) -> None:
+    router = importlib.import_module("services.market_data_router")
+
+    fake_module = ModuleType("services.deriv_bridge")
+    fake_module.deriv_bridge = SimpleNamespace(
+        resolve_symbol_info=lambda asset, category="": (
+            {"symbol": "OTC_GDAXI"} if asset == "GER40" else None
+        )
+    )
+    monkeypatch.setitem(sys.modules, "services.deriv_bridge", fake_module)
+
+    fallback_assets, ig_poll_assets = router.split_pending_ig_fallback_assets(
+        {
+            "GER40": "indices",
+            "WTI": "commodities",
+        }
+    )
+
+    assert fallback_assets == {"GER40": "indices"}
+    assert ig_poll_assets == {"WTI": "commodities"}
+
+
+def test_market_data_router_client_sentiment_respects_primary_routing(monkeypatch) -> None:
+    router = importlib.import_module("services.market_data_router")
+    monkeypatch.setattr(router, "IG_ROUTE_TO_DERIV_BY_DEFAULT", False, raising=False)
+    monkeypatch.setattr(router, "IG_ROUTED_CATEGORIES", ["commodities"], raising=False)
+    monkeypatch.setattr(router, "IG_ROUTED_ASSETS", ["GER40"], raising=False)
+    router._configured_ig_routed_assets.cache_clear()
+
+    fake_module = ModuleType("services.ig_market_bridge")
+    fake_module.ig_market_bridge = SimpleNamespace(
+        list_profiles=lambda: ["ig"],
+        supports=lambda asset, category="": True,
+        get_client_sentiment=lambda asset, category="": {"asset": asset, "score": 0.42},
+    )
+    monkeypatch.setitem(sys.modules, "services.ig_market_bridge", fake_module)
+
+    assert router.get_client_sentiment("XAU/USD", "commodities") == {
+        "asset": "XAU/USD",
+        "score": 0.42,
+    }
+    assert router.get_client_sentiment("GER40", "indices") == {
+        "asset": "GER40",
+        "score": 0.42,
+    }
+    assert router.get_client_sentiment("EUR/USD", "forex") is None
 
 
 def test_ig_bridge_scores_new_assets_without_network(monkeypatch) -> None:

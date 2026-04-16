@@ -23,6 +23,11 @@ def _configured_ig_routed_assets() -> frozenset[str]:
     )
 
 
+def _is_configured_ig_asset(asset: str) -> bool:
+    canonical = registry.canonical(str(asset or "").strip())
+    return canonical in _configured_ig_routed_assets()
+
+
 def is_ig_primary_category(category: str) -> bool:
     if IG_ROUTE_TO_DERIV_BY_DEFAULT:
         return False
@@ -66,11 +71,18 @@ def _ig_supported_asset(asset: str, category: str = "") -> bool:
 def _select_ig_primary_assets(asset_map: Dict[str, str]) -> tuple[Dict[str, str], Dict[str, str]]:
     selected: Dict[str, str] = {}
     overflow: Dict[str, str] = {}
-    candidates = {
-        str(asset): str(category)
-        for asset, category in (asset_map or {}).items()
-        if is_ig_primary_asset(str(asset or ""), str(category or ""))
-    }
+    explicit_candidates: Dict[str, str] = {}
+    category_candidates: Dict[str, str] = {}
+
+    for asset, category in (asset_map or {}).items():
+        asset_text = str(asset or "")
+        category_text = str(category or "")
+        if not is_ig_primary_asset(asset_text, category_text):
+            continue
+        target = explicit_candidates if _is_configured_ig_asset(asset_text) else category_candidates
+        target[asset_text] = category_text
+
+    candidates = {**explicit_candidates, **category_candidates}
     if IG_MAX_ROUTED_ASSETS is None or IG_MAX_ROUTED_ASSETS <= 0 or len(candidates) <= IG_MAX_ROUTED_ASSETS:
         return candidates, {}
 
@@ -92,6 +104,34 @@ def filter_deriv_stream_assets(asset_map: Dict[str, str]) -> Dict[str, str]:
 def filter_ig_primary_assets(asset_map: Dict[str, str]) -> Dict[str, str]:
     selected_ig, _ = _select_ig_primary_assets(asset_map)
     return selected_ig
+
+
+def split_pending_ig_fallback_assets(asset_map: Dict[str, str]) -> tuple[Dict[str, str], Dict[str, str]]:
+    """Split pending IG assets into Deriv-streamable fallbacks vs true IG REST poll assets."""
+
+    deriv_fallback_assets: Dict[str, str] = {}
+    ig_poll_assets: Dict[str, str] = {}
+
+    try:
+        from services.deriv_bridge import deriv_bridge
+    except Exception:
+        deriv_bridge = None
+
+    for asset, category in (asset_map or {}).items():
+        asset_text = str(asset or "")
+        category_text = str(category or "")
+        resolved = None
+        if deriv_bridge is not None:
+            try:
+                resolved = deriv_bridge.resolve_symbol_info(asset_text, category=category_text)
+            except Exception:
+                resolved = None
+        if resolved and str((resolved or {}).get("symbol") or "").strip():
+            deriv_fallback_assets[asset_text] = category_text
+        else:
+            ig_poll_assets[asset_text] = category_text
+
+    return deriv_fallback_assets, ig_poll_assets
 
 
 def get_market_status(asset: str, category: str = ""):
@@ -133,7 +173,9 @@ def get_broker_account_summary() -> Dict[str, Any]:
 
 def get_client_sentiment(asset: str, category: str = "") -> Optional[Dict[str, Any]]:
     resolved_category = str(category or get_profile(asset).category or "").strip().lower()
-    if not _ig_supported_asset(asset, resolved_category):
+    # Only use IG client-positioning for assets that are actually routed to IG.
+    # Otherwise Deriv-primary assets still burn IG allowance through sentiment.
+    if not is_ig_primary_asset(asset, resolved_category):
         return None
     try:
         from services.ig_market_bridge import ig_market_bridge

@@ -6199,7 +6199,11 @@ def _dashboard_asset_map_from_positions(open_positions: Any, *, fallback_to_univ
 def _setup_dashboard_live_streams(cb) -> tuple[Any, Dict[str, Dict[str, str]], Any]:
     from websocket_dashboard import set_connected
     from websocket_manager import WebSocketManager
-    from services.market_data_router import filter_deriv_stream_assets, filter_ig_primary_assets
+    from services.market_data_router import (
+        filter_deriv_stream_assets,
+        filter_ig_primary_assets,
+        split_pending_ig_fallback_assets,
+    )
 
     try:
         from services.ig_streaming_manager import ig_streaming_manager as _ig_stream_manager
@@ -6212,7 +6216,8 @@ def _setup_dashboard_live_streams(cb) -> tuple[Any, Dict[str, Dict[str, str]], A
     assets_by_category = _dashboard_asset_map_from_positions(open_positions, fallback_to_universe=True)
     ig_primary_assets = filter_ig_primary_assets(assets_by_category)
     ig_stream_assets: Dict[str, str] = {}
-    ig_poll_assets: Dict[str, str] = dict(ig_primary_assets)
+    ig_poll_assets: Dict[str, str] = {}
+    ig_fallback_assets: Dict[str, str] = {}
 
     if assets_by_category:
         deriv_stream_assets = filter_deriv_stream_assets(assets_by_category)
@@ -6229,25 +6234,32 @@ def _setup_dashboard_live_streams(cb) -> tuple[Any, Dict[str, Dict[str, str]], A
                     f"[dashboard] IG streaming unavailable; falling back to Deriv stream for IG assets: {stream_exc}"
                 )
                 ig_stream_assets = {}
-        ig_poll_assets = {
+        pending_ig_assets = {
             asset: category
             for asset, category in ig_primary_assets.items()
             if asset not in ig_stream_assets
         }
-        if ig_poll_assets:
-            ws.subscribe_deriv(ig_poll_assets, cb, include_ig_assets=True)
-            logger.info(f"[dashboard] Deriv fallback for IG primary assets: {sorted(ig_poll_assets.keys())}")
+        ig_fallback_assets, ig_poll_assets = split_pending_ig_fallback_assets(pending_ig_assets)
+        if ig_fallback_assets:
+            ws.subscribe_deriv(ig_fallback_assets, cb, include_ig_assets=True)
+            logger.info(f"[dashboard] Deriv fallback for IG primary assets: {sorted(ig_fallback_assets.keys())}")
 
         if ig_stream_assets:
             logger.info(f"[dashboard] Live IG stream assets: {sorted(ig_stream_assets.keys())}")
         if ig_poll_assets:
             set_connected("ig", True, len(ig_poll_assets))
             logger.info(f"[dashboard] Live IG poll assets: {sorted(ig_poll_assets.keys())}")
-        elif not ig_stream_assets:
+        elif ig_stream_assets:
+            set_connected("ig", True, len(ig_stream_assets))
+        else:
             set_connected("ig", False, 0)
 
     logger.info("[dashboard] Live streams started")
-    return ws, {"ig_poll_assets": ig_poll_assets, "ig_stream_assets": ig_stream_assets}, _ig_stream_manager
+    return ws, {
+        "ig_poll_assets": ig_poll_assets,
+        "ig_stream_assets": ig_stream_assets,
+        "ig_fallback_assets": ig_fallback_assets,
+    }, _ig_stream_manager
 
 
 def _dashboard_apply_subscription_update(
@@ -6258,7 +6270,11 @@ def _dashboard_apply_subscription_update(
     asset_map: Dict[str, str],
 ) -> None:
     from websocket_dashboard import set_connected
-    from services.market_data_router import filter_deriv_stream_assets, filter_ig_primary_assets
+    from services.market_data_router import (
+        filter_deriv_stream_assets,
+        filter_ig_primary_assets,
+        split_pending_ig_fallback_assets,
+    )
 
     try:
         deriv_stream_assets = filter_deriv_stream_assets(asset_map)
@@ -6274,20 +6290,25 @@ def _dashboard_apply_subscription_update(
                 stream_state["ig_stream_assets"] = {}
         else:
             stream_state["ig_stream_assets"] = {}
-        stream_state["ig_poll_assets"] = {
+        pending_ig_assets = {
             asset: category
             for asset, category in ig_primary_assets.items()
             if asset not in stream_state["ig_stream_assets"]
         }
-        if stream_state["ig_poll_assets"]:
-            ws_global.subscribe_deriv(stream_state["ig_poll_assets"], cb, include_ig_assets=True)
+        stream_state["ig_fallback_assets"], stream_state["ig_poll_assets"] = split_pending_ig_fallback_assets(
+            pending_ig_assets
+        )
+        if stream_state["ig_fallback_assets"]:
+            ws_global.subscribe_deriv(stream_state["ig_fallback_assets"], cb, include_ig_assets=True)
             logger.debug(
-                f"[dashboard] Deriv fallback subscribed for IG primary poll assets: {sorted(stream_state['ig_poll_assets'].keys())}"
+                f"[dashboard] Deriv fallback subscribed for IG primary assets: {sorted(stream_state['ig_fallback_assets'].keys())}"
             )
         try:
             if stream_state["ig_poll_assets"]:
                 set_connected("ig", True, len(stream_state["ig_poll_assets"]))
-            elif not stream_state["ig_stream_assets"]:
+            elif stream_state["ig_stream_assets"]:
+                set_connected("ig", True, len(stream_state["ig_stream_assets"]))
+            else:
                 set_connected("ig", False, 0)
         except Exception:
             pass
@@ -6363,12 +6384,12 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
     # Optional live-price cache — Deriv/Binance streams plus IG streaming/poll fallback
     _ws_global = None  # Reference to WebSocket manager for periodic updates
     _ig_stream_global = None
-    _stream_state = {"ig_poll_assets": {}, "ig_stream_assets": {}}
+    _stream_state = {"ig_poll_assets": {}, "ig_stream_assets": {}, "ig_fallback_assets": {}}
     try:
         _ws_global, _stream_state, _ig_stream_global = _setup_dashboard_live_streams(_dashboard_live_quote_callback)
     except Exception as e:
         logger.warning(f"[dashboard] WebSocket streams failed (non-fatal): {e}")
-        _stream_state = {"ig_poll_assets": {}, "ig_stream_assets": {}}
+        _stream_state = {"ig_poll_assets": {}, "ig_stream_assets": {}, "ig_fallback_assets": {}}
 
     threading.Thread(
         target=_dashboard_update_ws_subscriptions_loop,
