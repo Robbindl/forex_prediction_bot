@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
 import threading
 from datetime import datetime
 from typing import Callable, Dict, Optional
 
+from config.config import IG_STREAMING_HOLDOFF_SEC
 from services.ig_market_bridge import IGRequestError, _normalize_ig_commodity_price, ig_market_bridge
 from services.market_data_router import filter_ig_primary_assets
 from utils.logger import get_logger
@@ -96,6 +98,28 @@ class IGStreamingManager:
         self._running = False
         self._account_id = ""
         self._reconnect_timer: Optional[threading.Timer] = None
+        self._streaming_holdoff_until = 0.0
+
+    def _holdoff_active_locked(self) -> bool:
+        return bool(self._streaming_holdoff_until and time.monotonic() < self._streaming_holdoff_until)
+
+    def _enter_streaming_holdoff_locked(self, reason: str = "") -> None:
+        self._streaming_holdoff_until = time.monotonic() + IG_STREAMING_HOLDOFF_SEC
+        self._running = False
+        self._cancel_reconnect_locked()
+        self._unsubscribe_locked()
+        self._disconnect_client_locked()
+        try:
+            from websocket_dashboard import set_connected
+
+            set_connected("ig", False, 0)
+        except Exception:
+            pass
+        logger.warning(
+            "[IGStream] IG streaming suspended for %ss due to allowance limits: %s",
+            IG_STREAMING_HOLDOFF_SEC,
+            reason,
+        )
 
     def is_available(self) -> bool:
         return bool(_LIGHTSTREAMER_AVAILABLE and ig_market_bridge.list_profiles())
@@ -118,6 +142,26 @@ class IGStreamingManager:
         with self._lock:
             if callback not in self._callbacks:
                 self._callbacks.append(callback)
+
+            if self._holdoff_active_locked():
+                logger.warning(
+                    "[IGStream] IG streaming temporarily suspended until %s due to recent allowance limits.",
+                    datetime.fromtimestamp(self._streaming_holdoff_until),
+                )
+                self._asset_categories = {}
+                self._asset_to_epic = {}
+                self._epic_to_asset = {}
+                self._running = False
+                self._cancel_reconnect_locked()
+                self._unsubscribe_locked()
+                self._disconnect_client_locked()
+                try:
+                    from websocket_dashboard import set_connected
+
+                    set_connected("ig", False, 0)
+                except Exception:
+                    pass
+                return {}
 
             self._asset_categories = dict(streamable)
             self._asset_to_epic = {}
@@ -148,10 +192,15 @@ class IGStreamingManager:
                 return {}
 
             self._running = True
-            if self._client is None:
-                self._connect_locked()
-            else:
-                self._apply_subscription_locked()
+            try:
+                if self._client is None:
+                    self._connect_locked()
+                else:
+                    self._apply_subscription_locked()
+            except IGRequestError as exc:
+                if "allowance" in str(exc.code).lower() or "allowance" in str(exc.message).lower():
+                    self._enter_streaming_holdoff_locked(exc.message)
+                raise
             return dict(self._asset_categories)
 
     def stop(self) -> None:
@@ -231,6 +280,8 @@ class IGStreamingManager:
         self._client.subscribe(subscription)
 
     def _schedule_reconnect_locked(self) -> None:
+        if self._holdoff_active_locked():
+            return
         if not self._running or not self._asset_to_epic:
             return
         if self._reconnect_timer is not None:

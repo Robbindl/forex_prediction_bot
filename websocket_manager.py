@@ -68,14 +68,21 @@ class WebSocketManager:
             time.sleep(0.1)
         asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    def subscribe_deriv(self, assets: Dict[str, str], callback: Callable):
+    def subscribe_deriv(self, assets: Dict[str, str], callback: Callable, include_ig_assets: bool = False):
         """
         Subscribe to canonical assets via Deriv.
 
         `assets` is a mapping of canonical asset -> category.
+        If include_ig_assets is True, do not filter out IG-routed assets before
+        attempting Deriv stream subscription. This is used for fallback when IG
+        streaming or IG quote polling is not available.
         """
-        tracked_assets = filter_deriv_stream_assets(assets or {})
-        skipped_ig_assets = sorted(filter_ig_primary_assets(assets or {}).keys())
+        if include_ig_assets:
+            tracked_assets = dict(assets or {})
+            skipped_ig_assets: list[str] = []
+        else:
+            tracked_assets = filter_deriv_stream_assets(assets or {})
+            skipped_ig_assets = sorted(filter_ig_primary_assets(assets or {}).keys())
 
         with self._lock:
             if callback not in self._callbacks:

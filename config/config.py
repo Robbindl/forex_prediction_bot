@@ -9,6 +9,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _parse_int(value: str, default=None):
+    try:
+        text = str(value or "").strip()
+        return int(text) if text else default
+    except Exception:
+        return default
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MARKET DATA
 # ─────────────────────────────────────────────────────────────────────────────
@@ -34,6 +42,9 @@ IG_ROUTED_ASSETS      = [
     for item in os.getenv("IG_ROUTED_ASSETS", "").split(",")
     if item.strip()
 ]
+IG_ROUTE_TO_DERIV_BY_DEFAULT = os.getenv("IG_ROUTE_TO_DERIV_BY_DEFAULT", "false").lower() == "true"
+IG_MAX_ROUTED_ASSETS = _parse_int(os.getenv("IG_MAX_ROUTED_ASSETS", "5"), 5)
+IG_STREAMING_HOLDOFF_SEC = _parse_int(os.getenv("IG_STREAMING_HOLDOFF_SEC", "300"), 300)
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
 DUKASCOPY_HISTORY_ENABLED = os.getenv("DUKASCOPY_HISTORY_ENABLED", "true").lower() == "true"
 DUKASCOPY_SYMBOL_MAP  = os.getenv("DUKASCOPY_SYMBOL_MAP", "").strip()

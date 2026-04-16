@@ -3,7 +3,12 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Dict, Optional
 
-from config.config import IG_ROUTED_ASSETS, IG_ROUTED_CATEGORIES
+from config.config import (
+    IG_MAX_ROUTED_ASSETS,
+    IG_ROUTE_TO_DERIV_BY_DEFAULT,
+    IG_ROUTED_ASSETS,
+    IG_ROUTED_CATEGORIES,
+)
 from core.assets import registry
 from core.asset_profiles import get_profile
 from services.market_hours_guard import build_market_status
@@ -19,6 +24,8 @@ def _configured_ig_routed_assets() -> frozenset[str]:
 
 
 def is_ig_primary_category(category: str) -> bool:
+    if IG_ROUTE_TO_DERIV_BY_DEFAULT:
+        return False
     normalized = str(category or "").strip().lower()
     if normalized not in set(IG_ROUTED_CATEGORIES or []):
         return False
@@ -31,6 +38,8 @@ def is_ig_primary_category(category: str) -> bool:
 
 
 def is_ig_primary_asset(asset: str, category: str = "") -> bool:
+    if IG_ROUTE_TO_DERIV_BY_DEFAULT:
+        return False
     canonical = registry.canonical(str(asset or "").strip())
     resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
     if (
@@ -54,20 +63,35 @@ def _ig_supported_asset(asset: str, category: str = "") -> bool:
         return False
 
 
-def filter_deriv_stream_assets(asset_map: Dict[str, str]) -> Dict[str, str]:
-    return {
-        str(asset): str(category)
-        for asset, category in (asset_map or {}).items()
-        if not is_ig_primary_asset(str(asset or ""), str(category or ""))
-    }
-
-
-def filter_ig_primary_assets(asset_map: Dict[str, str]) -> Dict[str, str]:
-    return {
+def _select_ig_primary_assets(asset_map: Dict[str, str]) -> tuple[Dict[str, str], Dict[str, str]]:
+    selected: Dict[str, str] = {}
+    overflow: Dict[str, str] = {}
+    candidates = {
         str(asset): str(category)
         for asset, category in (asset_map or {}).items()
         if is_ig_primary_asset(str(asset or ""), str(category or ""))
     }
+    if IG_MAX_ROUTED_ASSETS is None or IG_MAX_ROUTED_ASSETS <= 0 or len(candidates) <= IG_MAX_ROUTED_ASSETS:
+        return candidates, {}
+
+    items = list(candidates.items())
+    selected = dict(items[:IG_MAX_ROUTED_ASSETS])
+    overflow = dict(items[IG_MAX_ROUTED_ASSETS:])
+    return selected, overflow
+
+
+def filter_deriv_stream_assets(asset_map: Dict[str, str]) -> Dict[str, str]:
+    selected_ig, _ = _select_ig_primary_assets(asset_map)
+    return {
+        str(asset): str(category)
+        for asset, category in (asset_map or {}).items()
+        if str(asset) not in selected_ig
+    }
+
+
+def filter_ig_primary_assets(asset_map: Dict[str, str]) -> Dict[str, str]:
+    selected_ig, _ = _select_ig_primary_assets(asset_map)
+    return selected_ig
 
 
 def get_market_status(asset: str, category: str = ""):

@@ -59,6 +59,9 @@ python3 -m venv venv_tf
   - `WHALE_TELEGRAM_TOKEN`, `INTELLIGENCE_CHAT_ID`, and Telegram API credentials are set if you expect intelligence alerts
   - `DERIV_APP_ID` and `DERIV_TOKEN` are set for Deriv-backed data
   - `IG_ROUTED_ASSETS=GER40,AUS200,JPN225` if you want the new regional indices to stay on IG while the new forex pairs stay on Deriv
+  - `IG_ROUTE_TO_DERIV_BY_DEFAULT=false` to preserve existing IG primary asset routing; set to `true` if you want IG primary assets to fall through to Deriv by default
+  - `IG_MAX_ROUTED_ASSETS=5` to cap IG-routed assets by default and route excess assets to Deriv proactively; set to `0` to disable the cap
+  - `IG_STREAMING_HOLDOFF_SEC=300` to keep IG streaming disabled for 5 minutes after an allowance limit error, avoiding repeated quota retries
   - rotate any secrets that have ever been committed, logged, or shared locally before deployment
 
 ## 5. Install the systemd service

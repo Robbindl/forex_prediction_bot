@@ -4691,6 +4691,38 @@ def test_ig_streaming_manager_subscribe_prices_builds_epic_map(monkeypatch) -> N
     assert manager._epic_to_asset == {"CS.D.IN_GOLD.MFI.IP": "XAU/USD"}
     assert connect_calls == ["connect"]
 
+
+def test_ig_streaming_manager_enters_holdoff_after_allowance_error(monkeypatch) -> None:
+    stream_mod = importlib.import_module("services.ig_streaming_manager")
+
+    manager = stream_mod.IGStreamingManager()
+    monkeypatch.setattr(manager, "filter_streamable_assets", lambda assets: {"XAU/USD": "commodities"}, raising=False)
+    connect_calls = []
+
+    def failing_connect() -> None:
+        connect_calls.append("connect")
+        raise stream_mod.IGRequestError(
+            "error.public-api.exceeded-api-key-allowance",
+            "IG API allowance exceeded",
+        )
+
+    monkeypatch.setattr(manager, "_connect_locked", failing_connect, raising=False)
+    manager_time = [100.0]
+    monkeypatch.setattr(stream_mod.time, "monotonic", lambda: manager_time[0], raising=False)
+
+    try:
+        manager.subscribe_prices({"XAU/USD": "commodities"}, lambda *_args: None)
+        raise AssertionError("expected IGRequestError")
+    except stream_mod.IGRequestError as exc:
+        assert "allowance" in exc.code
+        assert manager._streaming_holdoff_until == 100.0 + stream_mod.IG_STREAMING_HOLDOFF_SEC
+        assert connect_calls == ["connect"]
+
+    manager_time[0] = 101.0
+    assert manager.subscribe_prices({"XAU/USD": "commodities"}, lambda *_args: None) == {}
+    assert connect_calls == ["connect"]
+
+
 def test_live_microstructure_service_scores_pressure_and_stop_hunt() -> None:
     micro_mod = importlib.import_module("services.live_microstructure_service")
     service = micro_mod.LiveMicrostructureService(maxlen=32)
@@ -6693,6 +6725,36 @@ def test_websocket_manager_filters_ig_routed_assets_before_tracking(monkeypatch)
     assert manager._stream_started is True
     assert scheduled
     assert any("Skipping IG-routed assets" in str(message) for message in infos)
+
+
+def test_websocket_manager_includes_ig_routed_assets_when_forced(monkeypatch) -> None:
+    ws_mod = importlib.import_module("websocket_manager")
+
+    manager = ws_mod.WebSocketManager()
+    scheduled = []
+    infos = []
+
+    monkeypatch.setattr(ws_mod, "filter_deriv_stream_assets", lambda assets: {"EUR/USD": "forex"}, raising=False)
+    monkeypatch.setattr(ws_mod, "filter_ig_primary_assets", lambda assets: {"XAU/USD": "commodities"}, raising=False)
+    monkeypatch.setattr(
+        manager,
+        "_schedule",
+        lambda coro: (scheduled.append(type(coro).__name__), getattr(coro, "close", lambda: None)()),
+        raising=False,
+    )
+    monkeypatch.setattr(ws_mod.logger, "info", infos.append)
+
+    manager.subscribe_deriv(
+        {"EUR/USD": "forex", "XAU/USD": "commodities"},
+        lambda *_args: None,
+        include_ig_assets=True,
+    )
+
+    assert manager._asset_categories == {"EUR/USD": "forex", "XAU/USD": "commodities"}
+    assert manager._stream_started is True
+    assert scheduled
+    assert not any("Skipping IG-routed assets" in str(message) for message in infos)
+
 
 def test_websocket_manager_does_not_start_for_ig_only_assets(monkeypatch) -> None:
     ws_mod = importlib.import_module("websocket_manager")

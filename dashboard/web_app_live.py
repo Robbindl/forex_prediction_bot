@@ -6225,13 +6225,19 @@ def _setup_dashboard_live_streams(cb) -> tuple[Any, Dict[str, Dict[str, str]], A
             try:
                 ig_stream_assets = _ig_stream_manager.subscribe_prices(ig_primary_assets, cb)
             except Exception as stream_exc:
-                logger.warning(f"[dashboard] IG streaming unavailable; falling back to quote polling: {stream_exc}")
+                logger.warning(
+                    f"[dashboard] IG streaming unavailable; falling back to Deriv stream for IG assets: {stream_exc}"
+                )
                 ig_stream_assets = {}
         ig_poll_assets = {
             asset: category
             for asset, category in ig_primary_assets.items()
             if asset not in ig_stream_assets
         }
+        if ig_poll_assets:
+            ws.subscribe_deriv(ig_poll_assets, cb, include_ig_assets=True)
+            logger.info(f"[dashboard] Deriv fallback for IG primary assets: {sorted(ig_poll_assets.keys())}")
+
         if ig_stream_assets:
             logger.info(f"[dashboard] Live IG stream assets: {sorted(ig_stream_assets.keys())}")
         if ig_poll_assets:
@@ -6273,6 +6279,11 @@ def _dashboard_apply_subscription_update(
             for asset, category in ig_primary_assets.items()
             if asset not in stream_state["ig_stream_assets"]
         }
+        if stream_state["ig_poll_assets"]:
+            ws_global.subscribe_deriv(stream_state["ig_poll_assets"], cb, include_ig_assets=True)
+            logger.debug(
+                f"[dashboard] Deriv fallback subscribed for IG primary poll assets: {sorted(stream_state['ig_poll_assets'].keys())}"
+            )
         try:
             if stream_state["ig_poll_assets"]:
                 set_connected("ig", True, len(stream_state["ig_poll_assets"]))
