@@ -690,6 +690,18 @@ class MarketStructureService:
             (direction_sign > 0 and pattern_family.startswith("trending_up_"))
             or (direction_sign < 0 and pattern_family.startswith("trending_down_"))
         )
+        premium_generic_trend_ready = bool(
+            direction_sign != 0
+            and family_directional_match
+            and pattern_family.endswith("generic")
+            and resolved_trend_state in {"trending_up", "trending_down"}
+            and trend["alignment_score"] >= 0.86
+            and setup_quality >= 0.78
+            and target_efficiency_score >= 0.55
+            and extension_score <= 1.18
+            and impulse_age_bars <= 5
+            and dominant_exhaustion <= 0.50
+        )
         generic_trend_ready = bool(
             direction_sign != 0
             and family_directional_match
@@ -697,12 +709,14 @@ class MarketStructureService:
             and resolved_trend_state in {"trending_up", "trending_down"}
             and trend["alignment_score"] >= 0.68
             and setup_quality >= 0.62
-            and candle_quality_score >= 0.36
-            and session_quality_score >= 0.40
             and target_efficiency_score >= 0.40
             and extension_score <= 1.45
             and impulse_age_bars <= 5
             and dominant_exhaustion <= 0.58
+            and (
+                (candle_quality_score >= 0.36 and session_quality_score >= 0.40)
+                or premium_generic_trend_ready
+            )
         )
         elite_pattern_rank = float(primary.get("elite_pattern_rank", 0.0) or 0.0)
         if generic_trend_ready:
@@ -713,6 +727,7 @@ class MarketStructureService:
                 + session_quality_score * 0.10
                 + candle_quality_score * 0.10
                 + external_confirmation * 0.08
+                + (0.06 if premium_generic_trend_ready else 0.0)
                 - min(0.10, extension_score * 0.05)
                 - dominant_exhaustion * 0.08,
                 0.0,

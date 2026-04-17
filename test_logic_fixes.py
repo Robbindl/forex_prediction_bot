@@ -12538,6 +12538,79 @@ def test_market_structure_service_derives_generic_trend_pattern_rank_for_strong_
     assert result["elite_pattern_rank"] >= 0.18
 
 
+def test_market_structure_service_derives_generic_trend_rank_for_premium_setup_without_candle_session_gate(monkeypatch) -> None:
+    structure_mod = importlib.import_module("services.market_structure_service")
+    service = structure_mod.MarketStructureService()
+    primary = {
+        "trend_state": "trending_up",
+        "volatility_state": "normal",
+        "support": 3340.0,
+        "resistance": 3368.0,
+        "distance_to_support": 0.0022,
+        "distance_to_resistance": 0.0011,
+        "vwap": 3355.0,
+        "vwap_distance_atr": 0.34,
+        "session_quality_label": "mixed",
+        "session_quality_score": 0.32,
+        "candle_quality_score": 0.24,
+        "candle_range_atr": 0.88,
+        "candle_body_ratio": 0.42,
+        "upper_wick_ratio": 0.18,
+        "lower_wick_ratio": 0.16,
+        "close_location": 0.61,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": False,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": False,
+        "impulse_age_bars": 3,
+        "extension_score": 0.84,
+        "target_efficiency_score": 1.0,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 1,
+        "entry_confirmation_count": 0,
+        "entry_confirmation_ready": False,
+        "pattern_family": "trending_up_generic",
+        "elite_pattern_rank": 0.0,
+        "cluster_penalty": 0.10,
+        "regime_entry_policy": {"confirmation_bars": 1},
+        "pullback_score": 0.03,
+        "breakout_score": 0.01,
+        "upside_exhaustion_score": 0.18,
+        "downside_exhaustion_score": 0.0,
+    }
+
+    monkeypatch.setattr(service, "_collect_frame_details", lambda frames: ({"15m": dict(primary)}, ["15m"]), raising=False)
+    monkeypatch.setattr(service, "_primary_interval", lambda ordered, details: "15m", raising=False)
+    monkeypatch.setattr(
+        service,
+        "_trend_summary",
+        lambda details: {
+            "structure_bias": "buy",
+            "alignment_score": 1.0,
+            "weighted_score": 0.92,
+            "weight_total": 1.0,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "_range_summary",
+        lambda details, weight_total: {
+            "pullback_score": 0.03,
+            "breakout_score": 0.01,
+            "upside_exhaustion_score": 0.18,
+            "downside_exhaustion_score": 0.0,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(service, "_setup_quality", lambda *args, **kwargs: 0.90, raising=False)
+
+    result = service.analyze("XAU/USD", "commodities", {"15m": pd.DataFrame({"close": [1.0]})})
+
+    assert result["pattern_family"] == "trending_up_generic"
+    assert result["elite_pattern_rank"] >= 0.18
+
+
 def test_playbook_service_detects_news_impulse_for_major_forex(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
@@ -13212,6 +13285,112 @@ def test_playbook_service_fallback_allows_structural_generic_trend_without_break
                 "downside_exhaustion_score": 0.0,
                 "distance_to_support": 0.0019,
                 "distance_to_resistance": 0.0011,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["blocked_reason"] == ""
+    assert pick["primary"] is not None
+    assert pick["primary"]["playbook"] == "breakout_continuation"
+    assert pick["primary"]["entry_style"] == "elite_trend_continuation"
+
+
+def test_playbook_service_fallback_allows_premium_generic_trend_without_pattern_rank(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 15, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    pick = service.pick_seed(
+        "XAU/USD",
+        "commodities",
+        _build_trend_frame(3350.0, 0.45),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 1.0,
+                "setup_quality": 0.90,
+                "pullback_score": 0.03,
+                "breakout_score": 0.01,
+                "candle_quality_score": 0.24,
+                "session_quality_score": 0.32,
+                "extension_score": 0.84,
+                "target_efficiency_score": 1.0,
+                "impulse_age_bars": 3,
+                "elite_pattern_rank": 0.0,
+                "cluster_penalty": 0.10,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "pattern_family": "trending_up_generic",
+                "liquidity_sweep_buy": False,
+                "liquidity_sweep_sell": False,
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 0,
+                "entry_confirmation_bars_required": 1,
+                "upside_exhaustion_score": 0.18,
+                "downside_exhaustion_score": 0.0,
+                "distance_to_support": 0.0022,
+                "distance_to_resistance": 0.0011,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["blocked_reason"] == ""
+    assert pick["primary"] is not None
+    assert pick["primary"]["playbook"] == "breakout_continuation"
+    assert pick["primary"]["entry_style"] == "elite_trend_continuation"
+
+
+def test_playbook_service_fallback_allows_bearish_premium_generic_trend_without_pattern_rank(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 15, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    pick = service.pick_seed(
+        "WTI",
+        "commodities",
+        _build_trend_frame(70.0, 0.30),
+        context={
+            "market_structure": {
+                "structure_bias": "sell",
+                "alignment_score": 1.0,
+                "setup_quality": 0.95,
+                "pullback_score": 0.03,
+                "breakout_score": -0.01,
+                "candle_quality_score": 0.24,
+                "session_quality_score": 0.32,
+                "extension_score": 1.104,
+                "target_efficiency_score": 1.0,
+                "impulse_age_bars": 3,
+                "elite_pattern_rank": 0.0,
+                "cluster_penalty": 0.10,
+                "volatility_state": "normal",
+                "regime": "trending_down",
+                "trend_15m": "trending_down",
+                "trend_1h": "trending_down",
+                "pattern_family": "trending_down_generic",
+                "liquidity_sweep_buy": False,
+                "liquidity_sweep_sell": False,
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 0,
+                "entry_confirmation_bars_required": 1,
+                "upside_exhaustion_score": 0.0,
+                "downside_exhaustion_score": 0.18,
+                "distance_to_support": 0.22,
+                "distance_to_resistance": 0.11,
             }
         },
         ml_direction="",

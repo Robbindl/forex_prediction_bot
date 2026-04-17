@@ -1115,19 +1115,35 @@ class PlaybookService:
             and target_efficiency_score >= 0.40
             and impulse_age_bars <= 5
         )
+        premium_generic_trend_ready = bool(
+            pattern_family.endswith("generic")
+            and family_directional_match
+            and alignment_score >= 0.86
+            and setup_quality >= 0.78
+            and target_efficiency_score >= 0.55
+            and extension_score <= 1.18
+            and impulse_age_bars <= 5
+            and (
+                (direction == "BUY" and upside_exhaustion_score <= 0.50)
+                or (direction == "SELL" and downside_exhaustion_score <= 0.50)
+            )
+        )
         potential_generic_trend_ready = bool(
             pattern_family.endswith("generic")
             and family_directional_match
             and alignment_score >= max(0.56, float(plan.min_alignment_score) - 0.04)
             and setup_quality >= max(0.52, float(plan.min_setup_quality) - 0.06)
-            and candle_quality_score >= 0.34
-            and session_quality_score >= 0.42
             and extension_score <= 1.45
             and target_efficiency_score >= 0.40
             and impulse_age_bars <= 5
             and (
+                (candle_quality_score >= 0.34 and session_quality_score >= 0.42)
+                or premium_generic_trend_ready
+            )
+            and (
                 max(directional_breakout, directional_pullback) >= 0.08
                 or structural_generic_rank_ready
+                or premium_generic_trend_ready
             )
         )
         directional_liquidity_sweep_ready = bool(
@@ -1170,7 +1186,7 @@ class PlaybookService:
             return None
         if setup_quality < setup_floor:
             return None
-        if candle_quality_score < 0.30 or session_quality_score < 0.34:
+        if not premium_generic_trend_ready and (candle_quality_score < 0.30 or session_quality_score < 0.34):
             return None
         if extension_score > extension_ceiling or target_efficiency_score < target_efficiency_floor:
             return None
@@ -1266,6 +1282,8 @@ class PlaybookService:
             structural_ready_bonus += 0.05
             if structural_generic_rank_ready:
                 structural_ready_bonus += 0.03
+            if premium_generic_trend_ready:
+                structural_ready_bonus += 0.02
         if near_confirmation:
             structural_ready_bonus += 0.05
         score = _clip(
