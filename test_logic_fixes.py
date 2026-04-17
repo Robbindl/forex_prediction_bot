@@ -12464,6 +12464,80 @@ def test_market_structure_service_preserves_signed_directional_scores(monkeypatc
     assert result["pullback_score"] == -0.54
     assert result["breakout_score"] == -0.38
 
+
+def test_market_structure_service_derives_generic_trend_pattern_rank_for_strong_trend_structure(monkeypatch) -> None:
+    structure_mod = importlib.import_module("services.market_structure_service")
+    service = structure_mod.MarketStructureService()
+    primary = {
+        "trend_state": "trending_up",
+        "volatility_state": "normal",
+        "support": 0.6612,
+        "resistance": 0.6648,
+        "distance_to_support": 0.0018,
+        "distance_to_resistance": 0.0010,
+        "vwap": 0.6631,
+        "vwap_distance_atr": 0.28,
+        "session_quality_label": "good",
+        "session_quality_score": 0.58,
+        "candle_quality_score": 0.54,
+        "candle_range_atr": 0.92,
+        "candle_body_ratio": 0.56,
+        "upper_wick_ratio": 0.14,
+        "lower_wick_ratio": 0.20,
+        "close_location": 0.68,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": False,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": False,
+        "impulse_age_bars": 3,
+        "extension_score": 0.52,
+        "target_efficiency_score": 0.74,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 1,
+        "entry_confirmation_count": 0,
+        "entry_confirmation_ready": False,
+        "pattern_family": "trending_up_generic",
+        "elite_pattern_rank": 0.0,
+        "cluster_penalty": 0.04,
+        "regime_entry_policy": {"confirmation_bars": 1},
+        "pullback_score": 0.03,
+        "breakout_score": 0.02,
+        "upside_exhaustion_score": 0.12,
+        "downside_exhaustion_score": 0.0,
+    }
+
+    monkeypatch.setattr(service, "_collect_frame_details", lambda frames: ({"15m": dict(primary)}, ["15m"]), raising=False)
+    monkeypatch.setattr(service, "_primary_interval", lambda ordered, details: "15m", raising=False)
+    monkeypatch.setattr(
+        service,
+        "_trend_summary",
+        lambda details: {
+            "structure_bias": "buy",
+            "alignment_score": 0.86,
+            "weighted_score": 0.78,
+            "weight_total": 1.0,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "_range_summary",
+        lambda details, weight_total: {
+            "pullback_score": 0.03,
+            "breakout_score": 0.02,
+            "upside_exhaustion_score": 0.12,
+            "downside_exhaustion_score": 0.0,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(service, "_setup_quality", lambda *args, **kwargs: 0.72, raising=False)
+
+    result = service.analyze("NZD/USD", "forex", {"15m": pd.DataFrame({"close": [1.0]})})
+
+    assert result["pattern_family"] == "trending_up_generic"
+    assert result["elite_pattern_rank"] >= 0.18
+
+
 def test_playbook_service_detects_news_impulse_for_major_forex(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
@@ -13096,6 +13170,60 @@ def test_playbook_service_fallback_allows_generic_trend_continuation(monkeypatch
     assert pick["primary"] is not None
     assert pick["primary"]["playbook"] == "breakout_continuation"
     assert pick["primary"]["entry_style"] == "elite_trend_continuation"
+
+
+def test_playbook_service_fallback_allows_structural_generic_trend_without_breakout_trigger(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 14, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    pick = service.pick_seed(
+        "NZD/USD",
+        "forex",
+        _build_trend_frame(0.6060, 0.00005),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 1.0,
+                "setup_quality": 0.69,
+                "pullback_score": 0.02,
+                "breakout_score": 0.01,
+                "candle_quality_score": 0.52,
+                "session_quality_score": 0.56,
+                "extension_score": 0.42,
+                "target_efficiency_score": 0.81,
+                "impulse_age_bars": 3,
+                "elite_pattern_rank": 0.34,
+                "cluster_penalty": 0.06,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "pattern_family": "trending_up_generic",
+                "liquidity_sweep_buy": False,
+                "liquidity_sweep_sell": False,
+                "entry_confirmation_ready": False,
+                "entry_confirmation_count": 0,
+                "entry_confirmation_bars_required": 1,
+                "upside_exhaustion_score": 0.14,
+                "downside_exhaustion_score": 0.0,
+                "distance_to_support": 0.0019,
+                "distance_to_resistance": 0.0011,
+            }
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["blocked_reason"] == ""
+    assert pick["primary"] is not None
+    assert pick["primary"]["playbook"] == "breakout_continuation"
+    assert pick["primary"]["entry_style"] == "elite_trend_continuation"
+
 
 def test_playbook_service_limits_alt_crypto_to_liquid_sessions(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")

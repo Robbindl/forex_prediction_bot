@@ -1103,6 +1103,18 @@ class PlaybookService:
             (direction == "BUY" and pattern_family.startswith("trending_up_"))
             or (direction == "SELL" and pattern_family.startswith("trending_down_"))
         )
+        structural_generic_rank_ready = bool(
+            pattern_family.endswith("generic")
+            and family_directional_match
+            and elite_pattern_rank >= 0.18
+            and alignment_score >= max(0.56, float(plan.min_alignment_score) - 0.04)
+            and setup_quality >= max(0.52, float(plan.min_setup_quality) - 0.06)
+            and candle_quality_score >= 0.34
+            and session_quality_score >= 0.42
+            and extension_score <= 1.45
+            and target_efficiency_score >= 0.40
+            and impulse_age_bars <= 5
+        )
         potential_generic_trend_ready = bool(
             pattern_family.endswith("generic")
             and family_directional_match
@@ -1113,7 +1125,10 @@ class PlaybookService:
             and extension_score <= 1.45
             and target_efficiency_score >= 0.40
             and impulse_age_bars <= 5
-            and max(directional_breakout, directional_pullback) >= 0.08
+            and (
+                max(directional_breakout, directional_pullback) >= 0.08
+                or structural_generic_rank_ready
+            )
         )
         directional_liquidity_sweep_ready = bool(
             pattern_family.endswith("liquidity_sweep")
@@ -1249,6 +1264,8 @@ class PlaybookService:
             structural_ready_bonus += 0.06
         elif entry_style == "elite_trend_continuation":
             structural_ready_bonus += 0.05
+            if structural_generic_rank_ready:
+                structural_ready_bonus += 0.03
         if near_confirmation:
             structural_ready_bonus += 0.05
         score = _clip(
