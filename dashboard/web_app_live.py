@@ -6241,28 +6241,23 @@ def _run_hypercorn_server(host: str, port: int, http2: bool = False, ssl_cert: s
                 response_body = self.app(environ, start_response)
 
                 try:
-                    sent_start = False
+                    first_chunk = True
                     for output in response_body:
                         if not response_started:
                             raise RuntimeError("WSGI app did not call start_response")
 
-                        if not sent_start:
+                        if first_chunk:
                             send({"type": "http.response.start", "status": status_code, "headers": headers})
-                            sent_start = True
+                            first_chunk = False
 
                         send({"type": "http.response.body", "body": output, "more_body": True})
 
-                    if not response_started:
-                        raise RuntimeError("WSGI app did not call start_response")
-
-                    if not sent_start:
+                    # Hypercorn's handle_http() sends the terminating
+                    # `http.response.body` frame itself. We only patch the
+                    # empty-body case where upstream Hypercorn versions can
+                    # miss the initial response start entirely.
+                    if response_started and first_chunk:
                         send({"type": "http.response.start", "status": status_code, "headers": headers})
-
-                    # Always terminate the HTTP response explicitly. Without
-                    # this final ASGI frame, Hypercorn can leave clients stuck
-                    # in a perpetual loading state and keep writing to dead
-                    # sockets after browsers give up.
-                    send({"type": "http.response.body", "body": b"", "more_body": False})
                 finally:
                     if hasattr(response_body, "close"):
                         response_body.close()

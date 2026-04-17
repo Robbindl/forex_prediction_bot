@@ -1429,16 +1429,19 @@ class SignalDecisionEngine:
         cross_asset_confidence = float(signal.metadata.get("cross_asset_confidence", 0.0) or 0.0)
         supportive_structure_distance = float(signal.metadata.get("supportive_structure_distance", 0.0) or 0.0)
         category_label = str(signal.category or signal.metadata.get("category") or "").strip().lower()
-        strong_fx_crypto_candidate = bool(
-            category_label in {"crypto", "forex"}
+        strong_market_candidate = bool(
+            category_label in {"crypto", "forex", "commodities", "indices"}
             and float(signal.confidence or 0.0) >= 0.64
             and alignment_score >= 0.68
             and setup_quality >= 0.62
             and candle_quality_score >= 0.36
             and session_quality_score >= 0.40
         )
+        strong_fx_crypto_candidate = bool(
+            category_label in {"crypto", "forex"} and strong_market_candidate
+        )
         elite_supported_candidate = bool(
-            strong_fx_crypto_candidate
+            strong_market_candidate
             and (
                 elite_pattern_rank >= 0.16
                 or failed_opposite_move_confirmed
@@ -1536,7 +1539,7 @@ class SignalDecisionEngine:
 
         if failed_opposite_move_confirmed:
             risk_score -= 0.06
-        if strong_fx_crypto_candidate and extension_score <= 1.18 and target_efficiency_score >= 0.22 and impulse_age_bars <= 6:
+        if strong_market_candidate and extension_score <= 1.18 and target_efficiency_score >= 0.22 and impulse_age_bars <= 6:
             risk_score -= 0.04
         if elite_supported_candidate and cluster_penalty < 0.22:
             risk_score -= 0.03
@@ -1638,7 +1641,7 @@ class SignalDecisionEngine:
             hard_blocks.append("recent pattern learning shows this entry shape keeps arriving too late")
         if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
             hard_blocks.append("entry confirmation delay is still pending")
-        pattern_rank_hard_floor = 0.08 if strong_fx_crypto_candidate and setup_quality >= 0.66 and alignment_score >= 0.74 else 0.12
+        pattern_rank_hard_floor = 0.08 if strong_market_candidate and setup_quality >= 0.66 and alignment_score >= 0.74 else 0.12
         if pattern_family != "unknown" and elite_pattern_rank <= pattern_rank_hard_floor:
             hard_blocks.append("pattern family ranks below elite threshold")
         cluster_hard_limit = 0.30 if elite_supported_candidate else 0.26
@@ -1654,6 +1657,7 @@ class SignalDecisionEngine:
         signal.metadata["late_entry_risk_reasons"] = list(reasons)
         signal.metadata["execution_hard_blocks"] = list(hard_blocks)
         signal.metadata["execution_relief_flags"] = {
+            "strong_market_candidate": strong_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
             "elite_supported_candidate": elite_supported_candidate,
         }
@@ -1692,6 +1696,7 @@ class SignalDecisionEngine:
             "liquidity_sweep_buy": liquidity_sweep_buy,
             "liquidity_sweep_sell": liquidity_sweep_sell,
             "alignment_score": round(alignment_score, 4),
+            "strong_market_candidate": strong_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
             "elite_supported_candidate": elite_supported_candidate,
             "hard_blocks": list(hard_blocks),

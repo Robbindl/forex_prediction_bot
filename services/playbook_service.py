@@ -563,7 +563,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "EUR/JPY": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
         ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.61,
         0.59,
@@ -571,7 +571,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "GBP/JPY": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
         ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.62,
         0.60,
@@ -627,7 +627,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "US30": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
         ("us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
@@ -643,7 +643,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "US500": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
         ("us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
@@ -651,7 +651,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "UK100": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
         ("europe_open", "europe_core"),
         0.58,
         0.56,
@@ -659,7 +659,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "GER40": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
         ("europe_open", "europe_core"),
         0.58,
         0.56,
@@ -667,7 +667,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "AUS200": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
         ("asia_core",),
         0.58,
         0.56,
@@ -675,7 +675,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
         1,
     ),
     "JPN225": _AssetPlaybookPlan(
-        ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
         ("asia_core",),
         0.58,
         0.56,
@@ -728,8 +728,8 @@ _ASSET_MANAGEMENT_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "EUR/USD": {"preferred_interval": "5m", "runner_target_rr": 2.0, "trail_activation_rr": 0.9, "trail_atr_multiple": 0.65},
     "GBP/USD": {"preferred_interval": "5m", "runner_target_rr": 2.1, "trail_activation_rr": 0.9, "trail_atr_multiple": 0.68},
     "USD/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 0.95, "trail_atr_multiple": 0.70},
-    "EUR/JPY": {"preferred_interval": "15m", "runner_target_rr": 2.2, "trail_activation_rr": 1.0, "trail_atr_multiple": 0.78},
-    "GBP/JPY": {"preferred_interval": "15m", "runner_target_rr": 2.3, "trail_activation_rr": 1.0, "trail_atr_multiple": 0.80},
+    "EUR/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 1.0, "trail_atr_multiple": 0.78},
+    "GBP/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.3, "trail_activation_rr": 1.0, "trail_atr_multiple": 0.80},
     "AUD/USD": {"preferred_interval": "15m", "runner_target_rr": 2.0, "trail_activation_rr": 0.95, "trail_atr_multiple": 0.70},
     "NZD/USD": {"preferred_interval": "15m", "runner_target_rr": 2.0, "trail_activation_rr": 0.95, "trail_atr_multiple": 0.70},
     "USD/CAD": {"preferred_interval": "5m", "runner_target_rr": 2.0, "trail_activation_rr": 0.95, "trail_atr_multiple": 0.72},
@@ -1619,8 +1619,8 @@ class PlaybookService:
         session: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        canonical = str(asset or "").strip().upper()
-        if canonical not in {"EUR/USD", "GBP/USD", "USD/JPY", "XAU/USD", "US100", "BTC-USD"}:
+        plan = self._asset_plan(asset, category)
+        if "early_inflection" not in set(plan.allowed_playbooks):
             return None
 
         profile = self._profile(category)

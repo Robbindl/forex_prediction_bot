@@ -7385,15 +7385,10 @@ def test_run_hypercorn_server_patches_empty_wsgi_responses(monkeypatch) -> None:
             "status": 304,
             "headers": [(b"etag", b"x")],
         },
-        {
-            "type": "http.response.body",
-            "body": b"",
-            "more_body": False,
-        },
     ]
 
 
-def test_run_hypercorn_server_terminates_non_empty_wsgi_responses(monkeypatch) -> None:
+def test_run_hypercorn_server_keeps_non_empty_wsgi_response_contract(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
     class _FakeConfig:
@@ -7457,11 +7452,6 @@ def test_run_hypercorn_server_terminates_non_empty_wsgi_responses(monkeypatch) -
             "type": "http.response.body",
             "body": b"ok",
             "more_body": True,
-        },
-        {
-            "type": "http.response.body",
-            "body": b"",
-            "more_body": False,
         },
     ]
 
@@ -11950,7 +11940,7 @@ def test_playbook_service_detects_early_inflection_for_selected_asset(monkeypatc
     assert inflection["direction"] == "SELL"
     assert inflection["entry_style"] == "early_inflection_turn"
 
-def test_playbook_service_does_not_enable_early_inflection_for_non_selected_asset(monkeypatch) -> None:
+def test_playbook_service_does_not_enable_early_inflection_when_asset_plan_disallows_it(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
         svc_mod,
@@ -11982,6 +11972,66 @@ def test_playbook_service_does_not_enable_early_inflection_for_non_selected_asse
     )
 
     assert not any(candidate["playbook"] == "early_inflection" for candidate in analysis["candidates"])
+
+
+def test_playbook_service_enables_early_inflection_for_jpy_crosses_and_us500(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 7, 15, 30, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+
+    jpy_analysis = service.analyze(
+        "EUR/JPY",
+        "forex",
+        _build_early_inflection_frame(start=186.9),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.73,
+                "setup_quality": 0.70,
+                "pullback_score": 0.24,
+                "breakout_score": 0.44,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0020,
+                "distance_to_resistance": 0.0005,
+                "upside_exhaustion_score": 0.64,
+                "downside_exhaustion_score": 0.0,
+            }
+        },
+    )
+    us500_analysis = service.analyze(
+        "US500",
+        "indices",
+        _build_early_inflection_frame(start=7050.0),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.72,
+                "setup_quality": 0.70,
+                "pullback_score": 0.23,
+                "breakout_score": 0.43,
+                "volatility_state": "normal",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0021,
+                "distance_to_resistance": 0.0005,
+                "upside_exhaustion_score": 0.64,
+                "downside_exhaustion_score": 0.0,
+            }
+        },
+    )
+
+    assert service.preferred_interval("forex", "EUR/JPY") == "5m"
+    assert service.preferred_interval("forex", "GBP/JPY") == "5m"
+    assert any(candidate["playbook"] == "early_inflection" for candidate in jpy_analysis["candidates"])
+    assert any(candidate["playbook"] == "early_inflection" for candidate in us500_analysis["candidates"])
 
 def test_playbook_service_requires_dual_trend_confirmation_for_long_pullback(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
@@ -15232,7 +15282,86 @@ def test_execution_late_entry_gate_relaxes_strong_crypto_pattern_rank_and_impuls
 
     assert approved is True
     assert signal.alive is True
+    assert signal.metadata["execution_relief_flags"]["strong_market_candidate"] is True
     assert signal.metadata["execution_relief_flags"]["strong_fx_crypto_candidate"] is True
+    assert signal.metadata["execution_relief_flags"]["elite_supported_candidate"] is True
+    assert signal.metadata["late_entry_risk_score"] < 0.58
+    assert signal.metadata["execution_hard_blocks"] == []
+
+
+def test_execution_late_entry_gate_relaxes_strong_index_pattern_rank_and_impulse_age(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    signal = Signal(
+        asset="US500",
+        canonical_asset="US500",
+        category="indices",
+        direction="BUY",
+        confidence=0.72,
+        entry_price=7100.0,
+        stop_loss=7078.0,
+        take_profit=7144.0,
+        risk_reward=2.0,
+    )
+    signal.metadata.update(
+        {
+            "support_proximity": 0.78,
+            "resistance_proximity": 0.12,
+            "volatility_ratio": 1.18,
+            "exhaustion_risk": 0.18,
+            "playbook_entry_style": "breakout_close",
+        }
+    )
+    data = {}
+    notes = []
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.78,
+        "setup_quality": 0.71,
+        "vwap_distance_atr": 0.88,
+        "session_quality_score": 0.57,
+        "candle_quality_score": 0.49,
+        "extension_score": 0.96,
+        "target_efficiency_score": 0.29,
+        "impulse_age_bars": 6,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": False,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": False,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 1,
+        "entry_confirmation_count": 1,
+        "entry_confirmation_ready": True,
+        "pattern_family": "breakout_continuation",
+        "elite_pattern_rank": 0.09,
+        "cluster_penalty": 0.08,
+        "distance_to_resistance": 0.0068,
+        "distance_to_support": 0.0180,
+        "regime_entry_policy": {
+            "min_setup_quality": 0.32,
+            "min_candle_quality": 0.34,
+            "max_extension_score": 1.28,
+            "min_target_efficiency": 0.24,
+            "max_impulse_age_bars": 5,
+        },
+        "dominant_exhaustion_score": 0.22,
+        "bias_exhausted": False,
+    }
+
+    approved = engine._execution_late_entry_risk_gate(
+        signal,
+        adaptive_policy={"raw": {"recent_review_profile": {"sample_count": 6}}},
+        conf_before=signal.confidence,
+        structure=structure,
+        data=data,
+        notes=notes,
+    )
+
+    assert approved is True
+    assert signal.alive is True
+    assert signal.metadata["execution_relief_flags"]["strong_market_candidate"] is True
+    assert signal.metadata["execution_relief_flags"]["strong_fx_crypto_candidate"] is False
     assert signal.metadata["execution_relief_flags"]["elite_supported_candidate"] is True
     assert signal.metadata["late_entry_risk_score"] < 0.58
     assert signal.metadata["execution_hard_blocks"] == []
