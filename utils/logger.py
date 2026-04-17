@@ -93,6 +93,18 @@ class _TradeFilter(logging.Filter):
         return bool(getattr(record, "trade", False))
 
 
+def _silence_external_logger(name: str) -> None:
+    """
+    Prevent dependency loggers from falling through to logging.lastResort,
+    which systemd renders as raw one-line stderr noise such as
+    `socket.send() raised exception.`.
+    """
+    ext = logging.getLogger(name)
+    ext.handlers.clear()
+    ext.addHandler(logging.NullHandler())
+    ext.propagate = False
+
+
 class TradingLogger:
     """Singleton logger with rotating files, trade log, and error log."""
     _instance: Optional["TradingLogger"] = None
@@ -114,6 +126,11 @@ class TradingLogger:
         self._level = level.upper()
         self._log_dir = Path(log_dir)
         self._log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Suppress noisy dependency stderr while keeping our own structured
+        # stream diagnostics from exchange/websocket managers.
+        _silence_external_logger("websocket")
+        _silence_external_logger("websockets")
 
         self._logger = logging.getLogger("trading_bot")
         self._logger.setLevel(getattr(logging, self._level, logging.INFO))
