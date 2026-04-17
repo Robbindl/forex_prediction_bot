@@ -3234,30 +3234,19 @@ def api_command_center():
 @_check_rate_limit
 def api_command_center_stream():
     def _gen():
-        last_signature = None
-        last_emit = 0.0
         # Initial event tells the client the stream is alive and forces an
         # immediate refresh so reconnects recover the full dashboard state.
         yield f"{json.dumps({'type': 'connected', 'ts': int(time.time())})}\n"
-
-        while True:
-            try:
-                payload = _get_cached_command_center_payload(force_refresh=False)
-                signature = _command_center_payload_signature(payload)
-                now = time.time()
-                if last_signature is None or signature != last_signature:
-                    last_signature = signature
-                    last_emit = now
-                    yield f"{json.dumps({'type': 'refresh', 'ts': int(now), 'signature': signature})}\n"
-                elif now - last_emit >= 15.0:
-                    last_emit = now
-                    yield f"{json.dumps({'type': 'heartbeat', 'ts': int(now)})}\n"
-            except GeneratorExit:
-                raise
-            except Exception as exc:
-                logger.debug(f"[dashboard] command-center stream error: {exc}")
-                yield f"{json.dumps({'type': 'heartbeat', 'ts': int(time.time())})}\n"
-            time.sleep(5.0)
+        try:
+            payload = _get_cached_command_center_payload(force_refresh=False)
+            signature = _command_center_payload_signature(payload)
+            now = time.time()
+            yield f"{json.dumps({'type': 'refresh', 'ts': int(now), 'signature': signature})}\n"
+        except GeneratorExit:
+            raise
+        except Exception as exc:
+            logger.debug(f"[dashboard] command-center stream error: {exc}")
+            yield f"{json.dumps({'type': 'heartbeat', 'ts': int(time.time())})}\n"
 
     return Response(
         stream_with_context(_gen()),
@@ -4461,22 +4450,50 @@ def api_chart_stream():
         # Emit an immediate event so the SSE connection establishes cleanly even
         # if the next live quote takes a few seconds or the market is closed.
         yield f"data: {json.dumps({'type': 'connected', 'asset': asset, 'ts': int(time.time())})}\n\n"
-        while True:
-            try:
-                price, source = _chart_stream_live_quote(asset, cat)
-                if price:
-                    try:
-                        _record_live_quote(str(source or "LiveAPI"), asset, float(price), emit_transaction=False)
-                    except Exception:
-                        pass
-                    yield f"data: {json.dumps({'type': 'tick', 'price': price, 'asset': asset, 'source': source, 'ts': int(time.time())})}\n\n"
-                else:
-                    yield f"data: {json.dumps({'type': 'heartbeat', 'asset': asset, 'ts': int(time.time())})}\n\n"
-            except Exception:
+        try:
+            price, source = _chart_stream_live_quote(asset, cat)
+            if price:
+                try:
+                    _record_live_quote(str(source or "LiveAPI"), asset, float(price), emit_transaction=False)
+                except Exception:
+                    pass
+                yield f"data: {json.dumps({'type': 'tick', 'price': price, 'asset': asset, 'source': source, 'ts': int(time.time())})}\n\n"
+            else:
                 yield f"data: {json.dumps({'type': 'heartbeat', 'asset': asset, 'ts': int(time.time())})}\n\n"
-            time.sleep(3)
+        except Exception:
+            yield f"data: {json.dumps({'type': 'heartbeat', 'asset': asset, 'ts': int(time.time())})}\n\n"
     return Response(stream_with_context(_gen()), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/api/chart/quote")
+@_check_api_auth
+@_check_rate_limit
+def api_chart_quote():
+    asset = request.args.get("asset", "EUR/USD")
+    cat = _cat(asset)
+    try:
+        price, source = _chart_stream_live_quote(asset, cat)
+        ts = int(time.time())
+        if price is not None:
+            try:
+                _record_live_quote(str(source or "LiveAPI"), asset, float(price), emit_transaction=False)
+            except Exception:
+                pass
+        payload = {
+            "success": True,
+            "asset": asset,
+            "price": float(price) if price is not None else None,
+            "source": str(source or ""),
+            "ts": ts,
+        }
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+    except APIError as e:
+        return handle_api_error(e, "/api/chart/quote", e.status_code)
+    except Exception as e:
+        return handle_api_error(e, "/api/chart/quote", 500)
 
 @app.route("/api/market/heatmap")
 @_check_api_auth
@@ -6153,7 +6170,12 @@ def api_page_overview():
         }
         ttl = 15
     elif page == "command_center":
-        command_center = _response_to_dict(_call_view(api_command_center))
+        try:
+            command_center = _response_to_dict(
+                _get_cached_command_center_payload(force_refresh=force_refresh)
+            )
+        except Exception:
+            command_center = _response_to_dict(_call_view(api_command_center))
         payload = {
             "success": True,
             "command_center": command_center,
@@ -6230,8 +6252,17 @@ def _run_hypercorn_server(host: str, port: int, http2: bool = False, ssl_cert: s
 
                         send({"type": "http.response.body", "body": output, "more_body": True})
 
-                    if response_started and not sent_start:
+                    if not response_started:
+                        raise RuntimeError("WSGI app did not call start_response")
+
+                    if not sent_start:
                         send({"type": "http.response.start", "status": status_code, "headers": headers})
+
+                    # Always terminate the HTTP response explicitly. Without
+                    # this final ASGI frame, Hypercorn can leave clients stuck
+                    # in a perpetual loading state and keep writing to dead
+                    # sockets after browsers give up.
+                    send({"type": "http.response.body", "body": b"", "more_body": False})
                 finally:
                     if hasattr(response_body, "close"):
                         response_body.close()

@@ -93,6 +93,19 @@ class _TradeFilter(logging.Filter):
         return bool(getattr(record, "trade", False))
 
 
+class _DropExactMessageFilter(logging.Filter):
+    def __init__(self, blocked_messages: set[str]) -> None:
+        super().__init__()
+        self._blocked_messages = {str(msg).strip() for msg in blocked_messages if str(msg).strip()}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = str(record.getMessage() or "").strip()
+        except Exception:
+            return True
+        return message not in self._blocked_messages
+
+
 def _silence_external_logger(name: str) -> None:
     """
     Prevent dependency loggers from falling through to logging.lastResort,
@@ -103,6 +116,18 @@ def _silence_external_logger(name: str) -> None:
     ext.handlers.clear()
     ext.addHandler(logging.NullHandler())
     ext.propagate = False
+
+
+def _configure_asyncio_logger(name: str, formatter: logging.Formatter) -> None:
+    asyncio_logger = logging.getLogger(name)
+    asyncio_logger.setLevel(logging.WARNING)
+    asyncio_logger.handlers.clear()
+    asyncio_handler = _SafeStreamHandler(sys.stdout)
+    asyncio_handler.setLevel(logging.WARNING)
+    asyncio_handler.setFormatter(formatter)
+    asyncio_handler.addFilter(_DropExactMessageFilter({"socket.send() raised exception."}))
+    asyncio_logger.addHandler(asyncio_handler)
+    asyncio_logger.propagate = False
 
 
 class TradingLogger:
@@ -156,6 +181,13 @@ class TradingLogger:
         ch.setLevel(getattr(logging, level.upper(), logging.INFO))
         ch.setFormatter(fmt_short)
         self._logger.addHandler(ch)
+
+        # Route asyncio warnings through the same console formatter, but drop
+        # the noisy broken-client transport warning that floods systemd logs
+        # when dashboard stream clients disconnect mid-send.
+        _configure_asyncio_logger("asyncio", fmt_short)
+        _configure_asyncio_logger("asyncio.selector_events", fmt_short)
+        _configure_asyncio_logger("asyncio.proactor_events", fmt_short)
 
         # Main rotating file
         fh = _SafeRotatingFileHandler(

@@ -379,6 +379,8 @@ function setRiskActionStatus(message,type='info'){
 }
 let _riskDashboardCache = null;
 let _riskDashboardPending = null;
+let _riskTradeHistoryCache = null;
+let _riskTradeHistoryPending = null;
 let drawdownChartInst = null;
 function setRiskUnavailable(message){
   const msg = message || 'Risk dashboard data unavailable';
@@ -405,11 +407,11 @@ function setRiskUnavailable(message){
 }
 async function fetchRiskDashboardOverview() {
   const now = Date.now();
-  if (_riskDashboardCache && now - _riskDashboardCache.fetched < 2000) return _riskDashboardCache.data;
+  if (_riskDashboardCache && now - _riskDashboardCache.fetched < 10000) return _riskDashboardCache.data;
   if (_riskDashboardPending) return _riskDashboardPending;
   _riskDashboardPending = (async function(){
     try{
-      const d = await window.dashboardFetchJson('/api/page-overview?page=risk_dashboard&no_cache=1&_=' + Date.now(), {timeoutMs: 12000, init:{cache:'no-store'}});
+      const d = await window.dashboardFetchJson('/api/page-overview?page=risk_dashboard', {timeoutMs: 12000, init:{cache:'no-store'}});
       if (d.success) {_riskDashboardCache = {fetched: Date.now(), data: d};return d;}
       return {success:false};
     } finally {
@@ -417,6 +419,24 @@ async function fetchRiskDashboardOverview() {
     }
   })();
   return _riskDashboardPending;
+}
+async function fetchRiskTradeHistory(limit = 200) {
+  const now = Date.now();
+  if (_riskTradeHistoryCache && now - _riskTradeHistoryCache.fetched < 60000) return _riskTradeHistoryCache.data;
+  if (_riskTradeHistoryPending) return _riskTradeHistoryPending;
+  _riskTradeHistoryPending = (async function(){
+    try{
+      const d = await fetchProtectedJson('/api/trade-history?limit=' + encodeURIComponent(limit), {timeoutMs: 12000});
+      if (d.success) {
+        _riskTradeHistoryCache = {fetched: Date.now(), data: d};
+        return d;
+      }
+      return {success:false};
+    } finally {
+      _riskTradeHistoryPending = null;
+    }
+  })();
+  return _riskTradeHistoryPending;
 }
 function renderMixCard(title,value,note,klass,chips){
   return '<div class="mix-card"><div class="mix-top"><div class="mix-title">'+title+'</div><div class="mix-value '+klass+'">'+value+'</div></div><div class="mix-note">'+note+'</div>'+(chips&&chips.length?'<div class="flag-row">'+chips.join('')+'</div>':'')+'</div>';
@@ -827,7 +847,7 @@ async function load(){
   }).join('') : '<div class="empty">No weak positions are currently queued for repricing or reduction</div>';
 
   try{
-    const tradeData = await fetchProtectedJson('/api/trade-history?limit=200&no_cache=1&_='+Date.now(), {timeoutMs: 12000});
+    const tradeData = await fetchRiskTradeHistory(200);
     if(!tradeData.success || !tradeData.trades || !tradeData.trades.length){
       document.getElementById('ddStats').textContent = 'No closed trades yet';
       return;
@@ -884,7 +904,7 @@ async function bootRiskDashboard(){try{if(window.dashboardAuthReady){await windo
   await load();
 }
 bootRiskDashboard();
-setInterval(function(){ if(!document.hidden) load(); }, 5000);
+setInterval(function(){ if(!document.hidden) load(); }, 15000);
 document.addEventListener('visibilitychange', function(){ if(!document.hidden){ _riskDashboardCache=null; load(); }});
 async function riskClose(mode){
   const isCategory=['forex','crypto','commodities','indices'].includes(mode);
@@ -901,4 +921,4 @@ async function riskClose(mode){
 }
 </script>
 </body>
-<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js?v=5',{updateViaCache:'none'}).then(reg=>{console.log('SW registered',reg.scope);try{reg.update();}catch(_){}}).catch(err=>console.warn('SW registration failed',err)));}</script></html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js?v=6',{updateViaCache:'none'}).then(reg=>{console.log('SW registered',reg.scope);try{reg.update();}catch(_){}}).catch(err=>console.warn('SW registration failed',err)));}</script></html>

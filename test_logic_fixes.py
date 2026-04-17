@@ -7384,7 +7384,85 @@ def test_run_hypercorn_server_patches_empty_wsgi_responses(monkeypatch) -> None:
             "type": "http.response.start",
             "status": 304,
             "headers": [(b"etag", b"x")],
-        }
+        },
+        {
+            "type": "http.response.body",
+            "body": b"",
+            "more_body": False,
+        },
+    ]
+
+
+def test_run_hypercorn_server_terminates_non_empty_wsgi_responses(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    class _FakeConfig:
+        def __init__(self):
+            self.bind = []
+            self.worker_class = None
+            self.loglevel = None
+            self.keep_alive_timeout = None
+            self.alpn_protocols = None
+            self.certfile = None
+            self.keyfile = None
+
+    class _FakeMiddleware:
+        def __init__(self, app):
+            self.app = app
+
+    class _FakeWrapper:
+        def __init__(self, app, max_body_size=None):
+            self.app = app
+            self.max_body_size = max_body_size
+
+        def run_app(self, environ, send):
+            return None
+
+    async def _fake_serve(app, config):
+        return None
+
+    fake_hypercorn = ModuleType("hypercorn")
+    fake_app_wrappers = ModuleType("hypercorn.app_wrappers")
+    fake_app_wrappers.WSGIWrapper = _FakeWrapper
+    fake_hypercorn.app_wrappers = fake_app_wrappers
+
+    monkeypatch.setitem(sys.modules, "hypercorn", fake_hypercorn)
+    monkeypatch.setitem(sys.modules, "hypercorn.app_wrappers", fake_app_wrappers)
+    monkeypatch.setitem(sys.modules, "hypercorn.config", SimpleNamespace(Config=_FakeConfig, Sockets=object))
+    monkeypatch.setitem(sys.modules, "hypercorn.asyncio", SimpleNamespace(serve=_fake_serve))
+    monkeypatch.setitem(
+        sys.modules,
+        "hypercorn.middleware.wsgi",
+        SimpleNamespace(AsyncioWSGIMiddleware=_FakeMiddleware),
+    )
+
+    ok = dashboard_mod._run_hypercorn_server("127.0.0.1", 5000)
+
+    assert ok is True
+
+    wrapper = fake_app_wrappers.WSGIWrapper(
+        lambda environ, start_response: (start_response("200 OK", [("content-type", "text/plain")]) or [b"ok"]),
+        max_body_size=0,
+    )
+    messages: list[dict[str, object]] = []
+    wrapper.run_app({}, messages.append)
+
+    assert messages == [
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"text/plain")],
+        },
+        {
+            "type": "http.response.body",
+            "body": b"ok",
+            "more_body": True,
+        },
+        {
+            "type": "http.response.body",
+            "body": b"",
+            "more_body": False,
+        },
     ]
 
 def test_heatmap_api_reports_partial_payload(monkeypatch) -> None:
@@ -8192,13 +8270,6 @@ def test_page_overview_no_cache_bypasses_cached_payload(monkeypatch) -> None:
     cache_get_calls = []
     cache_set_calls = []
 
-    class _FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def get_json(self):
-            return self._payload
-
     def _fake_cache_get(key):
         cache_get_calls.append(key)
         return {"success": True, "command_center": {"balance": 111.0}}
@@ -8206,15 +8277,14 @@ def test_page_overview_no_cache_bypasses_cached_payload(monkeypatch) -> None:
     def _fake_cache_set(key, value, ttl=0):
         cache_set_calls.append((key, ttl))
 
-    def _fake_call_view(fn):
-        name = getattr(fn, "__name__", "")
-        if name == "api_command_center":
-            return _FakeResponse({"success": True, "balance": 321.0})
-        raise AssertionError(f"Unexpected view {name}")
-
     monkeypatch.setattr(dashboard_mod, "_cache_get", _fake_cache_get, raising=False)
     monkeypatch.setattr(dashboard_mod, "_cache_set", _fake_cache_set, raising=False)
-    monkeypatch.setattr(dashboard_mod, "_call_view", _fake_call_view, raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_get_cached_command_center_payload",
+        lambda force_refresh=False: {"success": True, "balance": 321.0},
+        raising=False,
+    )
 
     with dashboard_mod.app.test_request_context("/api/page-overview?page=command_center&no_cache=1"):
         response = dashboard_mod.api_page_overview()
@@ -8281,28 +8351,18 @@ def test_page_overview_command_center_reuses_embedded_whale_summary(monkeypatch)
     monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
     monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
 
-    class _FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def get_json(self):
-            return self._payload
-
-    def _fake_call_view(fn):
-        name = getattr(fn, "__name__", "")
-        if name == "api_command_center":
-            return _FakeResponse({
-                "success": True,
-                "balance": 123.0,
-                "recent": [{"asset": "BTC-USD", "value_usd": 1_250_000}],
-                "alert_count_24h": 3,
-                "whale_alerts_24h": 3,
-            })
-        if name == "api_whale_summary":
-            raise AssertionError("api_whale_summary should not be called for command_center overview")
-        raise AssertionError(f"Unexpected view {name}")
-
-    monkeypatch.setattr(dashboard_mod, "_call_view", _fake_call_view, raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_get_cached_command_center_payload",
+        lambda force_refresh=False: {
+            "success": True,
+            "balance": 123.0,
+            "recent": [{"asset": "BTC-USD", "value_usd": 1_250_000}],
+            "alert_count_24h": 3,
+            "whale_alerts_24h": 3,
+        },
+        raising=False,
+    )
 
     with dashboard_mod.app.test_request_context("/api/page-overview?page=command_center"):
         response = dashboard_mod.api_page_overview()
@@ -9566,6 +9626,37 @@ def test_chart_stream_uses_direct_provider_quote_when_live_cache_is_empty(monkey
     assert '"type": "tick"' in second_chunk
     assert '"asset": "EUR/USD"' in second_chunk
     assert '"source": "Deriv"' in second_chunk
+
+
+def test_chart_quote_returns_live_quote_snapshot(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    seen: list[tuple[str, str, float, bool]] = []
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_chart_stream_live_quote",
+        lambda asset, category: (123.456, "Deriv"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_record_live_quote",
+        lambda source, symbol, price, emit_transaction=False: seen.append((source, symbol, price, emit_transaction)),
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/quote?asset=EUR/USD")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["asset"] == "EUR/USD"
+    assert payload["price"] == 123.456
+    assert payload["source"] == "Deriv"
+    assert seen == [("Deriv", "EUR/USD", 123.456, False)]
+
 
 def test_record_live_quote_emits_transaction_and_cache(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")

@@ -331,11 +331,11 @@ let _orderFlowCache = null;
 let _orderFlowPending = null;
 async function fetchOrderFlowOverview(){
   const now = Date.now();
-  if(_orderFlowCache && now - _orderFlowCache.fetched < 2000) return _orderFlowCache.data;
+  if(_orderFlowCache && now - _orderFlowCache.fetched < 10000) return _orderFlowCache.data;
   if(_orderFlowPending) return _orderFlowPending;
   _orderFlowPending = (async function(){
     try{
-      const d = await window.dashboardFetchJson('/api/page-overview?page=order_flow&no_cache=1&_=' + Date.now(), {timeoutMs: 12000, init:{cache:'no-store'}});
+      const d = await window.dashboardFetchJson('/api/page-overview?page=order_flow', {timeoutMs: 12000, init:{cache:'no-store'}});
       if(d.success){
         _orderFlowCache = {fetched: Date.now(), data: d};
         return d;
@@ -1022,4 +1022,4 @@ document.querySelectorAll('.sb-link').forEach(function(a){
 });
 </script>
 </body>
-<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js?v=5',{updateViaCache:'none'}).then(reg=>{console.log('SW registered',reg.scope);try{reg.update();}catch(_){}}).catch(err=>console.warn('SW registration failed',err)));}</script></html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js?v=6',{updateViaCache:'none'}).then(reg=>{console.log('SW registered',reg.scope);try{reg.update();}catch(_){}}).catch(err=>console.warn('SW registration failed',err)));}</script></html>
