@@ -648,7 +648,8 @@ class DerivBridge:
             return False
 
         now = time.monotonic()
-        if self._ws is None:
+        if not self._ws_is_connected_locked():
+            self._close_locked()
             return self._connect_locked()
 
         if now - self._last_io < _KEEPALIVE_SEC:
@@ -660,6 +661,17 @@ class DerivBridge:
         except Exception:
             self._close_locked()
             return self._connect_locked()
+
+    def _ws_is_connected_locked(self) -> bool:
+        ws = self._ws
+        if ws is None:
+            return False
+        try:
+            if not bool(getattr(ws, "connected", False)):
+                return False
+            return getattr(ws, "sock", None) is not None
+        except Exception:
+            return False
 
     def _connect_locked(self) -> bool:
         now = time.monotonic()
@@ -785,6 +797,8 @@ class DerivBridge:
         op_name = self._payload_name(payload)
 
         for attempt in range(1, total_attempts + 1):
+            if not self._ws_is_connected_locked():
+                self._close_locked()
             if self._ws is None and not self._connect_locked():
                 raise RuntimeError("Deriv WebSocket unavailable")
 

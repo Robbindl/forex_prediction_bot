@@ -196,10 +196,13 @@ def _check_api_auth(fn):
         
         # Production mode: enforce authentication
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return jsonify({"success": False, "error": "Missing Authorization header"}), 401
-        
-        token = auth_header[7:]  # Remove "Bearer " prefix
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        else:
+            token = str(request.args.get("token", "") or "").strip()
+            if not token:
+                return jsonify({"success": False, "error": "Missing Authorization header"}), 401
         
         # Check if valid session token (issued by /api/login)
         with _SESSION_TOKEN_LOCK:
@@ -255,10 +258,22 @@ _CORE: Any = None
 def inject_core(core) -> None:
     global _CORE
     _CORE = core
+    try:
+        if getattr(core, "state", None) is not None:
+            setattr(_args, "state", core.state)
+    except Exception:
+        pass
     logger.info("[dashboard] TradingCore injected")
 
 def _core() -> Optional[Any]:
     return _CORE
+
+
+def _dashboard_state() -> Optional[Any]:
+    core = _core()
+    if core is not None and getattr(core, "state", None) is not None:
+        return core.state
+    return getattr(_args, "state", None)
 
 # ── Asset registry ────────────────────────────────────────────────────────────
 ALL_ASSETS: List[Tuple[str, str]] = registry.all_assets()
@@ -4378,6 +4393,10 @@ def api_chart_stream():
                     except Exception:
                         source = source or ""
                 if price:
+                    try:
+                        _record_live_quote(str(source or "LiveAPI"), asset, float(price), emit_transaction=False)
+                    except Exception:
+                        pass
                     yield f"data: {json.dumps({'type': 'tick', 'price': price, 'asset': asset, 'source': source, 'ts': int(time.time())})}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'heartbeat', 'asset': asset, 'ts': int(time.time())})}\n\n"
@@ -6212,7 +6231,8 @@ def _setup_dashboard_live_streams(cb) -> tuple[Any, Dict[str, Dict[str, str]], A
 
     ws = WebSocketManager()
     ws.start()
-    open_positions = _args.state.get_open_positions() if hasattr(_args, "state") else []
+    state = _dashboard_state()
+    open_positions = state.get_open_positions() if hasattr(state, "get_open_positions") else []
     assets_by_category = _dashboard_asset_map_from_positions(open_positions, fallback_to_universe=True)
     ig_primary_assets = filter_ig_primary_assets(assets_by_category)
     ig_stream_assets: Dict[str, str] = {}
@@ -6319,12 +6339,13 @@ def _dashboard_apply_subscription_update(
 def _dashboard_update_ws_subscriptions_loop(ws_global: Any, stream_state: Dict[str, Dict[str, str]], cb, ig_stream_global: Any) -> None:
     while True:
         try:
-            if ws_global is None or not hasattr(_args, "state"):
+            state = _dashboard_state()
+            if ws_global is None or state is None:
                 time.sleep(30)
                 continue
 
             time.sleep(30)
-            open_positions = _args.state.get_open_positions() if hasattr(_args.state, "get_open_positions") else []
+            open_positions = state.get_open_positions() if hasattr(state, "get_open_positions") else []
             asset_map = _dashboard_asset_map_from_positions(open_positions)
             if asset_map:
                 _dashboard_apply_subscription_update(ws_global, stream_state, cb, ig_stream_global, asset_map)

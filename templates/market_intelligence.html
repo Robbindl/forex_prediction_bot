@@ -731,12 +731,20 @@ async function loadHistoryCandles(opts = {}){
   }
   renderChartIntegrity();
 }
-function startStream(){
+async function startStream(){
   if(!_chartBooted || _chartMode !== 'live') return;
   if(sseSource) sseSource.close();
   const livePriceEl = document.getElementById('livePrice');
   if(livePriceEl) livePriceEl.textContent = '—';
-  sseSource = new EventSource('/api/chart/stream?asset=' + encodeURIComponent(currentAsset));
+  let token = '';
+  try{
+    if(typeof window.dashboardGetApiToken === 'function'){
+      token = await window.dashboardGetApiToken(false) || '';
+    }
+  }catch(err){ token = ''; }
+  const params = new URLSearchParams({asset: currentAsset});
+  if(token) params.set('token', token);
+  sseSource = new EventSource('/api/chart/stream?' + params.toString());
   sseSource.onmessage = e => {
     try{
       const d = JSON.parse(e.data);
@@ -746,6 +754,13 @@ function startStream(){
         if(price && !_chartLiveOverlayAllowed) setLivePriceLine(Number(price));
       }
     }catch(err){}
+  };
+  sseSource.onerror = () => {
+    try{ sseSource.close(); }catch(err){}
+    sseSource = null;
+    if(_chartMode === 'live' && !document.hidden){
+      setTimeout(() => { startStream(); }, 3000);
+    }
   };
 }
 async function loadHeatmap(manual=false){

@@ -203,4 +203,7 @@
   window.fetch = authorizedFetch;
   window.dashboardAuthReady = ensureApiToken(false).catch(() => '');
   window.dashboardFetchJson = dashboardFetchJson;
+  window.dashboardGetApiToken = async function(forceRefresh) {
+    return ensureApiToken(!!forceRefresh);
+  };
 })();
