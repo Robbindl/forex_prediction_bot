@@ -289,7 +289,48 @@ class DataFetcher:
             return "deriv"
         if token.startswith("binance"):
             return "binance"
+        if token.startswith("duka"):
+            return "dukascopy"
+        if token in {"financialmodelingprep", "fmp"}:
+            return "fmp"
         return token
+
+    def _ohlcv_bridge_catalog(self, *, ig_primary: bool) -> Dict[str, Tuple[Any, str, str, bool, bool, bool]]:
+        return {
+            "ig": (self._ig_bridge if ig_primary else None, "IG", "primary_api", False, False, False),
+            "dukascopy": (self._dukascopy_bridge, "Dukascopy", "secondary_api", False, False, False),
+            "fmp": (self._fmp_bridge, "FMP", "secondary_api", False, False, False),
+            "deriv": (self._deriv_bridge, "Deriv", "primary_api", False, False, True),
+            "binance": (self._binance_bridge, "Binance", "secondary_api", False, False, True),
+        }
+
+    def _preferred_ohlcv_bridge_order(
+        self,
+        asset: str,
+        category: str,
+        provider_preference: Optional[Tuple[str, ...]] = None,
+    ) -> Tuple[Tuple[Any, str, str, bool, bool, bool], ...]:
+        ig_primary = self._ig_primary_asset(asset, category)
+        catalog = self._ohlcv_bridge_catalog(ig_primary=ig_primary)
+        default_tokens = (
+            ("ig", "dukascopy", "fmp", "deriv", "binance")
+            if ig_primary
+            else ("dukascopy", "fmp", "deriv", "binance")
+        )
+        ordered_tokens: list[str] = []
+        seen: set[str] = set()
+
+        for raw_token in tuple(provider_preference or ()):
+            token = self._normalize_provider(raw_token)
+            if token in catalog and token not in seen:
+                ordered_tokens.append(token)
+                seen.add(token)
+        for token in default_tokens:
+            if token in catalog and token not in seen:
+                ordered_tokens.append(token)
+                seen.add(token)
+
+        return tuple(catalog[token] for token in ordered_tokens)
 
     @staticmethod
     def _local_history_satisfies(df: Optional[pd.DataFrame], periods: int) -> bool:
@@ -471,13 +512,22 @@ class DataFetcher:
         periods: Optional[int] = None,
         end_time: Any = None,
         closed_only: bool = False,
+        *,
+        prefer_local: bool = True,
+        provider_preference: Optional[Tuple[str, ...]] = None,
     ) -> Optional[pd.DataFrame]:
         interval = (interval or get_trading_timeframe(category)).lower()
         periods = int(periods or get_timeframe_periods(interval) or LOOKBACK_PERIOD)
         meta_key = f"ohlcv:{asset}:{interval}"
         normalized_end = _normalize_end_time(end_time)
         end_key = normalized_end.isoformat() if normalized_end is not None else "latest"
-        cache_key = f"fetcher:{meta_key}:{category}:{periods}:{end_key}:{int(bool(closed_only))}"
+        preference_token = ",".join(
+            token for token in (self._normalize_provider(item) for item in tuple(provider_preference or ())) if token
+        ) or "default"
+        cache_key = (
+            f"fetcher:{meta_key}:{category}:{periods}:{end_key}:{int(bool(closed_only))}:"
+            f"{int(bool(prefer_local))}:{preference_token}"
+        )
 
         cached = self._cached_ohlcv_frame(cache_key, meta_key)
         if cached is not None:
@@ -492,29 +542,13 @@ class DataFetcher:
             closed_only,
             meta_key,
             cache_key,
+            allow_short_circuit=prefer_local,
         )
         if local_hit is not None:
             return local_hit
 
         last_error_meta: Optional[Dict[str, Any]] = None
-        ig_primary = self._ig_primary_asset(asset, category)
-        ig_bridge = self._ig_bridge if ig_primary else None
-        bridge_order = (
-            (
-                (ig_bridge, "IG", "primary_api", False, False, False),
-                (self._dukascopy_bridge, "Dukascopy", "secondary_api", False, False, False),
-                (self._fmp_bridge, "FMP", "secondary_api", False, False, False),
-                (self._deriv_bridge, "Deriv", "primary_api", False, False, True),
-                (self._binance_bridge, "Binance", "secondary_api", False, False, True),
-            )
-            if ig_primary
-            else (
-                (self._dukascopy_bridge, "Dukascopy", "secondary_api", False, False, False),
-                (self._fmp_bridge, "FMP", "secondary_api", False, False, False),
-                (self._deriv_bridge, "Deriv", "primary_api", False, False, True),
-                (self._binance_bridge, "Binance", "secondary_api", False, False, True),
-            )
-        )
+        bridge_order = self._preferred_ohlcv_bridge_order(asset, category, provider_preference)
         for bridge, source, source_class, delayed, realtime, allow_legacy_signature in bridge_order:
             df, error_meta = self._fetch_ohlcv_from_bridge(
                 bridge,
@@ -822,6 +856,8 @@ class DataFetcher:
         closed_only: bool,
         meta_key: str,
         cache_key: str,
+        *,
+        allow_short_circuit: bool = True,
     ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[Dict[str, Any]]]:
         if self._local_candle_store is None:
             return None, None, None
@@ -846,17 +882,19 @@ class DataFetcher:
                     realtime=bool((local_meta or {}).get("realtime", False)),
                 )
                 if self._local_history_satisfies(local_df, periods):
-                    self._store_ohlcv_result(
-                        asset,
-                        category,
-                        interval,
-                        meta_key,
-                        cache_key,
-                        local_df,
-                        meta,
-                        persist_local=False,
-                    )
-                    return local_df, None, None
+                    if allow_short_circuit:
+                        self._store_ohlcv_result(
+                            asset,
+                            category,
+                            interval,
+                            meta_key,
+                            cache_key,
+                            local_df,
+                            meta,
+                            persist_local=False,
+                        )
+                        return local_df, None, None
+                    return None, local_df, meta
                 return None, local_df, meta
         except Exception as exc:
             logger.debug(f"[DataFetcher] LocalStore OHLCV {asset}: {exc}")

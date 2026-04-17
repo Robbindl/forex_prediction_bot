@@ -3627,12 +3627,46 @@ def _history_allows_live_overlay(descriptor: Dict[str, Any], meta: Dict[str, Any
         return True
     primary = _provider_family((descriptor or {}).get("primary_provider") or "")
     if source_class == "local_store":
+        backing_families = {
+            _provider_family(value)
+            for value in list((meta or {}).get("backing_provider_families") or [])
+            if str(value or "").strip()
+        }
         latest_family = _provider_family((meta or {}).get("latest_provider_family") or "")
         latest_source_class = str((meta or {}).get("latest_source_class") or "").strip().lower()
+        provider_family = _provider_family((meta or {}).get("provider_family") or "")
         if primary and latest_family == primary and latest_source_class == "stream_cache":
+            return True
+        if primary and (provider_family == primary or latest_family == primary or primary in backing_families):
             return True
     history = _provider_family((meta or {}).get("provider_family") or (meta or {}).get("source") or "")
     return bool(primary and history and primary == history)
+
+
+def _chart_history_provider_preference(asset: str, category: str, descriptor: Dict[str, Any]) -> Tuple[str, ...]:
+    primary = str((descriptor or {}).get("primary_provider") or "").strip()
+    secondary = str((descriptor or {}).get("secondary_provider") or "").strip()
+    category_key = str(category or "").strip().lower()
+
+    ordered: list[str] = []
+
+    def _add(token: str) -> None:
+        raw = str(token or "").strip()
+        if raw and raw not in ordered:
+            ordered.append(raw)
+
+    _add(primary)
+    _add(secondary)
+
+    if category_key == "crypto":
+        _add("Binance")
+        _add("Deriv")
+    else:
+        _add("Deriv")
+
+    _add("Dukascopy")
+    _add("FMP")
+    return tuple(ordered)
 
 
 def _chart_period_limit(asset: str, category: str, interval: str, requested: int) -> int:
@@ -3699,15 +3733,32 @@ def _fetch_ohlcv_with_allowance_retry(
     periods: int,
     *,
     closed_only: bool = False,
+    prefer_local: bool = True,
+    provider_preference: Optional[Tuple[str, ...]] = None,
 ) -> Tuple[Optional["pd.DataFrame"], Dict[str, Any], int]:
     import pandas as pd
 
     fetcher = _fetcher
     requested = max(2, int(periods or 0))
+    base_kwargs = {
+        "interval": interval,
+        "periods": requested,
+        "closed_only": closed_only,
+        "prefer_local": prefer_local,
+    }
+    if provider_preference:
+        base_kwargs["provider_preference"] = provider_preference
     try:
-        df = fetcher.get_ohlcv(asset, category, interval=interval, periods=requested, closed_only=closed_only)
+        df = fetcher.get_ohlcv(asset, category, **base_kwargs)
     except TypeError:
-        df = fetcher.get_ohlcv(asset, category, interval=interval, periods=requested)
+        fallback_kwargs = {"interval": interval, "periods": requested}
+        if closed_only:
+            try:
+                df = fetcher.get_ohlcv(asset, category, interval=interval, periods=requested, closed_only=closed_only)
+            except TypeError:
+                df = fetcher.get_ohlcv(asset, category, **fallback_kwargs)
+        else:
+            df = fetcher.get_ohlcv(asset, category, **fallback_kwargs)
     meta_fetch = getattr(fetcher, "get_last_ohlcv_metadata", None)
     meta = meta_fetch(asset, interval) if callable(meta_fetch) else {}
     used = requested
@@ -3722,6 +3773,8 @@ def _fetch_ohlcv_with_allowance_retry(
                     interval=interval,
                     periods=retry_periods,
                     closed_only=closed_only,
+                    prefer_local=prefer_local,
+                    provider_preference=provider_preference,
                 )
             except TypeError:
                 retry_df = fetcher.get_ohlcv(
@@ -4208,6 +4261,8 @@ def _chart_candle_apply_category_fallbacks(
     periods: int,
     df: Any,
     used: str,
+    *,
+    provider_preference: Optional[Tuple[str, ...]] = None,
 ) -> Tuple[Any, str, int]:
     if df is not None and not df.empty:
         return df, used, periods
@@ -4225,7 +4280,17 @@ def _chart_candle_apply_category_fallbacks(
     }
     for fb in fallbacks.get(interval, []):
         fb_periods = _chart_period_limit(asset, category, fb, int(get_chart_timeframe_periods(fb)))
-        fallback_df = _fetcher.get_ohlcv(asset, category, interval=fb, periods=fb_periods)
+        try:
+            fallback_df = _fetcher.get_ohlcv(
+                asset,
+                category,
+                interval=fb,
+                periods=fb_periods,
+                prefer_local=False,
+                provider_preference=provider_preference,
+            )
+        except TypeError:
+            fallback_df = _fetcher.get_ohlcv(asset, category, interval=fb, periods=fb_periods)
         if fallback_df is not None and not getattr(fallback_df, "empty", True):
             return fallback_df, fb, fb_periods
     return df, used, periods
@@ -4313,6 +4378,7 @@ def api_chart_candles():
         cat      = _cat(asset)
         descriptor = _chart_asset_descriptor(asset, cat)
         ig_primary = str(descriptor.get("primary_provider") or "").upper() == "IG"
+        provider_preference = _chart_history_provider_preference(asset, cat, descriptor)
         requested_periods = int(get_chart_timeframe_periods(interval))
         periods = _chart_period_limit(asset, cat, interval, requested_periods)
         fetcher_token = _chart_fetcher_cache_token()
@@ -4322,7 +4388,14 @@ def api_chart_candles():
         if cached_payload:
             return jsonify(cached_payload)
 
-        df, meta, periods = _fetch_ohlcv_with_allowance_retry(asset, cat, interval, periods)
+        df, meta, periods = _fetch_ohlcv_with_allowance_retry(
+            asset,
+            cat,
+            interval,
+            periods,
+            prefer_local=False,
+            provider_preference=provider_preference,
+        )
         used = interval
         df, used, overlay_meta = _chart_candle_apply_stream_overlay(
             asset,
@@ -4334,7 +4407,15 @@ def api_chart_candles():
         )
         if overlay_meta is not meta:
             meta = overlay_meta
-        df, used, periods = _chart_candle_apply_category_fallbacks(asset, cat, interval, periods, df, used)
+        df, used, periods = _chart_candle_apply_category_fallbacks(
+            asset,
+            cat,
+            interval,
+            periods,
+            df,
+            used,
+            provider_preference=provider_preference,
+        )
         if df is None or df.empty:
             return jsonify(_chart_candle_missing_payload(asset, meta, interval, periods, last_good_key))
 
@@ -4372,6 +4453,8 @@ def api_chart_history():
         asset = request.args.get("asset", "EUR/USD")
         interval = request.args.get("interval", "1h")
         cat = _cat(asset)
+        descriptor = _chart_asset_descriptor(asset, cat)
+        provider_preference = _chart_history_provider_preference(asset, cat, descriptor)
         requested = _deep_history_bar_limit(interval, int(request.args.get("bars", "500")))
         end_time = _parse_chart_history_end_time(request.args.get("end_time"))
         closed_only = end_time is not None
@@ -4381,14 +4464,26 @@ def api_chart_history():
         if cached_payload:
             return jsonify(cached_payload)
 
-        df = _fetcher.get_ohlcv(
-            asset,
-            cat,
-            interval=interval,
-            periods=requested,
-            end_time=end_time,
-            closed_only=closed_only,
-        )
+        try:
+            df = _fetcher.get_ohlcv(
+                asset,
+                cat,
+                interval=interval,
+                periods=requested,
+                end_time=end_time,
+                closed_only=closed_only,
+                prefer_local=False,
+                provider_preference=provider_preference,
+            )
+        except TypeError:
+            df = _fetcher.get_ohlcv(
+                asset,
+                cat,
+                interval=interval,
+                periods=requested,
+                end_time=end_time,
+                closed_only=closed_only,
+            )
         meta = {}
         try:
             meta = _fetcher.get_last_ohlcv_metadata(asset, interval)

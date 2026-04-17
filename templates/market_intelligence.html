@@ -274,6 +274,7 @@ let _chartPricePrecision = 5;
 let _marketIntelligenceCache = null;
 let _marketIntelligencePending = null;
 let _chartLivePollTimer = null;
+let _chartGapFillCount = 0;
 
 function numValue(){ for(let i=0;i<arguments.length;i++){ const n = Number(arguments[i]); if(Number.isFinite(n)) return n; } return null; }
 function boolValue(){ for(let i=0;i<arguments.length;i++){ const v = arguments[i]; if(v === true || v === false) return v; } return null; }
@@ -457,6 +458,56 @@ function mergeCandles(existing, incoming){
   [].concat(incoming || [], existing || []).forEach(candle => { if(candle && Number.isFinite(Number(candle.time))) merged.set(Number(candle.time), candle); });
   return Array.from(merged.values()).sort((a,b) => Number(a.time) - Number(b.time));
 }
+function densifyCandlesForDisplay(candles, intervalSec, sourceClass){
+  const items = Array.isArray(candles) ? candles.slice().sort((a,b) => Number(a.time) - Number(b.time)) : [];
+  _chartGapFillCount = 0;
+  if(!items.length || !intervalSec) return items;
+  const sourceClassKey = String(sourceClass || '').trim().toLowerCase();
+  if(!['local_store','stream_cache'].includes(sourceClassKey)) return items;
+  const maxFillBars = intervalSec <= 300 ? 18 : intervalSec <= 900 ? 12 : intervalSec <= 3600 ? 8 : 4;
+  const filled = [];
+  for(let i = 0; i < items.length; i += 1){
+    const current = items[i];
+    const prev = filled.length ? filled[filled.length - 1] : null;
+    if(prev){
+      const deltaSec = Number(current.time) - Number(prev.time);
+      const missingBars = Math.round(deltaSec / intervalSec) - 1;
+      if(missingBars > 0 && missingBars <= maxFillBars){
+        const carry = Number(prev.close);
+        for(let gap = 1; gap <= missingBars; gap += 1){
+          filled.push({
+            time: Number(prev.time) + intervalSec * gap,
+            open: carry,
+            high: carry,
+            low: carry,
+            close: carry,
+            volume: 0,
+            synthetic_gap_fill: true
+          });
+          _chartGapFillCount += 1;
+        }
+      }
+    }
+    filled.push(current);
+  }
+  return filled;
+}
+function captureChartLogicalRange(){
+  if(!lwChart || !lwChart.timeScale) return null;
+  try{ return lwChart.timeScale().getVisibleLogicalRange(); }catch(err){ return null; }
+}
+function restoreChartLogicalRange(range, fallbackFit=false){
+  if(!lwChart || !lwChart.timeScale) return;
+  try{
+    if(range && Number.isFinite(Number(range.from)) && Number.isFinite(Number(range.to))){
+      lwChart.timeScale().setVisibleLogicalRange(range);
+      return;
+    }
+  }catch(err){}
+  if(fallbackFit){
+    try{ lwChart.timeScale().fitContent(); }catch(err){}
+  }
+}
 function applyLiveTickToChart(price, tsSec){
   if(_chartMode !== 'live' || !Number.isFinite(Number(price))) return;
   if(!Array.isArray(_chartCandles) || !_chartCandles.length || !cSeries){
@@ -542,6 +593,7 @@ function renderChartIntegrity(){
     {label:'History Spine', value:_chartHistorySource || '—', color:_chartHistorySource ? 'var(--cy)' : 'var(--tx2)'},
     {label:'Live Source', value:_chartLiveSource || '—', color:_chartLiveSource ? 'var(--gr)' : 'var(--tx2)'},
     {label:'Candle State', value:!_chartCandles.length ? 'Waiting' : lastAgeSec != null && intervalSec && lastAgeSec <= intervalSec * 2 ? 'Confirmed' : 'Stale', color:lastAgeSec != null && intervalSec && lastAgeSec <= intervalSec * 2 ? 'var(--gr)' : !_chartCandles.length ? 'var(--bl)' : 'var(--am)'},
+    {label:'Gap Fill', value:_chartGapFillCount ? String(_chartGapFillCount) : '0', color:_chartGapFillCount ? 'var(--am)' : 'var(--tx2)'},
     {label:'Last Bar Age', value:lastAgeSec == null ? '—' : formatRelativeAge(lastAgeSec), color:lastAgeSec != null && intervalSec && lastAgeSec <= intervalSec * 2 ? 'var(--gr)' : lastAgeSec == null ? 'var(--tx2)' : 'var(--am)'}
   ].map(item => '<div class="dp-stat"><div class="dp-val" style="color:'+item.color+'">'+item.value+'</div><div class="dp-lbl">'+item.label+'</div></div>').join('');
   detailEl.textContent = selected ? selected.symbol + ' is charting on ' + (_chartTfUsed || currentTf) + ' with ' + (_chartHistorySource || selected.primary_provider || 'Unknown') + ' as the history spine and ' + (_chartLiveSource || selected.primary_provider || 'Unknown') + ' as the live source.' : 'Chart status unavailable';
@@ -705,16 +757,22 @@ async function loadDataPlane(){
   renderChartIntegrity();
   renderMarketStatePanels(runtimeStatus, signal);
 }
-async function loadCandles(){
+async function loadCandles(opts = {}){
   if(_chartMode !== 'live' || candlesLoading) return;
   candlesLoading = true;
   const st = document.getElementById('chartStatus');
-  st.textContent = 'Loading…'; st.style.background = 'rgba(41,121,255,.15)'; st.style.color = 'var(--bl)';
+  if(!opts.quiet){ st.textContent = 'Loading…'; st.style.background = 'rgba(41,121,255,.15)'; st.style.color = 'var(--bl)'; }
   const d = await fetchWithTimeout('/api/chart/candles?asset=' + encodeURIComponent(currentAsset) + '&interval=' + currentTf, 25000);
   candlesLoading = false;
   if(d && d.candles && d.candles.length){
+    const keepRange = opts.keepRange !== false && Array.isArray(_chartCandles) && _chartCandles.length > 0;
+    const logicalRange = keepRange ? captureChartLogicalRange() : null;
     _lastLiveReloadAt = Date.now();
-    _chartCandles = d.candles.slice();
+    _chartCandles = densifyCandlesForDisplay(
+      d.candles.slice(),
+      intervalSeconds(d.interval_used || currentTf) || intervalSeconds(currentTf),
+      d.data_source_class || ''
+    );
     _chartTfUsed = d.interval_used || currentTf;
     _chartLiveOverlayAllowed = d.live_overlay_allowed !== false;
     _chartLiveSource = String(d.live_price_source || '');
@@ -729,11 +787,12 @@ async function loadCandles(){
     syncChartPricePrecision(_chartCandles, currentAsset, _currentAssetDescriptor);
     cSeries.setData(_chartCandles);
     vSeries.setData(_chartCandles.map(volumeBarFor));
-    lwChart.timeScale().fitContent();
+    restoreChartLogicalRange(logicalRange, !keepRange);
     st.textContent = d.candles.length + ' bars · ' + _chartTfUsed + (_chartHistorySource ? ' · ' + _chartHistorySource : '');
     st.style.background = 'rgba(0,208,132,.12)'; st.style.color = 'var(--gr)';
   }else{
     _chartCandles = [];
+    _chartGapFillCount = 0;
     st.textContent = String(d?.message || ('No ' + currentTf + ' data')).slice(0,72);
     st.style.background = 'rgba(255,69,96,.12)'; st.style.color = 'var(--rd)';
   }
@@ -754,8 +813,10 @@ async function loadHistoryCandles(opts = {}){
   const d = await fetchWithTimeout('/api/chart/history?' + params.toString(), 40000);
   candlesLoading = false;
   if(d && d.candles && d.candles.length){
+    const logicalRange = opts.append ? captureChartLogicalRange() : null;
     const incoming = d.candles.slice();
     _chartCandles = opts.append ? mergeCandles(_chartCandles, incoming) : incoming;
+    _chartGapFillCount = 0;
     _chartTfUsed = d.interval_used || currentTf;
     _chartLiveOverlayAllowed = false;
     _chartLiveSource = '';
@@ -769,11 +830,12 @@ async function loadHistoryCandles(opts = {}){
     syncChartPricePrecision(_chartCandles, currentAsset, _currentAssetDescriptor);
     cSeries.setData(_chartCandles);
     vSeries.setData(_chartCandles.map(volumeBarFor));
-    lwChart.timeScale().fitContent();
+    restoreChartLogicalRange(logicalRange, !opts.append);
     st.textContent = _chartCandles.length + ' bars · ' + _chartTfUsed + (_chartHistorySource ? ' · ' + _chartHistorySource : '') + (_historyHasMore ? ' · older available' : ' · start reached');
     st.style.background = 'rgba(0,208,132,.12)'; st.style.color = 'var(--gr)';
   }else{
     _historyHasMore = false;
+    _chartGapFillCount = 0;
     updateHistoryButtons();
     st.textContent = String(d?.message || ('No ' + currentTf + ' history')).slice(0,72);
     st.style.background = 'rgba(255,69,96,.12)'; st.style.color = 'var(--rd)';
@@ -893,8 +955,8 @@ async function loadCorrelation(manual=false){
 })();
 function changeToAsset(a){ currentAsset = a; syncChartPricePrecision(null, currentAsset, null); const sel = document.getElementById('chartAsset'); for(let i=0;i<sel.options.length;i++){ if(sel.options[i].value === a){ sel.selectedIndex = i; break; } } loadDataPlane(); if(_chartBooted){ if(_chartMode === 'history') loadHistoryCandles({append:false}); else { loadCandles(); startStream(); } } }
 function changeChartAsset(){ currentAsset = document.getElementById('chartAsset').value; syncChartPricePrecision(null, currentAsset, null); loadDataPlane(); if(_chartBooted){ if(_chartMode === 'history') loadHistoryCandles({append:false}); else { loadCandles(); startStream(); } } }
-function setTf(tf, el){ currentTf = tf; document.querySelectorAll('.chart-controls .tb-btn').forEach(b => b.classList.remove('on')); el.classList.add('on'); if(_chartMode === 'history') loadHistoryCandles({append:false}); else loadCandles(); }
-function setChartMode(mode){ _chartMode = mode === 'history' ? 'history' : 'live'; updateChartModeUi(); stopStream(); if(!_chartBooted) return; if(_chartMode === 'history') loadHistoryCandles({append:false}); else { loadCandles(); startStream(); } }
+function setTf(tf, el){ currentTf = tf; _lastLiveReloadAt = 0; document.querySelectorAll('.chart-controls .tb-btn').forEach(b => b.classList.remove('on')); el.classList.add('on'); if(_chartMode === 'history') loadHistoryCandles({append:false}); else loadCandles({keepRange:false}); }
+function setChartMode(mode){ _chartMode = mode === 'history' ? 'history' : 'live'; _lastLiveReloadAt = 0; updateChartModeUi(); stopStream(); if(!_chartBooted) return; if(_chartMode === 'history') loadHistoryCandles({append:false}); else { loadCandles({keepRange:false}); startStream(); } }
 function onHistoryBarsChanged(){ if(_chartMode === 'history') loadHistoryCandles({append:false}); }
 function jumpHistory(){ if(_chartMode !== 'history'){ setChartMode('history'); return; } loadHistoryCandles({append:false, endTime:historyEndTimeFromInput()}); }
 function loadOlderHistory(){ if(_chartMode !== 'history' || !_historyHasMore || !_historyCursor) return; const beforeIso = new Date((Number(_historyCursor) - 1) * 1000).toISOString(); loadHistoryCandles({append:true, endTime:beforeIso}); }
@@ -923,7 +985,15 @@ function _boot(){
   setTimeout(() => loadCorrelation(), 1000);
 }
 _boot();
-setInterval(() => { if(!_chartBooted){ bootChartSection(); return; } if(_chartMode === 'live'){ const sec = intervalSeconds(currentTf) || 60; const minReloadMs = Math.max(sec * 1000, 15000); if(!_lastLiveReloadAt || (Date.now() - _lastLiveReloadAt) >= minReloadMs) loadCandles(); } }, 15000);
+setInterval(() => {
+  if(!_chartBooted){ bootChartSection(); return; }
+  if(_chartMode !== 'live' || document.hidden) return;
+  const sec = intervalSeconds(currentTf) || 60;
+  const refreshMs = sec <= 300 ? 15000 : sec <= 900 ? 20000 : sec <= 3600 ? 30000 : 60000;
+  if(!_lastLiveReloadAt || (Date.now() - _lastLiveReloadAt) >= refreshMs){
+    loadCandles({quiet:true, keepRange:true});
+  }
+}, 5000);
 setInterval(() => { if(!document.hidden) loadDataPlane(); }, 15000);
 setInterval(() => { if(!document.hidden) loadHeatmap(); }, 60000);
 document.addEventListener('visibilitychange', () => { if(!document.hidden){ _marketIntelligenceCache = null; loadDataPlane(); if(_chartMode === 'live') startStream(); } else { stopStream(); } });

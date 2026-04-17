@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -7933,6 +7934,77 @@ def test_history_allows_live_overlay_for_local_store_when_provider_matches() -> 
         {"primary_provider": "IG"},
         {"source": "LocalStore", "source_class": "local_store", "provider_family": "DUKASCOPY"},
     ) is False
+    assert dashboard_mod._history_allows_live_overlay(
+        {"primary_provider": "DERIV"},
+        {
+            "source": "LocalStore",
+            "source_class": "local_store",
+            "provider_family": "MIXED",
+            "backing_provider_families": ["DUKASCOPY", "DERIV"],
+            "latest_provider_family": "DUKASCOPY",
+            "latest_source_class": "primary_api",
+        },
+    ) is True
+
+
+def test_api_chart_candles_prefers_primary_chart_provider_and_skips_local_short_circuit(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    captured: dict[str, Any] = {}
+    frame = pd.DataFrame(
+        {
+            "open": [1.1750, 1.1755],
+            "high": [1.1760, 1.1764],
+            "low": [1.1748, 1.1752],
+            "close": [1.1756, 1.1762],
+            "volume": [10.0, 12.0],
+        },
+        index=pd.to_datetime(["2026-04-17T16:00:00Z", "2026-04-17T16:05:00Z"], utc=True),
+    )
+
+    class _FakeFetcher:
+        def get_ohlcv(self, asset, category, interval="5m", periods=0, **kwargs):
+            captured["asset"] = asset
+            captured["category"] = category
+            captured["interval"] = interval
+            captured["periods"] = int(periods or 0)
+            captured["prefer_local"] = kwargs.get("prefer_local")
+            captured["provider_preference"] = tuple(kwargs.get("provider_preference") or ())
+            return frame
+
+        def get_last_ohlcv_metadata(self, asset, interval):
+            return {"source": "Deriv", "source_class": "primary_api", "provider_family": "Deriv"}
+
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_chart_asset_descriptor",
+        lambda asset, category: {
+            "symbol": asset,
+            "category": category,
+            "primary_provider": "Deriv",
+            "secondary_provider": "",
+            "quote_mode": "stream",
+            "price_precision": 5,
+        },
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/candles?asset=EUR/USD&interval=5m")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["data_source"] == "Deriv"
+    assert payload["live_overlay_allowed"] is True
+    assert captured["prefer_local"] is False
+    assert captured["provider_preference"][:3] == ("Deriv", "Dukascopy", "FMP")
 
 def test_api_chart_candles_disables_live_overlay_for_cross_provider_history(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
