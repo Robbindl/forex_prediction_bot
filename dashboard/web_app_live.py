@@ -3472,6 +3472,63 @@ def _chart_asset_descriptor(asset: str, category: str) -> Dict[str, Any]:
     }
 
 
+def _chart_stream_live_quote(asset: str, category: str) -> tuple[Optional[float], str]:
+    try:
+        from websocket_dashboard import get_live_price_snapshot
+
+        live_snapshot = get_live_price_snapshot(asset, max_age_seconds=5.0)
+        if live_snapshot is not None:
+            return (
+                float(live_snapshot.get("price", 0.0) or 0.0),
+                str(live_snapshot.get("source") or "LiveCache"),
+            )
+    except Exception:
+        pass
+    try:
+        from websocket_dashboard import get_live_price
+
+        live_price, live_source = get_live_price(asset, max_age_seconds=5.0)
+        if live_price is not None:
+            return float(live_price), str(live_source or "LiveCache")
+    except Exception:
+        pass
+
+    descriptor = _chart_asset_descriptor(asset, category)
+    primary_provider = str(descriptor.get("primary_provider") or "").strip()
+    secondary_provider = str(descriptor.get("secondary_provider") or "").strip()
+
+    provider_order: list[str] = []
+    if primary_provider.upper() == "IG" and secondary_provider:
+        provider_order = [secondary_provider, primary_provider]
+    else:
+        provider_order = [primary_provider, secondary_provider]
+
+    seen: set[str] = set()
+    for provider in provider_order:
+        token = str(provider or "").strip()
+        if not token:
+            continue
+        normalized = token.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            price, _spread, provider_meta = _fetcher.get_provider_quote(asset, category, token)
+        except Exception:
+            price, provider_meta = None, {}
+        if price is not None:
+            return float(price), str((provider_meta or {}).get("source") or token)
+
+    price, _ = _fetcher.get_real_time_price(asset, category)
+    if price is None:
+        return None, ""
+    try:
+        source = str((_fetcher.get_last_price_metadata(asset) or {}).get("source") or "")
+    except Exception:
+        source = ""
+    return float(price), source
+
+
 def _chart_price_precision(asset: str, category: str) -> int:
     symbol = str(asset or "").strip().upper()
     category_key = str(category or "").strip().lower()
@@ -4377,21 +4434,7 @@ def api_chart_stream():
         yield f"data: {json.dumps({'type': 'connected', 'asset': asset, 'ts': int(time.time())})}\n\n"
         while True:
             try:
-                price = None
-                source = None
-                try:
-                    from websocket_dashboard import get_live_price
-
-                    price, source = get_live_price(asset, max_age_seconds=15.0)
-                except Exception:
-                    price, source = None, None
-
-                if price is None:
-                    price, _ = _fetcher.get_real_time_price(asset, cat)
-                    try:
-                        source = str((_fetcher.get_last_price_metadata(asset) or {}).get("source") or source or "")
-                    except Exception:
-                        source = source or ""
+                price, source = _chart_stream_live_quote(asset, cat)
                 if price:
                     try:
                         _record_live_quote(str(source or "LiveAPI"), asset, float(price), emit_transaction=False)

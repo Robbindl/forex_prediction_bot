@@ -143,6 +143,35 @@ def test_trading_core_fmt_ml_pair_formats_real_ml() -> None:
     assert TradingCore._fmt_ml_pair(0.7342, 0.421) == "0.734/0.421"
 
 
+def test_trading_core_execution_selection_spreads_slots_across_categories() -> None:
+    engine = TradingCore(balance=10_000.0)
+
+    def _signal(asset: str, category: str, rank: int) -> Signal:
+        signal = Signal(
+            asset=asset,
+            canonical_asset=asset,
+            category=category,
+            direction="BUY",
+            confidence=0.82,
+            entry_price=100.0,
+            stop_loss=95.0,
+            take_profit=110.0,
+        )
+        signal.metadata["opportunity_rank"] = rank
+        return signal
+
+    survivors = [
+        _signal("BTC-USD", "crypto", 1),
+        _signal("ETH-USD", "crypto", 2),
+        _signal("EUR/USD", "forex", 3),
+        _signal("XAU/USD", "commodities", 4),
+    ]
+
+    selected = engine._select_execution_survivors(survivors, limit=3)
+
+    assert [sig.asset for sig in selected] == ["BTC-USD", "EUR/USD", "XAU/USD"]
+
+
 def test_position_sizer_uses_mt5_style_lot_steps_and_balance_scaling(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "DEFAULT_RISK_PER_TRADE", 1.5, raising=False)
     monkeypatch.setattr(cfg, "CRYPTO_RISK_PER_TRADE", 2.0, raising=False)
@@ -9451,6 +9480,46 @@ def test_chart_stream_prefers_shared_live_price_cache(monkeypatch) -> None:
     assert '"asset": "WTI"' in second_chunk
     assert '"source": "IG"' in second_chunk
 
+
+def test_chart_stream_uses_direct_provider_quote_when_live_cache_is_empty(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    class _FakeFetcher:
+        def get_provider_quote(self, asset, category, provider):
+            assert provider == "Deriv"
+            return 1.23456, 0.0, {"source": "Deriv"}
+
+        def get_real_time_price(self, asset, category):
+            raise AssertionError("cached aggregate quote path should not be used for live chart ticks")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(ws_mod, "get_live_price_snapshot", lambda asset, max_age_seconds=5.0: None, raising=False)
+    monkeypatch.setattr(ws_mod, "get_live_price", lambda asset, max_age_seconds=5.0: (None, None), raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_chart_asset_descriptor",
+        lambda asset, category: {
+            "primary_provider": "Deriv",
+            "secondary_provider": "",
+            "quote_mode": "stream",
+        },
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/stream?asset=EUR/USD", buffered=False)
+    first_chunk = next(response.response).decode("utf-8")
+    second_chunk = next(response.response).decode("utf-8")
+    response.close()
+
+    assert response.status_code == 200
+    assert '"type": "connected"' in first_chunk
+    assert '"type": "tick"' in second_chunk
+    assert '"asset": "EUR/USD"' in second_chunk
+    assert '"source": "Deriv"' in second_chunk
+
 def test_record_live_quote_emits_transaction_and_cache(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -16778,4 +16847,3 @@ def test_telegram_trade_opened_alert_shows_tp1_and_runner() -> None:
     assert "TP1:" in text
     assert "Runner:" in text
     assert "Runner 2.4:1" in text
-

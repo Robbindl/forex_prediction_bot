@@ -1575,9 +1575,47 @@ class TradingCore:
             except Exception:
                 pass
 
+    @staticmethod
+    def _select_execution_survivors(
+        survivors: List[Signal],
+        limit: int = 3,
+    ) -> List[Signal]:
+        max_count = max(1, int(limit or 1))
+        if len(survivors) <= max_count:
+            return survivors[:max_count]
+
+        selected: List[Signal] = []
+        selected_ids: set[int] = set()
+        seen_categories: set[str] = set()
+
+        for signal in survivors:
+            category = str(signal.category or "").strip().lower()
+            if category in seen_categories:
+                continue
+            selected.append(signal)
+            selected_ids.add(id(signal))
+            seen_categories.add(category)
+            if len(selected) >= max_count:
+                return selected
+
+        for signal in survivors:
+            if id(signal) in selected_ids:
+                continue
+            selected.append(signal)
+            if len(selected) >= max_count:
+                break
+        return selected
+
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
+        selected_survivors = self._select_execution_survivors(survivors, limit=limit)
+        if selected_survivors:
+            selection_summary = ", ".join(
+                f"{sig.asset}({sig.category})#{sig.metadata.get('opportunity_rank', '?')}"
+                for sig in selected_survivors
+            )
+            logger.info(f"[TradingCore] Execution selection: {selection_summary}")
         processed = 0
-        for sig in survivors[: max(1, int(limit or 1))]:
+        for sig in selected_survivors:
             if self._stop_event.is_set():
                 break
             if sig.confidence < TRADE_MIN_CONFIDENCE:
