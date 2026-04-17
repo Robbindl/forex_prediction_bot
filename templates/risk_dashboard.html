@@ -901,4 +901,4 @@ async function riskClose(mode){
 }
 </script>
 </body>
-<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(reg=>console.log('SW registered',reg.scope)).catch(err=>console.warn('SW registration failed',err)));}</script></html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js?v=5',{updateViaCache:'none'}).then(reg=>{console.log('SW registered',reg.scope);try{reg.update();}catch(_){}}).catch(err=>console.warn('SW registration failed',err)));}</script></html>

@@ -130,6 +130,9 @@ class TradingLogger:
         # Suppress noisy dependency stderr while keeping our own structured
         # stream diagnostics from exchange/websocket managers.
         _silence_external_logger("websocket")
+        _silence_external_logger("websocket._app")
+        _silence_external_logger("websocket._core")
+        _silence_external_logger("websocket._logging")
         _silence_external_logger("websockets")
 
         self._logger = logging.getLogger("trading_bot")

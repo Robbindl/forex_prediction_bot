@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dashboard-sw-v4';
+const CACHE_NAME = 'dashboard-sw-v5';
 const OFFLINE_URL = '/';
 const STATIC_URLS = [
   '/',
@@ -39,7 +39,15 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
   const isApiRequest = url.pathname.startsWith('/api/');
   const isDashboardAuthScript = url.pathname === '/static/dashboard_auth.js';
-  const shouldNetworkFirst = isApiRequest || request.destination === 'document' || isDashboardAuthScript;
+  const shouldBypassCache =
+    isApiRequest ||
+    url.pathname === '/service-worker.js' ||
+    url.pathname === '/manifest.webmanifest';
+  const shouldNetworkFirst = request.destination === 'document' || isDashboardAuthScript;
+
+  if (shouldBypassCache) {
+    return;
+  }
 
   if (shouldNetworkFirst) {
     event.respondWith(

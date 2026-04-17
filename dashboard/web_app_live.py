@@ -666,9 +666,17 @@ def _run_with_timeout(
     return copy.deepcopy(default)
 
 
+def _request_wants_cache_bypass() -> bool:
+    if not _DEVELOPMENT_MODE:
+        return False
+    return request.args.get('no_cache', '').strip().lower() in {'1', 'true', 'yes'}
+
+
 def _normalized_query_string() -> str:
     params = []
     for key in sorted(request.args.keys()):
+        if key in {'_', 'no_cache'}:
+            continue
         values = request.args.getlist(key)
         for value in sorted(values):
             params.append(f"{key}={value}")
@@ -688,7 +696,7 @@ def _serve_cached_api_response() -> Optional[Response]:
         return None
     if request.path == "/api/trade-history" or request.path.startswith("/api/trade-history/"):
         return None
-    if request.args.get('no_cache'):
+    if _request_wants_cache_bypass():
         return None
 
     cache_key = _get_api_cache_key()
@@ -2618,6 +2626,27 @@ def _command_center_journals() -> List[Dict[str, Any]]:
     return journals
 
 
+def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
+    cache_key = "command_center_payload"
+    last_good_key = "command_center_payload:last_good"
+    if not force_refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _response_to_dict(cached)
+
+    try:
+        payload = _build_command_center_payload()
+        _cache_set(cache_key, payload, ttl=5)
+        _cache_set(last_good_key, payload, ttl=300)
+        return payload
+    except Exception as exc:
+        logger.warning(f"[dashboard] command-center payload build failed: {exc}")
+        fallback = _cache_get(last_good_key)
+        if fallback is not None:
+            return _response_to_dict(fallback)
+        raise
+
+
 def _fetch_command_center_slow_data() -> Dict[str, Any]:
     sent_score = 0.0
     whale_count = 0
@@ -3193,7 +3222,7 @@ def _command_center_payload_signature(payload: Dict[str, Any]) -> str:
 @_check_rate_limit
 def api_command_center():
     try:
-        return jsonify(_build_command_center_payload())
+        return jsonify(_get_cached_command_center_payload(force_refresh=_request_wants_cache_bypass()))
     except APIError as e:
         return handle_api_error(e, "/api/command-center", e.status_code)
     except Exception as e:
@@ -3213,7 +3242,7 @@ def api_command_center_stream():
 
         while True:
             try:
-                payload = _build_command_center_payload()
+                payload = _get_cached_command_center_payload(force_refresh=False)
                 signature = _command_center_payload_signature(payload)
                 now = time.time()
                 if last_signature is None or signature != last_signature:
@@ -3228,7 +3257,7 @@ def api_command_center_stream():
             except Exception as exc:
                 logger.debug(f"[dashboard] command-center stream error: {exc}")
                 yield f"{json.dumps({'type': 'heartbeat', 'ts': int(time.time())})}\n"
-            time.sleep(1.0)
+            time.sleep(5.0)
 
     return Response(
         stream_with_context(_gen()),
@@ -6060,7 +6089,7 @@ def api_system_monitor_overview():
 def api_page_overview():
     page = request.args.get("page", "").strip().lower()
     days = min(int(request.args.get("days", 30)), 90)
-    force_refresh = request.args.get("no_cache", "").strip().lower() in {"1", "true", "yes"}
+    force_refresh = _request_wants_cache_bypass()
     if not page:
         return handle_api_error(BadRequest("page query required"), "/api/page-overview", 400)
 
@@ -6072,7 +6101,7 @@ def api_page_overview():
 
     def _command_center_snapshot() -> Dict[str, Any]:
         try:
-            return _response_to_dict(_call_view(api_command_center))
+            return _response_to_dict(_get_cached_command_center_payload(force_refresh=False))
         except Exception:
             # Keep lightweight overview pages functional even when the richer
             # command-center payload is unavailable in a partial test or render.

@@ -8226,6 +8226,53 @@ def test_page_overview_no_cache_bypasses_cached_payload(monkeypatch) -> None:
     assert cache_get_calls == []
     assert cache_set_calls == []
 
+
+def test_page_overview_no_cache_is_ignored_in_production(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", False, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_API_KEY_HASH", "configured", raising=False)
+
+    class _UnexpectedCall(Exception):
+        pass
+
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_cache_get",
+        lambda key: {"success": True, "command_center": {"balance": 222.0}},
+        raising=False,
+    )
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_call_view",
+        lambda fn: (_ for _ in ()).throw(_UnexpectedCall("view should not run when cached payload is reused")),
+        raising=False,
+    )
+    with dashboard_mod._SESSION_TOKEN_LOCK:
+        dashboard_mod._SESSION_TOKENS.clear()
+        dashboard_mod._SESSION_TOKENS["test-token"] = time.time() + 60
+
+    with dashboard_mod.app.test_request_context(
+        "/api/page-overview?page=command_center&no_cache=1&_=",
+        headers={"Authorization": "Bearer test-token"},
+    ):
+        response = dashboard_mod.api_page_overview()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["command_center"]["balance"] == 222.0
+
+
+def test_normalized_query_string_ignores_cache_buster_params(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", False, raising=False)
+    with dashboard_mod.app.test_request_context("/api/page-overview?page=system_monitor&no_cache=1&_=123&days=30"):
+        assert dashboard_mod._normalized_query_string() == "days=30&page=system_monitor"
+
 def test_page_overview_command_center_reuses_embedded_whale_summary(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
