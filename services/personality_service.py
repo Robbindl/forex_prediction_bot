@@ -488,13 +488,26 @@ class RobbieExplainer:
         news:     Optional[List[Dict]] = None,
         sentiment:Optional[Dict]       = None,
         chat_id:  Optional[str]        = None,
+        analysis: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Generate Robbie's full signal explanation.
         Called by /why command and the dashboard overlay.
         """
+        signal = signal or {}
         report    = self.db.get_personality_report()
         mood      = report["current_mood"]
+        if analysis and self._current_signal(signal, analysis) is None:
+            memory = self.db.get_asset_memory(asset)
+            return _render_market_state_response(
+                asset,
+                analysis,
+                df,
+                mood,
+                memory,
+                topic="why",
+            )
+
         direction = signal.get("direction", signal.get("signal", "HOLD"))
         confidence= float(signal.get("confidence", 0.5)) * 100
         entry     = float(signal.get("entry_price", 0))
@@ -573,6 +586,7 @@ class RobbieExplainer:
         question: str,
         signal:   Optional[Dict] = None,
         df:       Optional[pd.DataFrame] = None,
+        analysis: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Answer a free-form question about an asset in Robbie's voice.
@@ -582,14 +596,19 @@ class RobbieExplainer:
         mood    = report["current_mood"]
         memory  = self.db.get_asset_memory(asset)
         q_lower = question.lower()
+        live_signal = self._current_signal(signal, analysis)
 
         # ── Route to the right answer type ───────────────────────────────────
 
         if any(w in q_lower for w in ("buy", "sell", "should i", "enter", "trade")):
-            return self._answer_trade_question(asset, question, signal, df, mood, memory)
+            if analysis and live_signal is None:
+                return self._answer_analysis_state(asset, mood, memory, analysis, df=df, topic="trade")
+            return self._answer_trade_question(asset, question, live_signal, df, mood, memory)
 
         if any(w in q_lower for w in ("confidence", "confident", "conviction", "sure")):
-            return self._answer_confidence_question(asset, signal, mood, memory)
+            if analysis and live_signal is None:
+                return self._answer_analysis_state(asset, mood, memory, analysis, df=df, topic="confidence")
+            return self._answer_confidence_question(asset, live_signal, mood, memory)
 
         if any(w in q_lower for w in ("remember", "history", "last time", "before", "previously", "diary")):
             return self._answer_memory_question(asset, mood, memory)
@@ -598,18 +617,72 @@ class RobbieExplainer:
             return self._answer_mood_question(asset, mood, report)
 
         if any(w in q_lower for w in ("why", "reason", "explain", "because")):
-            if signal and df is not None:
-                return self.explain_signal(asset, df, signal)
+            if live_signal and df is not None:
+                return self.explain_signal(asset, df, live_signal, analysis=analysis)
+            if analysis:
+                return self._answer_analysis_state(asset, mood, memory, analysis, df=df, topic="why")
             return self._answer_why_no_signal(asset, mood)
 
         if any(w in q_lower for w in ("risk", "stop", "loss", "safe")):
-            return self._answer_risk_question(asset, signal, mood, memory)
+            if analysis and live_signal is None:
+                return self._answer_analysis_state(asset, mood, memory, analysis, df=df, topic="risk")
+            return self._answer_risk_question(asset, live_signal, mood, memory)
 
         if any(w in q_lower for w in ("news", "sentiment", "social", "twitter")):
-            return self._answer_sentiment_question(asset, signal, mood)
+            if analysis and live_signal is None:
+                return self._answer_analysis_state(asset, mood, memory, analysis, df=df, topic="sentiment")
+            return self._answer_sentiment_question(asset, live_signal, mood)
 
         # Default — general take
-        return self._answer_general(asset, question, signal, mood, memory)
+        if analysis and live_signal is None:
+            return self._answer_analysis_state(asset, mood, memory, analysis, df=df, topic="general")
+        return self._answer_general(asset, question, live_signal, mood, memory)
+
+    @staticmethod
+    def _current_signal(signal: Optional[Dict], analysis: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
+        candidate: Any = signal
+        if (not isinstance(candidate, dict) or not candidate) and isinstance(analysis, dict):
+            maybe_signal = analysis.get("signal")
+            if isinstance(maybe_signal, dict):
+                candidate = maybe_signal
+        if not isinstance(candidate, dict) or not candidate:
+            return None
+        if str(candidate.get("direction", "HOLD") or "HOLD").upper() == "HOLD":
+            return None
+        if candidate.get("alive") is False:
+            return None
+        return candidate
+
+    def describe_market_state(
+        self,
+        asset: str,
+        analysis: Dict[str, Any],
+        *,
+        df: Optional[pd.DataFrame] = None,
+        topic: str = "general",
+    ) -> str:
+        report = self.db.get_personality_report()
+        memory = self.db.get_asset_memory(asset)
+        return _render_market_state_response(
+            asset,
+            analysis,
+            df,
+            report.get("current_mood", "neutral"),
+            memory,
+            topic=topic,
+        )
+
+    def _answer_analysis_state(
+        self,
+        asset: str,
+        mood: str,
+        memory: Dict[str, Any],
+        analysis: Dict[str, Any],
+        *,
+        df: Optional[pd.DataFrame] = None,
+        topic: str = "general",
+    ) -> str:
+        return _render_market_state_response(asset, analysis, df, mood, memory, topic=topic)
 
     def _answer_trade_question(self, asset, question, signal, df, mood, memory) -> str:
         if not signal or signal.get("direction", "HOLD") == "HOLD":
@@ -1176,6 +1249,359 @@ def _technical_reasons(df: pd.DataFrame, signal: Dict) -> List[str]:
         logger.debug(f"[Personality] _technical_reasons error: {e}")
 
     return reasons
+
+
+def _fmt_asset_price(price: Any) -> str:
+    try:
+        value = float(price or 0.0)
+    except Exception:
+        return "n/a"
+    if value == 0.0:
+        return "n/a"
+    if abs(value) >= 1000:
+        return f"{value:,.2f}"
+    if abs(value) >= 10:
+        return f"{value:.2f}"
+    if abs(value) >= 0.1:
+        return f"{value:.4f}"
+    return f"{value:.5f}"
+
+
+def _humanize_runtime_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("_", " ").replace("-", " ").replace("/", " / ")
+    text = " ".join(text.split())
+    return text
+
+
+def _humanize_runtime_reason(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "the setup is not ready yet"
+    canned = {
+        "no_playbook_seed": "the chart has not produced a playbook-quality seed yet",
+        "market_closed": "the market is closed right now",
+        "weekend_closed": "the market is closed for the weekend",
+        "pullback_missing:trend_pullback": "the bot wants a proper pullback before entering",
+        "trend_misaligned:aggressive_expansion": "the aggressive expansion idea is fighting the current structure",
+        "trend_misaligned:intermarket_continuation": "the continuation idea is fighting the current structure",
+        "alignment_too_weak:breakout_retest": "the breakout retest does not have enough structural alignment yet",
+        "upside_exhausted:intermarket_continuation": "the move already looks stretched on the upside",
+        "downside_exhausted:intermarket_continuation": "the move already looks stretched on the downside",
+        "pattern family ranks below elite threshold": "the setup family still ranks below the execution threshold",
+    }
+    if raw in canned:
+        return canned[raw]
+    if ":" in raw:
+        left, right = raw.split(":", 1)
+        return f"{_humanize_runtime_label(left)} — {_humanize_runtime_label(right)}".strip(" -")
+    return _humanize_runtime_label(raw)
+
+
+def _analysis_bias_word(structure: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+    signal = analysis.get("signal") if isinstance(analysis.get("signal"), dict) else {}
+    direction = str(signal.get("direction") or analysis.get("playbook_decision", {}).get("direction") or "").upper()
+    bias = str(structure.get("structure_bias") or "").lower()
+    if bias == "buy" or direction == "BUY":
+        return "bullish"
+    if bias == "sell" or direction == "SELL":
+        return "bearish"
+    return "neutral"
+
+
+def _analysis_setup_sentence(structure: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+    bias_word = _analysis_bias_word(structure, analysis)
+    breakout_ready = bool(structure.get("breakout_retest_ready"))
+    pullback_ready = bool(structure.get("first_pullback_ready"))
+    reclaim_ready = bool(structure.get("failed_opposite_move_confirmed"))
+    breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
+    pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
+    pattern_family = _humanize_runtime_label(structure.get("pattern_family"))
+    if breakout_ready:
+        return f"structure is {bias_word} and a breakout retest is already on the board"
+    if pullback_ready:
+        return f"structure is {bias_word} and the first pullback is ready to be judged"
+    if reclaim_ready:
+        return f"structure is trying to build a reclaim-style reversal"
+    if bias_word == "bullish":
+        if breakout_score >= 0.20:
+            return "structure still leans higher, but the breakout has not confirmed cleanly enough yet"
+        if pullback_score >= 0.20:
+            return "structure still leans higher, but the pullback has not reset cleanly enough yet"
+        return "structure leans higher, but the chart is not giving the bot a clean trigger yet"
+    if bias_word == "bearish":
+        if breakout_score <= -0.20:
+            return "structure still leans lower, but the breakdown has not confirmed cleanly enough yet"
+        if pullback_score <= -0.20:
+            return "structure still leans lower, but the bounce into sell territory is not clean enough yet"
+        return "structure leans lower, but the chart is not giving the bot a clean trigger yet"
+    if pattern_family:
+        return f"the market is behaving more like {pattern_family.lower()} than a clean trend continuation"
+    return "the market is still mixed and rangey"
+
+
+def _analysis_level_sentence(structure: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+    support_levels = list(structure.get("support_levels") or [])
+    resistance_levels = list(structure.get("resistance_levels") or [])
+    support = support_levels[0] if support_levels else structure.get("support")
+    resistance = resistance_levels[0] if resistance_levels else structure.get("resistance")
+    support_text = _fmt_asset_price(support)
+    resistance_text = _fmt_asset_price(resistance)
+    dist_to_support = structure.get("distance_to_support")
+    dist_to_resistance = structure.get("distance_to_resistance")
+    bias_word = _analysis_bias_word(structure, analysis)
+
+    pieces: List[str] = []
+    if support_text != "n/a" and resistance_text != "n/a":
+        pieces.append(f"support is near {support_text} and resistance is near {resistance_text}")
+    elif support_text != "n/a":
+        pieces.append(f"nearest support is around {support_text}")
+    elif resistance_text != "n/a":
+        pieces.append(f"nearest resistance is around {resistance_text}")
+
+    try:
+        if bias_word == "bullish" and dist_to_resistance is not None and float(dist_to_resistance) <= 0.0035:
+            pieces.append("price is already close to nearby resistance, so chasing here is lower quality")
+        elif bias_word == "bearish" and dist_to_support is not None and float(dist_to_support) <= 0.0035:
+            pieces.append("price is already close to nearby support, so chasing here is lower quality")
+    except Exception:
+        pass
+
+    exhaustion = float(structure.get("dominant_exhaustion_score", 0.0) or 0.0)
+    if exhaustion >= 0.58 or bool(structure.get("bias_exhausted")):
+        pieces.append("the move is already stretched, so the bot does not want to force the entry")
+
+    if not pieces:
+        return ""
+    return "Right now " + "; ".join(pieces) + "."
+
+
+def _analysis_tape_sentence(df: Optional[pd.DataFrame], analysis: Dict[str, Any]) -> str:
+    if df is None or df.empty:
+        return ""
+    signal = analysis.get("signal") if isinstance(analysis.get("signal"), dict) else {}
+    reasons = _technical_reasons(df, signal or {"metadata": {"sentiment_score": analysis.get("sentiment_score", 0.0)}})
+    clean_reasons = [str(item).strip() for item in reasons if str(item).strip()]
+    if not clean_reasons:
+        return ""
+    return "On the tape: " + "; ".join(clean_reasons[:2]) + "."
+
+
+def _analysis_flow_sentence(analysis: Dict[str, Any]) -> str:
+    sentiment_score = float(analysis.get("sentiment_score", 0.0) or 0.0)
+    cross = analysis.get("cross_asset_context") if isinstance(analysis.get("cross_asset_context"), dict) else {}
+    market_intelligence = analysis.get("market_intelligence") if isinstance(analysis.get("market_intelligence"), dict) else {}
+    narrative = _humanize_runtime_label(market_intelligence.get("dominant_narrative") or market_intelligence.get("narrative") or "")
+    peer = str(cross.get("dominant_peer") or "").strip()
+    cross_state = _humanize_runtime_label(cross.get("state") or "")
+
+    parts: List[str] = []
+    if sentiment_score >= 0.20:
+        parts.append(f"background sentiment is leaning bullish at {sentiment_score:+.2f}")
+    elif sentiment_score <= -0.20:
+        parts.append(f"background sentiment is leaning bearish at {sentiment_score:+.2f}")
+    if peer and cross_state:
+        parts.append(f"{peer} is currently {cross_state.lower()}")
+    if narrative:
+        parts.append(f"the dominant narrative is {narrative.lower()}")
+    if not parts:
+        return ""
+    return "Flow context: " + "; ".join(parts) + "."
+
+
+def _analysis_wait_sentence(structure: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+    market_status = analysis.get("market_status") if isinstance(analysis.get("market_status"), dict) else {}
+    if not bool(market_status.get("market_open", False)):
+        return "the next thing that matters is the reopen; after that the bot wants to see whether this structure still holds under live liquidity"
+    if bool(structure.get("breakout_retest_ready")):
+        return "the bot wants the retest to hold cleanly before it commits"
+    if bool(structure.get("first_pullback_ready")):
+        return "the bot wants the first pullback to hold and rotate back with conviction"
+    bias_word = _analysis_bias_word(structure, analysis)
+    if bias_word == "bullish":
+        return "the bot wants either a cleaner pullback hold or a much cleaner breakout through resistance before buying"
+    if bias_word == "bearish":
+        return "the bot wants either a cleaner bounce into sell territory or a cleaner break through support before selling"
+    return "the bot wants cleaner directional structure before it commits"
+
+
+def _analysis_bot_paragraph(asset: str, analysis: Dict[str, Any], *, topic: str = "general") -> str:
+    position = analysis.get("open_position") if isinstance(analysis.get("open_position"), dict) else {}
+    structure = analysis.get("market_structure") if isinstance(analysis.get("market_structure"), dict) else {}
+    signal = analysis.get("signal") if isinstance(analysis.get("signal"), dict) else {}
+    playbook = analysis.get("playbook_decision") if isinstance(analysis.get("playbook_decision"), dict) else {}
+    decision_status = str(analysis.get("decision_status") or "")
+    decision_reason = _humanize_runtime_reason(analysis.get("decision_reason"))
+
+    if position:
+        direction = str(position.get("direction") or position.get("signal") or "").upper() or "BUY"
+        pnl = position.get("pnl")
+        pnl_text = ""
+        try:
+            pnl_text = f" Floating P&L is ${float(pnl):+.2f}." if pnl is not None else ""
+        except Exception:
+            pnl_text = ""
+        return (
+            f"The bot is already in a live {direction.lower()} on {asset} from {_fmt_asset_price(position.get('entry_price'))}."
+            f"{pnl_text} It is managing that position first, so it is not looking for a second fresh entry on the same asset."
+        )
+
+    if signal and bool(signal.get("alive", True)):
+        direction = str(signal.get("direction") or "").upper() or "BUY"
+        confidence = float(signal.get("confidence", 0.0) or 0.0) * 100.0
+        entry = _fmt_asset_price(signal.get("entry_price"))
+        stop = _fmt_asset_price(signal.get("stop_loss"))
+        target = _fmt_asset_price(signal.get("take_profit"))
+        playbook = analysis.get("playbook_decision") if isinstance(analysis.get("playbook_decision"), dict) else {}
+        meta = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
+        playbook_name = _humanize_runtime_label(playbook.get("playbook") or meta.get("playbook_name"))
+        entry_style = _humanize_runtime_label(playbook.get("entry_style") or meta.get("playbook_entry_style"))
+        session_label = _humanize_runtime_label(playbook.get("session_label") or meta.get("session_label") or meta.get("playbook_session"))
+        broker = analysis.get("broker_quality") if isinstance(analysis.get("broker_quality"), dict) else {}
+        broker_bits = [
+            _humanize_runtime_label(broker.get("primary_provider")),
+            _humanize_runtime_label(broker.get("quote_quality_state")),
+            _humanize_runtime_label(broker.get("spread_regime")),
+        ]
+        broker_bits = [bit for bit in broker_bits if bit]
+        context_bits = []
+        if playbook_name:
+            context = playbook_name.lower()
+            if entry_style:
+                context += f" / {entry_style.lower()}"
+            context_bits.append(context)
+        if session_label:
+            context_bits.append(f"session {session_label.lower()}")
+        if broker_bits:
+            context_bits.append("quotes " + ", ".join(bit.lower() for bit in broker_bits[:3]))
+        context_prefix = ""
+        if context_bits:
+            context_prefix = "The active idea is " + "; ".join(context_bits[:3]) + ". "
+        return (
+            f"{context_prefix}Bot posture: it is willing to {direction.lower()} here, with a working plan around {entry},"
+            f" stop {stop}, target {target}, and about {confidence:.0f}% live conviction."
+        )
+
+    if decision_status == "killed":
+        blocks = []
+        if signal:
+            meta = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
+            blocks = list(meta.get("execution_hard_blocks") or meta.get("late_entry_risk_reasons") or [])
+        block_text = "; ".join(_humanize_runtime_reason(item) for item in blocks[:2]) if blocks else decision_reason
+        wait_text = _analysis_wait_sentence(structure, analysis)
+        return (
+            f"The bot had a directional idea, but it killed the entry because {block_text}. "
+            f"What it wants next is simple: {wait_text}."
+        )
+
+    if topic == "confidence":
+        playbook_conf = float(playbook.get("confidence", 0.0) or 0.0) * 100.0
+        align = float(structure.get("alignment_score", 0.0) or 0.0) * 100.0
+        setup = float(structure.get("setup_quality", 0.0) or 0.0) * 100.0
+        return (
+            f"There is no live execution confidence to quote yet. Structurally the chart is running around "
+            f"{align:.0f}% alignment and {setup:.0f}% setup quality, with playbook conviction near {playbook_conf:.0f}% when a candidate exists."
+        )
+
+    if topic == "risk":
+        return (
+            f"There is no live entry plan yet, so there is no active stop or target on {asset}. "
+            f"The real risk right now is forcing an entry before {_analysis_wait_sentence(structure, analysis)}."
+        )
+
+    if topic == "sentiment":
+        flow = _analysis_flow_sentence(analysis)
+        if flow:
+            return flow
+        return f"There is no meaningful sentiment edge on {asset} right now; the structure matters more than social or flow inputs here."
+
+    wait_text = _analysis_wait_sentence(structure, analysis)
+    return f"The bot is flat here for now. What it is waiting for next is {wait_text}."
+
+
+def _analysis_market_paragraph(asset: str, analysis: Dict[str, Any]) -> str:
+    market_status = analysis.get("market_status") if isinstance(analysis.get("market_status"), dict) else {}
+    market_open = bool(market_status.get("market_open", False))
+    market_reason = _humanize_runtime_reason(market_status.get("reason"))
+    current_price = _fmt_asset_price(analysis.get("current_price") or analysis.get("latest_close"))
+    category = str(analysis.get("category") or "").lower()
+    if market_open:
+        return f"{asset} is currently tradable, and the latest tracked price is around {current_price}."
+    closed_reason = market_reason or "the session is shut"
+    if category != "crypto":
+        return (
+            f"{asset} is in watch mode right now because {closed_reason}. "
+            f"The bot can still read the structure, but it will not call this a live executable setup until the market reopens."
+        )
+    return f"{asset} is trading around {current_price}, but the bot is not seeing a live executable edge yet."
+
+
+def _analysis_structure_paragraph(asset: str, analysis: Dict[str, Any], df: Optional[pd.DataFrame]) -> str:
+    structure = analysis.get("market_structure") if isinstance(analysis.get("market_structure"), dict) else {}
+    if not structure:
+        return f"The current chart state on {asset} is not fully available yet."
+    setup_sentence = _analysis_setup_sentence(structure, analysis)
+    level_sentence = _analysis_level_sentence(structure, analysis)
+    tape_sentence = _analysis_tape_sentence(df, analysis)
+    parts = [item for item in [setup_sentence[:1].upper() + setup_sentence[1:] + ".", level_sentence, tape_sentence] if item]
+    return " ".join(parts)
+
+
+def _analysis_memory_paragraph(asset: str, memory: Dict[str, Any]) -> str:
+    if not memory.get("has_memory"):
+        return ""
+    total_trades = int(memory.get("total_trades", 0) or 0)
+    if total_trades <= 0:
+        return ""
+    return (
+        f"Memory check: the bot has traded {asset} {total_trades} times recently, with "
+        f"{memory.get('win_rate', 0)}% wins and ${float(memory.get('total_pnl', 0.0) or 0.0):+.2f} total P&L."
+    )
+
+
+def _render_market_state_response(
+    asset: str,
+    analysis: Dict[str, Any],
+    df: Optional[pd.DataFrame],
+    mood: str,
+    memory: Dict[str, Any],
+    *,
+    topic: str = "general",
+) -> str:
+    analysis = analysis or {}
+    market_status = analysis.get("market_status") if isinstance(analysis.get("market_status"), dict) else {}
+    market_open = bool(market_status.get("market_open", False))
+    decision_status = str(analysis.get("decision_status") or "")
+    signal = analysis.get("signal") if isinstance(analysis.get("signal"), dict) else {}
+    position = analysis.get("open_position") if isinstance(analysis.get("open_position"), dict) else {}
+
+    if position:
+        headline = f"*{asset}* — already in a live trade."
+    elif signal and bool(signal.get("alive", True)):
+        direction = str(signal.get("direction") or "").upper() or "BUY"
+        headline = f"*{asset}* — live {direction.lower()} setup."
+    elif decision_status == "killed":
+        headline = f"*{asset}* — setup spotted, but entry is blocked."
+    elif not market_open:
+        headline = f"*{asset}* — market closed, watch mode."
+    else:
+        headline = f"*{asset}* — no live entry yet, but the chart is still active."
+
+    paragraphs = [headline, _analysis_market_paragraph(asset, analysis), _analysis_structure_paragraph(asset, analysis, df)]
+    flow_paragraph = _analysis_flow_sentence(analysis)
+    if flow_paragraph and topic in {"why", "trade", "sentiment", "general", "signal"}:
+        paragraphs.append(flow_paragraph)
+    paragraphs.append(_analysis_bot_paragraph(asset, analysis, topic=topic))
+    memory_paragraph = _analysis_memory_paragraph(asset, memory)
+    if memory_paragraph and topic in {"why", "trade", "general", "signal"}:
+        paragraphs.append(memory_paragraph)
+
+    if mood in {"grumpy", "cautious", "shaken"} and topic in {"trade", "why", "general"}:
+        paragraphs.append("Because recent form has been choppier, the bot is leaning toward cleaner price location and better confirmation rather than forcing the first idea it sees.")
+
+    return "\n\n".join(part for part in paragraphs if str(part or "").strip())
 
 
 _BULLISH_PHRASES = [

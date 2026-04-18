@@ -2194,60 +2194,96 @@ class SignalDecisionEngine:
             return False
 
     @staticmethod
-    def _finalize(signal: Signal, context: Dict[str, Any]) -> Optional[Signal]:
+    def _finalize(
+        signal: Signal,
+        context: Dict[str, Any],
+        *,
+        report: bool = True,
+        keep_dead: bool = False,
+    ) -> Optional[Signal]:
         elapsed_ms = (time.monotonic() - context.get("decision_start", time.monotonic())) * 1000
 
         if os.getenv("DEBUG_FORCE_SURVIVE", "0") == "1" and not signal.alive:
             signal.alive = True
             signal.kill_reason = "Forced survive via DEBUG_FORCE_SURVIVE"
 
-        if signal.alive:
-            logger.info(f"[DecisionEngine] {signal.asset} accepted score={signal.confidence:.3f} ({elapsed_ms:.0f}ms)")
-        else:
-            logger.debug(f"[DecisionEngine] {signal.asset} rejected at step {signal.step_reached}: {signal.kill_reason} ({elapsed_ms:.0f}ms)")
+        if report:
+            if signal.alive:
+                logger.info(f"[DecisionEngine] {signal.asset} accepted score={signal.confidence:.3f} ({elapsed_ms:.0f}ms)")
+            else:
+                logger.debug(f"[DecisionEngine] {signal.asset} rejected at step {signal.step_reached}: {signal.kill_reason} ({elapsed_ms:.0f}ms)")
 
-        if _MONITOR_OK:
+            if _MONITOR_OK:
+                try:
+                    metrics.record(DECISION, elapsed_ms, success=signal.alive)
+                    _monitor.record_decision_latency(elapsed_ms)
+                    _monitor.record_signal(signal.asset, signal.direction, signal.alive)
+                    if not signal.alive and signal.kill_reason:
+                        _monitor.record_kill(str(signal.step_reached))
+                except Exception as exc:
+                    logger.debug(f"[DecisionEngine] Monitoring record failed: {exc}")
+
+            if signal.alive:
+                try:
+                    from prediction_tracker import prediction_tracker as _pt
+                    _pt.record_signal({
+                        "asset": signal.asset,
+                        "direction": signal.direction,
+                        "signal": signal.direction,
+                        "entry_price": signal.entry_price,
+                        "take_profit": signal.take_profit,
+                        "stop_loss": signal.stop_loss,
+                        "confidence": signal.confidence,
+                        "category": signal.category,
+                        "strategy": signal.strategy_id,
+                        "session": signal.metadata.get("session", ""),
+                        "regime": signal.metadata.get("regime", ""),
+                        "features": context.get("features"),
+                        "signal_metadata": {
+                            "ml_prediction": context.get("ml_prediction"),
+                            "ml_confidence": context.get("ml_confidence"),
+                            **signal.metadata,
+                        },
+                    })
+                except Exception as exc:
+                    logger.debug(f"[DecisionEngine] Prediction tracker record failed: {exc}")
+
             try:
-                metrics.record(DECISION, elapsed_ms, success=signal.alive)
-                _monitor.record_decision_latency(elapsed_ms)
-                _monitor.record_signal(signal.asset, signal.direction, signal.alive)
-                if not signal.alive and signal.kill_reason:
-                    _monitor.record_kill(str(signal.step_reached))
+                from core.signal_reporter import reporter
+                signal = reporter.report(signal, context)
             except Exception as exc:
-                logger.debug(f"[DecisionEngine] Monitoring record failed: {exc}")
+                logger.error(f"[DecisionEngine] Reporter error: {exc}")
 
-        if signal.alive:
-            try:
-                from prediction_tracker import prediction_tracker as _pt
-                _pt.record_signal({
-                    "asset": signal.asset,
-                    "direction": signal.direction,
-                    "signal": signal.direction,
-                    "entry_price": signal.entry_price,
-                    "take_profit": signal.take_profit,
-                    "stop_loss": signal.stop_loss,
-                    "confidence": signal.confidence,
-                    "category": signal.category,
-                    "strategy": signal.strategy_id,
-                    "session": signal.metadata.get("session", ""),
-                    "regime": signal.metadata.get("regime", ""),
-                    "features": context.get("features"),
-                    "signal_metadata": {
-                        "ml_prediction": context.get("ml_prediction"),
-                        "ml_confidence": context.get("ml_confidence"),
-                        **signal.metadata,
-                    },
-                })
-            except Exception as exc:
-                logger.debug(f"[DecisionEngine] Prediction tracker record failed: {exc}")
+        return signal if (signal.alive or keep_dead) else None
 
+    def preview(self, signal: Signal, context: Optional[Dict[str, Any]] = None) -> Signal:
+        context = context or {}
+        context.setdefault("decision_start", time.monotonic())
         try:
-            from core.signal_reporter import reporter
-            signal = reporter.report(signal, context)
+            if not self._apply_market_review(signal, context):
+                return self._finalize(signal, context, report=False, keep_dead=True) or signal
+            if not self._apply_intelligence_review(signal, context):
+                return self._finalize(signal, context, report=False, keep_dead=True) or signal
+            if not self._apply_memory_review(signal, context):
+                return self._finalize(signal, context, report=False, keep_dead=True) or signal
+            if not self._apply_policy_review(signal, context):
+                return self._finalize(signal, context, report=False, keep_dead=True) or signal
+            if not self._apply_governance_review(signal, context):
+                return self._finalize(signal, context, report=False, keep_dead=True) or signal
+            if not self._apply_execution_review(signal, context):
+                return self._finalize(signal, context, report=False, keep_dead=True) or signal
         except Exception as exc:
-            logger.error(f"[DecisionEngine] Reporter error: {exc}")
-
-        return signal if signal.alive else None
+            if signal.alive:
+                signal.kill(f"decision engine preview exception: {exc}", STEP_GOVERNANCE)
+            signal.journal.record(
+                layer=STEP_GOVERNANCE,
+                name="governance",
+                decision=KILLED,
+                reason=f"preview exception: {exc}",
+                conf_before=signal.confidence,
+                conf_after=signal.confidence,
+            )
+        return self._finalize(signal, context, report=False, keep_dead=True) or signal
 
 
 decision_engine = SignalDecisionEngine()

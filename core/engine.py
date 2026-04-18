@@ -1039,6 +1039,119 @@ class TradingCore:
             logger.error(f"[TradingCore] get_signal_for_asset({asset}): {e}")
             return None
 
+    def inspect_asset(self, asset: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "asset": asset,
+            "canonical_asset": asset,
+            "category": "",
+            "market_status": {"market_open": False, "reason": "engine_not_ready"},
+            "decision_status": "engine_not_ready",
+            "decision_reason": "engine_not_ready",
+            "signal": None,
+            "journal_text": "",
+            "journal_summary": {},
+            "playbook_decision": {},
+            "seed_decision": {},
+            "market_structure": {},
+            "market_intelligence": {},
+            "broker_quality": {},
+            "market_microstructure": {},
+            "cross_asset_context": {},
+            "sentiment_score": 0.0,
+            "funding_bias": "NEUTRAL",
+            "oi_signal": "NEUTRAL",
+            "timeframe": "",
+            "current_price": 0.0,
+            "latest_close": 0.0,
+            "open_position": None,
+        }
+        if not self.is_ready:
+            return result
+        try:
+            canonical = self.registry.canonical(asset)
+            category = self.registry.category(canonical)
+            market_open, market_reason = self._market_hours_status(canonical, category)
+            result.update(
+                {
+                    "asset": canonical,
+                    "canonical_asset": canonical,
+                    "category": category,
+                    "market_status": {"market_open": bool(market_open), "reason": str(market_reason or "")},
+                }
+            )
+
+            open_position = next(
+                (
+                    dict(pos)
+                    for pos in self.state.get_open_positions()
+                    if self.registry.canonical(str(pos.get("asset", "") or "")) == canonical
+                ),
+                None,
+            )
+            result["open_position"] = open_position
+
+            price_data = self._fetch_price_data(canonical, category)
+            if price_data is None or price_data.empty:
+                result["decision_status"] = "no_price_data"
+                result["decision_reason"] = "no_price_data"
+                return result
+
+            try:
+                result["latest_close"] = float(price_data["close"].iloc[-1])
+            except Exception:
+                result["latest_close"] = 0.0
+
+            ctx, price, _spread = self._build_signal_generation_context(canonical, category, price_data)
+            ctx["_inspection_only"] = True
+
+            result.update(
+                {
+                    "market_intelligence": dict(ctx.get("market_intelligence") or {}),
+                    "market_structure": dict(ctx.get("market_structure") or {}),
+                    "broker_quality": dict(ctx.get("broker_quality") or {}),
+                    "market_microstructure": dict(ctx.get("market_microstructure") or {}),
+                    "cross_asset_context": dict(ctx.get("cross_asset_context") or {}),
+                    "sentiment_score": float(ctx.get("sentiment_score", 0.0) or 0.0),
+                    "funding_bias": str(ctx.get("funding_bias", "NEUTRAL") or "NEUTRAL"),
+                    "oi_signal": str(ctx.get("oi_signal", "NEUTRAL") or "NEUTRAL"),
+                    "timeframe": str(ctx.get("timeframe") or ""),
+                    "current_price": float(price or result.get("latest_close") or 0.0),
+                }
+            )
+
+            seed_signal = self._generate_seed_signal(
+                canonical,
+                canonical,
+                category,
+                price_data,
+                ctx,
+            )
+            result["playbook_decision"] = dict(ctx.get("playbook_decision") or {})
+            result["seed_decision"] = dict(ctx.get("seed_decision") or {})
+
+            if seed_signal is None:
+                blocked_reason = str(
+                    result["seed_decision"].get("reason")
+                    or result["playbook_decision"].get("blocked_reason")
+                    or ("market_closed" if not market_open else "no_playbook_seed")
+                ).strip() or ("market_closed" if not market_open else "no_playbook_seed")
+                result["decision_status"] = "market_closed" if not market_open else "no_seed"
+                result["decision_reason"] = blocked_reason
+                return result
+
+            preview = self.decision_engine.preview(seed_signal, ctx)
+            result["signal"] = preview.to_dict()
+            result["journal_summary"] = dict(preview.journal.summary(preview) or {})
+            result["journal_text"] = preview.journal.to_telegram_plain(preview)
+            result["decision_status"] = "accepted" if preview.alive else "killed"
+            result["decision_reason"] = str(preview.kill_reason or "").strip()
+            return result
+        except Exception as e:
+            logger.error(f"[TradingCore] inspect_asset({asset}): {e}")
+            result["decision_status"] = "error"
+            result["decision_reason"] = str(e)
+            return result
+
     def set_cooldown(self, asset: str, minutes: int = 60) -> None:
         canonical = self.registry.canonical(asset)
         self.state.set_cooldown(canonical, minutes)
@@ -2621,6 +2734,8 @@ class TradingCore:
         )
 
     def _log_seed_decision(self, asset: str, context: Dict[str, Any], reason: str) -> None:
+        if context.get("_inspection_only"):
+            return
         seed_decision = dict(context.get("seed_decision") or {})
         playbook_decision = dict(context.get("playbook_decision") or {})
         structure = dict(context.get("market_structure") or {})

@@ -600,6 +600,57 @@ class TelegramCommander:
 
     # ── Trade alert helpers (called from core/engine.py) ─────────────────────
 
+    @classmethod
+    def _trade_open_narrative(cls, trade: Dict[str, Any]) -> str:
+        asset = str(trade.get("asset", "") or "this asset")
+        direction = str(trade.get("direction", trade.get("signal", "BUY")) or "BUY").upper()
+        meta = trade.get("metadata", trade.get("trade_metadata", {})) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        playbook = cls._humanise_diagnostic_label(meta.get("playbook_name") or "").lower()
+        entry_style = cls._humanise_diagnostic_label(meta.get("playbook_entry_style") or "").lower()
+        session = cls._humanise_diagnostic_label(meta.get("session_label") or meta.get("playbook_session") or "").lower()
+        broker = meta.get("broker_quality") if isinstance(meta.get("broker_quality"), dict) else {}
+        cross = meta.get("cross_asset_context") if isinstance(meta.get("cross_asset_context"), dict) else {}
+
+        clauses: List[str] = []
+        if playbook:
+            clauses.append(f"the {playbook} playbook is active")
+        if entry_style:
+            clauses.append(f"entry style is {entry_style}")
+        if session:
+            clauses.append(f"timing lines up with {session}")
+        quote_quality = cls._humanise_diagnostic_label(broker.get("quote_quality_state") or "").lower()
+        spread = cls._humanise_diagnostic_label(broker.get("spread_regime") or "").lower()
+        if quote_quality or spread:
+            broker_bits = [bit for bit in [quote_quality, spread] if bit]
+            clauses.append(f"quote conditions are {' and '.join(broker_bits)}")
+        peer = str(cross.get("dominant_peer") or "").strip()
+        cross_state = cls._humanise_diagnostic_label(cross.get("state") or "").lower()
+        if peer and cross_state:
+            clauses.append(f"{peer} is {cross_state}")
+        if not clauses:
+            clauses.append("the full review stack aligned")
+        return f"Why now: {asset} triggered a {direction.lower()} because " + ", ".join(clauses[:3]) + "."
+
+    @classmethod
+    def _trade_close_narrative(cls, trade: Dict[str, Any]) -> str:
+        review = cls._trade_review(trade)
+        if isinstance(review, dict) and review:
+            summary = str(review.get("summary") or "").strip()
+            headline = str(review.get("headline") or "").strip()
+            lesson = str(review.get("lesson") or "").strip()
+            if summary and lesson:
+                return f"What actually happened: {summary} Main adjustment: {lesson}"
+            if summary:
+                return f"What actually happened: {summary}"
+            if headline and lesson:
+                return f"What actually happened: {headline}. Main adjustment: {lesson}"
+            if headline:
+                return f"What actually happened: {headline}."
+        reason = str(trade.get("display_exit_reason", trade.get("exit_reason", "the exit logic closed the trade")) or "").strip()
+        return f"What actually happened: the trade was closed because {reason.lower()}."
+
     def alert_trade_opened(self, trade: Dict) -> None:
         try:
             d     = trade.get("direction", trade.get("signal", "BUY"))
@@ -635,6 +686,7 @@ class TelegramCommander:
                 f"📍 Direction: *{d}*\n"
                 f"🕐 Opened:   `{opened_at}`\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
+                f"{self._trade_open_narrative(trade)}\n"
                 f"Entry:    `{self._fmt_price(entry, _a)}`\n"
                 f"{chr(10).join(target_lines)}\n"
                 f"{rr_line}\n"
@@ -707,6 +759,7 @@ class TelegramCommander:
                 f"🕑 Closed:   `{close_str}`\n"
                 f"⏱ Duration: `{dur_str}`\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
+                f"{self._trade_close_narrative(trade)}\n"
                 f"Entry:  `{self._fmt_price(_en, _a2)}`\n"
                 f"Exit:   `{self._fmt_price(_ex, _a2)}`\n"
                 f"P&L:    `{sign}${pnl:.2f}`"
@@ -871,30 +924,10 @@ class TelegramCommander:
 
     async def _run_ask(self, asset: str, question: str) -> str:
         try:
-            core = self.trading_system
-            sig  = None
-            df   = None
-            if core:
-                try:
-                    sig = core.get_signal_for_asset(asset)
-                except Exception:
-                    pass
-                try:
-                    from core.assets import registry
-                    cat     = registry.category(asset)
-                    fetcher = core.fetcher
-                    if fetcher:
-                        _TF = "15m"
-                        df = fetcher.get_ohlcv(asset, cat, interval=_TF, periods=100)
-                        if df is not None and not df.empty:
-                            from indicators.technical import TechnicalIndicators
-                            df = TechnicalIndicators.add_all_indicators(df)
-                except Exception:
-                    pass
-
+            analysis, sig, df = self._inspect_asset_snapshot(asset)
             from services.personality_service import RobbieExplainer
             explainer = RobbieExplainer()
-            answer    = explainer.answer(asset, question, signal=sig, df=df)
+            answer    = explainer.answer(asset, question, signal=sig, df=df, analysis=analysis)
             explainer.close()
             return answer
         except Exception as e:
@@ -2374,70 +2407,95 @@ class TelegramCommander:
         )
         return text, kb
 
+    def _inspect_asset_snapshot(self, asset: str):
+        core = self.trading_system
+        analysis = None
+        signal = None
+        df = None
+
+        if core:
+            try:
+                inspect_fn = getattr(core, "inspect_asset", None)
+                if callable(inspect_fn):
+                    analysis = inspect_fn(asset)
+            except Exception:
+                analysis = None
+
+            if isinstance(analysis, dict):
+                maybe_signal = analysis.get("signal")
+                if isinstance(maybe_signal, dict):
+                    signal = maybe_signal
+
+            if signal is None:
+                try:
+                    signal = core.get_signal_for_asset(asset)
+                except Exception:
+                    signal = None
+
+            if analysis is None and isinstance(signal, dict) and signal:
+                meta = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
+                analysis = {
+                    "asset": str(signal.get("asset") or asset),
+                    "canonical_asset": str(signal.get("canonical_asset") or signal.get("asset") or asset),
+                    "category": str(signal.get("category") or ""),
+                    "market_status": {"market_open": True, "reason": "open"},
+                    "decision_status": "accepted" if signal.get("alive", True) else "killed",
+                    "decision_reason": str(signal.get("kill_reason") or ""),
+                    "signal": signal,
+                    "playbook_decision": {
+                        "playbook": meta.get("playbook_name"),
+                        "entry_style": meta.get("playbook_entry_style"),
+                        "session_label": meta.get("session_label") or meta.get("playbook_session"),
+                        "preferred_interval": meta.get("playbook_timeframe"),
+                        "confidence": meta.get("playbook_confidence", signal.get("confidence", 0.0)),
+                    },
+                    "market_structure": dict(meta.get("market_structure") or {}),
+                    "market_intelligence": {},
+                    "broker_quality": dict(meta.get("broker_quality") or {}),
+                    "market_microstructure": dict(meta.get("market_microstructure") or {}),
+                    "cross_asset_context": dict(meta.get("cross_asset_context") or {}),
+                    "sentiment_score": float(meta.get("sentiment_score", 0.0) or 0.0),
+                    "funding_bias": str(meta.get("funding_bias", "NEUTRAL") or "NEUTRAL"),
+                    "oi_signal": str(meta.get("oi_signal", "NEUTRAL") or "NEUTRAL"),
+                    "timeframe": str(meta.get("playbook_timeframe") or ""),
+                    "current_price": float(signal.get("entry_price", 0.0) or 0.0),
+                    "latest_close": float(signal.get("entry_price", 0.0) or 0.0),
+                    "open_position": None,
+                }
+
+            try:
+                from core.assets import registry
+
+                canonical = str((analysis or {}).get("canonical_asset") or "") or registry.canonical(asset)
+                category = str((analysis or {}).get("category") or "") or registry.category(canonical)
+                fetcher = core.fetcher
+                if fetcher:
+                    df = fetcher.get_ohlcv(canonical or asset, category, interval="15m", periods=100)
+                    if df is not None and not df.empty:
+                        from indicators.technical import TechnicalIndicators
+
+                        df = TechnicalIndicators.add_all_indicators(df)
+            except Exception:
+                df = None
+
+        return analysis, signal, df
+
     async def _build_signal(self, asset: str):
         core = self.trading_system
         if not core:
             return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
 
+        display = _DISPLAY.get(asset, asset)
         try:
-            sig = core.get_signal_for_asset(asset)
+            analysis, sig, df = self._inspect_asset_snapshot(asset)
+            from services.personality_service import RobbieExplainer
+
+            explainer = RobbieExplainer()
+            text = explainer.describe_market_state(display, analysis or {"asset": asset, "signal": sig}, df=df, topic="signal")
+            explainer.close()
         except Exception as e:
             return f"❌ Error: {e}", _kb([("◀️ Back", "signals"), ("🏠 Menu", "menu")])
 
-        display = _DISPLAY.get(asset, asset)
-
-        if not sig or sig.get("direction", "HOLD") == "HOLD":
-            text = (
-                f"⏸ *{display}* — No signal\n\n"
-                f"The decision engine doesn't see a clean entry right now.\n"
-                f"_Try again in a few minutes._"
-            )
-            kb = _kb(
-                [(f"🧠 Ask Robbie", f"why:{asset}"), ("🔄 Retry", f"sig:{asset}")],
-                [("◀️ Back", "signals"), ("🏠 Menu", "menu")],
-            )
-            return text, kb
-
-        d      = sig.get("direction", "BUY")
-        emoji  = "🟢" if d == "BUY" else "🔴"
-        entry  = float(sig.get("entry_price", 0))
-        sl     = float(sig.get("stop_loss",   0))
-        tp     = float(sig.get("take_profit", 0))
-        conf   = float(sig.get("confidence",  0))
-        rr     = float(sig.get("risk_reward", sig.get("rr_ratio", 0)))
-        meta   = sig.get("metadata", {}) or {}
-        regime = meta.get("regime", "")
-        sess   = meta.get("session_label") or meta.get("playbook_session") or meta.get("session", "")
-        playbook_block = self._format_playbook_runtime_block(sig)
-        playbook_text = f"\n🧭 *Playbook*\n{playbook_block}\n" if playbook_block else "\n"
-        diagnostics_block = self._format_runtime_diagnostics_block(sig)
-        diagnostics_text = f"\n🧪 *Diagnostics*\n{diagnostics_block}\n" if diagnostics_block else "\n"
-
-        # TP levels
-        tp_levels = sig.get("take_profit_levels", [])
-        tp_lines  = ""
-        if tp_levels:
-            for i, lv in enumerate(tp_levels[:3], 1):
-                price = float(lv) if isinstance(lv, (int, float)) else float(lv.get("price", 0))
-                tp_lines += f"  TP{i}: `{self._fmt_price(price, asset)}`\n"
-        else:
-            tp_lines = f"  TP:  `{self._fmt_price(tp, asset)}`\n"
-
-        text = (
-            f"{emoji} *{d} {display}*\n"
-            f"{'─' * 26}\n"
-            f"📍 Entry:  `{self._fmt_price(entry, asset)}`\n"
-            f"🛑 Stop:   `{self._fmt_price(sl, asset)}`\n"
-            f"{tp_lines}"
-            f"\n📊 *Quality*\n"
-            f"Confidence: {conf:.0%}\n"
-            f"R:R ratio:  {rr:.2f}:1\n"
-            f"Regime:     {regime.replace('_', ' ') or '—'}\n"
-            f"Session:    {sess or '—'}\n"
-            f"{playbook_text}"
-            f"{diagnostics_text}"
-            f"_Decision engine ✅_"
-        )
         kb = _kb(
             [(f"🧠 Why {display}?", f"why:{asset}"), ("🔄 Refresh", f"sig:{asset}")],
             [("◀️ Assets", "signals"), ("🏠 Menu", "menu")],
@@ -2445,34 +2503,14 @@ class TelegramCommander:
         return text, kb
 
     async def _build_why(self, asset: str) -> str:
-        core    = self.trading_system
-        sig     = None
-        df      = None
         display = _DISPLAY.get(asset, asset)
 
-        if core:
-            try:
-                sig = core.get_signal_for_asset(asset)
-            except Exception:
-                pass
-            try:
-                from core.assets import registry
-                cat     = registry.category(asset)
-                fetcher = core.fetcher
-                if fetcher:
-                    _TF = "15m"
-                    df = fetcher.get_ohlcv(asset, cat, interval=_TF, periods=100)
-                    if df is not None and not df.empty:
-                        from indicators.technical import TechnicalIndicators
-                        df = TechnicalIndicators.add_all_indicators(df)
-            except Exception:
-                pass
-
         try:
+            analysis, sig, df = self._inspect_asset_snapshot(asset)
             from services.personality_service import RobbieExplainer
             explainer = RobbieExplainer()
             text      = explainer.explain_signal(
-                asset=asset, df=df, signal=sig or {},
+                asset=display, df=df, signal=sig or {}, analysis=analysis,
             )
             explainer.close()
             return text
@@ -2506,7 +2544,24 @@ class TelegramCommander:
         elif cl >= 3:
             text += f"😰 {cl} losses in a row — being careful.\n"
 
+        if mood in {"grumpy", "cautious", "shaken"}:
+            posture = (
+                "Operationally this means Robbie is being selective. "
+                "He wants cleaner retests, fresher confirmation, and less late-entry risk before acting."
+            )
+        elif mood in {"confident", "euphoric", "on_fire"}:
+            posture = (
+                "Operationally this means Robbie is more willing to press clean continuation setups, "
+                "as long as structure and execution still agree."
+            )
+        else:
+            posture = (
+                "Operationally this means Robbie is balanced: he will take the clean setups, "
+                "but he is not forcing trades just because the market is moving."
+            )
+
         text += (
+            f"{posture}\n\n"
             f"\n📊 *This Week*\n"
             f"Win Rate:    {stats.get('weekly_win_rate', 0):.0f}%\n"
             f"Trades:      {stats.get('weekly_trades', 0)}\n\n"

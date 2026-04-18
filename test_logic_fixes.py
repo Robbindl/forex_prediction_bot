@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
+import pytest
 import requests
 
 import core.state as state_mod
@@ -6408,14 +6409,54 @@ def test_telegram_build_signal_includes_runtime_diagnostics() -> None:
 
     text, _ = asyncio.run(commander._build_signal("XAU/USD"))
 
-    assert "Diagnostics" in text
-    assert "Playbook `breakout continuation` | `breakout close`" in text
-    assert "Session `europe open` | TF `5m`" in text
-    assert "Manage `TP1 1.0R | Runner 2.4R | Trail 1.0R · ATRx0.85`" in text
-    assert "Broker `0.86` | `IG` | strong / fresh / tight" in text
-    assert "Micro `0.42` | Depth `True depth`" in text
-    assert "Cross-market `buy support` via `XAG/USD`" in text
-    assert "Pattern memory `true depth winners`" in text
+    assert "*Gold* — live buy setup." in text
+    assert "breakout continuation / breakout close" in text.lower()
+    assert "session europe open" in text.lower()
+    assert "quotes ig, fresh, tight" in text.lower()
+    assert "bot posture: it is willing to buy here" in text.lower()
+
+def test_telegram_build_signal_uses_weekend_watch_mode_analysis() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.trading_system = SimpleNamespace(
+        inspect_asset=lambda asset: {
+            "asset": asset,
+            "canonical_asset": asset,
+            "category": "forex",
+            "market_status": {"market_open": False, "reason": "weekend_closed"},
+            "decision_status": "market_closed",
+            "decision_reason": "no_playbook_seed",
+            "signal": None,
+            "market_structure": {
+                "structure_bias": "buy",
+                "support_levels": [1.1761],
+                "resistance_levels": [1.1802],
+                "first_pullback_ready": False,
+                "breakout_retest_ready": False,
+                "pullback_score": 0.22,
+                "breakout_score": 0.11,
+                "dominant_exhaustion_score": 0.12,
+            },
+            "market_intelligence": {"dominant_narrative": "ECB_POLICY"},
+            "cross_asset_context": {"state": "buy_support", "dominant_peer": "DXY"},
+            "sentiment_score": 0.19,
+            "open_position": None,
+            "current_price": 1.1765,
+            "latest_close": 1.1765,
+        },
+        get_signal_for_asset=lambda asset: None,
+        fetcher=None,
+    )
+
+    text, _ = asyncio.run(commander._build_signal("EUR/USD"))
+
+    assert "market closed" in text.lower()
+    assert "watch mode" in text.lower()
+    assert "support is near 1.1765" not in text.lower()
+    assert "support is near 1.1761" in text.lower()
+    assert "resistance is near 1.1802" in text.lower()
+    assert "will not call this a live executable setup until the market reopens" in text.lower()
 
 def test_telegram_build_positions_includes_runtime_diagnostics() -> None:
     tg_mod = importlib.import_module("telegram_commander")
@@ -6603,6 +6644,55 @@ def test_robbie_explainer_confidence_question_uses_signal_not_mood() -> None:
     assert "reward to risk is `1.80:1`" in text
     assert "Right now I'm feeling" not in text
 
+def test_robbie_explainer_why_without_signal_uses_market_state_analysis() -> None:
+    personality_mod = importlib.import_module("services.personality_service")
+
+    explainer = object.__new__(personality_mod.RobbieExplainer)
+    explainer.db = SimpleNamespace(
+        get_personality_report=lambda: {
+            "current_mood": "neutral",
+            "mood_emoji": "😐",
+            "stats": {"consecutive_wins": 0, "consecutive_losses": 0, "weekly_win_rate": 50, "last_10_wins": 5, "last_10_pnl": 0.0},
+        },
+        get_asset_memory=lambda asset: {"has_memory": False},
+    )
+
+    text = explainer.answer(
+        "EUR/USD",
+        "why is there no signal on EUR/USD?",
+        signal=None,
+        df=None,
+        analysis={
+            "asset": "EUR/USD",
+            "category": "forex",
+            "market_status": {"market_open": False, "reason": "weekend_closed"},
+            "decision_status": "market_closed",
+            "decision_reason": "no_playbook_seed",
+            "signal": None,
+            "market_structure": {
+                "structure_bias": "buy",
+                "support_levels": [1.1761],
+                "resistance_levels": [1.1802],
+                "first_pullback_ready": False,
+                "breakout_retest_ready": False,
+                "pullback_score": 0.24,
+                "breakout_score": 0.09,
+                "dominant_exhaustion_score": 0.11,
+            },
+            "market_intelligence": {"dominant_narrative": "ECB_POLICY"},
+            "cross_asset_context": {"state": "buy_support", "dominant_peer": "DXY"},
+            "sentiment_score": 0.16,
+            "open_position": None,
+            "current_price": 1.1765,
+            "latest_close": 1.1765,
+        },
+    )
+
+    assert "market closed" in text.lower()
+    assert "structure still leans higher" in text.lower()
+    assert "support is near 1.1761" in text.lower()
+    assert "the next thing that matters is the reopen" in text.lower()
+
 def test_robbie_explainer_sentiment_question_uses_live_signal_metadata() -> None:
     personality_mod = importlib.import_module("services.personality_service")
 
@@ -6637,6 +6727,41 @@ def test_robbie_explainer_sentiment_question_uses_live_signal_metadata() -> None
     assert "Whale flow currently leans bearish." in text
     assert "AI-related crypto narrative" in text
     assert "3 sources" in text
+
+def test_telegram_build_mood_explains_operational_posture() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+    personality_mod = importlib.import_module("services.personality_service")
+
+    class _FakeDb:
+        def get_personality_report(self):
+            return {
+                "current_mood": "grumpy",
+                "mood_emoji": "😤",
+                "stats": {
+                    "consecutive_wins": 0,
+                    "consecutive_losses": 3,
+                    "weekly_win_rate": 42,
+                    "weekly_trades": 12,
+                    "last_10_wins": 4,
+                    "last_10_pnl": -133.7,
+                },
+                "traits": {"base_confidence": 0.68, "cautiousness": 0.62, "optimism": 0.41},
+            }
+
+        def close(self):
+            return None
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(personality_mod, "PersonalityDatabase", _FakeDb)
+    try:
+        commander = object.__new__(tg_mod.TelegramCommander)
+        text = commander._build_mood()
+    finally:
+        monkey.undo()
+
+    assert "Operationally this means Robbie is being selective" in text
+    assert "cleaner retests" in text
+    assert "late-entry risk" in text
 
 def test_telegram_alert_trade_closed_includes_post_trade_review() -> None:
     tg_mod = importlib.import_module("telegram_commander")
@@ -6675,14 +6800,45 @@ def test_telegram_alert_trade_closed_includes_post_trade_review() -> None:
     )
 
     message = captured["text"]
-    assert "Execution Audit" in message
+    assert "What actually happened:" in message
     assert "Post-Trade Audit" in message
     assert "Failure stack" in message
     assert "Next avoid" in message
     assert "Do not chase extended entries" in message
-    assert "04 Apr 2026 10:00:00 UTC" in message
-    assert "04 Apr 2026 10:37:00 UTC" in message
+    assert "04 Apr 2026" in message
     assert "37m" in message
+
+def test_telegram_trade_opened_alert_includes_natural_summary() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    captured = {}
+    commander.send_message = lambda text, parse_mode=tg_mod.ParseMode.MARKDOWN, reply_markup=None: captured.setdefault("text", text) or True
+
+    commander.alert_trade_opened(
+        {
+            "asset": "XAU/USD",
+            "direction": "BUY",
+            "entry_price": 2312.5,
+            "stop_loss": 2298.0,
+            "take_profit": 2345.0,
+            "confidence": 0.74,
+            "trade_id": "trade-2",
+            "open_time": "2026-04-07T20:35:16+00:00",
+            "metadata": {
+                "playbook_name": "breakout_continuation",
+                "playbook_entry_style": "breakout_close",
+                "session_label": "us core",
+                "broker_quality": {"quote_quality_state": "fresh", "spread_regime": "tight"},
+                "cross_asset_context": {"state": "buy_support", "dominant_peer": "XAG/USD"},
+            },
+        }
+    )
+
+    message = captured["text"]
+    assert "Why now:" in message
+    assert "breakout continuation" in message
+    assert "Cross-market `buy support` via `XAG/USD`" in message
 
 def test_telegram_humanises_equity_labels_for_user_facing_diagnostics() -> None:
     tg_mod = importlib.import_module("telegram_commander")
