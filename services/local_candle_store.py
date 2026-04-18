@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -87,9 +88,14 @@ class LocalCandleStore:
         self._path = Path(path or LOCAL_CANDLE_STORE_PATH)
         self._lock = threading.Lock()
         self._conn: Optional[sqlite3.Connection] = None
+        self._pending_live_rows: Dict[tuple[str, int], Dict[str, Any]] = {}
+        self._flush_interval_sec = 1.0
+        self._flush_stop = threading.Event()
+        self._flush_thread: Optional[threading.Thread] = None
         if self._enabled:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._ensure_schema()
+            self._start_flush_worker()
 
     def enabled(self) -> bool:
         return bool(self._enabled)
@@ -130,6 +136,24 @@ class LocalCandleStore:
                 "CREATE INDEX IF NOT EXISTS idx_ohlcv_lookup ON ohlcv_bars (asset, interval, timestamp DESC)"
             )
             conn.commit()
+
+    def _start_flush_worker(self) -> None:
+        if self._flush_thread is not None:
+            return
+
+        def _loop() -> None:
+            while not self._flush_stop.wait(self._flush_interval_sec):
+                try:
+                    self.flush_live_updates()
+                except Exception:
+                    pass
+
+        self._flush_thread = threading.Thread(
+            target=_loop,
+            name="LocalCandleStoreFlush",
+            daemon=True,
+        )
+        self._flush_thread.start()
 
     @staticmethod
     def _normalize_frame(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
@@ -241,11 +265,54 @@ class LocalCandleStore:
             return
         ts = float(timestamp if timestamp is not None else datetime.now().timestamp())
         bucket = _bucket_epoch(ts, 60)
-        updated_at = _utc_now_ts()
         family = _provider_family(source)
         with self._lock:
+            key = (canonical, bucket)
+            row = self._pending_live_rows.get(key)
+            if row is None:
+                self._pending_live_rows[key] = {
+                    "asset": canonical,
+                    "category": category,
+                    "timestamp": bucket,
+                    "open": price_value,
+                    "high": price_value,
+                    "low": price_value,
+                    "close": price_value,
+                    "source": str(source or "WebSocket"),
+                    "provider_family": family,
+                    "updated_at": _utc_now_ts(),
+                }
+            else:
+                row["high"] = max(float(row.get("high", price_value) or price_value), price_value)
+                row["low"] = min(float(row.get("low", price_value) or price_value), price_value)
+                row["close"] = price_value
+                row["source"] = str(source or row.get("source") or "WebSocket")
+                row["provider_family"] = family or row.get("provider_family") or "UNKNOWN"
+                row["updated_at"] = _utc_now_ts()
+
+    def flush_live_updates(self) -> int:
+        if not self._enabled:
+            return 0
+        with self._lock:
+            if not self._pending_live_rows:
+                return 0
+            rows = [
+                (
+                    item["asset"],
+                    item["category"],
+                    int(item["timestamp"]),
+                    float(item["open"]),
+                    float(item["high"]),
+                    float(item["low"]),
+                    float(item["close"]),
+                    str(item["source"]),
+                    str(item["provider_family"]),
+                    int(item["updated_at"]),
+                )
+                for item in self._pending_live_rows.values()
+            ]
             conn = self._connection()
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO ohlcv_bars (
                     asset, category, interval, timestamp,
@@ -263,20 +330,12 @@ class LocalCandleStore:
                     data_origin='live_stream',
                     updated_at=excluded.updated_at
                 """,
-                (
-                    canonical,
-                    category,
-                    bucket,
-                    price_value,
-                    price_value,
-                    price_value,
-                    price_value,
-                    str(source or "WebSocket"),
-                    family,
-                    updated_at,
-                ),
+                rows,
             )
             conn.commit()
+            flushed = len(rows)
+            self._pending_live_rows.clear()
+            return flushed
 
     def get_ohlcv(
         self,
@@ -290,6 +349,7 @@ class LocalCandleStore:
     ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
         if not self._enabled:
             return None, {}
+        self.flush_live_updates()
         interval_key = _normalize_interval(interval)
         if interval_key not in _INTERVAL_SECONDS:
             return None, {}
@@ -328,6 +388,13 @@ class LocalCandleStore:
                 mode="resampled_1m",
             )
         return None, {}
+
+    def close(self) -> None:
+        self._flush_stop.set()
+        try:
+            self.flush_live_updates()
+        except Exception:
+            pass
 
     def _load_exact(
         self,

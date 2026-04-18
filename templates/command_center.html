@@ -888,7 +888,8 @@ let _commandCenterStreamActive = false;
 let _commandCenterStreamDisabled = false;
 let _liveBookCache = null;
 let _liveBookPending = null;
-let _liveBookTimer = null;
+let _liveBookSource = null;
+let _liveBookReconnect = null;
 let _commandCenterLastClosedTradeCount = null;
 
 function setCommandCenterUnavailable(message){
@@ -1009,24 +1010,42 @@ function applyLiveBookSnapshot(snapshot){
   else renderPositions(_allPositions);
 }
 function stopLiveBookLoop(){
-  if(_liveBookTimer){clearTimeout(_liveBookTimer);_liveBookTimer=null;}
+  if(_liveBookReconnect){clearTimeout(_liveBookReconnect);_liveBookReconnect=null;}
+  if(_liveBookSource){try{_liveBookSource.close();}catch(err){} _liveBookSource=null;}
 }
-async function pollLiveBookLoop(forceRefresh=false){
-  if(document.hidden){
-    _liveBookTimer=setTimeout(() => { pollLiveBookLoop(false); }, 3000);
-    return;
-  }
-  try{
-    const snapshot = await fetchLiveBook(forceRefresh);
-    applyLiveBookSnapshot(snapshot);
-  }catch(e){}
-  finally{
-    _liveBookTimer=setTimeout(() => { pollLiveBookLoop(false); }, 1000);
-  }
+function scheduleLiveBookReconnect(delayMs=1500){
+  if(document.hidden) return;
+  if(_liveBookReconnect) clearTimeout(_liveBookReconnect);
+  _liveBookReconnect=setTimeout(() => { _liveBookReconnect=null; startLiveBookLoop(false); }, delayMs);
 }
-function startLiveBookLoop(forceRefresh=false){
+async function startLiveBookLoop(forceRefresh=false){
   stopLiveBookLoop();
-  pollLiveBookLoop(forceRefresh);
+  if(document.hidden) return;
+  try{
+    if(forceRefresh){
+      const snapshot = await fetchLiveBook(true);
+      applyLiveBookSnapshot(snapshot);
+    }
+    let token='';
+    try{ if(window.dashboardGetApiToken) token = await window.dashboardGetApiToken(false); }catch(_){}
+    const qs = new URLSearchParams();
+    if(token) qs.set('token', token);
+    _liveBookSource = new EventSource('/api/live-book/stream' + (qs.toString() ? ('?' + qs.toString()) : ''));
+    _liveBookSource.onmessage = function(event){
+      try{
+        const data = JSON.parse(event.data || '{}');
+        if(data.type === 'snapshot' && data.payload){
+          applyLiveBookSnapshot(data.payload);
+        }
+      }catch(err){}
+    };
+    _liveBookSource.onerror = function(){
+      stopLiveBookLoop();
+      scheduleLiveBookReconnect();
+    };
+  }catch(err){
+    scheduleLiveBookReconnect(2500);
+  }
 }
 function stopCommandCenterStream(){
   if(_commandCenterStreamReconnect){clearTimeout(_commandCenterStreamReconnect);_commandCenterStreamReconnect = null;}

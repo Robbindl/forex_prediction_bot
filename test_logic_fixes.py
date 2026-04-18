@@ -9717,7 +9717,7 @@ def test_chart_quote_returns_live_quote_snapshot(monkeypatch) -> None:
     assert payload["asset"] == "EUR/USD"
     assert payload["price"] == 123.456
     assert payload["source"] == "Deriv"
-    assert seen == [("Deriv", "EUR/USD", 123.456, False)]
+    assert seen == []
 
 
 def test_chart_stream_live_quote_reuses_cached_provider_quote(monkeypatch) -> None:
@@ -9810,6 +9810,104 @@ def test_api_live_book_uses_shared_live_price_snapshots_for_positions(monkeypatc
     assert payload["positions"][0]["current_price"] == 1.105
     assert payload["positions"][0]["price_live"] is True
     assert payload["positions"][0]["price_source"] == "Deriv"
+
+
+def test_api_live_book_falls_back_to_provider_quote_when_snapshot_is_stale(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_command_center_core_snapshot",
+        lambda core: (
+            {"balance": 1000.0, "initial_balance": 1000.0, "total_pnl": 0.0, "total_trades": 0, "win_rate": 0.0},
+            {"daily_pnl": 0.0},
+            [
+                {
+                    "trade_id": "T2",
+                    "asset": "EUR/USD",
+                    "category": "forex",
+                    "direction": "BUY",
+                    "entry_price": 1.1000,
+                    "position_size": 100000,
+                }
+            ],
+            {},
+            [],
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ws_mod,
+        "get_live_price_snapshots",
+        lambda assets=None, max_age_seconds=None: {
+            "EUR/USD": {"price": 1.1010, "timestamp": 1234567000.0, "source": "Deriv", "age_seconds": 12.0}
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_chart_stream_live_quote",
+        lambda asset, category, allow_live_cache=True: (1.1025, "Deriv"),
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/live-book")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["positions"][0]["current_price"] == 1.1025
+    assert payload["positions"][0]["price_live"] is True
+    assert payload["positions"][0]["price_source"] == "Deriv"
+
+
+def test_dashboard_asset_map_fallback_keeps_universe(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    asset_profiles_mod = importlib.import_module("core.asset_profiles")
+
+    monkeypatch.setattr(asset_profiles_mod, "ALL_ASSETS", ["EUR/USD", "XAU/USD", "BTC-USD"], raising=False)
+
+    result = dashboard_mod._dashboard_asset_map_from_positions(
+        [{"asset": "EUR/USD", "category": "forex"}],
+        fallback_to_universe=True,
+    )
+
+    assert result["EUR/USD"] == "forex"
+    assert "XAU/USD" in result
+    assert "BTC-USD" in result
+
+
+def test_live_prices_stream_emits_cached_snapshot_immediately(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(
+        ws_mod,
+        "get_live_price_snapshots",
+        lambda assets=None, max_age_seconds=None: {
+            "EUR/USD": {"price": 1.1765, "timestamp": 1234567890.0, "source": "Deriv", "age_seconds": 0.2}
+        },
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/live-prices/stream?assets=EUR/USD", buffered=False)
+    first_chunk = next(response.response).decode("utf-8")
+    second_chunk = next(response.response).decode("utf-8")
+    response.close()
+
+    assert response.status_code == 200
+    assert '"type": "connected"' in first_chunk
+    assert '"type": "prices"' in second_chunk
+    assert '"EUR/USD"' in second_chunk
+    assert '"source": "Deriv"' in second_chunk
 
 
 def test_record_live_quote_emits_transaction_and_cache(monkeypatch) -> None:

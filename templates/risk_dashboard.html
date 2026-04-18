@@ -383,7 +383,8 @@ let _riskTradeHistoryCache = null;
 let _riskTradeHistoryPending = null;
 let _riskLiveBookCache = null;
 let _riskLiveBookPending = null;
-let _riskLiveBookTimer = null;
+let _riskLiveBookSource = null;
+let _riskLiveBookReconnect = null;
 let drawdownChartInst = null;
 function setRiskUnavailable(message){
   const msg = message || 'Risk dashboard data unavailable';
@@ -490,24 +491,42 @@ function applyRiskLiveBook(snapshot){
   if(document.getElementById('stateOpenPositions')) document.getElementById('stateOpenPositions').textContent=liveOpenPositions||0;
 }
 function stopRiskLiveBookLoop(){
-  if(_riskLiveBookTimer){clearTimeout(_riskLiveBookTimer);_riskLiveBookTimer=null;}
+  if(_riskLiveBookReconnect){clearTimeout(_riskLiveBookReconnect);_riskLiveBookReconnect=null;}
+  if(_riskLiveBookSource){try{_riskLiveBookSource.close();}catch(err){} _riskLiveBookSource=null;}
 }
-async function pollRiskLiveBookLoop(forceRefresh=false){
-  if(document.hidden){
-    _riskLiveBookTimer=setTimeout(function(){pollRiskLiveBookLoop(false);},3000);
-    return;
-  }
-  try{
-    const snapshot = await fetchRiskLiveBook(forceRefresh);
-    applyRiskLiveBook(snapshot);
-  }catch(e){}
-  finally{
-    _riskLiveBookTimer=setTimeout(function(){pollRiskLiveBookLoop(false);},1000);
-  }
+function scheduleRiskLiveBookReconnect(delayMs=1500){
+  if(document.hidden) return;
+  if(_riskLiveBookReconnect) clearTimeout(_riskLiveBookReconnect);
+  _riskLiveBookReconnect=setTimeout(function(){_riskLiveBookReconnect=null;startRiskLiveBookLoop(false);},delayMs);
 }
-function startRiskLiveBookLoop(forceRefresh=false){
+async function startRiskLiveBookLoop(forceRefresh=false){
   stopRiskLiveBookLoop();
-  pollRiskLiveBookLoop(forceRefresh);
+  if(document.hidden) return;
+  try{
+    if(forceRefresh){
+      const snapshot = await fetchRiskLiveBook(true);
+      applyRiskLiveBook(snapshot);
+    }
+    let token='';
+    try{ if(window.dashboardGetApiToken) token = await window.dashboardGetApiToken(false); }catch(_){}
+    const qs = new URLSearchParams();
+    if(token) qs.set('token', token);
+    _riskLiveBookSource = new EventSource('/api/live-book/stream' + (qs.toString() ? ('?' + qs.toString()) : ''));
+    _riskLiveBookSource.onmessage = function(event){
+      try{
+        const data = JSON.parse(event.data || '{}');
+        if(data.type === 'snapshot' && data.payload){
+          applyRiskLiveBook(data.payload);
+        }
+      }catch(err){}
+    };
+    _riskLiveBookSource.onerror = function(){
+      stopRiskLiveBookLoop();
+      scheduleRiskLiveBookReconnect();
+    };
+  }catch(err){
+    scheduleRiskLiveBookReconnect(2500);
+  }
 }
 function renderMixCard(title,value,note,klass,chips){
   return '<div class="mix-card"><div class="mix-top"><div class="mix-title">'+title+'</div><div class="mix-value '+klass+'">'+value+'</div></div><div class="mix-note">'+note+'</div>'+(chips&&chips.length?'<div class="flag-row">'+chips.join('')+'</div>':'')+'</div>';

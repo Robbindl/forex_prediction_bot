@@ -75,11 +75,13 @@ def _record_live_quote(
     side: Optional[str] = None,
     *,
     emit_transaction: bool = True,
+    store_live_price: bool = True,
 ) -> None:
     if emit_transaction:
         add_transaction(source, symbol, price, volume, side)
-    # Store price for live P&L updates and shared dashboard cache freshness.
-    set_live_price(symbol, price, source)
+    if store_live_price:
+        # Store price for live P&L updates and shared dashboard cache freshness.
+        set_live_price(symbol, price, source)
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(
@@ -2960,6 +2962,19 @@ def _build_live_book_payload() -> Dict[str, Any]:
         position_size = float(position.get("position_size", 0) or 0)
         snapshot = dict(snapshots.get(asset) or {})
         current_price = snapshot.get("price")
+        price_age_seconds = float(snapshot.get("age_seconds", 9999.0) or 9999.0)
+        price_source = str(snapshot.get("source") or position.get("current_price_source") or "")
+        is_live = bool(snapshot) and price_age_seconds <= 3.0
+        if not is_live:
+            try:
+                fallback_price, fallback_source = _chart_stream_live_quote(asset, category, allow_live_cache=False)
+            except Exception:
+                fallback_price, fallback_source = None, ""
+            if fallback_price not in (None, 0, 0.0):
+                current_price = float(fallback_price or 0.0)
+                price_source = str(fallback_source or price_source or "")
+                price_age_seconds = 0.0
+                is_live = True
         if current_price in (None, 0, 0.0):
             try:
                 current_price = float(position.get("current_price", 0) or 0)
@@ -2977,9 +2992,6 @@ def _build_live_book_payload() -> Dict[str, Any]:
                     live_pnl = (entry_price - current_price) * position_size
                 else:
                     live_pnl = (current_price - entry_price) * position_size
-        price_age_seconds = float(snapshot.get("age_seconds", 9999.0) or 9999.0)
-        price_source = str(snapshot.get("source") or position.get("current_price_source") or "")
-        is_live = bool(snapshot) and price_age_seconds <= 30.0
         if asset and not is_live:
             stale_assets.append(asset)
         enriched_positions.append(
@@ -3324,6 +3336,64 @@ def api_live_book():
         return handle_api_error(e, "/api/live-book", 500)
 
 
+@app.route("/api/live-book/stream")
+@_check_api_auth
+@_check_rate_limit
+def api_live_book_stream():
+    def _signature(payload: Dict[str, Any]) -> str:
+        slim = {
+            "positions": [
+                {
+                    "trade_id": str(item.get("trade_id", "") or ""),
+                    "asset": str(item.get("asset", "") or ""),
+                    "current_price": round(float(item.get("current_price", 0.0) or 0.0), 8),
+                    "pnl": round(float(item.get("pnl", 0.0) or 0.0), 2),
+                    "price_live": bool(item.get("price_live")),
+                    "price_source": str(item.get("price_source", "") or ""),
+                }
+                for item in list((payload or {}).get("positions") or [])
+            ],
+            "live_summary": dict((payload or {}).get("live_summary") or {}),
+        }
+        return hashlib.sha256(
+            json.dumps(slim, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+
+    def _gen():
+        last_signature = ""
+        last_emit = 0.0
+        yield f"data: {json.dumps({'type': 'connected', 'ts': int(time.time())})}\n\n"
+        while True:
+            try:
+                payload = _build_live_book_payload()
+                signature = _signature(payload)
+                now = time.time()
+                if signature != last_signature:
+                    last_signature = signature
+                    last_emit = now
+                    yield f"data: {json.dumps({'type': 'snapshot', 'payload': payload, 'ts': int(now)})}\n\n"
+                elif now - last_emit >= 5.0:
+                    last_emit = now
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'ts': int(now)})}\n\n"
+                time.sleep(0.5)
+            except GeneratorExit:
+                raise
+            except Exception as exc:
+                logger.debug(f"[dashboard] live-book stream error: {exc}")
+                yield f"data: {json.dumps({'type': 'heartbeat', 'ts': int(time.time())})}\n\n"
+                time.sleep(1.0)
+
+    return Response(
+        stream_with_context(_gen()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @app.route("/api/command-center/stream")
 @_check_api_auth
 @_check_rate_limit
@@ -3585,26 +3655,27 @@ def _chart_asset_descriptor(asset: str, category: str) -> Dict[str, Any]:
     }
 
 
-def _chart_stream_live_quote(asset: str, category: str) -> tuple[Optional[float], str]:
-    try:
-        from websocket_dashboard import get_live_price_snapshot
+def _chart_stream_live_quote(asset: str, category: str, *, allow_live_cache: bool = True) -> tuple[Optional[float], str]:
+    if allow_live_cache:
+        try:
+            from websocket_dashboard import get_live_price_snapshot
 
-        live_snapshot = get_live_price_snapshot(asset, max_age_seconds=20.0)
-        if live_snapshot is not None:
-            return (
-                float(live_snapshot.get("price", 0.0) or 0.0),
-                str(live_snapshot.get("source") or "LiveCache"),
-            )
-    except Exception:
-        pass
-    try:
-        from websocket_dashboard import get_live_price
+            live_snapshot = get_live_price_snapshot(asset, max_age_seconds=2.5)
+            if live_snapshot is not None:
+                return (
+                    float(live_snapshot.get("price", 0.0) or 0.0),
+                    str(live_snapshot.get("source") or "LiveCache"),
+                )
+        except Exception:
+            pass
+        try:
+            from websocket_dashboard import get_live_price
 
-        live_price, live_source = get_live_price(asset, max_age_seconds=20.0)
-        if live_price is not None:
-            return float(live_price), str(live_source or "LiveCache")
-    except Exception:
-        pass
+            live_price, live_source = get_live_price(asset, max_age_seconds=2.5)
+            if live_price is not None:
+                return float(live_price), str(live_source or "LiveCache")
+        except Exception:
+            pass
 
     cache_key = f"chart_quote:{asset}"
     last_good_key = f"chart_quote_last_good:{asset}"
@@ -4661,10 +4732,6 @@ def api_chart_stream():
         try:
             price, source = _chart_stream_live_quote(asset, cat)
             if price:
-                try:
-                    _record_live_quote(str(source or "LiveAPI"), asset, float(price), emit_transaction=False)
-                except Exception:
-                    pass
                 yield f"data: {json.dumps({'type': 'tick', 'price': price, 'asset': asset, 'source': source, 'ts': int(time.time())})}\n\n"
             else:
                 yield f"data: {json.dumps({'type': 'heartbeat', 'asset': asset, 'ts': int(time.time())})}\n\n"
@@ -4683,11 +4750,6 @@ def api_chart_quote():
     try:
         price, source = _chart_stream_live_quote(asset, cat)
         ts = int(time.time())
-        if price is not None:
-            try:
-                _record_live_quote(str(source or "LiveAPI"), asset, float(price), emit_transaction=False)
-            except Exception:
-                pass
         payload = {
             "success": True,
             "asset": asset,
@@ -4702,6 +4764,71 @@ def api_chart_quote():
         return handle_api_error(e, "/api/chart/quote", e.status_code)
     except Exception as e:
         return handle_api_error(e, "/api/chart/quote", 500)
+
+
+@app.route("/api/live-prices/stream")
+@_check_api_auth
+@_check_rate_limit
+def api_live_prices_stream():
+    raw_assets = str(request.args.get("assets", "") or "").strip()
+    assets = [str(item or "").strip() for item in raw_assets.split(",") if str(item or "").strip()]
+    if not assets:
+        return handle_api_error(BadRequest("assets query required"), "/api/live-prices/stream", 400)
+
+    def _snapshot() -> Dict[str, Any]:
+        try:
+            from websocket_dashboard import get_live_price_snapshots
+
+            return get_live_price_snapshots(assets, max_age_seconds=30.0) or {}
+        except Exception:
+            return {}
+
+    def _signature(snapshot: Dict[str, Any]) -> str:
+        normalized = {
+            asset: {
+                "price": round(float((snapshot.get(asset) or {}).get("price", 0.0) or 0.0), 8),
+                "timestamp": round(float((snapshot.get(asset) or {}).get("timestamp", 0.0) or 0.0), 3),
+                "source": str((snapshot.get(asset) or {}).get("source", "") or ""),
+            }
+            for asset in assets
+        }
+        return hashlib.sha256(
+            json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+
+    def _gen():
+        last_signature = ""
+        last_emit = 0.0
+        yield f"data: {json.dumps({'type': 'connected', 'assets': assets, 'ts': int(time.time())})}\n\n"
+        while True:
+            try:
+                snapshot = _snapshot()
+                signature = _signature(snapshot)
+                now = time.time()
+                if signature != last_signature:
+                    last_signature = signature
+                    last_emit = now
+                    yield f"data: {json.dumps({'type': 'prices', 'prices': snapshot, 'ts': int(now)})}\n\n"
+                elif now - last_emit >= 5.0:
+                    last_emit = now
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'ts': int(now)})}\n\n"
+                time.sleep(0.25)
+            except GeneratorExit:
+                raise
+            except Exception as exc:
+                logger.debug(f"[dashboard] live-prices stream error: {exc}")
+                yield f"data: {json.dumps({'type': 'heartbeat', 'ts': int(time.time())})}\n\n"
+                time.sleep(1.0)
+
+    return Response(
+        stream_with_context(_gen()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 @app.route("/api/market/heatmap")
 @_check_api_auth
@@ -6498,7 +6625,7 @@ def _run_hypercorn_server(host: str, port: int, http2: bool = False, ssl_cert: s
 
 
 def _dashboard_live_quote_callback(source, symbol, price, volume, side, ts=None) -> None:
-    _record_live_quote(source, symbol, price, volume, side)
+    _record_live_quote(source, symbol, price, volume, side, emit_transaction=False)
 
 
 def _dashboard_asset_map_from_positions(open_positions: Any, *, fallback_to_universe: bool = False) -> Dict[str, str]:
@@ -6511,13 +6638,11 @@ def _dashboard_asset_map_from_positions(open_positions: Any, *, fallback_to_univ
         if asset:
             assets_by_category[str(asset)] = str(category)
 
-    if not assets_by_category and fallback_to_universe:
+    if fallback_to_universe:
         from core.asset_profiles import ALL_ASSETS
 
-        assets_by_category = {
-            asset: registry.category(asset)
-            for asset in sorted(ALL_ASSETS)
-        }
+        for asset in sorted(ALL_ASSETS):
+            assets_by_category.setdefault(asset, registry.category(asset))
     return assets_by_category
 
 
@@ -6652,7 +6777,7 @@ def _dashboard_update_ws_subscriptions_loop(ws_global: Any, stream_state: Dict[s
 
             time.sleep(30)
             open_positions = state.get_open_positions() if hasattr(state, "get_open_positions") else []
-            asset_map = _dashboard_asset_map_from_positions(open_positions)
+            asset_map = _dashboard_asset_map_from_positions(open_positions, fallback_to_universe=True)
             if asset_map:
                 _dashboard_apply_subscription_update(ws_global, stream_state, cb, ig_stream_global, asset_map)
         except Exception as e:

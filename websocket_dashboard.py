@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 import sqlite3
 import threading
+import time
 
 try:
     from services.local_candle_store import local_candle_store
@@ -25,6 +26,9 @@ live_prices_lock = threading.Lock()
 _DASHBOARD_STATE_PATH = Path(os.getenv("LIVE_DASHBOARD_STORE_PATH") or "data/live_dashboard_state.sqlite3")
 _dashboard_state_lock = threading.Lock()
 _dashboard_state_conn = None
+_pending_live_snapshot_rows: dict[str, tuple[float, float, str]] = {}
+_snapshot_flush_stop = threading.Event()
+_snapshot_flush_thread = None
 
 # ─── Per-exchange connection status ───────────────────────────────────────────
 connection_status: dict = {
@@ -121,10 +125,25 @@ def _persist_transaction(tx: dict) -> None:
 
 
 def _persist_live_snapshot(asset: str, price: float, ts: float, source: str) -> None:
+    with _dashboard_state_lock:
+        _pending_live_snapshot_rows[str(asset or "")] = (float(price), float(ts), str(source or ""))
+
+
+def _flush_live_snapshots() -> None:
     try:
         with _dashboard_state_lock:
+            if not _pending_live_snapshot_rows:
+                return
+            rows = [
+                (asset, float(price), float(ts), str(source or ""))
+                for asset, (price, ts, source) in _pending_live_snapshot_rows.items()
+                if asset
+            ]
+            if not rows:
+                _pending_live_snapshot_rows.clear()
+                return
             conn = _dashboard_state_connection()
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO live_price_snapshots (asset, price, timestamp, source)
                 VALUES (?, ?, ?, ?)
@@ -132,13 +151,30 @@ def _persist_live_snapshot(asset: str, price: float, ts: float, source: str) -> 
                     price=excluded.price,
                     timestamp=excluded.timestamp,
                     source=excluded.source
-                """
-                ,
-                (str(asset or ""), float(price), float(ts), str(source or "")),
+                """,
+                rows,
             )
             conn.commit()
+            _pending_live_snapshot_rows.clear()
     except Exception:
         pass
+
+
+def _start_snapshot_flush_worker() -> None:
+    global _snapshot_flush_thread
+    if _snapshot_flush_thread is not None:
+        return
+
+    def _loop() -> None:
+        while not _snapshot_flush_stop.wait(1.0):
+            _flush_live_snapshots()
+
+    _snapshot_flush_thread = threading.Thread(
+        target=_loop,
+        name="DashboardLiveSnapshotFlush",
+        daemon=True,
+    )
+    _snapshot_flush_thread.start()
 
 
 def _hydrate_live_history_from_store(asset: str, limit: int = 720) -> None:
@@ -382,3 +418,4 @@ def get_live_price_snapshots(
 
 
 _hydrate_dashboard_state()
+_start_snapshot_flush_worker()
