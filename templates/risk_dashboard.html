@@ -381,6 +381,9 @@ let _riskDashboardCache = null;
 let _riskDashboardPending = null;
 let _riskTradeHistoryCache = null;
 let _riskTradeHistoryPending = null;
+let _riskLiveBookCache = null;
+let _riskLiveBookPending = null;
+let _riskLiveBookTimer = null;
 let drawdownChartInst = null;
 function setRiskUnavailable(message){
   const msg = message || 'Risk dashboard data unavailable';
@@ -437,6 +440,74 @@ async function fetchRiskTradeHistory(limit = 200) {
     }
   })();
   return _riskTradeHistoryPending;
+}
+async function fetchRiskLiveBook(forceRefresh=false) {
+  const now = Date.now();
+  if (!forceRefresh && _riskLiveBookCache && now - _riskLiveBookCache.fetched < 900) return _riskLiveBookCache.data;
+  if (_riskLiveBookPending) return _riskLiveBookPending;
+  _riskLiveBookPending = (async function(){
+    try{
+      const suffix = forceRefresh ? '&refresh=1' : '';
+      const d = await fetchProtectedJson('/api/live-book?live=1'+suffix, {timeoutMs: 5000});
+      if (d.success) {
+        _riskLiveBookCache = {fetched: Date.now(), data: d};
+        return d;
+      }
+      return {success:false};
+    } finally {
+      _riskLiveBookPending = null;
+    }
+  })();
+  return _riskLiveBookPending;
+}
+function applyRiskLiveBook(snapshot){
+  if(!snapshot || !snapshot.success)return;
+  const live = snapshot.live_summary || {};
+  const realizedBalance = Number(live.realized_balance || 0);
+  const liveBalance = Number(live.balance || realizedBalance);
+  const openPnl = Number(live.open_pnl || 0);
+  const liveTotalPnl = Number(live.balance_delta || 0);
+  const realizedTotalPnl = Number(live.realized_total_pnl || 0);
+  const liveDailyPnl = Number(live.daily_pnl || 0);
+  const liveWinRate = Number(live.win_rate || 0);
+  const liveClosedTrades = Number(live.closed_trades || 0);
+  const liveOpenPositions = Number(live.open_positions || 0);
+  if(document.getElementById('topBalance')){
+    document.getElementById('topBalance').textContent = '$'+fmt(liveBalance);
+    document.getElementById('topBalance').style.color = liveTotalPnl >= 0 ? 'var(--gr)' : 'var(--rd)';
+  }
+  if(document.getElementById('mcBalance')) document.getElementById('mcBalance').textContent = '$'+fmt(liveBalance);
+  if(document.getElementById('mcBalanceSub')) document.getElementById('mcBalanceSub').textContent = `Realized $${fmt(realizedBalance)} · Floating ${(openPnl>=0?'+':'')}$${fmt(openPnl)}`;
+  if(document.getElementById('mcWinRate')) document.getElementById('mcWinRate').textContent  = liveWinRate.toFixed(1)+'%';
+  if(document.getElementById('mcTrades')) document.getElementById('mcTrades').textContent   = liveClosedTrades+' closed · '+liveOpenPositions+' open';
+  var pnlEl=document.getElementById('mcPnl');
+  if(pnlEl){
+    pnlEl.textContent=(liveTotalPnl>=0?'+':'')+fmt(liveTotalPnl);
+    pnlEl.className='mc-value '+(liveTotalPnl>=0?'gn':'rd');
+  }
+  if(document.getElementById('mcPnlSub')) document.getElementById('mcPnlSub').textContent = `Realized $${fmt(realizedTotalPnl)} · Floating ${(openPnl>=0?'+':'')}$${fmt(openPnl)}`;
+  if(document.getElementById('posCount')) document.getElementById('posCount').textContent=liveOpenPositions+' open';
+  if(document.getElementById('stateOpenPositions')) document.getElementById('stateOpenPositions').textContent=liveOpenPositions||0;
+}
+function stopRiskLiveBookLoop(){
+  if(_riskLiveBookTimer){clearTimeout(_riskLiveBookTimer);_riskLiveBookTimer=null;}
+}
+async function pollRiskLiveBookLoop(forceRefresh=false){
+  if(document.hidden){
+    _riskLiveBookTimer=setTimeout(function(){pollRiskLiveBookLoop(false);},3000);
+    return;
+  }
+  try{
+    const snapshot = await fetchRiskLiveBook(forceRefresh);
+    applyRiskLiveBook(snapshot);
+  }catch(e){}
+  finally{
+    _riskLiveBookTimer=setTimeout(function(){pollRiskLiveBookLoop(false);},1000);
+  }
+}
+function startRiskLiveBookLoop(forceRefresh=false){
+  stopRiskLiveBookLoop();
+  pollRiskLiveBookLoop(forceRefresh);
 }
 function renderMixCard(title,value,note,klass,chips){
   return '<div class="mix-card"><div class="mix-top"><div class="mix-title">'+title+'</div><div class="mix-value '+klass+'">'+value+'</div></div><div class="mix-note">'+note+'</div>'+(chips&&chips.length?'<div class="flag-row">'+chips.join('')+'</div>':'')+'</div>';
@@ -902,10 +973,12 @@ async function riskReduceWeak(){
 }
 async function bootRiskDashboard(){try{if(window.dashboardAuthReady){await window.dashboardAuthReady;}}catch(_){}
   await load();
+  startRiskLiveBookLoop(true);
 }
 bootRiskDashboard();
-setInterval(function(){ if(!document.hidden) load(); }, 15000);
-document.addEventListener('visibilitychange', function(){ if(!document.hidden){ _riskDashboardCache=null; load(); }});
+setInterval(function(){ if(!document.hidden) load(); }, 30000);
+document.addEventListener('visibilitychange', function(){ if(!document.hidden){ _riskDashboardCache=null; load(); startRiskLiveBookLoop(true); } else { stopRiskLiveBookLoop(); }});
+window.addEventListener('pagehide', stopRiskLiveBookLoop);
 async function riskClose(mode){
   const isCategory=['forex','crypto','commodities','indices'].includes(mode);
   const label={forex:'Forex',crypto:'Crypto',commodities:'Commodities',indices:'Indices',losing:'Losing',winning:'Winning',all:'ALL'}[mode]||mode;

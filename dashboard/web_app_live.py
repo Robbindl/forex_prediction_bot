@@ -2716,45 +2716,36 @@ def _fetch_command_center_live_prices(positions: Any, *, limit: Optional[int] = 
             assets.append((asset, category))
     if not assets:
         return live_prices
-
-    from concurrent.futures import ThreadPoolExecutor, wait
-
-    max_workers = min(4, len(assets))
-    pool = ThreadPoolExecutor(max_workers=max_workers)
     try:
-        futures = {
-            pool.submit(_fetcher.get_real_time_price, asset, category): asset
-            for asset, category in assets
-        }
-        done, not_done = wait(tuple(futures.keys()), timeout=4)
-        for future in done:
-            asset = futures[future]
-            try:
-                price, _ = future.result()
-                if price:
-                    live_prices[asset] = float(price)
-            except Exception:
-                pass
-        if not_done:
-            for future in not_done:
-                future.cancel()
-            logger.debug(f"[dashboard] command-center live price fetch timed out for {len(not_done)} asset(s)")
-    finally:
-        try:
-            pool.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
+        from websocket_dashboard import get_live_price_snapshots
+
+        snapshots = get_live_price_snapshots(
+            assets=[asset for asset, _category in assets],
+            max_age_seconds=30.0,
+        )
+        for asset, _category in assets:
+            snapshot = (snapshots or {}).get(asset) or {}
+            price = snapshot.get("price")
+            if price is not None:
+                live_prices[asset] = float(price)
+    except Exception:
+        pass
     return live_prices
 
 
 def _build_command_center_enriched_positions(positions: Any, live_prices: Dict[str, float]) -> List[Dict[str, Any]]:
     enriched_positions: List[Dict[str, Any]] = []
     for position in list(positions or []):
-        current_price = live_prices.get(position.get("asset", ""), 0.0)
+        asset = str(position.get("asset", "") or "")
+        current_price = live_prices.get(asset)
+        if current_price in (None, 0, 0.0):
+            try:
+                current_price = float(position.get("current_price", 0) or 0)
+            except Exception:
+                current_price = 0.0
         entry_price = float(position.get("entry_price", 0) or 0)
         position_size = float(position.get("position_size", 0) or 0)
         direction = position.get("direction", position.get("signal", "BUY"))
-        asset = str(position.get("asset", "") or "")
         category = str(position.get("category", "forex") or "forex")
         try:
             lot_size = float(position.get("lot_size", 0) or 0)
@@ -2938,6 +2929,87 @@ def _build_command_center_live_summary(perf: Dict[str, Any], daily: Dict[str, An
         "sell_count": sell_count,
         "book_bias": book_bias,
         "open_state": open_state,
+    }
+
+
+def _build_live_book_payload() -> Dict[str, Any]:
+    core = _core()
+    perf, daily, positions, _health, _closed_trades = _command_center_core_snapshot(core)
+    position_rows = [dict(pos) for pos in list(positions or []) if isinstance(pos, dict)]
+    asset_order: List[str] = []
+    for pos in position_rows:
+        asset = str(pos.get("asset", "") or "")
+        if asset and asset not in asset_order:
+            asset_order.append(asset)
+
+    snapshots: Dict[str, Dict[str, Any]] = {}
+    try:
+        from websocket_dashboard import get_live_price_snapshots
+
+        snapshots = get_live_price_snapshots(asset_order, max_age_seconds=30.0) or {}
+    except Exception:
+        snapshots = {}
+
+    enriched_positions: List[Dict[str, Any]] = []
+    stale_assets: List[str] = []
+    for position in position_rows:
+        asset = str(position.get("asset", "") or "")
+        category = str(position.get("category", "forex") or "forex")
+        direction = str(position.get("direction") or position.get("signal", "BUY")).upper()
+        entry_price = float(position.get("entry_price", 0) or 0)
+        position_size = float(position.get("position_size", 0) or 0)
+        snapshot = dict(snapshots.get(asset) or {})
+        current_price = snapshot.get("price")
+        if current_price in (None, 0, 0.0):
+            try:
+                current_price = float(position.get("current_price", 0) or 0)
+            except Exception:
+                current_price = 0.0
+        current_price = float(current_price or 0.0)
+        live_pnl = float(position.get("pnl", 0.0) or 0.0)
+        if current_price and entry_price and position_size:
+            try:
+                from risk.position_sizer import PositionSizer as _PS
+
+                live_pnl = _PS.pnl(asset, category, entry_price, current_price, position_size, direction)
+            except Exception:
+                if direction == "SELL":
+                    live_pnl = (entry_price - current_price) * position_size
+                else:
+                    live_pnl = (current_price - entry_price) * position_size
+        price_age_seconds = float(snapshot.get("age_seconds", 9999.0) or 9999.0)
+        price_source = str(snapshot.get("source") or position.get("current_price_source") or "")
+        is_live = bool(snapshot) and price_age_seconds <= 30.0
+        if asset and not is_live:
+            stale_assets.append(asset)
+        enriched_positions.append(
+            {
+                "trade_id": position.get("trade_id", ""),
+                "asset": asset,
+                "category": category,
+                "direction": direction,
+                "entry_price": entry_price,
+                "current_price": round(current_price, 8) if current_price else 0.0,
+                "pnl": round(float(live_pnl), 2),
+                "position_size": position_size,
+                "lot_size": float(position.get("lot_size", 0) or 0),
+                "confidence": float(position.get("confidence", 0) or 0),
+                "open_time": str(position.get("open_time", "") or ""),
+                "price_source": price_source,
+                "price_age_seconds": round(price_age_seconds, 3) if is_live else None,
+                "price_live": is_live,
+            }
+        )
+
+    live_summary = _build_command_center_live_summary(perf, daily, enriched_positions)
+    return {
+        "success": True,
+        "timestamp": datetime.utcnow().isoformat(),
+        "positions": enriched_positions,
+        "live_summary": live_summary,
+        "open_positions": len(enriched_positions),
+        "updated_assets": [item["asset"] for item in enriched_positions if item.get("price_live")],
+        "stale_assets": stale_assets,
     }
 
 
@@ -3229,6 +3301,29 @@ def api_command_center():
         return handle_api_error(e, "/api/command-center", 500)
 
 
+@app.route("/api/live-book")
+@_check_api_auth
+@_check_rate_limit
+def api_live_book():
+    cache_key = "live_book:v1"
+    force_refresh = _request_wants_cache_bypass()
+    if not force_refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+    try:
+        payload = _build_live_book_payload()
+        if not force_refresh:
+            _cache_set(cache_key, payload, ttl=1)
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+    except APIError as e:
+        return handle_api_error(e, "/api/live-book", e.status_code)
+    except Exception as e:
+        return handle_api_error(e, "/api/live-book", 500)
+
+
 @app.route("/api/command-center/stream")
 @_check_api_auth
 @_check_rate_limit
@@ -3494,7 +3589,7 @@ def _chart_stream_live_quote(asset: str, category: str) -> tuple[Optional[float]
     try:
         from websocket_dashboard import get_live_price_snapshot
 
-        live_snapshot = get_live_price_snapshot(asset, max_age_seconds=5.0)
+        live_snapshot = get_live_price_snapshot(asset, max_age_seconds=20.0)
         if live_snapshot is not None:
             return (
                 float(live_snapshot.get("price", 0.0) or 0.0),
@@ -3505,15 +3600,22 @@ def _chart_stream_live_quote(asset: str, category: str) -> tuple[Optional[float]
     try:
         from websocket_dashboard import get_live_price
 
-        live_price, live_source = get_live_price(asset, max_age_seconds=5.0)
+        live_price, live_source = get_live_price(asset, max_age_seconds=20.0)
         if live_price is not None:
             return float(live_price), str(live_source or "LiveCache")
     except Exception:
         pass
 
+    cache_key = f"chart_quote:{asset}"
+    last_good_key = f"chart_quote_last_good:{asset}"
+    cached_quote = _cache_get(cache_key)
+    if isinstance(cached_quote, dict) and cached_quote.get("price") is not None:
+        return float(cached_quote.get("price") or 0.0), str(cached_quote.get("source") or "")
+
     descriptor = _chart_asset_descriptor(asset, category)
     primary_provider = str(descriptor.get("primary_provider") or "").strip()
     secondary_provider = str(descriptor.get("secondary_provider") or "").strip()
+    quote_mode = str(descriptor.get("quote_mode") or "").strip().lower()
 
     provider_order: list[str] = []
     if primary_provider.upper() == "IG" and secondary_provider:
@@ -3535,15 +3637,26 @@ def _chart_stream_live_quote(asset: str, category: str) -> tuple[Optional[float]
         except Exception:
             price, provider_meta = None, {}
         if price is not None:
-            return float(price), str((provider_meta or {}).get("source") or token)
+            source = str((provider_meta or {}).get("source") or token)
+            payload = {"price": float(price), "source": source}
+            ttl = 5 if token.upper() == "IG" else 2 if quote_mode == "stream" else 3
+            _cache_set(cache_key, payload, ttl=ttl)
+            _cache_set(last_good_key, payload, ttl=30)
+            return float(price), source
 
     price, _ = _fetcher.get_real_time_price(asset, category)
     if price is None:
+        last_good = _cache_get(last_good_key)
+        if isinstance(last_good, dict) and last_good.get("price") is not None:
+            return float(last_good.get("price") or 0.0), str(last_good.get("source") or "")
         return None, ""
     try:
         source = str((_fetcher.get_last_price_metadata(asset) or {}).get("source") or "")
     except Exception:
         source = ""
+    payload = {"price": float(price), "source": source}
+    _cache_set(cache_key, payload, ttl=3)
+    _cache_set(last_good_key, payload, ttl=30)
     return float(price), source
 
 

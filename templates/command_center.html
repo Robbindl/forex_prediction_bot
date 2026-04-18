@@ -886,6 +886,9 @@ let _commandCenterStreamAbort = null;
 let _commandCenterStreamReconnect = null;
 let _commandCenterStreamActive = false;
 let _commandCenterStreamDisabled = false;
+let _liveBookCache = null;
+let _liveBookPending = null;
+let _liveBookTimer = null;
 let _commandCenterLastClosedTradeCount = null;
 
 function setCommandCenterUnavailable(message){
@@ -938,6 +941,92 @@ async function fetchCommandCenterOverview(){
     } finally {_commandCenterPending = null;}
   })();
   return _commandCenterPending;
+}
+async function fetchLiveBook(forceRefresh=false){
+  const now = Date.now();
+  if(!forceRefresh && _liveBookCache && now - _liveBookCache.fetched < 900)return _liveBookCache.data;
+  if(_liveBookPending)return _liveBookPending;
+  _liveBookPending = (async () => {
+    try{
+      const suffix = forceRefresh ? '&refresh=1' : '';
+      const page = await fetchProtectedJson('/api/live-book?live=1'+suffix, {timeoutMs: 5000});
+      if(page && page.success){_liveBookCache = {fetched: Date.now(), data: page};return page;}
+      return {success:false};
+    } finally {_liveBookPending = null;}
+  })();
+  return _liveBookPending;
+}
+function mergeLivePositionsSnapshot(items){
+  const updates = Array.isArray(items) ? items : [];
+  const base = new Map((_allPositions || []).map(item => [item.trade_id || item.asset, Object.assign({}, item)]));
+  updates.forEach(item => {
+    const key = item.trade_id || item.asset;
+    const existing = base.get(key) || {};
+    base.set(key, Object.assign({}, existing, item));
+  });
+  return Array.from(base.values());
+}
+function applyLiveBookSnapshot(snapshot){
+  if(!snapshot || !snapshot.success)return;
+  const live = snapshot.live_summary || {};
+  const realizedBalance = Number(live.realized_balance || 0);
+  const liveBalance = Number(live.balance || realizedBalance);
+  const balanceDelta = Number(live.balance_delta || 0);
+  const openPnl = Number(live.open_pnl || 0);
+  const dailyPnl = Number(live.daily_pnl || 0);
+  const liveWinRate = Number(live.win_rate || 0);
+  const openPositions = Number(live.open_positions || 0);
+  const buyCount = Number(live.buy_count || 0);
+  const sellCount = Number(live.sell_count || 0);
+  const balanceEl=document.getElementById('mBal');
+  if(balanceEl){
+    balanceEl.textContent=fmtMoney(liveBalance);
+    balanceEl.className='mc-value '+(balanceDelta>=0?'gn':'rd');
+  }
+  if(document.getElementById('topBalance')){
+    document.getElementById('topBalance').textContent=fmtMoney(liveBalance);
+    document.getElementById('topBalance').style.color=balanceDelta>=0?'var(--gr)':'var(--rd)';
+  }
+  if(document.getElementById('mBalSub')) document.getElementById('mBalSub').textContent=`Realized ${fmtMoney(realizedBalance)} · Open ${fmtMoney(openPnl)}`;
+  if(document.getElementById('mDPnl')){
+    const dpEl=document.getElementById('mDPnl');
+    dpEl.textContent=fmtNum(dailyPnl);
+    dpEl.className='mc-value '+(dailyPnl>=0?'gn':'rd');
+  }
+  if(document.getElementById('mDTrades')) document.getElementById('mDTrades').textContent=`Realized ${fmtMoney(Number(live.realized_daily_pnl||0))} · Floating ${fmtMoney(openPnl)}`;
+  if(document.getElementById('mWr')){
+    const wrEl=document.getElementById('mWr');
+    wrEl.textContent=liveWinRate.toFixed(1)+'%';
+    wrEl.className='mc-value '+(liveWinRate>=60?'gn':liveWinRate<=40?'rd':'am');
+  }
+  if(document.getElementById('mWrSub')) document.getElementById('mWrSub').textContent=`${Number(live.closed_trades||0)} closed · ${openPositions} open`;
+  if(document.getElementById('mPos')) document.getElementById('mPos').textContent=openPositions;
+  if(document.getElementById('mPosSub')) document.getElementById('mPosSub').textContent=`BUY ${buyCount} · SELL ${sellCount}`;
+  if(document.getElementById('posCount')) document.getElementById('posCount').textContent=openPositions;
+  _allPositions = mergeLivePositionsSnapshot(snapshot.positions || []);
+  const pf=document.getElementById('posFilter');
+  if(pf && pf.value && pf.value !== 'all')filterPositions();
+  else renderPositions(_allPositions);
+}
+function stopLiveBookLoop(){
+  if(_liveBookTimer){clearTimeout(_liveBookTimer);_liveBookTimer=null;}
+}
+async function pollLiveBookLoop(forceRefresh=false){
+  if(document.hidden){
+    _liveBookTimer=setTimeout(() => { pollLiveBookLoop(false); }, 3000);
+    return;
+  }
+  try{
+    const snapshot = await fetchLiveBook(forceRefresh);
+    applyLiveBookSnapshot(snapshot);
+  }catch(e){}
+  finally{
+    _liveBookTimer=setTimeout(() => { pollLiveBookLoop(false); }, 1000);
+  }
+}
+function startLiveBookLoop(forceRefresh=false){
+  stopLiveBookLoop();
+  pollLiveBookLoop(forceRefresh);
 }
 function stopCommandCenterStream(){
   if(_commandCenterStreamReconnect){clearTimeout(_commandCenterStreamReconnect);_commandCenterStreamReconnect = null;}
@@ -1207,13 +1296,16 @@ async function bootCommandCenter(){
   try{if(window.dashboardAuthReady)await window.dashboardAuthReady;}catch(_){}
   await Promise.allSettled([loadMain(),loadHistory()]);
   startCommandCenterStream();
+  startLiveBookLoop(true);
 }
 bootCommandCenter();
-setInterval(() => { if(!document.hidden && !_commandCenterStreamActive){ loadMain(); } }, 15000);
+setInterval(() => { if(!document.hidden && !_commandCenterStreamActive){ loadMain(); } }, 30000);
 setInterval(loadHistory,60000);
-document.addEventListener('visibilitychange', () => {if(!document.hidden){loadMain();if(!_commandCenterStreamActive && !_commandCenterStreamDisabled)startCommandCenterStream();}});
+document.addEventListener('visibilitychange', () => {if(!document.hidden){loadMain();startLiveBookLoop(true);if(!_commandCenterStreamActive && !_commandCenterStreamDisabled)startCommandCenterStream();} else {stopLiveBookLoop();}});
 window.addEventListener('pagehide', stopCommandCenterStream);
 window.addEventListener('beforeunload', stopCommandCenterStream);
+window.addEventListener('pagehide', stopLiveBookLoop);
+window.addEventListener('beforeunload', stopLiveBookLoop);
 
 async function loadHistory(){
   try{

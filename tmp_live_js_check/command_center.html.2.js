@@ -367,6 +367,9 @@ let _commandCenterStreamAbort = null;
 let _commandCenterStreamReconnect = null;
 let _commandCenterStreamActive = false;
 let _commandCenterStreamDisabled = false;
+let _liveBookCache = null;
+let _liveBookPending = null;
+let _liveBookTimer = null;
 let _commandCenterLastClosedTradeCount = null;
 
 function setCommandCenterUnavailable(message){
@@ -409,16 +412,102 @@ function renderWhalePanel(d){
 }
 async function fetchCommandCenterOverview(){
   const now = Date.now();
-  if(_commandCenterCache && now - _commandCenterCache.fetched < 1000)return _commandCenterCache.data;
+  if(_commandCenterCache && now - _commandCenterCache.fetched < 5000)return _commandCenterCache.data;
   if(_commandCenterPending)return _commandCenterPending;
   _commandCenterPending = (async () => {
     try{
-      const page = await fetchProtectedJson(`/api/command-center?live=1&_=${Date.now()}`, {timeoutMs: 15000});
+      const page = await fetchProtectedJson('/api/command-center?live=1', {timeoutMs: 15000});
       if(page && page.success){_commandCenterCache = {fetched: Date.now(), data: page};return page;}
       return {success:false};
     } finally {_commandCenterPending = null;}
   })();
   return _commandCenterPending;
+}
+async function fetchLiveBook(forceRefresh=false){
+  const now = Date.now();
+  if(!forceRefresh && _liveBookCache && now - _liveBookCache.fetched < 900)return _liveBookCache.data;
+  if(_liveBookPending)return _liveBookPending;
+  _liveBookPending = (async () => {
+    try{
+      const suffix = forceRefresh ? '&refresh=1' : '';
+      const page = await fetchProtectedJson('/api/live-book?live=1'+suffix, {timeoutMs: 5000});
+      if(page && page.success){_liveBookCache = {fetched: Date.now(), data: page};return page;}
+      return {success:false};
+    } finally {_liveBookPending = null;}
+  })();
+  return _liveBookPending;
+}
+function mergeLivePositionsSnapshot(items){
+  const updates = Array.isArray(items) ? items : [];
+  const base = new Map((_allPositions || []).map(item => [item.trade_id || item.asset, Object.assign({}, item)]));
+  updates.forEach(item => {
+    const key = item.trade_id || item.asset;
+    const existing = base.get(key) || {};
+    base.set(key, Object.assign({}, existing, item));
+  });
+  return Array.from(base.values());
+}
+function applyLiveBookSnapshot(snapshot){
+  if(!snapshot || !snapshot.success)return;
+  const live = snapshot.live_summary || {};
+  const realizedBalance = Number(live.realized_balance || 0);
+  const liveBalance = Number(live.balance || realizedBalance);
+  const balanceDelta = Number(live.balance_delta || 0);
+  const openPnl = Number(live.open_pnl || 0);
+  const dailyPnl = Number(live.daily_pnl || 0);
+  const liveWinRate = Number(live.win_rate || 0);
+  const openPositions = Number(live.open_positions || 0);
+  const buyCount = Number(live.buy_count || 0);
+  const sellCount = Number(live.sell_count || 0);
+  const balanceEl=document.getElementById('mBal');
+  if(balanceEl){
+    balanceEl.textContent=fmtMoney(liveBalance);
+    balanceEl.className='mc-value '+(balanceDelta>=0?'gn':'rd');
+  }
+  if(document.getElementById('topBalance')){
+    document.getElementById('topBalance').textContent=fmtMoney(liveBalance);
+    document.getElementById('topBalance').style.color=balanceDelta>=0?'var(--gr)':'var(--rd)';
+  }
+  if(document.getElementById('mBalSub')) document.getElementById('mBalSub').textContent=`Realized ${fmtMoney(realizedBalance)} · Open ${fmtMoney(openPnl)}`;
+  if(document.getElementById('mDPnl')){
+    const dpEl=document.getElementById('mDPnl');
+    dpEl.textContent=fmtNum(dailyPnl);
+    dpEl.className='mc-value '+(dailyPnl>=0?'gn':'rd');
+  }
+  if(document.getElementById('mDTrades')) document.getElementById('mDTrades').textContent=`Realized ${fmtMoney(Number(live.realized_daily_pnl||0))} · Floating ${fmtMoney(openPnl)}`;
+  if(document.getElementById('mWr')){
+    const wrEl=document.getElementById('mWr');
+    wrEl.textContent=liveWinRate.toFixed(1)+'%';
+    wrEl.className='mc-value '+(liveWinRate>=60?'gn':liveWinRate<=40?'rd':'am');
+  }
+  if(document.getElementById('mWrSub')) document.getElementById('mWrSub').textContent=`${Number(live.closed_trades||0)} closed · ${openPositions} open`;
+  if(document.getElementById('mPos')) document.getElementById('mPos').textContent=openPositions;
+  if(document.getElementById('mPosSub')) document.getElementById('mPosSub').textContent=`BUY ${buyCount} · SELL ${sellCount}`;
+  if(document.getElementById('posCount')) document.getElementById('posCount').textContent=openPositions;
+  _allPositions = mergeLivePositionsSnapshot(snapshot.positions || []);
+  const pf=document.getElementById('posFilter');
+  if(pf && pf.value && pf.value !== 'all')filterPositions();
+  else renderPositions(_allPositions);
+}
+function stopLiveBookLoop(){
+  if(_liveBookTimer){clearTimeout(_liveBookTimer);_liveBookTimer=null;}
+}
+async function pollLiveBookLoop(forceRefresh=false){
+  if(document.hidden){
+    _liveBookTimer=setTimeout(() => { pollLiveBookLoop(false); }, 3000);
+    return;
+  }
+  try{
+    const snapshot = await fetchLiveBook(forceRefresh);
+    applyLiveBookSnapshot(snapshot);
+  }catch(e){}
+  finally{
+    _liveBookTimer=setTimeout(() => { pollLiveBookLoop(false); }, 1000);
+  }
+}
+function startLiveBookLoop(forceRefresh=false){
+  stopLiveBookLoop();
+  pollLiveBookLoop(forceRefresh);
 }
 function stopCommandCenterStream(){
   if(_commandCenterStreamReconnect){clearTimeout(_commandCenterStreamReconnect);_commandCenterStreamReconnect = null;}
@@ -431,43 +520,10 @@ function scheduleCommandCenterStreamReconnect(delayMs = 3000){
   _commandCenterStreamReconnect = setTimeout(() => {_commandCenterStreamReconnect = null;startCommandCenterStream();}, delayMs);
 }
 async function startCommandCenterStream(){
-  if(_commandCenterStreamDisabled || _commandCenterStreamActive || _commandCenterStreamAbort)return;
-  if(typeof window.fetch !== 'function'){_commandCenterStreamDisabled = true;return;}
-  const controller = new AbortController();
-  _commandCenterStreamAbort = controller;
-  try{
-    const response = await window.fetch(`/api/command-center/stream?_=${Date.now()}`, {method: 'GET',cache: 'no-store',headers: {'Accept': 'application/x-ndjson'},signal: controller.signal});
-    if(!response.ok)throw new Error(`HTTP ${response.status}`);
-    if(!response.body || typeof response.body.getReader !== 'function'){_commandCenterStreamDisabled = true;_commandCenterStreamActive = false;return;}
-    _commandCenterStreamActive = true;
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while(true){
-      const {value, done} = await reader.read();
-      if(done)break;
-      buffer += decoder.decode(value, {stream:true});
-      let newlineIndex = buffer.indexOf('\n');
-      while(newlineIndex >= 0){
-        const rawLine = buffer.slice(0, newlineIndex).trim();
-        buffer = buffer.slice(newlineIndex + 1);
-        if(rawLine){
-          try{
-            const msg = JSON.parse(rawLine);
-            if(msg && msg.type === 'refresh')loadMain();
-          }catch(err){console.warn('[CC stream] parse error', err);}
-        }
-        newlineIndex = buffer.indexOf('\n');
-      }
-    }
-  }catch(err){
-    if(err && err.name === 'AbortError')return;
-    console.warn('[CC stream]', err);
-  }finally{
-    if(_commandCenterStreamAbort === controller)_commandCenterStreamAbort = null;
-    _commandCenterStreamActive = false;
-    if(!document.hidden && !_commandCenterStreamDisabled)scheduleCommandCenterStreamReconnect();
-  }
+  _commandCenterStreamDisabled = true;
+  _commandCenterStreamActive = false;
+  if(_commandCenterStreamAbort){ try{ _commandCenterStreamAbort.abort(); }catch(err){} _commandCenterStreamAbort = null; }
+  return;
 }
 function collectElitePool(d){
   return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]);
@@ -721,13 +777,16 @@ async function bootCommandCenter(){
   try{if(window.dashboardAuthReady)await window.dashboardAuthReady;}catch(_){}
   await Promise.allSettled([loadMain(),loadHistory()]);
   startCommandCenterStream();
+  startLiveBookLoop(true);
 }
 bootCommandCenter();
-setInterval(() => { if(!document.hidden && !_commandCenterStreamActive){ loadMain(); } }, 5000);
+setInterval(() => { if(!document.hidden && !_commandCenterStreamActive){ loadMain(); } }, 30000);
 setInterval(loadHistory,60000);
-document.addEventListener('visibilitychange', () => {if(!document.hidden){loadMain();if(!_commandCenterStreamActive && !_commandCenterStreamDisabled)startCommandCenterStream();}});
+document.addEventListener('visibilitychange', () => {if(!document.hidden){loadMain();startLiveBookLoop(true);if(!_commandCenterStreamActive && !_commandCenterStreamDisabled)startCommandCenterStream();} else {stopLiveBookLoop();}});
 window.addEventListener('pagehide', stopCommandCenterStream);
 window.addEventListener('beforeunload', stopCommandCenterStream);
+window.addEventListener('pagehide', stopLiveBookLoop);
+window.addEventListener('beforeunload', stopLiveBookLoop);
 
 async function loadHistory(){
   try{

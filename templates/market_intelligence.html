@@ -852,7 +852,7 @@ async function _pollChartQuoteOnce(){
     return;
   }
   if(document.hidden){
-    _chartLivePollTimer = setTimeout(() => { _pollChartQuoteOnce(); }, 5000);
+    _chartLivePollTimer = setTimeout(() => { _pollChartQuoteOnce(); }, 3000);
     return;
   }
   const livePriceEl = document.getElementById('livePrice');
@@ -871,7 +871,7 @@ async function _pollChartQuoteOnce(){
   }catch(err){}
   finally{
     if(_chartMode === 'live'){
-      _chartLivePollTimer = setTimeout(() => { _pollChartQuoteOnce(); }, 3000);
+      _chartLivePollTimer = setTimeout(() => { _pollChartQuoteOnce(); }, 1000);
     }
   }
 }
@@ -989,11 +989,11 @@ setInterval(() => {
   if(!_chartBooted){ bootChartSection(); return; }
   if(_chartMode !== 'live' || document.hidden) return;
   const sec = intervalSeconds(currentTf) || 60;
-  const refreshMs = sec <= 300 ? 15000 : sec <= 900 ? 20000 : sec <= 3600 ? 30000 : 60000;
+  const refreshMs = sec <= 60 ? 5000 : sec <= 300 ? 5000 : sec <= 900 ? 10000 : sec <= 1800 ? 15000 : sec <= 3600 ? 20000 : 60000;
   if(!_lastLiveReloadAt || (Date.now() - _lastLiveReloadAt) >= refreshMs){
     loadCandles({quiet:true, keepRange:true});
   }
-}, 5000);
+}, 1000);
 setInterval(() => { if(!document.hidden) loadDataPlane(); }, 15000);
 setInterval(() => { if(!document.hidden) loadHeatmap(); }, 60000);
 document.addEventListener('visibilitychange', () => { if(!document.hidden){ _marketIntelligenceCache = null; loadDataPlane(); if(_chartMode === 'live') startStream(); } else { stopStream(); } });

@@ -9720,6 +9720,98 @@ def test_chart_quote_returns_live_quote_snapshot(monkeypatch) -> None:
     assert seen == [("Deriv", "EUR/USD", 123.456, False)]
 
 
+def test_chart_stream_live_quote_reuses_cached_provider_quote(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    calls = {"provider": 0}
+    cache_store: dict[str, object] = {}
+
+    class _FakeFetcher:
+        def get_provider_quote(self, asset, category, provider):
+            calls["provider"] += 1
+            return 1.23456, 0.0, {"source": provider}
+
+        def get_real_time_price(self, asset, category):
+            raise AssertionError("provider cache should satisfy repeat quote lookups")
+
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_chart_asset_descriptor",
+        lambda asset, category: {
+            "primary_provider": "Deriv",
+            "secondary_provider": "",
+            "quote_mode": "stream",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(ws_mod, "get_live_price_snapshot", lambda asset, max_age_seconds=20.0: None, raising=False)
+    monkeypatch.setattr(ws_mod, "get_live_price", lambda asset, max_age_seconds=20.0: (None, None), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: cache_store.get(key), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: cache_store.__setitem__(key, value), raising=False)
+
+    price1, source1 = dashboard_mod._chart_stream_live_quote("EUR/USD", "forex")
+    price2, source2 = dashboard_mod._chart_stream_live_quote("EUR/USD", "forex")
+
+    assert price1 == price2 == 1.23456
+    assert source1 == source2 == "Deriv"
+    assert calls["provider"] == 1
+
+
+def test_api_live_book_uses_shared_live_price_snapshots_for_positions(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_command_center_core_snapshot",
+        lambda core: (
+            {"balance": 1000.0, "initial_balance": 900.0, "total_pnl": 50.0, "total_trades": 4, "win_rate": 0.5},
+            {"daily_pnl": 5.0},
+            [
+                {
+                    "trade_id": "T1",
+                    "asset": "EUR/USD",
+                    "category": "forex",
+                    "direction": "BUY",
+                    "entry_price": 1.1000,
+                    "position_size": 100000,
+                    "confidence": 0.74,
+                    "open_time": "2026-04-18T09:00:00Z",
+                }
+            ],
+            {},
+            [],
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ws_mod,
+        "get_live_price_snapshots",
+        lambda assets=None, max_age_seconds=None: {
+            "EUR/USD": {"price": 1.1050, "timestamp": 1234567890.0, "source": "Deriv", "age_seconds": 0.6}
+        },
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/live-book")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["open_positions"] == 1
+    assert payload["positions"][0]["asset"] == "EUR/USD"
+    assert payload["positions"][0]["current_price"] == 1.105
+    assert payload["positions"][0]["price_live"] is True
+    assert payload["positions"][0]["price_source"] == "Deriv"
+
+
 def test_record_live_quote_emits_transaction_and_cache(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
