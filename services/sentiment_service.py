@@ -15,7 +15,7 @@ from services.sentiment_sources import (
     _clamp,
     _reddit_score,
 )
-from config.config import NEWS_REDDIT_ENABLED
+from config.config import NEWS_REDDIT_ENABLED, NEWS_SENTIMENT_ENABLED
 from core.asset_profiles import get_profile
 from utils.logger import get_logger
 
@@ -91,23 +91,24 @@ class SentimentService:
             components["price_momentum"] = pm
             weights["price_momentum"]    = 0.30
 
-        # 3. News sentiment (asset-filtered)
-        ns = _NewsSentiment.get(asset)
-        if ns is not None:
-            components["news"] = ns
-            weights["news"]    = 0.20
+        if NEWS_SENTIMENT_ENABLED:
+            # 3. News sentiment (asset-filtered)
+            ns = _NewsSentiment.get(asset)
+            if ns is not None:
+                components["news"] = ns
+                weights["news"]    = 0.20
 
-        # 4. Reddit — uses new public-JSON watcher (all subreddits per asset)
-        if NEWS_REDDIT_ENABLED:
-            rd = _reddit_score(asset)
-            if rd is not None:
-                components["reddit"] = rd
-                weights["reddit"]    = 0.20
+            # 4. Reddit — uses new public-JSON watcher (all subreddits per asset)
+            if NEWS_REDDIT_ENABLED:
+                rd = _reddit_score(asset)
+                if rd is not None:
+                    components["reddit"] = rd
+                    weights["reddit"]    = 0.20
 
-        macro = _NewsSentiment.macro_impact(asset)
-        if macro is not None:
-            components["macro_event"] = macro
-            weights["macro_event"]    = 0.10
+            macro = _NewsSentiment.macro_impact(asset)
+            if macro is not None:
+                components["macro_event"] = macro
+                weights["macro_event"]    = 0.10
 
         return self._build_result(components, weights)
 
@@ -122,23 +123,24 @@ class SentimentService:
             components["price_momentum"] = pm
             weights["price_momentum"]    = 0.35
 
-        # 2. News (asset-specific — precious-metals coverage)
-        ns = _NewsSentiment.get(asset)
-        if ns is not None:
-            components["news"] = ns
-            weights["news"]    = 0.30
+        if NEWS_SENTIMENT_ENABLED:
+            # 2. News (asset-specific — precious-metals coverage)
+            ns = _NewsSentiment.get(asset)
+            if ns is not None:
+                components["news"] = ns
+                weights["news"]    = 0.30
 
-        # 3. Reddit — metals-focused subreddits via public JSON
-        if NEWS_REDDIT_ENABLED:
-            rd = _reddit_score(asset)
-            if rd is not None:
-                components["reddit"] = rd
-                weights["reddit"]    = 0.15
+            # 3. Reddit — metals-focused subreddits via public JSON
+            if NEWS_REDDIT_ENABLED:
+                rd = _reddit_score(asset)
+                if rd is not None:
+                    components["reddit"] = rd
+                    weights["reddit"]    = 0.15
 
-        macro = _NewsSentiment.macro_impact(asset)
-        if macro is not None:
-            components["macro_event"] = macro
-            weights["macro_event"]    = 0.10
+            macro = _NewsSentiment.macro_impact(asset)
+            if macro is not None:
+                components["macro_event"] = macro
+                weights["macro_event"]    = 0.10
 
         # 4. VIX (risk-off tends to support safe-haven metals)
         vix = _MarketInstruments.vix()
@@ -173,23 +175,24 @@ class SentimentService:
             components["price_momentum"] = pm
             weights["price_momentum"]    = 0.40
 
-        # 2. News (asset-filtered)
-        ns = _NewsSentiment.get(asset)
-        if ns is not None:
-            components["news"] = ns
-            weights["news"]    = 0.30
+        if NEWS_SENTIMENT_ENABLED:
+            # 2. News (asset-filtered)
+            ns = _NewsSentiment.get(asset)
+            if ns is not None:
+                components["news"] = ns
+                weights["news"]    = 0.30
 
-        # 3. Reddit — r/Forex, r/Forexstrategy, r/trading via public JSON
-        if NEWS_REDDIT_ENABLED:
-            rd = _reddit_score(asset)
-            if rd is not None:
-                components["reddit"] = rd
-                weights["reddit"]    = 0.15
+            # 3. Reddit — r/Forex, r/Forexstrategy, r/trading via public JSON
+            if NEWS_REDDIT_ENABLED:
+                rd = _reddit_score(asset)
+                if rd is not None:
+                    components["reddit"] = rd
+                    weights["reddit"]    = 0.15
 
-        macro = _NewsSentiment.macro_impact(asset)
-        if macro is not None:
-            components["macro_event"] = macro
-            weights["macro_event"]    = 0.10
+            macro = _NewsSentiment.macro_impact(asset)
+            if macro is not None:
+                components["macro_event"] = macro
+                weights["macro_event"]    = 0.10
 
         # 4. VIX — high VIX = risk-off = USD strength = bearish non-USD pairs
         vix = _MarketInstruments.vix()
@@ -219,14 +222,15 @@ class SentimentService:
             components["price_momentum"] = pm
             weights["price_momentum"]    = 0.20
 
-        # 2. Reddit — equity-index subreddits via public JSON
-        if NEWS_REDDIT_ENABLED:
-            rd = _reddit_score(asset)
-            if rd is not None:
-                components["reddit"] = rd
-                weights["reddit"]    = 0.10
+        if NEWS_SENTIMENT_ENABLED:
+            # 2. Reddit — equity-index subreddits via public JSON
+            if NEWS_REDDIT_ENABLED:
+                rd = _reddit_score(asset)
+                if rd is not None:
+                    components["reddit"] = rd
+                    weights["reddit"]    = 0.10
 
-        # 3. VIX (primary fear gauge for equities)
+            # 3. VIX (primary fear gauge for equities)
         vix = _MarketInstruments.vix()
         if vix:
             components["vix"] = vix["score"]
@@ -238,10 +242,10 @@ class SentimentService:
             components["fear_greed"] = fg["score"]
             weights["fear_greed"]    = 0.20
 
-        macro = _NewsSentiment.macro_impact(asset)
-        if macro is not None:
-            components["macro_event"] = macro
-            weights["macro_event"]    = 0.10
+            macro = _NewsSentiment.macro_impact(asset)
+            if macro is not None:
+                components["macro_event"] = macro
+                weights["macro_event"]    = 0.10
 
         # 4. AAII (weekly survey)
         aaii = _MarketInstruments.aaii()

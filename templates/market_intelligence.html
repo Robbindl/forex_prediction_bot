@@ -887,33 +887,7 @@ async function startStream(){
   if(!_chartBooted || _chartMode !== 'live') return;
   const livePriceEl = document.getElementById('livePrice');
   if(livePriceEl) livePriceEl.textContent = '—';
-  try{
-    let token = '';
-    try{ if(window.dashboardGetApiToken) token = await window.dashboardGetApiToken(false); }catch(_){}
-    const qs = new URLSearchParams({assets: currentAsset});
-    if(token) qs.set('token', token);
-    sseSource = new EventSource('/api/live-prices/stream?' + qs.toString());
-    sseSource.onmessage = function(event){
-      try{
-        const data = JSON.parse(event.data || '{}');
-        if(data.type !== 'prices') return;
-        const item = (data.prices || {})[currentAsset];
-        if(!item || !Number.isFinite(Number(item.price))) return;
-        const price = Number(item.price);
-        const tickTs = Number(item.timestamp || 0);
-        _chartLiveSource = String(item.source || _chartLiveSource || '');
-        if(livePriceEl) livePriceEl.textContent = formatChartPrice(price);
-        if(_chartLiveOverlayAllowed) applyLiveTickToChart(price, tickTs);
-        else setLivePriceLine(price);
-      }catch(err){}
-    };
-    sseSource.onerror = function(){
-      stopStream();
-      scheduleChartStreamReconnect();
-    };
-  }catch(err){
-    scheduleChartStreamReconnect(2500);
-  }
+  _pollChartQuoteOnce();
 }
 async function loadHeatmap(manual=false){
   const grid = document.getElementById('heatmapGrid');

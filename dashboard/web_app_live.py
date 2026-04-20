@@ -92,11 +92,21 @@ app = Flask(
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 try:
-    from config.config import DASHBOARD_CORS_ORIGINS, TRUST_PROXY_COUNT, PLAYBOOK_ONLY_RUNTIME
+    from config.config import (
+        DASHBOARD_CORS_ORIGINS,
+        NEWS_REDDIT_ENABLED,
+        NEWS_RSS_ENABLED,
+        NEWS_SENTIMENT_ENABLED,
+        PLAYBOOK_ONLY_RUNTIME,
+        TRUST_PROXY_COUNT,
+    )
 except Exception:
     DASHBOARD_CORS_ORIGINS = ["http://localhost:5000"]
     TRUST_PROXY_COUNT = 1
     PLAYBOOK_ONLY_RUNTIME = False
+    NEWS_SENTIMENT_ENABLED = True
+    NEWS_REDDIT_ENABLED = False
+    NEWS_RSS_ENABLED = False
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=TRUST_PROXY_COUNT, x_proto=TRUST_PROXY_COUNT, x_host=TRUST_PROXY_COUNT)
 CORS(app, resources={r"/api/*": {"origins": DASHBOARD_CORS_ORIGINS}})
@@ -992,6 +1002,9 @@ def _fallback_signal(asset: str) -> Optional[Dict]:
 def _prewarm_sentiment() -> None:
     time.sleep(12)
     try:
+        if not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED):
+            logger.info("[dashboard] Sentiment prewarm skipped — news sources are disabled")
+            return
         logger.info("[dashboard] Pre-warming sentiment cache...")
         _get_sent()
         with app.test_request_context():

@@ -38,6 +38,7 @@ from utils.logger import logger
 # ── Conversation state ────────────────────────────────────────────────────────
 WAITING_ASK_ASSET    = 1
 WAITING_ASK_QUESTION = 2
+WAITING_CHAT_MESSAGE = 3
 
 # ── Asset display names ───────────────────────────────────────────────────────
 _DISPLAY = {
@@ -141,6 +142,17 @@ _ASK_QUESTIONS = [
     ("🎯 How confident are you?", "confidence"),
 ]
 
+_CHAT_QUICK_PROMPTS = {
+    "top": "What are the top setups right now?",
+    "issues": "What issues are you experiencing right now?",
+    "learned": "What have you learned recently?",
+    "market": "What is currently happening that affects trading right now?",
+    "macro": "How can CPI or FOMC affect the current market?",
+    "holiday": "When is the next bank holiday and how could it affect trading?",
+    "outlook": "Where do you see Bitcoin in the next 2 years?",
+    "adjust": "How should you adjust yourself right now?",
+}
+
 def _ask_category_keyboard() -> InlineKeyboardMarkup:
     rows = [(emoji_cat, f"askcat:{emoji_cat}") for emoji_cat in _ASK_CATEGORY_ASSETS]
     # 2 per row
@@ -170,6 +182,17 @@ def _ask_question_keyboard(asset: str) -> InlineKeyboardMarkup:
     return _kb(*rows)
 
 
+def _chat_shortcuts_keyboard() -> InlineKeyboardMarkup:
+    return _kb(
+        [("📍 Top setups", "chatq:top"), ("🩺 Issues", "chatq:issues")],
+        [("🧠 What learned", "chatq:learned"), ("📡 Market now", "chatq:market")],
+        [("🏛 Macro", "chatq:macro"), ("📅 Holiday", "chatq:holiday")],
+        [("🔭 Outlook", "chatq:outlook"), ("⚙️ Adjust", "chatq:adjust")],
+        [("🗑 Reset chat", "chat_reset")],
+        [("🎯 Asset Q&A", "ask"), ("🏠 Menu", "menu")],
+    )
+
+
 def _bot_menu_commands() -> List[BotCommand]:
     return [
         BotCommand("menu", "Open the control panel"),
@@ -179,6 +202,8 @@ def _bot_menu_commands() -> List[BotCommand]:
         BotCommand("signal", "Review a signal for an asset"),
         BotCommand("why", "Explain the current signal for an asset"),
         BotCommand("history", "Show recent trade history"),
+        BotCommand("chat", "Talk to Robbie freely"),
+        BotCommand("resetchat", "Clear Robbie chat memory"),
         BotCommand("ask", "Ask Robbie about an asset"),
         BotCommand("pause", "Pause the bot"),
         BotCommand("resume", "Resume the bot"),
@@ -331,6 +356,7 @@ class TelegramCommander:
         app.add_handler(CommandHandler("why",        self._cmd_why_direct))
         app.add_handler(CommandHandler("close",      self._cmd_close_direct))
         app.add_handler(CommandHandler("history",    self._cmd_history))
+        app.add_handler(CommandHandler("resetchat",  self._cmd_reset_chat))
         app.add_handler(CommandHandler("pause",      self._cmd_pause_direct))
         app.add_handler(CommandHandler("resume",     self._cmd_resume_direct))
         app.add_handler(CommandHandler("reprice",    self._cmd_reprice_direct))
@@ -352,6 +378,21 @@ class TelegramCommander:
             conversation_timeout=120,
         )
         app.add_handler(ask_conv)
+
+        chat_conv = ConversationHandler(
+            entry_points=[CommandHandler("chat", self._chat_entry)],
+            states={
+                WAITING_CHAT_MESSAGE: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self._chat_got_message)
+                ],
+            },
+            fallbacks=[
+                CommandHandler("cancel", self._chat_cancel),
+                CommandHandler("resetchat", self._cmd_reset_chat),
+            ],
+            conversation_timeout=1800,
+        )
+        app.add_handler(chat_conv)
 
         # All inline button presses
         app.add_handler(CallbackQueryHandler(self._on_button))
@@ -934,6 +975,86 @@ class TelegramCommander:
             logger.error(f"[Telegram] /ask error: {e}")
             return f"❌ Robbie hit an error: {e}"
 
+    async def _chat_entry(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if ctx.args:
+            question = " ".join(ctx.args).strip()
+            await update.message.chat.send_action("typing")
+            text = await self._run_chat(question, chat_id=str(update.effective_chat.id))
+            await self._reply_in_chunks(
+                update.message.reply_text,
+                text,
+                reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
+            )
+            return WAITING_CHAT_MESSAGE
+
+        await update.message.reply_text(
+            "🧠 *Robbie Chat*\n\n"
+            "Talk to me normally here. You can ask things like:\n"
+            "• `why did you choose that trade?`\n"
+            "• `what happened for it to hit stop loss?`\n"
+            "• `what have you learned recently?`\n"
+            "• `what is currently happening that affects trading?`\n"
+            "• `how should you adjust yourself right now?`\n"
+            "• `what issues are you experiencing?`\n\n"
+            "Send a message to start. Use `/resetchat` to clear context or `/cancel` to exit chat mode.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_chat_shortcuts_keyboard(),
+        )
+        return WAITING_CHAT_MESSAGE
+
+    async def _chat_got_message(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        question = update.message.text.strip()
+        await update.message.chat.send_action("typing")
+        text = await self._run_chat(question, chat_id=str(update.effective_chat.id))
+        await self._reply_in_chunks(
+            update.message.reply_text,
+            text,
+            reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
+        )
+        return WAITING_CHAT_MESSAGE
+
+    async def _chat_cancel(self, update, ctx):
+        await update.message.reply_text("Chat mode closed. Use `/chat` when you want to continue.", parse_mode=ParseMode.MARKDOWN)
+        return ConversationHandler.END
+
+    async def _cmd_reset_chat(self, update, ctx):
+        try:
+            from services.robbie_chat_service import get_chat_service
+
+            get_chat_service().reset(str(update.effective_chat.id))
+            await update.message.reply_text(
+                "Robbie chat memory cleared for this chat. Start again with `/chat`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            logger.error(f"[Telegram] /resetchat error: {e}")
+            await update.message.reply_text(f"❌ Could not reset chat memory: {e}")
+        return ConversationHandler.END
+
+    async def _run_chat(self, question: str, chat_id: str) -> str:
+        try:
+            from services.robbie_chat_service import get_chat_service
+
+            answer = get_chat_service().answer(
+                question=question,
+                trading_system=self.trading_system,
+                chat_id=chat_id,
+            )
+            return answer
+        except Exception as e:
+            logger.error(f"[Telegram] /chat error: {e}", exc_info=True)
+            return f"❌ Robbie hit a chat error: {e}"
+
+    async def _reply_in_chunks(self, send_fn, text: str, reply_markup=None) -> None:
+        answer = self._sanitise_markdown(text)
+        chunks = [answer[i:i+4000] for i in range(0, max(len(answer), 1), 4000)]
+        for i, chunk in enumerate(chunks):
+            await send_fn(
+                chunk,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup if i == len(chunks) - 1 else None,
+            )
+
     # ══════════════════════════════════════════════════════════════════════════
     # Inline button router
     # ══════════════════════════════════════════════════════════════════════════
@@ -946,6 +1067,7 @@ class TelegramCommander:
             "balance": (self._btn_balance, ()),
             "signals": (self._btn_signals, ()),
             "ask": (self._btn_ask, ()),
+            "chat_reset": (self._btn_chat_reset, ()),
             "mood": (self._btn_mood, ()),
             "diary": (self._btn_diary, ()),
             "market": (self._btn_market, ()),
@@ -973,6 +1095,7 @@ class TelegramCommander:
             ("askcat:", self._btn_ask_category, 7),
             ("askasset:", self._btn_ask_asset, 9),
             ("askq:", self._btn_ask_question, 5),
+            ("chatq:", self._btn_chat_prompt, 6),
             ("history_filter:", self._btn_history, 15),
             ("close_cat:", self._btn_close_category, 10),
         )
@@ -1085,13 +1208,14 @@ class TelegramCommander:
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
     async def _btn_ask(self, query) -> None:
-        """Entry point — show category picker."""
+        """Entry point — show free-form chat shortcuts plus asset mode."""
         await query.edit_message_text(
-            "🧠 *Ask Robbie*\n\n"
-            "Pick a market category, then an asset, then the kind of answer you want.\n"
-            "This explains the existing setup and memory for that asset; it does not run a second trading engine.",
+            "🧠 *Talk To Robbie*\n\n"
+            "For a real back-and-forth, send `/chat` and keep talking naturally.\n"
+            "If you want fast shortcuts right here, use the buttons below.\n"
+            "You can still open the old asset-specific explainer under *Asset Q&A*.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_ask_category_keyboard(),
+            reply_markup=_chat_shortcuts_keyboard(),
         )
 
     async def _btn_ask_category(self, query, emoji_cat: str) -> None:
@@ -1164,6 +1288,36 @@ class TelegramCommander:
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=kb,
                 )
+
+    async def _btn_chat_prompt(self, query, prompt_key: str) -> None:
+        prompt = _CHAT_QUICK_PROMPTS.get(prompt_key, "What is happening right now?")
+        chat_id = str(query.message.chat_id)
+        await query.edit_message_text(
+            f"🧠 *Robbie is thinking...*\n_{prompt}_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        answer = await self._run_chat(prompt, chat_id=chat_id)
+        answer = self._sanitise_markdown(answer)
+        chunks = [answer[i:i+4000] for i in range(0, max(len(answer), 1), 4000)]
+        for i, chunk in enumerate(chunks):
+            kb = _kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]) if i == len(chunks) - 1 else None
+            if i == 0:
+                await query.edit_message_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            else:
+                await query.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    async def _btn_chat_reset(self, query) -> None:
+        try:
+            from services.robbie_chat_service import get_chat_service
+
+            get_chat_service().reset(str(query.message.chat_id))
+            await query.edit_message_text(
+                "Robbie chat memory cleared for this chat.\n\nUse `/chat` to start a fresh conversation.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_kb([("🧠 Chat shortcuts", "ask"), ("🏠 Menu", "menu")]),
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Could not reset chat memory: {e}")
 
     async def _btn_mood(self, query) -> None:
         text = self._build_mood()

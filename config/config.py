@@ -68,6 +68,7 @@ ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
 FINNHUB_API_KEY       = os.getenv("FINNHUB_KEY", "")
 NEWSAPI_KEY     = os.getenv("NEWSAPI_KEY", "")
 GNEWS_KEY       = os.getenv("GNEWS_KEY", "")
+NEWS_SENTIMENT_ENABLED = os.getenv("NEWS_SENTIMENT_ENABLED", "true").lower() == "true"
 NEWS_RSS_ENABLED = os.getenv("NEWS_RSS_ENABLED", "false").lower() == "true"
 NEWS_REDDIT_ENABLED = os.getenv("NEWS_REDDIT_ENABLED", "false").lower() == "true"
 WHALE_ALERT_KEY = os.getenv("WHALE_ALERT_KEY", "")
@@ -89,6 +90,20 @@ ECON_CALENDAR_HTTP_TIMEOUT = int(os.getenv("ECON_CALENDAR_HTTP_TIMEOUT", "15"))
 # ─────────────────────────────────────────────────────────────────────────────
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROBBIE CHAT / DEEPSEEK
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+ROBBIE_CHAT_PROVIDER = os.getenv("ROBBIE_CHAT_PROVIDER", "auto").strip().lower() or "auto"
+ROBBIE_CHAT_MODEL = os.getenv("ROBBIE_CHAT_MODEL", "deepseek-chat").strip() or "deepseek-chat"
+ROBBIE_CHAT_BASE_URL = os.getenv("ROBBIE_CHAT_BASE_URL", "https://api.deepseek.com").strip() or "https://api.deepseek.com"
+ROBBIE_CHAT_TIMEOUT_SECONDS = int(os.getenv("ROBBIE_CHAT_TIMEOUT_SECONDS", "20"))
+ROBBIE_CHAT_HISTORY_LIMIT = int(os.getenv("ROBBIE_CHAT_HISTORY_LIMIT", "6"))
+ROBBIE_CHAT_CONTEXT_CHAR_LIMIT = int(os.getenv("ROBBIE_CHAT_CONTEXT_CHAR_LIMIT", "8000"))
+ROBBIE_CHAT_NEWS_ENABLED = os.getenv("ROBBIE_CHAT_NEWS_ENABLED", "true").lower() == "true"
+ROBBIE_CHAT_NEWS_LIMIT = int(os.getenv("ROBBIE_CHAT_NEWS_LIMIT", "8"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SOCIAL / TWITTER
