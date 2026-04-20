@@ -236,14 +236,16 @@ class RiskManager:
         if direction == "BUY":
             protective_levels = sorted(level for level in raw_levels if level < entry)
         elif direction == "SELL":
-            protective_levels = sorted((level for level in raw_levels if level > entry), reverse=True)
+            protective_levels = sorted(level for level in raw_levels if level > entry)
         else:
             return float(fallback_stop)
 
         if not protective_levels:
             return float(fallback_stop)
 
-        anchor_level = protective_levels[0]
+        # Use the nearest invalidation level, not the farthest one. A far anchor
+        # widens the stop and destroys the trade's reward profile.
+        anchor_level = protective_levels[-1] if direction == "BUY" else protective_levels[0]
         buffer_dist = 0.0
         if atr and atr > 0:
             buffer_dist = max(buffer_dist, atr * 0.10)
@@ -262,9 +264,12 @@ class RiskManager:
 
         fallback_dist = abs(entry - fallback_stop)
         if fallback_dist > 0:
-            if direction == "BUY" and structure_stop > fallback_stop:
+            # Fall back only when the structural stop would be wider than the
+            # generic ATR stop. A valid, tighter structural invalidation should
+            # be preserved.
+            if direction == "BUY" and structure_stop < fallback_stop:
                 structure_stop = fallback_stop
-            elif direction == "SELL" and structure_stop < fallback_stop:
+            elif direction == "SELL" and structure_stop > fallback_stop:
                 structure_stop = fallback_stop
 
         return float(structure_stop)

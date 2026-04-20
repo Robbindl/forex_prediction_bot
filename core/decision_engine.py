@@ -1809,10 +1809,12 @@ class SignalDecisionEngine:
             signal.confidence = float(scorecard.get("final_score", signal.confidence) or signal.confidence)
             signal.metadata["scorecard"] = scorecard
             signal.metadata["live_validation_profile"] = dict(scorecard.get("live_validation") or {})
+            signal.metadata["execution_expectancy_profile"] = dict(scorecard.get("execution_expectancy") or {})
             data["scorecard"] = {
                 "raw_score": scorecard.get("raw_score"),
                 "reliability": scorecard.get("reliability"),
                 "breakdown": dict(scorecard.get("breakdown") or {}),
+                "execution_expectancy": dict(scorecard.get("execution_expectancy") or {}),
                 "notes": list(scorecard.get("notes") or []),
             }
         except Exception as exc:
@@ -2023,10 +2025,54 @@ class SignalDecisionEngine:
         signal.metadata["memory_sample_count"] = memory.get("sample_count")
 
         adjustment = float(memory.get("adjustment", 0.0) or 0.0)
+        sample_count = int(memory.get("sample_count", 0) or 0)
+        memory_edge = float(memory.get("memory_edge", 0.0) or 0.0)
+        memory_score = float(memory.get("memory_score", 50.0) or 50.0)
+        memory_notes = list(memory.get("notes", []) or [])
+
+        if adjustment > 0:
+            signal.boost(adjustment)
+        elif adjustment < 0:
+            signal.reduce(abs(adjustment))
+
+        signal.metadata["memory_adjustment_applied"] = round(adjustment, 4)
+        signal.metadata["memory_notes"] = list(memory_notes)
+
+        strong_negative_memory = bool(
+            sample_count >= 8 and (memory_edge <= -0.18 or memory_score <= 36.0)
+        )
+        if strong_negative_memory:
+            reason = (
+                f"negative setup memory: score={memory_score:.1f} "
+                f"edge={memory_edge:+.3f} samples={sample_count}"
+            )
+            signal.kill(reason, 0)
+            signal.journal.record(
+                layer=0,
+                name="memory",
+                decision=KILLED,
+                reason=reason,
+                conf_before=conf_before,
+                conf_after=signal.confidence,
+                data={
+                    "memory_score": memory_score,
+                    "memory_edge": memory_edge,
+                    "memory_win_rate": memory.get("win_rate"),
+                    "memory_similarity": memory.get("avg_similarity"),
+                    "memory_sample_count": sample_count,
+                    "same_asset_matches": memory.get("same_asset_matches"),
+                    "adjustment": adjustment,
+                    "notes": memory_notes,
+                    "fingerprint": fingerprint,
+                },
+            )
+            return False
+
         reason = (
-            f"memory score={float(memory.get('memory_score', 50.0)):.1f} "
-            f"edge={float(memory.get('memory_edge', 0.0)):+.3f} "
-            f"samples={int(memory.get('sample_count', 0) or 0)}"
+            f"memory score={memory_score:.1f} "
+            f"edge={memory_edge:+.3f} "
+            f"samples={sample_count} "
+            f"adj={adjustment:+.3f}"
         )
         signal.journal.record(
             layer=0,
@@ -2036,14 +2082,14 @@ class SignalDecisionEngine:
             conf_before=conf_before,
             conf_after=signal.confidence,
             data={
-                "memory_score": memory.get("memory_score"),
-                "memory_edge": memory.get("memory_edge"),
+                "memory_score": memory_score,
+                "memory_edge": memory_edge,
                 "memory_win_rate": memory.get("win_rate"),
                 "memory_similarity": memory.get("avg_similarity"),
-                "memory_sample_count": memory.get("sample_count"),
+                "memory_sample_count": sample_count,
                 "same_asset_matches": memory.get("same_asset_matches"),
                 "adjustment": adjustment,
-                "notes": memory.get("notes", []),
+                "notes": memory_notes,
                 "fingerprint": fingerprint,
             },
         )

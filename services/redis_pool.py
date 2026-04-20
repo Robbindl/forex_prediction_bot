@@ -11,6 +11,7 @@ logger = get_logger()
 
 # ── Pool singleton ────────────────────────────────────────────────────────────
 _pool       = None
+_client     = None
 _pool_lock  = threading.Lock()
 _available  = False
 _next_retry_at = 0.0
@@ -20,7 +21,7 @@ _last_unavailable_message = ""
 
 def _build_pool():
     """Build the connection pool once. Thread-safe."""
-    global _pool, _available, _next_retry_at, _last_unavailable_log, _last_unavailable_message
+    global _pool, _client, _available, _next_retry_at, _last_unavailable_log, _last_unavailable_message
     now = time.monotonic()
     if now < _next_retry_at:
         return
@@ -28,23 +29,25 @@ def _build_pool():
         import redis
         from config.config import REDIS_URL
 
-        # max_connections=10 — shared by all publishers + cache
-        # Each publish/get/set borrows a connection from the pool
-        # and releases it immediately after — so 10 connections
-        # handles hundreds of concurrent publish calls efficiently.
-        max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", "10"))
+        # Keep the default small-host friendly. This bot also opens dedicated
+        # pub/sub sockets, so a large shared pool can exhaust low-tier Redis
+        # plans even when command throughput is modest.
+        max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", "6"))
         pool = redis.ConnectionPool.from_url(
             REDIS_URL,
             max_connections=max_connections,
             socket_connect_timeout=3,
             socket_timeout=3,
             retry_on_timeout=True,
+            socket_keepalive=True,
+            health_check_interval=30,
             decode_responses=True,
         )
         # Test the pool
         client = redis.Redis(connection_pool=pool)
         client.ping()
         _pool      = pool
+        _client    = client
         _available = True
         _next_retry_at = 0.0
         _last_unavailable_message = ""
@@ -54,6 +57,7 @@ def _build_pool():
         )
     except Exception as e:
         _pool      = None
+        _client    = None
         _available = False
         message = str(e)
         _next_retry_at = now + 10.0
@@ -89,8 +93,7 @@ def get_client():
     if _pool is None:
         return None
     try:
-        import redis
-        return redis.Redis(connection_pool=_pool)
+        return _client
     except Exception:
         return None
 

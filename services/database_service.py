@@ -638,12 +638,14 @@ class DatabaseService:
                 FROM prediction_outcomes
                 WHERE evaluated = true
                   AND category = :category
+                  AND (:asset = '' OR asset = :asset)
                   AND signal_time >= :since
                   AND signal_metadata IS NOT NULL
                 ORDER BY signal_time DESC
                 LIMIT :limit
             """), {
                 "category": category,
+                "asset": asset,
                 "since": since,
                 "limit": limit,
             }).fetchall()

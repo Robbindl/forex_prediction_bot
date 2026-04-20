@@ -17,8 +17,8 @@ logger = get_logger()
 
 # ── Alert thresholds ──────────────────────────────────────────────────────────
 
-CPU_ALERT_PCT         = 90.0
-RAM_ALERT_PCT         = 85.0
+CPU_ALERT_PCT         = float(os.getenv("SYSTEM_CPU_ALERT_PCT", "90"))
+RAM_ALERT_PCT         = float(os.getenv("SYSTEM_RAM_ALERT_PCT", "85"))
 PHASE_SILENT_SECS     = 300
 DECISION_SLOW_MS      = 5000
 ERROR_RATE_PER_MIN    = 10
@@ -50,6 +50,29 @@ FRESHNESS_THRESHOLDS: Dict[str, int] = {
     "open_interest": 360,    # same poll interval as funding rate
     "macro":        3600,
 }
+
+
+def _resource_snapshot() -> Dict[str, float]:
+    try:
+        import psutil
+
+        vm = psutil.virtual_memory()
+        proc = psutil.Process(os.getpid())
+        return {
+            "cpu_pct": float(psutil.cpu_percent(interval=1)),
+            "ram_pct": float(vm.percent),
+            "total_gb": round(float(vm.total) / 1024 / 1024 / 1024, 2),
+            "available_gb": round(float(vm.available) / 1024 / 1024 / 1024, 2),
+            "proc_mb": round(float(proc.memory_info().rss) / 1024 / 1024, 1),
+        }
+    except Exception:
+        return {
+            "cpu_pct": 0.0,
+            "ram_pct": 0.0,
+            "total_gb": 0.0,
+            "available_gb": 0.0,
+            "proc_mb": 0.0,
+        }
 
 
 class SystemHealthService:
@@ -333,10 +356,12 @@ class SystemHealthService:
         # CPU / RAM
         if (now - self._start_time) >= PHASE_SILENT_SECS:
             try:
-                import psutil
-
-                cpu = psutil.cpu_percent(interval=1)
-                ram = psutil.virtual_memory().percent
+                snapshot = _resource_snapshot()
+                cpu = float(snapshot.get("cpu_pct", 0.0))
+                ram = float(snapshot.get("ram_pct", 0.0))
+                proc_mb = float(snapshot.get("proc_mb", 0.0))
+                total_gb = float(snapshot.get("total_gb", 0.0))
+                available_gb = float(snapshot.get("available_gb", 0.0))
                 if cpu > CPU_ALERT_PCT:
                     if self._cpu_high_since is None:
                         self._cpu_high_since = now
@@ -349,7 +374,15 @@ class SystemHealthService:
                     if self._ram_high_since is None:
                         self._ram_high_since = now
                     elif (now - self._ram_high_since) >= ALERT_CHECK_INTERVAL:
-                        self._send_alert("ram_high", f"RAM usage {ram:.0f}% (threshold {RAM_ALERT_PCT}%)")
+                        self._send_alert(
+                            "ram_high",
+                            (
+                                f"Host RAM usage {ram:.0f}% (threshold {RAM_ALERT_PCT}%)"
+                                f" | total {total_gb:.2f} GB"
+                                f" | available {available_gb:.2f} GB"
+                                f" | bot RSS {proc_mb:.0f} MB"
+                            ),
+                        )
                 else:
                     self._ram_high_since = None
             except Exception as e:

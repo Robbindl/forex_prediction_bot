@@ -963,6 +963,7 @@ class TradingCore:
 
         ctx = self._build_context(canonical, category)
         ctx["price_data"] = price_data
+        ctx["current_price"] = float(price or 0.0)
         ctx["spread"] = spread
         ctx["market_data"] = {"price": price_meta, "ohlcv": ohlcv_meta}
         ctx["timeframe"] = timeframe
@@ -1694,30 +1695,7 @@ class TradingCore:
         limit: int = 3,
     ) -> List[Signal]:
         max_count = max(1, int(limit or 1))
-        if len(survivors) <= max_count:
-            return survivors[:max_count]
-
-        selected: List[Signal] = []
-        selected_ids: set[int] = set()
-        seen_categories: set[str] = set()
-
-        for signal in survivors:
-            category = str(signal.category or "").strip().lower()
-            if category in seen_categories:
-                continue
-            selected.append(signal)
-            selected_ids.add(id(signal))
-            seen_categories.add(category)
-            if len(selected) >= max_count:
-                return selected
-
-        for signal in survivors:
-            if id(signal) in selected_ids:
-                continue
-            selected.append(signal)
-            if len(selected) >= max_count:
-                break
-        return selected
+        return survivors[:max_count]
 
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
         selected_survivors = self._select_execution_survivors(survivors, limit=limit)
@@ -2515,7 +2493,7 @@ class TradingCore:
         category: str,
         price_data,
         context: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], str]:
+    ) -> Tuple[Dict[str, Any], str, Any]:
         playbook_pick: Dict[str, Any] = {"action": "", "primary": None, "candidates": []}
         playbook_interval = ""
         playbook_price_data = price_data
@@ -2555,7 +2533,7 @@ class TradingCore:
             )
         except Exception as exc:
             logger.debug(f"[TradingCore] Playbook seed unavailable for {asset}: {exc}")
-        return playbook_pick, playbook_interval
+        return playbook_pick, playbook_interval, playbook_price_data
 
     def _build_seed_exit_plan(
         self,
@@ -2988,19 +2966,128 @@ class TradingCore:
     def _extract_seed_entry_price(
         self,
         asset: str,
+        direction: str,
+        playbook_name: str,
+        playbook_entry_style: str,
         price_data,
+        playbook_price_data,
+        structure: Dict[str, Any],
         context: Dict[str, Any],
-    ) -> Optional[float]:
+    ) -> Optional[Dict[str, Any]]:
+        signal_frame = playbook_price_data
+        if signal_frame is None or getattr(signal_frame, "empty", True):
+            signal_frame = price_data
+
         try:
-            entry_price = float(price_data["close"].iloc[-1])
+            signal_price = float(signal_frame["close"].iloc[-1])
         except Exception:
             self._reject_seed_signal(asset, context, "invalid_entry_price")
             return None
 
+        current_price = float(context.get("current_price", 0.0) or 0.0)
+        entry_price = current_price if current_price > 0.0 else signal_price
         if entry_price <= 0.0:
             self._reject_seed_signal(asset, context, "non_positive_entry_price")
             return None
-        return entry_price
+
+        structure = structure if isinstance(structure, dict) else {}
+        atr = self._estimate_atr(signal_frame)
+        atr_unit = max(float(atr or 0.0), entry_price * 0.0015, 1e-9)
+        entry_style_label = str(playbook_entry_style or "").strip().lower()
+        playbook_label = str(playbook_name or "").strip().lower()
+
+        def _structure_levels(*keys: str) -> List[float]:
+            levels: List[float] = []
+            for key in keys:
+                raw = structure.get(key)
+                if isinstance(raw, (int, float)):
+                    level = float(raw)
+                    if level > 0:
+                        levels.append(level)
+                elif isinstance(raw, (list, tuple)):
+                    for item in raw:
+                        try:
+                            level = float(item)
+                        except Exception:
+                            continue
+                        if level > 0:
+                            levels.append(level)
+            return levels
+
+        def _nearest_relative_level(relation: str, *keys: str) -> float:
+            levels = _structure_levels(*keys)
+            if not levels:
+                return 0.0
+            if relation == "below":
+                candidates = [level for level in levels if level < entry_price]
+                return max(candidates) if candidates else 0.0
+            if relation == "above":
+                candidates = [level for level in levels if level > entry_price]
+                return min(candidates) if candidates else 0.0
+            return min(levels, key=lambda level: abs(level - entry_price))
+
+        anchor_price = 0.0
+        anchor_role = ""
+        anchor_distance_atr = 0.0
+        confidence_penalty = 0.0
+        stale_limit_atr = 0.60
+        signal_drift_atr = abs(entry_price - signal_price) / atr_unit if signal_price > 0 else 0.0
+
+        if "retest" in entry_style_label or playbook_label == "breakout_retest":
+            anchor_role = "retest_level"
+            if direction == "BUY":
+                anchor_price = _nearest_relative_level("nearest", "resistance", "resistance_levels")
+            else:
+                anchor_price = _nearest_relative_level("nearest", "support", "support_levels")
+            stale_limit_atr = 0.48
+        elif "pullback" in entry_style_label or playbook_label == "trend_pullback":
+            anchor_role = "pullback_anchor"
+            if direction == "BUY":
+                anchor_price = _nearest_relative_level("below", "support", "support_levels", "recent_low")
+            else:
+                anchor_price = _nearest_relative_level("above", "resistance", "resistance_levels", "recent_high")
+            stale_limit_atr = 0.52
+        elif "reclaim" in entry_style_label or playbook_label == "failed_break_reclaim":
+            anchor_role = "reclaim_anchor"
+            if direction == "BUY":
+                anchor_price = _nearest_relative_level("nearest", "support", "support_levels", "resistance", "resistance_levels")
+            else:
+                anchor_price = _nearest_relative_level("nearest", "resistance", "resistance_levels", "support", "support_levels")
+            stale_limit_atr = 0.48
+        elif playbook_label in {"news_impulse", "aggressive_expansion", "opening_drive", "crypto_orderflow_continuation"}:
+            stale_limit_atr = 0.42
+        elif playbook_label in {"breakout_continuation", "intermarket_continuation"}:
+            stale_limit_atr = 0.50
+
+        if anchor_role:
+            if anchor_price <= 0.0:
+                self._reject_seed_signal(asset, context, f"missing_{anchor_role}")
+                return None
+            anchor_distance_atr = abs(entry_price - anchor_price) / atr_unit
+            anchor_tolerance_atr = 0.30 if anchor_role == "pullback_anchor" else 0.26
+            if anchor_distance_atr > anchor_tolerance_atr:
+                self._reject_seed_signal(asset, context, f"{anchor_role}_not_in_range")
+                return None
+            confidence_penalty += min(0.07, max(0.0, anchor_distance_atr - 0.10) * 0.18)
+
+        if signal_drift_atr > stale_limit_atr:
+            self._reject_seed_signal(asset, context, "stale_market_entry")
+            return None
+        confidence_penalty += min(0.08, max(0.0, signal_drift_atr - 0.16) * 0.14)
+
+        return {
+            "entry_price": round(entry_price, 6),
+            "signal_price": round(signal_price, 6),
+            "current_price": round(current_price, 6) if current_price > 0 else 0.0,
+            "signal_atr": round(float(atr or 0.0), 6),
+            "signal_drift_atr": round(signal_drift_atr, 4),
+            "anchor_price": round(anchor_price, 6) if anchor_price > 0 else 0.0,
+            "anchor_role": anchor_role,
+            "anchor_distance_atr": round(anchor_distance_atr, 4),
+            "stale_limit_atr": round(stale_limit_atr, 4),
+            "confidence_penalty": round(confidence_penalty, 4),
+            "entry_source": "live_price" if current_price > 0 else "signal_close",
+        }
 
     @staticmethod
     def _build_seed_signal_object(
@@ -3091,7 +3178,7 @@ class TradingCore:
         breakout_score = float(structure_metrics["breakout_score"])
         volatility_state = str(structure_metrics["volatility_state"])
 
-        playbook_pick, playbook_interval = self._resolve_playbook_seed(
+        playbook_pick, playbook_interval, playbook_price_data = self._resolve_playbook_seed(
             asset,
             canonical,
             category,
@@ -3169,9 +3256,28 @@ class TradingCore:
             volatility_state=volatility_state,
         )
 
-        entry_price = self._extract_seed_entry_price(asset, price_data, context)
-        if entry_price is None:
+        entry_plan = self._extract_seed_entry_price(
+            asset,
+            direction=direction,
+            playbook_name=playbook_name,
+            playbook_entry_style=playbook_entry_style,
+            price_data=price_data,
+            playbook_price_data=playbook_price_data,
+            structure=structure if isinstance(structure, dict) else {},
+            context=context,
+        )
+        if entry_plan is None:
             return None
+        entry_price = float(entry_plan.get("entry_price", 0.0) or 0.0)
+        seed_confidence = max(
+            0.0,
+            seed_confidence - float(entry_plan.get("confidence_penalty", 0.0) or 0.0),
+        )
+        exit_price_data = (
+            playbook_price_data
+            if playbook_price_data is not None and not getattr(playbook_price_data, "empty", True)
+            else price_data
+        )
 
         exit_plan = self._build_seed_exit_plan(
             asset=asset,
@@ -3179,7 +3285,7 @@ class TradingCore:
             category=category,
             direction=direction,
             entry_price=entry_price,
-            price_data=price_data,
+            price_data=exit_price_data,
             context=context,
             structure=structure if isinstance(structure, dict) else {},
             seed_confidence=seed_confidence,
@@ -3254,10 +3360,12 @@ class TradingCore:
             "target_rr_multiplier": round(target_rr_multiplier, 4),
             "stop_buffer_multiplier": round(stop_buffer_multiplier, 4),
             "structure_target_alignment": structure_target_alignment,
+            "entry_plan": dict(entry_plan),
         })
         context["execution_feedback_policy"] = execution_feedback_policy
         context["signal_metadata"] = {
             **dict(context.get("signal_metadata") or {}),
+            "confidence": round(seed_confidence, 4),
             "execution_quality_score": round(float(execution_feedback_policy.get("avg_quality_score", 50.0) or 50.0), 1),
             "execution_feedback_sample_count": int(execution_feedback_policy.get("sample_count", 0) or 0),
             "target_rr_multiplier": round(target_rr_multiplier, 4),
@@ -3268,7 +3376,9 @@ class TradingCore:
             "playbook_session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
             "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
             "trade_management_plan": trade_management_plan,
+            "entry_plan": dict(entry_plan),
         }
+        context["seed_decision"]["entry_plan"] = dict(entry_plan)
         self._finalize_seed_signal_context(
             context=context,
             direction=direction,

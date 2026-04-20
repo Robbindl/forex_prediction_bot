@@ -811,69 +811,95 @@ _p3_wall_lock = threading.Lock()
 _p3_hunt_lock = threading.Lock()
 _p3_started   = False
 
-def _start_p3_listener():
-    global _p3_started
-    if _p3_started:
-        return
-    _p3_started = True
-    def _listen():
-        try:
-            from services.redis_pool import get_pubsub as _get_pubsub
-            ps = _get_pubsub()
-            if ps is None:
-                raise RuntimeError("Redis unavailable")
-            ps.subscribe("LIQUIDITY_WALL_DETECTED", "STOP_HUNT_DETECTED")
-            for msg in ps.listen():
-                if msg["type"] != "message":
-                    continue
-                try:
-                    data = json.loads(msg["data"])
-                    ch   = msg["channel"]
-                    if isinstance(ch, bytes): ch = ch.decode()
-                    if ch == "LIQUIDITY_WALL_DETECTED":
-                        with _p3_wall_lock:
-                            _p3_walls.append(data)
-                            if len(_p3_walls) > 50: _p3_walls.pop(0)
-                    elif ch == "STOP_HUNT_DETECTED":
-                        with _p3_hunt_lock:
-                            _p3_hunts.append(data)
-                            if len(_p3_hunts) > 30: _p3_hunts.pop(0)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"[Phase3Listener] {e}")
-    threading.Thread(target=_listen, name="p3-listener", daemon=True).start()
-
 # ── Intelligence alerts pub/sub buffer ───────────────────────────────────────
 _p7_alerts: list = []
 _p7_lock    = threading.Lock()
 _p7_started = False
+_dashboard_pubsub_started = False
+_dashboard_pubsub_channels = (
+    "signals",
+    "LIQUIDITY_WALL_DETECTED",
+    "STOP_HUNT_DETECTED",
+    "INTELLIGENCE_ALERT",
+)
+
+
+def _handle_dashboard_pubsub_message(channel: str, payload: Dict[str, Any]) -> None:
+    if channel == "signals":
+        asset = str(payload.get("asset") or "")
+        if asset:
+            _store(asset, payload)
+            _last_ref[asset] = time.time()
+        return
+    if channel == "LIQUIDITY_WALL_DETECTED":
+        with _p3_wall_lock:
+            _p3_walls.append(payload)
+            if len(_p3_walls) > 50:
+                _p3_walls.pop(0)
+        return
+    if channel == "STOP_HUNT_DETECTED":
+        with _p3_hunt_lock:
+            _p3_hunts.append(payload)
+            if len(_p3_hunts) > 30:
+                _p3_hunts.pop(0)
+        return
+    if channel == "INTELLIGENCE_ALERT":
+        with _p7_lock:
+            _p7_alerts.append(payload)
+            if len(_p7_alerts) > 100:
+                _p7_alerts.pop(0)
+
+
+def _start_dashboard_pubsub_listener() -> None:
+    global _dashboard_pubsub_started, _p3_started, _p7_started
+    if _dashboard_pubsub_started:
+        _p3_started = True
+        _p7_started = True
+        return
+    _dashboard_pubsub_started = True
+    _p3_started = True
+    _p7_started = True
+
+    def _listen():
+        ps = None
+        while True:
+            try:
+                from services.redis_pool import get_pubsub as _get_pubsub
+
+                ps = _get_pubsub(old_pubsub=ps)
+                if ps is None:
+                    raise RuntimeError("Redis unavailable")
+                ps.subscribe(*_dashboard_pubsub_channels)
+                logger.info(
+                    "[dashboard] Shared Redis listener active for "
+                    + ", ".join(_dashboard_pubsub_channels)
+                )
+                for msg in ps.listen():
+                    if msg.get("type") != "message":
+                        continue
+                    try:
+                        channel = msg.get("channel", "")
+                        if isinstance(channel, bytes):
+                            channel = channel.decode()
+                        data = msg.get("data", "{}")
+                        payload = json.loads(data) if isinstance(data, (str, bytes)) else data
+                        if isinstance(payload, dict):
+                            _handle_dashboard_pubsub_message(str(channel or ""), payload)
+                    except Exception as exc:
+                        logger.debug(f"[dashboard] shared redis parse error: {exc}")
+            except Exception as exc:
+                logger.warning(f"[dashboard] Shared Redis listener dropped ({exc}) — reconnecting in 10s")
+                time.sleep(10)
+
+    threading.Thread(target=_listen, name="dashboard-redis-listener", daemon=True).start()
+
+
+def _start_p3_listener():
+    _start_dashboard_pubsub_listener()
+
 
 def _start_p7_listener():
-    global _p7_started
-    if _p7_started:
-        return
-    _p7_started = True
-    def _listen():
-        try:
-            from services.redis_pool import get_pubsub as _get_pubsub
-            ps = _get_pubsub()
-            if ps is None:
-                raise RuntimeError("Redis unavailable")
-            ps.subscribe("INTELLIGENCE_ALERT")
-            for msg in ps.listen():
-                if msg["type"] != "message":
-                    continue
-                try:
-                    data = json.loads(msg["data"])
-                    with _p7_lock:
-                        _p7_alerts.append(data)
-                        if len(_p7_alerts) > 100: _p7_alerts.pop(0)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"[IntelListener] {e}")
-    threading.Thread(target=_listen, name="p7-listener", daemon=True).start()
+    _start_dashboard_pubsub_listener()
 
 # ── Background signal listener — Redis subscriber ────────────────────────────
 # The trading loop publishes every accepted signal to the Redis 'signals'
@@ -893,42 +919,14 @@ def _bg_refresh() -> None:
     try:
         from services.redis_pool import is_available as _redis_available
         if _redis_available():
-            logger.info("[dashboard] Signal source: Redis subscriber (zero decision re-runs)")
-            _bg_refresh_redis()
-            return   # _bg_refresh_redis() blocks forever while Redis is up
+            logger.info("[dashboard] Signal source: shared Redis listener (zero decision re-runs)")
+            _start_dashboard_pubsub_listener()
+            while True:
+                time.sleep(60)
     except Exception:
         pass
     logger.info("[dashboard] Signal source: engine polling fallback (Redis unavailable)")
     _bg_refresh_fallback()
-
-
-def _bg_refresh_redis() -> None:
-    """Subscribe to the 'signals' Redis channel published by the trading loop."""
-    import json
-    ps = None
-    while True:
-        try:
-            from services.redis_pool import get_pubsub as _get_pubsub
-            ps = _get_pubsub(old_pubsub=ps)  # closes old connection before new one
-            if ps is None:
-                raise RuntimeError("pubsub unavailable")
-            ps.subscribe("signals")
-            logger.info("[dashboard] Subscribed to Redis 'signals' channel")
-            for msg in ps.listen():
-                if msg.get("type") != "message":
-                    continue
-                try:
-                    data = msg.get("data", "{}")
-                    sig  = json.loads(data) if isinstance(data, (str, bytes)) else data
-                    asset = sig.get("asset", "")
-                    if asset:
-                        _store(asset, sig)
-                        _last_ref[asset] = time.time()
-                except Exception as _pe:
-                    logger.debug(f"[dashboard] signal parse: {_pe}")
-        except Exception as e:
-            logger.warning(f"[dashboard] Redis subscriber dropped ({e}) — reconnecting in 10s")
-            time.sleep(10)
 
 
 def _bg_refresh_fallback() -> None:

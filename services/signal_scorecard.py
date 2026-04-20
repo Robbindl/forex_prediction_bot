@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 from config.config import (
+    GOVERNANCE_EXPECTANCY_MIN_SAMPLES,
     GOVERNANCE_BOOTSTRAP_MIN_LIVE_SAMPLES,
     GOVERNANCE_VALIDATION_DAYS,
     GOVERNANCE_VALIDATION_HORIZON,
@@ -57,17 +58,17 @@ class SignalScorecard:
 
             stats = tracker.get_accuracy_stats(days_back=GOVERNANCE_VALIDATION_DAYS)
         except Exception:
-            return 0.55, {"scope": "unavailable", "samples": 0, "accuracy_pct": 0.0}
+            return 0.50, {"scope": "unavailable", "samples": 0, "accuracy_pct": 0.0}
 
         by_asset = (stats.get("by_asset") or {}).get(asset, {})
         asset_stats = by_asset.get(GOVERNANCE_VALIDATION_HORIZON)
         if not asset_stats:
-            return 0.55, {"scope": "bootstrap", "samples": 0, "accuracy_pct": 0.0}
+            return 0.50, {"scope": "bootstrap", "samples": 0, "accuracy_pct": 0.0}
 
         live_total = int(asset_stats.get("total", 0) or 0)
         live_accuracy = _maybe_float(asset_stats.get("accuracy_pct"), 0.0)
         if live_total < GOVERNANCE_BOOTSTRAP_MIN_LIVE_SAMPLES:
-            return 0.55, {
+            return 0.50, {
                 "scope": "bootstrap",
                 "samples": live_total,
                 "accuracy_pct": round(live_accuracy, 2),
@@ -78,6 +79,90 @@ class SignalScorecard:
             "samples": live_total,
             "accuracy_pct": round(live_accuracy, 2),
         }
+
+    def _execution_expectancy(self, signal) -> Tuple[Optional[float], Dict[str, Any]]:
+        try:
+            from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+            service = get_execution_feedback_service()
+            lookback_days = max(90, GOVERNANCE_VALIDATION_DAYS * 4)
+            asset_summary = service.summarize_history(
+                asset=signal.asset,
+                category=signal.category,
+                days_back=lookback_days,
+                limit=220,
+            )
+            category_summary = service.summarize_history(
+                asset="",
+                category=signal.category,
+                days_back=lookback_days,
+                limit=600,
+            )
+        except Exception:
+            return None, {"scope": "unavailable", "sample_count": 0}
+
+        asset_samples = int(asset_summary.get("sample_count", 0) or 0)
+        category_samples = int(category_summary.get("sample_count", 0) or 0)
+        if asset_samples >= max(4, GOVERNANCE_EXPECTANCY_MIN_SAMPLES // 2):
+            scope = "asset"
+            summary = asset_summary
+        elif category_samples >= GOVERNANCE_EXPECTANCY_MIN_SAMPLES:
+            scope = "category_context"
+            summary = category_summary
+        elif category_samples > 0:
+            return None, {"scope": "bootstrap", "sample_count": category_samples}
+        else:
+            return None, {"scope": "bootstrap", "sample_count": 0}
+
+        avg_rr_realized = _maybe_float(summary.get("avg_rr_realized"), 0.0)
+        target_hit_rate = _clip(_maybe_float(summary.get("target_hit_rate"), 0.0))
+        late_entry_rate = _clip(_maybe_float(summary.get("late_entry_rate"), 0.0))
+        premature_stop_rate = _clip(_maybe_float(summary.get("premature_stop_rate"), 0.0))
+        target_miss_rate = _clip(_maybe_float(summary.get("target_miss_rate"), 0.0))
+        avg_quality_score = _clip(_maybe_float(summary.get("avg_quality_score"), 50.0) / 100.0)
+
+        rr_score = _clip((avg_rr_realized + 0.30) / 1.80)
+        timing_score = _clip(
+            1.0 - (late_entry_rate * 0.55 + premature_stop_rate * 0.45 + target_miss_rate * 0.35)
+        )
+        expectancy_score = _clip(
+            rr_score * 0.38
+            + target_hit_rate * 0.18
+            + avg_quality_score * 0.24
+            + timing_score * 0.20
+        )
+        return expectancy_score, {
+            "scope": scope,
+            "sample_count": int(summary.get("sample_count", 0) or 0),
+            "avg_rr_realized": round(avg_rr_realized, 4),
+            "target_hit_rate": round(target_hit_rate, 4),
+            "late_entry_rate": round(late_entry_rate, 4),
+            "premature_stop_rate": round(premature_stop_rate, 4),
+            "target_miss_rate": round(target_miss_rate, 4),
+            "avg_quality_score": round(_maybe_float(summary.get("avg_quality_score"), 50.0), 1),
+        }
+
+    @staticmethod
+    def _expectancy_confidence_cap(
+        expectancy_score: Optional[float],
+        expectancy_payload: Dict[str, Any],
+    ) -> Optional[float]:
+        if expectancy_score is None:
+            return None
+        scope = str(expectancy_payload.get("scope") or "bootstrap")
+        cap = 0.18 + _clip(expectancy_score) * (MAX_SIGNAL_CONFIDENCE - 0.18)
+        if scope == "category_context":
+            cap = min(cap, 0.82)
+        if _maybe_float(expectancy_payload.get("avg_rr_realized"), 0.0) < 0.0:
+            cap = min(cap, 0.68)
+        if (
+            _maybe_float(expectancy_payload.get("target_hit_rate"), 0.0) < 0.32
+            and _maybe_float(expectancy_payload.get("late_entry_rate"), 0.0) > 0.32
+        ):
+            cap = min(cap, 0.62)
+        if _maybe_float(expectancy_payload.get("avg_quality_score"), 50.0) < 45.0:
+            cap = min(cap, 0.66)
+        return _clip(cap, 0.0, MAX_SIGNAL_CONFIDENCE)
 
     @staticmethod
     def _research_quality(signal, context: Dict[str, Any]) -> float:
@@ -371,7 +456,13 @@ class SignalScorecard:
         return score, has_signal
 
     @staticmethod
-    def _scorecard_notes(signal, live_payload: Dict[str, Any], seed_source: str, rr_gap: float) -> list[str]:
+    def _scorecard_notes(
+        signal,
+        live_payload: Dict[str, Any],
+        expectancy_payload: Dict[str, Any],
+        seed_source: str,
+        rr_gap: float,
+    ) -> list[str]:
         notes: list[str] = []
         if live_payload.get("scope") == "asset":
             notes.append(
@@ -379,6 +470,18 @@ class SignalScorecard:
             )
         elif live_payload.get("scope") == "bootstrap":
             notes.append("live validation still bootstrapping")
+        if expectancy_payload.get("scope") == "asset":
+            notes.append(
+                f"execution expectancy {float(expectancy_payload.get('avg_rr_realized', 0.0)):+.2f}R"
+                f" over {int(expectancy_payload.get('sample_count', 0) or 0)} trades"
+            )
+        elif expectancy_payload.get("scope") == "category_context":
+            notes.append(
+                f"execution expectancy using {signal.category} context"
+                f" ({int(expectancy_payload.get('sample_count', 0) or 0)} trades)"
+            )
+        elif expectancy_payload.get("scope") == "bootstrap":
+            notes.append("execution expectancy still bootstrapping")
         if signal.metadata.get("ml_prediction_real") is True and signal.metadata.get("ml_direction_agrees") is False:
             notes.append("ml direction conflicts with trade direction")
         if seed_source == "playbook":
@@ -446,6 +549,7 @@ class SignalScorecard:
         rr_score = self._risk_reward_quality(signal)
         liquidity_score = self._liquidity_quality(signal, context)
         live_score, live_payload = self._live_validation(signal.asset)
+        expectancy_score, expectancy_payload = self._execution_expectancy(signal)
         research_score = self._research_quality(signal, context)
 
         components: Dict[str, Tuple[float, float]] = {
@@ -472,6 +576,7 @@ class SignalScorecard:
             "order_flow": (self._orderflow_quality(signal), 0.04),
             "memory": (self._memory_quality(signal), 0.06),
             "policy": (self._policy_quality(signal), 0.06),
+            "execution_expectancy": (expectancy_score, 0.10),
         }
         for name, (value, weight) in optional_components.items():
             if value is not None:
@@ -501,10 +606,15 @@ class SignalScorecard:
         if live_payload.get("scope") == "asset":
             live_cap = 0.10 + (MAX_SIGNAL_CONFIDENCE - 0.10) * live_score
             final_score = min(final_score, live_cap)
+        expectancy_cap = self._expectancy_confidence_cap(expectancy_score, expectancy_payload)
+        if expectancy_cap is not None:
+            final_score = min(final_score, expectancy_cap)
+        if live_payload.get("scope") in {"bootstrap", "unavailable"} and expectancy_payload.get("scope") in {"bootstrap", "unavailable"}:
+            final_score = min(final_score, 0.72)
         final_score = _clip(final_score, 0.0, MAX_SIGNAL_CONFIDENCE)
 
         rr_gap = max(0.0, _maybe_float(signal.metadata.get("adaptive_rr_gap"), 0.0))
-        notes = self._scorecard_notes(signal, live_payload, seed_source, rr_gap)
+        notes = self._scorecard_notes(signal, live_payload, expectancy_payload, seed_source, rr_gap)
 
         return {
             "raw_score": round(raw_score, 4),
@@ -513,6 +623,7 @@ class SignalScorecard:
             "final_score": round(final_score, 4),
             "breakdown": breakdown,
             "live_validation": live_payload,
+            "execution_expectancy": expectancy_payload,
             "notes": notes,
         }
 

@@ -199,8 +199,8 @@ DATABASE_URL = os.getenv(
 DATABASE_SSLMODE = os.getenv("DATABASE_SSLMODE", "").strip()
 DB_CONNECT_RETRIES = int(os.getenv("DB_CONNECT_RETRIES", "5"))
 DB_RETRY_DELAY_SECONDS = int(os.getenv("DB_RETRY_DELAY_SECONDS", "3"))
-DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
-DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "5"))
 DB_POOL_RECYCLE_SECONDS = int(os.getenv("DB_POOL_RECYCLE_SECONDS", "3600"))
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -346,7 +346,7 @@ USE_FEATURE_ENGINEERING = os.getenv("USE_FEATURE_ENGINEERING", "true").lower() =
 MODEL_MAX_AGE_HOURS     = int(os.getenv("MODEL_MAX_AGE_HOURS", "24"))
 MODEL_DIR               = Path(os.getenv("MODEL_DIR", "models"))
 MODEL_DIR.mkdir(exist_ok=True)
-MAX_TRAINING_WORKERS    = int(os.getenv("MAX_TRAINING_WORKERS", "4"))
+MAX_TRAINING_WORKERS    = int(os.getenv("MAX_TRAINING_WORKERS", "2"))
 MIN_HOLDOUT_ACCURACY    = float(os.getenv("MIN_HOLDOUT_ACCURACY", "0.52"))
 MIN_WALK_FORWARD_ACCURACY = float(os.getenv("MIN_WALK_FORWARD_ACCURACY", "0.52"))
 MIN_WALK_FORWARD_SAMPLES  = int(os.getenv("MIN_WALK_FORWARD_SAMPLES", "60"))
@@ -460,7 +460,7 @@ LOG_RETENTION_DAYS     = int(os.getenv("LOG_RETENTION_DAYS", "14"))
 WS_RECONNECT_DELAY     = int(os.getenv("WS_RECONNECT_DELAY", "30"))
 WS_MAX_RECONNECT_DELAY = int(os.getenv("WS_MAX_RECONNECT_DELAY", "120"))
 SCAN_INTERVAL_SECONDS  = int(os.getenv("SCAN_INTERVAL_SECONDS", "45"))
-MAX_SCAN_WORKERS       = int(os.getenv("MAX_SCAN_WORKERS", "8"))
+MAX_SCAN_WORKERS       = int(os.getenv("MAX_SCAN_WORKERS", "4"))
 AUTO_RESEARCH_ALLOW_IN_BOT_RUNTIME = (
     os.getenv("AUTO_RESEARCH_ALLOW_IN_BOT_RUNTIME", "false").lower() == "true"
 )
@@ -468,7 +468,7 @@ AUTO_RESEARCH_ALLOW_SEPARATE_WORKER = (
     os.getenv("AUTO_RESEARCH_ALLOW_SEPARATE_WORKER", "true").lower() == "true"
 )
 AUTO_RESEARCH_MAX_PARALLEL_ASSETS = int(
-    os.getenv("AUTO_RESEARCH_MAX_PARALLEL_ASSETS", os.getenv("MAX_PARALLEL_ASSETS", "2"))
+    os.getenv("AUTO_RESEARCH_MAX_PARALLEL_ASSETS", os.getenv("MAX_PARALLEL_ASSETS", "1"))
 )
 AUTO_RESEARCH_DEFER_ON_RESOURCE_PRESSURE = (
     os.getenv("AUTO_RESEARCH_DEFER_ON_RESOURCE_PRESSURE", "true").lower() == "true"
