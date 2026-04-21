@@ -2750,7 +2750,7 @@ def _fetch_command_center_live_snapshots(
         if asset and asset not in snapshots:
             assets.append((asset, category))
     if not assets:
-        return live_prices
+        return snapshots
     try:
         from websocket_dashboard import get_live_price_snapshots
 

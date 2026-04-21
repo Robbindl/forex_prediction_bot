@@ -10507,6 +10507,44 @@ def test_api_live_book_uses_shared_live_price_snapshots_for_positions(monkeypatc
     assert payload["positions"][0]["price_source"] == "Deriv"
 
 
+def test_fetch_command_center_live_snapshots_returns_empty_dict_without_positions() -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    assert dashboard_mod._fetch_command_center_live_snapshots([], max_age_seconds=None) == {}
+
+
+def test_api_live_book_handles_empty_positions_without_live_snapshot_failure(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_command_center_core_snapshot",
+        lambda core: (
+            {"balance": 1000.0, "initial_balance": 1000.0, "total_pnl": 0.0, "total_trades": 0, "win_rate": 0.0},
+            {"daily_pnl": 0.0},
+            [],
+            {},
+            [],
+        ),
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/live-book")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["open_positions"] == 0
+    assert payload["positions"] == []
+    assert payload["updated_assets"] == []
+    assert payload["stale_assets"] == []
+
+
 def test_api_live_book_falls_back_to_provider_quote_when_snapshot_is_stale(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
     ws_mod = importlib.import_module("websocket_dashboard")
