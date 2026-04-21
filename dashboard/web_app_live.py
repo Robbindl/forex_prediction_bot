@@ -94,10 +94,18 @@ app.jinja_env.auto_reload = True
 try:
     from config.config import (
         DASHBOARD_CORS_ORIGINS,
+        DASHBOARD_BG_REFRESH_WORKERS,
+        DASHBOARD_COMMAND_CENTER_WORKERS,
+        DASHBOARD_CORRELATION_WORKERS,
+        DASHBOARD_HEATMAP_WORKERS,
+        DASHBOARD_SENTIMENT_ASSET_WORKERS,
+        DASHBOARD_SENTIMENT_FETCH_WORKERS,
+        DASHBOARD_WEAK_POSITIONS_LIMIT,
         NEWS_REDDIT_ENABLED,
         NEWS_RSS_ENABLED,
         NEWS_SENTIMENT_ENABLED,
         PLAYBOOK_ONLY_RUNTIME,
+        TOP_OPPORTUNITIES_LIMIT,
         TRUST_PROXY_COUNT,
     )
 except Exception:
@@ -107,6 +115,14 @@ except Exception:
     NEWS_SENTIMENT_ENABLED = True
     NEWS_REDDIT_ENABLED = False
     NEWS_RSS_ENABLED = False
+    TOP_OPPORTUNITIES_LIMIT = 10
+    DASHBOARD_WEAK_POSITIONS_LIMIT = 8
+    DASHBOARD_BG_REFRESH_WORKERS = 6
+    DASHBOARD_COMMAND_CENTER_WORKERS = 4
+    DASHBOARD_CORRELATION_WORKERS = 8
+    DASHBOARD_HEATMAP_WORKERS = 10
+    DASHBOARD_SENTIMENT_ASSET_WORKERS = 10
+    DASHBOARD_SENTIMENT_FETCH_WORKERS = 6
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=TRUST_PROXY_COUNT, x_proto=TRUST_PROXY_COUNT, x_host=TRUST_PROXY_COUNT)
 CORS(app, resources={r"/api/*": {"origins": DASHBOARD_CORS_ORIGINS}})
@@ -959,7 +975,7 @@ def _bg_refresh_fallback() -> None:
                 finally:
                     _last_ref[asset] = time.time()
 
-            with ThreadPoolExecutor(max_workers=4) as pool:
+            with ThreadPoolExecutor(max_workers=max(1, int(DASHBOARD_BG_REFRESH_WORKERS or 6))) as pool:
                 list(pool.map(_refresh_one, due))
         except Exception as e:
             logger.error(f"[dashboard] bg_refresh_fallback: {e}")
@@ -2668,7 +2684,7 @@ def _fetch_command_center_slow_data() -> Dict[str, Any]:
     try:
         from concurrent.futures import ThreadPoolExecutor, wait
 
-        pool = ThreadPoolExecutor(max_workers=2)
+        pool = ThreadPoolExecutor(max_workers=max(1, int(DASHBOARD_COMMAND_CENTER_WORKERS or 4)))
         futures = {}
         sa = _get_sent()
         if sa:
@@ -3243,13 +3259,19 @@ def _build_command_center_payload() -> Dict[str, Any]:
     if core and (top_opportunities is None or weak_positions is None):
         if top_opportunities is None:
             try:
-                top_opportunities = _get_command_center_top_opportunities(core, limit=5)
+                top_opportunities = _get_command_center_top_opportunities(
+                    core,
+                    limit=max(3, int(TOP_OPPORTUNITIES_LIMIT or 10)),
+                )
             except Exception as exc:
                 logger.debug(f"[dashboard] command-center top_opportunities error: {exc}")
                 top_opportunities = []
         if weak_positions is None:
             try:
-                weak_positions = _get_command_center_weak_positions(core, limit=5)
+                weak_positions = _get_command_center_weak_positions(
+                    core,
+                    limit=max(3, int(DASHBOARD_WEAK_POSITIONS_LIMIT or 8)),
+                )
             except Exception as exc:
                 logger.debug(f"[dashboard] command-center weak_positions error: {exc}")
                 weak_positions = []
@@ -4264,7 +4286,7 @@ def _fetch_correlation_closes(assets: List[str], interval: str, periods: int) ->
     from concurrent.futures import ThreadPoolExecutor, wait
 
     closes: Dict[str, Any] = {}
-    pool = ThreadPoolExecutor(max_workers=6)
+    pool = ThreadPoolExecutor(max_workers=max(1, int(DASHBOARD_CORRELATION_WORKERS or 8)))
     try:
         futures = {
             pool.submit(_fetch_correlation_close_series, asset, interval, periods): asset
@@ -4862,7 +4884,7 @@ def api_market_heatmap():
 
         results = []
         expected_assets = sum(1 for _, cat in ALL_ASSETS if not _is_market_weekend(cat))
-        max_workers = min(8, len(ALL_ASSETS))
+        max_workers = min(max(1, int(DASHBOARD_HEATMAP_WORKERS or 10)), len(ALL_ASSETS))
         pool = ThreadPoolExecutor(max_workers=max_workers)
         try:
             futures = {pool.submit(_fetch_one, ac): ac for ac in ALL_ASSETS}
@@ -5333,7 +5355,7 @@ def _collect_sentiment_by_asset_rows(mi: Any, watch: List[str], *, timeout: floa
 
     results: List[Dict[str, Any]] = []
     seen: set[str] = set()
-    max_workers = max(1, min(8, len(watch)))
+    max_workers = max(1, min(int(DASHBOARD_SENTIMENT_ASSET_WORKERS or 10), len(watch)))
     pool = ThreadPoolExecutor(max_workers=max_workers)
     try:
         futures = {pool.submit(_sentiment_by_asset_row, mi, asset): asset for asset in watch}
@@ -5393,7 +5415,7 @@ def api_sentiment_dashboard():
         try:
             from concurrent.futures import ThreadPoolExecutor, wait
 
-            pool = ThreadPoolExecutor(max_workers=5)
+            pool = ThreadPoolExecutor(max_workers=max(1, int(DASHBOARD_SENTIMENT_FETCH_WORKERS or 6)))
             futures = {
                 pool.submit(sa.get_comprehensive_sentiment): "market_sentiment",
                 pool.submit(sa.fetch_fear_greed_index): "fear_greed",

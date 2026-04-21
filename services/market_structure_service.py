@@ -39,6 +39,15 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _trend_state_sign(state: Any) -> int:
+    label = str(state or "").strip().lower()
+    if label in {"trending_up", "buy", "bullish", "up"}:
+        return 1
+    if label in {"trending_down", "sell", "bearish", "down"}:
+        return -1
+    return 0
+
+
 def _to_float_series(df: pd.DataFrame, column: str) -> Optional[pd.Series]:
     try:
         return df[column].astype(float)
@@ -583,6 +592,7 @@ class MarketStructureService:
         )
         structure_bias = str(trend["structure_bias"] or "neutral").lower()
         direction_sign = 1 if structure_bias == "buy" else -1 if structure_bias == "sell" else 0
+        trend_5m = str(details.get("5m", {}).get("trend_state", "unknown") or "unknown").lower()
         primary_trend_state = str(primary.get("trend_state", "unknown") or "unknown").lower()
         session_quality_score = float(primary.get("session_quality_score", 0.0) or 0.0)
         candle_quality_score = float(primary.get("candle_quality_score", 0.0) or 0.0)
@@ -618,6 +628,9 @@ class MarketStructureService:
             ),
             0.0,
             1.0,
+        )
+        trigger_trend_aligned = bool(
+            direction_sign != 0 and _trend_state_sign(trend_5m) == direction_sign
         )
 
         resolved_trend_state = primary_trend_state
@@ -665,6 +678,32 @@ class MarketStructureService:
                 entry_confirmation_ready = True
                 entry_confirmation_count = max(entry_confirmation_count, max(entry_confirmation_bars_required, 1))
                 structure_promoted = True
+
+        fast_entry_confirmation_bars_required = max(1, min(int(entry_confirmation_bars_required or 1), 1))
+        fast_entry_confirmation_count = int(entry_confirmation_count)
+        fast_entry_confirmation_ready = bool(entry_confirmation_ready)
+        if direction_sign != 0 and not fast_entry_confirmation_ready:
+            if (
+                resolved_trend_state in {"trending_up", "trending_down"}
+                and directional_breakout >= 0.12
+                and candle_quality_score >= 0.28
+                and session_quality_score >= 0.40
+                and target_efficiency_score >= 0.20
+                and extension_score <= 1.24
+                and impulse_age_bars <= 5
+                and external_confirmation >= 0.12
+                and (
+                    trigger_trend_aligned
+                    or structure_promoted
+                    or bool(primary.get("liquidity_sweep_buy"))
+                    or bool(primary.get("liquidity_sweep_sell"))
+                )
+            ):
+                fast_entry_confirmation_ready = True
+                fast_entry_confirmation_count = max(
+                    fast_entry_confirmation_count,
+                    fast_entry_confirmation_bars_required,
+                )
 
         setup_quality = self._setup_quality(
             trend["weighted_score"],
@@ -742,6 +781,7 @@ class MarketStructureService:
             "primary_interval": primary_interval,
             "volatility_state": volatility_state,
             "structure_bias": structure_bias,
+            "trend_5m": trend_5m,
             "trend_15m": details.get("15m", {}).get("trend_state", "unknown"),
             "trend_1h": details.get("1h", {}).get("trend_state", "unknown"),
             "trend_4h": details.get("4h", {}).get("trend_state", "unknown"),
@@ -778,12 +818,17 @@ class MarketStructureService:
             "entry_confirmation_bars_required": entry_confirmation_bars_required,
             "entry_confirmation_count": entry_confirmation_count,
             "entry_confirmation_ready": entry_confirmation_ready,
+            "fast_entry_confirmation_bars_required": int(fast_entry_confirmation_bars_required),
+            "fast_entry_confirmation_count": int(fast_entry_confirmation_count),
+            "fast_entry_confirmation_ready": bool(fast_entry_confirmation_ready),
             "pattern_family": pattern_family,
             "resolved_trend_state": resolved_trend_state,
             "structure_promoted": bool(structure_promoted),
+            "trigger_trend_aligned": bool(trigger_trend_aligned),
             "cross_asset_support_score": round(cross_support_score, 4),
             "cross_asset_confidence": round(cross_confidence, 4),
             "microstructure_support_score": round(microstructure_support_score, 4),
+            "external_confirmation_score": round(external_confirmation, 4),
             "elite_pattern_rank": round(elite_pattern_rank, 4),
             "cluster_penalty": primary.get("cluster_penalty", 0.0),
             "regime_entry_policy": primary.get("regime_entry_policy", {}),
@@ -806,6 +851,7 @@ class MarketStructureService:
             "category": category,
             "regime": "unknown",
             "structure_bias": "neutral",
+            "trend_5m": "unknown",
             "alignment_score": 0.0,
             "setup_quality": 0.0,
             "pullback_score": 0.0,
@@ -837,12 +883,17 @@ class MarketStructureService:
             "entry_confirmation_bars_required": 0,
             "entry_confirmation_count": 0,
             "entry_confirmation_ready": False,
+            "fast_entry_confirmation_bars_required": 0,
+            "fast_entry_confirmation_count": 0,
+            "fast_entry_confirmation_ready": False,
             "pattern_family": "unknown",
             "resolved_trend_state": "unknown",
             "structure_promoted": False,
+            "trigger_trend_aligned": False,
             "cross_asset_support_score": 0.0,
             "cross_asset_confidence": 0.0,
             "microstructure_support_score": 0.0,
+            "external_confirmation_score": 0.0,
             "elite_pattern_rank": 0.0,
             "cluster_penalty": 0.0,
             "regime_entry_policy": {},

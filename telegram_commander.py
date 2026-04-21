@@ -2918,7 +2918,9 @@ class TelegramCommander:
         if not core:
             return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
         try:
-            setups = core.get_top_ranked_opportunities(limit=5, refresh=refresh)
+            from config.config import TOP_OPPORTUNITIES_LIMIT
+
+            setups = core.get_top_ranked_opportunities(limit=max(3, int(TOP_OPPORTUNITIES_LIMIT or 10)), refresh=refresh)
             if not setups:
                 return (
                     "No ranked opportunities available yet.\n"

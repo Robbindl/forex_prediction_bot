@@ -15,7 +15,7 @@ from config.config import (
     GOVERNANCE_EXPECTANCY_MIN_TARGET_HIT_RATE,
     GOVERNANCE_MIN_LIVE_ACCURACY,
     GOVERNANCE_MIN_LIVE_SAMPLES,
-    GOVERNANCE_MIN_ML_CONFIDENCE,
+    GOVERNANCE_MIN_SEED_CONFIDENCE,
     GOVERNANCE_PORTFOLIO_MIN_LIVE_ACCURACY,
     GOVERNANCE_PORTFOLIO_MIN_LIVE_SAMPLES,
     GOVERNANCE_MIN_REAL_SOURCES,
@@ -35,6 +35,18 @@ logger = get_logger()
 
 MODE_NAME = "deriv"
 
+
+def _predictor_confidence(signal, context: Dict[str, Any]) -> float:
+    return float(
+        signal.metadata.get(
+            "predictor_confidence",
+            signal.metadata.get(
+                "ml_confidence",
+                context.get("predictor_confidence", context.get("ml_confidence", 0.0)),
+            ),
+        ) or 0.0
+    )
+
 _ACCEPTABLE_SOURCE_CLASSES = {"stream", "broker", "primary_api", "secondary_api", "cache", "local_store"}
 _SOURCE_SCORE = {
     "stream": 96,
@@ -51,14 +63,14 @@ _SOURCE_SCORE = {
 _LIVE_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
     "crypto": {
         "min_risk_reward": 1.35,
-        "min_ml_confidence": 0.14,
+        "min_seed_confidence": 0.14,
         "min_live_accuracy": 45.0,
         "bootstrap_min_live_accuracy": 42.0,
         "expectancy_min_avg_r": -0.05,
     },
     "commodities": {
         "min_risk_reward": 1.15,
-        "min_ml_confidence": 0.14,
+        "min_seed_confidence": 0.14,
         "min_live_accuracy": 50.0,
         "bootstrap_min_live_accuracy": 45.0,
         "expectancy_min_avg_r": -0.02,
@@ -69,7 +81,7 @@ _LIVE_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
     },
     "indices": {
         "min_risk_reward": 1.25,
-        "min_ml_confidence": 0.14,
+        "min_seed_confidence": 0.14,
         "min_live_accuracy": 50.0,
         "bootstrap_min_live_accuracy": 45.0,
     },
@@ -78,14 +90,14 @@ _LIVE_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
 _PAPER_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
     "crypto": {
         "min_risk_reward": 1.20,
-        "min_ml_confidence": 0.14,
+        "min_seed_confidence": 0.14,
         "min_live_accuracy": 25.0,
         "bootstrap_min_live_accuracy": 22.0,
         "expectancy_min_avg_r": -0.05,
     },
     "commodities": {
         "min_risk_reward": 1.00,
-        "min_ml_confidence": 0.14,
+        "min_seed_confidence": 0.14,
         "min_live_accuracy": 50.0,
         "bootstrap_min_live_accuracy": 45.0,
         "expectancy_min_avg_r": -0.02,
@@ -96,7 +108,7 @@ _PAPER_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
     },
     "indices": {
         "min_risk_reward": 1.00,
-        "min_ml_confidence": 0.14,
+        "min_seed_confidence": 0.14,
         "min_live_accuracy": 45.0,
         "bootstrap_min_live_accuracy": 40.0,
     },
@@ -141,15 +153,15 @@ class SignalGovernance:
         expectancy_validation = self._get_expectancy_validation(asset, signal.category)
         adaptive_policy = context.get("adaptive_policy") or signal.metadata.get("adaptive_policy") or {}
         min_risk_reward = self._effective_min_risk_reward(adaptive_policy, category=category)
-        min_ml_confidence = self._effective_min_ml_confidence(category)
+        min_seed_confidence = self._effective_min_seed_confidence(category)
         valid_sources = int(signal.metadata.get("valid_sources_count", 0) or 0)
         market_intel_score = float(signal.metadata.get("market_intelligence_score", 0.0) or 0.0)
         market_intel_sources = list(signal.metadata.get("market_intelligence_sources") or [])
-        ml_conf = float(signal.metadata.get("ml_confidence", context.get("ml_confidence", 0.0)) or 0.0)
+        predictor_conf = _predictor_confidence(signal, context)
         seed_source = str(signal.metadata.get("seed_source", "") or "").strip().lower()
         playbook_action = str(signal.metadata.get("playbook_action", "") or "").strip().lower()
         playbook_confidence = float(signal.metadata.get("playbook_confidence", 0.0) or 0.0)
-        effective_seed_confidence = ml_conf
+        effective_seed_confidence = predictor_conf
         if seed_source == "playbook" or playbook_action in {"seed", "override"}:
             effective_seed_confidence = max(effective_seed_confidence, playbook_confidence)
         live_total = int(live_validation.get("total", 0) or 0)
@@ -182,11 +194,11 @@ class SignalGovernance:
             "expectancy_validation": expectancy_validation,
             "adaptive_policy": adaptive_policy,
             "min_risk_reward": min_risk_reward,
-            "min_ml_confidence": min_ml_confidence,
+            "min_seed_confidence": min_seed_confidence,
             "valid_sources": valid_sources,
             "market_intel_score": market_intel_score,
             "market_intel_sources": market_intel_sources,
-            "ml_conf": ml_conf,
+            "predictor_conf": predictor_conf,
             "seed_source": seed_source,
             "playbook_action": playbook_action,
             "playbook_confidence": playbook_confidence,
@@ -203,16 +215,16 @@ class SignalGovernance:
         if state["valid_sources"] < GOVERNANCE_MIN_REAL_SOURCES:
             violations.append(f"real_sources={state['valid_sources']} below minimum {GOVERNANCE_MIN_REAL_SOURCES}")
 
-        if state["effective_seed_confidence"] < state["min_ml_confidence"]:
+        if state["effective_seed_confidence"] < state["min_seed_confidence"]:
             if state["seed_source"] == "playbook" or state["playbook_action"] in {"seed", "override"}:
                 violations.append(
                     f"seed_confidence={state['effective_seed_confidence']:.3f} below minimum "
-                    f"{state['min_ml_confidence']:.3f} "
-                    f"(ml={state['ml_conf']:.3f}, playbook={state['playbook_confidence']:.3f})"
+                    f"{state['min_seed_confidence']:.3f} "
+                    f"(predictor={state['predictor_conf']:.3f}, playbook={state['playbook_confidence']:.3f})"
                 )
             else:
                 violations.append(
-                    f"ml_confidence={state['ml_conf']:.3f} below minimum {state['min_ml_confidence']:.3f}"
+                    f"seed_confidence={state['predictor_conf']:.3f} below minimum {state['min_seed_confidence']:.3f}"
                 )
 
         if float(state["signal"].risk_reward or 0.0) < state["min_risk_reward"]:
@@ -380,7 +392,7 @@ class SignalGovernance:
     def _category_profile(category: str) -> Dict[str, float | bool]:
         base: Dict[str, float | bool] = {
             "min_risk_reward": float(GOVERNANCE_MIN_RISK_REWARD),
-            "min_ml_confidence": float(GOVERNANCE_MIN_ML_CONFIDENCE),
+            "min_seed_confidence": float(GOVERNANCE_MIN_SEED_CONFIDENCE),
             "min_live_accuracy": float(GOVERNANCE_MIN_LIVE_ACCURACY),
             "bootstrap_min_live_accuracy": float(GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY),
             "expectancy_min_avg_r": float(GOVERNANCE_EXPECTANCY_MIN_AVG_R),
@@ -397,9 +409,17 @@ class SignalGovernance:
         return base
 
     @classmethod
-    def _effective_min_ml_confidence(cls, category: str) -> float:
+    def _effective_min_seed_confidence(cls, category: str) -> float:
         profile = cls._category_profile(category)
-        return max(0.05, float(profile.get("min_ml_confidence", GOVERNANCE_MIN_ML_CONFIDENCE) or GOVERNANCE_MIN_ML_CONFIDENCE))
+        return max(
+            0.05,
+            float(
+                profile.get(
+                    "min_seed_confidence",
+                    profile.get("min_ml_confidence", GOVERNANCE_MIN_SEED_CONFIDENCE),
+                ) or GOVERNANCE_MIN_SEED_CONFIDENCE
+            ),
+        )
 
     @classmethod
     def _effective_min_risk_reward(cls, adaptive_policy: Dict[str, Any], *, category: str = "") -> float:

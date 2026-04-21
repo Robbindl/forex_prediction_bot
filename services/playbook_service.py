@@ -131,6 +131,34 @@ def _candidate_trend_misaligned_reason(
     return ""
 
 
+def _effective_confirmation_gate(
+    *,
+    playbook: str,
+    entry_confirmation_ready: bool,
+    entry_confirmation_count: int,
+    entry_confirmation_bars_required: int,
+    fast_entry_confirmation_ready: bool = False,
+    fast_entry_confirmation_count: int = 0,
+    fast_entry_confirmation_bars_required: int = 0,
+) -> tuple[bool, int, int, bool]:
+    raw_ready = bool(entry_confirmation_ready)
+    raw_count = max(0, int(entry_confirmation_count or 0))
+    raw_required = max(0, int(entry_confirmation_bars_required or 0))
+    fast_ready = bool(fast_entry_confirmation_ready)
+    fast_count = max(0, int(fast_entry_confirmation_count or 0))
+    fast_required = max(0, int(fast_entry_confirmation_bars_required or 0))
+
+    if playbook in _PREMIUM_ENTRY_PLAYBOOKS:
+        return raw_ready, raw_count, raw_required, False
+    if playbook in _FAST_ENTRY_PLAYBOOKS:
+        effective_required = fast_required or raw_required
+        effective_count = max(raw_count, fast_count)
+        effective_ready = raw_ready or fast_ready
+        fast_override = bool(fast_ready and not raw_ready)
+        return effective_ready, effective_count, effective_required, fast_override
+    return raw_ready, raw_count, raw_required, False
+
+
 def _qualify_crypto_orderflow_candidate(
     *,
     candidate: Dict[str, Any],
@@ -195,6 +223,10 @@ def _qualify_impulse_candidate(
     entry_confirmation_count: int = 0,
     entry_confirmation_bars_required: int = 0,
     liquidity_sweep_directional: bool = False,
+    preferred_interval: str = "",
+    trigger_trend_aligned: bool = False,
+    structure_promoted: bool = False,
+    external_confirmation_score: float = 0.0,
 ) -> tuple[bool, str, bool, bool]:
     candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
     entry_style_label = str(entry_style or "").strip().lower()
@@ -224,8 +256,16 @@ def _qualify_impulse_candidate(
         early_relief_candidate_floor = max(0.44, float(profile.breakout_min_score) - 0.18)
     elif family.endswith("first_pullback") or family.endswith("breakout_retest"):
         early_relief_candidate_floor = max(0.47, float(profile.breakout_min_score) - 0.12)
+    fast_interval = str(preferred_interval or "").strip().lower() in {"1m", "5m", "15m"}
+    fast_supportive_context = bool(
+        external_confirmation_score >= 0.16
+        or structure_promoted
+        or trigger_trend_aligned
+        or max(cross_strength, micro_strength) >= 0.22
+    )
     allow_early_trend_relief = bool(
-        playbook in {"breakout_continuation", "intermarket_continuation"}
+        playbook in {"breakout_continuation", "intermarket_continuation", "aggressive_expansion", "news_impulse"}
+        and fast_interval
         and bias_alignment
         and candidate_score >= early_relief_candidate_floor
         and alignment_score >= max(0.52, float(plan.min_alignment_score) - 0.08)
@@ -235,6 +275,7 @@ def _qualify_impulse_candidate(
             or (family.endswith("first_pullback") and near_confirmation)
             or (family.endswith("breakout_retest") and near_confirmation)
             or (entry_confirmation_ready and near_confirmation)
+            or fast_supportive_context
         )
     )
     if allow_early_trend_relief:
@@ -500,6 +541,21 @@ _REVERSAL_PLAYBOOKS = {
 
 _EARLY_INFLECTION_PLAYBOOKS = {
     "early_inflection",
+}
+
+_PREMIUM_ENTRY_PLAYBOOKS = {
+    "breakout_retest",
+    "trend_pullback",
+    "failed_break_reclaim",
+}
+
+_FAST_ENTRY_PLAYBOOKS = {
+    "breakout_continuation",
+    "aggressive_expansion",
+    "intermarket_continuation",
+    "opening_drive",
+    "news_impulse",
+    "crypto_orderflow_continuation",
 }
 
 _CATEGORY_PLANS: Dict[str, _AssetPlaybookPlan] = {
@@ -909,14 +965,22 @@ class PlaybookService:
         setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
         upside_exhaustion_score = float(structure.get("upside_exhaustion_score", 0.0) or 0.0)
         downside_exhaustion_score = float(structure.get("downside_exhaustion_score", 0.0) or 0.0)
+        trend_5m = str(structure.get("trend_5m", "unknown") or "unknown").lower()
         trend_15m = str(structure.get("trend_15m", "unknown") or "unknown").lower()
         trend_1h = str(structure.get("trend_1h", "unknown") or "unknown").lower()
         pattern_family = str(structure.get("pattern_family", "unknown") or "unknown").lower()
         entry_confirmation_ready = bool(structure.get("entry_confirmation_ready"))
         entry_confirmation_count = int(structure.get("entry_confirmation_count", 0) or 0)
         entry_confirmation_bars_required = int(structure.get("entry_confirmation_bars_required", 0) or 0)
+        fast_entry_confirmation_ready = bool(structure.get("fast_entry_confirmation_ready"))
+        fast_entry_confirmation_count = int(structure.get("fast_entry_confirmation_count", 0) or 0)
+        fast_entry_confirmation_bars_required = int(structure.get("fast_entry_confirmation_bars_required", 0) or 0)
+        trigger_trend_aligned = bool(structure.get("trigger_trend_aligned"))
+        structure_promoted = bool(structure.get("structure_promoted"))
+        external_confirmation_score = float(structure.get("external_confirmation_score", 0.0) or 0.0)
         liquidity_sweep_buy = bool(structure.get("liquidity_sweep_buy"))
         liquidity_sweep_sell = bool(structure.get("liquidity_sweep_sell"))
+        preferred_interval = str(candidate.get("preferred_interval") or self.preferred_interval(category, asset) or "").strip().lower()
 
         trend_states = (trend_15m, trend_1h)
         aligned_trends = sum(1 for state in trend_states if self._trend_sign(state) == direction_sign)
@@ -924,6 +988,15 @@ class PlaybookService:
         bias_alignment = (
             (structure_bias == "buy" and direction == "BUY")
             or (structure_bias == "sell" and direction == "SELL")
+        )
+        effective_confirmation_ready, effective_confirmation_count, effective_confirmation_required, fast_confirmation_override = _effective_confirmation_gate(
+            playbook=playbook,
+            entry_confirmation_ready=entry_confirmation_ready,
+            entry_confirmation_count=entry_confirmation_count,
+            entry_confirmation_bars_required=entry_confirmation_bars_required,
+            fast_entry_confirmation_ready=fast_entry_confirmation_ready,
+            fast_entry_confirmation_count=fast_entry_confirmation_count,
+            fast_entry_confirmation_bars_required=fast_entry_confirmation_bars_required,
         )
         strong_impulse_break = False
         allow_early_trend_relief = False
@@ -937,6 +1010,7 @@ class PlaybookService:
             "score": round(float(candidate.get("score", 0.0) or 0.0), 4),
             "confidence": round(float(candidate.get("confidence", 0.0) or 0.0), 4),
             "pattern_family": pattern_family,
+            "trend_5m": trend_5m,
             "aligned_trends": aligned_trends,
             "opposing_trends": opposing_trends,
             "required_trends": int(plan.min_trend_agreement or 0),
@@ -945,6 +1019,14 @@ class PlaybookService:
             "entry_confirmation_ready": bool(entry_confirmation_ready),
             "entry_confirmation_count": int(entry_confirmation_count),
             "entry_confirmation_bars_required": int(entry_confirmation_bars_required),
+            "effective_confirmation_ready": bool(effective_confirmation_ready),
+            "effective_confirmation_count": int(effective_confirmation_count),
+            "effective_confirmation_bars_required": int(effective_confirmation_required),
+            "fast_confirmation_override": bool(fast_confirmation_override),
+            "trigger_trend_aligned": bool(trigger_trend_aligned),
+            "structure_promoted": bool(structure_promoted),
+            "external_confirmation_score": round(external_confirmation_score, 4),
+            "preferred_interval": preferred_interval,
             "liquidity_sweep_directional": bool(liquidity_sweep_directional),
         }
 
@@ -983,10 +1065,14 @@ class PlaybookService:
                 bias_alignment=bias_alignment,
                 entry_style=str(candidate.get("entry_style") or ""),
                 pattern_family=pattern_family,
-                entry_confirmation_ready=entry_confirmation_ready,
-                entry_confirmation_count=entry_confirmation_count,
-                entry_confirmation_bars_required=entry_confirmation_bars_required,
+                entry_confirmation_ready=effective_confirmation_ready,
+                entry_confirmation_count=effective_confirmation_count,
+                entry_confirmation_bars_required=effective_confirmation_required,
                 liquidity_sweep_directional=liquidity_sweep_directional,
+                preferred_interval=preferred_interval,
+                trigger_trend_aligned=trigger_trend_aligned,
+                structure_promoted=structure_promoted,
+                external_confirmation_score=external_confirmation_score,
             )
             qualification["strong_impulse_break"] = bool(strong_impulse_break)
             qualification["allow_early_trend_relief"] = bool(allow_early_trend_relief)
@@ -1006,6 +1092,21 @@ class PlaybookService:
                 qualification["reason"] = reason
                 candidate["qualification"] = qualification
                 return False, reason
+
+        if (
+            playbook == "opening_drive"
+            and preferred_interval in {"1m", "5m", "15m"}
+            and bias_alignment
+            and trigger_trend_aligned
+            and alignment_score >= max(0.52, float(plan.min_alignment_score) - 0.08)
+            and setup_quality >= max(0.50, float(plan.min_setup_quality) - 0.08)
+            and (
+                effective_confirmation_ready
+                or external_confirmation_score >= 0.16
+                or structure_promoted
+            )
+        ):
+            allow_early_trend_relief = True
 
         reason = _qualify_family_rules(
             playbook=playbook,
@@ -1090,6 +1191,9 @@ class PlaybookService:
         entry_confirmation_ready = bool(structure.get("entry_confirmation_ready"))
         entry_confirmation_bars_required = int(structure.get("entry_confirmation_bars_required", 0) or 0)
         entry_confirmation_count = int(structure.get("entry_confirmation_count", 0) or 0)
+        fast_entry_confirmation_ready = bool(structure.get("fast_entry_confirmation_ready"))
+        fast_entry_confirmation_bars_required = int(structure.get("fast_entry_confirmation_bars_required", 0) or 0)
+        fast_entry_confirmation_count = int(structure.get("fast_entry_confirmation_count", 0) or 0)
         pattern_family = str(structure.get("pattern_family", "unknown") or "unknown").lower()
         liquidity_sweep_buy = bool(structure.get("liquidity_sweep_buy"))
         liquidity_sweep_sell = bool(structure.get("liquidity_sweep_sell"))
@@ -1099,6 +1203,16 @@ class PlaybookService:
         directional_pullback = pullback_score if direction == "BUY" else -pullback_score
         directional_breakout = breakout_score if direction == "BUY" else -breakout_score
         near_confirmation = entry_confirmation_count >= max(0, entry_confirmation_bars_required - 1)
+        fast_confirmation_ready, fast_confirmation_count, fast_confirmation_required, _ = _effective_confirmation_gate(
+            playbook="breakout_continuation",
+            entry_confirmation_ready=entry_confirmation_ready,
+            entry_confirmation_count=entry_confirmation_count,
+            entry_confirmation_bars_required=entry_confirmation_bars_required,
+            fast_entry_confirmation_ready=fast_entry_confirmation_ready,
+            fast_entry_confirmation_count=fast_entry_confirmation_count,
+            fast_entry_confirmation_bars_required=fast_entry_confirmation_bars_required,
+        )
+        near_fast_confirmation = fast_confirmation_count >= max(0, fast_confirmation_required - 1)
         family_directional_match = bool(
             (direction == "BUY" and pattern_family.startswith("trending_up_"))
             or (direction == "SELL" and pattern_family.startswith("trending_down_"))
@@ -1192,7 +1306,12 @@ class PlaybookService:
             return None
         if impulse_age_bars >= 6 or cluster_penalty >= 0.26:
             return None
-        if entry_confirmation_bars_required > 1 and not entry_confirmation_ready and not near_confirmation and not directional_liquidity_sweep_ready:
+        if (
+            fast_confirmation_required > 1
+            and not fast_confirmation_ready
+            and not near_fast_confirmation
+            and not directional_liquidity_sweep_ready
+        ):
             return None
         if direction == "BUY" and upside_exhaustion_score >= 0.58:
             return None
@@ -1247,7 +1366,7 @@ class PlaybookService:
             readiness_note = "liquidity_sweep_continuation"
         elif (
             "breakout_continuation" in plan.allowed_playbooks
-            and near_confirmation
+            and near_fast_confirmation
             and directional_breakout >= 0.16
             and emerging_continuation_ready
         ):
@@ -2647,6 +2766,16 @@ class PlaybookService:
             seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.04))
         elif entry_style == "elite_trend_continuation":
             seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.04))
+        elif entry_style in {
+            "breakout_close",
+            "expansion_break",
+            "opening_drive_break",
+            "news_followthrough",
+            "intermarket_break",
+            "intermarket_confirmed_break",
+            "intermarket_trend_hold",
+        }:
+            seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.03))
 
         if not ml_direction or ml_confidence < 0.10:
             if confidence >= seed_floor:

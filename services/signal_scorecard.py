@@ -31,6 +31,38 @@ def _maybe_float(value: Any, default: float = 0.0) -> float:
 
 class SignalScorecard:
     @staticmethod
+    def _predictor_metadata(signal, context: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = signal.metadata if isinstance(signal.metadata, dict) else {}
+        prediction = metadata.get("predictor_prediction", metadata.get("ml_prediction", context.get("predictor_prediction", context.get("ml_prediction"))))
+        confidence = _clip(
+            _maybe_float(
+                metadata.get(
+                    "predictor_confidence",
+                    metadata.get(
+                        "ml_confidence",
+                        context.get("predictor_confidence", context.get("ml_confidence")),
+                    ),
+                ),
+                0.0,
+            )
+        )
+        real_flag = metadata.get("predictor_real")
+        if real_flag is None:
+            real_flag = metadata.get("ml_prediction_real")
+        real = bool(real_flag) if real_flag is not None else bool(prediction is not None and confidence > 0.10)
+        direction = str(metadata.get("predictor_direction", metadata.get("ml_direction", "")) or "").upper()
+        direction_agrees = metadata.get("predictor_direction_agrees")
+        if direction_agrees is None:
+            direction_agrees = metadata.get("ml_direction_agrees")
+        return {
+            "prediction": prediction,
+            "confidence": confidence if real else 0.0,
+            "real": real,
+            "direction": direction,
+            "direction_agrees": direction_agrees,
+        }
+
+    @staticmethod
     def _playbook_quality(signal) -> Optional[float]:
         action = str(signal.metadata.get("playbook_action", "") or "").strip().lower()
         if action not in {"seed", "override", "support"}:
@@ -244,22 +276,23 @@ class SignalScorecard:
         return _clip(1.0 - (spread_pct / threshold))
 
     @staticmethod
-    def _ml_alignment_quality(signal, context: Dict[str, Any]) -> Optional[float]:
-        if signal.metadata.get("ml_prediction_real") is not True:
+    def _predictor_alignment_quality(signal, context: Dict[str, Any]) -> Optional[float]:
+        predictor = SignalScorecard._predictor_metadata(signal, context)
+        if predictor["real"] is not True:
             return None
-        ml_direction = str(signal.metadata.get("ml_direction", "") or "").upper()
-        if not ml_direction:
-            ml_pred = context.get("ml_prediction")
-            if ml_pred is None:
+        predictor_direction = str(predictor["direction"] or "").upper()
+        if not predictor_direction:
+            prediction = predictor["prediction"]
+            if prediction is None:
                 return None
             try:
-                ml_direction = "BUY" if float(ml_pred) > 0.5 else "SELL"
+                predictor_direction = "BUY" if float(prediction) > 0.5 else "SELL"
             except Exception:
                 return None
-        ml_conf = _clip(_maybe_float(signal.metadata.get("ml_confidence", context.get("ml_confidence")), 0.0))
-        if ml_direction == signal.direction:
-            return _clip(0.65 + ml_conf * 0.30)
-        return _clip(0.35 - ml_conf * 0.20, 0.05, 0.45)
+        predictor_conf = predictor["confidence"]
+        if predictor_direction == signal.direction:
+            return _clip(0.65 + predictor_conf * 0.30)
+        return _clip(0.35 - predictor_conf * 0.20, 0.05, 0.45)
 
     @staticmethod
     def _microstructure_quality(signal) -> Optional[float]:
@@ -482,8 +515,9 @@ class SignalScorecard:
             )
         elif expectancy_payload.get("scope") == "bootstrap":
             notes.append("execution expectancy still bootstrapping")
-        if signal.metadata.get("ml_prediction_real") is True and signal.metadata.get("ml_direction_agrees") is False:
-            notes.append("ml direction conflicts with trade direction")
+        predictor = SignalScorecard._predictor_metadata(signal, {})
+        if predictor["real"] is True and predictor["direction_agrees"] is False:
+            notes.append("predictor direction conflicts with trade direction")
         if seed_source == "playbook":
             notes.append(
                 f"playbook {signal.metadata.get('playbook_name', 'setup')} seeded the trade"
@@ -524,26 +558,24 @@ class SignalScorecard:
 
         seed_source = str(signal.metadata.get("seed_source", "") or "").strip().lower()
         playbook_confidence = _clip(_maybe_float(signal.metadata.get("playbook_confidence"), 0.0))
-        ml_seed_score = _clip(
+        predictor = self._predictor_metadata(signal, context)
+        predictor_seed_score = _clip(
             _maybe_float(
-                signal.metadata.get(
-                    "ml_confidence",
-                    context.get(
-                        "ml_confidence",
-                        signal.metadata.get("seed_candidate_score", getattr(signal, "confidence", 0.0)),
-                    ),
-                ),
+                predictor["confidence"],
                 getattr(signal, "confidence", 0.0),
             )
         )
         if seed_source == "playbook":
             seed_score = max(
-                ml_seed_score,
+                predictor_seed_score,
                 playbook_confidence,
                 _clip(_maybe_float(signal.metadata.get("seed_candidate_score"), getattr(signal, "confidence", 0.0))),
             )
         else:
-            seed_score = ml_seed_score
+            seed_score = max(
+                predictor_seed_score,
+                _clip(_maybe_float(signal.metadata.get("seed_candidate_score"), getattr(signal, "confidence", 0.0))),
+            )
         structure_score = self._structure_quality(signal, context)
         regime_score = self._regime_quality(signal, context)
         rr_score = self._risk_reward_quality(signal)
@@ -564,7 +596,7 @@ class SignalScorecard:
 
         optional_components = {
             "playbook": (self._playbook_quality(signal), 0.08),
-            "ml_alignment": (self._ml_alignment_quality(signal, context), 0.07),
+            "predictor_alignment": (self._predictor_alignment_quality(signal, context), 0.07),
             "broker_quality": (self._broker_quality(signal), 0.07),
             "microstructure": (self._microstructure_quality(signal), 0.05),
             "cross_asset": (self._cross_asset_quality(signal), 0.04),
@@ -590,6 +622,8 @@ class SignalScorecard:
             weighted_sum += clipped * weight
             weight_total += weight
             breakdown[name] = round(clipped, 4)
+        if "predictor_alignment" in breakdown and "ml_alignment" not in breakdown:
+            breakdown["ml_alignment"] = breakdown["predictor_alignment"]
 
         raw_score = weighted_sum / max(weight_total, 1e-9)
         reliability = _clip(

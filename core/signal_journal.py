@@ -228,7 +228,16 @@ class SignalJournal:
             0.0,
         ) or 0.0
         setup_signal = breakout_score if abs(breakout_score) >= abs(pullback_score) else pullback_score
-        ml_confidence = _safe_float(metadata.get("ml_confidence"), 0.0) or 0.0
+        predictor_confidence = _safe_float(
+            metadata.get("predictor_confidence", metadata.get("ml_confidence")),
+            0.0,
+        ) or 0.0
+        predictor_real = bool(
+            metadata.get(
+                "predictor_real",
+                metadata.get("ml_prediction_real", False),
+            )
+        )
         sentiment_score = _safe_float(
             metadata.get(
                 "sentiment_score",
@@ -280,7 +289,8 @@ class SignalJournal:
             "pullback_score": pullback_score,
             "breakout_score": breakout_score,
             "setup_signal": setup_signal,
-            "ml_confidence": ml_confidence,
+            "predictor_confidence": predictor_confidence,
+            "predictor_real": predictor_real,
             "sentiment_score": sentiment_score,
             "whale_dominant": whale_dominant,
             "whale_ratio": whale_ratio,
@@ -299,15 +309,20 @@ class SignalJournal:
         return round(_clip11(market_structure), 4)
 
     @staticmethod
-    def _factor_ml(ctx: Dict[str, Any]) -> float:
-        ml_prediction = _safe_float(ctx["metadata"].get("ml_prediction"), None)
-        ml_direction = 0.0
-        if ml_prediction is not None:
-            if ml_prediction > 0.5:
-                ml_direction = 1.0
-            elif ml_prediction < 0.5:
-                ml_direction = -1.0
-        return round(_clip11(ml_direction * ctx["sign"] * min(1.0, ctx["ml_confidence"])), 4)
+    def _factor_predictor(ctx: Dict[str, Any]) -> float:
+        if not ctx.get("predictor_real"):
+            return 0.0
+        predictor_prediction = _safe_float(
+            ctx["metadata"].get("predictor_prediction", ctx["metadata"].get("ml_prediction")),
+            None,
+        )
+        predictor_direction = 0.0
+        if predictor_prediction is not None:
+            if predictor_prediction > 0.5:
+                predictor_direction = 1.0
+            elif predictor_prediction < 0.5:
+                predictor_direction = -1.0
+        return round(_clip11(predictor_direction * ctx["sign"] * min(1.0, ctx["predictor_confidence"])), 4)
 
     @staticmethod
     def _factor_sentiment(ctx: Dict[str, Any]) -> float:
@@ -424,7 +439,7 @@ class SignalJournal:
         ctx = self._signal_context(signal)
         return {
             "market_structure": self._factor_market_structure(ctx),
-            "ml": self._factor_ml(ctx),
+            "predictor": self._factor_predictor(ctx),
             "sentiment": self._factor_sentiment(ctx),
             "whales": self._factor_whales(ctx),
             "order_flow": self._factor_order_flow(ctx),
@@ -798,7 +813,8 @@ class SignalJournal:
     def _factor_label(name: str) -> str:
         labels = {
             "market_structure": "market structure",
-            "ml": "model conviction",
+            "predictor": "predictor conviction",
+            "ml": "predictor conviction",
             "sentiment": "sentiment",
             "whales": "whale activity",
             "order_flow": "order flow",
@@ -873,9 +889,9 @@ class SignalJournal:
         regime = self._humanize_token(data.get("regime") or summary.get("regime"))
         if regime:
             clauses.append(f"trend is {regime}")
-        ml_direction = str(data.get("ml_direction") or "").upper()
-        if ml_direction:
-            clauses.append(f"the model also points {ml_direction.lower()}")
+        predictor_direction = str(data.get("predictor_direction") or data.get("ml_direction") or "").upper()
+        if predictor_direction:
+            clauses.append(f"the predictor also points {predictor_direction.lower()}")
         rr = _safe_float(data.get("rr"), None)
         if rr is not None and rr > 0:
             clauses.append(f"reward to risk is {rr:.2f}:1")

@@ -17,6 +17,14 @@ def _parse_int(value: str, default=None):
     except Exception:
         return default
 
+
+def _parse_float(value: str, default=None):
+    try:
+        text = str(value or "").strip()
+        return float(text) if text else default
+    except Exception:
+        return default
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MARKET DATA
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,11 +107,32 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 ROBBIE_CHAT_PROVIDER = os.getenv("ROBBIE_CHAT_PROVIDER", "auto").strip().lower() or "auto"
 ROBBIE_CHAT_MODEL = os.getenv("ROBBIE_CHAT_MODEL", "deepseek-chat").strip() or "deepseek-chat"
 ROBBIE_CHAT_BASE_URL = os.getenv("ROBBIE_CHAT_BASE_URL", "https://api.deepseek.com").strip() or "https://api.deepseek.com"
-ROBBIE_CHAT_TIMEOUT_SECONDS = int(os.getenv("ROBBIE_CHAT_TIMEOUT_SECONDS", "20"))
-ROBBIE_CHAT_HISTORY_LIMIT = int(os.getenv("ROBBIE_CHAT_HISTORY_LIMIT", "6"))
-ROBBIE_CHAT_CONTEXT_CHAR_LIMIT = int(os.getenv("ROBBIE_CHAT_CONTEXT_CHAR_LIMIT", "8000"))
+ROBBIE_CHAT_MODE = os.getenv("ROBBIE_CHAT_MODE", "hybrid").strip().lower() or "hybrid"
+if ROBBIE_CHAT_MODE not in {"strict", "hybrid", "llm"}:
+    ROBBIE_CHAT_MODE = "hybrid"
+ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE = os.getenv("ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE", "true").lower() == "true"
+ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT = os.getenv("ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT", "auto").strip().lower() or "auto"
+if ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT not in {"auto", "always", "never"}:
+    ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT = "auto"
+ROBBIE_CHAT_TIMEOUT_SECONDS = int(os.getenv("ROBBIE_CHAT_TIMEOUT_SECONDS", "30"))
+ROBBIE_CHAT_HISTORY_LIMIT = int(os.getenv("ROBBIE_CHAT_HISTORY_LIMIT", "10"))
+ROBBIE_CHAT_CONTEXT_CHAR_LIMIT = int(os.getenv("ROBBIE_CHAT_CONTEXT_CHAR_LIMIT", "12000"))
+ROBBIE_CHAT_MAX_TOKENS = _parse_int(os.getenv("ROBBIE_CHAT_MAX_TOKENS", "1100"), 1100)
+ROBBIE_CHAT_TEMPERATURE = _parse_float(os.getenv("ROBBIE_CHAT_TEMPERATURE", "0.35"), 0.35)
 ROBBIE_CHAT_NEWS_ENABLED = os.getenv("ROBBIE_CHAT_NEWS_ENABLED", "true").lower() == "true"
 ROBBIE_CHAT_NEWS_LIMIT = int(os.getenv("ROBBIE_CHAT_NEWS_LIMIT", "8"))
+ROBBIE_CHAT_CLOSED_TRADES_LIMIT = _parse_int(os.getenv("ROBBIE_CHAT_CLOSED_TRADES_LIMIT", "100"), 100)
+ROBBIE_CHAT_OPEN_POSITIONS_LIMIT = _parse_int(os.getenv("ROBBIE_CHAT_OPEN_POSITIONS_LIMIT", "8"), 8)
+ROBBIE_CHAT_MARKET_EVENT_LIMIT = _parse_int(os.getenv("ROBBIE_CHAT_MARKET_EVENT_LIMIT", "10"), 10)
+ROBBIE_CHAT_MARKET_LOOKAHEAD_DAYS = _parse_int(os.getenv("ROBBIE_CHAT_MARKET_LOOKAHEAD_DAYS", "5"), 5)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAPABILITY / INTELLIGENCE LIMITS
+# ─────────────────────────────────────────────────────────────────────────────
+
+TOP_OPPORTUNITIES_LIMIT = _parse_int(os.getenv("TOP_OPPORTUNITIES_LIMIT", "10"), 10)
+LEARNING_HISTORY_LIMIT = _parse_int(os.getenv("LEARNING_HISTORY_LIMIT", "40"), 40)
+DASHBOARD_WEAK_POSITIONS_LIMIT = _parse_int(os.getenv("DASHBOARD_WEAK_POSITIONS_LIMIT", "8"), 8)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SOCIAL / TWITTER
@@ -180,6 +209,12 @@ DEVELOPMENT_MODE = os.getenv("DEVELOPMENT_MODE", "false").lower() == "true"
 DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
 SESSION_TOKEN_TTL = int(os.getenv("SESSION_TOKEN_TTL", "3600"))  # 1 hour default
 TRUST_PROXY_COUNT = int(os.getenv("TRUST_PROXY_COUNT", "1"))
+DASHBOARD_BG_REFRESH_WORKERS = _parse_int(os.getenv("DASHBOARD_BG_REFRESH_WORKERS", "6"), 6)
+DASHBOARD_COMMAND_CENTER_WORKERS = _parse_int(os.getenv("DASHBOARD_COMMAND_CENTER_WORKERS", "4"), 4)
+DASHBOARD_CORRELATION_WORKERS = _parse_int(os.getenv("DASHBOARD_CORRELATION_WORKERS", "8"), 8)
+DASHBOARD_HEATMAP_WORKERS = _parse_int(os.getenv("DASHBOARD_HEATMAP_WORKERS", "10"), 10)
+DASHBOARD_SENTIMENT_ASSET_WORKERS = _parse_int(os.getenv("DASHBOARD_SENTIMENT_ASSET_WORKERS", "10"), 10)
+DASHBOARD_SENTIMENT_FETCH_WORKERS = _parse_int(os.getenv("DASHBOARD_SENTIMENT_FETCH_WORKERS", "6"), 6)
 DASHBOARD_CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv("DASHBOARD_CORS_ORIGINS", "http://localhost:5000").split(",")
@@ -489,7 +524,10 @@ GOVERNANCE_BOOTSTRAP_MIN_LIVE_SAMPLES = int(os.getenv("GOVERNANCE_BOOTSTRAP_MIN_
 GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY = float(os.getenv("GOVERNANCE_BOOTSTRAP_MIN_LIVE_ACCURACY", "50.0"))
 GOVERNANCE_PORTFOLIO_MIN_LIVE_SAMPLES = int(os.getenv("GOVERNANCE_PORTFOLIO_MIN_LIVE_SAMPLES", "100"))
 GOVERNANCE_PORTFOLIO_MIN_LIVE_ACCURACY = float(os.getenv("GOVERNANCE_PORTFOLIO_MIN_LIVE_ACCURACY", "40.0"))
-GOVERNANCE_MIN_ML_CONFIDENCE = float(os.getenv("GOVERNANCE_MIN_ML_CONFIDENCE", "0.15"))
+GOVERNANCE_MIN_SEED_CONFIDENCE = float(
+    os.getenv("GOVERNANCE_MIN_SEED_CONFIDENCE", os.getenv("GOVERNANCE_MIN_ML_CONFIDENCE", "0.15"))
+)
+GOVERNANCE_MIN_ML_CONFIDENCE = GOVERNANCE_MIN_SEED_CONFIDENCE
 GOVERNANCE_MIN_RISK_REWARD = float(os.getenv("GOVERNANCE_MIN_RISK_REWARD", "1.5"))
 GOVERNANCE_MIN_REAL_SOURCES = int(os.getenv("GOVERNANCE_MIN_REAL_SOURCES", "3"))
 GOVERNANCE_REQUIRE_MODEL_RESEARCH = os.getenv("GOVERNANCE_REQUIRE_MODEL_RESEARCH", "true").lower() == "true"

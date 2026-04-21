@@ -66,6 +66,18 @@ def _service(tmp_path: Path) -> RobbieChatService:
     )
 
 
+class _FakeDeepSeekResponse:
+    def __init__(self, content: str = "llm reply") -> None:
+        self._content = content
+        self.content = b'{"choices":[{"message":{"content":"llm reply"}}]}'
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> Dict[str, Any]:
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
 def test_robbie_chat_reports_runtime_issues(tmp_path: Path) -> None:
     service = _service(tmp_path)
     core = _FakeCore(
@@ -309,3 +321,100 @@ def test_robbie_chat_gives_scenario_forecast_for_bitcoin(tmp_path: Path, monkeyp
     assert "scenario" in reply.lower()
     assert "2028-03-15" in reply
     assert "not a promise" in reply.lower()
+
+
+def test_robbie_chat_deepseek_prompt_allows_hybrid_macro_reasoning(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {}
+
+    def _fake_post(url: str, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _FakeDeepSeekResponse("macro llm reply")
+
+    monkeypatch.setattr(robbie_chat_module, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_PROVIDER", "deepseek")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_MODE", "hybrid")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE", True)
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT", "auto")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_MAX_TOKENS", 1234)
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_TEMPERATURE", 0.45)
+    monkeypatch.setattr(robbie_chat_module.requests, "post", _fake_post)
+
+    service = _service(tmp_path)
+    core = _FakeCore(
+        analyses={
+            "EUR/USD": {
+                "asset": "EUR/USD",
+                "category": "forex",
+                "decision_status": "accepted",
+                "decision_reason": "continuation_ready",
+                "signal": {"direction": "BUY", "confidence": 0.66, "alive": True, "metadata": {}},
+            }
+        }
+    )
+
+    reply = service.answer(
+        question="how can cpi affect EUR/USD right now?",
+        trading_system=core,
+        chat_id="chat-llm-1",
+    )
+
+    assert reply == "macro llm reply"
+    payload = captured["json"]
+    assert "general trading and macro knowledge" in payload["messages"][0]["content"]
+    assert "runtime_facts_market_snapshot" in payload["messages"][1]["content"]
+    assert "chat_contract" in payload["messages"][1]["content"]
+    assert "local_baseline_answer" not in payload["messages"][1]["content"]
+    assert payload["max_tokens"] == 1234
+    assert payload["temperature"] == 0.45
+
+
+def test_robbie_chat_deepseek_prompt_keeps_local_baseline_for_stop_loss(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {}
+
+    def _fake_post(url: str, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeDeepSeekResponse("stop loss llm reply")
+
+    monkeypatch.setattr(robbie_chat_module, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_PROVIDER", "deepseek")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_MODE", "hybrid")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE", True)
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT", "auto")
+    monkeypatch.setattr(robbie_chat_module.requests, "post", _fake_post)
+
+    service = _service(tmp_path)
+    core = _FakeCore(
+        closed_trades=[
+            {
+                "trade_id": "stop-1",
+                "asset": "EUR/USD",
+                "direction": "BUY",
+                "entry_price": 1.1010,
+                "exit_price": 1.0970,
+                "exit_reason": "Stop Loss",
+                "pnl": -43.2,
+                "metadata": {
+                    "post_trade_review": {
+                        "summary": "The trade was late and ran into a weak continuation.",
+                        "lesson": "Avoid chasing the move after it is already mature.",
+                    }
+                },
+            }
+        ]
+    )
+
+    reply = service.answer(
+        question="what happened for it to hit stop loss?",
+        trading_system=core,
+        chat_id="chat-llm-2",
+        asset_hint="EUR/USD",
+    )
+
+    assert reply == "stop loss llm reply"
+    payload = captured["json"]
+    assert "runtime facts first" in payload["messages"][0]["content"].lower()
+    assert "local_baseline_answer" in payload["messages"][1]["content"]
+    assert "review_lesson" in payload["messages"][1]["content"]

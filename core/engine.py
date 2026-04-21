@@ -15,6 +15,7 @@ from config.config import (
     MAX_SIGNAL_CONFIDENCE,
     MIN_FINAL_CONFIDENCE,
     PLAYBOOK_ONLY_RUNTIME,
+    TOP_OPPORTUNITIES_LIMIT,
     TRADE_CLOSE_COOLDOWN_MINUTES as CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES,
     get_timeframe_periods,
     get_trading_timeframe,
@@ -760,7 +761,7 @@ class TradingCore:
         )
         return item
 
-    def scan_top_ranked_opportunities(self, limit: int = 5) -> List[Dict[str, Any]]:
+    def scan_top_ranked_opportunities(self, limit: int = TOP_OPPORTUNITIES_LIMIT) -> List[Dict[str, Any]]:
         if not self.is_ready:
             return []
         signal_ctx_pairs = self._generate_signals()
@@ -909,7 +910,7 @@ class TradingCore:
 
     def get_top_ranked_opportunities(
         self,
-        limit: int = 5,
+        limit: int = TOP_OPPORTUNITIES_LIMIT,
         refresh: bool = False,
         include_positions: bool = True,
         allow_refresh_when_empty: bool = True,
@@ -920,7 +921,7 @@ class TradingCore:
             and self.is_ready
         ):
             try:
-                self.scan_top_ranked_opportunities(limit=max(limit, 5))
+                self.scan_top_ranked_opportunities(limit=max(limit, TOP_OPPORTUNITIES_LIMIT))
             except Exception as exc:
                 logger.debug(f"[TradingCore] Top opportunity refresh failed: {exc}")
 
@@ -933,7 +934,7 @@ class TradingCore:
                 candidates.append(self._build_ranked_position_candidate(pos))
 
         ranked = self._dedupe_ranked_candidates(candidates)
-        return ranked[: max(1, int(limit or 5))]
+        return ranked[: max(1, int(limit or TOP_OPPORTUNITIES_LIMIT))]
 
     def _build_signal_generation_context(
         self,
@@ -2503,6 +2504,7 @@ class TradingCore:
             playbook_service = get_playbook_service()
             playbook_interval = str(playbook_service.preferred_interval(category, canonical) or "").strip().lower()
             current_interval = str(context.get("timeframe") or get_trading_timeframe(category) or "").strip().lower()
+            predictor = self._extract_predictor_runtime(context)
             fetcher = context.get("fetcher") or getattr(self, "fetcher", None)
             if (
                 fetcher is not None
@@ -2526,8 +2528,8 @@ class TradingCore:
                     category,
                     playbook_price_data,
                     context,
-                    ml_direction="",
-                    ml_confidence=0.0,
+                    ml_direction="BUY" if predictor["available"] and float(predictor["prediction"]) > 0.5 else "SELL" if predictor["available"] else "",
+                    ml_confidence=float(predictor["confidence"] or 0.0),
                 )
                 or playbook_pick
             )
@@ -2626,7 +2628,7 @@ class TradingCore:
             return "n/a"
 
     @classmethod
-    def _fmt_ml_pair(cls, prediction: Any, confidence: Any) -> str:
+    def _fmt_predictor_pair(cls, prediction: Any, confidence: Any) -> str:
         try:
             conf = float(confidence)
         except Exception:
@@ -2634,6 +2636,39 @@ class TradingCore:
         if prediction is None or conf <= 0.10:
             return "n/a"
         return f"{cls._fmt_metric(prediction)}/{cls._fmt_metric(confidence)}"
+
+    @staticmethod
+    def _extract_predictor_runtime(context: Dict[str, Any]) -> Dict[str, Any]:
+        prediction = context.get("predictor_prediction")
+        if prediction is None:
+            prediction = context.get("ml_prediction")
+        try:
+            confidence = float(
+                context.get(
+                    "predictor_confidence",
+                    context.get("ml_confidence", 0.0),
+                ) or 0.0
+            )
+        except Exception:
+            confidence = 0.0
+        model = str(
+            context.get("predictor_model")
+            or context.get("ml_model")
+            or ""
+        ).strip()
+        provider = str(
+            context.get("predictor_provider")
+            or context.get("ml_provider")
+            or ""
+        ).strip()
+        available = bool(prediction is not None and confidence > 0.10)
+        return {
+            "prediction": prediction if available else None,
+            "confidence": confidence if available else 0.0,
+            "model": model,
+            "provider": provider,
+            "available": available,
+        }
 
     @staticmethod
     def _fmt_reason_list(value: Any, limit: int = 3) -> str:
@@ -2746,8 +2781,11 @@ class TradingCore:
             f"reject_buckets={self._fmt_reason_buckets(rejected_reasons)} "
             f"reject_details={self._fmt_reason_list(rejected_details, limit=2)} "
             f"family={str(structure.get('pattern_family', 'unknown') or 'unknown').lower()} "
+            f"trend5m={str(structure.get('trend_5m', 'unknown') or 'unknown').lower()} "
+            f"trigger_align={int(bool(structure.get('trigger_trend_aligned')))} "
             f"confirm={confirmation_count}/{confirmation_required} "
             f"confirm_ready={int(bool(structure.get('entry_confirmation_ready')))} "
+            f"fast_confirm={int(bool(structure.get('fast_entry_confirmation_ready')))} "
             f"retest={int(bool(structure.get('breakout_retest_ready')))} "
             f"pullback={int(bool(structure.get('first_pullback_ready')))} "
             f"reclaim={int(bool(structure.get('failed_opposite_move_confirmed')))} "
@@ -2755,7 +2793,7 @@ class TradingCore:
             f"tgt={self._fmt_metric(structure.get('target_efficiency_score'))} "
             f"rank={self._fmt_metric(structure.get('elite_pattern_rank'))} "
             f"cluster={self._fmt_metric(structure.get('cluster_penalty'))} "
-            f"ml={self._fmt_ml_pair(context.get('ml_prediction'), context.get('ml_confidence'))} "
+            f"predictor={self._fmt_predictor_pair(context.get('predictor_prediction', context.get('ml_prediction')), context.get('predictor_confidence', context.get('ml_confidence')))} "
             f"sent={self._fmt_metric(context.get('sentiment_score'))} "
             f"funding={context.get('funding_bias', 'NEUTRAL')} "
             f"oi={context.get('oi_signal', 'NEUTRAL')}"
@@ -2766,7 +2804,7 @@ class TradingCore:
         logger.info(
             f"[TradingCore] Decision {signal.asset} killed "
             f"step={signal.step_reached} dir={signal.direction} "
-            f"ml={self._fmt_ml_pair(signal.metadata.get('ml_prediction', context.get('ml_prediction')), signal.metadata.get('ml_confidence', context.get('ml_confidence')))} "
+            f"predictor={self._fmt_predictor_pair(signal.metadata.get('predictor_prediction', signal.metadata.get('ml_prediction', context.get('predictor_prediction', context.get('ml_prediction')))), signal.metadata.get('predictor_confidence', signal.metadata.get('ml_confidence', context.get('predictor_confidence', context.get('ml_confidence')))))} "
             f"sent={self._fmt_metric(signal.metadata.get('sentiment_score', context.get('sentiment_score')))} "
             f"whale={signal.metadata.get('whale_dominant', 'n/a')} "
             f"oflow={self._fmt_metric(signal.metadata.get('orderflow_imbalance'))} "
@@ -2780,14 +2818,18 @@ class TradingCore:
 
     @staticmethod
     def _initialize_playbook_runtime_seed(context: Dict[str, Any]) -> None:
-        context["ml_prediction"] = 0.5
-        context["ml_confidence"] = 0.0
+        context.pop("ml_prediction", None)
+        context.pop("ml_confidence", None)
+        context["predictor_prediction"] = None
+        context["predictor_confidence"] = 0.0
+        context["predictor_model"] = ""
+        context["predictor_provider"] = ""
         context["seed_decision"] = {
             "status": "playbook_runtime",
             "model": "playbook",
-            "probability": 0.5,
+            "probability": None,
             "confidence": 0.0,
-            "reason": "legacy classifier seed removed",
+            "reason": "playbook runtime active; no external predictor attached",
         }
 
     @staticmethod
@@ -2935,12 +2977,9 @@ class TradingCore:
         volatility_state: str,
     ) -> None:
         existing_meta = dict(context.get("signal_metadata") or {})
-        ml_conf = float(context.get("ml_confidence", 0.0) or 0.0)
+        predictor = self._extract_predictor_runtime(context)
         context["signal_metadata"] = {
             **existing_meta,
-            "ml_prediction": context.get("ml_prediction", 0.5),
-            "ml_confidence": ml_conf,
-            "ml_prediction_real": ml_conf > 0.10,
             "playbook_action": playbook_action,
             "playbook_name": playbook_name,
             "playbook_direction": playbook_direction,
@@ -2957,6 +2996,19 @@ class TradingCore:
             "breakout_score": round(breakout_score, 4),
             "volatility_state": volatility_state,
         }
+        if predictor["available"]:
+            context["signal_metadata"].update(
+                {
+                    "predictor_prediction": round(float(predictor["prediction"]), 4),
+                    "predictor_confidence": round(float(predictor["confidence"]), 4),
+                    "predictor_real": True,
+                    "predictor_model": predictor["model"],
+                    "predictor_provider": predictor["provider"],
+                    "ml_prediction": round(float(predictor["prediction"]), 4),
+                    "ml_confidence": round(float(predictor["confidence"]), 4),
+                    "ml_prediction_real": True,
+                }
+            )
 
     def _reject_seed_signal(self, asset: str, context: Dict[str, Any], reason: str) -> None:
         context["seed_decision"]["status"] = "rejected"
@@ -3323,12 +3375,8 @@ class TradingCore:
             seed_model=seed_model,
             take_profit_levels=take_profit_levels,
         )
-        ml_prediction = float(context.get("ml_prediction", 0.5) or 0.5)
-        ml_conf = float(context.get("ml_confidence", 0.0) or 0.0)
+        predictor = self._extract_predictor_runtime(context)
         signal.metadata.update({
-            "ml_prediction": round(ml_prediction, 4),
-            "ml_confidence": round(ml_conf, 4),
-            "ml_prediction_real": ml_conf > 0.10,
             "seed_candidate_score": round(signal.confidence, 4),
             "seed_source": seed_source,
             "seed_model": seed_model,
@@ -3362,6 +3410,24 @@ class TradingCore:
             "structure_target_alignment": structure_target_alignment,
             "entry_plan": dict(entry_plan),
         })
+        if predictor["available"]:
+            predictor_direction = "BUY" if float(predictor["prediction"]) > 0.5 else "SELL"
+            signal.metadata.update(
+                {
+                    "predictor_prediction": round(float(predictor["prediction"]), 4),
+                    "predictor_confidence": round(float(predictor["confidence"]), 4),
+                    "predictor_real": True,
+                    "predictor_direction": predictor_direction,
+                    "predictor_direction_agrees": predictor_direction == direction,
+                    "predictor_model": predictor["model"],
+                    "predictor_provider": predictor["provider"],
+                    "ml_prediction": round(float(predictor["prediction"]), 4),
+                    "ml_confidence": round(float(predictor["confidence"]), 4),
+                    "ml_prediction_real": True,
+                    "ml_direction": predictor_direction,
+                    "ml_direction_agrees": predictor_direction == direction,
+                }
+            )
         context["execution_feedback_policy"] = execution_feedback_policy
         context["signal_metadata"] = {
             **dict(context.get("signal_metadata") or {}),
@@ -3378,6 +3444,19 @@ class TradingCore:
             "trade_management_plan": trade_management_plan,
             "entry_plan": dict(entry_plan),
         }
+        if predictor["available"]:
+            context["signal_metadata"].update(
+                {
+                    "predictor_prediction": round(float(predictor["prediction"]), 4),
+                    "predictor_confidence": round(float(predictor["confidence"]), 4),
+                    "predictor_real": True,
+                    "predictor_model": predictor["model"],
+                    "predictor_provider": predictor["provider"],
+                    "ml_prediction": round(float(predictor["prediction"]), 4),
+                    "ml_confidence": round(float(predictor["confidence"]), 4),
+                    "ml_prediction_real": True,
+                }
+            )
         context["seed_decision"]["entry_plan"] = dict(entry_plan)
         self._finalize_seed_signal_context(
             context=context,
@@ -3425,7 +3504,7 @@ class TradingCore:
         plans = {
             "1m": ["5m", "15m", "1h"],
             "5m": ["15m", "1h", "4h"],
-            "15m": ["1h", "4h"],
+            "15m": ["5m", "1h", "4h"],
             "30m": ["1h", "4h"],
             "1h": ["4h", "1d"],
             "4h": ["1d"],

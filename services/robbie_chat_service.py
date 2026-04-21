@@ -13,14 +13,25 @@ import requests
 
 from config.config import (
     DEEPSEEK_API_KEY,
+    LEARNING_HISTORY_LIMIT,
+    ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE,
     ROBBIE_CHAT_BASE_URL,
+    ROBBIE_CHAT_CLOSED_TRADES_LIMIT,
     ROBBIE_CHAT_CONTEXT_CHAR_LIMIT,
     ROBBIE_CHAT_HISTORY_LIMIT,
+    ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT,
+    ROBBIE_CHAT_MAX_TOKENS,
+    ROBBIE_CHAT_MARKET_EVENT_LIMIT,
+    ROBBIE_CHAT_MARKET_LOOKAHEAD_DAYS,
     ROBBIE_CHAT_MODEL,
+    ROBBIE_CHAT_MODE,
     ROBBIE_CHAT_NEWS_ENABLED,
     ROBBIE_CHAT_NEWS_LIMIT,
+    ROBBIE_CHAT_OPEN_POSITIONS_LIMIT,
     ROBBIE_CHAT_PROVIDER,
+    ROBBIE_CHAT_TEMPERATURE,
     ROBBIE_CHAT_TIMEOUT_SECONDS,
+    TOP_OPPORTUNITIES_LIMIT,
 )
 from core.asset_profiles import get_profile
 from core.assets import registry
@@ -36,6 +47,8 @@ _SESSION_FILE = Path("data/robbie_chat_sessions.json")
 _SESSION_FILE.parent.mkdir(exist_ok=True)
 _MAX_HISTORY_MESSAGES = max(2, int(ROBBIE_CHAT_HISTORY_LIMIT or 6)) * 2
 _ASSET_ALIAS_PATTERNS: List[Tuple[re.Pattern[str], str]] = []
+_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why"}
+_WORLD_KNOWLEDGE_INTENTS = {"general", "macro", "forecast", "market", "trade_why", "stop_loss", "learning", "adjustment"}
 
 
 def _build_asset_alias_patterns() -> List[Tuple[re.Pattern[str], str]]:
@@ -78,6 +91,18 @@ def _clip_text(text: Any, limit: int = 600) -> str:
     if len(clean) <= limit:
         return clean
     return clean[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _json_text(value: Any, limit: int = 1600) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=True, default=str)
+    except Exception:
+        text = str(value)
+    return _clip_text(text, limit)
+
+
+def _section_text(title: str, value: Any, limit: int = 1600) -> str:
+    return f"{title}:\n{_json_text(value, limit)}"
 
 
 def _humanize_token(value: Any) -> str:
@@ -361,8 +386,9 @@ class RobbieChatService:
         session = self._sessions.get(chat_id)
         focus_asset = _resolve_asset_from_text(question, asset_hint or session.get("last_asset", ""))
         runtime = self._build_runtime_context(trading_system, focus_asset)
-        deterministic = self._answer_deterministic(question, runtime, session)
-        response = self._answer_with_optional_deepseek(question, runtime, session, deterministic)
+        intent = self._classify_intent(question)
+        deterministic = self._answer_deterministic(question, runtime, session, intent=intent)
+        response = self._answer_with_optional_deepseek(question, runtime, session, deterministic, intent)
         self._sessions.append_turn(
             chat_id,
             user_message=question,
@@ -393,7 +419,11 @@ class RobbieChatService:
             except Exception:
                 positions = []
             try:
-                closed_trades = rollup_closed_trade_history(list(core.get_closed_trades(limit=60) or []), limit=60)
+                history_limit = max(20, int(ROBBIE_CHAT_CLOSED_TRADES_LIMIT or 100))
+                closed_trades = rollup_closed_trade_history(
+                    list(core.get_closed_trades(limit=history_limit) or []),
+                    limit=history_limit,
+                )
             except Exception:
                 closed_trades = []
             try:
@@ -474,7 +504,7 @@ class RobbieChatService:
         calendar = MarketCalendar()
         events = []
         try:
-            events = list(calendar.get_high_impact_events(days=3) or [])
+            events = list(calendar.get_high_impact_events(days=max(1, int(ROBBIE_CHAT_MARKET_LOOKAHEAD_DAYS or 5))) or [])
         except Exception:
             events = []
 
@@ -498,7 +528,7 @@ class RobbieChatService:
             from data_ingestion.news_event_monitor import news_monitor
 
             raw_upcoming = list(news_monitor.upcoming_events(hours=48) or [])
-            for item in raw_upcoming[:8]:
+            for item in raw_upcoming[: max(1, int(ROBBIE_CHAT_MARKET_EVENT_LIMIT or 10))]:
                 upcoming.append(
                     {
                         "event": str(item.get("name") or ""),
@@ -536,7 +566,7 @@ class RobbieChatService:
                     "source": str(item.get("source") or ""),
                     "surprise_direction": str(item.get("surprise_direction") or ""),
                 }
-                for item in events[:8]
+                for item in events[: max(1, int(ROBBIE_CHAT_MARKET_EVENT_LIMIT or 10))]
             ],
             "upcoming_events": upcoming,
             "halving": halving,
@@ -645,7 +675,7 @@ class RobbieChatService:
         if core is None:
             return []
         try:
-            setups = list(core.scan_top_ranked_opportunities(limit=5) or [])
+            setups = list(core.scan_top_ranked_opportunities(limit=max(3, int(TOP_OPPORTUNITIES_LIMIT or 10))) or [])
         except Exception:
             setups = []
         runtime["top_setups"] = setups
@@ -653,7 +683,7 @@ class RobbieChatService:
 
     @staticmethod
     def _learning_snapshot(closed_trades: List[Dict[str, Any]]) -> Dict[str, Any]:
-        sample = list(closed_trades[:10])
+        sample = list(closed_trades[: max(10, int(LEARNING_HISTORY_LIMIT or 40))])
         total = len(sample)
         pnl_total = round(sum(_coerce_float(trade.get("pnl"), 0.0) for trade in sample), 2)
         wins = sum(1 for trade in sample if _coerce_float(trade.get("pnl"), 0.0) > 0)
@@ -1003,8 +1033,15 @@ class RobbieChatService:
             return "trade_why"
         return "general"
 
-    def _answer_deterministic(self, question: str, runtime: Dict[str, Any], session: Dict[str, Any]) -> str:
-        intent = self._classify_intent(question)
+    def _answer_deterministic(
+        self,
+        question: str,
+        runtime: Dict[str, Any],
+        session: Dict[str, Any],
+        *,
+        intent: Optional[str] = None,
+    ) -> str:
+        intent = str(intent or self._classify_intent(question) or "general")
         focus_asset = str(runtime.get("focus_asset") or "")
         focus_analysis = runtime.get("focus_analysis") if isinstance(runtime.get("focus_analysis"), dict) else {}
         focus_signal = runtime.get("focus_signal") if isinstance(runtime.get("focus_signal"), dict) else {}
@@ -1354,12 +1391,95 @@ class RobbieChatService:
         lines.append("Ask me about issues, learning, CPI/FOMC, holidays, current market conditions, a specific asset, or why a stop loss happened.")
         return "\n".join(lines)
 
+    @staticmethod
+    def _allow_world_knowledge(intent: str) -> bool:
+        if not ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE or ROBBIE_CHAT_MODE == "strict":
+            return False
+        if ROBBIE_CHAT_MODE == "llm":
+            return True
+        return intent in _WORLD_KNOWLEDGE_INTENTS
+
+    @staticmethod
+    def _include_local_draft(intent: str) -> bool:
+        policy = str(ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT or "auto").strip().lower() or "auto"
+        if policy == "always":
+            return True
+        if policy == "never":
+            return False
+        if ROBBIE_CHAT_MODE == "strict":
+            return True
+        if ROBBIE_CHAT_MODE == "llm":
+            return intent in {"issues", "positions", "stop_loss", "trade_why"}
+        return intent in _RUNTIME_FACT_INTENTS
+
+    @staticmethod
+    def _position_fact(position: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+        return {
+            "asset": position.get("asset") or position.get("canonical_asset"),
+            "direction": position.get("direction") or position.get("signal"),
+            "entry_price": position.get("entry_price"),
+            "current_price": position.get("current_price"),
+            "stop_loss": position.get("stop_loss"),
+            "take_profit": position.get("take_profit"),
+            "pnl": position.get("pnl"),
+            "entry_time": position.get("entry_time") or position.get("open_time"),
+            "playbook": metadata.get("playbook"),
+            "exit_plan": metadata.get("exit_plan"),
+        }
+
+    @classmethod
+    def _closed_trade_fact(cls, trade: Dict[str, Any]) -> Dict[str, Any]:
+        review = cls._review_for_trade(trade)
+        return {
+            "trade_id": trade.get("trade_id"),
+            "asset": trade.get("asset"),
+            "direction": trade.get("direction"),
+            "entry_price": trade.get("entry_price"),
+            "exit_price": trade.get("exit_price"),
+            "pnl": trade.get("pnl"),
+            "exit_reason": trade.get("display_exit_reason") or trade.get("exit_reason"),
+            "entry_time": trade.get("entry_time") or trade.get("open_time"),
+            "exit_time": trade.get("exit_time"),
+            "review_summary": review.get("summary"),
+            "review_lesson": review.get("lesson"),
+            "review_next_focus": review.get("next_focus"),
+        }
+
+    def _deepseek_system_prompt(self, *, intent: str, allow_world_knowledge: bool, include_local_draft: bool) -> str:
+        instructions = [
+            "You are Robbie, the conversational intelligence layer for a live trading bot.",
+            "Answer like a strong analytical LLM, not like a menu tree or canned FAQ.",
+            "Runtime facts in the provided context are authoritative for bot state, trades, performance, health, and recorded market snapshots.",
+            "Do not invent positions, trades, fills, P&L, health issues, headlines, prices, or event timestamps.",
+            "If runtime facts are missing, say what is missing instead of fabricating it.",
+            "Think through the mechanics before answering, but do not reveal chain-of-thought.",
+        ]
+        if allow_world_knowledge:
+            instructions.extend(
+                [
+                    "You may use general trading and macro knowledge for explanations, scenario analysis, and conceptual questions.",
+                    "When you rely on general knowledge instead of runtime facts, label it clearly as inference, mechanics, or scenario rather than a confirmed live fact.",
+                    "If asked about something currently happening in the world that is not in runtime facts, answer at a general-mechanics level and state that you are not confirming a fresh live event.",
+                ]
+            )
+        else:
+            instructions.append("Stay grounded to runtime facts and general mechanics only; do not answer as if you have broader live awareness.")
+        if include_local_draft:
+            instructions.append("A local baseline answer may be provided; use it only if it is consistent with the stronger runtime facts and your own reasoning.")
+        if intent in {"stop_loss", "trade_why", "learning", "adjustment", "issues", "positions"}:
+            instructions.append("For bot-specific questions, lead with runtime facts first, then add inference only if useful.")
+        elif intent in {"macro", "forecast", "general", "market"}:
+            instructions.append("For broader market questions, synthesize runtime facts with general knowledge and answer conversationally, but do not overclaim certainty.")
+        return " ".join(instructions)
+
     def _answer_with_optional_deepseek(
         self,
         question: str,
         runtime: Dict[str, Any],
         session: Dict[str, Any],
         deterministic: str,
+        intent: str,
     ) -> str:
         provider = str(ROBBIE_CHAT_PROVIDER or "auto").strip().lower()
         if provider not in {"auto", "deepseek"}:
@@ -1367,8 +1487,19 @@ class RobbieChatService:
         if not DEEPSEEK_API_KEY:
             return deterministic
 
+        allow_world_knowledge = self._allow_world_knowledge(intent)
+        include_local_draft = self._include_local_draft(intent)
+
         try:
-            response = self._call_deepseek(question, runtime, session, deterministic)
+            response = self._call_deepseek(
+                question,
+                runtime,
+                session,
+                deterministic,
+                intent=intent,
+                allow_world_knowledge=allow_world_knowledge,
+                include_local_draft=include_local_draft,
+            )
             return response or deterministic
         except Exception as exc:
             logger.debug(f"[RobbieChat] DeepSeek fallback: {exc}")
@@ -1380,23 +1511,31 @@ class RobbieChatService:
         runtime: Dict[str, Any],
         session: Dict[str, Any],
         deterministic: str,
+        *,
+        intent: str,
+        allow_world_knowledge: bool,
+        include_local_draft: bool,
     ) -> str:
         base_url = str(ROBBIE_CHAT_BASE_URL or "https://api.deepseek.com").rstrip("/")
         endpoint = f"{base_url}/chat/completions"
         history = list(session.get("messages") or [])[-_MAX_HISTORY_MESSAGES:]
-        context = self._llm_context(runtime, deterministic)
+        context = self._llm_context(
+            runtime,
+            deterministic,
+            question=question,
+            intent=intent,
+            allow_world_knowledge=allow_world_knowledge,
+            include_local_draft=include_local_draft,
+        )
         payload = {
             "model": str(ROBBIE_CHAT_MODEL or "deepseek-chat"),
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are Robbie, a trading bot assistant. Answer only from the supplied runtime context. "
-                        "Do not invent trades, positions, health problems, or performance. "
-                        "If context is insufficient, say that directly. "
-                        "You may explain general macro mechanics and scenario-based outlooks, but clearly separate runtime facts from inference. "
-                        "Never imply web access or arbitrary real-time awareness beyond the supplied context. "
-                        "Keep answers operational and concise."
+                    "content": self._deepseek_system_prompt(
+                        intent=intent,
+                        allow_world_knowledge=allow_world_knowledge,
+                        include_local_draft=include_local_draft,
                     ),
                 },
                 {
@@ -1409,8 +1548,8 @@ class RobbieChatService:
                     "content": question,
                 },
             ],
-            "temperature": 0.2,
-            "max_tokens": 700,
+            "temperature": max(0.0, min(1.1, float(ROBBIE_CHAT_TEMPERATURE or 0.35))),
+            "max_tokens": max(300, min(2000, int(ROBBIE_CHAT_MAX_TOKENS or 1100))),
         }
         resp = requests.post(
             endpoint,
@@ -1430,7 +1569,16 @@ class RobbieChatService:
         content = str((message or {}).get("content") or "").strip()
         return content
 
-    def _llm_context(self, runtime: Dict[str, Any], deterministic: str) -> str:
+    def _llm_context(
+        self,
+        runtime: Dict[str, Any],
+        deterministic: str,
+        *,
+        question: str,
+        intent: str,
+        allow_world_knowledge: bool,
+        include_local_draft: bool,
+    ) -> str:
         focus_analysis = runtime.get("focus_analysis") if isinstance(runtime.get("focus_analysis"), dict) else {}
         health = runtime.get("health") if isinstance(runtime.get("health"), dict) else {}
         learning = runtime.get("learning") if isinstance(runtime.get("learning"), dict) else {}
@@ -1439,54 +1587,130 @@ class RobbieChatService:
         market_snapshot = runtime.get("market_snapshot") if isinstance(runtime.get("market_snapshot"), dict) else {}
         news_snapshot = runtime.get("news_snapshot") if isinstance(runtime.get("news_snapshot"), dict) else {}
         setups = self._ensure_top_setups(runtime)
+        focus_signal = runtime.get("focus_signal") if isinstance(runtime.get("focus_signal"), dict) else {}
+        position_limit = max(2, int(ROBBIE_CHAT_OPEN_POSITIONS_LIMIT or 8))
+        trade_limit = max(4, min(int(ROBBIE_CHAT_CLOSED_TRADES_LIMIT or 100), 12))
+        event_limit = max(3, int(ROBBIE_CHAT_MARKET_EVENT_LIMIT or 10))
+        setup_limit = max(3, min(int(TOP_OPPORTUNITIES_LIMIT or 10), 12))
+        positions = [
+            self._position_fact(item)
+            for item in list(runtime.get("positions") or [])[:position_limit]
+            if isinstance(item, dict)
+        ]
+        recent_closed = [
+            self._closed_trade_fact(item)
+            for item in list(runtime.get("closed_trades") or [])[:trade_limit]
+            if isinstance(item, dict)
+        ]
+        daily = runtime.get("daily") if isinstance(runtime.get("daily"), dict) else {}
+        performance = runtime.get("performance") if isinstance(runtime.get("performance"), dict) else {}
 
-        snapshot = {
-            "focus_asset": runtime.get("focus_asset"),
-            "engine_status": {
-                "status": health.get("status"),
-                "issues": list(health.get("issues") or [])[:4],
-                "open_positions": health.get("open_positions"),
-                "daily_trades": health.get("daily_trades"),
-                "daily_pnl": health.get("daily_pnl"),
-                "recent_error_count": health.get("recent_error_count"),
-                "stale_sources": list(health.get("stale_sources") or [])[:4],
-            },
-            "focus_analysis": {
-                "decision_status": focus_analysis.get("decision_status"),
-                "decision_reason": focus_analysis.get("decision_reason"),
-                "market_status": focus_analysis.get("market_status"),
-                "sentiment_score": focus_analysis.get("sentiment_score"),
-                "playbook_decision": focus_analysis.get("playbook_decision"),
-                "market_structure": focus_analysis.get("market_structure"),
-            },
-            "current_trade": {
-                "asset": current_trade.get("asset"),
-                "direction": current_trade.get("direction"),
-                "entry_price": current_trade.get("entry_price"),
-                "pnl": current_trade.get("pnl"),
-            },
-            "stop_trade": {
-                "asset": stop_trade.get("asset"),
-                "exit_reason": stop_trade.get("exit_reason"),
-                "pnl": stop_trade.get("pnl"),
-                "review": self._review_for_trade(stop_trade),
-            },
-            "learning": learning,
-            "market_snapshot": market_snapshot,
-            "news_snapshot": news_snapshot,
-            "top_setups": [
+        sections = [
+            _section_text(
+                "chat_contract",
                 {
-                    "asset": item.get("asset"),
-                    "direction": item.get("direction") or item.get("signal"),
-                    "confidence": item.get("confidence"),
-                    "opportunity_score": item.get("opportunity_score"),
-                }
-                for item in setups[:3]
-            ],
-            "grounded_draft": deterministic,
-        }
-        text = json.dumps(snapshot, ensure_ascii=True, default=str)
-        return _clip_text(text, int(ROBBIE_CHAT_CONTEXT_CHAR_LIMIT or 8000))
+                    "utc_now": _utc_now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "question": question,
+                    "intent": intent,
+                    "mode": ROBBIE_CHAT_MODE,
+                    "allow_world_knowledge": allow_world_knowledge,
+                    "focus_asset": runtime.get("focus_asset"),
+                },
+                limit=900,
+            ),
+            _section_text(
+                "runtime_facts_engine",
+                {
+                    "health_status": health.get("status"),
+                    "issues": list(health.get("issues") or [])[:8],
+                    "open_positions": health.get("open_positions"),
+                    "daily": daily,
+                    "performance": performance,
+                    "balance": runtime.get("balance"),
+                    "recent_error_count": health.get("recent_error_count"),
+                    "stale_sources": list(health.get("stale_sources") or [])[:8],
+                    "never_seen_sources": list(health.get("never_seen_sources") or [])[:8],
+                    "signal_diagnostics": health.get("signal_diagnostics"),
+                },
+                limit=1800,
+            ),
+            _section_text(
+                "runtime_facts_focus_asset",
+                {
+                    "analysis": {
+                        "asset": focus_analysis.get("asset") or runtime.get("focus_asset"),
+                        "category": focus_analysis.get("category") or market_snapshot.get("focus_category"),
+                        "decision_status": focus_analysis.get("decision_status"),
+                        "decision_reason": focus_analysis.get("decision_reason"),
+                        "market_status": focus_analysis.get("market_status"),
+                        "sentiment_score": focus_analysis.get("sentiment_score"),
+                        "signal": {
+                            "direction": focus_signal.get("direction"),
+                            "confidence": focus_signal.get("confidence"),
+                            "alive": focus_signal.get("alive"),
+                            "entry_price": focus_signal.get("entry_price"),
+                            "stop_loss": focus_signal.get("stop_loss"),
+                            "take_profit": focus_signal.get("take_profit"),
+                        },
+                        "playbook_decision": focus_analysis.get("playbook_decision"),
+                        "market_structure": focus_analysis.get("market_structure"),
+                    }
+                },
+                limit=2600,
+            ),
+            _section_text("runtime_facts_open_positions", positions, limit=1800),
+            _section_text(
+                "runtime_facts_focus_trade",
+                {
+                    "current_trade": self._position_fact(current_trade) if current_trade else {},
+                    "recent_stop_trade": self._closed_trade_fact(stop_trade) if stop_trade else {},
+                    "recent_closed_trades": recent_closed,
+                },
+                limit=2400,
+            ),
+            _section_text("runtime_facts_learning", learning, limit=1400),
+            _section_text(
+                "runtime_facts_market_snapshot",
+                {
+                    "risk_outlook": market_snapshot.get("risk_outlook"),
+                    "focus_market_status": market_snapshot.get("focus_market_status"),
+                    "focus_macro_currencies": market_snapshot.get("focus_macro_currencies"),
+                    "high_impact_events": list(market_snapshot.get("high_impact_events") or [])[:event_limit],
+                    "upcoming_events": list(market_snapshot.get("upcoming_events") or [])[:event_limit],
+                    "exchange_holiday": market_snapshot.get("exchange_holiday"),
+                    "halving": market_snapshot.get("halving"),
+                    "focus_free_market_intelligence": market_snapshot.get("focus_free_market_intelligence"),
+                },
+                limit=2600,
+            ),
+            _section_text(
+                "runtime_facts_news",
+                {
+                    "enabled": news_snapshot.get("enabled"),
+                    "count": news_snapshot.get("count"),
+                    "articles": list(news_snapshot.get("articles") or [])[: max(4, int(ROBBIE_CHAT_NEWS_LIMIT or 8))],
+                },
+                limit=1800,
+            ),
+            _section_text(
+                "runtime_facts_top_setups",
+                [
+                    {
+                        "asset": item.get("asset"),
+                        "direction": item.get("direction") or item.get("signal"),
+                        "confidence": item.get("confidence"),
+                        "opportunity_score": item.get("opportunity_score"),
+                    }
+                    for item in setups[:setup_limit]
+                    if isinstance(item, dict)
+                ],
+                limit=1200,
+            ),
+        ]
+        if include_local_draft and deterministic:
+            sections.append(_section_text("local_baseline_answer", deterministic, limit=1400))
+        text = "\n\n".join(section for section in sections if section.strip())
+        return _clip_text(text, int(ROBBIE_CHAT_CONTEXT_CHAR_LIMIT or 12000))
 
 
 _chat_service: Optional[RobbieChatService] = None

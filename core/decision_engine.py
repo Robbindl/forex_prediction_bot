@@ -101,6 +101,37 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _predictor_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    prediction = meta.get("predictor_prediction", meta.get("ml_prediction"))
+    confidence = _safe_float(meta.get("predictor_confidence", meta.get("ml_confidence", 0.0)), 0.0)
+    real_flag = meta.get("predictor_real")
+    if real_flag is None:
+        real_flag = meta.get("ml_prediction_real")
+    real = bool(real_flag) if real_flag is not None else bool(prediction is not None and confidence > 0.10)
+    direction = str(meta.get("predictor_direction", meta.get("ml_direction", "")) or "").strip().upper()
+    direction_agrees = meta.get("predictor_direction_agrees")
+    if direction_agrees is None:
+        direction_agrees = meta.get("ml_direction_agrees")
+    return {
+        "prediction": prediction,
+        "confidence": confidence if real else 0.0,
+        "real": real,
+        "direction": direction,
+        "direction_agrees": bool(direction_agrees) if direction_agrees is not None else None,
+        "model": str(meta.get("predictor_model", meta.get("ml_model", "")) or "").strip(),
+        "provider": str(meta.get("predictor_provider", meta.get("ml_provider", "")) or "").strip(),
+    }
+
+
+def _allowed_source_families(signal: Signal) -> List[str]:
+    families = list(get_profile(signal.asset).source_families or ())
+    predictor = _predictor_metadata(signal.metadata if isinstance(signal.metadata, dict) else {})
+    if not predictor["real"]:
+        families = [family for family in families if family != "model"]
+    return families
+
+
 def _parse_optional_datetime(value: Any) -> Optional[datetime]:
     if value in (None, ""):
         return None
@@ -201,7 +232,7 @@ def _register_source_family(
 def _resolve_source_families(signal: Signal) -> tuple[List[str], List[str], Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
     profile = get_profile(signal.asset)
     metadata = signal.metadata if isinstance(signal.metadata, dict) else {}
-    allowed = set(profile.source_families or ())
+    allowed = set(_allowed_source_families(signal))
     valid: set[str] = set()
     stale: set[str] = set()
     evidence: Dict[str, List[str]] = {}
@@ -214,10 +245,15 @@ def _resolve_source_families(signal: Signal) -> tuple[List[str], List[str], Dict
     market_intelligence_components = metadata.get("market_intelligence_components") if isinstance(metadata.get("market_intelligence_components"), dict) else {}
     market_microstructure = metadata.get("market_microstructure") if isinstance(metadata.get("market_microstructure"), dict) else {}
 
-    if metadata.get("ml_prediction_real", True):
+    predictor = _predictor_metadata(metadata)
+    if predictor["real"]:
         _register_source_family(
             family="model",
-            entries=["ml_prediction_real"],
+            entries=[
+                "predictor_real",
+                *( [f"model:{predictor['model']}"] if predictor["model"] else [] ),
+                *( [f"provider:{predictor['provider']}"] if predictor["provider"] else [] ),
+            ],
             timestamps=[signal.timestamp],
             allowed=allowed,
             valid=valid,
@@ -411,7 +447,7 @@ def _resolve_source_families(signal: Signal) -> tuple[List[str], List[str], Dict
 
 def count_valid_sources(signal: Signal) -> int:
     valid_families, stale_families, evidence, freshness = _resolve_source_families(signal)
-    signal.metadata["eligible_source_families"] = list(get_profile(signal.asset).source_families or ())
+    signal.metadata["eligible_source_families"] = _allowed_source_families(signal)
     signal.metadata["valid_source_families"] = valid_families
     signal.metadata["stale_source_families"] = stale_families
     signal.metadata["source_family_evidence"] = evidence
@@ -614,29 +650,39 @@ class SignalDecisionEngine:
         return False
 
     @staticmethod
-    def _market_seed_and_ml(signal: Signal, context: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> float:
+    def _market_seed_and_predictor(signal: Signal, context: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> float:
         seed_below_floor = signal.confidence < MIN_CONFIDENCE_SCORE
         signal.metadata["seed_below_floor"] = seed_below_floor
         data["seed_below_floor"] = seed_below_floor
         if seed_below_floor:
             notes.append(f"seed_conf<{MIN_CONFIDENCE_SCORE:.2f}")
 
-        ml_pred = context.get("ml_prediction")
-        ml_conf = float(context.get("ml_confidence", 0.0) or 0.0)
-        signal.metadata["ml_confidence"] = round(ml_conf, 4)
-        if ml_pred is not None and ml_conf > 0.1:
+        predictor = _predictor_metadata(context)
+        signal.metadata["predictor_confidence"] = round(float(predictor["confidence"]), 4)
+        if predictor["real"] and predictor["prediction"] is not None:
+            signal.metadata["predictor_real"] = True
+            signal.metadata["predictor_prediction"] = round(float(predictor["prediction"]), 4)
+            predictor_direction = predictor["direction"] or ("BUY" if float(predictor["prediction"]) > 0.5 else "SELL")
+            predictor_agrees = predictor_direction == signal.direction
+            signal.metadata["predictor_direction"] = predictor_direction
+            signal.metadata["predictor_direction_agrees"] = predictor_agrees
+            signal.metadata["ml_prediction"] = round(float(predictor["prediction"]), 4)
+            signal.metadata["ml_confidence"] = round(float(predictor["confidence"]), 4)
             signal.metadata["ml_prediction_real"] = True
-            signal.metadata["ml_prediction"] = round(float(ml_pred), 4)
-            ml_direction = "BUY" if ml_pred > 0.5 else "SELL"
-            signal.metadata["ml_direction"] = ml_direction
-            signal.metadata["ml_direction_agrees"] = ml_direction == signal.direction
-            data["ml_direction"] = ml_direction
-            data["ml_direction_agrees"] = ml_direction == signal.direction
-            notes.append("ml_agrees" if ml_direction == signal.direction else "ml_disagrees")
+            signal.metadata["ml_direction"] = predictor_direction
+            signal.metadata["ml_direction_agrees"] = predictor_agrees
+            if predictor["model"]:
+                signal.metadata["predictor_model"] = predictor["model"]
+            if predictor["provider"]:
+                signal.metadata["predictor_provider"] = predictor["provider"]
+            data["predictor_direction"] = predictor_direction
+            data["predictor_direction_agrees"] = predictor_agrees
+            notes.append("predictor_agrees" if predictor_agrees else "predictor_disagrees")
         else:
+            signal.metadata["predictor_real"] = False
             signal.metadata["ml_prediction_real"] = False
-            notes.append("ml_unavailable")
-        return ml_conf
+            notes.append("predictor_unavailable")
+        return float(predictor["confidence"])
 
     @staticmethod
     def _market_rr_and_spread(signal: Signal, context: Dict[str, Any], data: Dict[str, Any], notes: List[str]) -> float:
@@ -1000,7 +1046,7 @@ class SignalDecisionEngine:
         data: Dict[str, Any] = {}
         notes: List[str] = []
 
-        ml_conf = self._market_seed_and_ml(signal, context, data, notes)
+        predictor_conf = self._market_seed_and_predictor(signal, context, data, notes)
         rr = self._market_rr_and_spread(signal, context, data, notes)
         self._market_broker_quality(signal, context, data, notes)
         self._market_microstructure(signal, context, data, notes)
@@ -1056,7 +1102,7 @@ class SignalDecisionEngine:
             layer=STEP_MARKET,
             name="market",
             decision=PASS,
-            reason=f"ml={ml_conf:.3f} rr={rr:.2f} regime={regime} session={session} news={news_state}",
+            reason=f"predictor={predictor_conf:.3f} rr={rr:.2f} regime={regime} session={session} news={news_state}",
             conf_before=conf_before,
             conf_after=signal.confidence,
             data=data,
@@ -2286,8 +2332,8 @@ class SignalDecisionEngine:
                         "regime": signal.metadata.get("regime", ""),
                         "features": context.get("features"),
                         "signal_metadata": {
-                            "ml_prediction": context.get("ml_prediction"),
-                            "ml_confidence": context.get("ml_confidence"),
+                            "predictor_prediction": context.get("predictor_prediction", context.get("ml_prediction")),
+                            "predictor_confidence": context.get("predictor_confidence", context.get("ml_confidence")),
                             **signal.metadata,
                         },
                     })
