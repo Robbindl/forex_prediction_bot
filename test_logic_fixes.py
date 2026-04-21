@@ -10567,11 +10567,15 @@ def test_reset_bot_state_clears_files_and_temp_state(monkeypatch, tmp_path) -> N
     startup_log = tmp_path / "startup_test.log"
     telegram_pid = tmp_path / "telegram_bot.pid"
     paper_trades = tmp_path / "paper_trades.json"
+    robbie_chat_sessions = state_dir / "robbie_chat_sessions.json"
+    robbie_chat_sessions_tmp = state_dir / "robbie_chat_sessions.tmp"
     state_tmp = state_dir / "state_1.tmp"
     telegram_log.write_text("telegram", encoding="utf-8")
     startup_log.write_text("startup", encoding="utf-8")
     telegram_pid.write_text("pid", encoding="utf-8")
     paper_trades.write_text("paper", encoding="utf-8")
+    robbie_chat_sessions.write_text("{}", encoding="utf-8")
+    robbie_chat_sessions_tmp.write_text("tmp", encoding="utf-8")
     state_tmp.write_text("tmp", encoding="utf-8")
 
     monkeypatch.setattr(reset_mod, "LOG_DIR", log_dir, raising=False)
@@ -10581,15 +10585,19 @@ def test_reset_bot_state_clears_files_and_temp_state(monkeypatch, tmp_path) -> N
     monkeypatch.setattr(reset_mod, "STARTUP_TEST_LOG", startup_log, raising=False)
     monkeypatch.setattr(reset_mod, "TELEGRAM_PID_FILE", telegram_pid, raising=False)
     monkeypatch.setattr(reset_mod, "PAPER_TRADES_FILE", paper_trades, raising=False)
+    monkeypatch.setattr(reset_mod, "ROBBIE_CHAT_SESSIONS_FILE", robbie_chat_sessions, raising=False)
+    monkeypatch.setattr(reset_mod, "ROBBIE_CHAT_SESSIONS_TMP_FILE", robbie_chat_sessions_tmp, raising=False)
     monkeypatch.setattr(reset_mod, "STATE_FILE", state_dir / "system_state.json", raising=False)
 
     summary = reset_mod._clear_files()
 
-    assert summary == {"files_deleted": 6, "files_cleared": 2, "files_locked": 0}
+    assert summary == {"files_deleted": 8, "files_cleared": 2, "files_locked": 0}
     assert telegram_log.read_text(encoding="utf-8") == ""
     assert startup_log.read_text(encoding="utf-8") == ""
     assert not telegram_pid.exists()
     assert not paper_trades.exists()
+    assert not robbie_chat_sessions.exists()
+    assert not robbie_chat_sessions_tmp.exists()
     assert not state_tmp.exists()
 
 def test_telegram_manager_uses_configured_debug_flag_and_pid_file(monkeypatch) -> None:

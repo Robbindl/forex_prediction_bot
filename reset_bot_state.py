@@ -19,6 +19,8 @@ from config.database import SessionLocal
 
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "data" / "system_state.json"
+ROBBIE_CHAT_SESSIONS_FILE = ROOT / "data" / "robbie_chat_sessions.json"
+ROBBIE_CHAT_SESSIONS_TMP_FILE = ROBBIE_CHAT_SESSIONS_FILE.with_suffix(".tmp")
 LOG_DIR = ROOT / "logs"
 TRADE_LOG_DIR = ROOT / "trade_logs"
 PORTFOLIO_REPORTS_DIR = ROOT / "portfolio_reports"
@@ -112,7 +114,14 @@ def _write_clean_state(balance: float) -> None:
 def _clear_files() -> dict[str, int]:
     directory_summary = _delete_file_group(_iter_files((LOG_DIR, TRADE_LOG_DIR, PORTFOLIO_REPORTS_DIR)))
     text_summary = _clear_file_group((TELEGRAM_LOG_FILE, STARTUP_TEST_LOG))
-    tracked_summary = _delete_file_group((TELEGRAM_PID_FILE, PAPER_TRADES_FILE))
+    tracked_summary = _delete_file_group(
+        (
+            TELEGRAM_PID_FILE,
+            PAPER_TRADES_FILE,
+            ROBBIE_CHAT_SESSIONS_FILE,
+            ROBBIE_CHAT_SESSIONS_TMP_FILE,
+        )
+    )
     temp_summary = _delete_file_group(STATE_FILE.parent.glob("state_*.tmp"))
     return _merge_file_summaries(directory_summary, text_summary, tracked_summary, temp_summary)
 
