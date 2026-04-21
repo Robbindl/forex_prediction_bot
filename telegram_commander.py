@@ -28,6 +28,7 @@ from telegram.ext import (
 
 from config.config import ROBBIE_CHAT_TIMEOUT_SECONDS
 from core.assets import registry
+from services.live_position_pricing import resolve_live_position_snapshot
 from utils.display_time import (
     display_timezone_label,
     format_display_datetime,
@@ -392,6 +393,8 @@ class TelegramCommander:
                 ],
             },
             fallbacks=[
+                CommandHandler("chat", self._chat_entry),
+                CallbackQueryHandler(self._chat_entry_from_button, pattern="^chat_menu$"),
                 CommandHandler("cancel", self._chat_cancel),
                 CommandHandler("resetchat", self._cmd_reset_chat),
             ],
@@ -2085,18 +2088,31 @@ class TelegramCommander:
         display_current = float(position.get("current_price", entry) or entry)
         pnl_str = ""
         try:
-            fetcher = core.fetcher
-            if fetcher:
-                cat = position.get("category", "forex")
-                price, _ = fetcher.get_real_time_price(asset, cat)
-                if price:
-                    display_current = float(price)
-                    try:
-                        from risk.position_sizer import PositionSizer as _PS
-                        pnl = _PS.pnl(asset, cat, entry, price, size, direction)
-                    except Exception:
-                        pnl = (price - entry) * size if direction == "BUY" else (entry - price) * size
-                    pnl_str = f"  P&L: `${pnl:+.2f}`\n"
+            fetcher = getattr(core, "fetcher", None)
+            cat = str(position.get("category", "forex") or "forex")
+
+            def _provider_fallback(fallback_asset: str, fallback_category: str) -> tuple[Optional[float], str]:
+                if not fetcher:
+                    return None, ""
+                price, _meta = fetcher.get_real_time_price(fallback_asset, fallback_category)
+                return (float(price), "provider quote") if price not in (None, 0, 0.0) else (None, "")
+
+            quote = resolve_live_position_snapshot(
+                {
+                    **dict(position or {}),
+                    "asset": asset,
+                    "category": cat,
+                    "direction": direction,
+                    "entry_price": entry,
+                    "position_size": size,
+                },
+                live_snapshot_max_age_seconds=3.0,
+                provider_fallback=_provider_fallback,
+            )
+            if float(quote.get("current_price", 0.0) or 0.0):
+                display_current = float(quote.get("current_price", display_current) or display_current)
+                pnl = float(quote.get("pnl", 0.0) or 0.0)
+                pnl_str = f"  P&L: `${pnl:+.2f}`\n"
         except Exception:
             pass
         return display_current, pnl_str

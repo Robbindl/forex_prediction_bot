@@ -151,6 +151,95 @@ class TradingCore:
     def get_daily_stats(self) -> Dict:
         return {"daily_trades": self.state.daily_trades, "daily_pnl": self.state.daily_pnl}
 
+    def get_runtime_asset_snapshot(self, asset: str) -> Dict[str, Any]:
+        canonical = self.registry.canonical(asset)
+        category = self.registry.category(canonical)
+        market_open, market_reason = self._market_hours_status(canonical, category)
+        snapshot: Dict[str, Any] = {
+            "asset": canonical,
+            "canonical_asset": canonical,
+            "category": category,
+            "market_status": {"market_open": bool(market_open), "reason": str(market_reason or "")},
+            "decision_status": "snapshot_only",
+            "decision_reason": "snapshot_only",
+            "signal": {},
+            "market_structure": {},
+            "market_intelligence": {},
+            "playbook_decision": {},
+            "sentiment_score": 0.0,
+            "current_price": 0.0,
+            "latest_close": 0.0,
+            "open_position": None,
+        }
+
+        open_position = next(
+            (
+                dict(pos)
+                for pos in self.state.get_open_positions()
+                if self.registry.canonical(str(pos.get("asset", "") or "")) == canonical
+            ),
+            None,
+        )
+        snapshot["open_position"] = open_position
+        if open_position:
+            metadata = dict(open_position.get("metadata") or {})
+            direction = str(open_position.get("direction") or open_position.get("signal") or "HOLD").upper()
+            snapshot.update(
+                {
+                    "decision_status": "open_position",
+                    "decision_reason": "open_position_active",
+                    "sentiment_score": float(metadata.get("sentiment_score", 0.0) or 0.0),
+                    "current_price": float(open_position.get("current_price", 0.0) or 0.0),
+                    "signal": {
+                        "direction": direction,
+                        "confidence": float(open_position.get("confidence", 0.0) or metadata.get("confidence", 0.0) or 0.0),
+                        "alive": direction != "HOLD",
+                        "entry_price": open_position.get("entry_price"),
+                        "stop_loss": open_position.get("stop_loss"),
+                        "take_profit": open_position.get("take_profit"),
+                        "metadata": metadata,
+                    },
+                }
+            )
+            return snapshot
+
+        try:
+            ranked = self.get_top_ranked_opportunities(limit=max(3, TOP_OPPORTUNITIES_LIMIT), refresh=False, allow_refresh_when_empty=False)
+        except TypeError:
+            ranked = self.get_top_ranked_opportunities(limit=max(3, TOP_OPPORTUNITIES_LIMIT), refresh=False)
+        except Exception:
+            ranked = []
+
+        candidate = next(
+            (
+                dict(item)
+                for item in ranked
+                if self.registry.canonical(str(item.get("asset", "") or "")) == canonical
+            ),
+            None,
+        )
+        if candidate:
+            direction = str(candidate.get("direction") or candidate.get("signal") or "HOLD").upper()
+            snapshot.update(
+                {
+                    "decision_status": "cached_ranked_setup",
+                    "decision_reason": "cached_ranked_setup",
+                    "sentiment_score": float(candidate.get("sentiment_score", 0.0) or 0.0),
+                    "current_price": float(candidate.get("current_price", 0.0) or 0.0),
+                    "signal": {
+                        "direction": direction,
+                        "confidence": float(candidate.get("confidence", 0.0) or 0.0),
+                        "alive": direction != "HOLD",
+                        "entry_price": candidate.get("entry_price"),
+                        "stop_loss": candidate.get("stop_loss"),
+                        "take_profit": candidate.get("take_profit"),
+                        "metadata": {},
+                    },
+                    "playbook_decision": dict(candidate.get("opportunity_breakdown") or {}),
+                }
+            )
+        return snapshot
+
     @staticmethod
     def _market_hours_status_fallback(asset: str, category: str) -> Tuple[bool, str]:
         try:

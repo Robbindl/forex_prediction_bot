@@ -25,6 +25,7 @@ class _FakeCore:
         analyses: Dict[str, Dict[str, Any]] | None = None,
         top_setups: List[Dict[str, Any]] | None = None,
         scan_error: Exception | None = None,
+        inspect_error: Exception | None = None,
     ):
         self._health = health or {}
         self._positions = positions or []
@@ -32,8 +33,10 @@ class _FakeCore:
         self._analyses = analyses or {}
         self._top_setups = top_setups or []
         self._scan_error = scan_error
+        self._inspect_error = inspect_error
         self.get_top_setups_calls = 0
         self.scan_calls = 0
+        self.inspect_calls = 0
 
     def health_report(self) -> Dict[str, Any]:
         return dict(self._health)
@@ -53,7 +56,13 @@ class _FakeCore:
     def get_balance(self) -> float:
         return 10_250.0
 
+    def get_runtime_asset_snapshot(self, asset: str) -> Dict[str, Any]:
+        return dict(self._analyses.get(asset, self._analyses.get("default", {})))
+
     def inspect_asset(self, asset: str) -> Dict[str, Any]:
+        self.inspect_calls += 1
+        if self._inspect_error is not None:
+            raise self._inspect_error
         return dict(self._analyses.get(asset, self._analyses.get("default", {})))
 
     def get_top_ranked_opportunities(self, limit: int = 5, refresh: bool = False, allow_refresh_when_empty: bool = True) -> List[Dict[str, Any]]:
@@ -367,6 +376,7 @@ def test_robbie_chat_market_response_uses_cached_top_setups_without_scan(tmp_pat
     assert "EUR/USD" in reply
     assert core.get_top_setups_calls >= 1
     assert core.scan_calls == 0
+    assert core.inspect_calls == 0
 
 
 def test_robbie_chat_deepseek_context_uses_cached_top_setups_without_scan(tmp_path: Path, monkeypatch) -> None:
@@ -402,6 +412,47 @@ def test_robbie_chat_deepseek_context_uses_cached_top_setups_without_scan(tmp_pa
     assert "EUR/USD" in captured["json"]["messages"][1]["content"]
     assert core.get_top_setups_calls >= 1
     assert core.scan_calls == 0
+    assert core.inspect_calls == 0
+
+
+def test_robbie_chat_macro_response_does_not_call_inspect_asset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(robbie_chat_module.MarketCalendar, "get_high_impact_events", lambda self, days=3: [])
+    monkeypatch.setattr(
+        robbie_chat_module.MarketCalendar,
+        "should_reduce_risk",
+        lambda self: {"risk_multiplier": 1.0, "reduce_trading": False, "high_impact_events": False, "halving_soon": False},
+    )
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "_next_us_exchange_holiday",
+        lambda now=None: {"next_holiday": "Memorial Day", "next_holiday_date": "2026-05-25", "days_until": 36, "is_today": False},
+    )
+
+    service = _service(tmp_path)
+    core = _FakeCore(
+        positions=[
+            {
+                "trade_id": "live-1",
+                "asset": "SOL-USD",
+                "direction": "SELL",
+                "entry_price": 85.28,
+                "current_price": 85.22,
+                "stop_loss": 85.85,
+                "take_profit": 84.76,
+                "confidence": 0.71,
+            }
+        ],
+        inspect_error=AssertionError("chat should not call inspect_asset"),
+    )
+
+    reply = service.answer(
+        question="how can cpi affect the current market?",
+        trading_system=core,
+        chat_id="chat-macro-no-inspect",
+    )
+
+    assert "inflation" in reply.lower() or "macro read" in reply.lower()
+    assert core.inspect_calls == 0
 
 
 def test_robbie_chat_deepseek_prompt_allows_hybrid_macro_reasoning(tmp_path: Path, monkeypatch) -> None:

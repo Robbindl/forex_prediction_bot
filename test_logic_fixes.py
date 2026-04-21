@@ -6300,6 +6300,39 @@ def test_telegram_configure_bot_menu_registers_commands_and_menu_button() -> Non
     ]
     assert seen["menu_button"].__class__.__name__ == "MenuButtonCommands"
 
+def test_telegram_chat_conversation_allows_reentering_chat_command_and_button() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    handlers = []
+
+    class _FakeApp:
+        def add_handler(self, handler):
+            handlers.append(handler)
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.application = _FakeApp()
+
+    commander._register_handlers()
+
+    chat_conv = next(
+        handler
+        for handler in handlers
+        if isinstance(handler, tg_mod.ConversationHandler)
+        and any(
+            isinstance(entry, tg_mod.CommandHandler) and "chat" in set(getattr(entry, "commands", set()) or set())
+            for entry in handler.entry_points
+        )
+    )
+
+    assert any(
+        isinstance(fallback, tg_mod.CommandHandler) and "chat" in set(getattr(fallback, "commands", set()) or set())
+        for fallback in chat_conv.fallbacks
+    )
+    assert any(
+        isinstance(fallback, tg_mod.CallbackQueryHandler) and "chat_menu" in str(getattr(fallback, "pattern", ""))
+        for fallback in chat_conv.fallbacks
+    )
+
 def test_telegram_chat_prompt_falls_back_to_reply_when_edit_target_is_missing() -> None:
     tg_mod = importlib.import_module("telegram_commander")
 
@@ -6510,6 +6543,43 @@ def test_telegram_run_chat_times_out_cleanly(monkeypatch) -> None:
     result = asyncio.run(commander._run_chat("why?", chat_id="321"))
 
     assert "took too long to answer" in result.lower()
+
+def test_telegram_position_price_context_prefers_shared_live_snapshot(monkeypatch) -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+
+    monkeypatch.setattr(
+        ws_mod,
+        "get_live_price_snapshot",
+        lambda asset, max_age_seconds=None: {
+            "price": 1.1050,
+            "timestamp": 1234567890.0,
+            "source": "Deriv",
+            "age_seconds": 0.4,
+        },
+        raising=False,
+    )
+
+    class _FailingFetcher:
+        @staticmethod
+        def get_real_time_price(asset, category):
+            raise AssertionError("provider fallback should not run when shared snapshot is fresh")
+
+    core = SimpleNamespace(fetcher=_FailingFetcher())
+
+    current_price, pnl_text = commander._position_price_context(
+        core,
+        {"category": "forex"},
+        "EUR/USD",
+        1.1000,
+        100000,
+        "BUY",
+    )
+
+    assert current_price == 1.105
+    assert "+500.00" in pnl_text
 
 def test_telegram_build_main_menu_surfaces_counts_and_guidance(monkeypatch) -> None:
     tg_mod = importlib.import_module("telegram_commander")
@@ -9169,6 +9239,105 @@ def test_command_center_includes_live_summary_and_intraday_curve(monkeypatch) ->
     assert next(point for point in payload["pnl_curve"] if point["label"] == "06:00")["cumulative_pnl"] == 10.0
     assert payload["pnl_curve_stats"]["current_pnl"] == 10.0
     assert payload["pnl_curve_stats"]["peak"] == 10.0
+
+
+def test_command_center_intraday_curve_uses_live_daily_pnl_on_current_bucket(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    import sys
+    import types
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+
+    class _FakeCore:
+        is_running = True
+        is_ready = True
+
+        def get_performance(self):
+            return {
+                "balance": 1000.0,
+                "initial_balance": 1000.0,
+                "total_pnl": 0.0,
+                "win_rate": 0.0,
+                "total_trades": 0,
+            }
+
+        def get_daily_stats(self):
+            return {"daily_pnl": 0.0, "daily_trades": 0}
+
+        def get_positions(self):
+            return [
+                {
+                    "trade_id": "t-live",
+                    "asset": "BTC-USD",
+                    "category": "crypto",
+                    "direction": "BUY",
+                    "confidence": 0.8,
+                    "entry_price": 100.0,
+                    "stop_loss": 95.0,
+                    "take_profit": 120.0,
+                    "position_size": 1.0,
+                    "strategy_id": "playbook_breakout_continuation",
+                    "open_time": "2026-04-10T03:00:00+00:00",
+                    "pnl": 0.0,
+                    "metadata": {},
+                }
+            ]
+
+        def health_report(self):
+            return {"is_running": True, "engine_ready": True}
+
+    class _FakeFetcher:
+        @staticmethod
+        def get_real_time_price(asset, category):
+            return 115.0, {"source": "IG"}
+
+    fixed_now = datetime(2026, 4, 10, 12, 17, tzinfo=timezone(timedelta(hours=3)))
+
+    monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_dashboard_now_local", lambda: fixed_now, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "websocket_dashboard",
+        types.SimpleNamespace(
+            get_live_price_snapshots=lambda assets=None, max_age_seconds=None: {
+                "BTC-USD": {
+                    "price": 115.0,
+                    "timestamp": datetime(2026, 4, 10, 9, 17, tzinfo=timezone.utc).timestamp(),
+                    "source": "Deriv",
+                    "age_seconds": 0.5,
+                }
+            },
+            get_live_price_history=lambda asset, limit=2000: [
+                {
+                    "timestamp": datetime(2026, 4, 10, 3, 0, tzinfo=timezone.utc).timestamp(),
+                    "price": 110.0,
+                }
+            ],
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "services.local_candle_store",
+        types.SimpleNamespace(local_candle_store=types.SimpleNamespace(enabled=lambda: False)),
+    )
+
+    with dashboard_mod.app.test_request_context("/api/command-center"):
+        response = dashboard_mod.api_command_center()
+
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["live_summary"]["open_pnl"] == 15.0
+    assert payload["pnl_curve"][-1]["label"] == "12:00"
+    assert all(point["label"] != "12:17" for point in payload["pnl_curve"])
+    assert payload["pnl_curve_stats"]["current_pnl"] == 15.0
 
 
 def test_command_center_stream_emits_refresh_signal(monkeypatch) -> None:

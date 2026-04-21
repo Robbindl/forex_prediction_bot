@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.assets  import registry
 from data.fetcher import DataFetcher, get_shared_fetcher
+from services.live_position_pricing import resolve_live_position_snapshot
 from utils.logger import get_logger
 from utils.api_errors import (
     APIError, BadRequest, Unauthorized, Forbidden, NotFound, InternalError,
@@ -2732,50 +2733,63 @@ def _fetch_command_center_slow_data() -> Dict[str, Any]:
     }
 
 
-def _fetch_command_center_live_prices(positions: Any, *, limit: Optional[int] = None) -> Dict[str, float]:
+def _fetch_command_center_live_snapshots(
+    positions: Any,
+    *,
+    limit: Optional[int] = None,
+    max_age_seconds: Optional[float] = None,
+) -> Dict[str, Dict[str, Any]]:
     assets: List[Tuple[str, str]] = []
-    live_prices: Dict[str, float] = {}
+    snapshots: Dict[str, Dict[str, Any]] = {}
     position_list = list(positions or [])
     if limit is not None:
         position_list = position_list[: max(1, int(limit or 0))]
     for position in position_list:
         asset = str(position.get("asset", "") or "")
         category = str(position.get("category", "forex") or "forex")
-        if asset and asset not in live_prices:
+        if asset and asset not in snapshots:
             assets.append((asset, category))
     if not assets:
         return live_prices
     try:
         from websocket_dashboard import get_live_price_snapshots
 
-        snapshots = get_live_price_snapshots(
+        raw = get_live_price_snapshots(
             assets=[asset for asset, _category in assets],
-            max_age_seconds=30.0,
-        )
+            max_age_seconds=max_age_seconds,
+        ) or {}
         for asset, _category in assets:
-            snapshot = (snapshots or {}).get(asset) or {}
-            price = snapshot.get("price")
-            if price is not None:
-                live_prices[asset] = float(price)
+            snapshots[asset] = dict(raw.get(asset) or {})
     except Exception:
         pass
-    return live_prices
+    return snapshots
 
 
-def _build_command_center_enriched_positions(positions: Any, live_prices: Dict[str, float]) -> List[Dict[str, Any]]:
+def _dashboard_live_quote_fallback(asset: str, category: str) -> tuple[Optional[float], str]:
+    try:
+        return _chart_stream_live_quote(asset, category, allow_live_cache=False)
+    except Exception:
+        return None, ""
+
+
+def _build_command_center_enriched_positions(
+    positions: Any,
+    live_snapshots: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     enriched_positions: List[Dict[str, Any]] = []
     for position in list(positions or []):
         asset = str(position.get("asset", "") or "")
-        current_price = live_prices.get(asset)
-        if current_price in (None, 0, 0.0):
-            try:
-                current_price = float(position.get("current_price", 0) or 0)
-            except Exception:
-                current_price = 0.0
-        entry_price = float(position.get("entry_price", 0) or 0)
-        position_size = float(position.get("position_size", 0) or 0)
-        direction = position.get("direction", position.get("signal", "BUY"))
-        category = str(position.get("category", "forex") or "forex")
+        quote = resolve_live_position_snapshot(
+            position,
+            live_snapshot=(live_snapshots or {}).get(asset),
+            live_snapshot_max_age_seconds=3.0,
+            provider_fallback=_dashboard_live_quote_fallback,
+        )
+        current_price = float(quote.get("current_price", 0.0) or 0.0)
+        entry_price = float(quote.get("entry_price", 0.0) or 0.0)
+        position_size = float(quote.get("position_size", 0.0) or 0.0)
+        direction = str(quote.get("direction") or "BUY")
+        category = str(quote.get("category", "forex") or "forex")
         try:
             lot_size = float(position.get("lot_size", 0) or 0)
         except Exception:
@@ -2787,14 +2801,7 @@ def _build_command_center_enriched_positions(positions: Any, live_prices: Dict[s
                 lot_size = _PS.lots_from_size(asset, category, position_size)
             except Exception:
                 lot_size = 0.0
-        live_pnl = float(position.get("pnl", 0) or 0)
-        if current_price and entry_price and position_size:
-            try:
-                from risk.position_sizer import PositionSizer as _PS
-
-                live_pnl = _PS.pnl(asset, category, entry_price, current_price, position_size, direction)
-            except Exception:
-                live_pnl = (current_price - entry_price) * position_size if direction == "BUY" else (entry_price - current_price) * position_size
+        live_pnl = float(quote.get("pnl", position.get("pnl", 0.0)) or 0.0)
         metadata = dict(position.get("metadata") or {})
         enriched_positions.append({
             "trade_id": position.get("trade_id", ""),
@@ -2815,6 +2822,9 @@ def _build_command_center_enriched_positions(positions: Any, live_prices: Dict[s
             "open_time": str(position.get("open_time", "") or ""),
             "risk_reward": float(position.get("risk_reward", 0) or 0),
             "metadata": metadata,
+            "price_source": str(quote.get("price_source", "") or ""),
+            "price_age_seconds": quote.get("price_age_seconds"),
+            "price_live": bool(quote.get("price_live")),
             **_extract_entry_structure_fields(metadata),
             **_extract_execution_feedback_fields(metadata),
             **_extract_memory_fields(metadata),
@@ -2965,78 +2975,36 @@ def _build_live_book_payload() -> Dict[str, Any]:
     core = _core()
     perf, daily, positions, _health, _closed_trades = _command_center_core_snapshot(core)
     position_rows = [dict(pos) for pos in list(positions or []) if isinstance(pos, dict)]
-    asset_order: List[str] = []
-    for pos in position_rows:
-        asset = str(pos.get("asset", "") or "")
-        if asset and asset not in asset_order:
-            asset_order.append(asset)
-
-    snapshots: Dict[str, Dict[str, Any]] = {}
-    try:
-        from websocket_dashboard import get_live_price_snapshots
-
-        snapshots = get_live_price_snapshots(asset_order, max_age_seconds=30.0) or {}
-    except Exception:
-        snapshots = {}
+    snapshots = _fetch_command_center_live_snapshots(position_rows, max_age_seconds=None)
 
     enriched_positions: List[Dict[str, Any]] = []
     stale_assets: List[str] = []
     for position in position_rows:
         asset = str(position.get("asset", "") or "")
-        category = str(position.get("category", "forex") or "forex")
-        direction = str(position.get("direction") or position.get("signal", "BUY")).upper()
-        entry_price = float(position.get("entry_price", 0) or 0)
-        position_size = float(position.get("position_size", 0) or 0)
-        snapshot = dict(snapshots.get(asset) or {})
-        current_price = snapshot.get("price")
-        price_age_seconds = float(snapshot.get("age_seconds", 9999.0) or 9999.0)
-        price_source = str(snapshot.get("source") or position.get("current_price_source") or "")
-        is_live = bool(snapshot) and price_age_seconds <= 3.0
-        if not is_live:
-            try:
-                fallback_price, fallback_source = _chart_stream_live_quote(asset, category, allow_live_cache=False)
-            except Exception:
-                fallback_price, fallback_source = None, ""
-            if fallback_price not in (None, 0, 0.0):
-                current_price = float(fallback_price or 0.0)
-                price_source = str(fallback_source or price_source or "")
-                price_age_seconds = 0.0
-                is_live = True
-        if current_price in (None, 0, 0.0):
-            try:
-                current_price = float(position.get("current_price", 0) or 0)
-            except Exception:
-                current_price = 0.0
-        current_price = float(current_price or 0.0)
-        live_pnl = float(position.get("pnl", 0.0) or 0.0)
-        if current_price and entry_price and position_size:
-            try:
-                from risk.position_sizer import PositionSizer as _PS
-
-                live_pnl = _PS.pnl(asset, category, entry_price, current_price, position_size, direction)
-            except Exception:
-                if direction == "SELL":
-                    live_pnl = (entry_price - current_price) * position_size
-                else:
-                    live_pnl = (current_price - entry_price) * position_size
-        if asset and not is_live:
+        quote = resolve_live_position_snapshot(
+            position,
+            live_snapshot=snapshots.get(asset),
+            live_snapshot_max_age_seconds=3.0,
+            provider_fallback=_dashboard_live_quote_fallback,
+        )
+        if asset and not bool(quote.get("price_live")):
             stale_assets.append(asset)
         enriched_positions.append(
             {
                 "trade_id": position.get("trade_id", ""),
                 "asset": asset,
-                "category": category,
-                "direction": direction,
-                "entry_price": entry_price,
-                "current_price": round(current_price, 8) if current_price else 0.0,
-                "pnl": round(float(live_pnl), 2),
-                "position_size": position_size,
+                "category": str(quote.get("category", "forex") or "forex"),
+                "direction": str(quote.get("direction") or "BUY"),
+                "entry_price": float(quote.get("entry_price", 0.0) or 0.0),
+                "current_price": round(float(quote.get("current_price", 0.0) or 0.0), 8),
+                "pnl": round(float(quote.get("pnl", 0.0) or 0.0), 2),
+                "position_size": float(quote.get("position_size", 0.0) or 0.0),
                 "lot_size": float(position.get("lot_size", 0) or 0),
                 "confidence": float(position.get("confidence", 0) or 0),
                 "open_time": str(position.get("open_time", "") or ""),
-                "price_source": price_source,
-                "price_age_seconds": round(price_age_seconds, 3) if is_live else None,
-                "price_live": is_live,
+                "price_source": str(quote.get("price_source", "") or ""),
+                "price_age_seconds": quote.get("price_age_seconds"),
+                "price_live": bool(quote.get("price_live")),
             }
         )
 
@@ -3057,18 +3025,25 @@ def _build_command_center_pnl_curve(
     closed_trades: Any,
     *,
     interval_minutes: int = 30,
+    current_daily_pnl: Optional[float] = None,
+    current_open_pnl: Optional[float] = None,
 ) -> Dict[str, Any]:
     tz = _dashboard_local_timezone()
     now_local = _dashboard_now_local()
     today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     bucket_minutes = max(5, int(interval_minutes or 30))
+    current_bucket = now_local.replace(
+        minute=(now_local.minute // bucket_minutes) * bucket_minutes,
+        second=0,
+        microsecond=0,
+    )
     bucket_times: List[datetime] = []
     cursor = today_start
-    while cursor <= now_local:
+    while cursor <= current_bucket:
         bucket_times.append(cursor)
         cursor += timedelta(minutes=bucket_minutes)
-    if not bucket_times or bucket_times[-1] < now_local:
-        bucket_times.append(now_local)
+    if not bucket_times:
+        bucket_times.append(today_start)
 
     try:
         from websocket_dashboard import get_live_price_history
@@ -3201,16 +3176,12 @@ def _build_command_center_pnl_curve(
     curve: List[Dict[str, Any]] = []
     realized_cum = 0.0
     realized_idx = 0
-    running_peak = 0.0
-    max_drawdown = 0.0
     for bucket in bucket_times:
         while realized_idx < len(closed_events) and closed_events[realized_idx][0] <= bucket:
             realized_cum += closed_events[realized_idx][1]
             realized_idx += 1
         open_pnl = sum(_mark_to_market(pos, bucket) for pos in open_positions)
         cumulative_pnl = round(realized_cum + open_pnl, 2)
-        running_peak = max(running_peak, cumulative_pnl)
-        max_drawdown = min(max_drawdown, cumulative_pnl - running_peak)
         curve.append(
             {
                 "time": bucket.isoformat(),
@@ -3220,6 +3191,24 @@ def _build_command_center_pnl_curve(
                 "cumulative_pnl": cumulative_pnl,
             }
         )
+
+    if curve and current_daily_pnl is not None:
+        live_open_pnl = round(float(current_open_pnl or 0.0), 2)
+        live_daily_total = round(float(current_daily_pnl or 0.0), 2)
+        curve[-1] = {
+            "time": now_local.isoformat(),
+            "label": current_bucket.strftime("%H:%M"),
+            "realized_pnl": round(live_daily_total - live_open_pnl, 2),
+            "open_pnl": live_open_pnl,
+            "cumulative_pnl": live_daily_total,
+        }
+
+    running_peak = 0.0
+    max_drawdown = 0.0
+    for point in curve:
+        cumulative_pnl = float(point.get("cumulative_pnl", 0.0) or 0.0)
+        running_peak = max(running_peak, cumulative_pnl)
+        max_drawdown = min(max_drawdown, cumulative_pnl - running_peak)
 
     return {
         "points": curve,
@@ -3247,13 +3236,19 @@ def _build_command_center_payload() -> Dict[str, Any]:
     sent_score = float((_cc_slow or {}).get("sentiment_score", 0.0) or 0.0)
     _cache_set("cc_slow", _cc_slow, ttl=600 if whale_recent or whale_count or sent_score else 45)
 
-    live_prices = _fetch_command_center_live_prices(positions)
-    enriched_positions = _build_command_center_enriched_positions(positions, live_prices)
+    live_snapshots = _fetch_command_center_live_snapshots(positions, max_age_seconds=None)
+    enriched_positions = _build_command_center_enriched_positions(positions, live_snapshots)
     live_summary = _build_command_center_live_summary(perf, daily, enriched_positions)
     signals = _build_command_center_signals(enriched_positions)
     signal_quality = _command_center_signal_quality(signals)
     signal_diagnostics = _summarize_signal_diagnostics(enriched_positions)
-    pnl_curve = _build_command_center_pnl_curve(enriched_positions, closed_trades, interval_minutes=30)
+    pnl_curve = _build_command_center_pnl_curve(
+        enriched_positions,
+        closed_trades,
+        interval_minutes=30,
+        current_daily_pnl=float(live_summary.get("daily_pnl", 0.0) or 0.0),
+        current_open_pnl=float(live_summary.get("open_pnl", 0.0) or 0.0),
+    )
     top_opportunities = _cache_get("cc_top_opportunities")
     weak_positions = _cache_get("cc_weak_positions")
     if core and (top_opportunities is None or weak_positions is None):

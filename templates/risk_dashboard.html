@@ -467,7 +467,7 @@ function applyRiskLiveBook(snapshot){
   const realizedBalance = Number(live.realized_balance || 0);
   const liveBalance = Number(live.balance || realizedBalance);
   const openPnl = Number(live.open_pnl || 0);
-  const liveTotalPnl = Number(live.balance_delta || 0);
+  const liveTotalPnl = Number(live.total_pnl ?? live.balance_delta ?? 0);
   const realizedTotalPnl = Number(live.realized_total_pnl || 0);
   const liveDailyPnl = Number(live.daily_pnl || 0);
   const liveWinRate = Number(live.win_rate || 0);
@@ -638,7 +638,7 @@ async function load(){
   const liveOpenPositions = Number(live.open_positions ?? d.open_positions ?? 0);
   const liveWinRate = Number(live.win_rate ?? d.win_rate ?? 0);
   const liveDailyPnl = Number(live.daily_pnl ?? d.daily_pnl ?? 0);
-  const liveTotalPnl = Number(live.balance_delta ?? ((Number(d.total_pnl||0)) + openPnl));
+  const liveTotalPnl = Number(live.total_pnl ?? live.balance_delta ?? ((Number(d.total_pnl||0)) + openPnl));
   const liveExposurePct = liveBalance > 0 ? (Number(d.total_exposure||0) / liveBalance) : 0;
   document.getElementById('topBalance').textContent = '$'+fmt(liveBalance);
   document.getElementById('topBalance').style.color = liveTotalPnl >= 0 ? 'var(--gr)' : 'var(--rd)';
@@ -944,11 +944,19 @@ async function load(){
     document.getElementById('ddStats').textContent = 'Max: $'+Math.abs(maxDD).toFixed(2)+' | Current: $'+Math.abs(drawdownData[drawdownData.length-1] || 0).toFixed(2);
     const ctx = document.getElementById('drawdownChart');
     if(!ctx)return;
-    if(drawdownChartInst)drawdownChartInst.destroy();
+    const dataset = {label: 'Drawdown $',data: drawdownData,borderColor: '#ff4560',backgroundColor: 'rgba(255, 69, 96, 0.2)',fill: true,tension: 0.3,pointRadius: 1,pointBorderColor: 'transparent'};
+    const options = {responsive: true,maintainAspectRatio: false,animation: false,plugins: {legend: {display: false},tooltip: {backgroundColor: 'rgba(13, 17, 23, 0.9)',borderColor: '#1e2635'}},scales: {y: {grid: {color: 'rgba(30, 38, 53, 0.3)'},ticks: {color: '#7a8899', font: {size: 10}},title: {display: false}},x: {grid: {color: 'transparent'},ticks: {color: '#7a8899', font: {size: 10}, maxTicksLimit: 8}}}};
+    if(drawdownChartInst){
+      drawdownChartInst.data.labels = labels;
+      drawdownChartInst.data.datasets = [dataset];
+      drawdownChartInst.options = options;
+      drawdownChartInst.update('none');
+      return;
+    }
     drawdownChartInst = new Chart(ctx, {
       type: 'line',
-      data: {labels: labels,datasets: [{label: 'Drawdown $',data: drawdownData,borderColor: '#ff4560',backgroundColor: 'rgba(255, 69, 96, 0.2)',fill: true,tension: 0.3,pointRadius: 1,pointBorderColor: 'transparent'}]},
-      options: {responsive: true,maintainAspectRatio: false,plugins: {legend: {display: false},tooltip: {backgroundColor: 'rgba(13, 17, 23, 0.9)',borderColor: '#1e2635'}},scales: {y: {grid: {color: 'rgba(30, 38, 53, 0.3)'},ticks: {color: '#7a8899', font: {size: 10}},title: {display: false}},x: {grid: {color: 'transparent'},ticks: {color: '#7a8899', font: {size: 10}, maxTicksLimit: 8}}}}
+      data: {labels: labels,datasets: [dataset]},
+      options
     });
   }catch(e){console.error('[DrawdownChart]', e);}
 }

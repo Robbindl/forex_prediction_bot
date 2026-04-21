@@ -407,7 +407,6 @@ class RobbieChatService:
         performance: Dict[str, Any] = {}
         balance = 0.0
         top_setups: List[Dict[str, Any]] = []
-        focus_analysis: Dict[str, Any] = {}
 
         if core is not None:
             try:
@@ -442,30 +441,42 @@ class RobbieChatService:
         if not focus_asset:
             focus_asset = self._default_focus_asset(positions, closed_trades)
 
-        if core is not None and focus_asset:
-            try:
-                focus_analysis = dict(core.inspect_asset(focus_asset) or {})
-            except Exception:
-                focus_analysis = {}
+        current_trade = self._current_trade_for_asset(positions, focus_asset)
+        recent_trade = self._recent_trade_for_asset(closed_trades, focus_asset)
+        stop_trade = self._recent_stop_trade_for_asset(closed_trades, focus_asset)
+        top_setups = self._ensure_top_setups({"core": core, "top_setups": top_setups}, allow_refresh=False)
 
         market_snapshot = self._build_market_snapshot(
             focus_asset=focus_asset,
             trading_system=core,
-            focus_analysis=focus_analysis,
+            focus_analysis={},
         )
         news_snapshot = self._build_news_snapshot(
             focus_asset=focus_asset,
             category=str(market_snapshot.get("focus_category") or ""),
         )
+        focus_analysis: Dict[str, Any] = {}
+        if core is not None and focus_asset:
+            getter = getattr(core, "get_runtime_asset_snapshot", None)
+            if callable(getter):
+                try:
+                    focus_analysis = dict(getter(focus_asset) or {})
+                except Exception:
+                    focus_analysis = {}
+        if not focus_analysis:
+            focus_analysis = self._build_lightweight_focus_analysis(
+                focus_asset=focus_asset,
+                current_trade=current_trade,
+                recent_trade=recent_trade,
+                market_snapshot=market_snapshot,
+                top_setups=top_setups,
+            )
 
         try:
             report = self._report_provider() or {}
         except Exception:
             report = {}
         learning = self._learning_snapshot(closed_trades)
-        current_trade = self._current_trade_for_asset(positions, focus_asset)
-        recent_trade = self._recent_trade_for_asset(closed_trades, focus_asset)
-        stop_trade = self._recent_stop_trade_for_asset(closed_trades, focus_asset)
 
         return {
             "core": core,
@@ -666,6 +677,85 @@ class RobbieChatService:
             if "stop" in reason or _coerce_float(trade.get("pnl"), 0.0) < 0:
                 return dict(trade)
         return {}
+
+    @staticmethod
+    def _cached_setup_for_asset(top_setups: List[Dict[str, Any]], asset: str) -> Dict[str, Any]:
+        target = registry.canonical(asset) if asset else ""
+        for item in top_setups:
+            if registry.canonical(str(item.get("asset") or "")) == target:
+                return dict(item)
+        return {}
+
+    @classmethod
+    def _build_lightweight_focus_analysis(
+        cls,
+        *,
+        focus_asset: str,
+        current_trade: Dict[str, Any],
+        recent_trade: Dict[str, Any],
+        market_snapshot: Dict[str, Any],
+        top_setups: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not focus_asset:
+            return {}
+
+        category = str(market_snapshot.get("focus_category") or "").strip().lower()
+        market_status = dict(market_snapshot.get("focus_market_status") or {})
+        cached_setup = cls._cached_setup_for_asset(top_setups, focus_asset)
+        analysis: Dict[str, Any] = {
+            "asset": focus_asset,
+            "category": category,
+            "market_status": market_status,
+            "market_structure": {},
+            "market_intelligence": {},
+            "playbook_decision": {},
+            "decision_status": "snapshot_only",
+            "decision_reason": "snapshot_only",
+            "sentiment_score": 0.0,
+        }
+
+        if cached_setup:
+            direction = str(cached_setup.get("direction") or cached_setup.get("signal") or "").upper()
+            analysis.update(
+                {
+                    "decision_status": "cached_ranked_setup",
+                    "decision_reason": "cached_ranked_setup",
+                    "sentiment_score": _coerce_float(cached_setup.get("sentiment_score"), 0.0),
+                    "signal": {
+                        "direction": direction,
+                        "confidence": _coerce_float(cached_setup.get("confidence"), 0.0),
+                        "alive": direction not in {"", "HOLD"},
+                        "entry_price": cached_setup.get("entry_price"),
+                        "stop_loss": cached_setup.get("stop_loss"),
+                        "take_profit": cached_setup.get("take_profit"),
+                    },
+                }
+            )
+
+        if current_trade:
+            direction = str(current_trade.get("direction") or current_trade.get("signal") or "").upper()
+            analysis.update(
+                {
+                    "decision_status": "open_position",
+                    "decision_reason": "open_position_active",
+                    "signal": {
+                        "direction": direction,
+                        "confidence": _coerce_float(current_trade.get("confidence"), 0.0),
+                        "alive": True,
+                        "entry_price": current_trade.get("entry_price"),
+                        "stop_loss": current_trade.get("stop_loss"),
+                        "take_profit": current_trade.get("take_profit"),
+                    },
+                }
+            )
+        elif recent_trade:
+            analysis.setdefault("signal", {})
+            analysis["decision_status"] = "recent_trade_memory"
+            analysis["decision_reason"] = str(
+                recent_trade.get("display_exit_reason") or recent_trade.get("exit_reason") or "recent_trade_memory"
+            )
+
+        return analysis
 
     def _ensure_top_setups(self, runtime: Dict[str, Any], *, allow_refresh: bool = False) -> List[Dict[str, Any]]:
         cached = list(runtime.get("top_setups") or [])
