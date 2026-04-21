@@ -15,7 +15,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
-from telegram.error import NetworkError, RetryAfter, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -26,6 +26,7 @@ from telegram.ext import (
     filters,
 )
 
+from config.config import ROBBIE_CHAT_TIMEOUT_SECONDS
 from core.assets import registry
 from utils.display_time import (
     display_timezone_label,
@@ -39,6 +40,7 @@ from utils.logger import logger
 WAITING_ASK_ASSET    = 1
 WAITING_ASK_QUESTION = 2
 WAITING_CHAT_MESSAGE = 3
+_CHAT_HANDLER_TIMEOUT_SECONDS = max(60.0, float(ROBBIE_CHAT_TIMEOUT_SECONDS or 45) + 15.0)
 
 # ── Asset display names ───────────────────────────────────────────────────────
 _DISPLAY = {
@@ -98,7 +100,7 @@ def _main_menu_keyboard(summary: Optional[Dict[str, Any]] = None) -> InlineKeybo
     return _kb(
         [("📊 Status",    "status"),   (positions_label, "positions")],
         [("💰 Balance",   "balance"),  ("🎯 Signals",    "signals")],
-        [("🧠 Ask Robbie","ask"),      (diary_label,     "diary")],
+        [("🧠 Ask Robbie","chat_menu"), (diary_label,    "diary")],
         [("😶 Mood",      "mood"),      ("📡 Market",    "market")],
         [("🏠 Menu",      "menu"),      (run_label,      run_action)],
     )
@@ -168,7 +170,7 @@ def _ask_asset_keyboard(emoji_cat: str) -> InlineKeyboardMarkup:
             label = _DISPLAY.get(asset, asset)
             row.append((label, f"askasset:{asset}"))
         rows.append(row)
-    rows.append([("◀️ Back", "ask")])
+    rows.append([("◀️ Back", "ask_asset_menu")])
     return _kb(*rows)
 
 def _ask_question_keyboard(asset: str) -> InlineKeyboardMarkup:
@@ -178,7 +180,7 @@ def _ask_question_keyboard(asset: str) -> InlineKeyboardMarkup:
         for label, qkey in _ASK_QUESTIONS[i:i+2]:
             row.append((label, f"askq:{asset}:{qkey}"))
         rows.append(row)
-    rows.append([("◀️ Back", "ask")])
+    rows.append([("◀️ Back", "ask_asset_menu")])
     return _kb(*rows)
 
 
@@ -189,7 +191,7 @@ def _chat_shortcuts_keyboard() -> InlineKeyboardMarkup:
         [("🏛 Macro", "chatq:macro"), ("📅 Holiday", "chatq:holiday")],
         [("🔭 Outlook", "chatq:outlook"), ("⚙️ Adjust", "chatq:adjust")],
         [("🗑 Reset chat", "chat_reset")],
-        [("🎯 Asset Q&A", "ask"), ("🏠 Menu", "menu")],
+        [("🎯 Asset Q&A", "ask_asset_menu"), ("🏠 Menu", "menu")],
     )
 
 
@@ -380,7 +382,10 @@ class TelegramCommander:
         app.add_handler(ask_conv)
 
         chat_conv = ConversationHandler(
-            entry_points=[CommandHandler("chat", self._chat_entry)],
+            entry_points=[
+                CommandHandler("chat", self._chat_entry),
+                CallbackQueryHandler(self._chat_entry_from_button, pattern="^chat_menu$"),
+            ],
             states={
                 WAITING_CHAT_MESSAGE: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self._chat_got_message)
@@ -964,30 +969,31 @@ class TelegramCommander:
         return ConversationHandler.END
 
     async def _run_ask(self, asset: str, question: str) -> str:
-        try:
+        def _compute() -> str:
             analysis, sig, df = self._inspect_asset_snapshot(asset)
             from services.personality_service import RobbieExplainer
+
             explainer = RobbieExplainer()
-            answer    = explainer.answer(asset, question, signal=sig, df=df, analysis=analysis)
-            explainer.close()
-            return answer
+            try:
+                return explainer.answer(asset, question, signal=sig, df=df, analysis=analysis)
+            finally:
+                explainer.close()
+
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_compute),
+                timeout=_CHAT_HANDLER_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[Telegram] /ask timed out after {_CHAT_HANDLER_TIMEOUT_SECONDS:.0f}s")
+            return "⏱️ Robbie took too long to answer that asset question. Try again with a shorter question."
         except Exception as e:
             logger.error(f"[Telegram] /ask error: {e}")
             return f"❌ Robbie hit an error: {e}"
 
-    async def _chat_entry(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        if ctx.args:
-            question = " ".join(ctx.args).strip()
-            await update.message.chat.send_action("typing")
-            text = await self._run_chat(question, chat_id=str(update.effective_chat.id))
-            await self._reply_in_chunks(
-                update.message.reply_text,
-                text,
-                reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
-            )
-            return WAITING_CHAT_MESSAGE
-
-        await update.message.reply_text(
+    @staticmethod
+    def _chat_intro_text() -> str:
+        return (
             "🧠 *Robbie Chat*\n\n"
             "Talk to me normally here. You can ask things like:\n"
             "• `why did you choose that trade?`\n"
@@ -996,8 +1002,35 @@ class TelegramCommander:
             "• `what is currently happening that affects trading?`\n"
             "• `how should you adjust yourself right now?`\n"
             "• `what issues are you experiencing?`\n\n"
-            "Send a message to start. Use `/resetchat` to clear context or `/cancel` to exit chat mode.",
+            "Send a message to start. Use `/resetchat` to clear context or `/cancel` to exit chat mode."
+        )
+
+    async def _chat_entry(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if ctx.args:
+            question = " ".join(ctx.args).strip()
+            await update.message.chat.send_action("typing")
+            placeholder = await update.message.reply_text("🧠 *Robbie is thinking...*", parse_mode=ParseMode.MARKDOWN)
+            text = await self._run_chat(question, chat_id=str(update.effective_chat.id))
+            await self._replace_placeholder_with_chunks(
+                placeholder,
+                text,
+                reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
+            )
+            return WAITING_CHAT_MESSAGE
+
+        await update.message.reply_text(
+            self._chat_intro_text(),
             parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_chat_shortcuts_keyboard(),
+        )
+        return WAITING_CHAT_MESSAGE
+
+    async def _chat_entry_from_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        await self._edit_query_text_or_reply(
+            query,
+            self._chat_intro_text(),
             reply_markup=_chat_shortcuts_keyboard(),
         )
         return WAITING_CHAT_MESSAGE
@@ -1005,9 +1038,10 @@ class TelegramCommander:
     async def _chat_got_message(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         question = update.message.text.strip()
         await update.message.chat.send_action("typing")
+        placeholder = await update.message.reply_text("🧠 *Robbie is thinking...*", parse_mode=ParseMode.MARKDOWN)
         text = await self._run_chat(question, chat_id=str(update.effective_chat.id))
-        await self._reply_in_chunks(
-            update.message.reply_text,
+        await self._replace_placeholder_with_chunks(
+            placeholder,
             text,
             reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
         )
@@ -1035,12 +1069,19 @@ class TelegramCommander:
         try:
             from services.robbie_chat_service import get_chat_service
 
-            answer = get_chat_service().answer(
-                question=question,
-                trading_system=self.trading_system,
-                chat_id=chat_id,
+            answer = await asyncio.wait_for(
+                asyncio.to_thread(
+                    get_chat_service().answer,
+                    question=question,
+                    trading_system=self.trading_system,
+                    chat_id=chat_id,
+                ),
+                timeout=_CHAT_HANDLER_TIMEOUT_SECONDS,
             )
             return answer
+        except asyncio.TimeoutError:
+            logger.warning(f"[Telegram] /chat timed out after {_CHAT_HANDLER_TIMEOUT_SECONDS:.0f}s")
+            return "⏱️ Robbie took too long to answer. Try again with a shorter question or use `/resetchat` if the thread feels stuck."
         except Exception as e:
             logger.error(f"[Telegram] /chat error: {e}", exc_info=True)
             return f"❌ Robbie hit a chat error: {e}"
@@ -1055,6 +1096,52 @@ class TelegramCommander:
                 reply_markup=reply_markup if i == len(chunks) - 1 else None,
             )
 
+    async def _replace_placeholder_with_chunks(self, message, text: str, reply_markup=None) -> None:
+        answer = self._sanitise_markdown(text)
+        chunks = [answer[i:i+4000] for i in range(0, max(len(answer), 1), 4000)]
+        for i, chunk in enumerate(chunks):
+            kb = reply_markup if i == len(chunks) - 1 else None
+            if i == 0:
+                await self._edit_message_text_or_reply(message, chunk, reply_markup=kb)
+            else:
+                await message.reply_text(
+                    chunk,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=kb,
+                )
+
+    async def _edit_message_text_or_reply(self, message, text: str, *, reply_markup=None) -> None:
+        try:
+            await message.edit_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
+        except BadRequest as exc:
+            if "message to edit not found" not in str(exc).lower():
+                raise
+            await message.reply_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
+
+    async def _edit_query_text_or_reply(self, query, text: str, *, reply_markup=None) -> None:
+        try:
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
+        except BadRequest as exc:
+            if "message to edit not found" not in str(exc).lower():
+                raise
+            await query.message.reply_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
+
     # ══════════════════════════════════════════════════════════════════════════
     # Inline button router
     # ══════════════════════════════════════════════════════════════════════════
@@ -1066,7 +1153,7 @@ class TelegramCommander:
             "positions": (self._btn_positions, ()),
             "balance": (self._btn_balance, ()),
             "signals": (self._btn_signals, ()),
-            "ask": (self._btn_ask, ()),
+            "ask_asset_menu": (self._btn_ask_asset_menu, ()),
             "chat_reset": (self._btn_chat_reset, ()),
             "mood": (self._btn_mood, ()),
             "diary": (self._btn_diary, ()),
@@ -1207,15 +1294,13 @@ class TelegramCommander:
         text, kb = self._do_close(trade_id)
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
-    async def _btn_ask(self, query) -> None:
-        """Entry point — show free-form chat shortcuts plus asset mode."""
+    async def _btn_ask_asset_menu(self, query) -> None:
+        """Open the asset-specific Ask Robbie flow."""
         await query.edit_message_text(
-            "🧠 *Talk To Robbie*\n\n"
-            "For a real back-and-forth, send `/chat` and keep talking naturally.\n"
-            "If you want fast shortcuts right here, use the buttons below.\n"
-            "You can still open the old asset-specific explainer under *Asset Q&A*.",
+            "🧠 *Ask Robbie By Asset*\n\n"
+            "Pick a market category, then choose an asset.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_chat_shortcuts_keyboard(),
+            reply_markup=_ask_category_keyboard(),
         )
 
     async def _btn_ask_category(self, query, emoji_cat: str) -> None:
@@ -1292,9 +1377,9 @@ class TelegramCommander:
     async def _btn_chat_prompt(self, query, prompt_key: str) -> None:
         prompt = _CHAT_QUICK_PROMPTS.get(prompt_key, "What is happening right now?")
         chat_id = str(query.message.chat_id)
-        await query.edit_message_text(
+        await self._edit_query_text_or_reply(
+            query,
             f"🧠 *Robbie is thinking...*\n_{prompt}_",
-            parse_mode=ParseMode.MARKDOWN,
         )
         answer = await self._run_chat(prompt, chat_id=chat_id)
         answer = self._sanitise_markdown(answer)
@@ -1302,7 +1387,7 @@ class TelegramCommander:
         for i, chunk in enumerate(chunks):
             kb = _kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]) if i == len(chunks) - 1 else None
             if i == 0:
-                await query.edit_message_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+                await self._edit_query_text_or_reply(query, chunk, reply_markup=kb)
             else:
                 await query.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
@@ -1311,13 +1396,13 @@ class TelegramCommander:
             from services.robbie_chat_service import get_chat_service
 
             get_chat_service().reset(str(query.message.chat_id))
-            await query.edit_message_text(
-                "Robbie chat memory cleared for this chat.\n\nUse `/chat` to start a fresh conversation.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=_kb([("🧠 Chat shortcuts", "ask"), ("🏠 Menu", "menu")]),
+            await self._edit_query_text_or_reply(
+                query,
+                "Robbie chat memory cleared for this chat.\n\nSend a new message to start fresh.",
+                reply_markup=_kb([("🧠 Chat shortcuts", "chat_menu"), ("🏠 Menu", "menu")]),
             )
         except Exception as e:
-            await query.edit_message_text(f"❌ Could not reset chat memory: {e}")
+            await self._edit_query_text_or_reply(query, f"❌ Could not reset chat memory: {e}")
 
     async def _btn_mood(self, query) -> None:
         text = self._build_mood()

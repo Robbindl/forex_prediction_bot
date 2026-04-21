@@ -6273,11 +6273,224 @@ def test_telegram_configure_bot_menu_registers_commands_and_menu_button() -> Non
         "signal",
         "why",
         "history",
+        "chat",
+        "resetchat",
         "ask",
         "pause",
         "resume",
     ]
     assert seen["menu_button"].__class__.__name__ == "MenuButtonCommands"
+
+def test_telegram_chat_prompt_falls_back_to_reply_when_edit_target_is_missing() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    sent = []
+
+    class _FakeMessage:
+        chat_id = 123
+
+        async def reply_text(self, text, parse_mode=None, reply_markup=None):
+            sent.append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+
+    class _FakeQuery:
+        def __init__(self):
+            self.message = _FakeMessage()
+            self.edits = []
+
+        async def edit_message_text(self, text, parse_mode=None, reply_markup=None):
+            self.edits.append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+            raise tg_mod.BadRequest("Message to edit not found")
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander._sanitise_markdown = lambda text: text
+
+    async def _fake_run_chat(prompt: str, chat_id: str) -> str:
+        assert prompt == "What are the top setups right now?"
+        assert chat_id == "123"
+        return "Fallback answer"
+
+    commander._run_chat = _fake_run_chat
+
+    query = _FakeQuery()
+    asyncio.run(commander._btn_chat_prompt(query, "top"))
+
+    assert [item["text"] for item in query.edits] == [
+        "🧠 *Robbie is thinking...*\n_What are the top setups right now?_",
+        "Fallback answer",
+    ]
+    assert [item["text"] for item in sent] == [
+        "🧠 *Robbie is thinking...*\n_What are the top setups right now?_",
+        "Fallback answer",
+    ]
+    assert sent[-1]["reply_markup"] is not None
+
+def test_telegram_chat_entry_from_button_enters_chat_mode() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    seen = {"answered": 0, "edits": []}
+
+    class _FakeQuery:
+        message = SimpleNamespace(chat_id=123)
+
+        async def answer(self):
+            seen["answered"] += 1
+
+        async def edit_message_text(self, text, parse_mode=None, reply_markup=None):
+            seen["edits"].append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    update = SimpleNamespace(callback_query=_FakeQuery())
+
+    result = asyncio.run(commander._chat_entry_from_button(update, SimpleNamespace()))
+
+    assert result == tg_mod.WAITING_CHAT_MESSAGE
+    assert seen["answered"] == 1
+    assert "Send a message to start." in seen["edits"][0]["text"]
+    assert seen["edits"][0]["reply_markup"] is not None
+
+def test_telegram_chat_message_shows_placeholder_then_answer() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    seen = {"actions": [], "placeholders": [], "edits": []}
+
+    class _FakePlaceholder:
+        async def edit_text(self, text, parse_mode=None, reply_markup=None):
+            seen["edits"].append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+
+        async def reply_text(self, text, parse_mode=None, reply_markup=None):
+            seen.setdefault("followups", []).append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+
+    class _FakeChat:
+        async def send_action(self, action):
+            seen["actions"].append(action)
+
+    class _FakeIncomingMessage:
+        text = "What is happening?"
+        chat = _FakeChat()
+
+        async def reply_text(self, text, parse_mode=None, reply_markup=None):
+            seen["placeholders"].append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+            return _FakePlaceholder()
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander._sanitise_markdown = lambda text: text
+
+    async def _fake_run_chat(question: str, chat_id: str) -> str:
+        assert question == "What is happening?"
+        assert chat_id == "456"
+        return "Answer ready"
+
+    commander._run_chat = _fake_run_chat
+
+    update = SimpleNamespace(
+        message=_FakeIncomingMessage(),
+        effective_chat=SimpleNamespace(id=456),
+    )
+
+    result = asyncio.run(commander._chat_got_message(update, SimpleNamespace()))
+
+    assert result == tg_mod.WAITING_CHAT_MESSAGE
+    assert seen["actions"] == ["typing"]
+    assert seen["placeholders"][0]["text"] == "🧠 *Robbie is thinking...*"
+    assert seen["edits"][0]["text"] == "Answer ready"
+    assert seen["edits"][0]["reply_markup"] is not None
+
+def test_telegram_run_chat_offloads_blocking_chat_service(monkeypatch) -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+    chat_mod = importlib.import_module("services.robbie_chat_service")
+
+    seen = {}
+
+    class _FakeChatService:
+        def answer(self, **kwargs):
+            seen["kwargs"] = kwargs
+            return "chat-ok"
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        seen["func"] = func
+        return func(*args, **kwargs)
+
+    async def _fake_wait_for(awaitable, timeout=None):
+        seen["timeout"] = timeout
+        return await awaitable
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.trading_system = object()
+
+    monkeypatch.setattr(chat_mod, "get_chat_service", lambda: _FakeChatService())
+    monkeypatch.setattr(tg_mod.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(tg_mod.asyncio, "wait_for", _fake_wait_for)
+
+    result = asyncio.run(commander._run_chat("why?", chat_id="321"))
+
+    assert result == "chat-ok"
+    assert seen["func"].__name__ == "answer"
+    assert seen["kwargs"]["question"] == "why?"
+    assert seen["kwargs"]["chat_id"] == "321"
+    assert seen["kwargs"]["trading_system"] is commander.trading_system
+    assert seen["timeout"] == tg_mod._CHAT_HANDLER_TIMEOUT_SECONDS
+
+def test_telegram_run_chat_times_out_cleanly(monkeypatch) -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+    chat_mod = importlib.import_module("services.robbie_chat_service")
+
+    class _FakeChatService:
+        def answer(self, **kwargs):
+            return "chat-ok"
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    async def _fake_wait_for(awaitable, timeout=None):
+        awaitable.close()
+        raise asyncio.TimeoutError()
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.trading_system = object()
+
+    monkeypatch.setattr(chat_mod, "get_chat_service", lambda: _FakeChatService())
+    monkeypatch.setattr(tg_mod.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(tg_mod.asyncio, "wait_for", _fake_wait_for)
+
+    result = asyncio.run(commander._run_chat("why?", chat_id="321"))
+
+    assert "took too long to answer" in result.lower()
 
 def test_telegram_build_main_menu_surfaces_counts_and_guidance(monkeypatch) -> None:
     tg_mod = importlib.import_module("telegram_commander")
