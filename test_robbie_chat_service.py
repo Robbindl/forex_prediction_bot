@@ -23,11 +23,17 @@ class _FakeCore:
         positions: List[Dict[str, Any]] | None = None,
         closed_trades: List[Dict[str, Any]] | None = None,
         analyses: Dict[str, Dict[str, Any]] | None = None,
+        top_setups: List[Dict[str, Any]] | None = None,
+        scan_error: Exception | None = None,
     ):
         self._health = health or {}
         self._positions = positions or []
         self._closed_trades = closed_trades or []
         self._analyses = analyses or {}
+        self._top_setups = top_setups or []
+        self._scan_error = scan_error
+        self.get_top_setups_calls = 0
+        self.scan_calls = 0
 
     def health_report(self) -> Dict[str, Any]:
         return dict(self._health)
@@ -50,11 +56,18 @@ class _FakeCore:
     def inspect_asset(self, asset: str) -> Dict[str, Any]:
         return dict(self._analyses.get(asset, self._analyses.get("default", {})))
 
+    def get_top_ranked_opportunities(self, limit: int = 5, refresh: bool = False, allow_refresh_when_empty: bool = True) -> List[Dict[str, Any]]:
+        self.get_top_setups_calls += 1
+        return list(self._top_setups[:limit])
+
     def scan_top_ranked_opportunities(self, limit: int = 5) -> List[Dict[str, Any]]:
-        return [
+        self.scan_calls += 1
+        if self._scan_error is not None:
+            raise self._scan_error
+        return list((self._top_setups or [
             {"asset": "EUR/USD", "direction": "BUY", "confidence": 0.71, "opportunity_score": 0.81},
             {"asset": "XAU/USD", "direction": "SELL", "confidence": 0.68, "opportunity_score": 0.74},
-        ][:limit]
+        ])[:limit])
 
 
 def _service(tmp_path: Path) -> RobbieChatService:
@@ -321,6 +334,74 @@ def test_robbie_chat_gives_scenario_forecast_for_bitcoin(tmp_path: Path, monkeyp
     assert "scenario" in reply.lower()
     assert "2028-03-15" in reply
     assert "not a promise" in reply.lower()
+
+
+def test_robbie_chat_market_response_uses_cached_top_setups_without_scan(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(robbie_chat_module.MarketCalendar, "get_high_impact_events", lambda self, days=3: [])
+    monkeypatch.setattr(
+        robbie_chat_module.MarketCalendar,
+        "should_reduce_risk",
+        lambda self: {"risk_multiplier": 1.0, "reduce_trading": False, "high_impact_events": False, "halving_soon": False},
+    )
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "_next_us_exchange_holiday",
+        lambda now=None: {"next_holiday": "Memorial Day", "next_holiday_date": "2026-05-25", "days_until": 36, "is_today": False},
+    )
+
+    service = _service(tmp_path)
+    core = _FakeCore(
+        top_setups=[
+            {"asset": "EUR/USD", "direction": "BUY", "confidence": 0.71, "opportunity_score": 0.81},
+        ],
+        scan_error=AssertionError("chat should not scan opportunities"),
+    )
+
+    reply = service.answer(
+        question="what is happening right now?",
+        trading_system=core,
+        chat_id="chat-market-cache",
+    )
+
+    assert "Top setups on the board" in reply
+    assert "EUR/USD" in reply
+    assert core.get_top_setups_calls >= 1
+    assert core.scan_calls == 0
+
+
+def test_robbie_chat_deepseek_context_uses_cached_top_setups_without_scan(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {}
+
+    def _fake_post(url: str, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeDeepSeekResponse("cached setup llm reply")
+
+    monkeypatch.setattr(robbie_chat_module, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_PROVIDER", "deepseek")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_MODE", "llm")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE", True)
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT", "auto")
+    monkeypatch.setattr(robbie_chat_module.requests, "post", _fake_post)
+
+    service = _service(tmp_path)
+    core = _FakeCore(
+        top_setups=[
+            {"asset": "EUR/USD", "direction": "BUY", "confidence": 0.71, "opportunity_score": 0.81},
+        ],
+        scan_error=AssertionError("chat llm context should not scan opportunities"),
+    )
+
+    reply = service.answer(
+        question="what is happening right now?",
+        trading_system=core,
+        chat_id="chat-market-llm-cache",
+    )
+
+    assert reply == "cached setup llm reply"
+    assert "runtime_facts_top_setups" in captured["json"]["messages"][1]["content"]
+    assert "EUR/USD" in captured["json"]["messages"][1]["content"]
+    assert core.get_top_setups_calls >= 1
+    assert core.scan_calls == 0
 
 
 def test_robbie_chat_deepseek_prompt_allows_hybrid_macro_reasoning(tmp_path: Path, monkeypatch) -> None:

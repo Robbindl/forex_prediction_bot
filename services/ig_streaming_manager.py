@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Dict, Optional
 
 from config.config import IG_STREAMING_HOLDOFF_SEC
@@ -103,6 +103,10 @@ class IGStreamingManager:
     def _holdoff_active_locked(self) -> bool:
         return bool(self._streaming_holdoff_until and time.monotonic() < self._streaming_holdoff_until)
 
+    def _holdoff_until_display_locked(self) -> datetime:
+        remaining = max(0.0, float(self._streaming_holdoff_until or 0.0) - time.monotonic())
+        return datetime.now() + timedelta(seconds=remaining)
+
     def _enter_streaming_holdoff_locked(self, reason: str = "") -> None:
         self._streaming_holdoff_until = time.monotonic() + IG_STREAMING_HOLDOFF_SEC
         self._running = False
@@ -146,7 +150,7 @@ class IGStreamingManager:
             if self._holdoff_active_locked():
                 logger.warning(
                     "[IGStream] IG streaming temporarily suspended until %s due to recent allowance limits.",
-                    datetime.fromtimestamp(self._streaming_holdoff_until),
+                    self._holdoff_until_display_locked(),
                 )
                 self._asset_categories = {}
                 self._asset_to_epic = {}
@@ -459,4 +463,3 @@ class IGStreamingManager:
         return levels
 
 ig_streaming_manager = IGStreamingManager()
-

@@ -667,17 +667,44 @@ class RobbieChatService:
                 return dict(trade)
         return {}
 
-    def _ensure_top_setups(self, runtime: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _ensure_top_setups(self, runtime: Dict[str, Any], *, allow_refresh: bool = False) -> List[Dict[str, Any]]:
         cached = list(runtime.get("top_setups") or [])
         if cached:
             return cached
         core = runtime.get("core")
         if core is None:
             return []
-        try:
-            setups = list(core.scan_top_ranked_opportunities(limit=max(3, int(TOP_OPPORTUNITIES_LIMIT or 10))) or [])
-        except Exception:
-            setups = []
+        setups: List[Dict[str, Any]] = []
+        getter = getattr(core, "get_top_ranked_opportunities", None)
+        if callable(getter):
+            try:
+                setups = list(
+                    getter(
+                        limit=max(3, int(TOP_OPPORTUNITIES_LIMIT or 10)),
+                        refresh=False,
+                        allow_refresh_when_empty=False,
+                    )
+                    or []
+                )
+            except TypeError:
+                try:
+                    setups = list(getter(limit=max(3, int(TOP_OPPORTUNITIES_LIMIT or 10)), refresh=False) or [])
+                except TypeError:
+                    try:
+                        setups = list(getter(limit=max(3, int(TOP_OPPORTUNITIES_LIMIT or 10))) or [])
+                    except Exception:
+                        setups = []
+                except Exception:
+                    setups = []
+            except Exception:
+                setups = []
+        if not setups and allow_refresh:
+            scanner = getattr(core, "scan_top_ranked_opportunities", None)
+            if callable(scanner):
+                try:
+                    setups = list(scanner(limit=max(3, int(TOP_OPPORTUNITIES_LIMIT or 10))) or [])
+                except Exception:
+                    setups = []
         runtime["top_setups"] = setups
         return setups
 

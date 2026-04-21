@@ -4754,6 +4754,25 @@ def test_ig_streaming_manager_enters_holdoff_after_allowance_error(monkeypatch) 
     assert connect_calls == ["connect"]
 
 
+def test_ig_streaming_manager_holdoff_display_uses_wall_clock_time(monkeypatch) -> None:
+    stream_mod = importlib.import_module("services.ig_streaming_manager")
+
+    manager = stream_mod.IGStreamingManager()
+    fixed_now = datetime(2026, 4, 22, 12, 0, 0)
+
+    class _FakeDateTime:
+        @staticmethod
+        def now():
+            return fixed_now
+
+    monkeypatch.setattr(stream_mod.time, "monotonic", lambda: 100.0, raising=False)
+    monkeypatch.setattr(stream_mod, "datetime", _FakeDateTime, raising=False)
+
+    manager._streaming_holdoff_until = 160.0
+
+    assert manager._holdoff_until_display_locked() == fixed_now + timedelta(seconds=60)
+
+
 def test_live_microstructure_service_scores_pressure_and_stop_hunt() -> None:
     micro_mod = importlib.import_module("services.live_microstructure_service")
     service = micro_mod.LiveMicrostructureService(maxlen=32)
