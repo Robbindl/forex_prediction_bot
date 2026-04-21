@@ -209,8 +209,15 @@ def _chat_shortcuts_keyboard() -> InlineKeyboardMarkup:
         [("🧠 What learned", "chatq:learned"), ("📡 Market now", "chatq:market")],
         [("🏛 Macro", "chatq:macro"), ("📅 Holiday", "chatq:holiday")],
         [("🔭 Outlook", "chatq:outlook"), ("⚙️ Adjust", "chatq:adjust")],
-        [("🗑 Reset chat", "chat_reset")],
-        [("🎯 Asset Q&A", "ask_asset_menu"), ("🏠 Menu", "menu")],
+        [("🗑 Reset chat", "chat_reset"), ("🛑 Cancel chat", "chat_cancel"), ("🏠 Menu", "menu")],
+        [("🎯 Asset Q&A", "ask_asset_menu")],
+    )
+
+
+def _chat_reply_keyboard() -> InlineKeyboardMarkup:
+    return _kb(
+        [("🗑 Reset chat", "chat_reset"), ("🛑 Cancel chat", "chat_cancel"), ("🏠 Menu", "menu")],
+        [("🎯 Asset Q&A", "ask_asset_menu")],
     )
 
 
@@ -413,6 +420,7 @@ class TelegramCommander:
             fallbacks=[
                 CommandHandler("chat", self._chat_entry),
                 CallbackQueryHandler(self._chat_entry_from_button, pattern="^chat_menu$"),
+                CallbackQueryHandler(self._chat_cancel_from_button, pattern="^chat_cancel$"),
                 CommandHandler("cancel", self._chat_cancel),
                 CommandHandler("resetchat", self._cmd_reset_chat),
             ],
@@ -1034,7 +1042,7 @@ class TelegramCommander:
             "• `what is currently happening that affects trading?`\n"
             "• `how should you adjust yourself right now?`\n"
             "• `what issues are you experiencing?`\n\n"
-            "Send a message to start. Use `/resetchat` to clear context or `/cancel` to exit chat mode."
+            "Send a message to start. Use `/resetchat`, `/cancel`, or the buttons below."
         )
 
     async def _chat_entry(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1046,7 +1054,7 @@ class TelegramCommander:
             await self._replace_placeholder_with_chunks(
                 placeholder,
                 text,
-                reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
+                reply_markup=_chat_reply_keyboard(),
             )
             return WAITING_CHAT_MESSAGE
 
@@ -1075,12 +1083,26 @@ class TelegramCommander:
         await self._replace_placeholder_with_chunks(
             placeholder,
             text,
-            reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
+            reply_markup=_chat_reply_keyboard(),
         )
         return WAITING_CHAT_MESSAGE
 
     async def _chat_cancel(self, update, ctx):
-        await update.message.reply_text("Chat mode closed. Use `/chat` when you want to continue.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            "Chat mode closed. Use `/chat` when you want to continue.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
+        )
+        return ConversationHandler.END
+
+    async def _chat_cancel_from_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        await self._edit_query_text_or_reply(
+            query,
+            "Chat mode closed. Use `/chat` when you want to continue.",
+            reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
+        )
         return ConversationHandler.END
 
     async def _cmd_reset_chat(self, update, ctx):
@@ -1201,6 +1223,7 @@ class TelegramCommander:
             "signals": (self._btn_signals, ()),
             "ask_asset_menu": (self._btn_ask_asset_menu, ()),
             "chat_reset": (self._btn_chat_reset, ()),
+            "chat_cancel": (self._btn_chat_cancel, ()),
             "mood": (self._btn_mood, ()),
             "diary": (self._btn_diary, ()),
             "market": (self._btn_market, ()),
@@ -1264,6 +1287,7 @@ class TelegramCommander:
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
     async def _btn_positions(self, query) -> None:
+        await query.edit_message_text("🔄 Refreshing positions…", parse_mode=ParseMode.MARKDOWN)
         text, kb = await self._build_positions()
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
@@ -1432,7 +1456,7 @@ class TelegramCommander:
         answer = self._sanitise_markdown(answer)
         chunks = [answer[i:i+4000] for i in range(0, max(len(answer), 1), 4000)]
         for i, chunk in enumerate(chunks):
-            kb = _kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]) if i == len(chunks) - 1 else None
+            kb = _chat_reply_keyboard() if i == len(chunks) - 1 else None
             if i == 0:
                 await self._edit_query_text_or_reply(query, chunk, reply_markup=kb)
             else:
@@ -1450,6 +1474,13 @@ class TelegramCommander:
             )
         except Exception as e:
             await self._edit_query_text_or_reply(query, f"❌ Could not reset chat memory: {e}")
+
+    async def _btn_chat_cancel(self, query) -> None:
+        await self._edit_query_text_or_reply(
+            query,
+            "Chat mode closed. Use `/chat` when you want to continue.",
+            reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
+        )
 
     async def _btn_mood(self, query) -> None:
         text = self._build_mood()
@@ -2242,6 +2273,8 @@ class TelegramCommander:
 
         if len(positions) > 8:
             lines.append(f"_…and {len(positions) - 8} more_")
+
+        lines.append(f"_Updated: {now_in_display_timezone().strftime('%H:%M:%S')} {display_timezone_label()}_")
 
         buttons.append([
             ("🧭 Top Setups", "top_setups"),

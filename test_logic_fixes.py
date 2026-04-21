@@ -6481,8 +6481,49 @@ def test_telegram_button_router_ignores_message_not_modified_on_refresh() -> Non
     asyncio.run(commander._on_button(update, None))
 
     assert update.callback_query.answered == 1
-    assert [item["text"] for item in update.callback_query.edits] == ["same positions"]
+    assert [item["text"] for item in update.callback_query.edits] == ["🔄 Refreshing positions…", "same positions"]
     assert update.callback_query.message.sent == []
+
+
+def test_telegram_chat_shortcuts_keyboard_includes_cancel_action() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    labels = [button.text for row in tg_mod._chat_shortcuts_keyboard().inline_keyboard for button in row]
+    callbacks = [button.callback_data for row in tg_mod._chat_shortcuts_keyboard().inline_keyboard for button in row]
+
+    assert "🛑 Cancel chat" in labels
+    assert "chat_cancel" in callbacks
+
+
+def test_telegram_chat_cancel_from_button_ends_chat_with_controls() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    seen = {"answered": 0, "edits": []}
+
+    class _FakeQuery:
+        async def answer(self):
+            seen["answered"] += 1
+
+        async def edit_message_text(self, text, parse_mode=None, reply_markup=None):
+            seen["edits"].append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+
+        message = SimpleNamespace()
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    update = SimpleNamespace(callback_query=_FakeQuery())
+
+    result = asyncio.run(commander._chat_cancel_from_button(update, SimpleNamespace()))
+
+    assert result == tg_mod.ConversationHandler.END
+    assert seen["answered"] == 1
+    assert "Chat mode closed" in seen["edits"][0]["text"]
+    assert seen["edits"][0]["reply_markup"] is not None
 
 def test_telegram_chat_entry_from_button_enters_chat_mode() -> None:
     tg_mod = importlib.import_module("telegram_commander")
@@ -6919,6 +6960,7 @@ def test_telegram_build_positions_includes_runtime_diagnostics() -> None:
     assert "Micro `0.19` | Depth `True depth`" in text
     assert "Cross-market `conflicted` via `ETH-USD`" in text
     assert "Pattern memory `premature stop`" in text
+    assert "_Updated:" in text
 
 
 def test_telegram_build_positions_uses_live_price_for_current_display() -> None:

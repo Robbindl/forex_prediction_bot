@@ -379,6 +379,33 @@ def test_robbie_chat_market_response_uses_cached_top_setups_without_scan(tmp_pat
     assert core.inspect_calls == 0
 
 
+def test_robbie_chat_news_snapshot_reads_direct_news_feed(tmp_path: Path, monkeypatch) -> None:
+    sentiment_sources_mod = __import__("services.sentiment_sources", fromlist=["_NewsSentiment"])
+
+    monkeypatch.setattr(
+        sentiment_sources_mod._NewsSentiment,
+        "get_articles_for_dashboard",
+        lambda limit=20: [
+            {
+                "title": "Fed signals slower balance sheet runoff",
+                "source": "DirectFeed",
+                "date": "2026-04-22T00:10:00Z",
+                "sentiment": -0.1,
+            }
+        ],
+        raising=False,
+    )
+
+    service = _service(tmp_path)
+    snapshot = service._build_news_snapshot(focus_asset="SOL-USD", category="crypto")
+
+    assert snapshot["enabled"] is True
+    assert snapshot["raw_count"] == 1
+    assert snapshot["count"] == 1
+    assert snapshot["articles"][0]["title"] == "Fed signals slower balance sheet runoff"
+    assert snapshot["articles"][0]["source"] == "DirectFeed"
+
+
 def test_robbie_chat_deepseek_context_uses_cached_top_setups_without_scan(tmp_path: Path, monkeypatch) -> None:
     captured: Dict[str, Any] = {}
 
@@ -413,6 +440,48 @@ def test_robbie_chat_deepseek_context_uses_cached_top_setups_without_scan(tmp_pa
     assert core.get_top_setups_calls >= 1
     assert core.scan_calls == 0
     assert core.inspect_calls == 0
+
+
+def test_robbie_chat_deepseek_context_includes_display_timezone_now(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {}
+
+    def _fake_post(url: str, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeDeepSeekResponse("timezone aware reply")
+
+    monkeypatch.setattr(robbie_chat_module, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_PROVIDER", "deepseek")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_MODE", "llm")
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE", True)
+    monkeypatch.setattr(robbie_chat_module, "ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT", "auto")
+    monkeypatch.setattr(robbie_chat_module, "display_timezone_label", lambda: "EAT")
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "now_in_display_timezone",
+        lambda: robbie_chat_module.datetime(
+            2026,
+            4,
+            22,
+            2,
+            20,
+            0,
+            tzinfo=robbie_chat_module.timezone(robbie_chat_module.timedelta(hours=3)),
+        ),
+    )
+    monkeypatch.setattr(robbie_chat_module.requests, "post", _fake_post)
+
+    service = _service(tmp_path)
+    reply = service.answer(
+        question="what is happening right now?",
+        trading_system=_FakeCore(),
+        chat_id="chat-display-now",
+    )
+
+    assert reply == "timezone aware reply"
+    context = captured["json"]["messages"][1]["content"]
+    assert "display_now_local" in context
+    assert "2026-04-22 02:20:00 EAT" in context
+    assert "display_timezone" in context
 
 
 def test_robbie_chat_macro_response_does_not_call_inspect_asset(tmp_path: Path, monkeypatch) -> None:

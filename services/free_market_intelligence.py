@@ -493,7 +493,7 @@ class FreeMarketIntelligence:
                 response.raise_for_status()
                 with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
                     with archive.open(archive.namelist()[0]) as handle:
-                        frame = pd.read_csv(handle)
+                        frame = pd.read_csv(handle, low_memory=False)
                         with self._lock:
                             self._frame_cache[url] = _CacheEntry(
                                 payload={"frame": frame},

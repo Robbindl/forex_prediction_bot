@@ -39,6 +39,7 @@ from core.state import rollup_closed_trade_history
 from market_calendar import MarketCalendar
 from services.market_hours_guard import build_market_status
 from services.personality_service import RobbieExplainer, personality
+from utils.display_time import display_timezone_label, now_in_display_timezone, to_display_datetime
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -132,6 +133,10 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _display_now() -> datetime:
+    return now_in_display_timezone()
+
+
 def _format_iso_minutes(value: Any) -> str:
     if value in (None, ""):
         return ""
@@ -147,8 +152,18 @@ def _format_iso_minutes(value: Any) -> str:
         return str(value)
 
 
+def _format_display_minutes(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    dt = to_display_datetime(value)
+    if dt is None:
+        return str(value)
+    return dt.strftime(f"%Y-%m-%d %H:%M {display_timezone_label()}")
+
+
 def _next_us_exchange_holiday(now: Optional[datetime] = None) -> Dict[str, Any]:
     now_utc = now or _utc_now()
+    now_display = _display_now()
     year = now_utc.year
 
     def _thanksgiving(y: int) -> datetime:
@@ -175,11 +190,12 @@ def _next_us_exchange_holiday(now: Optional[datetime] = None) -> Dict[str, Any]:
     if not future:
         return {"next_holiday": "", "next_holiday_date": "", "days_until": 0, "is_today": False}
     name, dt = min(future, key=lambda item: item[1])
+    display_dt = to_display_datetime(dt) or dt
     return {
         "next_holiday": name,
-        "next_holiday_date": dt.strftime("%Y-%m-%d"),
-        "days_until": max(0, (dt.date() - now_utc.date()).days),
-        "is_today": dt.date() == now_utc.date(),
+        "next_holiday_date": display_dt.strftime("%Y-%m-%d"),
+        "days_until": max(0, (display_dt.date() - now_display.date()).days),
+        "is_today": display_dt.date() == now_display.date(),
     }
 
 
@@ -594,40 +610,52 @@ class RobbieChatService:
             return {"enabled": False, "articles": []}
 
         articles: List[Dict[str, Any]] = []
+        raw_articles: List[Dict[str, Any]] = []
         try:
-            from services.sentiment_dashboard_service import get_dashboard_service
+            from services.sentiment_sources import _NewsSentiment
 
-            raw_articles = list(get_dashboard_service().news_integrator.fetch_all_sources() or [])
+            raw_articles = list(_NewsSentiment.get_articles_for_dashboard(limit=max(20, int(ROBBIE_CHAT_NEWS_LIMIT or 8) * 4)) or [])
         except Exception:
             raw_articles = []
+        if not raw_articles:
+            try:
+                from services.sentiment_dashboard_service import get_dashboard_service
+
+                raw_articles = list(get_dashboard_service().news_integrator.fetch_all_sources() or [])
+            except Exception:
+                raw_articles = []
 
         terms = set(_news_terms_for_asset(focus_asset, category))
+        general_articles: List[Dict[str, Any]] = []
         for item in raw_articles:
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title") or item.get("headline") or "").strip()
             if not title:
                 continue
+            normalized = {
+                "title": title,
+                "source": str(item.get("source") or "").strip(),
+                "date": _format_display_minutes(item.get("date") or item.get("published_at") or item.get("published") or ""),
+                "sentiment": item.get("sentiment"),
+            }
+            general_articles.append(normalized)
             text = title.upper()
-            source = str(item.get("source") or "").strip()
             if terms and not any(term in text for term in terms):
                 if focus_asset and category == "crypto" and "BTC" not in text and "BITCOIN" not in text:
                     continue
                 if focus_asset and category == "forex" and not any(term in text for term in ("USD", "EUR", "GBP", "JPY", "CPI", "FOMC", "FED", "ECB", "BOE", "BOJ")):
                     continue
-            articles.append(
-                {
-                    "title": title,
-                    "source": source,
-                    "date": str(item.get("date") or item.get("published_at") or item.get("published") or ""),
-                    "sentiment": item.get("sentiment"),
-                }
-            )
+            articles.append(normalized)
             if len(articles) >= max(1, int(ROBBIE_CHAT_NEWS_LIMIT or 8)):
                 break
 
+        if not articles and general_articles:
+            articles = general_articles[: max(1, int(ROBBIE_CHAT_NEWS_LIMIT or 8))]
+
         return {
             "enabled": True,
+            "raw_count": len(general_articles),
             "count": len(articles),
             "articles": articles,
         }
@@ -1571,6 +1599,8 @@ class RobbieChatService:
             "Do not invent positions, trades, fills, P&L, health issues, headlines, prices, or event timestamps.",
             "If runtime facts are missing, say what is missing instead of fabricating it.",
             "Think through the mechanics before answering, but do not reveal chain-of-thought.",
+            "Use the provided display_now_local and display_timezone for relative dates and times like today, tomorrow, tonight, and this morning, not UTC.",
+            "If there is any date ambiguity near midnight, state the explicit calendar date.",
         ]
         if allow_world_knowledge:
             instructions.extend(
@@ -1727,6 +1757,9 @@ class RobbieChatService:
                 "chat_contract",
                 {
                     "utc_now": _utc_now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "display_now_local": _display_now().strftime(f"%Y-%m-%d %H:%M:%S {display_timezone_label()}"),
+                    "display_timezone": display_timezone_label(),
+                    "display_date": _display_now().strftime("%Y-%m-%d"),
                     "question": question,
                     "intent": intent,
                     "mode": ROBBIE_CHAT_MODE,
@@ -1804,6 +1837,7 @@ class RobbieChatService:
                 "runtime_facts_news",
                 {
                     "enabled": news_snapshot.get("enabled"),
+                    "raw_count": news_snapshot.get("raw_count"),
                     "count": news_snapshot.get("count"),
                     "articles": list(news_snapshot.get("articles") or [])[: max(4, int(ROBBIE_CHAT_NEWS_LIMIT or 8))],
                 },
