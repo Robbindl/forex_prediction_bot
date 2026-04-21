@@ -87,6 +87,24 @@ def _kb(*rows) -> InlineKeyboardMarkup:
         for row in rows
     ])
 
+
+class _SafeCallbackQuery:
+    def __init__(self, query: Any, edit_fn: Any):
+        self._query = query
+        self._edit_fn = edit_fn
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._query, name)
+
+    async def edit_message_text(self, text: str, parse_mode=ParseMode.MARKDOWN, reply_markup=None, **kwargs):
+        return await self._edit_fn(
+            self._query,
+            text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            **kwargs,
+        )
+
 def _main_menu_keyboard(summary: Optional[Dict[str, Any]] = None) -> InlineKeyboardMarkup:
     summary = summary or {}
     open_positions = max(0, int(summary.get("open_positions", 0) or 0))
@@ -404,6 +422,17 @@ class TelegramCommander:
 
         # All inline button presses
         app.add_handler(CallbackQueryHandler(self._on_button))
+        app.add_error_handler(self._on_application_error)
+
+    async def _on_application_error(self, update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        error = getattr(ctx, "error", None)
+        message = str(error or "").lower()
+        if isinstance(error, BadRequest) and (
+            "message is not modified" in message or "message to edit not found" in message
+        ):
+            logger.debug(f"[Telegram] benign callback edit error ignored: {error}")
+            return
+        logger.error(f"[Telegram] application handler error: {error}", exc_info=error)
 
     # ── send_message (thread-safe, callable from any thread) ─────────────────
 
@@ -1113,37 +1142,51 @@ class TelegramCommander:
                     reply_markup=kb,
                 )
 
-    async def _edit_message_text_or_reply(self, message, text: str, *, reply_markup=None) -> None:
+    async def _edit_message_text_or_reply(self, message, text: str, *, parse_mode=ParseMode.MARKDOWN, reply_markup=None, **kwargs) -> bool:
         try:
             await message.edit_text(
                 text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=parse_mode,
                 reply_markup=reply_markup,
+                **kwargs,
             )
+            return True
         except BadRequest as exc:
-            if "message to edit not found" not in str(exc).lower():
+            lowered = str(exc).lower()
+            if "message is not modified" in lowered:
+                return False
+            if "message to edit not found" not in lowered:
                 raise
             await message.reply_text(
                 text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=parse_mode,
                 reply_markup=reply_markup,
+                **kwargs,
             )
+            return True
 
-    async def _edit_query_text_or_reply(self, query, text: str, *, reply_markup=None) -> None:
+    async def _edit_query_text_or_reply(self, query, text: str, *, parse_mode=ParseMode.MARKDOWN, reply_markup=None, **kwargs) -> bool:
         try:
             await query.edit_message_text(
                 text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=parse_mode,
                 reply_markup=reply_markup,
+                **kwargs,
             )
+            return True
         except BadRequest as exc:
-            if "message to edit not found" not in str(exc).lower():
+            lowered = str(exc).lower()
+            if "message is not modified" in lowered:
+                return False
+            if "message to edit not found" not in lowered:
                 raise
             await query.message.reply_text(
                 text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=parse_mode,
                 reply_markup=reply_markup,
+                **kwargs,
             )
+            return True
 
     # ══════════════════════════════════════════════════════════════════════════
     # Inline button router
@@ -1197,13 +1240,14 @@ class TelegramCommander:
 
     async def _on_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
-        await query.answer()               # acknowledge tap immediately
-        data = query.data or ""
+        safe_query = _SafeCallbackQuery(query, self._edit_query_text_or_reply)
+        await safe_query.answer()               # acknowledge tap immediately
+        data = safe_query.data or ""
         handler, args = self._resolve_button_action(data)
         if handler is None:
-            await query.edit_message_text("⚠️ Unknown action.")
+            await safe_query.edit_message_text("⚠️ Unknown action.")
             return
-        await handler(query, *args)
+        await handler(safe_query, *args)
 
     # ── Button implementations ────────────────────────────────────────────────
 

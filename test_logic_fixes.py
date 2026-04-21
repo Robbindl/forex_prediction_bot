@@ -6388,6 +6388,102 @@ def test_telegram_chat_prompt_falls_back_to_reply_when_edit_target_is_missing() 
     ]
     assert sent[-1]["reply_markup"] is not None
 
+
+def test_telegram_edit_query_text_ignores_message_not_modified() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    class _FakeMessage:
+        def __init__(self):
+            self.sent = []
+
+        async def reply_text(self, text, parse_mode=None, reply_markup=None):
+            self.sent.append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+
+    class _FakeQuery:
+        def __init__(self):
+            self.message = _FakeMessage()
+            self.edits = []
+
+        async def edit_message_text(self, text, parse_mode=None, reply_markup=None):
+            self.edits.append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+            raise tg_mod.BadRequest(
+                "Message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message"
+            )
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    query = _FakeQuery()
+
+    result = asyncio.run(commander._edit_query_text_or_reply(query, "same text"))
+
+    assert result is False
+    assert [item["text"] for item in query.edits] == ["same text"]
+    assert query.message.sent == []
+
+
+def test_telegram_button_router_ignores_message_not_modified_on_refresh() -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    class _FakeMessage:
+        def __init__(self):
+            self.sent = []
+
+        async def reply_text(self, text, parse_mode=None, reply_markup=None):
+            self.sent.append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+
+    class _RawQuery:
+        def __init__(self):
+            self.data = "positions"
+            self.message = _FakeMessage()
+            self.answered = 0
+            self.edits = []
+
+        async def answer(self):
+            self.answered += 1
+
+        async def edit_message_text(self, text, parse_mode=None, reply_markup=None):
+            self.edits.append(
+                {
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": reply_markup,
+                }
+            )
+            raise tg_mod.BadRequest(
+                "Message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message"
+            )
+
+    async def _fake_build_positions():
+        return "same positions", object()
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander._build_positions = _fake_build_positions
+
+    update = SimpleNamespace(callback_query=_RawQuery())
+
+    asyncio.run(commander._on_button(update, None))
+
+    assert update.callback_query.answered == 1
+    assert [item["text"] for item in update.callback_query.edits] == ["same positions"]
+    assert update.callback_query.message.sent == []
+
 def test_telegram_chat_entry_from_button_enters_chat_mode() -> None:
     tg_mod = importlib.import_module("telegram_commander")
 
