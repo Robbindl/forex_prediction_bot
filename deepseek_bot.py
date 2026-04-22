@@ -44,10 +44,10 @@ class DeepSeekTelegramBot:
             .connect_timeout(30)
             .read_timeout(30)
             .write_timeout(30)
+            .post_init(self._post_init)
             .build()
         )
         self._register_handlers()
-        asyncio.run(self._post_init(self.application))
         self.application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
@@ -111,7 +111,9 @@ class DeepSeekTelegramBot:
         return (
             "DeepSeek private chat is ready.\n\n"
             "Use /chat or send me a message and I will answer directly.\n"
-            "This bot is separate from the trading control bot and does not expose signals, positions, dashboards, or other menus.\n\n"
+            "I can discuss the latest read-only snapshot of your trading bot, including balance, positions, P&L, recent trades, and cooldowns.\n"
+            "I can also use current macro context for questions about NFP, CPI, Fed policy, and oil.\n"
+            "This bot is separate from the trading control bot and does not expose live menus or controls.\n\n"
             "Use /reset to clear chat memory."
         )
 

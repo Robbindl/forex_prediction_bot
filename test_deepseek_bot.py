@@ -115,6 +115,15 @@ def test_deepseek_bot_requires_allowed_private_chat() -> None:
     assert bot._is_allowed(group_update) is False
 
 
+def test_deepseek_bot_intro_mentions_bot_snapshot() -> None:
+    intro = DeepSeekTelegramBot._intro_text().lower()
+    assert "latest read-only snapshot" in intro
+    assert "balance" in intro
+    assert "positions" in intro
+    assert "macro context" in intro
+    assert "nfp" in intro
+
+
 def test_deepseek_bot_run_uses_compatible_run_polling_signature() -> None:
     captured: dict[str, Any] = {}
 
@@ -152,6 +161,10 @@ def test_deepseek_bot_run_uses_compatible_run_polling_signature() -> None:
             captured["write_timeout"] = value
             return self
 
+        def post_init(self, value: Any) -> "_FakeBuilder":
+            captured["post_init"] = value
+            return self
+
         def build(self) -> _FakeApp:
             captured["built"] = True
             return _FakeApp()
@@ -161,8 +174,10 @@ def test_deepseek_bot_run_uses_compatible_run_polling_signature() -> None:
     with patch("deepseek_bot.Application.builder", return_value=_FakeBuilder()):
         bot.run()
 
+    asyncio.run(captured["post_init"](_FakeApp()))
     assert captured["token"] == "test-token"
     assert captured["built"] is True
+    assert captured["post_init"] is not None
     assert "post_init" not in captured["run_polling_kwargs"]
     assert captured["run_polling_kwargs"]["allowed_updates"] is not None
     assert len(captured["commands"]) == 4
