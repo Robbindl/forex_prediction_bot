@@ -206,4 +206,15 @@
   window.dashboardGetApiToken = async function(forceRefresh) {
     return ensureApiToken(!!forceRefresh);
   };
+  window.dashboardBuildAuthedUrl = async function(input, forceRefresh) {
+    const url = toUrl(input);
+    if (!url) return String(input || '');
+    if (isProtectedApiRequest(url.toString())) {
+      const token = await ensureApiToken(!!forceRefresh);
+      if (token) {
+        url.searchParams.set('token', token);
+      }
+    }
+    return url.toString();
+  };
 })();

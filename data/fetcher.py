@@ -590,20 +590,24 @@ class DataFetcher:
         self,
         asset: str,
         category: str,
+        *,
+        prefer_live_stream: bool = True,
+        allow_cached_quote: bool = True,
     ) -> Tuple[Optional[float], Optional[float]]:
         meta_key = f"rt:{asset}"
         cache_key = f"fetcher:{meta_key}:{category}"
         last_error_meta: Optional[Dict[str, Any]] = None
         ig_primary = self._ig_primary_asset(asset, category) and self._ig_bridge is not None
 
-        if ig_primary:
+        if prefer_live_stream:
+            live_price = self._live_stream_real_time_price(asset, category, meta_key)
+            if live_price is not None:
+                return live_price
+
+        if ig_primary and allow_cached_quote:
             cached = self._cached_real_time_price(cache_key, meta_key)
             if cached is not None:
                 return cached
-
-        live_price = self._live_stream_real_time_price(asset, category, meta_key)
-        if live_price is not None:
-            return live_price
 
         if ig_primary:
             price, spread, last_error_meta = self._fetch_ig_real_time_price(asset, category, meta_key, cache_key)
@@ -638,9 +642,15 @@ class DataFetcher:
         if price is not None:
             return price, spread
 
-        cached = self._cached_real_time_price(cache_key, meta_key)
-        if cached is not None:
-            return cached
+        if not prefer_live_stream:
+            live_price = self._live_stream_real_time_price(asset, category, meta_key)
+            if live_price is not None:
+                return live_price
+
+        if allow_cached_quote:
+            cached = self._cached_real_time_price(cache_key, meta_key)
+            if cached is not None:
+                return cached
 
         self._rt_meta[meta_key] = last_error_meta or self._stamp_metadata(
             {"source": "unavailable", "source_class": "unavailable", "delayed": False}

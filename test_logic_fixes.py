@@ -9001,6 +9001,33 @@ def test_normalized_query_string_ignores_cache_buster_params(monkeypatch) -> Non
     with dashboard_mod.app.test_request_context("/api/page-overview?page=system_monitor&no_cache=1&_=123&days=30"):
         assert dashboard_mod._normalized_query_string() == "days=30&page=system_monitor"
 
+
+def test_live_api_paths_bypass_global_cache_layer(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: {"success": True}, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/live-book"):
+        assert dashboard_mod._serve_cached_api_response() is None
+
+    with dashboard_mod.app.test_request_context("/api/chart/quote?asset=EUR/USD"):
+        assert dashboard_mod._serve_cached_api_response() is None
+
+
+def test_live_api_after_request_skips_global_cache_write(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    cache_set_calls = []
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: cache_set_calls.append((key, ttl)), raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/live-book"):
+        response = dashboard_mod.jsonify({"success": True})
+        response = dashboard_mod._set_api_cache_headers(response)
+
+    assert cache_set_calls == []
+    assert "no-cache" in str(response.headers.get("Cache-Control", "")).lower()
+
+
 def test_page_overview_command_center_reuses_embedded_whale_summary(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
@@ -10413,6 +10440,58 @@ def test_chart_quote_returns_live_quote_snapshot(monkeypatch) -> None:
     assert payload["price"] == 123.456
     assert payload["source"] == "Deriv"
     assert seen == []
+
+
+def test_fetcher_get_real_time_price_prefers_live_snapshot_over_cached_ig_quote(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._ig_bridge = object()
+
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_ig_primary_asset", staticmethod(lambda asset, category: True), raising=False)
+    monkeypatch.setattr(fetcher_mod.cache, "get", lambda key: (999.0, 0.0, {"source": "IG", "source_class": "primary_api"}), raising=False)
+    monkeypatch.setattr(
+        ws_mod,
+        "get_live_price_snapshot",
+        lambda asset, max_age_seconds=15.0: {"price": 123.45, "timestamp": 10.0, "source": "IG", "age_seconds": 0.5},
+        raising=False,
+    )
+
+    price, spread = fetcher.get_real_time_price("XAU/USD", "commodities")
+    meta = fetcher.get_last_price_metadata("XAU/USD")
+
+    assert price == 123.45
+    assert spread == 0.0
+    assert meta["source"] == "IG"
+    assert meta["source_class"] == "stream"
+
+
+def test_fetcher_get_real_time_price_can_force_provider_refresh(monkeypatch) -> None:
+    fetcher_mod = importlib.import_module("data.fetcher")
+
+    fetcher = fetcher_mod.DataFetcher()
+    fetcher._ig_bridge = object()
+
+    monkeypatch.setattr(fetcher_mod.DataFetcher, "_ig_primary_asset", staticmethod(lambda asset, category: True), raising=False)
+    monkeypatch.setattr(fetcher, "_live_stream_real_time_price", lambda asset, category, meta_key: (123.0, 0.0), raising=False)
+    monkeypatch.setattr(fetcher, "_cached_real_time_price", lambda cache_key, meta_key: (111.0, 0.0), raising=False)
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_ig_real_time_price",
+        lambda asset, category, meta_key, cache_key: (222.0, 0.0, None),
+        raising=False,
+    )
+
+    price, spread = fetcher.get_real_time_price(
+        "XAU/USD",
+        "commodities",
+        prefer_live_stream=False,
+        allow_cached_quote=False,
+    )
+
+    assert price == 222.0
+    assert spread == 0.0
 
 
 def test_chart_stream_live_quote_reuses_cached_provider_quote(monkeypatch) -> None:

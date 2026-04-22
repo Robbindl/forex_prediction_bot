@@ -701,6 +701,29 @@ def _request_wants_cache_bypass() -> bool:
     return request.args.get('no_cache', '').strip().lower() in {'1', 'true', 'yes'}
 
 
+_GLOBAL_API_CACHE_SKIP_PREFIXES = (
+    "/api/status",
+    "/api/page-overview",
+    "/api/command-center",
+    "/api/live-book",
+    "/api/chart/candles",
+    "/api/chart/quote",
+    "/api/chart/stream",
+    "/api/live-prices/stream",
+    "/api/system/health",
+    "/api/system-monitor/overview",
+    "/api/monitoring/snapshot",
+    "/api/monitoring/metrics",
+    "/api/monitoring/errors",
+    "/api/market/heatmap",
+)
+
+
+def _should_skip_global_api_cache(path: Optional[str] = None) -> bool:
+    current_path = str(path or request.path or "").strip()
+    return any(current_path.startswith(prefix) for prefix in _GLOBAL_API_CACHE_SKIP_PREFIXES)
+
+
 def _normalized_query_string() -> str:
     params = []
     for key in sorted(request.args.keys()):
@@ -724,6 +747,8 @@ def _serve_cached_api_response() -> Optional[Response]:
     if request.method != 'GET' or not request.path.startswith('/api/'):
         return None
     if request.path == "/api/trade-history" or request.path.startswith("/api/trade-history/"):
+        return None
+    if _should_skip_global_api_cache():
         return None
     if _request_wants_cache_bypass():
         return None
@@ -776,6 +801,11 @@ def _compress_response(response: Response) -> Response:
 def _set_api_cache_headers(response: Response) -> Response:
     if request.path.startswith("/api/") and request.method == "GET":
         if request.path == "/api/trade-history" or request.path.startswith("/api/trade-history/"):
+            return _compress_response(response)
+        if _should_skip_global_api_cache():
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
             return _compress_response(response)
         response.headers.setdefault("Cache-Control", "public, max-age=5, stale-while-revalidate=30")
         if response.status_code == 200 and response.is_json:
@@ -2666,7 +2696,7 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
 
     try:
         payload = _build_command_center_payload()
-        _cache_set(cache_key, payload, ttl=5)
+        _cache_set(cache_key, payload, ttl=3)
         _cache_set(last_good_key, payload, ttl=300)
         return payload
     except Exception as exc:
@@ -3427,23 +3457,32 @@ def api_live_book_stream():
 @_check_rate_limit
 def api_command_center_stream():
     def _gen():
-        # Initial event tells the client the stream is alive and forces an
-        # immediate refresh so reconnects recover the full dashboard state.
-        yield f"{json.dumps({'type': 'connected', 'ts': int(time.time())})}\n"
-        try:
-            payload = _get_cached_command_center_payload(force_refresh=False)
-            signature = _command_center_payload_signature(payload)
-            now = time.time()
-            yield f"{json.dumps({'type': 'refresh', 'ts': int(now), 'signature': signature})}\n"
-        except GeneratorExit:
-            raise
-        except Exception as exc:
-            logger.debug(f"[dashboard] command-center stream error: {exc}")
-            yield f"{json.dumps({'type': 'heartbeat', 'ts': int(time.time())})}\n"
+        last_signature = ""
+        last_emit = 0.0
+        yield f"data: {json.dumps({'type': 'connected', 'ts': int(time.time())})}\n\n"
+        while True:
+            try:
+                payload = _get_cached_command_center_payload(force_refresh=False)
+                signature = _command_center_payload_signature(payload)
+                now = time.time()
+                if signature != last_signature:
+                    last_signature = signature
+                    last_emit = now
+                    yield f"data: {json.dumps({'type': 'refresh', 'ts': int(now), 'signature': signature})}\n\n"
+                elif now - last_emit >= 5.0:
+                    last_emit = now
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'ts': int(now)})}\n\n"
+                time.sleep(1.0)
+            except GeneratorExit:
+                raise
+            except Exception as exc:
+                logger.debug(f"[dashboard] command-center stream error: {exc}")
+                yield f"data: {json.dumps({'type': 'heartbeat', 'ts': int(time.time())})}\n\n"
+                time.sleep(1.0)
 
     return Response(
         stream_with_context(_gen()),
-        mimetype="application/x-ndjson",
+        mimetype="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "X-Accel-Buffering": "no",
@@ -4862,7 +4901,7 @@ def api_live_prices_stream():
 @_check_api_auth
 @_check_rate_limit
 def api_market_heatmap():
-    cache_key = "heatmap:v2"
+    cache_key = "heatmap:v3"
     cached = _cache_get(cache_key)
     if cached is not None:
         return jsonify(cached)
@@ -4907,7 +4946,7 @@ def api_market_heatmap():
             "expected_assets": expected_assets,
             "partial": len(results) < expected_assets,
         }
-        _cache_set(cache_key, payload, ttl=120)   # refresh every 120s for live price changes
+        _cache_set(cache_key, payload, ttl=15)
         return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/market/heatmap", e.status_code)
@@ -6378,7 +6417,7 @@ def api_system_health():
             "balance":          health.get("balance", _args.balance),
             "timestamp":        datetime.now().isoformat(),
         }
-        _cache_set("system_health", payload, ttl=10)
+        _cache_set("system_health", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -6459,7 +6498,7 @@ def api_system_monitor_overview():
         },
         "timestamp": datetime.utcnow().isoformat(),
     }
-    _cache_set(cache_key, payload, ttl=10)
+    _cache_set(cache_key, payload, ttl=5)
     return jsonify(payload)
 
 
@@ -6491,7 +6530,7 @@ def api_page_overview():
         status = _response_to_dict(_call_view(api_status))
         risk = _response_to_dict(_call_view(api_risk_portfolio))
         payload = {"success": True, "page": page, "status": status, "risk": risk, "command_center": _command_center_snapshot()}
-        ttl = 10
+        ttl = 5
     elif page in {"ai_predictions", "playbook_intel"}:
         page = "playbook_intel"
         payload = _response_to_dict(_call_view(api_ai_predictions_overview))
@@ -6505,12 +6544,12 @@ def api_page_overview():
     elif page == "system_monitor":
         payload = _response_to_dict(_call_view(api_system_monitor_overview))
         payload["command_center"] = _command_center_snapshot()
-        ttl = 10
+        ttl = 5
     elif page == "whale_intelligence":
         payload = _response_to_dict(_call_view(api_whale_summary))
         payload["status"] = _response_to_dict(_call_view(api_status))
         payload["command_center"] = _command_center_snapshot()
-        ttl = 30
+        ttl = 10
     elif page == "sentiment_intelligence":
         payload = {
             "success": True,
@@ -6521,7 +6560,7 @@ def api_page_overview():
             "heatmap": _response_to_dict(_call_view(api_market_heatmap)),
             "command_center": _command_center_snapshot(),
         }
-        ttl = 30
+        ttl = 5
     elif page == "order_flow":
         payload = {
             "success": True,
@@ -6531,7 +6570,7 @@ def api_page_overview():
             "hunts": _response_to_dict(_call_view(api_phase3_stop_hunts)),
             "command_center": _command_center_snapshot(),
         }
-        ttl = 15
+        ttl = 5
     elif page == "command_center":
         try:
             command_center = _response_to_dict(
@@ -6549,7 +6588,7 @@ def api_page_overview():
                 "whale_alerts_24h": int(command_center.get("whale_alerts_24h", 0) or 0),
             },
         }
-        ttl = 15
+        ttl = 5
     elif page == "market_intelligence":
         payload = {
             "success": True,
@@ -6558,7 +6597,7 @@ def api_page_overview():
             "events": _response_to_dict(_call_view(api_market_events)),
             "command_center": _command_center_snapshot(),
         }
-        ttl = 30
+        ttl = 5
     else:
         return handle_api_error(BadRequest(f"Unknown overview page '{page}'"), "/api/page-overview", 400)
 
@@ -6825,7 +6864,12 @@ def _dashboard_refresh_ig_quotes_loop(stream_state: Dict[str, Dict[str, str]]) -
             success_count = 0
             for asset, category in list(poll_assets.items()):
                 try:
-                    price, _ = _fetcher.get_real_time_price(asset, category)
+                    price, _ = _fetcher.get_real_time_price(
+                        asset,
+                        category,
+                        prefer_live_stream=False,
+                        allow_cached_quote=False,
+                    )
                     if price is None:
                         continue
                     meta = _fetcher.get_last_price_metadata(asset)

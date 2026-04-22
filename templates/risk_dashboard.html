@@ -505,7 +505,29 @@ async function startRiskLiveBookLoop(forceRefresh=false){
   try{
     const snapshot = await fetchRiskLiveBook(forceRefresh);
     applyRiskLiveBook(snapshot);
+  }catch(err){}
+  if(!window.EventSource || !window.dashboardBuildAuthedUrl){
     scheduleRiskLiveBookReconnect(forceRefresh ? 2000 : 2500);
+    return;
+  }
+  try{
+    const streamUrl = await window.dashboardBuildAuthedUrl('/api/live-book/stream');
+    const source = new EventSource(streamUrl);
+    _riskLiveBookSource = source;
+    source.onmessage = function(event){
+      try{
+        const msg = JSON.parse(event.data || '{}');
+        if(msg.type === 'snapshot' && msg.payload){
+          _riskLiveBookCache = {fetched: Date.now(), data: msg.payload};
+          applyRiskLiveBook(msg.payload);
+        }
+      }catch(err){}
+    };
+    source.onerror = function(){
+      if(_riskLiveBookSource !== source) return;
+      stopRiskLiveBookLoop();
+      scheduleRiskLiveBookReconnect(2000);
+    };
   }catch(err){
     scheduleRiskLiveBookReconnect(2500);
   }

@@ -1024,7 +1024,29 @@ async function startLiveBookLoop(forceRefresh=false){
   try{
     const snapshot = await fetchLiveBook(forceRefresh);
     applyLiveBookSnapshot(snapshot);
+  }catch(err){}
+  if(!window.EventSource || !window.dashboardBuildAuthedUrl){
     scheduleLiveBookReconnect(forceRefresh ? 2000 : 2500);
+    return;
+  }
+  try{
+    const streamUrl = await window.dashboardBuildAuthedUrl('/api/live-book/stream');
+    const source = new EventSource(streamUrl);
+    _liveBookSource = source;
+    source.onmessage = function(event){
+      try{
+        const msg = JSON.parse(event.data || '{}');
+        if(msg.type === 'snapshot' && msg.payload){
+          _liveBookCache = {fetched: Date.now(), data: msg.payload};
+          applyLiveBookSnapshot(msg.payload);
+        }
+      }catch(err){}
+    };
+    source.onerror = function(){
+      if(_liveBookSource !== source) return;
+      stopLiveBookLoop();
+      scheduleLiveBookReconnect(2000);
+    };
   }catch(err){
     scheduleLiveBookReconnect(2500);
   }
@@ -1040,10 +1062,38 @@ function scheduleCommandCenterStreamReconnect(delayMs = 3000){
   _commandCenterStreamReconnect = setTimeout(() => {_commandCenterStreamReconnect = null;startCommandCenterStream();}, delayMs);
 }
 async function startCommandCenterStream(){
-  _commandCenterStreamDisabled = true;
-  _commandCenterStreamActive = false;
-  if(_commandCenterStreamAbort){ try{ _commandCenterStreamAbort.abort(); }catch(err){} _commandCenterStreamAbort = null; }
-  return;
+  stopCommandCenterStream();
+  if(document.hidden) return;
+  if(!window.EventSource || !window.dashboardBuildAuthedUrl){
+    _commandCenterStreamDisabled = true;
+    return;
+  }
+  _commandCenterStreamDisabled = false;
+  try{
+    const streamUrl = await window.dashboardBuildAuthedUrl('/api/command-center/stream');
+    const source = new EventSource(streamUrl);
+    _commandCenterStreamAbort = {abort(){ try{ source.close(); }catch(err){} }};
+    _commandCenterStreamActive = true;
+    source.onmessage = function(event){
+      try{
+        const msg = JSON.parse(event.data || '{}');
+        if(msg.type === 'refresh'){
+          _commandCenterCache = null;
+          loadMain();
+        }
+      }catch(err){}
+    };
+    source.onerror = function(){
+      if(_commandCenterStreamAbort){
+        try{ source.close(); }catch(err){}
+      }
+      _commandCenterStreamActive = false;
+      scheduleCommandCenterStreamReconnect(2500);
+    };
+  }catch(err){
+    _commandCenterStreamActive = false;
+    scheduleCommandCenterStreamReconnect(3000);
+  }
 }
 function collectElitePool(d){
   return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]);
