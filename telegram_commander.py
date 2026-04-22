@@ -1018,7 +1018,7 @@ class TelegramCommander:
             "• `what is currently happening that affects trading?`\n"
             "• `how should you adjust yourself right now?`\n"
             "• `what issues are you experiencing?`\n\n"
-            "Send a message to start. Use `/resetchat`, `/cancel`, or the buttons below."
+            "Send a message to start. Use the standalone DeepSeek bot for direct chat, or use `/resetchat`, `/cancel`, or the buttons below."
         )
 
     async def _chat_entry(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1065,7 +1065,7 @@ class TelegramCommander:
 
     async def _chat_cancel(self, update, ctx):
         await update.message.reply_text(
-            "Chat mode closed. Use `/chat` when you want to continue.",
+            "Chat mode closed. Use the standalone DeepSeek bot when you want to continue.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
         )
@@ -1076,7 +1076,7 @@ class TelegramCommander:
         await query.answer()
         await self._edit_query_text_or_reply(
             query,
-            "Chat mode closed. Use `/chat` when you want to continue.",
+            "Chat mode closed. Use the standalone DeepSeek bot when you want to continue.",
             reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
         )
         return ConversationHandler.END
@@ -1087,7 +1087,7 @@ class TelegramCommander:
 
             get_chat_service().reset(str(update.effective_chat.id))
             await update.message.reply_text(
-                "Robbie chat memory cleared for this chat. Start again with `/chat`.",
+                "Robbie chat memory cleared for this chat. Start again in the standalone DeepSeek bot.",
                 parse_mode=ParseMode.MARKDOWN,
             )
         except Exception as e:
@@ -1110,10 +1110,10 @@ class TelegramCommander:
             )
             return answer
         except asyncio.TimeoutError:
-            logger.warning(f"[Telegram] /chat timed out after {_CHAT_HANDLER_TIMEOUT_SECONDS:.0f}s")
-            return "⏱️ Robbie took too long to answer. Try again with a shorter question or use `/resetchat` if the thread feels stuck."
+            logger.warning(f"[Telegram] DeepSeek chat timed out after {_CHAT_HANDLER_TIMEOUT_SECONDS:.0f}s")
+            return "⏱️ Robbie took too long to answer. Try again with a shorter question or use the standalone DeepSeek bot if the thread feels stuck."
         except Exception as e:
-            logger.error(f"[Telegram] /chat error: {e}", exc_info=True)
+            logger.error(f"[Telegram] DeepSeek chat error: {e}", exc_info=True)
             return f"❌ Robbie hit a chat error: {e}"
 
     async def _reply_in_chunks(self, send_fn, text: str, reply_markup=None) -> None:
@@ -1451,7 +1451,7 @@ class TelegramCommander:
     async def _btn_chat_cancel(self, query) -> None:
         await self._edit_query_text_or_reply(
             query,
-            "Chat mode closed. Use `/chat` when you want to continue.",
+            "Chat mode closed. Use the standalone DeepSeek bot when you want to continue.",
             reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
         )
 

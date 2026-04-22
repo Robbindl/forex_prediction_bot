@@ -14,14 +14,14 @@ from pathlib import Path
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 from config.config import (
     LOG_LEVEL, LOG_DIR, DEFAULT_BALANCE,
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, DEEPSEEK_TELEGRAM_TOKEN,
     LOG_RETENTION_DAYS,
 )
 from utils.logger import TradingLogger, get_logger, prune_stale_log_artifacts
 
 _BOT_ROLE = os.getenv("BOT_ROLE", "").strip().lower()
 _DEEPSEEK_ONLY_MODE = _BOT_ROLE == "deepseek"
-_deepseek_bot = None
+_deepseek_proc: subprocess.Popen | None = None
 
 _trading_logger = TradingLogger(log_dir=str(LOG_DIR), level=LOG_LEVEL)
 logger = get_logger()
@@ -36,6 +36,31 @@ except Exception as e:
 _DEFAULT_HTTP2_CERT = Path("cert.pem")
 _DEFAULT_HTTP2_KEY = Path("key.pem")
 
+
+def _launch_deepseek_sibling() -> None:
+    global _deepseek_proc
+
+    if _DEEPSEEK_ONLY_MODE:
+        return
+    if not DEEPSEEK_TELEGRAM_TOKEN:
+        logger.info("[bot] DeepSeek Telegram bot not started — DEEPSEEK_TELEGRAM_TOKEN missing")
+        return
+    if _deepseek_proc and _deepseek_proc.poll() is None:
+        logger.info(f"[bot] DeepSeek Telegram bot already running (PID {_deepseek_proc.pid})")
+        return
+
+    env = os.environ.copy()
+    env["BOT_ROLE"] = "deepseek"
+    try:
+        _deepseek_proc = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve())],
+            cwd=str(Path(__file__).parent),
+            env=env,
+        )
+        logger.info(f"[bot] DeepSeek Telegram bot spawned (PID {_deepseek_proc.pid})")
+    except Exception as error:
+        logger.warning(f"[bot] DeepSeek Telegram bot failed to spawn: {error}")
+
 if _DEEPSEEK_ONLY_MODE:
     logger.info("=" * 60)
     logger.info(" DEEPSEEK STANDALONE BOT — STARTING")
@@ -44,6 +69,8 @@ else:
     logger.info("=" * 60)
     logger.info(" FOREX PREDICTION BOT — STARTING")
     logger.info("=" * 60)
+
+    _launch_deepseek_sibling()
 
     # ── API key validation (before anything else) ─────────────────────────────
     logger.info("[bot] Validating API keys...")
@@ -236,6 +263,10 @@ def _perform_shutdown(engine, *, reason: str = "signal", exit_code: int = 0) -> 
         except Exception as e:
             logger.debug(f"[bot] Telegram stop during shutdown failed: {e}")
         try:
+            _stop_deepseek_background_bot()
+        except Exception as e:
+            logger.debug(f"[bot] DeepSeek stop during shutdown failed: {e}")
+        try:
             stop_gateway()
         except Exception as e:
             logger.debug(f"[bot] Gateway stop during shutdown failed: {e}")
@@ -249,6 +280,7 @@ def _perform_shutdown(engine, *, reason: str = "signal", exit_code: int = 0) -> 
 
 atexit.register(stop_gateway)
 atexit.register(stop_telegram)
+atexit.register(lambda: _stop_deepseek_background_bot())
 
 
 def gateway_is_running() -> bool:
@@ -347,18 +379,53 @@ def _start_deepseek_bot() -> None:
 
 
 def _start_deepseek_background_bot() -> None:
-    global _deepseek_bot
+    global _deepseek_proc
 
-    from config.config import DEEPSEEK_TELEGRAM_CHAT_ID, DEEPSEEK_TELEGRAM_TOKEN
-    from deepseek_bot import DeepSeekTelegramBot
+    if _DEEPSEEK_ONLY_MODE:
+        return
+
+    from config.config import DEEPSEEK_TELEGRAM_TOKEN
 
     if not DEEPSEEK_TELEGRAM_TOKEN:
         logger.info("[bot] DeepSeek Telegram bot not started — DEEPSEEK_TELEGRAM_TOKEN missing")
         return
 
-    _deepseek_bot = DeepSeekTelegramBot(token=DEEPSEEK_TELEGRAM_TOKEN, allowed_chat_id=DEEPSEEK_TELEGRAM_CHAT_ID)
-    _deepseek_bot.start_background()
-    logger.info("[bot] DeepSeek Telegram bot started in background")
+    if _deepseek_proc and _deepseek_proc.poll() is None:
+        logger.info(f"[bot] DeepSeek Telegram bot already running (PID {_deepseek_proc.pid})")
+        return
+
+    env = os.environ.copy()
+    env["BOT_ROLE"] = "deepseek"
+
+    try:
+        _deepseek_proc = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve())],
+            cwd=str(Path(__file__).parent),
+            env=env,
+        )
+        logger.info(f"[bot] DeepSeek Telegram bot spawned (PID {_deepseek_proc.pid})")
+    except Exception as error:
+        logger.warning(f"[bot] DeepSeek Telegram bot failed to spawn: {error}")
+
+
+def _stop_deepseek_background_bot() -> None:
+    global _deepseek_proc
+    proc = _deepseek_proc
+    if proc is None:
+        return
+    if proc.poll() is not None:
+        _deepseek_proc = None
+        return
+    try:
+        logger.info(f"[bot] Stopping DeepSeek Telegram bot (PID {proc.pid})...")
+        proc.terminate()
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    except Exception as error:
+        logger.debug(f"[bot] DeepSeek bot stop failed: {error}")
+    finally:
+        _deepseek_proc = None
 
 
 def _register_engine_singleton(engine) -> None:
@@ -716,7 +783,8 @@ def main() -> None:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # DeepSeek chat does not depend on the trading engine, so start it early.
+    # DeepSeek chat runs as a sibling process so it can keep working even if
+    # trading bootstrap slows down or fails later.
     _start_deepseek_background_bot()
 
     engine.start()

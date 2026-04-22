@@ -110,7 +110,7 @@ class DeepSeekTelegramBot:
     def _intro_text() -> str:
         return (
             "DeepSeek private chat is ready.\n\n"
-            "Send me a message and I will answer directly.\n"
+            "Use /chat or send me a message and I will answer directly.\n"
             "This bot is separate from the trading control bot and does not expose signals, positions, dashboards, or other menus.\n\n"
             "Use /reset to clear chat memory."
         )
