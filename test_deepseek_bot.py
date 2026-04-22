@@ -113,3 +113,56 @@ def test_deepseek_bot_requires_allowed_private_chat() -> None:
     assert bot._is_allowed(allowed_update) is True
     assert bot._is_allowed(denied_update) is False
     assert bot._is_allowed(group_update) is False
+
+
+def test_deepseek_bot_run_uses_compatible_run_polling_signature() -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeApp:
+        def __init__(self) -> None:
+            async def _set_my_commands(commands: Any) -> None:
+                captured["commands"] = commands
+
+            self.bot = SimpleNamespace(set_my_commands=_set_my_commands)
+
+        def add_handler(self, handler: Any) -> None:
+            captured.setdefault("handlers", []).append(type(handler).__name__)
+
+        def add_error_handler(self, handler: Any) -> None:
+            captured["error_handler"] = True
+
+        def run_polling(self, *args: Any, **kwargs: Any) -> None:
+            captured["run_polling_args"] = args
+            captured["run_polling_kwargs"] = kwargs
+
+    class _FakeBuilder:
+        def token(self, value: str) -> "_FakeBuilder":
+            captured["token"] = value
+            return self
+
+        def connect_timeout(self, value: int) -> "_FakeBuilder":
+            captured["connect_timeout"] = value
+            return self
+
+        def read_timeout(self, value: int) -> "_FakeBuilder":
+            captured["read_timeout"] = value
+            return self
+
+        def write_timeout(self, value: int) -> "_FakeBuilder":
+            captured["write_timeout"] = value
+            return self
+
+        def build(self) -> _FakeApp:
+            captured["built"] = True
+            return _FakeApp()
+
+    bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
+
+    with patch("deepseek_bot.Application.builder", return_value=_FakeBuilder()):
+        bot.run()
+
+    assert captured["token"] == "test-token"
+    assert captured["built"] is True
+    assert "post_init" not in captured["run_polling_kwargs"]
+    assert captured["run_polling_kwargs"]["allowed_updates"] is not None
+    assert len(captured["commands"]) == 4

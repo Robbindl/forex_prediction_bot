@@ -47,10 +47,10 @@ class DeepSeekTelegramBot:
             .build()
         )
         self._register_handlers()
+        asyncio.run(self._post_init(self.application))
         self.application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
-            post_init=self._post_init,
             stop_signals=None,
         )
 
