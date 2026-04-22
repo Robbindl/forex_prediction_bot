@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections import deque
-from typing import Deque, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Optional
 
 from utils.logger import get_logger
 
@@ -24,12 +24,13 @@ class StopHuntDetector:
     LiquidityWallDetector via __init__.py.
     """
 
-    def __init__(self, asset: str) -> None:
+    def __init__(self, asset: str, on_hunt_detected: Optional[Callable[[dict], None]] = None) -> None:
         self.asset       = asset
         self._prices:    Deque[Dict] = deque(maxlen=MAX_PRICE_HISTORY)
         self._walls:     List[dict]  = []
         self._cooldown:  Dict[str, float] = {}   # "SIDE:price" → last alert ts
         self._pub                         = None
+        self._on_hunt_detected            = on_hunt_detected
         self._init_redis()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -186,6 +187,12 @@ class StopHuntDetector:
             "confidence":    confidence,
             "ts":            int(time.time() * 1000),
         }
+
+        if self._on_hunt_detected is not None:
+            try:
+                self._on_hunt_detected(dict(event))
+            except Exception as e:
+                logger.debug(f"[StopHunt] direct handler error for {self.asset}: {e}")
 
         # FIX HIGH: Reconnect Redis if previous publish failed.
         # Previously self._pub = None on error and was never reset —

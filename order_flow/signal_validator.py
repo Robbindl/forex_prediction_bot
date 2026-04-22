@@ -27,6 +27,7 @@ class OrderFlowSignalValidator:
         self._lock           = threading.RLock()
         self._running        = False
         self._sub_thread     = None
+        self._redis_subscription_enabled = True
         
         # Rolling windows: deque([{"price": X, "strength": Y, "ts": Z}, ...])
         self._walls:    deque = deque(maxlen=500)
@@ -42,20 +43,26 @@ class OrderFlowSignalValidator:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def start(self) -> None:
-        """Start subscribing to wall and hunt alerts."""
+    def start(self, use_redis_subscriber: bool = True) -> None:
+        """Start the validator. Optionally subscribe to Redis for wall/hunt alerts."""
         if self._running:
             return
         self._running = True
-        self._sub_thread = threading.Thread(
-            target=self._subscribe_loop, name="OrderFlowValidator", daemon=True
-        )
-        self._sub_thread.start()
-        logger.info("[OrderFlowValidator] Started")
+        self._redis_subscription_enabled = bool(use_redis_subscriber)
+        if self._redis_subscription_enabled:
+            self._sub_thread = threading.Thread(
+                target=self._subscribe_loop, name="OrderFlowValidator", daemon=True
+            )
+            self._sub_thread.start()
+            logger.info("[OrderFlowValidator] Started with Redis subscriber")
+        else:
+            self._sub_thread = None
+            logger.info("[OrderFlowValidator] Started in direct-feed mode")
 
     def stop(self) -> None:
         """Stop subscribing."""
         self._running = False
+        self._sub_thread = None
 
     def validate_signal(self, signal: Dict) -> Tuple[bool, Optional[str]]:
         """
@@ -169,6 +176,14 @@ class OrderFlowSignalValidator:
                 "walls": walls[-10:] if walls else [],  # last 10
                 "hunts": hunts[-10:] if hunts else [],  # last 10
             }
+
+    def ingest_wall(self, event: dict) -> None:
+        """Direct in-process ingest path for wall events."""
+        self._ingest_wall(event)
+
+    def ingest_hunt(self, event: dict) -> None:
+        """Direct in-process ingest path for stop-hunt events."""
+        self._ingest_hunt(event)
 
     # ── Internal ──────────────────────────────────────────────────────────────
 

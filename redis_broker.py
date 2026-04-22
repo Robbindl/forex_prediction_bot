@@ -129,11 +129,11 @@ class RedisBroker:
 
         def _listen():
             import time as _time
+            ps = None
             while True:
                 try:
-                    import redis as _r
                     from services.redis_pool import get_pubsub as _get_pubsub
-                    ps = _get_pubsub()
+                    ps = _get_pubsub(old_pubsub=ps)
                     if ps is None:
                         logger.warning(f"[RedisBroker] pubsub unavailable for {channel}")
                         return

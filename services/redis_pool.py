@@ -32,7 +32,7 @@ def _build_pool():
         # Keep the default small-host friendly. This bot also opens dedicated
         # pub/sub sockets, so a large shared pool can exhaust low-tier Redis
         # plans even when command throughput is modest.
-        max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", "6"))
+        max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", "3"))
         pool = redis.ConnectionPool.from_url(
             REDIS_URL,
             max_connections=max_connections,

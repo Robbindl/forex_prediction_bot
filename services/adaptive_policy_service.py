@@ -5,6 +5,8 @@ from typing import Any, Dict
 
 from config.config import (
     GOVERNANCE_MIN_RISK_REWARD,
+    INACTIVITY_RELIEF_FULL_HOURS,
+    INACTIVITY_RELIEF_START_HOURS,
     MIN_FINAL_CONFIDENCE,
     SPREAD_THRESHOLDS,
     TRADE_CLOSE_COOLDOWN_MINUTES,
@@ -233,6 +235,59 @@ def _apply_recent_review_thresholds(
         thresholds["recent_review_profile"] = {}
 
 
+def _apply_inactivity_thresholds(
+    thresholds: Dict[str, Any],
+    *,
+    state: Any | None,
+) -> None:
+    if state is None:
+        thresholds["inactivity_profile"] = {}
+        return
+
+    try:
+        hours_since_last_entry = getattr(state, "hours_since_last_entry", lambda: None)()
+        open_position_count = int(getattr(state, "open_position_count", lambda: 0)() or 0)
+    except Exception:
+        thresholds["inactivity_profile"] = {}
+        return
+
+    if hours_since_last_entry is None:
+        thresholds["inactivity_profile"] = {
+            "active": False,
+            "hours_since_last_entry": None,
+            "relief_strength": 0.0,
+            "flat_book": open_position_count == 0,
+            "open_position_count": open_position_count,
+        }
+        return
+
+    start_hours = max(0.0, float(INACTIVITY_RELIEF_START_HOURS or 0.0))
+    full_hours = max(start_hours + 1.0, float(INACTIVITY_RELIEF_FULL_HOURS or 0.0))
+    relief_strength = _clip((float(hours_since_last_entry) - start_hours) / max(1.0, full_hours - start_hours), 0.0, 1.0)
+    if open_position_count > 0:
+        relief_strength *= 0.45
+
+    thresholds["inactivity_profile"] = {
+        "active": bool(relief_strength > 0.0),
+        "hours_since_last_entry": round(float(hours_since_last_entry), 2),
+        "relief_strength": round(float(relief_strength), 4),
+        "flat_book": open_position_count == 0,
+        "open_position_count": open_position_count,
+    }
+
+    if relief_strength <= 0.0:
+        return
+
+    thresholds["min_final_confidence"] -= 0.008 + relief_strength * 0.018
+    thresholds["min_rr"] -= 0.03 + relief_strength * 0.09
+    thresholds["cooldown_minutes"] -= int(round(1 + relief_strength * 3))
+    if open_position_count == 0:
+        thresholds["risk_multiplier"] += 0.01 + relief_strength * 0.03
+        thresholds["notes"].append("flat_book_relief")
+    else:
+        thresholds["notes"].append("entry_drought_relief")
+
+
 def _apply_controls_thresholds(
     thresholds: Dict[str, Any],
     *,
@@ -341,6 +396,7 @@ class AdaptivePolicyService:
             "target_rr_multiplier": 1.0,
             "notes": [],
             "recent_review_profile": {},
+            "inactivity_profile": {},
             "block_new_entries": False,
             "block_reason": "",
         }
@@ -386,6 +442,10 @@ class AdaptivePolicyService:
             signal=signal,
             context=context,
         )
+        _apply_inactivity_thresholds(
+            thresholds,
+            state=state,
+        )
         _apply_controls_thresholds(
             thresholds,
             live_scope=live_scope,
@@ -415,6 +475,7 @@ class AdaptivePolicyService:
             "min_rr": thresholds["min_rr"],
             "target_rr_multiplier": thresholds["target_rr_multiplier"],
             "recent_review_profile": thresholds["recent_review_profile"],
+            "inactivity_profile": thresholds["inactivity_profile"],
             "block_new_entries": thresholds["block_new_entries"],
             "block_reason": thresholds["block_reason"],
             "notes": thresholds["notes"],

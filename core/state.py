@@ -215,6 +215,8 @@ class SystemState:
         self._strategy_stats:   Dict[str, Dict] = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
         self._session_stats:    Dict[str, Dict] = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
         self._asset_stats:      Dict[str, Dict] = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
+        self._last_entry_time:  Optional[datetime] = None
+        self._last_entry_time_loaded: bool = False
 
         # ── Load ──────────────────────────────────────────────────────────
         self._load_json()                # load balance / cooldowns / counters
@@ -224,6 +226,7 @@ class SystemState:
         """Load DB-dependent state after DB is initialized."""
         self._load_positions_from_db()
         self._rebuild_stats_from_db()
+        self._prime_last_entry_time_from_db()
 
     # ── Positions ─────────────────────────────────────────────────────────────
 
@@ -233,6 +236,7 @@ class SystemState:
             trade_id = position["trade_id"]
             self._open_positions[trade_id] = position
             self._daily_trades += 1
+            self._remember_entry_time_unlocked(position)
             self._persist_json()
 
         # Write to DB outside lock
@@ -394,6 +398,64 @@ class SystemState:
     def open_position_count(self) -> int:
         with self._lock:
             return len(self._open_positions)
+
+    @staticmethod
+    def _extract_entry_time(record: Optional[Dict[str, Any]]) -> Optional[datetime]:
+        if not isinstance(record, dict):
+            return None
+        return _coerce_trade_time(record.get("entry_time") or record.get("open_time"))
+
+    def _remember_entry_time_unlocked(self, record: Optional[Dict[str, Any]]) -> None:
+        entry_time = self._extract_entry_time(record)
+        if entry_time is None:
+            return
+        if self._last_entry_time is None or entry_time > self._last_entry_time:
+            self._last_entry_time = entry_time
+        self._last_entry_time_loaded = True
+
+    def _prime_last_entry_time_from_db(self) -> None:
+        if self._last_entry_time_loaded:
+            return
+        latest_entry: Optional[datetime] = None
+        try:
+            from services.db_pool import get_db
+
+            recent = list(get_db().get_recent_trades(limit=25) or [])
+            for trade in recent:
+                entry_time = self._extract_entry_time(trade)
+                if entry_time is not None and (latest_entry is None or entry_time > latest_entry):
+                    latest_entry = entry_time
+        except Exception as e:
+            logger.debug(f"[State] last entry lookup skipped: {e}")
+        with self._lock:
+            if latest_entry is not None and (self._last_entry_time is None or latest_entry > self._last_entry_time):
+                self._last_entry_time = latest_entry
+            self._last_entry_time_loaded = True
+
+    def get_last_entry_time(self) -> Optional[datetime]:
+        with self._lock:
+            cached = self._last_entry_time
+            loaded = self._last_entry_time_loaded
+        if cached is not None:
+            return cached
+        if not loaded:
+            self._prime_last_entry_time_from_db()
+            with self._lock:
+                return self._last_entry_time
+        return None
+
+    def hours_since_last_entry(self, now: Optional[datetime] = None) -> Optional[float]:
+        last_entry = self.get_last_entry_time()
+        if last_entry is None:
+            return None
+        reference = now or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        try:
+            delta_seconds = (reference.astimezone(timezone.utc) - last_entry).total_seconds()
+            return max(0.0, delta_seconds / 3600.0)
+        except Exception:
+            return None
 
     def has_open_position_for(self, canonical_asset: str) -> bool:
         with self._lock:
@@ -705,10 +767,13 @@ class SystemState:
                 tid = pos.get("trade_id")
                 if tid and tid not in self._open_positions:
                     self._open_positions[tid] = pos
+                    self._remember_entry_time_unlocked(pos)
 
             closed_positions = raw.get("closed_positions", [])
             if closed_positions:
                 self._closed_positions = list(closed_positions)[-500:]
+                for pos in self._closed_positions:
+                    self._remember_entry_time_unlocked(pos)
 
             # Day rollover
             if self._last_save_date != date.today().isoformat():
@@ -737,6 +802,7 @@ class SystemState:
                 stale_open_trade_ids.append(tid)
                 continue
             self._open_positions[tid] = pos
+            self._remember_entry_time_unlocked(pos)
             restored += 1
 
         return restored, stale_open_trade_ids

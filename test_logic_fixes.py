@@ -16361,6 +16361,60 @@ def test_adaptive_policy_service_applies_recent_winner_boosts(monkeypatch) -> No
     assert boosted["target_rr_multiplier"] > 1.0
     assert "recent_pattern_winners" in boosted["notes"]
 
+def test_adaptive_policy_service_relaxes_thresholds_after_prolonged_flat_book() -> None:
+    adaptive_mod = importlib.import_module("services.adaptive_policy_service")
+    service = adaptive_mod.get_service()
+
+    signal = Signal(
+        asset="BTC-USD",
+        canonical_asset="BTC-USD",
+        category="crypto",
+        direction="BUY",
+        confidence=0.74,
+    )
+    signal.metadata.update(
+        {
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.76,
+                "setup_quality": 0.73,
+                "pullback_score": 0.43,
+                "breakout_score": 0.52,
+                "regime": "trending_up",
+                "volatility_state": "expansion",
+            },
+            "structure_bias": "buy",
+            "alignment_score": 0.76,
+            "setup_quality": 0.73,
+            "pullback_score": 0.43,
+            "breakout_score": 0.52,
+            "opportunity_score": 0.84,
+        }
+    )
+
+    class FlatBookState:
+        def hours_since_last_entry(self) -> float:
+            return 13.0
+
+        def open_position_count(self) -> int:
+            return 0
+
+    base = service.get_thresholds("BTC-USD", "crypto", {"market_structure": signal.metadata["market_structure"]}, signal)
+    relaxed = service.get_thresholds(
+        "BTC-USD",
+        "crypto",
+        {"market_structure": signal.metadata["market_structure"]},
+        signal,
+        state=FlatBookState(),
+    )
+
+    assert relaxed["inactivity_profile"]["active"] is True
+    assert relaxed["inactivity_profile"]["flat_book"] is True
+    assert relaxed["min_final_confidence"] < base["min_final_confidence"]
+    assert relaxed["min_rr"] < base["min_rr"]
+    assert relaxed["cooldown_minutes"] <= base["cooldown_minutes"]
+    assert "flat_book_relief" in relaxed["notes"]
+
 def test_execution_review_uses_adaptive_policy_thresholds() -> None:
     decision_mod = importlib.import_module("core.decision_engine")
     engine = decision_mod.SignalDecisionEngine()
@@ -16754,6 +16808,182 @@ def test_execution_late_entry_gate_relaxes_strong_index_pattern_rank_and_impulse
     assert signal.metadata["execution_relief_flags"]["elite_supported_candidate"] is True
     assert signal.metadata["late_entry_risk_score"] < 0.58
     assert signal.metadata["execution_hard_blocks"] == []
+
+
+def test_execution_late_entry_gate_uses_inactivity_relief_for_strong_flat_book_candidate() -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    def build_signal() -> Signal:
+        signal = Signal(
+            asset="BTC-USD",
+            canonical_asset="BTC-USD",
+            category="crypto",
+            direction="BUY",
+            confidence=0.72,
+            entry_price=100.0,
+            stop_loss=99.1,
+            take_profit=101.9,
+            risk_reward=2.11,
+        )
+        signal.metadata.update(
+            {
+                "support_proximity": 0.78,
+                "resistance_proximity": 0.12,
+                "volatility_ratio": 1.18,
+                "exhaustion_risk": 0.18,
+                "playbook_entry_style": "breakout_close",
+            }
+        )
+        return signal
+
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.78,
+        "setup_quality": 0.71,
+        "vwap_distance_atr": 0.88,
+        "session_quality_score": 0.57,
+        "candle_quality_score": 0.49,
+        "extension_score": 0.96,
+        "target_efficiency_score": 0.10,
+        "impulse_age_bars": 4,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": False,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": False,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 1,
+        "entry_confirmation_count": 1,
+        "entry_confirmation_ready": True,
+        "pattern_family": "breakout_continuation",
+        "elite_pattern_rank": 0.09,
+        "cluster_penalty": 0.08,
+        "distance_to_resistance": 0.0029,
+        "distance_to_support": 0.0180,
+        "regime_entry_policy": {
+            "min_setup_quality": 0.32,
+            "min_candle_quality": 0.34,
+            "max_extension_score": 1.28,
+            "min_target_efficiency": 0.24,
+            "max_impulse_age_bars": 5,
+        },
+        "dominant_exhaustion_score": 0.22,
+        "bias_exhausted": False,
+    }
+
+    baseline_signal = build_signal()
+    baseline_approved = engine._execution_late_entry_risk_gate(
+        baseline_signal,
+        adaptive_policy={"raw": {"recent_review_profile": {"sample_count": 0}}},
+        conf_before=baseline_signal.confidence,
+        structure=structure,
+        data={},
+        notes=[],
+    )
+
+    relieved_signal = build_signal()
+    relieved_data = {}
+    relieved_approved = engine._execution_late_entry_risk_gate(
+        relieved_signal,
+        adaptive_policy={
+            "raw": {
+                "recent_review_profile": {"sample_count": 0},
+                "inactivity_profile": {
+                    "active": True,
+                    "flat_book": True,
+                    "hours_since_last_entry": 13.0,
+                    "relief_strength": 1.0,
+                },
+            }
+        },
+        conf_before=relieved_signal.confidence,
+        structure=structure,
+        data=relieved_data,
+        notes=[],
+    )
+
+    assert baseline_approved is False
+    assert "too little clean space remains to the target" in baseline_signal.metadata["execution_hard_blocks"]
+    assert relieved_approved is True
+    assert relieved_signal.alive is True
+    assert relieved_signal.metadata["execution_relief_flags"]["inactivity_execution_relief"] is True
+    assert relieved_signal.metadata["execution_hard_blocks"] == []
+    assert relieved_data["late_entry_risk"]["inactivity_hours_since_last_entry"] == 13.0
+
+
+def test_redis_broker_subscribe_reuses_old_pubsub_on_reconnect(monkeypatch) -> None:
+    rb_mod = importlib.import_module("redis_broker")
+    redis_pool_mod = importlib.import_module("services.redis_pool")
+    broker = rb_mod.RedisBroker()
+    broker._enabled = True
+
+    class FakePubSub:
+        def subscribe(self, *channels) -> None:
+            self.channels = list(channels)
+
+        def listen(self):
+            raise RuntimeError("connection dropped")
+            yield None
+
+    first_pubsub = FakePubSub()
+    pubsub_calls = []
+
+    def fake_get_pubsub(old_pubsub=None):
+        pubsub_calls.append(old_pubsub)
+        if len(pubsub_calls) == 1:
+            return first_pubsub
+        return None
+
+    class ImmediateThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            if self._target:
+                self._target()
+
+    monkeypatch.setattr(redis_pool_mod, "get_pubsub", fake_get_pubsub, raising=False)
+    monkeypatch.setattr(rb_mod.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(time, "sleep", lambda *_args, **_kwargs: None)
+
+    broker.subscribe("signals", lambda _payload: None)
+
+    assert pubsub_calls == [None, first_pubsub]
+
+
+def test_order_flow_start_all_uses_direct_validator_mode(monkeypatch) -> None:
+    order_flow_mod = importlib.import_module("order_flow")
+
+    start_calls = []
+
+    class FakeValidator:
+        def start(self, use_redis_subscriber: bool = True) -> None:
+            start_calls.append(use_redis_subscriber)
+
+        def stop(self) -> None:
+            return None
+
+        def ingest_wall(self, event: dict) -> None:
+            return None
+
+        def ingest_hunt(self, event: dict) -> None:
+            return None
+
+    class DummyThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(order_flow_mod, "get_validator", lambda: FakeValidator(), raising=False)
+    monkeypatch.setattr(order_flow_mod, "TRACKED_ASSETS", [], raising=False)
+    monkeypatch.setattr(order_flow_mod.threading, "Thread", DummyThread)
+
+    order_flow_mod._running = False
+    order_flow_mod.start_all()
+
+    assert start_calls == [False]
 
 
 def test_trading_core_formats_seed_rejection_buckets() -> None:

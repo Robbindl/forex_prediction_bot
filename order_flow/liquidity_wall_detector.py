@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from utils.logger import get_logger
 
@@ -25,10 +25,11 @@ class LiquidityWallDetector:
     Call scan() on every order book snapshot.
     """
 
-    def __init__(self, asset: str) -> None:
+    def __init__(self, asset: str, on_wall_detected: Optional[Callable[[dict], None]] = None) -> None:
         self.asset     = asset
         self._cooldown: Dict[str, float] = {}   # "BID:price" → last alert ts
         self._pub                        = None
+        self._on_wall_detected           = on_wall_detected
         self._init_redis()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -85,6 +86,11 @@ class LiquidityWallDetector:
             if event is None:
                 continue
             walls.append(event)
+            if self._on_wall_detected is not None:
+                try:
+                    self._on_wall_detected(dict(event))
+                except Exception as e:
+                    logger.debug(f"[WallDetector] direct handler error for {self.asset}: {e}")
             self._publish_wall(event)
 
         # Prune stale cooldown entries (keep memory bounded)

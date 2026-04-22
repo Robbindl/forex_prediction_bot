@@ -1405,6 +1405,11 @@ class SignalDecisionEngine:
             if isinstance(raw_policy, dict) and isinstance(raw_policy.get("recent_review_profile"), dict)
             else {}
         )
+        inactivity_profile = (
+            raw_policy.get("inactivity_profile")
+            if isinstance(raw_policy, dict) and isinstance(raw_policy.get("inactivity_profile"), dict)
+            else {}
+        )
         late_entry_rate = float(recent_review.get("late_entry_rate", 0.0) or 0.0)
         hard_loss_rate = float(recent_review.get("hard_loss_rate", 0.0) or 0.0)
         avg_rr_realized = float(recent_review.get("avg_rr_realized", 0.0) or 0.0)
@@ -1412,6 +1417,10 @@ class SignalDecisionEngine:
         blocked_recent_pattern = bool(recent_review.get("block_new_entries"))
         blocked_recent_pattern_reason = str(recent_review.get("block_reason") or "").strip()
         confirmation_needed = bool(recent_review.get("confirmation_needed"))
+        inactivity_relief_strength = float(inactivity_profile.get("relief_strength", 0.0) or 0.0)
+        inactivity_relief_active = bool(inactivity_profile.get("active")) and inactivity_relief_strength > 0.0
+        inactivity_flat_book = bool(inactivity_profile.get("flat_book"))
+        inactivity_hours_since_last_entry = float(inactivity_profile.get("hours_since_last_entry", 0.0) or 0.0)
         elite_pattern_rank = max(
             float(recent_review.get("pattern_rank_score", 0.0) or 0.0),
             float(structure.get("elite_pattern_rank", signal.metadata.get("elite_pattern_rank", 0.0)) or 0.0),
@@ -1495,6 +1504,12 @@ class SignalDecisionEngine:
                 or first_pullback_ready
                 or entry_confirmation_ready
             )
+        )
+        inactivity_execution_relief = bool(
+            inactivity_relief_active
+            and inactivity_flat_book
+            and strong_market_candidate
+            and float(signal.confidence or 0.0) >= 0.68
         )
 
         risk_score = 0.0
@@ -1652,19 +1667,30 @@ class SignalDecisionEngine:
         if avg_quality_score <= 46.0 and hard_loss_rate >= 0.28:
             risk_score += 0.08
             reasons.append("recent execution quality for this setup family is poor")
+        if inactivity_execution_relief:
+            risk_score -= 0.04 + inactivity_relief_strength * 0.08
 
         if broker_agreement_state in {"divergent", "severe_divergence"} and broker_spread_regime in {"stressed", "extreme", "wide"}:
             hard_blocks.append("broker divergence and spread stress are both active")
         weak_candle_extension_limit = 1.32 if elite_supported_candidate else 1.25
         weak_candle_floor = 0.24 if elite_supported_candidate else 0.26
+        if inactivity_execution_relief:
+            weak_candle_extension_limit += 0.02 + inactivity_relief_strength * 0.03
+            weak_candle_floor = max(0.22, weak_candle_floor - (0.01 + inactivity_relief_strength * 0.02))
         if extension_score >= weak_candle_extension_limit and candle_quality_score <= weak_candle_floor:
             hard_blocks.append("entry is extended and the trigger candle is weak")
         target_efficiency_hard_floor = 0.11 if elite_supported_candidate else 0.15
         opposing_distance_hard_floor = 0.0030 if elite_supported_candidate else 0.0035
+        if inactivity_execution_relief:
+            target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - (0.015 + inactivity_relief_strength * 0.03))
+            opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - (0.0003 + inactivity_relief_strength * 0.0004))
         if target_efficiency_score <= target_efficiency_hard_floor and opposing_distance <= opposing_distance_hard_floor:
             hard_blocks.append("too little clean space remains to the target")
         impulse_age_hard_limit = 7 if elite_supported_candidate else 6
         directional_extension_hard_limit = 0.80 if elite_supported_candidate else 0.74
+        if inactivity_execution_relief:
+            impulse_age_hard_limit += 1 + (1 if inactivity_relief_strength >= 0.75 else 0)
+            directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
         if impulse_age_bars >= impulse_age_hard_limit and directional_extension >= directional_extension_hard_limit:
             hard_blocks.append("setup is too old and already stretched")
         if wants_retest and not breakout_retest_ready and not first_pullback_ready:
@@ -1688,6 +1714,8 @@ class SignalDecisionEngine:
         if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
             hard_blocks.append("entry confirmation delay is still pending")
         pattern_rank_hard_floor = 0.08 if strong_market_candidate and setup_quality >= 0.66 and alignment_score >= 0.74 else 0.12
+        if inactivity_execution_relief:
+            pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
         if pattern_family != "unknown" and elite_pattern_rank <= pattern_rank_hard_floor:
             hard_blocks.append("pattern family ranks below elite threshold")
         cluster_hard_limit = 0.30 if elite_supported_candidate else 0.26
@@ -1706,6 +1734,9 @@ class SignalDecisionEngine:
             "strong_market_candidate": strong_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
             "elite_supported_candidate": elite_supported_candidate,
+            "inactivity_execution_relief": inactivity_execution_relief,
+            "inactivity_relief_strength": round(inactivity_relief_strength, 4),
+            "inactivity_flat_book": inactivity_flat_book,
         }
         data["late_entry_risk"] = {
             "score": round(risk_score, 4),
@@ -1720,6 +1751,8 @@ class SignalDecisionEngine:
             "hard_loss_rate": round(hard_loss_rate, 4),
             "avg_rr_realized": round(avg_rr_realized, 4),
             "avg_quality_score": round(avg_quality_score, 2),
+            "inactivity_hours_since_last_entry": round(inactivity_hours_since_last_entry, 2),
+            "inactivity_relief_strength": round(inactivity_relief_strength, 4),
             "blocked_recent_pattern": blocked_recent_pattern,
             "blocked_recent_pattern_reason": blocked_recent_pattern_reason,
             "confirmation_needed": confirmation_needed,

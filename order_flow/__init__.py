@@ -29,10 +29,11 @@ TRACKED_ASSETS: List[str] = [
 def _get_or_create(asset: str):
     """Lazily instantiate all four detectors for a new asset."""
     if asset not in _processors:
+        validator = get_validator()
         _processors[asset]         = OrderbookProcessor(asset)
-        _wall_detectors[asset]     = LiquidityWallDetector(asset)
+        _wall_detectors[asset]     = LiquidityWallDetector(asset, on_wall_detected=validator.ingest_wall)
         _imbalance_detectors[asset] = ImbalanceDetector(asset)
-        _stop_hunt_detectors[asset] = StopHuntDetector(asset)
+        _stop_hunt_detectors[asset] = StopHuntDetector(asset, on_hunt_detected=validator.ingest_hunt)
     return (
         _processors[asset],
         _wall_detectors[asset],
@@ -123,8 +124,9 @@ def start_all() -> None:
         target=_subscribe_loop, name="OrderFlowSub", daemon=True
     )
     _sub_thread.start()
-    # Start signal validator (subscribes to Redis alerts, validates trades)
-    get_validator().start()
+    # Feed wall/hunt events directly in-process to avoid an extra Redis pub/sub
+    # connection for the validator on every bot instance.
+    get_validator().start(use_redis_subscriber=False)
     logger.info(f"[OrderFlow] Started — monitoring {len(TRACKED_ASSETS)} assets")
 
 
