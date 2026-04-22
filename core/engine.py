@@ -12,6 +12,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type, cast
 import pandas as pd
 
 from config.config import (
+    INACTIVITY_RELIEF_FULL_HOURS,
+    INACTIVITY_RELIEF_START_HOURS,
     MAX_SIGNAL_CONFIDENCE,
     MIN_FINAL_CONFIDENCE,
     PLAYBOOK_ONLY_RUNTIME,
@@ -37,6 +39,66 @@ def _get_news_event(category: str) -> dict:
         return news_monitor.get_event_state(category)
     except Exception:
         return {"state": "clear", "event": "", "impact": "", "direction": "", "mins_to": 0}
+
+
+def _seed_inactivity_profile(context: Dict[str, Any]) -> Dict[str, Any]:
+    adaptive_policy = context.get("adaptive_policy")
+    if isinstance(adaptive_policy, dict):
+        raw_policy = adaptive_policy.get("raw") if isinstance(adaptive_policy.get("raw"), dict) else adaptive_policy
+        inactivity = raw_policy.get("inactivity_profile") if isinstance(raw_policy, dict) else None
+        if isinstance(inactivity, dict):
+            return {
+                "active": bool(inactivity.get("active")),
+                "hours_since_last_entry": float(inactivity.get("hours_since_last_entry", 0.0) or 0.0),
+                "relief_strength": max(0.0, min(1.0, float(inactivity.get("relief_strength", 0.0) or 0.0))),
+                "flat_book": bool(inactivity.get("flat_book")),
+                "open_position_count": int(inactivity.get("open_position_count", 0) or 0),
+            }
+
+    engine = context.get("engine")
+    state = getattr(engine, "state", None) if engine is not None else context.get("state")
+    if state is None:
+        return {
+            "active": False,
+            "hours_since_last_entry": 0.0,
+            "relief_strength": 0.0,
+            "flat_book": False,
+            "open_position_count": 0,
+        }
+
+    try:
+        hours_since_last_entry = getattr(state, "hours_since_last_entry", lambda: None)()
+        open_position_count = int(getattr(state, "open_position_count", lambda: 0)() or 0)
+    except Exception:
+        return {
+            "active": False,
+            "hours_since_last_entry": 0.0,
+            "relief_strength": 0.0,
+            "flat_book": False,
+            "open_position_count": 0,
+        }
+
+    if hours_since_last_entry is None:
+        return {
+            "active": False,
+            "hours_since_last_entry": 0.0,
+            "relief_strength": 0.0,
+            "flat_book": open_position_count == 0,
+            "open_position_count": open_position_count,
+        }
+
+    start_hours = max(0.0, float(INACTIVITY_RELIEF_START_HOURS or 0.0))
+    full_hours = max(start_hours + 1.0, float(INACTIVITY_RELIEF_FULL_HOURS or 0.0))
+    relief_strength = max(0.0, min(1.0, (float(hours_since_last_entry) - start_hours) / max(1.0, full_hours - start_hours)))
+    if open_position_count > 0:
+        relief_strength *= 0.45
+    return {
+        "active": bool(relief_strength > 0.0),
+        "hours_since_last_entry": round(float(hours_since_last_entry), 2),
+        "relief_strength": round(float(relief_strength), 4),
+        "flat_book": open_position_count == 0,
+        "open_position_count": open_position_count,
+    }
 
 
 class TradingCore:
@@ -2840,6 +2902,7 @@ class TradingCore:
             return
         seed_decision = dict(context.get("seed_decision") or {})
         playbook_decision = dict(context.get("playbook_decision") or {})
+        inactivity_profile = dict(playbook_decision.get("inactivity_profile") or _seed_inactivity_profile(context))
         structure = dict(context.get("market_structure") or {})
         current_interval = str(context.get("timeframe") or "").strip().lower() or "n/a"
         playbook_interval = (
@@ -2882,6 +2945,9 @@ class TradingCore:
             f"tgt={self._fmt_metric(structure.get('target_efficiency_score'))} "
             f"rank={self._fmt_metric(structure.get('elite_pattern_rank'))} "
             f"cluster={self._fmt_metric(structure.get('cluster_penalty'))} "
+            f"inactivity={int(bool(inactivity_profile.get('active')))} "
+            f"flat_book={int(bool(inactivity_profile.get('flat_book')))} "
+            f"relief={self._fmt_metric(inactivity_profile.get('relief_strength'))} "
             f"predictor={self._fmt_predictor_pair(context.get('predictor_prediction', context.get('ml_prediction')), context.get('predictor_confidence', context.get('ml_confidence')))} "
             f"sent={self._fmt_metric(context.get('sentiment_score'))} "
             f"funding={context.get('funding_bias', 'NEUTRAL')} "
@@ -2958,6 +3024,7 @@ class TradingCore:
             "blocked_reason": str(playbook_pick.get("blocked_reason") or ""),
             "rejected_reasons": list(playbook_pick.get("rejected_reasons") or []),
             "rejected_details": list(playbook_pick.get("rejected_details") or []),
+            "inactivity_profile": dict(playbook_pick.get("inactivity_profile") or {}),
             "allowed_sessions": list(playbook_pick.get("allowed_sessions") or []),
             "asset_plan": dict(playbook_pick.get("asset_plan") or {}),
             "notes": list(playbook_primary.get("notes") or []),
@@ -3173,6 +3240,14 @@ class TradingCore:
         confidence_penalty = 0.0
         stale_limit_atr = 0.60
         signal_drift_atr = abs(entry_price - signal_price) / atr_unit if signal_price > 0 else 0.0
+        inactivity_profile = _seed_inactivity_profile(context)
+        inactivity_relief_strength = float(inactivity_profile.get("relief_strength", 0.0) or 0.0)
+        inactivity_entry_relief = bool(inactivity_profile.get("active")) and bool(inactivity_profile.get("flat_book")) and inactivity_relief_strength > 0.0
+        strong_seed_context = bool(
+            float(structure.get("alignment_score", 0.0) or 0.0) >= 0.72
+            and float(structure.get("setup_quality", 0.0) or 0.0) >= 0.66
+            and float((context.get("playbook_decision") or {}).get("confidence", 0.0) or 0.0) >= 0.66
+        )
 
         if "retest" in entry_style_label or playbook_label == "breakout_retest":
             anchor_role = "retest_level"
@@ -3206,14 +3281,24 @@ class TradingCore:
                 return None
             anchor_distance_atr = abs(entry_price - anchor_price) / atr_unit
             anchor_tolerance_atr = 0.30 if anchor_role == "pullback_anchor" else 0.26
-            if anchor_distance_atr > anchor_tolerance_atr:
+            inactivity_anchor_tolerance = anchor_tolerance_atr
+            if inactivity_entry_relief and strong_seed_context:
+                inactivity_anchor_tolerance += 0.04 + inactivity_relief_strength * 0.10
+            if anchor_distance_atr > inactivity_anchor_tolerance:
                 self._reject_seed_signal(asset, context, f"{anchor_role}_not_in_range")
                 return None
+            if anchor_distance_atr > anchor_tolerance_atr and inactivity_entry_relief and strong_seed_context:
+                confidence_penalty += min(0.09, (anchor_distance_atr - anchor_tolerance_atr) * (0.24 + inactivity_relief_strength * 0.10))
             confidence_penalty += min(0.07, max(0.0, anchor_distance_atr - 0.10) * 0.18)
 
-        if signal_drift_atr > stale_limit_atr:
+        inactivity_stale_limit_atr = stale_limit_atr
+        if inactivity_entry_relief and strong_seed_context:
+            inactivity_stale_limit_atr += 0.05 + inactivity_relief_strength * 0.12
+        if signal_drift_atr > inactivity_stale_limit_atr:
             self._reject_seed_signal(asset, context, "stale_market_entry")
             return None
+        if signal_drift_atr > stale_limit_atr and inactivity_entry_relief and strong_seed_context:
+            confidence_penalty += min(0.08, (signal_drift_atr - stale_limit_atr) * (0.20 + inactivity_relief_strength * 0.10))
         confidence_penalty += min(0.08, max(0.0, signal_drift_atr - 0.16) * 0.14)
 
         return {
@@ -3226,6 +3311,8 @@ class TradingCore:
             "anchor_role": anchor_role,
             "anchor_distance_atr": round(anchor_distance_atr, 4),
             "stale_limit_atr": round(stale_limit_atr, 4),
+            "inactivity_entry_relief": inactivity_entry_relief and strong_seed_context,
+            "inactivity_relief_strength": round(inactivity_relief_strength, 4),
             "confidence_penalty": round(confidence_penalty, 4),
             "entry_source": "live_price" if current_price > 0 else "signal_close",
         }

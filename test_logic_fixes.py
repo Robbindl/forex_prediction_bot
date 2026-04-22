@@ -14513,6 +14513,75 @@ def test_playbook_service_fallback_allows_bearish_premium_generic_trend_without_
     assert pick["primary"]["entry_style"] == "elite_trend_continuation"
 
 
+def test_playbook_service_fallback_uses_inactivity_relief_for_flat_book_generic_trend(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.84,
+        "setup_quality": 0.78,
+        "pullback_score": 0.04,
+        "breakout_score": 0.08,
+        "candle_quality_score": 0.0,
+        "session_quality_score": 0.0,
+        "extension_score": 1.02,
+        "target_efficiency_score": 0.28,
+        "impulse_age_bars": 4,
+        "elite_pattern_rank": 0.24,
+        "cluster_penalty": 0.06,
+        "volatility_state": "normal",
+        "regime": "trending_up",
+        "trend_15m": "trending_up",
+        "trend_1h": "ranging",
+        "pattern_family": "trending_up_generic",
+        "entry_confirmation_ready": False,
+        "entry_confirmation_count": 0,
+        "entry_confirmation_bars_required": 1,
+        "upside_exhaustion_score": 0.16,
+        "downside_exhaustion_score": 0.0,
+    }
+
+    base_pick = service.pick_seed(
+        "EUR/USD",
+        "forex",
+        _build_trend_frame(1.10, 0.00004),
+        context={"market_structure": dict(structure)},
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+    assert base_pick["primary"] is None
+
+    class _FlatBookState:
+        def hours_since_last_entry(self) -> float:
+            return 13.0
+
+        def open_position_count(self) -> int:
+            return 0
+
+    relieved_pick = service.pick_seed(
+        "EUR/USD",
+        "forex",
+        _build_trend_frame(1.10, 0.00004),
+        context={
+            "market_structure": dict(structure),
+            "engine": SimpleNamespace(state=_FlatBookState()),
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert relieved_pick["action"] == "seed"
+    assert relieved_pick["primary"] is not None
+    assert relieved_pick["primary"]["playbook"] == "breakout_continuation"
+    assert relieved_pick["inactivity_profile"]["active"] is True
+    assert relieved_pick["inactivity_profile"]["flat_book"] is True
+
+
 def test_playbook_service_limits_alt_crypto_to_liquid_sessions(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
@@ -14802,6 +14871,94 @@ def test_generate_seed_signal_carries_playbook_rejection_details(monkeypatch) ->
         "breakout_continuation:BUY:reason=alignment_too_weak:breakout_continuation:score=0.410:align=0.220:setup=0.240:trends=0/1:early=0:strong=0:family=ranging_generic:confirm=0/2",
     ]
     assert ctx["playbook_decision"]["allowed_sessions"][-1] == "us_core"
+
+
+def test_generate_seed_signal_uses_inactivity_relief_for_anchor_range(monkeypatch) -> None:
+    core = TradingCore.__new__(TradingCore)
+    _pin_playbook_clock(monkeypatch)
+    core._predictor = SimpleNamespace(predict=lambda *args, **kwargs: (0.5, 0.0))
+    core._risk_manager = SimpleNamespace(
+        get_stop_loss=lambda entry, direction, category, atr=0.0: entry - 0.0009,
+        get_take_profit=lambda entry, stop_loss, direction, category="", rr_multiplier=1.0: entry + 0.0016,
+    )
+    monkeypatch.setattr(core, "_estimate_atr", lambda price_data, period=14: 0.30, raising=False)
+
+    class _FakePlaybookService:
+        @staticmethod
+        def preferred_interval(category: str, asset: str) -> str:
+            return "5m"
+
+        @staticmethod
+        def pick_seed(*args, **kwargs):
+            return {
+                "action": "seed",
+                "asset": "ETH-USD",
+                "category": "crypto",
+                "session": "europe_core",
+                "session_label": "europe_core",
+                "primary": {
+                    "playbook": "failed_break_reclaim",
+                    "direction": "BUY",
+                    "score": 0.78,
+                    "confidence": 0.80,
+                    "entry_style": "reclaim_failure",
+                    "preferred_interval": "5m",
+                    "management": {},
+                    "notes": ["test_reclaim"],
+                },
+                "candidates": [],
+                "blocked_reason": "",
+                "rejected_reasons": [],
+                "rejected_details": [],
+                "allowed_sessions": ["europe_core", "us_overlap", "us_open", "us_core"],
+                "asset_plan": {"min_alignment_score": 0.60, "min_setup_quality": 0.58},
+            }
+
+    playbook_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(playbook_mod, "get_service", lambda: _FakePlaybookService(), raising=False)
+
+    price_data = _build_breakout_frame(start=100.0)
+    base_ctx = {
+        "sentiment_score": 0.10,
+        "regime": "trending_up",
+        "market_data": {},
+        "timeframe": "15m",
+        "current_price": 100.0,
+        "market_structure": {
+            "structure_bias": "buy",
+            "alignment_score": 0.82,
+            "setup_quality": 0.76,
+            "pullback_score": 0.18,
+            "breakout_score": 0.44,
+            "volatility_state": "expansion",
+            "regime": "trending_up",
+            "trend_15m": "trending_up",
+            "trend_1h": "trending_up",
+            "failed_opposite_move_confirmed": True,
+            "support": 99.91,
+            "resistance": 101.20,
+            "distance_to_support": 0.0022,
+            "distance_to_resistance": 0.0040,
+        },
+    }
+
+    rejected = TradingCore._generate_seed_signal(core, "ETH-USD", "ETH-USD", "crypto", price_data, dict(base_ctx))
+    assert rejected is None
+
+    class _FlatBookState:
+        def hours_since_last_entry(self) -> float:
+            return 13.0
+
+        def open_position_count(self) -> int:
+            return 0
+
+    relieved_ctx = dict(base_ctx)
+    relieved_ctx["engine"] = SimpleNamespace(state=_FlatBookState())
+    signal = TradingCore._generate_seed_signal(core, "ETH-USD", "ETH-USD", "crypto", price_data, relieved_ctx)
+
+    assert signal is not None
+    assert signal.metadata["entry_plan"]["inactivity_entry_relief"] is True
+    assert signal.metadata["entry_plan"]["anchor_distance_atr"] > 0.26
 
 def test_market_review_records_structure_context() -> None:
     decision_mod = importlib.import_module("core.decision_engine")

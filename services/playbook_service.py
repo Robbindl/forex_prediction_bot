@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from config.config import INACTIVITY_RELIEF_FULL_HOURS, INACTIVITY_RELIEF_START_HOURS
+
 
 def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, float(value)))
@@ -56,6 +58,67 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
+    adaptive_policy = ctx.get("adaptive_policy")
+    if isinstance(adaptive_policy, dict):
+        raw_policy = adaptive_policy.get("raw") if isinstance(adaptive_policy.get("raw"), dict) else adaptive_policy
+        inactivity = raw_policy.get("inactivity_profile") if isinstance(raw_policy, dict) else None
+        if isinstance(inactivity, dict):
+            return {
+                "active": bool(inactivity.get("active")),
+                "hours_since_last_entry": _safe_float(inactivity.get("hours_since_last_entry"), 0.0),
+                "relief_strength": _clip(_safe_float(inactivity.get("relief_strength"), 0.0), 0.0, 1.0),
+                "flat_book": bool(inactivity.get("flat_book")),
+                "open_position_count": int(inactivity.get("open_position_count", 0) or 0),
+            }
+
+    engine = ctx.get("engine")
+    state = getattr(engine, "state", None) if engine is not None else ctx.get("state")
+    if state is None:
+        return {
+            "active": False,
+            "hours_since_last_entry": 0.0,
+            "relief_strength": 0.0,
+            "flat_book": False,
+            "open_position_count": 0,
+        }
+
+    try:
+        hours_since_last_entry = getattr(state, "hours_since_last_entry", lambda: None)()
+        open_position_count = int(getattr(state, "open_position_count", lambda: 0)() or 0)
+    except Exception:
+        return {
+            "active": False,
+            "hours_since_last_entry": 0.0,
+            "relief_strength": 0.0,
+            "flat_book": False,
+            "open_position_count": 0,
+        }
+
+    if hours_since_last_entry is None:
+        return {
+            "active": False,
+            "hours_since_last_entry": 0.0,
+            "relief_strength": 0.0,
+            "flat_book": open_position_count == 0,
+            "open_position_count": open_position_count,
+        }
+
+    start_hours = max(0.0, float(INACTIVITY_RELIEF_START_HOURS or 0.0))
+    full_hours = max(start_hours + 1.0, float(INACTIVITY_RELIEF_FULL_HOURS or 0.0))
+    relief_strength = _clip((float(hours_since_last_entry) - start_hours) / max(1.0, full_hours - start_hours), 0.0, 1.0)
+    if open_position_count > 0:
+        relief_strength *= 0.45
+    return {
+        "active": bool(relief_strength > 0.0),
+        "hours_since_last_entry": round(float(hours_since_last_entry), 2),
+        "relief_strength": round(float(relief_strength), 4),
+        "flat_book": open_position_count == 0,
+        "open_position_count": open_position_count,
+    }
 
 
 def _session_matches(current: str, allowed: str) -> bool:
@@ -227,6 +290,8 @@ def _qualify_impulse_candidate(
     trigger_trend_aligned: bool = False,
     structure_promoted: bool = False,
     external_confirmation_score: float = 0.0,
+    inactivity_relief_strength: float = 0.0,
+    inactivity_flat_book: bool = False,
 ) -> tuple[bool, str, bool, bool]:
     candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
     entry_style_label = str(entry_style or "").strip().lower()
@@ -263,6 +328,35 @@ def _qualify_impulse_candidate(
         or trigger_trend_aligned
         or max(cross_strength, micro_strength) >= 0.22
     )
+    inactivity_seed_relief = bool(inactivity_flat_book and inactivity_relief_strength > 0.0)
+    inactivity_candidate_floor = max(
+        0.44,
+        early_relief_candidate_floor - (0.05 + inactivity_relief_strength * 0.10),
+    )
+    inactivity_alignment_floor = max(
+        0.46,
+        float(plan.min_alignment_score) - (0.08 + inactivity_relief_strength * 0.10),
+    )
+    inactivity_setup_floor = max(
+        0.44,
+        float(plan.min_setup_quality) - (0.06 + inactivity_relief_strength * 0.08),
+    )
+    inactivity_fast_track_context = bool(
+        inactivity_seed_relief
+        and fast_interval
+        and bias_alignment
+        and candidate_score >= inactivity_candidate_floor
+        and alignment_score >= inactivity_alignment_floor
+        and setup_quality >= inactivity_setup_floor
+        and (
+            family.endswith("liquidity_sweep")
+            or family.endswith("first_pullback")
+            or family.endswith("breakout_retest")
+            or family.endswith("generic")
+            or near_confirmation
+            or fast_supportive_context
+        )
+    )
     allow_early_trend_relief = bool(
         playbook in {"breakout_continuation", "intermarket_continuation", "aggressive_expansion", "news_impulse"}
         and fast_interval
@@ -278,13 +372,23 @@ def _qualify_impulse_candidate(
             or fast_supportive_context
         )
     )
+    if inactivity_fast_track_context:
+        allow_early_trend_relief = True
     if allow_early_trend_relief:
         strong_impulse_break = True
     effective_required_trends = int(plan.min_trend_agreement or 0)
     if allow_early_trend_relief:
         effective_required_trends = min(effective_required_trends, 1)
-    relaxed_alignment_floor = 0.0 if strong_impulse_break else max(0.25, float(plan.min_alignment_score) - 0.16)
-    relaxed_setup_floor = max(0.12, float(plan.min_setup_quality) - (0.42 if strong_impulse_break else 0.10))
+    relaxed_alignment_floor = 0.0 if strong_impulse_break else max(
+        0.22,
+        float(plan.min_alignment_score) - 0.16 - (inactivity_relief_strength * 0.06 if inactivity_seed_relief else 0.0),
+    )
+    relaxed_setup_floor = max(
+        0.10,
+        float(plan.min_setup_quality)
+        - (0.42 if strong_impulse_break else 0.10)
+        - (inactivity_relief_strength * 0.05 if inactivity_seed_relief else 0.0),
+    )
 
     reason = _candidate_threshold_reason(alignment_score, relaxed_alignment_floor, "alignment_too_weak", playbook)
     if reason:
@@ -311,11 +415,19 @@ def _qualify_standard_candidate(
     plan: _AssetPlaybookPlan,
     alignment_score: float,
     setup_quality: float,
+    inactivity_relief_strength: float = 0.0,
+    inactivity_flat_book: bool = False,
 ) -> tuple[bool, str]:
-    reason = _candidate_threshold_reason(alignment_score, plan.min_alignment_score, "alignment_too_weak", playbook)
+    inactivity_seed_relief = bool(inactivity_flat_book and inactivity_relief_strength > 0.0)
+    alignment_floor = float(plan.min_alignment_score)
+    setup_floor = float(plan.min_setup_quality)
+    if inactivity_seed_relief:
+        alignment_floor = max(0.50, alignment_floor - (0.03 + inactivity_relief_strength * 0.05))
+        setup_floor = max(0.48, setup_floor - (0.03 + inactivity_relief_strength * 0.05))
+    reason = _candidate_threshold_reason(alignment_score, alignment_floor, "alignment_too_weak", playbook)
     if reason:
         return False, reason
-    reason = _candidate_threshold_reason(setup_quality, plan.min_setup_quality, "setup_quality_too_weak", playbook)
+    reason = _candidate_threshold_reason(setup_quality, setup_floor, "setup_quality_too_weak", playbook)
     if reason:
         return False, reason
     return True, ""
@@ -950,6 +1062,7 @@ class PlaybookService:
         category: str,
         structure: Dict[str, Any],
         plan: _AssetPlaybookPlan,
+        inactivity_profile: Optional[Dict[str, Any]] = None,
     ) -> tuple[bool, str]:
         playbook = str(candidate.get("playbook") or "").strip()
         if playbook not in plan.allowed_playbooks:
@@ -1000,6 +1113,9 @@ class PlaybookService:
         )
         strong_impulse_break = False
         allow_early_trend_relief = False
+        inactivity_profile = inactivity_profile if isinstance(inactivity_profile, dict) else {}
+        inactivity_relief_strength = _safe_float(inactivity_profile.get("relief_strength"), 0.0)
+        inactivity_flat_book = bool(inactivity_profile.get("flat_book"))
         liquidity_sweep_directional = (
             (direction == "BUY" and liquidity_sweep_buy)
             or (direction == "SELL" and liquidity_sweep_sell)
@@ -1028,6 +1144,8 @@ class PlaybookService:
             "external_confirmation_score": round(external_confirmation_score, 4),
             "preferred_interval": preferred_interval,
             "liquidity_sweep_directional": bool(liquidity_sweep_directional),
+            "inactivity_relief_strength": round(inactivity_relief_strength, 4),
+            "inactivity_flat_book": inactivity_flat_book,
         }
 
         if playbook == "crypto_orderflow_continuation":
@@ -1073,6 +1191,8 @@ class PlaybookService:
                 trigger_trend_aligned=trigger_trend_aligned,
                 structure_promoted=structure_promoted,
                 external_confirmation_score=external_confirmation_score,
+                inactivity_relief_strength=inactivity_relief_strength,
+                inactivity_flat_book=inactivity_flat_book,
             )
             qualification["strong_impulse_break"] = bool(strong_impulse_break)
             qualification["allow_early_trend_relief"] = bool(allow_early_trend_relief)
@@ -1087,6 +1207,8 @@ class PlaybookService:
                 plan=plan,
                 alignment_score=alignment_score,
                 setup_quality=setup_quality,
+                inactivity_relief_strength=inactivity_relief_strength,
+                inactivity_flat_book=inactivity_flat_book,
             )
             if not ok:
                 qualification["reason"] = reason
@@ -1167,6 +1289,7 @@ class PlaybookService:
         session: str,
         structure: Dict[str, Any],
         plan: _AssetPlaybookPlan,
+        inactivity_profile: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
         if structure_bias not in {"buy", "sell"}:
@@ -1199,9 +1322,26 @@ class PlaybookService:
         liquidity_sweep_sell = bool(structure.get("liquidity_sweep_sell"))
         upside_exhaustion_score = float(structure.get("upside_exhaustion_score", 0.0) or 0.0)
         downside_exhaustion_score = float(structure.get("downside_exhaustion_score", 0.0) or 0.0)
+        inactivity_profile = inactivity_profile if isinstance(inactivity_profile, dict) else {}
+        inactivity_relief_strength = _safe_float(inactivity_profile.get("relief_strength"), 0.0)
+        inactivity_flat_book = bool(inactivity_profile.get("flat_book"))
+        inactivity_seed_relief = bool(inactivity_flat_book and inactivity_relief_strength > 0.0)
 
         directional_pullback = pullback_score if direction == "BUY" else -pullback_score
         directional_breakout = breakout_score if direction == "BUY" else -breakout_score
+        effective_candle_quality_score = candle_quality_score
+        effective_session_quality_score = session_quality_score
+        if inactivity_seed_relief:
+            if effective_candle_quality_score <= 0.0:
+                effective_candle_quality_score = min(
+                    1.0,
+                    0.18 + setup_quality * 0.34 + max(0.0, max(directional_breakout, directional_pullback)) * 0.16,
+                )
+            if effective_session_quality_score <= 0.0 and str(session or "").lower() != "off":
+                effective_session_quality_score = min(
+                    1.0,
+                    0.20 + alignment_score * 0.28 + target_efficiency_score * 0.20,
+                )
         near_confirmation = entry_confirmation_count >= max(0, entry_confirmation_bars_required - 1)
         fast_confirmation_ready, fast_confirmation_count, fast_confirmation_required, _ = _effective_confirmation_gate(
             playbook="breakout_continuation",
@@ -1223,8 +1363,8 @@ class PlaybookService:
             and elite_pattern_rank >= 0.18
             and alignment_score >= max(0.56, float(plan.min_alignment_score) - 0.04)
             and setup_quality >= max(0.52, float(plan.min_setup_quality) - 0.06)
-            and candle_quality_score >= 0.34
-            and session_quality_score >= 0.42
+            and effective_candle_quality_score >= 0.34
+            and effective_session_quality_score >= 0.42
             and extension_score <= 1.45
             and target_efficiency_score >= 0.40
             and impulse_age_bars <= 5
@@ -1251,7 +1391,7 @@ class PlaybookService:
             and target_efficiency_score >= 0.40
             and impulse_age_bars <= 5
             and (
-                (candle_quality_score >= 0.34 and session_quality_score >= 0.42)
+                (effective_candle_quality_score >= 0.34 and effective_session_quality_score >= 0.42)
                 or premium_generic_trend_ready
             )
             and (
@@ -1295,16 +1435,32 @@ class PlaybookService:
             extension_ceiling = 1.10 if relaxed_target_gate else 1.05
             alignment_floor = max(0.52, float(plan.min_alignment_score) - 0.02)
             setup_floor = max(0.50, float(plan.min_setup_quality) - 0.02)
+        if inactivity_seed_relief:
+            target_efficiency_floor = max(0.0, target_efficiency_floor - (0.04 + inactivity_relief_strength * 0.08))
+            extension_ceiling += 0.05 + inactivity_relief_strength * 0.10
+            alignment_floor = max(0.50, alignment_floor - (0.02 + inactivity_relief_strength * 0.04))
+            setup_floor = max(0.48, setup_floor - (0.02 + inactivity_relief_strength * 0.04))
 
         if alignment_score < alignment_floor:
             return None
         if setup_quality < setup_floor:
             return None
-        if not premium_generic_trend_ready and (candle_quality_score < 0.30 or session_quality_score < 0.34):
+        candle_floor = 0.30
+        session_floor = 0.34
+        if inactivity_seed_relief:
+            candle_floor = max(0.20, candle_floor - (0.04 + inactivity_relief_strength * 0.04))
+            session_floor = max(0.24, session_floor - (0.04 + inactivity_relief_strength * 0.05))
+        if not premium_generic_trend_ready and (
+            effective_candle_quality_score < candle_floor or effective_session_quality_score < session_floor
+        ):
             return None
         if extension_score > extension_ceiling or target_efficiency_score < target_efficiency_floor:
             return None
-        if impulse_age_bars >= 6 or cluster_penalty >= 0.26:
+        impulse_age_limit = 6 + (1 if inactivity_seed_relief and inactivity_relief_strength >= 0.35 else 0) + (
+            1 if inactivity_seed_relief and inactivity_relief_strength >= 0.75 else 0
+        )
+        cluster_penalty_limit = 0.26 + (0.03 + inactivity_relief_strength * 0.04 if inactivity_seed_relief else 0.0)
+        if impulse_age_bars >= impulse_age_limit or cluster_penalty >= cluster_penalty_limit:
             return None
         if (
             fast_confirmation_required > 1
@@ -1326,8 +1482,8 @@ class PlaybookService:
             directional_liquidity_sweep_ready
             and alignment_score >= max(0.54, float(plan.min_alignment_score) - 0.06)
             and setup_quality >= max(0.50, float(plan.min_setup_quality) - 0.06)
-            and candle_quality_score >= 0.28
-            and session_quality_score >= 0.42
+            and effective_candle_quality_score >= 0.28
+            and effective_session_quality_score >= 0.42
             and extension_score <= 1.02
             and target_efficiency_score >= 0.0
             and impulse_age_bars <= 5
@@ -1335,13 +1491,26 @@ class PlaybookService:
         emerging_continuation_ready = bool(
             alignment_score >= max(0.54, float(plan.min_alignment_score) - 0.06)
             and setup_quality >= max(0.50, float(plan.min_setup_quality) - 0.06)
-            and candle_quality_score >= 0.30
-            and session_quality_score >= 0.46
+            and effective_candle_quality_score >= 0.30
+            and effective_session_quality_score >= 0.46
             and extension_score <= 1.00
             and target_efficiency_score >= 0.20
             and impulse_age_bars <= 5
         )
         emerging_generic_trend_ready = bool(potential_generic_trend_ready)
+        if (
+            inactivity_seed_relief
+            and pattern_family.endswith("generic")
+            and family_directional_match
+            and alignment_score >= max(0.58, float(plan.min_alignment_score) - 0.06)
+            and setup_quality >= max(0.56, float(plan.min_setup_quality) - 0.06)
+            and effective_candle_quality_score >= max(0.18, candle_floor - 0.02)
+            and effective_session_quality_score >= max(0.24, session_floor - 0.02)
+            and extension_score <= extension_ceiling
+            and target_efficiency_score >= max(0.0, target_efficiency_floor)
+            and impulse_age_bars <= impulse_age_limit
+        ):
+            emerging_generic_trend_ready = True
         if failed_opposite_move_confirmed and "failed_break_reclaim" in plan.allowed_playbooks:
             playbook = "failed_break_reclaim"
             entry_style = "failed_move_reclaim"
@@ -1374,6 +1543,19 @@ class PlaybookService:
             entry_style = "elite_early_continuation"
             readiness_note = "early_continuation_ready"
         elif (
+            inactivity_seed_relief
+            and "breakout_continuation" in plan.allowed_playbooks
+            and pattern_family.endswith("generic")
+            and family_directional_match
+            and alignment_score >= max(0.58, float(plan.min_alignment_score) - 0.06)
+            and setup_quality >= max(0.56, float(plan.min_setup_quality) - 0.06)
+            and effective_candle_quality_score >= max(0.18, candle_floor - 0.02)
+            and effective_session_quality_score >= max(0.24, session_floor - 0.02)
+        ):
+            playbook = "breakout_continuation"
+            entry_style = "elite_trend_continuation"
+            readiness_note = "inactivity_generic_continuation"
+        elif (
             "breakout_continuation" in plan.allowed_playbooks
             and emerging_generic_trend_ready
         ):
@@ -1403,6 +1585,8 @@ class PlaybookService:
                 structural_ready_bonus += 0.03
             if premium_generic_trend_ready:
                 structural_ready_bonus += 0.02
+            if inactivity_seed_relief:
+                structural_ready_bonus += 0.03 + inactivity_relief_strength * 0.03
         if near_confirmation:
             structural_ready_bonus += 0.05
         score = _clip(
@@ -1410,8 +1594,8 @@ class PlaybookService:
             + abs(directional_pullback) * 0.18
             + _clip(setup_quality) * 0.18
             + _clip(alignment_score) * 0.16
-            + _clip(candle_quality_score) * 0.10
-            + _clip(session_quality_score) * 0.08
+            + _clip(effective_candle_quality_score) * 0.10
+            + _clip(effective_session_quality_score) * 0.08
             + _clip(target_efficiency_score) * 0.08
             + _clip(elite_pattern_rank) * 0.10
             + (0.06 if failed_opposite_move_confirmed else 0.0)
@@ -1430,6 +1614,8 @@ class PlaybookService:
             score_floor = 0.52
         elif entry_style == "elite_trend_continuation":
             score_floor = 0.40
+            if inactivity_seed_relief:
+                score_floor = max(0.28, score_floor - (0.04 + inactivity_relief_strength * 0.08))
         if score < score_floor:
             return None
 
@@ -1456,6 +1642,7 @@ class PlaybookService:
                 f"session={session}",
                 f"align={alignment_score:.2f}",
                 f"setup={setup_quality:.2f}",
+                f"inactivity_relief={inactivity_relief_strength:.2f}" if inactivity_seed_relief else "inactivity_relief=0.00",
             ],
         }
 
@@ -2600,6 +2787,7 @@ class PlaybookService:
 
         plan = self._asset_plan(asset, category)
         session_allowed, session, allowed_sessions = self._session_allowed(asset, category)
+        inactivity_profile = _context_inactivity_profile(context)
         if not session_allowed:
             return {
                 "asset": asset,
@@ -2609,6 +2797,7 @@ class PlaybookService:
                 "blocked_reason": f"session_block:{session}",
                 "session": session,
                 "allowed_sessions": list(allowed_sessions),
+                "inactivity_profile": dict(inactivity_profile),
                 "asset_plan": {
                     "allowed_playbooks": list(plan.allowed_playbooks),
                     "allowed_sessions": list(allowed_sessions),
@@ -2647,6 +2836,7 @@ class PlaybookService:
                     category=category,
                     structure=structure,
                     plan=plan,
+                    inactivity_profile=inactivity_profile,
                 )
                 if approved:
                     candidates.append(candidate)
@@ -2675,6 +2865,7 @@ class PlaybookService:
                 session=session,
                 structure=structure,
                 plan=plan,
+                inactivity_profile=inactivity_profile,
             )
             if fallback:
                 approved, reason = self._qualify_candidate(
@@ -2683,6 +2874,7 @@ class PlaybookService:
                     category=category,
                     structure=structure,
                     plan=plan,
+                    inactivity_profile=inactivity_profile,
                 )
                 if approved:
                     candidates.append(fallback)
@@ -2711,6 +2903,7 @@ class PlaybookService:
             "category": category,
             "session": session,
             "allowed_sessions": list(allowed_sessions),
+            "inactivity_profile": dict(inactivity_profile),
             "candidates": candidates,
             "primary": primary,
             "blocked_reason": "" if primary else (rejected_reasons[0] if rejected_reasons else ""),
@@ -2746,6 +2939,7 @@ class PlaybookService:
                 "blocked_reason": analysis.get("blocked_reason", ""),
                 "session": analysis.get("session", ""),
                 "session_label": analysis.get("session", ""),
+                "inactivity_profile": dict(analysis.get("inactivity_profile") or {}),
                 "rejected_reasons": list(analysis.get("rejected_reasons") or []),
                 "rejected_details": list(analysis.get("rejected_details") or []),
                 "allowed_sessions": list(analysis.get("allowed_sessions") or []),
@@ -2792,6 +2986,7 @@ class PlaybookService:
             "category": category,
             "session": analysis.get("session", ""),
             "session_label": analysis.get("session", ""),
+            "inactivity_profile": dict(analysis.get("inactivity_profile") or {}),
             "primary": best,
             "candidates": analysis.get("candidates", []),
             "blocked_reason": analysis.get("blocked_reason", ""),
