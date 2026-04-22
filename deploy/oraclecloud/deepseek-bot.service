@@ -9,8 +9,9 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/forex_prediction_bot
 EnvironmentFile=-/opt/forex_prediction_bot/.env
+Environment=BOT_ROLE=deepseek
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/forex_prediction_bot/venv_tf/bin/python deepseek_bot.py
+ExecStart=/opt/forex_prediction_bot/venv_tf/bin/python bot.py
 Restart=always
 RestartSec=5
 KillSignal=SIGINT

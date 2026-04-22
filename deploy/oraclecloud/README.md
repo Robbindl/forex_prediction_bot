@@ -92,10 +92,10 @@ If you want a separate Telegram bot for pure DeepSeek chat, run it as a second p
 
 ```bash
 cd /opt/forex_prediction_bot
-./venv_tf/bin/python deepseek_bot.py
+./venv_tf/bin/python bot.py
 ```
 
-Use `DEEPSEEK_TELEGRAM_TOKEN` for the chat bot token. Set `DEEPSEEK_TELEGRAM_CHAT_ID` only if you want to lock it to one private chat.
+`bot.py` starts the trading stack and, if `DEEPSEEK_TELEGRAM_TOKEN` is set, the standalone DeepSeek chat bot in the background. Set `BOT_ROLE=deepseek` only if you want this service to run DeepSeek by itself.
 
 To run it as a service, copy `deploy/oraclecloud/deepseek-bot.service` to `/etc/systemd/system/deepseek-bot.service`, adjust the `User` and `Group` if needed, then run:
 

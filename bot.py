@@ -19,6 +19,10 @@ from config.config import (
 )
 from utils.logger import TradingLogger, get_logger, prune_stale_log_artifacts
 
+_BOT_ROLE = os.getenv("BOT_ROLE", "").strip().lower()
+_DEEPSEEK_ONLY_MODE = _BOT_ROLE == "deepseek"
+_deepseek_bot = None
+
 _trading_logger = TradingLogger(log_dir=str(LOG_DIR), level=LOG_LEVEL)
 logger = get_logger()
 
@@ -32,48 +36,53 @@ except Exception as e:
 _DEFAULT_HTTP2_CERT = Path("cert.pem")
 _DEFAULT_HTTP2_KEY = Path("key.pem")
 
-logger.info("=" * 60)
-logger.info(" FOREX PREDICTION BOT — STARTING")
-logger.info("=" * 60)
+if _DEEPSEEK_ONLY_MODE:
+    logger.info("=" * 60)
+    logger.info(" DEEPSEEK STANDALONE BOT — STARTING")
+    logger.info("=" * 60)
+else:
+    logger.info("=" * 60)
+    logger.info(" FOREX PREDICTION BOT — STARTING")
+    logger.info("=" * 60)
 
-# ── API key validation (before anything else) ─────────────────────────────────
-logger.info("[bot] Validating API keys...")
-try:
-    from config.api_validation import validate_apis
-    validate_apis()
-    logger.info("[bot] API validation passed")
-except RuntimeError as e:
-    logger.critical(f"[bot] API validation failed: {e}")
-    sys.exit(1)
+    # ── API key validation (before anything else) ─────────────────────────────
+    logger.info("[bot] Validating API keys...")
+    try:
+        from config.api_validation import validate_apis
+        validate_apis()
+        logger.info("[bot] API validation passed")
+    except RuntimeError as e:
+        logger.critical(f"[bot] API validation failed: {e}")
+        sys.exit(1)
 
-# ── Check optional API keys ─────────────────────────────────────────────────
-from config.config import WHALE_ALERT_KEY, WHALE_TELEGRAM_TOKEN, FRED_API_KEY
-if not WHALE_ALERT_KEY:
-    logger.warning("[bot] WHALE_ALERT_KEY not set — authenticated whale API enrichment disabled")
-if not WHALE_TELEGRAM_TOKEN:
-    logger.warning("[bot] WHALE_TELEGRAM_TOKEN not set — intelligence alerts disabled")
-if not FRED_API_KEY:
-    logger.warning("[bot] FRED_API_KEY not set — macro data collection disabled")
+    # ── Check optional API keys ─────────────────────────────────────────────
+    from config.config import WHALE_ALERT_KEY, WHALE_TELEGRAM_TOKEN, FRED_API_KEY
+    if not WHALE_ALERT_KEY:
+        logger.warning("[bot] WHALE_ALERT_KEY not set — authenticated whale API enrichment disabled")
+    if not WHALE_TELEGRAM_TOKEN:
+        logger.warning("[bot] WHALE_TELEGRAM_TOKEN not set — intelligence alerts disabled")
+    if not FRED_API_KEY:
+        logger.warning("[bot] FRED_API_KEY not set — macro data collection disabled")
 
-# ── Database (required) ───────────────────────────────────────────────────────
-logger.info("[bot] Connecting to database...")
-try:
-    from config.database import init_db
-    init_db()
-    logger.info("[bot] Database ready")
-except RuntimeError as e:
-    logger.critical(str(e))
-    sys.exit(1)
+    # ── Database (required) ───────────────────────────────────────────────────
+    logger.info("[bot] Connecting to database...")
+    try:
+        from config.database import init_db
+        init_db()
+        logger.info("[bot] Database ready")
+    except RuntimeError as e:
+        logger.critical(str(e))
+        sys.exit(1)
 
-# ── System state (after DB ready) ─────────────────────────────────────────────
-logger.info("[bot] Loading system state...")
-try:
-    from core.state import state
-    state.init_db()
-    logger.info("[bot] System state loaded from DB")
-except Exception as e:
-    logger.critical(f"[bot] Failed to load system state: {e}")
-    sys.exit(1)
+    # ── System state (after DB ready) ─────────────────────────────────────────
+    logger.info("[bot] Loading system state...")
+    try:
+        from core.state import state
+        state.init_db()
+        logger.info("[bot] System state loaded from DB")
+    except Exception as e:
+        logger.critical(f"[bot] Failed to load system state: {e}")
+        sys.exit(1)
 
 
 # ── Gateway management ────────────────────────────────────────────────────────
@@ -322,6 +331,34 @@ def _run_optional_step(
         if failure_message:
             getattr(logger, failure_level)(failure_message.format(error=error))
         return False
+
+
+def _start_deepseek_bot() -> None:
+    from config.config import DEEPSEEK_TELEGRAM_CHAT_ID, DEEPSEEK_TELEGRAM_TOKEN
+    from deepseek_bot import DeepSeekTelegramBot
+
+    if not DEEPSEEK_TELEGRAM_TOKEN:
+        logger.critical("[bot] DeepSeek Telegram token missing — set DEEPSEEK_TELEGRAM_TOKEN")
+        sys.exit(1)
+
+    logger.info("[bot] DeepSeek standalone mode enabled")
+    bot = DeepSeekTelegramBot(token=DEEPSEEK_TELEGRAM_TOKEN, allowed_chat_id=DEEPSEEK_TELEGRAM_CHAT_ID)
+    bot.run()
+
+
+def _start_deepseek_background_bot() -> None:
+    global _deepseek_bot
+
+    from config.config import DEEPSEEK_TELEGRAM_CHAT_ID, DEEPSEEK_TELEGRAM_TOKEN
+    from deepseek_bot import DeepSeekTelegramBot
+
+    if not DEEPSEEK_TELEGRAM_TOKEN:
+        logger.info("[bot] DeepSeek Telegram bot not started — DEEPSEEK_TELEGRAM_TOKEN missing")
+        return
+
+    _deepseek_bot = DeepSeekTelegramBot(token=DEEPSEEK_TELEGRAM_TOKEN, allowed_chat_id=DEEPSEEK_TELEGRAM_CHAT_ID)
+    _deepseek_bot.start_background()
+    logger.info("[bot] DeepSeek Telegram bot started in background")
 
 
 def _register_engine_singleton(engine) -> None:
@@ -655,6 +692,10 @@ def _start_dashboard(engine, args) -> None:
 def main() -> None:
     args = parse_args()
 
+    if _DEEPSEEK_ONLY_MODE:
+        _start_deepseek_bot()
+        return
+
     if args.backtest:
         run_backtest(args.backtest, args.backtest_cat, args.backtest_strategy)
         return
@@ -708,6 +749,9 @@ def main() -> None:
     # ──────────────────────────────────────────────────────────────────────
 
     _start_bot_services(engine, args)
+
+    # Standalone DeepSeek chat bot runs alongside the trading stack.
+    _start_deepseek_background_bot()
 
     # ── Wait for engine ───────────────────────────────────────────────────
     _wait_for_engine_ready(engine)

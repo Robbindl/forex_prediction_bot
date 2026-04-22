@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import threading
 from typing import Optional
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -31,6 +32,7 @@ class DeepSeekTelegramBot:
         self.token = str(token or "").strip()
         self.allowed_chat_id = str(allowed_chat_id or "").strip()
         self.application: Optional[Application] = None
+        self._thread: Optional[threading.Thread] = None
 
     def run(self) -> None:
         if not self.token:
@@ -49,7 +51,14 @@ class DeepSeekTelegramBot:
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
             post_init=self._post_init,
+            stop_signals=None,
         )
+
+    def start_background(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self.run, daemon=True, name="deepseek-bot")
+        self._thread.start()
 
     def _register_handlers(self) -> None:
         app = self.application
