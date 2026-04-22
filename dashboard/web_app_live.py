@@ -3727,7 +3727,7 @@ def _chart_stream_live_quote(asset: str, category: str, *, allow_live_cache: boo
         try:
             from websocket_dashboard import get_live_price_snapshot
 
-            live_snapshot = get_live_price_snapshot(asset, max_age_seconds=2.5)
+            live_snapshot = get_live_price_snapshot(asset, max_age_seconds=15.0)
             if live_snapshot is not None:
                 return (
                     float(live_snapshot.get("price", 0.0) or 0.0),
@@ -3738,7 +3738,7 @@ def _chart_stream_live_quote(asset: str, category: str, *, allow_live_cache: boo
         try:
             from websocket_dashboard import get_live_price
 
-            live_price, live_source = get_live_price(asset, max_age_seconds=2.5)
+            live_price, live_source = get_live_price(asset, max_age_seconds=15.0)
             if live_price is not None:
                 return float(live_price), str(live_source or "LiveCache")
         except Exception:

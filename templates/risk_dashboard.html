@@ -461,6 +461,10 @@ async function fetchRiskLiveBook(forceRefresh=false) {
   })();
   return _riskLiveBookPending;
 }
+function getAuthoritativeRiskLiveBookSnapshot(){
+  const snapshot = _riskLiveBookCache && _riskLiveBookCache.data && _riskLiveBookCache.data.success ? _riskLiveBookCache.data : null;
+  return snapshot || null;
+}
 function applyRiskLiveBook(snapshot){
   if(!snapshot || !snapshot.success)return;
   const live = snapshot.live_summary || {};
@@ -634,7 +638,8 @@ async function load(){
   const status = overview.status || {};
   const d = overview.risk || {};
   const commandCenter = overview.command_center || {};
-  const live = commandCenter.live_summary || {};
+  const authoritativeLiveBook = getAuthoritativeRiskLiveBookSnapshot();
+  const live = authoritativeLiveBook?.live_summary || commandCenter.live_summary || {};
   const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
   const providerRouting = status.provider_routing || {};
   const signalDiagnostics = d.signal_diagnostics || {};

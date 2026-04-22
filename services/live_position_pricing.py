@@ -59,6 +59,7 @@ def resolve_live_position_snapshot(
     price_source = str(snapshot.get("source") or position.get("current_price_source") or "")
     price_age_seconds: Optional[float] = None
     price_live = False
+    snapshot_price_available = False
 
     if snapshot:
         snapshot_price = snapshot.get("price")
@@ -67,8 +68,12 @@ def resolve_live_position_snapshot(
             current_price = _coerce_float(snapshot_price)
             price_age_seconds = max(0.0, snapshot_age)
             price_live = price_age_seconds <= float(live_snapshot_max_age_seconds or 0.0)
+            snapshot_price_available = True
 
-    if not price_live and provider_fallback is not None and asset:
+    # Keep the most recent shared live snapshot authoritative for UI pricing.
+    # Falling back to a secondary quote path after a small age threshold can
+    # reintroduce older cached provider prices and make dashboards jump backward.
+    if not snapshot_price_available and provider_fallback is not None and asset:
         try:
             fallback_price, fallback_source = provider_fallback(asset, category)
         except Exception:
@@ -103,6 +108,6 @@ def resolve_live_position_snapshot(
         "current_price": current_price,
         "pnl": round(float(live_pnl), 2),
         "price_source": price_source,
-        "price_age_seconds": round(float(price_age_seconds), 3) if price_live and price_age_seconds is not None else None,
+        "price_age_seconds": round(float(price_age_seconds), 3) if price_age_seconds is not None else None,
         "price_live": bool(price_live),
     }

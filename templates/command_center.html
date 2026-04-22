@@ -967,6 +967,19 @@ function mergeLivePositionsSnapshot(items){
   });
   return Array.from(base.values());
 }
+function mergePositionCollections(baseItems, liveItems){
+  const base = new Map((Array.isArray(baseItems) ? baseItems : []).map(item => [item.trade_id || item.asset, Object.assign({}, item)]));
+  (Array.isArray(liveItems) ? liveItems : []).forEach(item => {
+    const key = item.trade_id || item.asset;
+    const existing = base.get(key) || {};
+    base.set(key, Object.assign({}, existing, item));
+  });
+  return Array.from(base.values());
+}
+function getAuthoritativeLiveBookSnapshot(){
+  const snapshot = _liveBookCache && _liveBookCache.data && _liveBookCache.data.success ? _liveBookCache.data : null;
+  return snapshot || null;
+}
 function applyLiveBookSnapshot(snapshot){
   if(!snapshot || !snapshot.success)return;
   const live = snapshot.live_summary || {};
@@ -1141,9 +1154,13 @@ async function loadMain(){
   const providerRouting=d.provider_routing||{};
   const signalQuality=d.signal_quality||{};
   const signalDiagnostics=d.signal_diagnostics||{};
+  const authoritativeLiveBook = getAuthoritativeLiveBookSnapshot();
+  const live = authoritativeLiveBook?.live_summary || d.live_summary || {};
+  const mergedPositions = authoritativeLiveBook
+    ? mergePositionCollections(d.positions || [], authoritativeLiveBook.positions || [])
+    : (d.positions || []);
 
   try{
-    const live=d.live_summary||{};
     const closedTradeCount=Number(live.closed_trades??d.total_trades??0);
     if(_commandCenterLastClosedTradeCount===null){_commandCenterLastClosedTradeCount=closedTradeCount;}
     else if(closedTradeCount!==_commandCenterLastClosedTradeCount){_commandCenterLastClosedTradeCount=closedTradeCount;if(!document.hidden)loadHistory();}
@@ -1165,7 +1182,7 @@ async function loadMain(){
     wrEl.textContent=liveWr.toFixed(1)+'%';
     wrEl.className='mc-value '+(liveWr>=60?'gn':liveWr<=40?'rd':'am');
     document.getElementById('mWrSub').textContent=`${Number(live.closed_trades??d.total_trades??0)} closed · ${Number(live.open_positions??0)} open`;
-    const posLen=(d.positions||[]).length;
+    const posLen=mergedPositions.length;
     document.getElementById('mPos').textContent=posLen;
     document.getElementById('mPosSub').textContent=`BUY ${Number(live.buy_count||0)} · SELL ${Number(live.sell_count||0)}`;
     document.getElementById('posCount').textContent=posLen;
@@ -1181,7 +1198,7 @@ async function loadMain(){
     document.getElementById('engineBadge').className='tb-badge '+(running?'badge-live':'badge-off');
     const topOpportunities = d.top_opportunities || [];
     const lead = topOpportunities[0] || null;
-    const positions = d.positions || [];
+    const positions = mergedPositions;
     const categoryCounts = positions.reduce((acc, item) => {const key = String(item.category || 'unknown');acc[key] = (acc[key] || 0) + 1;return acc;}, {});
     const leadCategory = Object.entries(categoryCounts).sort((a,b) => b[1] - a[1])[0];
     const supportiveCount = Number(signalDiagnostics.broker_supportive_count || 0);
@@ -1321,7 +1338,7 @@ async function loadMain(){
   }catch(e){console.error('[CC] sentiment:',e);}
 
   try{
-    const pos=d.positions||[];
+    const pos=mergedPositions;
     document.getElementById('posCount').textContent=pos.length||0;
     _allPositions = pos;
     const pf=document.getElementById('posFilter');

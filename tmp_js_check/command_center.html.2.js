@@ -448,6 +448,19 @@ function mergeLivePositionsSnapshot(items){
   });
   return Array.from(base.values());
 }
+function mergePositionCollections(baseItems, liveItems){
+  const base = new Map((Array.isArray(baseItems) ? baseItems : []).map(item => [item.trade_id || item.asset, Object.assign({}, item)]));
+  (Array.isArray(liveItems) ? liveItems : []).forEach(item => {
+    const key = item.trade_id || item.asset;
+    const existing = base.get(key) || {};
+    base.set(key, Object.assign({}, existing, item));
+  });
+  return Array.from(base.values());
+}
+function getAuthoritativeLiveBookSnapshot(){
+  const snapshot = _liveBookCache && _liveBookCache.data && _liveBookCache.data.success ? _liveBookCache.data : null;
+  return snapshot || null;
+}
 function applyLiveBookSnapshot(snapshot){
   if(!snapshot || !snapshot.success)return;
   const live = snapshot.live_summary || {};
@@ -505,7 +518,29 @@ async function startLiveBookLoop(forceRefresh=false){
   try{
     const snapshot = await fetchLiveBook(forceRefresh);
     applyLiveBookSnapshot(snapshot);
+  }catch(err){}
+  if(!window.EventSource || !window.dashboardBuildAuthedUrl){
     scheduleLiveBookReconnect(forceRefresh ? 2000 : 2500);
+    return;
+  }
+  try{
+    const streamUrl = await window.dashboardBuildAuthedUrl('/api/live-book/stream');
+    const source = new EventSource(streamUrl);
+    _liveBookSource = source;
+    source.onmessage = function(event){
+      try{
+        const msg = JSON.parse(event.data || '{}');
+        if(msg.type === 'snapshot' && msg.payload){
+          _liveBookCache = {fetched: Date.now(), data: msg.payload};
+          applyLiveBookSnapshot(msg.payload);
+        }
+      }catch(err){}
+    };
+    source.onerror = function(){
+      if(_liveBookSource !== source) return;
+      stopLiveBookLoop();
+      scheduleLiveBookReconnect(2000);
+    };
   }catch(err){
     scheduleLiveBookReconnect(2500);
   }
@@ -521,10 +556,38 @@ function scheduleCommandCenterStreamReconnect(delayMs = 3000){
   _commandCenterStreamReconnect = setTimeout(() => {_commandCenterStreamReconnect = null;startCommandCenterStream();}, delayMs);
 }
 async function startCommandCenterStream(){
-  _commandCenterStreamDisabled = true;
-  _commandCenterStreamActive = false;
-  if(_commandCenterStreamAbort){ try{ _commandCenterStreamAbort.abort(); }catch(err){} _commandCenterStreamAbort = null; }
-  return;
+  stopCommandCenterStream();
+  if(document.hidden) return;
+  if(!window.EventSource || !window.dashboardBuildAuthedUrl){
+    _commandCenterStreamDisabled = true;
+    return;
+  }
+  _commandCenterStreamDisabled = false;
+  try{
+    const streamUrl = await window.dashboardBuildAuthedUrl('/api/command-center/stream');
+    const source = new EventSource(streamUrl);
+    _commandCenterStreamAbort = {abort(){ try{ source.close(); }catch(err){} }};
+    _commandCenterStreamActive = true;
+    source.onmessage = function(event){
+      try{
+        const msg = JSON.parse(event.data || '{}');
+        if(msg.type === 'refresh'){
+          _commandCenterCache = null;
+          loadMain();
+        }
+      }catch(err){}
+    };
+    source.onerror = function(){
+      if(_commandCenterStreamAbort){
+        try{ source.close(); }catch(err){}
+      }
+      _commandCenterStreamActive = false;
+      scheduleCommandCenterStreamReconnect(2500);
+    };
+  }catch(err){
+    _commandCenterStreamActive = false;
+    scheduleCommandCenterStreamReconnect(3000);
+  }
 }
 function collectElitePool(d){
   return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]);
@@ -572,9 +635,13 @@ async function loadMain(){
   const providerRouting=d.provider_routing||{};
   const signalQuality=d.signal_quality||{};
   const signalDiagnostics=d.signal_diagnostics||{};
+  const authoritativeLiveBook = getAuthoritativeLiveBookSnapshot();
+  const live = authoritativeLiveBook?.live_summary || d.live_summary || {};
+  const mergedPositions = authoritativeLiveBook
+    ? mergePositionCollections(d.positions || [], authoritativeLiveBook.positions || [])
+    : (d.positions || []);
 
   try{
-    const live=d.live_summary||{};
     const closedTradeCount=Number(live.closed_trades??d.total_trades??0);
     if(_commandCenterLastClosedTradeCount===null){_commandCenterLastClosedTradeCount=closedTradeCount;}
     else if(closedTradeCount!==_commandCenterLastClosedTradeCount){_commandCenterLastClosedTradeCount=closedTradeCount;if(!document.hidden)loadHistory();}
@@ -596,7 +663,7 @@ async function loadMain(){
     wrEl.textContent=liveWr.toFixed(1)+'%';
     wrEl.className='mc-value '+(liveWr>=60?'gn':liveWr<=40?'rd':'am');
     document.getElementById('mWrSub').textContent=`${Number(live.closed_trades??d.total_trades??0)} closed · ${Number(live.open_positions??0)} open`;
-    const posLen=(d.positions||[]).length;
+    const posLen=mergedPositions.length;
     document.getElementById('mPos').textContent=posLen;
     document.getElementById('mPosSub').textContent=`BUY ${Number(live.buy_count||0)} · SELL ${Number(live.sell_count||0)}`;
     document.getElementById('posCount').textContent=posLen;
@@ -612,7 +679,7 @@ async function loadMain(){
     document.getElementById('engineBadge').className='tb-badge '+(running?'badge-live':'badge-off');
     const topOpportunities = d.top_opportunities || [];
     const lead = topOpportunities[0] || null;
-    const positions = d.positions || [];
+    const positions = mergedPositions;
     const categoryCounts = positions.reduce((acc, item) => {const key = String(item.category || 'unknown');acc[key] = (acc[key] || 0) + 1;return acc;}, {});
     const leadCategory = Object.entries(categoryCounts).sort((a,b) => b[1] - a[1])[0];
     const supportiveCount = Number(signalDiagnostics.broker_supportive_count || 0);
@@ -752,7 +819,7 @@ async function loadMain(){
   }catch(e){console.error('[CC] sentiment:',e);}
 
   try{
-    const pos=d.positions||[];
+    const pos=mergedPositions;
     document.getElementById('posCount').textContent=pos.length||0;
     _allPositions = pos;
     const pf=document.getElementById('posFilter');

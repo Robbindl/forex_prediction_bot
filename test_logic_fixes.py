@@ -10624,7 +10624,7 @@ def test_api_live_book_handles_empty_positions_without_live_snapshot_failure(mon
     assert payload["stale_assets"] == []
 
 
-def test_api_live_book_falls_back_to_provider_quote_when_snapshot_is_stale(monkeypatch) -> None:
+def test_api_live_book_keeps_stream_snapshot_when_it_is_aging(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
     ws_mod = importlib.import_module("websocket_dashboard")
 
@@ -10674,9 +10674,36 @@ def test_api_live_book_falls_back_to_provider_quote_when_snapshot_is_stale(monke
 
     assert response.status_code == 200
     assert payload["success"] is True
-    assert payload["positions"][0]["current_price"] == 1.1025
-    assert payload["positions"][0]["price_live"] is True
+    assert payload["positions"][0]["current_price"] == 1.101
+    assert payload["positions"][0]["price_live"] is False
+    assert payload["positions"][0]["price_age_seconds"] == 12.0
     assert payload["positions"][0]["price_source"] == "Deriv"
+
+
+def test_chart_stream_live_quote_prefers_aging_shared_live_cache_over_provider_cache(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    ws_mod = importlib.import_module("websocket_dashboard")
+
+    class _FakeFetcher:
+        def get_provider_quote(self, asset, category, provider):
+            raise AssertionError("provider quote should not override an existing shared live snapshot")
+
+        def get_real_time_price(self, asset, category):
+            raise AssertionError("aggregate quote fallback should not be used when shared live snapshot exists")
+
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(
+        ws_mod,
+        "get_live_price_snapshot",
+        lambda asset, max_age_seconds=15.0: {"price": 194.25, "timestamp": 1234567000.0, "source": "IG", "age_seconds": 8.0},
+        raising=False,
+    )
+    monkeypatch.setattr(ws_mod, "get_live_price", lambda asset, max_age_seconds=15.0: (None, None), raising=False)
+
+    price, source = dashboard_mod._chart_stream_live_quote("XAU/USD", "commodities")
+
+    assert price == 194.25
+    assert source == "IG"
 
 
 def test_dashboard_asset_map_fallback_keeps_universe(monkeypatch) -> None:
