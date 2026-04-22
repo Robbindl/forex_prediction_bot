@@ -142,3 +142,41 @@ def test_deepseek_chat_service_includes_macro_snapshot_for_nfp_and_oil(tmp_path:
     assert "read-only macro snapshot" in captured["json"]["messages"][2]["content"].lower()
     assert "nfp" in captured["json"]["messages"][2]["content"].lower()
     assert "oil" in captured["json"]["messages"][2]["content"].lower()
+
+
+def test_deepseek_chat_service_includes_current_news_snapshot_for_latest_statement_questions(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeDeepSeekResponse("news answer")
+
+    monkeypatch.setattr(deepseek_module.requests, "post", fake_post)
+    monkeypatch.setattr(deepseek_module, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(deepseek_module, "_build_bot_snapshot", lambda: {"available": True, "balance": 2000.0, "open_positions_count": 1})
+    monkeypatch.setattr(
+        deepseek_module,
+        "_build_current_news_snapshot",
+        lambda question: {
+            "available": True,
+            "source": "question_news_search",
+            "query": "trump",
+            "articles": [
+                {
+                    "title": "Trump says tariffs remain on the table",
+                    "source": "Reuters",
+                    "published_local": "2026-04-22 15:00",
+                    "summary": "Remarks from a campaign stop.",
+                }
+            ],
+            "summary": {"article_count": 1, "provider_count": 1, "query": "trump"},
+        },
+    )
+
+    service = DeepSeekChatService(session_store=ChatSessionStore(path=tmp_path / "sessions.json"))
+    reply = service.answer(question="Has Trump said anything today?", chat_id="chat-4")
+
+    assert reply == "news answer"
+    assert len(captured["json"]["messages"]) == 4
+    assert "current news snapshot" in captured["json"]["messages"][2]["content"].lower()
+    assert "trump" in captured["json"]["messages"][2]["content"].lower()

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any, List, Tuple
 from unittest.mock import patch
 
+from telegram.constants import ParseMode
+
 from deepseek_bot import DeepSeekTelegramBot
 
 
@@ -23,12 +25,12 @@ class _FakeChat:
 class _FakeReply:
     parent: "_FakeMessage"
 
-    async def edit_text(self, text: str, reply_markup: Any = None) -> "_FakeReply":
-        self.parent.edits.append((text, reply_markup))
+    async def edit_text(self, text: str, parse_mode: Any = None, reply_markup: Any = None) -> "_FakeReply":
+        self.parent.edits.append((text, reply_markup, parse_mode))
         return self
 
-    async def reply_text(self, text: str, reply_markup: Any = None) -> "_FakeReply":
-        self.parent.followups.append((text, reply_markup))
+    async def reply_text(self, text: str, parse_mode: Any = None, reply_markup: Any = None) -> "_FakeReply":
+        self.parent.followups.append((text, reply_markup, parse_mode))
         return self
 
 
@@ -40,8 +42,8 @@ class _FakeMessage:
     edits: List[Tuple[str, Any]] = field(default_factory=list)
     followups: List[Tuple[str, Any]] = field(default_factory=list)
 
-    async def reply_text(self, text: str, reply_markup: Any = None) -> _FakeReply:
-        self.replies.append((text, reply_markup))
+    async def reply_text(self, text: str, parse_mode: Any = None, reply_markup: Any = None) -> _FakeReply:
+        self.replies.append((text, reply_markup, parse_mode))
         return _FakeReply(self)
 
 
@@ -49,10 +51,11 @@ class _FakeMessage:
 class _FakeService:
     answers: List[Tuple[str, str]] = field(default_factory=list)
     resets: List[str] = field(default_factory=list)
+    reply_text: str = "deepseek reply"
 
     def answer(self, *, question: str, chat_id: str) -> str:
         self.answers.append((question, chat_id))
-        return "deepseek reply"
+        return self.reply_text
 
     def reset(self, chat_id: str) -> None:
         self.resets.append(chat_id)
@@ -83,6 +86,7 @@ def test_deepseek_bot_replies_to_plain_text() -> None:
     assert fake_service.answers == [("hello DeepSeek", "5747207752")]
     assert update.message.replies[0][0] == "DeepSeek is thinking..."
     assert update.message.edits[0][0] == "deepseek reply"
+    assert update.message.edits[0][2] == ParseMode.HTML
     assert update.effective_chat.actions == ["typing"]
 
 
@@ -101,6 +105,23 @@ def test_deepseek_bot_replies_to_chat_command() -> None:
     assert fake_service.answers == [("how are markets looking?", "5747207752")]
     assert update.message.replies[0][0] == "DeepSeek is thinking..."
     assert update.message.edits[0][0] == "deepseek reply"
+    assert update.message.edits[0][2] == ParseMode.HTML
+
+
+def test_deepseek_bot_renders_markdownish_output_for_telegram() -> None:
+    bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
+    fake_service = _FakeService(reply_text="**Entry Time:** `BNB_USD`")
+    update = _build_update(text="show entry")
+    ctx = SimpleNamespace(args=[])
+
+    async def run() -> None:
+        with patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service):
+            await bot._on_text(update, ctx)
+
+    asyncio.run(run())
+
+    assert update.message.edits[0][0] == "<b>Entry Time:</b> <code>BNB_USD</code>"
+    assert update.message.edits[0][2] == ParseMode.HTML
 
 
 def test_deepseek_bot_requires_allowed_private_chat() -> None:

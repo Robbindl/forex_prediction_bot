@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
+import re
 import threading
 from typing import Optional
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -16,6 +19,7 @@ from utils.logger import get_logger
 logger = get_logger()
 
 _CHAT_TIMEOUT_SECONDS = 60.0
+_MARKDOWNISH_TOKEN_RE = re.compile(r"(```[\s\S]+?```|`[^`\n]+`|\*\*[\s\S]+?\*\*|\*[^\*\n][^\n]*?\*)")
 
 
 def _keyboard() -> InlineKeyboardMarkup:
@@ -25,6 +29,31 @@ def _keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("ℹ️ Help", callback_data="help"),
         ]]
     )
+
+
+def _render_telegram_html(text: str) -> str:
+    raw = str(text or "").replace("\r\n", "\n")
+    if not raw:
+        return ""
+
+    parts: list[str] = []
+    cursor = 0
+    for match in _MARKDOWNISH_TOKEN_RE.finditer(raw):
+        parts.append(html.escape(raw[cursor:match.start()]))
+        token = match.group(0)
+        if token.startswith("```") and token.endswith("```"):
+            parts.append(f"<pre>{html.escape(token[3:-3].strip())}</pre>")
+        elif token.startswith("`") and token.endswith("`"):
+            parts.append(f"<code>{html.escape(token[1:-1])}</code>")
+        elif token.startswith("**") and token.endswith("**"):
+            parts.append(f"<b>{html.escape(token[2:-2])}</b>")
+        elif token.startswith("*") and token.endswith("*"):
+            parts.append(f"<i>{html.escape(token[1:-1])}</i>")
+        else:
+            parts.append(html.escape(token))
+        cursor = match.end()
+    parts.append(html.escape(raw[cursor:]))
+    return "".join(parts)
 
 
 class DeepSeekTelegramBot:
@@ -199,19 +228,20 @@ class DeepSeekTelegramBot:
         for index, chunk in enumerate(chunks):
             is_last = index == len(chunks) - 1
             reply_markup = _keyboard() if is_last else None
+            rendered_chunk = _render_telegram_html(chunk)
             if index == 0:
                 try:
-                    await message.edit_text(chunk, reply_markup=reply_markup)
+                    await message.edit_text(rendered_chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
                 except BadRequest as exc:
                     lowered = str(exc).lower()
                     if "message is not modified" in lowered:
                         continue
                     if "message to edit not found" in lowered:
-                        await message.reply_text(chunk, reply_markup=reply_markup)
+                        await message.reply_text(rendered_chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
                     else:
                         raise
             else:
-                await message.reply_text(chunk, reply_markup=reply_markup)
+                await message.reply_text(rendered_chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
     async def _on_error(self, update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         error = getattr(ctx, "error", None)

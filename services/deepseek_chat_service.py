@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -11,10 +12,13 @@ import requests
 
 from config.config import (
     DEEPSEEK_API_KEY,
+    GNEWS_KEY,
+    NEWSAPI_KEY,
     ROBBIE_CHAT_BASE_URL,
     ROBBIE_CHAT_HISTORY_LIMIT,
     ROBBIE_CHAT_MAX_TOKENS,
     ROBBIE_CHAT_MODEL,
+    ROBBIE_CHAT_NEWS_ENABLED,
     ROBBIE_CHAT_TEMPERATURE,
     ROBBIE_CHAT_TIMEOUT_SECONDS,
 )
@@ -29,6 +33,9 @@ _MAX_HISTORY_MESSAGES = max(2, int(ROBBIE_CHAT_HISTORY_LIMIT or 10)) * 2
 _MACRO_SNAPSHOT_TTL_SECONDS = 300.0
 _MACRO_SNAPSHOT_CACHE: Dict[str, tuple[Dict[str, Any], float]] = {}
 _MACRO_SNAPSHOT_LOCK = threading.Lock()
+_CURRENT_NEWS_SNAPSHOT_TTL_SECONDS = 300.0
+_CURRENT_NEWS_SNAPSHOT_CACHE: Dict[str, tuple[Dict[str, Any], float]] = {}
+_CURRENT_NEWS_SNAPSHOT_LOCK = threading.Lock()
 
 _MACRO_QUESTION_TERMS = (
     "nfp",
@@ -97,6 +104,112 @@ _MACRO_NEWS_TERMS = (
     "dollar",
     "usd",
 )
+
+_CURRENT_NEWS_CUE_TERMS = (
+    "today",
+    "latest",
+    "recent",
+    "currently",
+    "current",
+    "news",
+    "headline",
+    "headlines",
+    "update",
+    "updates",
+    "said",
+    "say",
+    "statement",
+    "statements",
+    "announced",
+    "announcement",
+    "posted",
+    "post",
+    "speaking",
+    "speech",
+    "remarks",
+)
+
+_CURRENT_NEWS_ENTITY_TERMS = (
+    "trump",
+    "biden",
+    "white house",
+    "president",
+    "presidential",
+    "election",
+    "tariff",
+    "tariffs",
+    "congress",
+    "senate",
+    "house",
+    "treasury",
+)
+
+_BOT_STATUS_TERMS = (
+    "bot",
+    "snapshot",
+    "position",
+    "positions",
+    "trade",
+    "trades",
+    "balance",
+    "p&l",
+    "pnl",
+    "cooldown",
+    "cooldowns",
+    "entry",
+    "open position",
+    "open positions",
+)
+
+_NEWS_QUERY_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "anything",
+    "about",
+    "are",
+    "been",
+    "can",
+    "current",
+    "did",
+    "for",
+    "has",
+    "have",
+    "headline",
+    "headlines",
+    "his",
+    "how",
+    "is",
+    "latest",
+    "me",
+    "news",
+    "of",
+    "on",
+    "or",
+    "our",
+    "post",
+    "posted",
+    "recent",
+    "said",
+    "say",
+    "something",
+    "statement",
+    "statements",
+    "tell",
+    "that",
+    "the",
+    "their",
+    "them",
+    "they",
+    "this",
+    "today",
+    "update",
+    "updates",
+    "was",
+    "what",
+    "when",
+    "with",
+}
 
 
 def _clip_text(text: Any, limit: int = 600) -> str:
@@ -188,6 +301,33 @@ def _question_needs_wti_context(question: str) -> bool:
     return any(term in text for term in ("oil", "wti", "crude", "brent", "opec", "inventory", "inventories", "energy"))
 
 
+def _question_needs_current_news_context(question: str) -> bool:
+    text = str(question or "").lower()
+    if not text:
+        return False
+    if any(term in text for term in _BOT_STATUS_TERMS) and not any(term in text for term in _CURRENT_NEWS_ENTITY_TERMS):
+        return False
+    return any(term in text for term in _CURRENT_NEWS_CUE_TERMS) or any(term in text for term in _CURRENT_NEWS_ENTITY_TERMS)
+
+
+def _derive_news_query(question: str) -> str:
+    tokens = re.findall(r"[a-z0-9][a-z0-9'-]*", str(question or "").lower())
+    query_terms: List[str] = []
+    for token in tokens:
+        clean = token.strip("-'")
+        if not clean or clean.isdigit():
+            continue
+        if clean in _NEWS_QUERY_STOP_WORDS:
+            continue
+        if len(clean) < 3:
+            continue
+        if clean not in query_terms:
+            query_terms.append(clean)
+        if len(query_terms) >= 6:
+            break
+    return " ".join(query_terms)
+
+
 def _summarize_macro_event(event: Dict[str, Any]) -> Dict[str, Any]:
     raw_time = event.get("time") or event.get("date") or event.get("datetime")
     return {
@@ -207,6 +347,17 @@ def _summarize_macro_article(article: Dict[str, Any]) -> Dict[str, Any]:
         "source": _clip_text(article.get("source") or "", 60),
         "date": str(article.get("date") or ""),
         "sentiment": article.get("sentiment"),
+    }
+
+
+def _summarize_current_news_article(article: Dict[str, Any]) -> Dict[str, Any]:
+    published = article.get("publishedAt") or article.get("published_at") or article.get("published")
+    return {
+        "title": _clip_text(article.get("title") or "", 160),
+        "source": _clip_text(article.get("source") or "", 60),
+        "published_local": format_display_datetime(published, "%Y-%m-%d %H:%M", include_tz=False, default="") if published else "",
+        "summary": _clip_text(article.get("description") or article.get("summary") or "", 220),
+        "url": _clip_text(article.get("url") or "", 180),
     }
 
 
@@ -325,6 +476,136 @@ def _build_macro_snapshot(question: str) -> Dict[str, Any]:
 
     with _MACRO_SNAPSHOT_LOCK:
         _MACRO_SNAPSHOT_CACHE[cache_key] = (dict(snapshot), now + _MACRO_SNAPSHOT_TTL_SECONDS)
+    return snapshot
+
+
+def _build_current_news_snapshot(question: str) -> Dict[str, Any]:
+    query = _derive_news_query(question)
+    cache_key = f"news:{query or 'empty'}"
+    now = time.time()
+    with _CURRENT_NEWS_SNAPSHOT_LOCK:
+        hit = _CURRENT_NEWS_SNAPSHOT_CACHE.get(cache_key)
+        if hit and now < hit[1]:
+            return dict(hit[0])
+
+    snapshot: Dict[str, Any] = {
+        "available": False,
+        "source": "question_news_search",
+        "display_now_local": now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M:%S {display_timezone_label()}"),
+        "query": query,
+        "articles": [],
+        "providers": [],
+    }
+
+    if not ROBBIE_CHAT_NEWS_ENABLED:
+        snapshot["message"] = "Configured news feeds are disabled."
+        return snapshot
+    if not query:
+        snapshot["message"] = "Could not derive a focused news search query from the question."
+        return snapshot
+
+    articles: List[Dict[str, Any]] = []
+    seen_titles: set[str] = set()
+    query_terms = [term for term in query.split() if term]
+    since_utc = datetime.now(timezone.utc) - timedelta(days=3)
+
+    def _keep_article(title: str, description: str) -> bool:
+        haystack = f"{title} {description}".lower()
+        return not query_terms or any(term in haystack for term in query_terms)
+
+    if NEWSAPI_KEY:
+        try:
+            resp = requests.get(
+                "https://newsapi.org/v2/everything",
+                params={
+                    "q": query,
+                    "language": "en",
+                    "sortBy": "publishedAt",
+                    "pageSize": 6,
+                    "from": since_utc.date().isoformat(),
+                    "apiKey": NEWSAPI_KEY,
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                snapshot["providers"].append("newsapi")
+                for item in resp.json().get("articles", []):
+                    title = str(item.get("title") or "").strip()
+                    description = str(item.get("description") or "").strip()
+                    if not title or not _keep_article(title, description):
+                        continue
+                    normalized = title.lower()
+                    if normalized in seen_titles:
+                        continue
+                    published = _parse_dt(item.get("publishedAt"))
+                    if published and published < since_utc:
+                        continue
+                    seen_titles.add(normalized)
+                    articles.append(
+                        _summarize_current_news_article(
+                            {
+                                "title": title,
+                                "source": (item.get("source") or {}).get("name", ""),
+                                "publishedAt": item.get("publishedAt"),
+                                "description": description,
+                                "url": item.get("url"),
+                            }
+                        )
+                    )
+                    if len(articles) >= 6:
+                        break
+        except Exception as exc:
+            snapshot["newsapi_error"] = str(exc)
+
+    if len(articles) < 6 and GNEWS_KEY:
+        try:
+            resp = requests.get(
+                "https://gnews.io/api/v4/search",
+                params={"q": query, "lang": "en", "max": 6, "token": GNEWS_KEY},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                snapshot["providers"].append("gnews")
+                for item in resp.json().get("articles", []):
+                    title = str(item.get("title") or "").strip()
+                    description = str(item.get("description") or "").strip()
+                    if not title or not _keep_article(title, description):
+                        continue
+                    normalized = title.lower()
+                    if normalized in seen_titles:
+                        continue
+                    published = _parse_dt(item.get("publishedAt"))
+                    if published and published < since_utc:
+                        continue
+                    seen_titles.add(normalized)
+                    articles.append(
+                        _summarize_current_news_article(
+                            {
+                                "title": title,
+                                "source": (item.get("source") or {}).get("name", ""),
+                                "publishedAt": item.get("publishedAt"),
+                                "description": description,
+                                "url": item.get("url"),
+                            }
+                        )
+                    )
+                    if len(articles) >= 6:
+                        break
+        except Exception as exc:
+            snapshot["gnews_error"] = str(exc)
+
+    snapshot["articles"] = articles[:6]
+    snapshot["available"] = bool(snapshot["articles"])
+    snapshot["summary"] = {
+        "article_count": len(snapshot["articles"]),
+        "provider_count": len(snapshot["providers"]),
+        "query": query,
+    }
+    if not snapshot["available"]:
+        snapshot["message"] = "No recent headlines matched the question in the configured news feeds."
+
+    with _CURRENT_NEWS_SNAPSHOT_LOCK:
+        _CURRENT_NEWS_SNAPSHOT_CACHE[cache_key] = (dict(snapshot), now + _CURRENT_NEWS_SNAPSHOT_TTL_SECONDS)
     return snapshot
 
 
@@ -457,6 +738,7 @@ class DeepSeekChatService:
             "A read-only snapshot of the latest persisted bot state is provided in a separate system message. "
             "Use that snapshot first for questions about positions, balance, P&L, recent trades, cooldowns, and bot health. "
             "If a second system message provides macro context, use it for questions about NFP, CPI, FOMC, oil, and current market events. "
+            "If another system message provides a current news snapshot, use it for latest-headline or public-statement questions instead of claiming you cannot browse. "
             "Do not claim access to menus or controls. "
             "If a detail is missing from the snapshot, say it is not available instead of inventing it. "
             "Answer naturally and directly. "
@@ -482,6 +764,15 @@ class DeepSeekChatService:
             f"{_json_text(snapshot, 3500)}"
         )
 
+    @staticmethod
+    def _current_news_context_prompt(snapshot: Dict[str, Any]) -> str:
+        return (
+            "Read-only current news snapshot for the user's question. "
+            "Use only these fetched headlines for latest-news or what-did-they-say questions. "
+            "If no matching articles are present, say that no current headline match was found in the configured feeds.\n"
+            f"{_json_text(snapshot, 3500)}"
+        )
+
     def _answer_via_deepseek(self, question: str, session: Dict[str, Any]) -> str:
         if not DEEPSEEK_API_KEY:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured")
@@ -497,6 +788,9 @@ class DeepSeekChatService:
         if _question_needs_macro_context(question):
             macro_snapshot = _build_macro_snapshot(question)
             messages.append({"role": "system", "content": self._macro_context_prompt(macro_snapshot)})
+        if _question_needs_current_news_context(question):
+            current_news_snapshot = _build_current_news_snapshot(question)
+            messages.append({"role": "system", "content": self._current_news_context_prompt(current_news_snapshot)})
         messages.extend(
             [
                 *history,
