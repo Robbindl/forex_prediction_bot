@@ -16,6 +16,8 @@ _KLINES_ENDPOINT = "/api/v3/klines"
 _BOOK_TICKER_ENDPOINT = "/api/v3/ticker/bookTicker"
 
 _SUPPORTED_SYMBOLS = {
+    "BTC-USD": "BTCUSDT",
+    "ETH-USD": "ETHUSDT",
     "BNB-USD": "BNBUSDT",
     "SOL-USD": "SOLUSDT",
     "XRP-USD": "XRPUSDT",

@@ -792,10 +792,17 @@ async function loadCandles(opts = {}){
     st.textContent = d.candles.length + ' bars · ' + _chartTfUsed + (_chartHistorySource ? ' · ' + _chartHistorySource : '');
     st.style.background = 'rgba(0,208,132,.12)'; st.style.color = 'var(--gr)';
   }else{
-    _chartCandles = [];
-    _chartGapFillCount = 0;
-    st.textContent = String(d?.message || ('No ' + currentTf + ' data')).slice(0,72);
-    st.style.background = 'rgba(255,69,96,.12)'; st.style.color = 'var(--rd)';
+    const hadCandles = Array.isArray(_chartCandles) && _chartCandles.length > 0;
+    _chartProviderWarning = String(d?.provider_warning_message || d?.message || _chartProviderWarning || '');
+    if(!hadCandles){
+      _chartCandles = [];
+      _chartGapFillCount = 0;
+      st.textContent = String(d?.message || ('No ' + currentTf + ' data')).slice(0,72);
+      st.style.background = 'rgba(255,69,96,.12)'; st.style.color = 'var(--rd)';
+    }else{
+      st.textContent = String((d?.message || ('No ' + currentTf + ' update')) + ' · holding live candles').slice(0,72);
+      st.style.background = 'rgba(255,165,0,.15)'; st.style.color = 'var(--am)';
+    }
   }
   renderChartIntegrity();
 }

@@ -2133,30 +2133,10 @@ class TelegramCommander:
         size: float,
         direction: str,
     ) -> tuple[float, str]:
-        display_current = float(position.get("current_price", entry) or entry)
+        quote = self._fresh_position_snapshot(core, position)
+        display_current = float(quote.get("current_price", position.get("current_price", entry)) or entry)
         pnl_str = ""
         try:
-            fetcher = getattr(core, "fetcher", None)
-            cat = str(position.get("category", "forex") or "forex")
-
-            def _provider_fallback(fallback_asset: str, fallback_category: str) -> tuple[Optional[float], str]:
-                if not fetcher:
-                    return None, ""
-                price, _meta = fetcher.get_real_time_price(fallback_asset, fallback_category)
-                return (float(price), "provider quote") if price not in (None, 0, 0.0) else (None, "")
-
-            quote = resolve_live_position_snapshot(
-                {
-                    **dict(position or {}),
-                    "asset": asset,
-                    "category": cat,
-                    "direction": direction,
-                    "entry_price": entry,
-                    "position_size": size,
-                },
-                live_snapshot_max_age_seconds=3.0,
-                provider_fallback=_provider_fallback,
-            )
             if float(quote.get("current_price", 0.0) or 0.0):
                 display_current = float(quote.get("current_price", display_current) or display_current)
                 pnl = float(quote.get("pnl", 0.0) or 0.0)
@@ -2164,6 +2144,83 @@ class TelegramCommander:
         except Exception:
             pass
         return display_current, pnl_str
+
+    def _fresh_position_snapshot(
+        self,
+        core: Any,
+        position: Dict[str, Any],
+        *,
+        live_snapshot_max_age_seconds: float = 3.0,
+    ) -> Dict[str, Any]:
+        asset = str(position.get("asset", "") or "")
+        category = str(position.get("category", "forex") or "forex")
+        direction = str(position.get("direction") or position.get("signal") or "BUY").upper()
+        entry_price = float(position.get("entry_price", 0.0) or 0.0)
+        position_size = float(position.get("position_size", 0.0) or 0.0)
+        fetcher = getattr(core, "fetcher", None)
+
+        live_snapshot: Dict[str, Any] = {}
+        if asset:
+            try:
+                from websocket_dashboard import get_live_price_snapshot
+
+                live_snapshot = dict(
+                    get_live_price_snapshot(asset, max_age_seconds=live_snapshot_max_age_seconds) or {}
+                )
+            except Exception:
+                live_snapshot = {}
+
+        def _provider_fallback(fallback_asset: str, fallback_category: str) -> tuple[Optional[float], str]:
+            if not fetcher:
+                return None, ""
+            try:
+                price, _meta = fetcher.get_real_time_price(
+                    fallback_asset,
+                    fallback_category,
+                    prefer_live_stream=True,
+                    allow_cached_quote=False,
+                )
+            except TypeError:
+                price, _meta = fetcher.get_real_time_price(fallback_asset, fallback_category)
+            return (float(price), "provider quote") if price not in (None, 0, 0.0) else (None, "")
+
+        return resolve_live_position_snapshot(
+            {
+                **dict(position or {}),
+                "asset": asset,
+                "category": category,
+                "direction": direction,
+                "entry_price": entry_price,
+                "position_size": position_size,
+            },
+            live_snapshot=live_snapshot,
+            live_snapshot_max_age_seconds=live_snapshot_max_age_seconds,
+            provider_fallback=_provider_fallback,
+        )
+
+    def _repriced_open_positions(
+        self,
+        core: Any,
+        *,
+        live_snapshot_max_age_seconds: float = 3.0,
+    ) -> List[Dict[str, Any]]:
+        positions = list((core.get_positions() if core else []) or [])
+        refreshed: List[Dict[str, Any]] = []
+        for position in positions:
+            row = dict(position or {})
+            quote = self._fresh_position_snapshot(
+                core,
+                row,
+                live_snapshot_max_age_seconds=live_snapshot_max_age_seconds,
+            )
+            if float(quote.get("current_price", 0.0) or 0.0):
+                row["current_price"] = float(quote.get("current_price", row.get("current_price", 0.0)) or 0.0)
+            row["pnl"] = float(quote.get("pnl", row.get("pnl", 0.0)) or 0.0)
+            row["price_source"] = str(quote.get("price_source", row.get("price_source", "")) or "")
+            row["price_age_seconds"] = quote.get("price_age_seconds")
+            row["price_live"] = bool(quote.get("price_live"))
+            refreshed.append(row)
+        return refreshed
 
     @staticmethod
     def _position_open_time_text(position: Dict[str, Any]) -> str:
@@ -2202,7 +2259,7 @@ class TelegramCommander:
         if not core:
             return "⏳ Engine not ready.", _kb([("🏠 Menu", "menu")])
 
-        positions = core.get_positions()
+        positions = self._repriced_open_positions(core)
         if not positions:
             return (
                 "📭 *No open positions*\n\nThe bot isn't in any trades right now.",
@@ -2458,7 +2515,7 @@ class TelegramCommander:
         if not core:
             await query.edit_message_text("⏳ Engine not ready.")
             return
-        positions = core.get_positions()
+        positions = self._repriced_open_positions(core)
         if not positions:
             await query.edit_message_text("📭 No open positions to manage.")
             return
@@ -2560,7 +2617,7 @@ class TelegramCommander:
             await query.edit_message_text("⏳ Engine not ready.")
             return
 
-        all_pos = core.get_positions()
+        all_pos = self._repriced_open_positions(core)
         if mode == "losing":
             positions = [p for p in all_pos if float(p.get("pnl", 0) or 0) < 0]
             title = "🔴 LOSING POSITIONS CLOSED"

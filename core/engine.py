@@ -1779,6 +1779,11 @@ class TradingCore:
             return 0
 
         try:
+            from services.market_data_router import get_market_status
+        except Exception:
+            get_market_status = None
+
+        try:
             from services.market_hours_guard import build_market_status
         except Exception:
             return 0
@@ -1790,7 +1795,14 @@ class TradingCore:
             trade_id = str(pos.get("trade_id", "") or "")
             if not trade_id or not asset:
                 continue
-            status = build_market_status(asset, category)
+            status = None
+            if get_market_status is not None:
+                try:
+                    status = get_market_status(asset, category=category)
+                except Exception:
+                    status = None
+            if not isinstance(status, dict) or "close_buffer_active" not in status:
+                status = build_market_status(asset, category)
             if bool(status.get("close_buffer_active")):
                 closable_trade_ids.append((trade_id, str(status.get("close_buffer_reason") or status.get("reason") or "")))
 

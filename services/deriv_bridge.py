@@ -521,16 +521,21 @@ class DerivBridge:
                 )
 
             if exchange_open is not None:
+                provider_status = {
+                    "asset": asset,
+                    "market_open": bool(exchange_open),
+                    "reason": f"{market_display} {'open' if exchange_open else 'closed'} on Deriv",
+                    "source": "Deriv",
+                    "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                }
+                if exchange_open:
+                    session_close_utc = self._current_session_close_locked(resolved["symbol"])
+                    if session_close_utc is not None:
+                        provider_status["session_close_utc"] = session_close_utc.isoformat()
                 return build_market_status(
                     asset,
                     category=category,
-                    provider_status={
-                        "asset": asset,
-                        "market_open": bool(exchange_open),
-                        "reason": f"{market_display} {'open' if exchange_open else 'closed'} on Deriv",
-                        "source": "Deriv",
-                        "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                    },
+                    provider_status=provider_status,
                 )
 
             trading_times = self._get_trading_times_locked(datetime.now(timezone.utc).date())
@@ -541,16 +546,21 @@ class DerivBridge:
             if hours_status is None:
                 return None
 
+            provider_status = {
+                "asset": asset,
+                "market_open": bool(hours_status[0]),
+                "reason": str(hours_status[1]),
+                "source": "Deriv",
+                "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            }
+            if bool(hours_status[0]):
+                session_close_utc = self._current_session_close_locked(resolved["symbol"])
+                if session_close_utc is not None:
+                    provider_status["session_close_utc"] = session_close_utc.isoformat()
             return build_market_status(
                 asset,
                 category=category,
-                provider_status={
-                    "asset": asset,
-                    "market_open": bool(hours_status[0]),
-                    "reason": str(hours_status[1]),
-                    "source": "Deriv",
-                    "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                },
+                provider_status=provider_status,
             )
 
     def get_economic_events(
@@ -1124,6 +1134,31 @@ class DerivBridge:
 
         return None
 
+    def _current_session_close_locked(
+        self,
+        deriv_symbol: str,
+        now: Optional[datetime] = None,
+    ) -> Optional[datetime]:
+        moment = now or datetime.now(timezone.utc)
+        sessions: List[Tuple[datetime, datetime]] = []
+        symbol_key = str(deriv_symbol or "").strip().lower()
+
+        for day_offset in (-1, 0, 1):
+            trading_times = self._get_trading_times_locked((moment + timedelta(days=day_offset)).date())
+            markets = trading_times.get("markets") or []
+            for market in markets:
+                for submarket in market.get("submarkets") or []:
+                    for symbol in submarket.get("symbols") or []:
+                        symbol_code = str(symbol.get("underlying_symbol") or symbol.get("symbol", "")).strip().lower()
+                        if symbol_code != symbol_key:
+                            continue
+                        sessions.extend(self._trading_times_sessions(trading_times, symbol))
+
+        for open_dt, close_dt in sorted(sessions, key=lambda item: item[0]):
+            if open_dt <= moment <= close_dt:
+                return close_dt
+        return None
+
     @staticmethod
     def _trading_times_sessions(trading_times: Dict[str, Any], symbol: Dict[str, Any]) -> List[Tuple[datetime, datetime]]:
         opens = []
@@ -1154,6 +1189,8 @@ class DerivBridge:
                 close_dt = datetime.fromisoformat(f"{trading_day}T{raw_close}+00:00")
             except Exception:
                 continue
+            if close_dt <= open_dt:
+                close_dt += timedelta(days=1)
             sessions.append((open_dt, close_dt))
         return sessions
 

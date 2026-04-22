@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote as _urlquote
 
@@ -730,6 +730,60 @@ class IGMarketBridge:
         if closed_only:
             return frame[frame.index < cutoff_ts]
         return frame[frame.index <= cutoff_ts]
+
+    @staticmethod
+    def _current_session_close_utc(details: Dict[str, Any], *, now_utc: Optional[datetime] = None) -> Optional[datetime]:
+        now = now_utc.astimezone(timezone.utc) if isinstance(now_utc, datetime) else datetime.now(timezone.utc)
+        opening_hours = details.get("openingHours") or (details.get("instrument") or {}).get("openingHours") or {}
+        market_times = opening_hours.get("marketTimes") or []
+        if not isinstance(market_times, list):
+            return None
+
+        for day_offset in (-1, 0, 1):
+            trading_day = (now + timedelta(days=day_offset)).date()
+            for session in market_times:
+                if not isinstance(session, dict):
+                    continue
+                raw_open = str(session.get("openTime") or "").strip()
+                raw_close = str(session.get("closeTime") or "").strip()
+                if not raw_open or not raw_close:
+                    continue
+                open_time = None
+                close_time = None
+                for fmt in ("%H:%M:%S", "%H:%M"):
+                    try:
+                        if open_time is None:
+                            open_time = datetime.strptime(raw_open, fmt).time()
+                        if close_time is None:
+                            close_time = datetime.strptime(raw_close, fmt).time()
+                    except Exception:
+                        continue
+                if open_time is None or close_time is None:
+                    continue
+                open_dt = datetime(
+                    trading_day.year,
+                    trading_day.month,
+                    trading_day.day,
+                    open_time.hour,
+                    open_time.minute,
+                    open_time.second,
+                    tzinfo=timezone.utc,
+                )
+                close_dt = datetime(
+                    trading_day.year,
+                    trading_day.month,
+                    trading_day.day,
+                    close_time.hour,
+                    close_time.minute,
+                    close_time.second,
+                    tzinfo=timezone.utc,
+                )
+                if close_dt <= open_dt:
+                    close_dt += timedelta(days=1)
+                if open_dt <= now < close_dt:
+                    return close_dt
+        return None
+
     def get_market_status(self, asset: str, category: str = "") -> Optional[Dict[str, Any]]:
         canonical = _canonical_asset(asset)
         if not self._supports_asset(canonical, category=category) or not self._credentials_ready():
@@ -746,17 +800,22 @@ class IGMarketBridge:
             market_status = str(snapshot.get("marketStatus") or resolved.get("market_status") or "").upper()
             market_open = market_status in {"TRADEABLE", "DEAL_NO_EDIT"}
             instrument_name = str((details.get("instrument") or {}).get("name") or resolved.get("instrument_name") or canonical)
+            provider_status = {
+                "asset": canonical,
+                "market_open": market_open,
+                "reason": f"{instrument_name} {market_status.lower() or 'status unavailable'} on IG",
+                "source": "IG",
+                "ig_epic": epic,
+                "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            }
+            if market_open:
+                session_close_utc = self._current_session_close_utc(details)
+                if session_close_utc is not None:
+                    provider_status["session_close_utc"] = session_close_utc.isoformat()
             return build_market_status(
                 canonical,
                 category=category,
-                provider_status={
-                    "asset": canonical,
-                    "market_open": market_open,
-                    "reason": f"{instrument_name} {market_status.lower() or 'status unavailable'} on IG",
-                    "source": "IG",
-                    "ig_epic": epic,
-                    "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                },
+                provider_status=provider_status,
             )
         except Exception:
             return None

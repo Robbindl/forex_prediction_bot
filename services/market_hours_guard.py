@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time as dtime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from core.asset_profiles import (
@@ -45,6 +45,56 @@ def _now_in_tz(tz_name: str, now_utc: datetime) -> datetime:
 def _resolved_category(asset: str, category: str = "") -> str:
     resolved = str(category or get_profile(asset).category or "").strip().lower()
     return resolved
+
+
+def _parse_utc_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _provider_close_buffer_gate(
+    provider_status: Optional[Dict[str, Any]],
+    now_utc: datetime,
+) -> Optional[Tuple[bool, str, bool, str]]:
+    if not isinstance(provider_status, dict):
+        return None
+    if provider_status.get("market_open") is not True:
+        return None
+
+    close_dt = _parse_utc_datetime(
+        provider_status.get("session_close_utc")
+        or provider_status.get("current_session_close_utc")
+        or provider_status.get("close_time_utc")
+        or provider_status.get("next_close_utc")
+    )
+    if close_dt is None:
+        return None
+
+    remaining = close_dt - now_utc
+    if remaining.total_seconds() <= 0:
+        return False, "Provider session ended", False, ""
+
+    if remaining <= timedelta(minutes=_CLOSE_BUFFER_MINUTES):
+        reason = (
+            "Close buffer: last hour before provider close "
+            f"({close_dt.strftime('%Y-%m-%d %H:%M UTC')})"
+        )
+        return False, reason, True, reason
+
+    return True, "", False, ""
 
 
 def close_buffer_status(
@@ -290,8 +340,12 @@ def build_market_status(
 
     resolved_category = _resolved_category(asset, category)
     now = _utc_now(now_utc)
-    buffer_active, buffer_reason = close_buffer_status(asset, resolved_category, now_utc=now)
-    gate_open, gate_reason = session_market_status(asset, resolved_category, now_utc=now)
+    provider_gate = _provider_close_buffer_gate(provider_status, now)
+    if provider_gate is not None:
+        gate_open, gate_reason, buffer_active, buffer_reason = provider_gate
+    else:
+        buffer_active, buffer_reason = close_buffer_status(asset, resolved_category, now_utc=now)
+        gate_open, gate_reason = session_market_status(asset, resolved_category, now_utc=now)
 
     provider_open: Optional[bool] = None
     provider_reason = ""

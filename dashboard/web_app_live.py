@@ -3950,6 +3950,18 @@ def _chart_history_cache_ttl(asset: str, category: str, interval: str) -> int:
     return 60
 
 
+def _chart_live_period_target(interval: str) -> int:
+    return {
+        "1m": 300,
+        "5m": 300,
+        "15m": 300,
+        "30m": 240,
+        "1h": 240,
+        "4h": 200,
+        "1d": 365,
+    }.get(str(interval or "").lower(), 300)
+
+
 def _chart_allowance_retry_limit(asset: str, category: str, interval: str, requested: int) -> int:
     descriptor = _chart_asset_descriptor(asset, category)
     if str(descriptor.get("primary_provider") or "").upper() != "IG":
@@ -4488,21 +4500,63 @@ def _chart_candle_apply_stream_overlay(
     df: Any,
     meta: Dict[str, Any],
     *,
-    ig_primary: bool,
+    primary_provider: str,
 ) -> Tuple[Any, str, Dict[str, Any]]:
-    if not ig_primary or (df is not None and not df.empty):
+    if df is not None and not df.empty:
         return df, interval, meta
 
-    stream_df = _stream_candles_from_live_feed(asset, interval, periods, source_hint="IG")
-    if stream_df is None or stream_df.empty:
-        return df, interval, meta
+    for source_hint in (str(primary_provider or "").strip(), ""):
+        stream_df = _stream_candles_from_live_feed(asset, interval, periods, source_hint=source_hint)
+        if stream_df is None or stream_df.empty:
+            continue
+        source_label = f"{source_hint} Stream" if source_hint else "Live Stream"
+        return stream_df, interval, {
+            "source": source_label,
+            "source_class": "stream_cache",
+            "provider_family": str(primary_provider or source_hint or ""),
+            "provider_error_message": str(meta.get("provider_error_message") or ""),
+            "provider_error_code": str(meta.get("provider_error_code") or ""),
+        }
 
-    return stream_df, interval, {
-        "source": "IG Stream",
-        "source_class": "stream_cache",
-        "provider_warning_message": str(meta.get("provider_error_message") or ""),
-        "provider_warning_code": str(meta.get("provider_error_code") or ""),
-    }
+    return df, interval, meta
+
+
+def _chart_candle_apply_local_store_fallback(
+    asset: str,
+    category: str,
+    interval: str,
+    periods: int,
+    df: Any,
+    meta: Dict[str, Any],
+) -> Tuple[Any, Dict[str, Any]]:
+    if df is not None and not df.empty:
+        return df, meta
+
+    try:
+        from services.local_candle_store import local_candle_store
+    except Exception:
+        local_candle_store = None
+
+    if local_candle_store is None or not callable(getattr(local_candle_store, "get_ohlcv", None)):
+        return df, meta
+
+    try:
+        local_df, local_meta = local_candle_store.get_ohlcv(
+            asset,
+            category,
+            interval,
+            periods,
+            closed_only=False,
+        )
+    except Exception:
+        return df, meta
+
+    if local_df is None or local_df.empty:
+        return df, meta
+
+    merged_meta = dict(meta or {})
+    merged_meta.update(local_meta or {})
+    return local_df, merged_meta
 
 
 def _chart_candle_apply_category_fallbacks(
@@ -4530,14 +4584,15 @@ def _chart_candle_apply_category_fallbacks(
         "4h": ["1d"],
     }
     for fb in fallbacks.get(interval, []):
-        fb_periods = _chart_period_limit(asset, category, fb, int(get_chart_timeframe_periods(fb)))
+        fb_requested = min(int(get_chart_timeframe_periods(fb)), _chart_live_period_target(fb))
+        fb_periods = _chart_period_limit(asset, category, fb, fb_requested)
         try:
             fallback_df = _fetcher.get_ohlcv(
                 asset,
                 category,
                 interval=fb,
                 periods=fb_periods,
-                prefer_local=False,
+                prefer_local=True,
                 provider_preference=provider_preference,
             )
         except TypeError:
@@ -4628,9 +4683,8 @@ def api_chart_candles():
         interval = request.args.get("interval", "15m")
         cat      = _cat(asset)
         descriptor = _chart_asset_descriptor(asset, cat)
-        ig_primary = str(descriptor.get("primary_provider") or "").upper() == "IG"
         provider_preference = _chart_history_provider_preference(asset, cat, descriptor)
-        requested_periods = int(get_chart_timeframe_periods(interval))
+        requested_periods = min(int(get_chart_timeframe_periods(interval)), _chart_live_period_target(interval))
         periods = _chart_period_limit(asset, cat, interval, requested_periods)
         fetcher_token = _chart_fetcher_cache_token()
         cache_key = f"chart_candles:{asset}:{cat}:{interval}:{periods}:{fetcher_token}"
@@ -4644,17 +4698,18 @@ def api_chart_candles():
             cat,
             interval,
             periods,
-            prefer_local=False,
+            prefer_local=True,
             provider_preference=provider_preference,
         )
         used = interval
+        df, meta = _chart_candle_apply_local_store_fallback(asset, cat, interval, periods, df, meta)
         df, used, overlay_meta = _chart_candle_apply_stream_overlay(
             asset,
             interval,
             periods,
             df,
             meta,
-            ig_primary=ig_primary,
+            primary_provider=str(descriptor.get("primary_provider") or ""),
         )
         if overlay_meta is not meta:
             meta = overlay_meta
@@ -4671,7 +4726,7 @@ def api_chart_candles():
             return jsonify(_chart_candle_missing_payload(asset, meta, interval, periods, last_good_key))
 
         candles = _serialize_chart_candles(df)
-        if str(meta.get("source_class") or "") != "stream_cache":
+        if str(meta.get("source_class") or "") not in {"stream_cache", "local_store"}:
             meta = {}
             try:
                 meta = _fetcher.get_last_ohlcv_metadata(asset, used)
@@ -4723,7 +4778,7 @@ def api_chart_history():
                 periods=requested,
                 end_time=end_time,
                 closed_only=closed_only,
-                prefer_local=False,
+                prefer_local=True,
                 provider_preference=provider_preference,
             )
         except TypeError:
@@ -6777,7 +6832,22 @@ def _setup_dashboard_live_streams(cb) -> tuple[Any, Dict[str, Dict[str, str]], A
         "ig_poll_assets": ig_poll_assets,
         "ig_stream_assets": ig_stream_assets,
         "ig_fallback_assets": ig_fallback_assets,
+        "subscription_signature": (
+            tuple(sorted((str(asset), str(category or "")) for asset, category in filter_deriv_stream_assets(assets_by_category).items())),
+            tuple(sorted((str(asset), str(category or "")) for asset, category in ig_primary_assets.items())),
+        ),
+        "last_subscription_update_ts": time.time() if assets_by_category else 0.0,
     }, _ig_stream_manager
+
+
+def _dashboard_subscription_signature(
+    deriv_stream_assets: Dict[str, str],
+    ig_primary_assets: Dict[str, str],
+) -> Tuple[Tuple[Tuple[str, str], ...], Tuple[Tuple[str, str], ...]]:
+    return (
+        tuple(sorted((str(asset), str(category or "")) for asset, category in deriv_stream_assets.items())),
+        tuple(sorted((str(asset), str(category or "")) for asset, category in ig_primary_assets.items())),
+    )
 
 
 def _dashboard_apply_subscription_update(
@@ -6797,6 +6867,19 @@ def _dashboard_apply_subscription_update(
     try:
         deriv_stream_assets = filter_deriv_stream_assets(asset_map)
         ig_primary_assets = filter_ig_primary_assets(asset_map)
+        desired_signature = _dashboard_subscription_signature(deriv_stream_assets, ig_primary_assets)
+        last_signature = stream_state.get("subscription_signature")
+        last_update_ts = float(stream_state.get("last_subscription_update_ts") or 0.0)
+        ig_degraded = bool(ig_primary_assets) and (
+            stream_state.get("ig_poll_assets")
+            or stream_state.get("ig_fallback_assets")
+            or not stream_state.get("ig_stream_assets")
+        )
+        if last_signature == desired_signature:
+            if not ig_degraded:
+                return
+            if last_update_ts and (time.time() - last_update_ts) < 300.0:
+                return
         if deriv_stream_assets:
             ws_global.subscribe_deriv(deriv_stream_assets, cb)
             logger.debug(f"[dashboard] Updated live Deriv subscriptions: {deriv_stream_assets}")
@@ -6830,6 +6913,8 @@ def _dashboard_apply_subscription_update(
                 set_connected("ig", False, 0)
         except Exception:
             pass
+        stream_state["subscription_signature"] = desired_signature
+        stream_state["last_subscription_update_ts"] = time.time()
     except Exception as _ue:
         logger.debug(f"[dashboard] Update live subs failed: {_ue}")
 

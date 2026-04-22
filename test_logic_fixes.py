@@ -5145,6 +5145,46 @@ def test_market_hours_guard_blocks_last_hour_before_close_windows() -> None:
     assert crypto_status["market_open"] is True
     assert crypto_status["reason"] == "crypto_24x7"
 
+def test_market_hours_guard_uses_provider_session_close_for_extended_hours() -> None:
+    guard_mod = importlib.import_module("services.market_hours_guard")
+
+    status = guard_mod.build_market_status(
+        "US30",
+        "indices",
+        now_utc=datetime(2026, 4, 13, 20, 30, tzinfo=timezone.utc),
+        provider_status={
+            "asset": "US30",
+            "market_open": True,
+            "reason": "US 30 tradeable on IG",
+            "source": "IG",
+            "session_close_utc": "2026-04-13T23:00:00+00:00",
+        },
+    )
+
+    assert status["market_open"] is True
+    assert status["close_buffer_active"] is False
+    assert status["reason"] == "US 30 tradeable on IG"
+
+def test_market_hours_guard_provider_session_close_triggers_close_buffer() -> None:
+    guard_mod = importlib.import_module("services.market_hours_guard")
+
+    status = guard_mod.build_market_status(
+        "US30",
+        "indices",
+        now_utc=datetime(2026, 4, 13, 22, 15, tzinfo=timezone.utc),
+        provider_status={
+            "asset": "US30",
+            "market_open": True,
+            "reason": "US 30 tradeable on IG",
+            "source": "IG",
+            "session_close_utc": "2026-04-13T23:00:00+00:00",
+        },
+    )
+
+    assert status["market_open"] is False
+    assert status["close_buffer_active"] is True
+    assert "close buffer" in str(status["reason"]).lower()
+
 def test_trading_core_market_hours_blocks_close_buffer_even_if_provider_reports_open(monkeypatch) -> None:
     guard_mod = importlib.import_module("services.market_hours_guard")
     router_mod = importlib.import_module("services.market_data_router")
@@ -5200,6 +5240,59 @@ def test_trading_core_flatten_positions_before_close_only_closes_buffered_assets
 
     assert core._flatten_positions_before_close() == 1
     assert closed == [("fx1", "Pre-close flatten")]
+
+def test_trading_core_flatten_positions_before_close_prefers_router_status(monkeypatch) -> None:
+    core = object.__new__(TradingCore)
+    router_mod = importlib.import_module("services.market_data_router")
+    guard_mod = importlib.import_module("services.market_hours_guard")
+    closed: list[tuple[str, str]] = []
+
+    def _fake_router_status(asset: str, category: str = "") -> dict:
+        if asset == "US30":
+            return {
+                "asset": asset,
+                "category": category,
+                "market_open": False,
+                "reason": "Close buffer: last hour before provider close",
+                "close_buffer_active": True,
+                "close_buffer_reason": "Close buffer: last hour before provider close",
+            }
+        return {
+            "asset": asset,
+            "category": category,
+            "market_open": True,
+            "reason": "open",
+            "close_buffer_active": False,
+        }
+
+    monkeypatch.setattr(router_mod, "get_market_status", _fake_router_status, raising=False)
+    monkeypatch.setattr(
+        guard_mod,
+        "build_market_status",
+        lambda asset, category="": {
+            "asset": asset,
+            "category": category,
+            "market_open": True,
+            "reason": "open",
+            "close_buffer_active": False,
+        },
+        raising=False,
+    )
+    core.state = SimpleNamespace(
+        get_open_positions=lambda: [
+            {"trade_id": "idx1", "asset": "US30", "category": "indices"},
+            {"trade_id": "fx1", "asset": "EUR/USD", "category": "forex"},
+        ]
+    )
+
+    def _close_position_manually(trade_id: str, *, reason: str = "Manual Close") -> dict:
+        closed.append((trade_id, reason))
+        return {"trade_id": trade_id}
+
+    core.close_position_manually = _close_position_manually
+
+    assert core._flatten_positions_before_close() == 1
+    assert closed == [("idx1", "Pre-close flatten")]
 
 def test_market_data_router_filters_ig_routed_commodities_from_deriv_streams() -> None:
     router_mod = importlib.import_module("services.market_data_router")
@@ -7406,6 +7499,90 @@ def test_websocket_manager_does_not_start_for_ig_only_assets(monkeypatch) -> Non
     assert scheduled == []
     assert any("No Deriv/Binance stream assets" in str(message) for message in infos)
 
+
+def test_dashboard_apply_subscription_update_skips_unchanged_healthy_assets(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    router_mod = importlib.import_module("services.market_data_router")
+    ws_dashboard_mod = importlib.import_module("websocket_dashboard")
+
+    deriv_calls: list[dict[str, str]] = []
+    ig_calls: list[dict[str, str]] = []
+
+    class _FakeWs:
+        def subscribe_deriv(self, assets, callback, include_ig_assets=False):
+            deriv_calls.append(dict(assets))
+
+    class _FakeIg:
+        def subscribe_prices(self, assets, callback):
+            ig_calls.append(dict(assets))
+            return dict(assets)
+
+    monkeypatch.setattr(router_mod, "filter_deriv_stream_assets", lambda assets: {"EUR/USD": "forex"}, raising=False)
+    monkeypatch.setattr(router_mod, "filter_ig_primary_assets", lambda assets: {"XAU/USD": "commodities"}, raising=False)
+    monkeypatch.setattr(router_mod, "split_pending_ig_fallback_assets", lambda pending: ({}, {}), raising=False)
+    monkeypatch.setattr(ws_dashboard_mod, "set_connected", lambda *args, **kwargs: None, raising=False)
+
+    stream_state: dict[str, Any] = {
+        "ig_poll_assets": {},
+        "ig_stream_assets": {},
+        "ig_fallback_assets": {},
+    }
+    asset_map = {"EUR/USD": "forex", "XAU/USD": "commodities"}
+
+    dashboard_mod._dashboard_apply_subscription_update(_FakeWs(), stream_state, lambda *_args: None, _FakeIg(), asset_map)
+    dashboard_mod._dashboard_apply_subscription_update(_FakeWs(), stream_state, lambda *_args: None, _FakeIg(), asset_map)
+
+    assert len(deriv_calls) == 1
+    assert len(ig_calls) == 1
+    assert stream_state["subscription_signature"]
+
+
+def test_dashboard_apply_subscription_update_retries_degraded_ig_state_after_backoff(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    router_mod = importlib.import_module("services.market_data_router")
+    ws_dashboard_mod = importlib.import_module("websocket_dashboard")
+
+    deriv_calls: list[dict[str, str]] = []
+    ig_calls: list[dict[str, str]] = []
+    now = {"value": 1000.0}
+
+    class _FakeWs:
+        def subscribe_deriv(self, assets, callback, include_ig_assets=False):
+            deriv_calls.append(dict(assets))
+
+    class _FakeIg:
+        def subscribe_prices(self, assets, callback):
+            ig_calls.append(dict(assets))
+            return {}
+
+    monkeypatch.setattr(router_mod, "filter_deriv_stream_assets", lambda assets: {"EUR/USD": "forex"}, raising=False)
+    monkeypatch.setattr(router_mod, "filter_ig_primary_assets", lambda assets: {"XAU/USD": "commodities"}, raising=False)
+    monkeypatch.setattr(
+        router_mod,
+        "split_pending_ig_fallback_assets",
+        lambda pending: ({}, {"XAU/USD": "commodities"}),
+        raising=False,
+    )
+    monkeypatch.setattr(ws_dashboard_mod, "set_connected", lambda *args, **kwargs: None, raising=False)
+    monkeypatch.setattr(dashboard_mod.time, "time", lambda: now["value"], raising=False)
+
+    stream_state: dict[str, Any] = {
+        "ig_poll_assets": {},
+        "ig_stream_assets": {},
+        "ig_fallback_assets": {},
+    }
+    asset_map = {"EUR/USD": "forex", "XAU/USD": "commodities"}
+
+    dashboard_mod._dashboard_apply_subscription_update(_FakeWs(), stream_state, lambda *_args: None, _FakeIg(), asset_map)
+    now["value"] = 1001.0
+    dashboard_mod._dashboard_apply_subscription_update(_FakeWs(), stream_state, lambda *_args: None, _FakeIg(), asset_map)
+    now["value"] = 1305.0
+    dashboard_mod._dashboard_apply_subscription_update(_FakeWs(), stream_state, lambda *_args: None, _FakeIg(), asset_map)
+
+    assert len(ig_calls) == 2
+    assert len(deriv_calls) == 2
+
+
 def test_websocket_manager_dispatches_deriv_ticks(monkeypatch) -> None:
     import asyncio
     import json
@@ -8543,7 +8720,120 @@ def test_history_allows_live_overlay_for_local_store_when_provider_matches() -> 
     ) is True
 
 
-def test_api_chart_candles_prefers_primary_chart_provider_and_skips_local_short_circuit(monkeypatch) -> None:
+def test_api_chart_candles_limits_live_window_for_non_ig_assets(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    captured: dict[str, Any] = {}
+    frame = pd.DataFrame(
+        {
+            "open": [1.1750, 1.1755],
+            "high": [1.1760, 1.1764],
+            "low": [1.1748, 1.1752],
+            "close": [1.1756, 1.1762],
+            "volume": [10.0, 12.0],
+        },
+        index=pd.to_datetime(["2026-04-17T16:00:00Z", "2026-04-17T16:05:00Z"], utc=True),
+    )
+
+    class _FakeFetcher:
+        def get_ohlcv(self, asset, category, interval="5m", periods=0, **kwargs):
+            captured["periods"] = int(periods or 0)
+            return frame
+
+        def get_last_ohlcv_metadata(self, asset, interval):
+            return {"source": "Deriv", "source_class": "primary_api", "provider_family": "Deriv"}
+
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_chart_asset_descriptor",
+        lambda asset, category: {
+            "symbol": asset,
+            "category": category,
+            "primary_provider": "Deriv",
+            "secondary_provider": "",
+            "quote_mode": "stream",
+            "price_precision": 5,
+        },
+        raising=False,
+    )
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/candles?asset=EUR/USD&interval=5m")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["bars_requested"] == 300
+    assert captured["periods"] == 300
+
+
+def test_api_chart_candles_falls_back_to_local_store_when_provider_history_is_missing(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+    config_mod = importlib.import_module("config.config")
+    local_store_mod = importlib.import_module("services.local_candle_store")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(config_mod, "IG_ENABLED", True, raising=False)
+    monkeypatch.setattr(config_mod, "IG_ROUTED_CATEGORIES", ["commodities"], raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+
+    local_frame = pd.DataFrame(
+        {
+            "open": [70.0, 70.2],
+            "high": [70.4, 70.6],
+            "low": [69.8, 70.1],
+            "close": [70.3, 70.5],
+            "volume": [25.0, 30.0],
+        },
+        index=pd.to_datetime(["2026-04-22T00:00:00Z", "2026-04-22T00:05:00Z"], utc=True),
+    )
+
+    class _FakeFetcher:
+        def get_ohlcv(self, asset, category, interval="5m", periods=0, **kwargs):
+            return None
+
+        def get_last_ohlcv_metadata(self, asset, interval):
+            return {
+                "source": "IG",
+                "provider_error_code": "historical-miss",
+                "provider_error_message": "historical-miss",
+            }
+
+    class _FakeLocalStore:
+        def get_ohlcv(self, asset, category, interval, periods, **kwargs):
+            return local_frame, {
+                "source": "LocalStore",
+                "source_class": "local_store",
+                "provider_family": "IG",
+                "latest_provider_family": "IG",
+                "latest_source_class": "stream_cache",
+                "realtime": True,
+            }
+
+    monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(local_store_mod, "local_candle_store", _FakeLocalStore(), raising=False)
+
+    client = dashboard_mod.app.test_client()
+    response = client.get("/api/chart/candles?asset=WTI&interval=5m")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["data_source"] == "LocalStore"
+    assert payload["live_overlay_allowed"] is True
+    assert payload["provider_warning_code"] == "historical-miss"
+    assert len(payload["candles"]) == 2
+
+
+def test_api_chart_candles_prefers_local_spine_before_provider_fetch(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
 
     monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
@@ -8599,7 +8889,7 @@ def test_api_chart_candles_prefers_primary_chart_provider_and_skips_local_short_
     assert payload["success"] is True
     assert payload["data_source"] == "Deriv"
     assert payload["live_overlay_allowed"] is True
-    assert captured["prefer_local"] is False
+    assert captured["prefer_local"] is True
     assert captured["provider_preference"][:3] == ("Deriv", "Dukascopy", "FMP")
 
 def test_api_chart_candles_disables_live_overlay_for_cross_provider_history(monkeypatch) -> None:
@@ -8690,6 +8980,7 @@ def test_api_chart_candles_caps_ig_history_requests(monkeypatch) -> None:
 def test_api_chart_candles_uses_last_good_cache_on_ig_allowance_error(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
     config_mod = importlib.import_module("config.config")
+    local_store_mod = importlib.import_module("services.local_candle_store")
 
     monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
     monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
@@ -8724,7 +9015,18 @@ def test_api_chart_candles_uses_last_good_cache_on_ig_allowance_error(monkeypatc
                 "provider_error_message": "error.public-api.exceeded-account-historical-data-allowance",
             }
 
+    class _EmptyLocalStore:
+        def get_ohlcv(self, asset, category, interval, periods, **kwargs):
+            return None, {}
+
     monkeypatch.setattr(dashboard_mod, "_fetcher", _FakeFetcher(), raising=False)
+    monkeypatch.setattr(local_store_mod, "local_candle_store", _EmptyLocalStore(), raising=False)
+    monkeypatch.setattr(
+        dashboard_mod,
+        "_stream_candles_from_live_feed",
+        lambda asset, interval, periods, source_hint="IG": None,
+        raising=False,
+    )
 
     client = dashboard_mod.app.test_client()
     response = client.get("/api/chart/candles?asset=WTI&interval=5m")
@@ -12233,6 +12535,120 @@ def test_telegram_history_hides_partial_close_rows_for_consistency(monkeypatch) 
     assert "Partial TP x1 -> Trailing Exit" in captured["text"]
     assert "Total +16.00" in captured["text"]
     assert "Partial TP 1/2" not in captured["text"]
+
+
+def test_telegram_fresh_position_snapshot_uses_uncached_provider_quote(monkeypatch) -> None:
+    tg_mod = importlib.import_module("telegram_commander")
+
+    commander = object.__new__(tg_mod.TelegramCommander)
+    captured: Dict[str, Any] = {}
+
+    class _FakeFetcher:
+        def get_real_time_price(
+            self,
+            asset,
+            category,
+            *,
+            prefer_live_stream=True,
+            allow_cached_quote=True,
+        ):
+            captured["asset"] = asset
+            captured["category"] = category
+            captured["prefer_live_stream"] = prefer_live_stream
+            captured["allow_cached_quote"] = allow_cached_quote
+            return 101.25, None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "websocket_dashboard",
+        SimpleNamespace(get_live_price_snapshot=lambda asset, max_age_seconds=None: None),
+    )
+
+    quote = commander._fresh_position_snapshot(
+        SimpleNamespace(fetcher=_FakeFetcher()),
+        {
+            "asset": "EUR/USD",
+            "category": "forex",
+            "direction": "BUY",
+            "entry_price": 100.0,
+            "position_size": 1.0,
+            "current_price": 99.0,
+        },
+    )
+
+    assert quote["current_price"] == 101.25
+    assert quote["price_source"] == "provider quote"
+    assert captured["prefer_live_stream"] is True
+    assert captured["allow_cached_quote"] is False
+
+
+def test_telegram_close_menu_counts_repriced_positions(monkeypatch) -> None:
+    import asyncio
+
+    tg_mod = importlib.import_module("telegram_commander")
+    commander = object.__new__(tg_mod.TelegramCommander)
+    commander.trading_system = SimpleNamespace()
+
+    monkeypatch.setattr(
+        commander,
+        "_repriced_open_positions",
+        lambda core, live_snapshot_max_age_seconds=3.0: [
+            {"asset": "EUR/USD", "category": "forex", "pnl": -3.0},
+            {"asset": "BTC-USD", "category": "crypto", "pnl": 6.0},
+            {"asset": "ETH-USD", "category": "crypto", "pnl": 2.5},
+        ],
+        raising=False,
+    )
+
+    captured: Dict[str, Any] = {}
+
+    class _Query:
+        async def edit_message_text(self, text, **kwargs):
+            captured["text"] = text
+            captured["kwargs"] = kwargs
+
+    asyncio.run(commander._btn_close_menu(_Query()))
+
+    assert "🔴 Losing: 1  |  🟢 Winning: 2" in captured["text"]
+    assert "Crypto: 2 position(s)" in captured["text"]
+
+
+def test_telegram_close_filter_uses_repriced_positions(monkeypatch) -> None:
+    import asyncio
+
+    tg_mod = importlib.import_module("telegram_commander")
+    commander = object.__new__(tg_mod.TelegramCommander)
+    closed_trade_ids: List[str] = []
+
+    class _Core:
+        def close_position_manually(self, trade_id):
+            closed_trade_ids.append(str(trade_id))
+            return {"success": True, "pnl": -4.5}
+
+    commander.trading_system = _Core()
+    monkeypatch.setattr(
+        commander,
+        "_repriced_open_positions",
+        lambda core, live_snapshot_max_age_seconds=3.0: [
+            {"trade_id": "loser-1", "asset": "EUR/USD", "category": "forex", "pnl": -4.5},
+            {"trade_id": "winner-1", "asset": "BTC-USD", "category": "crypto", "pnl": 9.0},
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(commander, "_is_weekend_for_category", lambda category: False, raising=False)
+
+    captured: Dict[str, Any] = {}
+
+    class _Query:
+        async def edit_message_text(self, text, **kwargs):
+            captured["text"] = text
+            captured["kwargs"] = kwargs
+
+    asyncio.run(commander._btn_close_filter(_Query(), "losing"))
+
+    assert closed_trade_ids == ["loser-1"]
+    assert "EUR/USD" in captured["text"]
+    assert "BTC-USD" not in captured["text"]
 
 def test_state_rebuild_stats_uses_shared_db_rollups(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(state_mod, "_STATE_FILE", tmp_path / "system_state.json")
