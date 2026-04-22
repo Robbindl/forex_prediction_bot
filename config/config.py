@@ -7,7 +7,11 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+_ROOT_DIR = Path(__file__).resolve().parents[1]
+_BASE_ENV = _ROOT_DIR / ".env"
+
+# Load the repo .env file only.
+load_dotenv(_BASE_ENV)
 
 
 def _parse_int(value: str, default=None):

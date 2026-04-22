@@ -716,6 +716,9 @@ def main() -> None:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
+    # DeepSeek chat does not depend on the trading engine, so start it early.
+    _start_deepseek_background_bot()
+
     engine.start()
 
     # ── API key expiry notifications ──────────────────────────────────────
@@ -749,9 +752,6 @@ def main() -> None:
     # ──────────────────────────────────────────────────────────────────────
 
     _start_bot_services(engine, args)
-
-    # Standalone DeepSeek chat bot runs alongside the trading stack.
-    _start_deepseek_background_bot()
 
     # ── Wait for engine ───────────────────────────────────────────────────
     _wait_for_engine_ready(engine)

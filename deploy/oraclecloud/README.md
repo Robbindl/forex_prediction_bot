@@ -95,7 +95,7 @@ cd /opt/forex_prediction_bot
 ./venv_tf/bin/python bot.py
 ```
 
-`bot.py` starts the trading stack and, if `DEEPSEEK_TELEGRAM_TOKEN` is set, the standalone DeepSeek chat bot in the background. Set `BOT_ROLE=deepseek` only if you want this service to run DeepSeek by itself.
+`bot.py` starts the trading stack and, if `DEEPSEEK_TELEGRAM_TOKEN` is set, the standalone DeepSeek chat bot in the background. It reads the repo `.env` file only. Set `BOT_ROLE=deepseek` only if you want this service to run DeepSeek by itself.
 
 To run it as a service, copy `deploy/oraclecloud/deepseek-bot.service` to `/etc/systemd/system/deepseek-bot.service`, adjust the `User` and `Group` if needed, then run:
 
