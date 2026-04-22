@@ -56,6 +56,8 @@ python3 -m venv venv_tf
   - `DATABASE_URL` points to the real database
   - `REDIS_URL` points to the real Redis instance
   - `COMMAND_BOT_TOKEN` / `COMMAND_BOT_CHAT_ID` are set if you expect command alerts
+  - `DEEPSEEK_TELEGRAM_TOKEN` is set if you want the standalone DeepSeek chat bot
+  - `DEEPSEEK_TELEGRAM_CHAT_ID` is optional; set it if you want to lock the chat bot to one private chat
   - `WHALE_TELEGRAM_TOKEN`, `INTELLIGENCE_CHAT_ID`, and Telegram API credentials are set if you expect intelligence alerts
   - `DERIV_APP_ID` and `DERIV_TOKEN` are set for Deriv-backed data
   - `IG_ROUTED_CATEGORIES=commodities` unless you explicitly want the whole indices category on IG
@@ -82,6 +84,25 @@ For a scripted install, you can also run:
 ```bash
 chmod +x deploy/oraclecloud/install.sh
 APP_DIR=/opt/forex_prediction_bot ./deploy/oraclecloud/install.sh
+```
+
+## Optional standalone DeepSeek chat bot
+
+If you want a separate Telegram bot for pure DeepSeek chat, run it as a second process:
+
+```bash
+cd /opt/forex_prediction_bot
+./venv_tf/bin/python deepseek_bot.py
+```
+
+Use `DEEPSEEK_TELEGRAM_TOKEN` for the chat bot token. Set `DEEPSEEK_TELEGRAM_CHAT_ID` only if you want to lock it to one private chat.
+
+To run it as a service, copy `deploy/oraclecloud/deepseek-bot.service` to `/etc/systemd/system/deepseek-bot.service`, adjust the `User` and `Group` if needed, then run:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now deepseek-bot
+sudo systemctl status deepseek-bot
 ```
 
 ## 6. Install Nginx reverse proxy

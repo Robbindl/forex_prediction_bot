@@ -119,7 +119,7 @@ def _main_menu_keyboard(summary: Optional[Dict[str, Any]] = None) -> InlineKeybo
     return _kb(
         [("📊 Status",    "status"),   (positions_label, "positions")],
         [("💰 Balance",   "balance"),  ("🎯 Signals",    "signals")],
-        [("🧠 Ask Robbie","chat_menu"), (diary_label,    "diary")],
+        [("🎯 Asset Q&A",  "ask_asset_menu"), (diary_label, "diary")],
         [("😶 Mood",      "mood"),      ("📡 Market",    "market")],
         [("🏠 Menu",      "menu"),      (run_label,      run_action)],
     )
@@ -230,8 +230,6 @@ def _bot_menu_commands() -> List[BotCommand]:
         BotCommand("signal", "Review a signal for an asset"),
         BotCommand("why", "Explain the current signal for an asset"),
         BotCommand("history", "Show recent trade history"),
-        BotCommand("chat", "Talk to Robbie freely"),
-        BotCommand("resetchat", "Clear Robbie chat memory"),
         BotCommand("ask", "Ask Robbie about an asset"),
         BotCommand("pause", "Pause the bot"),
         BotCommand("resume", "Resume the bot"),
@@ -384,7 +382,6 @@ class TelegramCommander:
         app.add_handler(CommandHandler("why",        self._cmd_why_direct))
         app.add_handler(CommandHandler("close",      self._cmd_close_direct))
         app.add_handler(CommandHandler("history",    self._cmd_history))
-        app.add_handler(CommandHandler("resetchat",  self._cmd_reset_chat))
         app.add_handler(CommandHandler("pause",      self._cmd_pause_direct))
         app.add_handler(CommandHandler("resume",     self._cmd_resume_direct))
         app.add_handler(CommandHandler("reprice",    self._cmd_reprice_direct))
@@ -406,27 +403,6 @@ class TelegramCommander:
             conversation_timeout=120,
         )
         app.add_handler(ask_conv)
-
-        chat_conv = ConversationHandler(
-            entry_points=[
-                CommandHandler("chat", self._chat_entry),
-                CallbackQueryHandler(self._chat_entry_from_button, pattern="^chat_menu$"),
-            ],
-            states={
-                WAITING_CHAT_MESSAGE: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self._chat_got_message)
-                ],
-            },
-            fallbacks=[
-                CommandHandler("chat", self._chat_entry),
-                CallbackQueryHandler(self._chat_entry_from_button, pattern="^chat_menu$"),
-                CallbackQueryHandler(self._chat_cancel_from_button, pattern="^chat_cancel$"),
-                CommandHandler("cancel", self._chat_cancel),
-                CommandHandler("resetchat", self._cmd_reset_chat),
-            ],
-            conversation_timeout=1800,
-        )
-        app.add_handler(chat_conv)
 
         # All inline button presses
         app.add_handler(CallbackQueryHandler(self._on_button))
@@ -1222,8 +1198,6 @@ class TelegramCommander:
             "balance": (self._btn_balance, ()),
             "signals": (self._btn_signals, ()),
             "ask_asset_menu": (self._btn_ask_asset_menu, ()),
-            "chat_reset": (self._btn_chat_reset, ()),
-            "chat_cancel": (self._btn_chat_cancel, ()),
             "mood": (self._btn_mood, ()),
             "diary": (self._btn_diary, ()),
             "market": (self._btn_market, ()),
@@ -1251,7 +1225,6 @@ class TelegramCommander:
             ("askcat:", self._btn_ask_category, 7),
             ("askasset:", self._btn_ask_asset, 9),
             ("askq:", self._btn_ask_question, 5),
-            ("chatq:", self._btn_chat_prompt, 6),
             ("history_filter:", self._btn_history, 15),
             ("close_cat:", self._btn_close_category, 10),
         )
@@ -2135,7 +2108,7 @@ class TelegramCommander:
                 f"{'s' if diary_trades != 1 else ''} to learn from."
             )
         else:
-            history_line = "The diary fills in after the bot has closed trades to learn from."
+            history_line = "Diary and strategies fill in after the bot has closed trades to learn from."
 
         text = (
             f"🤖 *Robbie Control Panel*\n\n"
@@ -2144,7 +2117,7 @@ class TelegramCommander:
             f"Open positions: {open_positions}\n\n"
             f"*Quick guide*\n"
             f"• `Signals` scans the live decision engine for current setups.\n"
-            f"• `Ask Robbie` explains one asset in plain English.\n"
+            f"• `Asset Q&A` explains one asset in plain English.\n"
             f"• `Positions` manages active trades.\n"
             f"• {history_line}\n\n"
             f"_{now_in_display_timezone().strftime('%H:%M:%S')} {display_timezone_label()}_"

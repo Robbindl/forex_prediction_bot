@@ -159,6 +159,13 @@ TELEGRAM_TOKEN   = COMMAND_BOT_TOKEN
 TELEGRAM_CHAT_ID = COMMAND_BOT_CHAT_ID
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TELEGRAM — DEEPSEEK CHAT BOT
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEEPSEEK_TELEGRAM_TOKEN = os.getenv("DEEPSEEK_TELEGRAM_TOKEN", "").strip()
+DEEPSEEK_TELEGRAM_CHAT_ID = os.getenv("DEEPSEEK_TELEGRAM_CHAT_ID", "").strip()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TELEGRAM — WHALE BOT
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,24 @@
+[Unit]
+Description=Standalone DeepSeek Telegram Chat Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/forex_prediction_bot
+EnvironmentFile=-/opt/forex_prediction_bot/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/forex_prediction_bot/venv_tf/bin/python deepseek_bot.py
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStartSec=120
+TimeoutStopSec=20
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

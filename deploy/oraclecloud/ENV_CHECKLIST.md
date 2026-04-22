@@ -13,6 +13,7 @@ OPENAI_API_KEY=<new-openai-api-key>
 DERIV_APP_ID=<your-deriv-app-id>
 DERIV_TOKEN=<new-deriv-token>
 COMMAND_BOT_TOKEN=<new-command-bot-token>
+DEEPSEEK_TELEGRAM_TOKEN=<new-deepseek-chat-bot-token>
 WHALE_TELEGRAM_TOKEN=<new-whale-bot-token>
 TELEGRAM_API_ID=<your-telegram-api-id>
 TELEGRAM_API_HASH=<your-telegram-api-hash>
@@ -36,6 +37,7 @@ These values depend on how you deploy:
 DATABASE_URL=postgresql://postgres:<password>@localhost:5432/trading_bot
 REDIS_URL=redis://default:<password>@<host>:6379
 COMMAND_BOT_CHAT_ID=<target-chat-id>
+DEEPSEEK_TELEGRAM_CHAT_ID=<optional-private-chat-id>
 INTELLIGENCE_CHAT_ID=<target-chat-id>
 ```
 

@@ -6292,15 +6292,13 @@ def test_telegram_configure_bot_menu_registers_commands_and_menu_button() -> Non
         "signal",
         "why",
         "history",
-        "chat",
-        "resetchat",
         "ask",
         "pause",
         "resume",
     ]
     assert seen["menu_button"].__class__.__name__ == "MenuButtonCommands"
 
-def test_telegram_chat_conversation_allows_reentering_chat_command_and_button() -> None:
+def test_telegram_command_bot_does_not_register_freeform_chat() -> None:
     tg_mod = importlib.import_module("telegram_commander")
 
     handlers = []
@@ -6309,28 +6307,27 @@ def test_telegram_chat_conversation_allows_reentering_chat_command_and_button() 
         def add_handler(self, handler):
             handlers.append(handler)
 
+        def add_error_handler(self, handler):
+            handlers.append(handler)
+
     commander = object.__new__(tg_mod.TelegramCommander)
     commander.application = _FakeApp()
 
     commander._register_handlers()
 
-    chat_conv = next(
-        handler
+    assert not any(
+        isinstance(entry, tg_mod.CommandHandler) and "chat" in set(getattr(entry, "commands", set()) or set())
         for handler in handlers
         if isinstance(handler, tg_mod.ConversationHandler)
+        for entry in handler.entry_points
+    )
+    assert not any(
+        isinstance(handler, tg_mod.ConversationHandler)
         and any(
-            isinstance(entry, tg_mod.CommandHandler) and "chat" in set(getattr(entry, "commands", set()) or set())
-            for entry in handler.entry_points
+            isinstance(fallback, tg_mod.CallbackQueryHandler) and "chat_menu" in str(getattr(fallback, "pattern", ""))
+            for fallback in handler.fallbacks
         )
-    )
-
-    assert any(
-        isinstance(fallback, tg_mod.CommandHandler) and "chat" in set(getattr(fallback, "commands", set()) or set())
-        for fallback in chat_conv.fallbacks
-    )
-    assert any(
-        isinstance(fallback, tg_mod.CallbackQueryHandler) and "chat_menu" in str(getattr(fallback, "pattern", ""))
-        for fallback in chat_conv.fallbacks
+        for handler in handlers
     )
 
 def test_telegram_chat_prompt_falls_back_to_reply_when_edit_target_is_missing() -> None:
@@ -6739,9 +6736,12 @@ def test_telegram_build_main_menu_surfaces_counts_and_guidance(monkeypatch) -> N
 
     text, kb = commander._build_main_menu()
     labels = [button.text for row in kb.inline_keyboard for button in row]
+    callbacks = [button.callback_data for row in kb.inline_keyboard for button in row]
 
     assert "Open positions: 0" in text
     assert "Diary and strategies fill in after the bot has closed trades to learn from." in text
+    assert "🎯 Asset Q&A" in labels
+    assert "chat_menu" not in callbacks
     assert "📈 Positions (0)" in labels
     assert "▶️ Resume" in labels
 
