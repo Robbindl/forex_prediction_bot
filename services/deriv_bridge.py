@@ -316,6 +316,9 @@ class DerivBridge:
                 return True
             return self._resolve_symbol_locked(asset, category=category) is not None
 
+    def supports(self, asset: str, category: str = "") -> bool:
+        return self.is_available(asset, category=category)
+
     def resolve_symbol_info(
         self,
         asset: str,

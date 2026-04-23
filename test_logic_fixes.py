@@ -4147,6 +4147,39 @@ def test_dukascopy_bridge_decodes_and_resamples_minute_candles(monkeypatch) -> N
     assert float(df.iloc[-1]["volume"]) == 15.0
     assert meta["dukascopy_symbol"] == "XAUUSD"
 
+def test_history_bridges_support_missing_forex_pairs(monkeypatch) -> None:
+    fmp_mod = importlib.import_module("services.fmp_history_bridge")
+    duk_mod = importlib.import_module("services.dukascopy_history_bridge")
+
+    monkeypatch.setattr(fmp_mod, "FMP_HISTORY_ENABLED", True, raising=False)
+    monkeypatch.setattr(fmp_mod, "FMP_API_KEY", "demo-key", raising=False)
+    monkeypatch.setattr(fmp_mod, "FMP_SYMBOL_MAP", "", raising=False)
+    monkeypatch.setattr(duk_mod, "DUKASCOPY_HISTORY_ENABLED", True, raising=False)
+    monkeypatch.setattr(duk_mod, "DUKASCOPY_SYMBOL_MAP", "", raising=False)
+
+    fmp_bridge = fmp_mod.FMPHistoryBridge()
+    duk_bridge = duk_mod.DukascopyHistoryBridge()
+
+    for asset in ("EUR/GBP", "NZD/USD", "USD/CHF"):
+        assert fmp_bridge.supports(asset, "forex") is True
+        assert duk_bridge.supports(asset, "forex") is True
+
+def test_backfill_provider_candidates_include_deriv_fallback(monkeypatch) -> None:
+    backfill_mod = importlib.import_module("scripts.backfill_local_history")
+
+    monkeypatch.setattr(backfill_mod, "dukascopy_history_bridge", None, raising=False)
+    monkeypatch.setattr(backfill_mod, "fmp_history_bridge", None, raising=False)
+    monkeypatch.setattr(
+        backfill_mod,
+        "deriv_bridge",
+        SimpleNamespace(supports=lambda asset, category="": asset == "GER40"),
+        raising=False,
+    )
+
+    candidates = [name for name, _bridge in backfill_mod._provider_candidates("GER40", "indices")]
+
+    assert candidates == ["Deriv"]
+
 def test_fetcher_preserves_ig_ohlcv_error_metadata_for_routed_commodities(monkeypatch) -> None:
     fetcher_mod = importlib.import_module("data.fetcher")
     monkeypatch.setattr(fetcher_mod.DataFetcher, "_init_clients", lambda self: None, raising=False)
