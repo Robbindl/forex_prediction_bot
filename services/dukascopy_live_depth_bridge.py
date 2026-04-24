@@ -29,7 +29,12 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
-_SIDEcar_PROJECT_DIR = Path("integrations/dukascopy_depth_bridge")
+import sys
+
+if sys.platform == "linux":
+    _SIDEcar_PROJECT_DIR = Path("/opt/forex_prediction_bot/integrations/dukascopy_depth_bridge")
+else:
+    _SIDEcar_PROJECT_DIR = Path("integrations/dukascopy_depth_bridge")
 _SIDECAR_JAR = _SIDEcar_PROJECT_DIR / "target" / "dukascopy-depth-bridge-1.0-shaded.jar"
 _STORE_WRITE_MIN_INTERVAL = 0.75
 _DEFAULT_STALE_SECONDS = 30.0
