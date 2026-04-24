@@ -178,6 +178,20 @@ def test_trading_core_execution_selection_spreads_slots_across_categories() -> N
     assert [sig.asset for sig in selected] == ["BTC-USD", "EUR/USD", "XAU/USD"]
 
 
+def test_playbook_service_expands_coverage_for_starved_assets() -> None:
+    from services.playbook_service import PlaybookService
+
+    service = PlaybookService()
+    eur_gbp = service._asset_plan("EUR/GBP", "forex")
+    usd_chf = service._asset_plan("USD/CHF", "forex")
+    sol = service._asset_plan("SOL-USD", "crypto")
+
+    assert "europe_open" in eur_gbp.allowed_sessions
+    assert "news_impulse" in eur_gbp.allowed_playbooks
+    assert "europe_open" in usd_chf.allowed_sessions
+    assert "asia_core" in sol.allowed_sessions
+
+
 def test_position_sizer_uses_mt5_style_lot_steps_and_balance_scaling(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "DEFAULT_RISK_PER_TRADE", 1.5, raising=False)
     monkeypatch.setattr(cfg, "CRYPTO_RISK_PER_TRADE", 2.0, raising=False)
@@ -5000,6 +5014,44 @@ def test_live_microstructure_service_synthesizes_depth_when_sizes_missing() -> N
     assert snapshot["depth_available"] is False
     assert snapshot["synthetic_depth_available"] is True
     assert snapshot["microstructure_source"] == "live_store_synthetic_depth"
+
+
+def test_live_microstructure_service_labels_depth_quality_tiers() -> None:
+    micro_mod = importlib.import_module("services.live_microstructure_service")
+    service = micro_mod.LiveMicrostructureService(maxlen=32)
+
+    service.record_quote(
+        "dukascopy",
+        "US30",
+        bid=100.0,
+        ask=100.2,
+        price=100.1,
+        levels=[{"bid": 100.0, "ask": 100.2, "bid_size": 1.0, "ask_size": 1.0}],
+        timestamp=1,
+    )
+    shallow = service.get_snapshot("dukascopy", "US30", price=100.1, spread=0.2)
+
+    deep_levels = [
+        {"bid": 1.1700 - idx * 0.0001, "ask": 1.1702 + idx * 0.0001, "bid_size": 2.0, "ask_size": 2.5}
+        for idx in range(10)
+    ]
+    service.record_quote(
+        "dukascopy",
+        "EUR/USD",
+        bid=1.17,
+        ask=1.1702,
+        price=1.1701,
+        levels=deep_levels,
+        timestamp=2,
+    )
+    deep = service.get_snapshot("dukascopy", "EUR/USD", price=1.1701, spread=0.0002)
+
+    assert shallow["depth_levels"] == 1
+    assert shallow["depth_quality_tier"] == "top_only"
+    assert shallow["depth_quality"] < 0.25
+    assert deep["depth_levels"] == 10
+    assert deep["depth_quality_tier"] == "full"
+    assert deep["depth_quality"] >= 0.95
 
 def test_cross_asset_spillover_service_links_wti_to_usdcad() -> None:
     spill_mod = importlib.import_module("services.cross_asset_spillover_service")
@@ -15180,7 +15232,7 @@ def test_playbook_service_fallback_uses_inactivity_relief_for_flat_book_generic_
     assert relieved_pick["inactivity_profile"]["flat_book"] is True
 
 
-def test_playbook_service_limits_alt_crypto_to_liquid_sessions(monkeypatch) -> None:
+def test_playbook_service_allows_alt_crypto_in_asia_core_when_setup_is_strong(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
         svc_mod,
@@ -15211,8 +15263,84 @@ def test_playbook_service_limits_alt_crypto_to_liquid_sessions(monkeypatch) -> N
         ml_confidence=0.02,
     )
 
-    assert pick["action"] == ""
-    assert pick["blocked_reason"].startswith("session_block:")
+    assert pick["blocked_reason"] == ""
+    assert pick["session"] == "asia_core"
+    assert "asia_core" in pick["allowed_sessions"]
+    assert pick["action"] in {"seed", "support"}
+
+
+def test_playbook_service_uses_equity_relief_for_underrepresented_assets_without_flat_book(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.84,
+        "setup_quality": 0.78,
+        "pullback_score": 0.04,
+        "breakout_score": 0.08,
+        "candle_quality_score": 0.0,
+        "session_quality_score": 0.0,
+        "extension_score": 1.02,
+        "target_efficiency_score": 0.28,
+        "impulse_age_bars": 4,
+        "elite_pattern_rank": 0.24,
+        "cluster_penalty": 0.06,
+        "volatility_state": "normal",
+        "regime": "trending_up",
+        "trend_15m": "trending_up",
+        "trend_1h": "ranging",
+        "pattern_family": "trending_up_generic",
+        "entry_confirmation_ready": False,
+        "entry_confirmation_count": 0,
+        "entry_confirmation_bars_required": 1,
+        "upside_exhaustion_score": 0.16,
+        "downside_exhaustion_score": 0.0,
+    }
+
+    class _DominatedBookState:
+        def hours_since_last_entry(self) -> float:
+            return 1.0
+
+        def open_position_count(self) -> int:
+            return 2
+
+        def get_open_positions(self):
+            return [
+                {"asset": "XAU/USD", "category": "commodities"},
+                {"asset": "WTI", "category": "commodities"},
+            ]
+
+        def get_closed_positions(self, limit: int = 36):
+            return [
+                {"asset": "XAU/USD", "category": "commodities"},
+                {"asset": "WTI", "category": "commodities"},
+                {"asset": "XAG/USD", "category": "commodities"},
+                {"asset": "US30", "category": "indices"},
+            ]
+
+    pick = service.pick_seed(
+        "EUR/USD",
+        "forex",
+        _build_trend_frame(1.10, 0.00004),
+        context={
+            "market_structure": dict(structure),
+            "engine": SimpleNamespace(state=_DominatedBookState()),
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["primary"] is not None
+    assert pick["inactivity_profile"]["flat_book"] is False
+    assert pick["inactivity_profile"]["equity_relief"] is True
+    assert pick["inactivity_profile"]["category_recent_count"] == 0.0
+    assert pick["inactivity_profile"]["asset_recent_count"] == 0.0
 
 def test_playbook_service_keeps_wti_on_trend_playbooks_only(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
@@ -15722,6 +15850,104 @@ def test_opportunity_ranker_prefers_higher_quality_signal() -> None:
     assert "broker_quality" in ranked[0][0].metadata["opportunity_breakdown"]
     assert "microstructure" in ranked[0][0].metadata["opportunity_breakdown"]
     assert "cross_asset" in ranked[0][0].metadata["opportunity_breakdown"]
+
+
+def test_opportunity_ranker_relives_dormant_categories_and_penalizes_shallow_true_depth() -> None:
+    ranker_mod = importlib.import_module("services.opportunity_ranker")
+    ranker = ranker_mod.get_service()
+
+    shallow_wti = Signal(
+        asset="WTI",
+        canonical_asset="WTI",
+        category="commodities",
+        direction="BUY",
+        confidence=0.84,
+        entry_price=90.0,
+        stop_loss=88.0,
+        take_profit=94.0,
+        risk_reward=2.0,
+    )
+    shallow_wti.metadata.update(
+        {
+            "setup_quality": 0.80,
+            "alignment_score": 0.79,
+            "pullback_score": 0.30,
+            "breakout_score": 0.55,
+            "sentiment_score": 0.20,
+            "broker_quality": {
+                "score": 0.82,
+                "quote_agreement_state": "aligned",
+                "quote_quality_state": "fresh",
+                "spread_regime": "tight",
+            },
+            "microstructure_score": 0.42,
+            "microstructure_alignment": 0.42,
+            "tick_imbalance": 0.20,
+            "book_imbalance": 0.16,
+            "depth_available": True,
+            "depth_levels": 1,
+            "depth_quality": 0.18,
+            "microstructure_source": "dukascopy_live_depth",
+        }
+    )
+
+    deep_forex = Signal(
+        asset="EUR/USD",
+        canonical_asset="EUR/USD",
+        category="forex",
+        direction="BUY",
+        confidence=0.80,
+        entry_price=1.10,
+        stop_loss=1.095,
+        take_profit=1.109,
+        risk_reward=1.8,
+    )
+    deep_forex.metadata.update(
+        {
+            "setup_quality": 0.78,
+            "alignment_score": 0.77,
+            "pullback_score": 0.26,
+            "breakout_score": 0.50,
+            "sentiment_score": 0.18,
+            "broker_quality": {
+                "score": 0.84,
+                "quote_agreement_state": "aligned",
+                "quote_quality_state": "fresh",
+                "spread_regime": "tight",
+            },
+            "microstructure_score": 0.40,
+            "microstructure_alignment": 0.40,
+            "tick_imbalance": 0.22,
+            "book_imbalance": 0.20,
+            "depth_available": True,
+            "depth_levels": 10,
+            "depth_quality": 1.0,
+            "microstructure_source": "dukascopy_live_depth",
+        }
+    )
+
+    state = SimpleNamespace(
+        get_open_positions=lambda: [],
+        get_closed_positions=lambda limit=36: [
+            {"asset": "WTI", "category": "commodities", "direction": "BUY"},
+            {"asset": "XAU/USD", "category": "commodities", "direction": "BUY"},
+            {"asset": "XAG/USD", "category": "commodities", "direction": "SELL"},
+            {"asset": "WTI", "category": "commodities", "direction": "SELL"},
+            {"asset": "US30", "category": "indices", "direction": "BUY"},
+            {"asset": "XAU/USD", "category": "commodities", "direction": "BUY"},
+        ],
+    )
+
+    ranked = ranker.rank(
+        [
+            (shallow_wti, {"spread": 0.05}),
+            (deep_forex, {"spread": 0.00012}),
+        ],
+        state,
+    )
+
+    assert ranked[0][0].asset == "EUR/USD"
+    assert ranked[0][0].metadata["opportunity_breakdown"]["book_balance"] > ranked[1][0].metadata["opportunity_breakdown"]["book_balance"]
 
 def test_trading_cycle_executes_ranked_survivors_first() -> None:
     core = TradingCore.__new__(TradingCore)
@@ -17693,6 +17919,126 @@ def test_execution_late_entry_gate_uses_inactivity_relief_for_strong_flat_book_c
     assert relieved_data["late_entry_risk"]["inactivity_hours_since_last_entry"] == 13.0
 
 
+def test_execution_late_entry_gate_accepts_equity_relief_without_flat_book() -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    signal = Signal(
+        asset="EUR/USD",
+        canonical_asset="EUR/USD",
+        category="forex",
+        direction="BUY",
+        confidence=0.72,
+        entry_price=100.0,
+        stop_loss=99.1,
+        take_profit=101.9,
+        risk_reward=2.11,
+    )
+    signal.metadata.update(
+        {
+            "support_proximity": 0.78,
+            "resistance_proximity": 0.12,
+            "volatility_ratio": 1.18,
+            "exhaustion_risk": 0.18,
+            "playbook_entry_style": "breakout_close",
+        }
+    )
+
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.78,
+        "setup_quality": 0.71,
+        "vwap_distance_atr": 0.88,
+        "session_quality_score": 0.57,
+        "candle_quality_score": 0.49,
+        "extension_score": 0.96,
+        "target_efficiency_score": 0.10,
+        "impulse_age_bars": 4,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": False,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": False,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 1,
+        "entry_confirmation_count": 1,
+        "entry_confirmation_ready": True,
+        "pattern_family": "breakout_continuation",
+        "elite_pattern_rank": 0.09,
+        "cluster_penalty": 0.08,
+        "distance_to_resistance": 0.0029,
+        "distance_to_support": 0.0180,
+        "regime_entry_policy": {
+            "min_setup_quality": 0.32,
+            "min_candle_quality": 0.34,
+            "max_extension_score": 1.28,
+            "min_target_efficiency": 0.24,
+            "max_impulse_age_bars": 5,
+        },
+        "dominant_exhaustion_score": 0.22,
+        "bias_exhausted": False,
+    }
+
+    approved = engine._execution_late_entry_risk_gate(
+        signal,
+        adaptive_policy={
+            "raw": {
+                "recent_review_profile": {"sample_count": 0},
+                "inactivity_profile": {
+                    "active": True,
+                    "flat_book": False,
+                    "equity_relief": True,
+                    "hours_since_last_entry": 1.0,
+                    "relief_strength": 0.72,
+                },
+            }
+        },
+        conf_before=signal.confidence,
+        structure=structure,
+        data={},
+        notes=[],
+    )
+
+    assert approved is True
+    assert signal.alive is True
+    assert signal.metadata["execution_relief_flags"]["inactivity_execution_relief"] is True
+    assert signal.metadata["execution_hard_blocks"] == []
+
+
+def test_seed_inactivity_profile_prefers_playbook_equity_relief_snapshot() -> None:
+    from core.engine import _seed_inactivity_profile
+
+    snapshot = _seed_inactivity_profile(
+        {
+            "playbook_decision": {
+                "inactivity_profile": {
+                    "active": True,
+                    "flat_book": False,
+                    "equity_relief": True,
+                    "equity_relief_strength": 0.66,
+                    "relief_strength": 0.72,
+                    "hours_since_last_entry": 1.0,
+                    "category_recent_count": 0.0,
+                    "asset_recent_count": 0.0,
+                }
+            },
+            "adaptive_policy": {
+                "raw": {
+                    "inactivity_profile": {
+                        "active": False,
+                        "flat_book": True,
+                        "relief_strength": 1.0,
+                    }
+                }
+            },
+        }
+    )
+
+    assert snapshot["flat_book"] is False
+    assert snapshot["equity_relief"] is True
+    assert snapshot["equity_relief_strength"] == 0.66
+    assert snapshot["relief_strength"] == 0.72
+
+
 def test_redis_broker_subscribe_reuses_old_pubsub_on_reconnect(monkeypatch) -> None:
     rb_mod = importlib.import_module("redis_broker")
     redis_pool_mod = importlib.import_module("services.redis_pool")
@@ -19482,7 +19828,101 @@ def test_offline_gap_fill_keeps_runner_open_after_partial_tp(monkeypatch) -> Non
     assert core._paper_trader.open_positions[trade_id]["position_size"] == 1.0
 
 
-def test_telegram_trade_opened_alert_shows_tp1_and_runner() -> None:
+def test_offline_gap_fill_resumes_from_management_checkpoint(monkeypatch) -> None:
+    now_utc = datetime.now(timezone.utc)
+    trade_id = "runner-checkpoint"
+    checkpoint = now_utc - timedelta(minutes=10)
+    position = {
+        "trade_id": trade_id,
+        "asset": "XAU/USD",
+        "canonical_asset": "XAU/USD",
+        "category": "commodities",
+        "direction": "BUY",
+        "entry_price": 100.0,
+        "stop_loss": 103.5,
+        "original_sl": 90.0,
+        "take_profit": 124.0,
+        "take_profit_levels": [110.0, 124.0],
+        "position_size": 1.0,
+        "tp_hit": 1,
+        "open_time": (now_utc - timedelta(minutes=30)).isoformat(),
+        "management_checkpoint_at": checkpoint.isoformat(),
+        "highest_price": 112.0,
+        "lowest_price": 100.0,
+        "metadata": {
+            "atr": 4.0,
+            "trade_management_plan": {
+                "partial_take_profit_rr": [1.0],
+                "runner_target_rr": 2.4,
+                "trail_activation_rr": 1.0,
+                "trail_atr_multiple": 0.85,
+                "break_even_after_partial": True,
+            },
+        },
+    }
+
+    class FakeState:
+        def __init__(self, pos):
+            self.positions = {pos["trade_id"]: dict(pos)}
+            self.synced = []
+            self.closed = []
+            self.balance = 10000.0
+
+        def get_open_positions(self):
+            return list(self.positions.values())
+
+        def sync_open_position(self, position):
+            self.positions[position["trade_id"]] = dict(position)
+            self.synced.append(dict(position))
+
+        def close_position(self, trade_id, exit_price, exit_reason, pnl, extra_updates=None):
+            snapshot = dict(self.positions.pop(trade_id))
+            snapshot.update({
+                "exit_price": exit_price,
+                "exit_reason": exit_reason,
+                "pnl": pnl,
+            })
+            self.closed.append(snapshot)
+            return snapshot
+
+        def set_cooldown(self, canonical_asset, minutes):
+            return None
+
+    fake_state = FakeState(position)
+
+    df = pd.DataFrame(
+        [
+            {"open": 101.0, "high": 111.0, "low": 99.0, "close": 109.0},
+            {"open": 107.0, "high": 108.5, "low": 104.0, "close": 107.5},
+        ],
+        index=pd.DatetimeIndex(
+            [
+                now_utc - timedelta(minutes=20),
+                now_utc - timedelta(minutes=5),
+            ]
+        ),
+    )
+
+    core = object.__new__(TradingCore)
+    core.state = fake_state
+    core.fetcher = SimpleNamespace(get_ohlcv=lambda asset, category, interval="5m", periods=0: df)
+    core._paper_trader = SimpleNamespace(_lock=threading.RLock(), open_positions={trade_id: dict(position)}, on_trade_closed=None)
+    core._risk_manager = SimpleNamespace(update_balance=lambda balance: None)
+    core.registry = SimpleNamespace(canonical=lambda asset: asset)
+    core._notify_telegram_close = lambda trade: None
+    core._record_partial_reduction = lambda parent_snapshot, partial_trade, pnl: None
+
+    core._check_offline_sl_tp()
+
+    assert not fake_state.closed
+    remaining = fake_state.positions[trade_id]
+    assert remaining["tp_hit"] == 1
+    assert remaining["position_size"] == 1.0
+    assert remaining["stop_loss"] == 103.5
+    assert fake_state.synced[-1]["management_checkpoint_at"] == df.index[-1].isoformat()
+
+
+def test_telegram_trade_opened_alert_shows_full_target_ladder_and_structure() -> None:
     tg_mod = importlib.import_module("telegram_commander")
     commander = object.__new__(tg_mod.TelegramCommander)
     captured: dict[str, str] = {}
@@ -19494,18 +19934,28 @@ def test_telegram_trade_opened_alert_shows_tp1_and_runner() -> None:
             "direction": "BUY",
             "entry_price": 4689.358675,
             "stop_loss": 4670.257,
-            "take_profit": 4735.202755,
-            "take_profit_levels": [4708.460675, 4735.202755],
+            "take_profit": 4735.202695,
+            "take_profit_levels": [4708.460675, 4721.831523, 4735.202695],
             "confidence": 0.62,
             "trade_id": "abc123",
             "open_time": "2026-04-07T19:21:35+00:00",
             "metadata": {
                 "playbook_name": "breakout_continuation",
                 "trade_management_plan": {
-                    "partial_take_profit_rr": [1.0],
+                    "partial_take_profit_rr": [1.0, 1.7],
+                    "partial_take_profit_size_fractions": [0.30, 0.40, 0.30],
                     "runner_target_rr": 2.4,
                     "trail_activation_rr": 1.0,
                     "trail_atr_multiple": 0.85,
+                },
+                "market_structure": {
+                    "structure_bias": "buy",
+                    "pattern_family": "trending_up_failed_opposite_reclaim",
+                    "failed_opposite_move_confirmed": True,
+                    "support_levels": [4679.2],
+                    "resistance_levels": [4754.3],
+                    "distance_to_support": 0.0021,
+                    "distance_to_resistance": 0.0138,
                 },
             },
         }
@@ -19513,5 +19963,80 @@ def test_telegram_trade_opened_alert_shows_tp1_and_runner() -> None:
 
     text = captured["text"]
     assert "TP1:" in text
-    assert "Runner:" in text
-    assert "Runner 2.4:1" in text
+    assert "TP2:" in text
+    assert "TP3:" in text
+    assert "TP3 2.4:1" in text
+    assert "TP2 1.7:1" in text
+    assert "Manage `TP1 1.0R (30%) | TP2 1.7R (40%) | TP3 2.4R (30%) | Trail 1.0R · ATRx0.85`" in text
+    assert "Structure Bias `buy`" in text
+    assert "Setup `Failed opposite reclaim`" in text
+
+
+def test_execution_review_blocks_direction_when_failed_opposite_reclaim_conflicts() -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    signal = Signal(
+        asset="WTI",
+        canonical_asset="WTI",
+        category="commodities",
+        direction="SELL",
+        confidence=0.72,
+        entry_price=93.86,
+        stop_loss=94.81,
+        take_profit=91.15,
+        risk_reward=2.85,
+    )
+    signal.metadata.update(
+        {
+            "resistance_proximity": 0.66,
+            "support_proximity": 0.18,
+            "volatility_ratio": 1.08,
+            "exhaustion_risk": 0.16,
+            "playbook_entry_style": "elite_trend_continuation",
+        }
+    )
+
+    approved = engine._apply_execution_review(
+        signal,
+        {
+            "category": "commodities",
+            "spread": 0.04,
+            "price_data": _build_trend_frame(92.5, 0.12, rows=40),
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.82,
+                "setup_quality": 0.74,
+                "vwap_distance_atr": 0.61,
+                "session_quality_score": 0.63,
+                "candle_quality_score": 0.58,
+                "extension_score": 0.72,
+                "target_efficiency_score": 0.54,
+                "impulse_age_bars": 2,
+                "breakout_retest_ready": False,
+                "first_pullback_ready": False,
+                "liquidity_sweep_buy": True,
+                "liquidity_sweep_sell": False,
+                "failed_opposite_move_confirmed": True,
+                "entry_confirmation_bars_required": 1,
+                "entry_confirmation_count": 1,
+                "entry_confirmation_ready": True,
+                "pattern_family": "trending_up_failed_opposite_reclaim",
+                "elite_pattern_rank": 0.76,
+                "cluster_penalty": 0.06,
+                "distance_to_resistance": 0.0180,
+                "distance_to_support": 0.0065,
+                "regime_entry_policy": {
+                    "min_setup_quality": 0.32,
+                    "min_candle_quality": 0.34,
+                    "max_extension_score": 1.28,
+                    "min_target_efficiency": 0.26,
+                    "max_impulse_age_bars": 5.0,
+                },
+            },
+        },
+    )
+
+    assert approved is False
+    assert signal.alive is False
+    assert "failed opposite reclaim" in signal.kill_reason.lower()

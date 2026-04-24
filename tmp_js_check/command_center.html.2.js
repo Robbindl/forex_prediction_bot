@@ -212,6 +212,81 @@ function qualityBits(item){
   if(Number(cluster||0) > 0)bits.push(`Cluster ${metricNumber(cluster,2)}`);
   return bits;
 }
+function itemStructure(item){
+  const meta=itemMeta(item);
+  return meta.market_structure && typeof meta.market_structure === 'object' ? meta.market_structure : {};
+}
+function normalizeTargetFractions(rawFractions,totalTiers){
+  if(!(totalTiers>0)) return [];
+  const parsed=(Array.isArray(rawFractions)?rawFractions:[]).map(v=>Number(v||0)).filter(v=>v>0).slice(0,totalTiers);
+  if(!parsed.length) return Array.from({length:totalTiers},()=>1/totalTiers);
+  const total=parsed.reduce((sum,v)=>sum+v,0);
+  if(!(total>0)) return Array.from({length:totalTiers},()=>1/totalTiers);
+  return parsed.map(v=>v/total);
+}
+function priceFormatterForItem(item){
+  const anchor=Number(item?.entry_price || item?.current_price || item?.take_profit || 0);
+  const small=anchor>0 && anchor<10;
+  return (value)=>{
+    const num=Number(value||0);
+    if(!(num>0)) return '—';
+    return small ? num.toFixed(5) : num.toFixed(2);
+  };
+}
+function targetLadder(item){
+  const entry=Number(item?.entry_price||0);
+  const stop=Number(item?.stop_loss||0);
+  const rawLevels=Array.isArray(item?.take_profit_levels)?item.take_profit_levels:[];
+  const levels=rawLevels.map(v=>Number(v||0)).filter(v=>v>0);
+  const fallback=Number(item?.take_profit||0);
+  const ladder=levels.length ? levels : (fallback>0 ? [fallback] : []);
+  const management=(() => {
+    const meta=itemMeta(item);
+    return meta.trade_management_plan && typeof meta.trade_management_plan === 'object' ? meta.trade_management_plan : {};
+  })();
+  const fractions=normalizeTargetFractions(management.partial_take_profit_size_fractions, ladder.length);
+  const risk=Math.abs(entry-stop);
+  return ladder.map((price,idx)=>({
+    label: ladder.length>1 ? `TP${idx+1}` : 'Target',
+    price,
+    rr: risk>0 ? Math.abs(price-entry)/risk : 0,
+    size: idx < fractions.length ? fractions[idx] : 0,
+  }));
+}
+function structureSetupLabel(item){
+  const failedOpp=itemBool(item,'failed_opposite_move_confirmed');
+  const retest=itemBool(item,'breakout_retest_ready');
+  const pullback=itemBool(item,'first_pullback_ready');
+  const sweepBuy=itemBool(item,'liquidity_sweep_buy');
+  const sweepSell=itemBool(item,'liquidity_sweep_sell');
+  const pattern=itemText(item,'pattern_family');
+  if(failedOpp===true) return 'Failed opposite reclaim';
+  if(retest===true && pullback===true) return 'Retest + pullback ready';
+  if(retest===true) return 'Breakout retest ready';
+  if(pullback===true) return 'First pullback ready';
+  if(sweepBuy===true && sweepSell!==true) return 'Buy-side sweep';
+  if(sweepSell===true && sweepBuy!==true) return 'Sell-side sweep';
+  if(sweepBuy===true || sweepSell===true) return 'Liquidity sweep';
+  return pattern ? titleToken(pattern) : '';
+}
+function structureLine(item){
+  const struct=itemStructure(item);
+  const fmt=priceFormatterForItem(item);
+  const bias=String(itemValue(item,'structure_bias') || struct.structure_bias || '').trim();
+  const setup=structureSetupLabel(item);
+  const supportLevels=Array.isArray(itemValue(item,'support_levels')) && itemValue(item,'support_levels').length ? itemValue(item,'support_levels') : (Array.isArray(struct.support_levels) ? struct.support_levels : []);
+  const resistanceLevels=Array.isArray(itemValue(item,'resistance_levels')) && itemValue(item,'resistance_levels').length ? itemValue(item,'resistance_levels') : (Array.isArray(struct.resistance_levels) ? struct.resistance_levels : []);
+  const support=Number((supportLevels||[]).map(v=>Number(v||0)).find(v=>v>0)||0);
+  const resistance=Number((resistanceLevels||[]).map(v=>Number(v||0)).find(v=>v>0)||0);
+  const supportDist=Number(itemValue(item,'distance_to_support') || struct.distance_to_support || itemValue(item,'support_proximity') || 0);
+  const resistanceDist=Number(itemValue(item,'distance_to_resistance') || struct.distance_to_resistance || itemValue(item,'resistance_proximity') || 0);
+  const bits=[];
+  if(bias) bits.push(`Bias ${titleToken(bias)}`);
+  if(setup) bits.push(setup);
+  if(support>0) bits.push(`S ${fmt(support)}${supportDist>0?` (${(supportDist*100).toFixed(2)}%)`:''}`);
+  if(resistance>0) bits.push(`R ${fmt(resistance)}${resistanceDist>0?` (${(resistanceDist*100).toFixed(2)}%)`:''}`);
+  return bits.join(' · ');
+}
 function confirmationProgress(item){
   const count=itemNum(item,'entry_confirmation_count',0);
   const required=itemNum(item,'entry_confirmation_bars_required',0);
@@ -724,8 +799,11 @@ async function loadMain(){
         const crossAlign=Number(s.cross_asset_alignment||0);
         const crossLine=crossPeer?`${crossAlign>=0?'Cross support':'Cross conflict'} via ${crossPeer}${crossRelation?` · ${crossRelation}`:''}`:'';
         const patternLine=recentPatternLine(s);
+        const setupLine=structureLine(s);
+        const ladder=targetLadder(s);
+        const ladderLine=ladder.length?ladder.map(level=>`${level.label} ${priceFormatterForItem(s)(level.price)}${level.rr>0?` · ${level.rr.toFixed(1)}R`:''}`).join(' · '):'';
         const pressure=buildQualityPressure(s);
-        return`<div class="sig-row"><span class="sig-dir ${dir==='BUY'?'sig-buy':'sig-sell'}">${dir}</span><div style="flex:1"><div class="sig-asset">${s.asset||'?'} ${statusPill(s,entryState.label)}</div><div class="sig-meta">${s.category||''} · ${detail}</div>${eliteChipRow(s)}${provenance?`<div class="sig-meta">${provenance}</div>`:''}<div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}<div class="sig-meta">${readinessBits(s).join(' · ')}</div><div class="sig-meta">${qualityBits(s).join(' · ') || 'Elite entry metrics pending'}</div>${pressure?`<div class="note-callout warn">${pressure}</div>`:''}${(s.exact_kill_reason||s.execution_kill_reason)?`<div class="note-callout bad">${exactKillReason(s)}</div>`:''}${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}${reviewNotesLine(s)?`<div class="note-callout ${entryState.label==='Ready'?'ok':entryState.label==='Blocked'?'bad':'warn'}">${reviewNotesLine(s)}</div>`:''}</div><div style="text-align:right"><div class="sig-conf ${entryState.className}" style="color:${barCol}">${cp}%</div><div class="conf-bar-mini"><div class="cbm-fill" style="width:${cp}%;background:${barCol}"></div></div><div class="sig-meta" style="margin-top:6px">${confirmationProgress(s).toFixed(0)}% conf</div></div></div>`;
+        return`<div class="sig-row"><span class="sig-dir ${dir==='BUY'?'sig-buy':'sig-sell'}">${dir}</span><div style="flex:1"><div class="sig-asset">${s.asset||'?'} ${statusPill(s,entryState.label)}</div><div class="sig-meta">${s.category||''} · ${detail}</div>${eliteChipRow(s)}${provenance?`<div class="sig-meta">${provenance}</div>`:''}<div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}${setupLine?`<div class="sig-meta">${setupLine}</div>`:''}${ladderLine?`<div class="sig-meta">${ladderLine}</div>`:''}<div class="sig-meta">${readinessBits(s).join(' · ')}</div><div class="sig-meta">${qualityBits(s).join(' · ') || 'Elite entry metrics pending'}</div>${pressure?`<div class="note-callout warn">${pressure}</div>`:''}${(s.exact_kill_reason||s.execution_kill_reason)?`<div class="note-callout bad">${exactKillReason(s)}</div>`:''}${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}${reviewNotesLine(s)?`<div class="note-callout ${entryState.label==='Ready'?'ok':entryState.label==='Blocked'?'bad':'warn'}">${reviewNotesLine(s)}</div>`:''}</div><div style="text-align:right"><div class="sig-conf ${entryState.className}" style="color:${barCol}">${cp}%</div><div class="conf-bar-mini"><div class="cbm-fill" style="width:${cp}%;background:${barCol}"></div></div><div class="sig-meta" style="margin-top:6px">${confirmationProgress(s).toFixed(0)}% conf</div></div></div>`;
       }).join('');
     }
   }catch(e){console.error('[CC] signals:',e);}
@@ -1016,9 +1094,11 @@ function renderPositions(pos){
     const noteMeta=execNotes.length?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${execNotes.slice(0,2).join(' · ')}</div>`:'';
     const crossMeta=crossPeer?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${crossAlign>=0?'Cross support':'Cross conflict'} via ${crossPeer}</div>`:'';
     const patternMeta=patternLine?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${patternLine}</div>`:'';
-    const targetMeta=runnerTp && Math.abs(runnerTp-nextTp)>1e-9 ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">Runner ${fmt(runnerTp)}</div>` : '';
+    const setupMeta=structureLine(p)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${structureLine(p)}</div>`:'';
+    const ladder=targetLadder(p);
+    const targetMeta=ladder.length ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${ladder.map((level, idx)=>`${idx < tpHit ? 'Hit ' : idx === tpHit && tpHit > 0 ? 'Next ' : ''}${level.label} ${fmt(level.price)}${level.size>0?` · ${(level.size*100).toFixed(0)}%`:''}${level.rr>0?` · ${level.rr.toFixed(1)}R`:''}`).join('<br>')}</div>` : (runnerTp && Math.abs(runnerTp-nextTp)>1e-9 ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">Runner ${fmt(runnerTp)}</div>` : '');
     const killReason=knownKillReason(p);
-    return`<tr><td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${eliteMeta}${readyMeta}${provenanceMeta}${brokerMeta}${microMeta}${crossMeta}${patternMeta}${regimeMeta}${killReason?`<div style="font-size:10px;color:var(--rd);margin-top:2px">${killReason}</div>`:''}${reviewNotesLine(p)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${reviewNotesLine(p)}</div>`:''}${pBar}</td><td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td><td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td><td style="font-family:monospace">${fmt(e)}</td><td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td><td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td><td style="font-family:monospace;color:var(--gr)">${fmt(nextTp||tp)}${targetMeta}${postureMeta}</td><td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td><td>${(Number(p.confidence||0)*100).toFixed(0)}%${rankMeta}${noteMeta}</td><td style="font-size:11px;white-space:nowrap">${openStr}</td><td><button onclick="confirmClose('${tid}','${p.asset||'?'}')" style="padding:4px 10px;border-radius:6px;border:none;background:rgba(255,69,96,.15);color:var(--rd);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap" onmouseover="this.style.background='var(--rd)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,69,96,.15)';this.style.color='var(--rd)'">✕ Close</button></td></tr>`;
+    return`<tr><td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${eliteMeta}${readyMeta}${provenanceMeta}${brokerMeta}${microMeta}${crossMeta}${setupMeta}${patternMeta}${regimeMeta}${killReason?`<div style="font-size:10px;color:var(--rd);margin-top:2px">${killReason}</div>`:''}${reviewNotesLine(p)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${reviewNotesLine(p)}</div>`:''}${pBar}</td><td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td><td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td><td style="font-family:monospace">${fmt(e)}</td><td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td><td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td><td style="font-family:monospace;color:var(--gr)">${fmt(nextTp||tp)}${targetMeta}${postureMeta}</td><td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td><td>${(Number(p.confidence||0)*100).toFixed(0)}%${rankMeta}${noteMeta}</td><td style="font-size:11px;white-space:nowrap">${openStr}</td><td><button onclick="confirmClose('${tid}','${p.asset||'?'}')" style="padding:4px 10px;border-radius:6px;border:none;background:rgba(255,69,96,.15);color:var(--rd);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap" onmouseover="this.style.background='var(--rd)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,69,96,.15)';this.style.color='var(--rd)'">✕ Close</button></td></tr>`;
   }).join('');
 }
 async function loadTopOpportunities(forceRefresh=false){

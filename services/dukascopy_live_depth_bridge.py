@@ -513,6 +513,8 @@ class DukascopyLiveDepthBridge:
             "ask_vol": _safe_float(snapshot.get("total_ask_volume"), 0.0),
             "orderbook_top_bids": top_bids,
             "orderbook_top_asks": top_asks,
+            "visible_bid_levels": int(len(top_bids)),
+            "visible_ask_levels": int(len(top_asks)),
             "microstructure_source": "dukascopy_live_depth",
         }
         payload.update(metrics or {})

@@ -770,8 +770,11 @@ class TelegramCommander:
         session = cls._humanise_diagnostic_label(meta.get("session_label") or meta.get("playbook_session") or "").lower()
         broker = meta.get("broker_quality") if isinstance(meta.get("broker_quality"), dict) else {}
         cross = meta.get("cross_asset_context") if isinstance(meta.get("cross_asset_context"), dict) else {}
+        structure = cls._structure_snapshot(trade)
 
         clauses: List[str] = []
+        if structure.get("setup_read"):
+            clauses.append(f"the setup read is {str(structure.get('setup_read') or '').lower()}")
         if playbook:
             clauses.append(f"the {playbook} playbook is active")
         if entry_style:
@@ -816,10 +819,7 @@ class TelegramCommander:
             entry = float(trade.get("entry_price", 0))
             sl    = float(trade.get("stop_loss",   0))
             target_plan = self._target_snapshot(trade)
-            primary_tp = float(target_plan.get("primary_target", 0.0) or 0.0)
-            runner_tp = float(target_plan.get("runner_target", 0.0) or 0.0)
-            primary_rr = float(target_plan.get("primary_rr", 0.0) or 0.0)
-            runner_rr = float(target_plan.get("runner_rr", 0.0) or 0.0)
+            target_levels = list(target_plan.get("levels") or [])
             _a    = trade.get('asset', '?')
             open_raw = trade.get("open_time") or trade.get("entry_time")
             opened_at = format_display_datetime(open_raw or now_in_display_timezone())
@@ -828,13 +828,21 @@ class TelegramCommander:
             diagnostics_block = self._format_runtime_diagnostics_block(trade)
             diagnostics_text = f"\n🧪 *Market Context*\n{diagnostics_block}" if diagnostics_block else ""
             target_lines = [f"Stop:     `{self._fmt_price(sl, _a)}`"]
-            if primary_tp > 0:
-                target_label = "TP1" if runner_tp > 0 and abs(runner_tp - primary_tp) > 1e-9 else "Target"
-                target_lines.append(f"{target_label}:      `{self._fmt_price(primary_tp, _a)}`")
-            if runner_tp > 0 and abs(runner_tp - primary_tp) > 1e-9:
-                target_lines.append(f"Runner:   `{self._fmt_price(runner_tp, _a)}`")
-                rr_line = f"R:R:      `TP1 {primary_rr:.1f}:1 | Runner {runner_rr:.1f}:1`"
+            rr_bits: List[str] = []
+            for level in target_levels:
+                label = str(level.get("label") or "Target")
+                price = float(level.get("price", 0.0) or 0.0)
+                rr_value = float(level.get("rr", 0.0) or 0.0)
+                if price <= 0:
+                    continue
+                target_lines.append(f"{label}:      `{self._fmt_price(price, _a)}`")
+                if rr_value > 0:
+                    rr_bits.append(f"{label} {rr_value:.1f}:1")
+            if rr_bits:
+                rr_line = f"R:R:      `{' | '.join(rr_bits)}`"
             else:
+                primary_tp = float(target_plan.get("primary_target", 0.0) or 0.0)
+                primary_rr = float(target_plan.get("primary_rr", 0.0) or 0.0)
                 rr_display = primary_rr if primary_rr > 0 else (abs(primary_tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 and primary_tp > 0 else 0.0)
                 rr_line = f"R:R:      `{rr_display:.1f}:1`"
             self.send_message(
@@ -1830,19 +1838,31 @@ class TelegramCommander:
         ).strip().lower()
 
         partials = management.get("partial_take_profit_rr") if isinstance(management.get("partial_take_profit_rr"), list) else []
-        partial_label = ""
-        if partials:
+        target_rrs: List[float] = []
+        for raw_rr in list(partials or []):
             try:
-                partial_label = f"TP1 {float(partials[0]):.1f}R"
+                rr_value = float(raw_rr)
             except Exception:
-                partial_label = ""
-        runner_target = ""
+                continue
+            if rr_value > 0:
+                target_rrs.append(rr_value)
         try:
             runner = float(management.get("runner_target_rr", 0.0) or 0.0)
             if runner > 0:
-                runner_target = f"Runner {runner:.1f}R"
+                target_rrs.append(runner)
         except Exception:
-            runner_target = ""
+            pass
+        size_fractions = cls._normalize_target_size_fractions(
+            management.get("partial_take_profit_size_fractions"),
+            len(target_rrs),
+        )
+        target_labels: List[str] = []
+        for idx, rr_value in enumerate(target_rrs):
+            label = f"TP{idx + 1}" if len(target_rrs) > 1 else "Target"
+            size_label = ""
+            if idx < len(size_fractions) and size_fractions[idx] > 0:
+                size_label = f" ({size_fractions[idx] * 100:.0f}%)"
+            target_labels.append(f"{label} {rr_value:.1f}R{size_label}")
         trail_label = ""
         try:
             activation = float(management.get("trail_activation_rr", 0.0) or 0.0)
@@ -1852,7 +1872,7 @@ class TelegramCommander:
         except Exception:
             trail_label = ""
 
-        management_bits = [bit for bit in (partial_label, runner_target, trail_label) if bit]
+        management_bits = [bit for bit in [*target_labels, trail_label] if bit]
         return {
             "playbook": cls._humanise_diagnostic_label(raw_playbook),
             "entry_style": entry_style,
@@ -1862,7 +1882,27 @@ class TelegramCommander:
         }
 
     @staticmethod
-    def _target_snapshot(payload: Dict[str, Any]) -> Dict[str, float]:
+    def _normalize_target_size_fractions(raw_fractions: Any, total_tiers: int) -> List[float]:
+        if total_tiers <= 0:
+            return []
+        parsed: List[float] = []
+        for raw in list(raw_fractions or []):
+            try:
+                value = float(raw)
+            except Exception:
+                continue
+            if value > 0:
+                parsed.append(value)
+        if not parsed:
+            return [round(1.0 / total_tiers, 6) for _ in range(total_tiers)]
+        parsed = parsed[:total_tiers]
+        total = sum(parsed)
+        if total <= 0:
+            return [round(1.0 / total_tiers, 6) for _ in range(total_tiers)]
+        return [round(value / total, 6) for value in parsed]
+
+    @classmethod
+    def _target_snapshot(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
         entry = 0.0
         stop = 0.0
         try:
@@ -1884,21 +1924,145 @@ class TelegramCommander:
             fallback_target = float(payload.get("take_profit", 0) or 0)
         except Exception:
             fallback_target = 0.0
+        meta = payload.get("metadata", payload.get("trade_metadata", {})) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        management = meta.get("trade_management_plan") if isinstance(meta.get("trade_management_plan"), dict) else {}
         tp_hit = 0
         try:
             tp_hit = max(0, int(payload.get("tp_hit", 0) or 0))
         except Exception:
             tp_hit = 0
-        primary_target = levels[min(tp_hit, len(levels) - 1)] if levels else fallback_target
-        runner_target = levels[-1] if len(levels) > 1 and tp_hit < len(levels) - 1 else 0.0
+        ladder_prices = list(levels)
+        if not ladder_prices and fallback_target > 0:
+            ladder_prices = [fallback_target]
+        size_fractions = cls._normalize_target_size_fractions(
+            management.get("partial_take_profit_size_fractions"),
+            len(ladder_prices),
+        )
         risk = abs(entry - stop)
-        primary_rr = abs(primary_target - entry) / risk if risk > 0 and primary_target > 0 else 0.0
-        runner_rr = abs(runner_target - entry) / risk if risk > 0 and runner_target > 0 else 0.0
+        ladder: List[Dict[str, Any]] = []
+        for idx, level in enumerate(ladder_prices):
+            rr_value = abs(level - entry) / risk if risk > 0 and level > 0 else 0.0
+            ladder.append(
+                {
+                    "label": f"TP{idx + 1}" if len(ladder_prices) > 1 else "Target",
+                    "price": round(level, 6),
+                    "rr": round(rr_value, 4),
+                    "size_fraction": float(size_fractions[idx]) if idx < len(size_fractions) else 0.0,
+                }
+            )
+        active_index = min(tp_hit, len(ladder) - 1) if ladder else 0
+        primary_target = float(ladder[active_index]["price"]) if ladder else 0.0
+        primary_rr = float(ladder[active_index]["rr"]) if ladder else 0.0
+        runner_target = float(ladder[-1]["price"]) if len(ladder) > 1 and tp_hit < len(ladder) - 1 else 0.0
+        runner_rr = float(ladder[-1]["rr"]) if len(ladder) > 1 and tp_hit < len(ladder) - 1 else 0.0
         return {
             "primary_target": round(primary_target, 6) if primary_target > 0 else 0.0,
             "runner_target": round(runner_target, 6) if runner_target > 0 else 0.0,
             "primary_rr": round(primary_rr, 4),
             "runner_rr": round(runner_rr, 4),
+            "levels": ladder,
+            "active_index": int(active_index),
+        }
+
+    @classmethod
+    def _structure_snapshot(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        meta = payload.get("metadata", payload.get("trade_metadata", {})) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        structure = (
+            payload.get("market_structure")
+            if isinstance(payload.get("market_structure"), dict)
+            else meta.get("market_structure")
+            if isinstance(meta.get("market_structure"), dict)
+            else {}
+        )
+        support_levels = structure.get("support_levels") if isinstance(structure.get("support_levels"), list) else []
+        resistance_levels = structure.get("resistance_levels") if isinstance(structure.get("resistance_levels"), list) else []
+
+        def _first_positive(values: Any) -> float:
+            for raw in list(values or []):
+                try:
+                    value = float(raw)
+                except Exception:
+                    continue
+                if value > 0:
+                    return value
+            return 0.0
+
+        support_level = _first_positive(support_levels)
+        resistance_level = _first_positive(resistance_levels)
+        support_distance = payload.get("support_proximity", meta.get("support_proximity", structure.get("distance_to_support")))
+        resistance_distance = payload.get(
+            "resistance_proximity",
+            meta.get("resistance_proximity", structure.get("distance_to_resistance")),
+        )
+        try:
+            support_distance = float(support_distance) if support_distance is not None else None
+        except Exception:
+            support_distance = None
+        try:
+            resistance_distance = float(resistance_distance) if resistance_distance is not None else None
+        except Exception:
+            resistance_distance = None
+
+        breakout_retest_ready = bool(
+            payload.get("breakout_retest_ready", meta.get("breakout_retest_ready", structure.get("breakout_retest_ready")))
+        )
+        first_pullback_ready = bool(
+            payload.get("first_pullback_ready", meta.get("first_pullback_ready", structure.get("first_pullback_ready")))
+        )
+        failed_opposite_move_confirmed = bool(
+            payload.get(
+                "failed_opposite_move_confirmed",
+                meta.get("failed_opposite_move_confirmed", structure.get("failed_opposite_move_confirmed")),
+            )
+        )
+        liquidity_sweep_buy = bool(
+            payload.get("liquidity_sweep_buy", meta.get("liquidity_sweep_buy", structure.get("liquidity_sweep_buy")))
+        )
+        liquidity_sweep_sell = bool(
+            payload.get("liquidity_sweep_sell", meta.get("liquidity_sweep_sell", structure.get("liquidity_sweep_sell")))
+        )
+        pattern_family = cls._humanise_diagnostic_label(
+            payload.get("pattern_family", meta.get("pattern_family", structure.get("pattern_family")))
+        )
+        structure_bias = cls._humanise_diagnostic_label(
+            payload.get("structure_bias", meta.get("structure_bias", structure.get("structure_bias")))
+        )
+
+        setup_read = ""
+        if failed_opposite_move_confirmed:
+            setup_read = "Failed opposite reclaim"
+        elif breakout_retest_ready and first_pullback_ready:
+            setup_read = "Retest and pullback ready"
+        elif breakout_retest_ready:
+            setup_read = "Breakout retest ready"
+        elif first_pullback_ready:
+            setup_read = "First pullback ready"
+        elif liquidity_sweep_buy and not liquidity_sweep_sell:
+            setup_read = "Buy-side liquidity sweep"
+        elif liquidity_sweep_sell and not liquidity_sweep_buy:
+            setup_read = "Sell-side liquidity sweep"
+        elif liquidity_sweep_buy or liquidity_sweep_sell:
+            setup_read = "Liquidity sweep"
+        elif pattern_family:
+            setup_read = pattern_family
+
+        return {
+            "structure_bias": structure_bias,
+            "pattern_family": pattern_family,
+            "setup_read": setup_read,
+            "support_level": round(support_level, 6) if support_level > 0 else 0.0,
+            "resistance_level": round(resistance_level, 6) if resistance_level > 0 else 0.0,
+            "support_distance": support_distance,
+            "resistance_distance": resistance_distance,
+            "breakout_retest_ready": breakout_retest_ready,
+            "first_pullback_ready": first_pullback_ready,
+            "failed_opposite_move_confirmed": failed_opposite_move_confirmed,
+            "liquidity_sweep_buy": liquidity_sweep_buy,
+            "liquidity_sweep_sell": liquidity_sweep_sell,
         }
 
     @classmethod
@@ -1929,6 +2093,7 @@ class TelegramCommander:
         broker = meta.get("broker_quality") if isinstance(meta.get("broker_quality"), dict) else {}
         micro = meta.get("market_microstructure") if isinstance(meta.get("market_microstructure"), dict) else {}
         cross = meta.get("cross_asset_context") if isinstance(meta.get("cross_asset_context"), dict) else {}
+        structure = cls._structure_snapshot(payload)
         adaptive = meta.get("adaptive_policy") if isinstance(meta.get("adaptive_policy"), dict) else {}
         recent_review = adaptive.get("recent_review_profile") if isinstance(adaptive.get("recent_review_profile"), dict) else {}
 
@@ -1988,6 +2153,7 @@ class TelegramCommander:
                     meta.get("recent_pattern_block_new_entries", recent_review.get("block_new_entries")),
                 )
             ),
+            **structure,
         }
 
     @classmethod
@@ -2023,6 +2189,28 @@ class TelegramCommander:
             context_parts.append("Pattern memory `recent-pattern block`")
         if context_parts:
             lines.append(f"{prefix}{' | '.join(context_parts)}")
+
+        structure_parts = []
+        if snapshot.get("structure_bias"):
+            structure_parts.append(f"Bias `{snapshot['structure_bias']}`")
+        if snapshot.get("setup_read"):
+            structure_parts.append(f"Setup `{snapshot['setup_read']}`")
+        support_level = float(snapshot.get("support_level", 0.0) or 0.0)
+        resistance_level = float(snapshot.get("resistance_level", 0.0) or 0.0)
+        support_distance = snapshot.get("support_distance")
+        resistance_distance = snapshot.get("resistance_distance")
+        if support_level > 0:
+            support_text = f"Support `{support_level:.5f}`" if support_level < 10 else f"Support `{support_level:.2f}`"
+            if isinstance(support_distance, (int, float)) and support_distance > 0:
+                support_text += f" ({float(support_distance) * 100:.2f}%)"
+            structure_parts.append(support_text)
+        if resistance_level > 0:
+            resistance_text = f"Resistance `{resistance_level:.5f}`" if resistance_level < 10 else f"Resistance `{resistance_level:.2f}`"
+            if isinstance(resistance_distance, (int, float)) and resistance_distance > 0:
+                resistance_text += f" ({float(resistance_distance) * 100:.2f}%)"
+            structure_parts.append(resistance_text)
+        if structure_parts:
+            lines.append(f"{prefix}Structure " + " | ".join(structure_parts))
 
         return "\n".join(lines)
 
@@ -2389,14 +2577,21 @@ class TelegramCommander:
 
     def _position_target_text(self, position: Dict[str, Any], asset: str, sl: float, tp: float) -> str:
         target_plan = self._target_snapshot(position)
-        primary_tp = float(target_plan.get("primary_target", 0.0) or 0.0)
-        runner_tp = float(target_plan.get("runner_target", 0.0) or 0.0)
-        if runner_tp > 0 and abs(runner_tp - primary_tp) > 1e-9:
-            return (
-                f"  Stop:  `{self._fmt_price(sl, asset)}` | TP1: `{self._fmt_price(primary_tp, asset)}`\n"
-                f"  Run:   `{self._fmt_price(runner_tp, asset)}`\n"
-            )
-        return f"  Stop:  `{self._fmt_price(sl, asset)}` | Target: `{self._fmt_price(primary_tp or tp, asset)}`\n"
+        tp_hit = max(0, int(position.get("tp_hit", 0) or 0))
+        levels = list(target_plan.get("levels") or [])
+        if not levels:
+            primary_tp = float(target_plan.get("primary_target", 0.0) or 0.0)
+            return f"  Stop:  `{self._fmt_price(sl, asset)}` | Target: `{self._fmt_price(primary_tp or tp, asset)}`\n"
+
+        lines = [f"  Stop:  `{self._fmt_price(sl, asset)}`"]
+        for idx, level in enumerate(levels):
+            label = str(level.get("label") or "Target")
+            price = float(level.get("price", 0.0) or 0.0)
+            if price <= 0:
+                continue
+            prefix = "Hit " if idx < tp_hit else "Next " if idx == tp_hit and tp_hit > 0 else ""
+            lines.append(f"  {prefix}{label}: `{self._fmt_price(price, asset)}`")
+        return "\n".join(lines) + "\n"
 
     async def _build_positions(self):
         core = self.trading_system

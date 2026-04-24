@@ -30,6 +30,65 @@ def _is_true_depth_source(source: str) -> bool:
 
 class OpportunityRanker:
     @staticmethod
+    def _recent_participation_profile(state: Any) -> Dict[str, Any]:
+        open_positions = list(state.get_open_positions()) if state is not None and hasattr(state, "get_open_positions") else []
+        try:
+            closed_positions = list(state.get_closed_positions(limit=36)) if state is not None and hasattr(state, "get_closed_positions") else []
+        except Exception:
+            closed_positions = []
+
+        category_counts: Dict[str, float] = {}
+        asset_counts: Dict[str, float] = {}
+
+        def _bump(asset: str, category: str, weight: float) -> None:
+            asset_key = str(asset or "").strip()
+            category_key = str(category or "").strip().lower()
+            if category_key:
+                category_counts[category_key] = category_counts.get(category_key, 0.0) + float(weight)
+            if asset_key:
+                asset_counts[asset_key] = asset_counts.get(asset_key, 0.0) + float(weight)
+
+        for pos in open_positions:
+            _bump(str(pos.get("asset") or pos.get("canonical_asset") or ""), str(pos.get("category") or ""), 1.0)
+
+        for index, trade in enumerate(closed_positions):
+            if index < 6:
+                weight = 1.0
+            elif index < 18:
+                weight = 0.6
+            else:
+                weight = 0.3
+            _bump(str(trade.get("asset") or trade.get("canonical_asset") or ""), str(trade.get("category") or ""), weight)
+
+        max_category = max(category_counts.values()) if category_counts else 0.0
+        max_asset = max(asset_counts.values()) if asset_counts else 0.0
+        return {
+            "category_counts": category_counts,
+            "asset_counts": asset_counts,
+            "max_category_count": float(max_category),
+            "max_asset_count": float(max_asset),
+        }
+
+    @staticmethod
+    def _participation_relief_score(signal: Any, profile: Dict[str, Any]) -> float:
+        category_key = str(getattr(signal, "category", "") or "").strip().lower()
+        asset_key = str(getattr(signal, "asset", "") or "").strip()
+        category_counts = dict(profile.get("category_counts") or {})
+        asset_counts = dict(profile.get("asset_counts") or {})
+        max_category = float(profile.get("max_category_count", 0.0) or 0.0)
+        max_asset = float(profile.get("max_asset_count", 0.0) or 0.0)
+
+        category_count = float(category_counts.get(category_key, 0.0) or 0.0)
+        asset_count = float(asset_counts.get(asset_key, 0.0) or 0.0)
+        category_relief = ((max_category - category_count) / max(max_category, 1.0)) if max_category > 0 else 0.0
+        asset_relief = ((max_asset - asset_count) / max(max_asset, 1.0)) if max_asset > 0 else 0.0
+
+        score = 0.5
+        score += min(0.22, category_relief * 0.22)
+        score += min(0.10, asset_relief * 0.10)
+        return round(_clip(score), 4)
+
+    @staticmethod
     def _broker_quality_score(signal) -> float:
         broker = signal.metadata.get("broker_quality") or {}
         if not isinstance(broker, dict) or not broker:
@@ -81,6 +140,8 @@ class OpportunityRanker:
         book = metadata.get("book_imbalance")
         stop_hunt_risk = _clip(float(metadata.get("stop_hunt_risk", 0.0) or 0.0))
         exhaustion_risk = _clip(float(metadata.get("exhaustion_risk", 0.0) or 0.0))
+        depth_levels = int(metadata.get("depth_levels", 0) or 0)
+        depth_quality = _clip(float(metadata.get("depth_quality", 0.0) or 0.0))
 
         components = [base]
         if tick is not None:
@@ -95,11 +156,13 @@ class OpportunityRanker:
         if bool(metadata.get("depth_available")):
             source = str(metadata.get("microstructure_source", "") or "").lower()
             if _is_true_depth_source(source):
-                score += 0.07
+                score += max(0.0, (depth_quality - 0.45) * 0.18)
+                if depth_levels >= 8:
+                    score += 0.05
+                elif depth_levels >= 4:
+                    score += 0.02
             else:
-                score += 0.04
-        elif bool(metadata.get("synthetic_depth_available")):
-            score -= 0.04
+                score += max(0.0, (depth_quality - 0.50) * 0.10)
 
         return round(_clip(score), 4)
 
@@ -131,6 +194,7 @@ class OpportunityRanker:
         context: Dict[str, Any],
         open_positions: Sequence[Dict[str, Any]],
         candidate_counts: Dict[Tuple[str, str], int],
+        participation_profile: Dict[str, Any],
     ) -> Tuple[float, Dict[str, float]]:
         category = str(signal.category or "")
         direction = str(signal.direction or "BUY").upper()
@@ -188,6 +252,7 @@ class OpportunityRanker:
         microstructure_score = self._microstructure_score(signal)
         cross_asset_score = self._cross_asset_score(signal)
         asset_edge_score = self._asset_edge_score(signal)
+        participation_relief = self._participation_relief_score(signal, participation_profile)
 
         cat_open = sum(1 for p in open_positions if p.get("category") == category)
         same_dir_open = sum(
@@ -226,12 +291,13 @@ class OpportunityRanker:
             "microstructure": round(microstructure_score, 4),
             "cross_asset": round(cross_asset_score, 4),
             "asset_edge": round(asset_edge_score, 4),
+            "book_balance": round(participation_relief, 4),
             "portfolio_fit": round(portfolio_fit, 4),
         }
 
         score = (
-            confidence_score * 0.20
-            + structure_score * 0.13
+            confidence_score * 0.18
+            + structure_score * 0.12
             + setup_score * 0.08
             + sentiment_score * 0.07
             + whale_score * 0.04
@@ -242,7 +308,8 @@ class OpportunityRanker:
             + broker_score * 0.08
             + microstructure_score * 0.06
             + cross_asset_score * 0.05
-            + asset_edge_score * 0.04
+            + asset_edge_score * 0.03
+            + participation_relief * 0.05
             + portfolio_fit * 0.04
         )
 
@@ -258,6 +325,7 @@ class OpportunityRanker:
             return []
 
         open_positions = list(state.get_open_positions()) if state is not None else []
+        participation_profile = self._recent_participation_profile(state)
         candidate_counts: Dict[Tuple[str, str], int] = {}
         for signal, _ctx in pairs:
             key = (str(signal.category or ""), str(signal.direction or "BUY").upper())
@@ -265,7 +333,13 @@ class OpportunityRanker:
 
         scored: List[Tuple[float, Any, Dict[str, Any]]] = []
         for signal, context in pairs:
-            score, breakdown = self._score_pair(signal, context, open_positions, candidate_counts)
+            score, breakdown = self._score_pair(
+                signal,
+                context,
+                open_positions,
+                candidate_counts,
+                participation_profile,
+            )
             signal.metadata["opportunity_score"] = score
             signal.metadata["opportunity_breakdown"] = breakdown
             scored.append((score, signal, context))

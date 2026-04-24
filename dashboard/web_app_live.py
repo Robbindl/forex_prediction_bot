@@ -1284,6 +1284,7 @@ def _extract_signal_intelligence_fields(metadata: Any) -> Dict[str, Any]:
 
 def _extract_entry_structure_fields(metadata: Any) -> Dict[str, Any]:
     meta = metadata if isinstance(metadata, dict) else {}
+    structure = meta.get("market_structure") if isinstance(meta.get("market_structure"), dict) else {}
     rejected_reasons = _clean_text_list(meta.get("rejected_reasons"), limit=6)
     blocked_reason = str(meta.get("blocked_reason") or "").strip()
     exact_kill_reason = str(
@@ -1301,7 +1302,10 @@ def _extract_entry_structure_fields(metadata: Any) -> Dict[str, Any]:
         "entry_confirmation_bars_required": int(meta.get("entry_confirmation_bars_required", 0) or 0),
         "failed_opposite_move_confirmed": bool(meta.get("failed_opposite_move_confirmed")),
         "liquidity_sweep_reclaim": bool(meta.get("liquidity_sweep_reclaim")),
+        "liquidity_sweep_buy": bool(meta.get("liquidity_sweep_buy", structure.get("liquidity_sweep_buy"))),
+        "liquidity_sweep_sell": bool(meta.get("liquidity_sweep_sell", structure.get("liquidity_sweep_sell"))),
         "pattern_family": str(meta.get("pattern_family") or ""),
+        "structure_bias": str(meta.get("structure_bias") or structure.get("structure_bias") or ""),
         "elite_pattern_rank": float(meta.get("elite_pattern_rank", 0.0) or 0.0),
         "cluster_penalty": float(meta.get("cluster_penalty", 0.0) or 0.0),
         "impulse_age_bars": int(meta.get("impulse_age_bars", 0) or 0),
@@ -1309,6 +1313,12 @@ def _extract_entry_structure_fields(metadata: Any) -> Dict[str, Any]:
         "candle_quality_score": float(meta.get("candle_quality_score", 0.0) or 0.0),
         "session_quality_score": float(meta.get("session_quality_score", 0.0) or 0.0),
         "target_efficiency_score": float(meta.get("target_efficiency_score", 0.0) or 0.0),
+        "support_proximity": float(meta.get("support_proximity", 0.0) or 0.0),
+        "resistance_proximity": float(meta.get("resistance_proximity", 0.0) or 0.0),
+        "distance_to_support": float(structure.get("distance_to_support", 0.0) or 0.0),
+        "distance_to_resistance": float(structure.get("distance_to_resistance", 0.0) or 0.0),
+        "support_levels": list(structure.get("support_levels") or []),
+        "resistance_levels": list(structure.get("resistance_levels") or []),
         "session_label": str(meta.get("session_label") or meta.get("session") or ""),
         "regime_policy_summary": str(meta.get("regime_policy_summary") or ""),
         "regime_policy": str(meta.get("regime_policy") or ""),

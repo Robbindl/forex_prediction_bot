@@ -73,6 +73,10 @@ def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, 
                 "relief_strength": _clip(_safe_float(inactivity.get("relief_strength"), 0.0), 0.0, 1.0),
                 "flat_book": bool(inactivity.get("flat_book")),
                 "open_position_count": int(inactivity.get("open_position_count", 0) or 0),
+                "equity_relief": bool(inactivity.get("equity_relief")),
+                "equity_relief_strength": _clip(_safe_float(inactivity.get("equity_relief_strength"), 0.0), 0.0, 1.0),
+                "category_recent_count": _safe_float(inactivity.get("category_recent_count"), 0.0),
+                "asset_recent_count": _safe_float(inactivity.get("asset_recent_count"), 0.0),
             }
 
     engine = ctx.get("engine")
@@ -84,6 +88,10 @@ def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, 
             "relief_strength": 0.0,
             "flat_book": False,
             "open_position_count": 0,
+            "equity_relief": False,
+            "equity_relief_strength": 0.0,
+            "category_recent_count": 0.0,
+            "asset_recent_count": 0.0,
         }
 
     try:
@@ -96,6 +104,10 @@ def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, 
             "relief_strength": 0.0,
             "flat_book": False,
             "open_position_count": 0,
+            "equity_relief": False,
+            "equity_relief_strength": 0.0,
+            "category_recent_count": 0.0,
+            "asset_recent_count": 0.0,
         }
 
     if hours_since_last_entry is None:
@@ -105,6 +117,10 @@ def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, 
             "relief_strength": 0.0,
             "flat_book": open_position_count == 0,
             "open_position_count": open_position_count,
+            "equity_relief": False,
+            "equity_relief_strength": 0.0,
+            "category_recent_count": 0.0,
+            "asset_recent_count": 0.0,
         }
 
     start_hours = max(0.0, float(INACTIVITY_RELIEF_START_HOURS or 0.0))
@@ -118,7 +134,124 @@ def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, 
         "relief_strength": round(float(relief_strength), 4),
         "flat_book": open_position_count == 0,
         "open_position_count": open_position_count,
+        "equity_relief": False,
+        "equity_relief_strength": 0.0,
+        "category_recent_count": 0.0,
+        "asset_recent_count": 0.0,
     }
+
+
+def _context_participation_relief(
+    context: Optional[Dict[str, Any]],
+    *,
+    asset: str,
+    category: str,
+) -> Dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
+    engine = ctx.get("engine")
+    state = getattr(engine, "state", None) if engine is not None else ctx.get("state")
+    if state is None:
+        return {
+            "active": False,
+            "relief_strength": 0.0,
+            "category_recent_count": 0.0,
+            "asset_recent_count": 0.0,
+        }
+
+    try:
+        open_positions = list(getattr(state, "get_open_positions", lambda: [])() or [])
+    except Exception:
+        open_positions = []
+    try:
+        closed_positions = list(getattr(state, "get_closed_positions", lambda limit=36: [])(36) or [])
+    except Exception:
+        closed_positions = []
+
+    category_key = str(category or "").strip().lower()
+    asset_key = str(asset or "").strip().upper()
+    if not category_key or not asset_key:
+        return {
+            "active": False,
+            "relief_strength": 0.0,
+            "category_recent_count": 0.0,
+            "asset_recent_count": 0.0,
+        }
+
+    category_counts: Dict[str, float] = {}
+    asset_counts: Dict[str, float] = {}
+
+    def _bump(raw_asset: Any, raw_category: Any, weight: float) -> None:
+        local_asset = str(raw_asset or "").strip().upper()
+        local_category = str(raw_category or "").strip().lower()
+        if local_category:
+            category_counts[local_category] = category_counts.get(local_category, 0.0) + float(weight)
+        if local_asset:
+            asset_counts[local_asset] = asset_counts.get(local_asset, 0.0) + float(weight)
+
+    for pos in open_positions:
+        _bump(pos.get("asset") or pos.get("canonical_asset"), pos.get("category"), 1.0)
+
+    for index, trade in enumerate(closed_positions):
+        if index < 6:
+            weight = 1.0
+        elif index < 18:
+            weight = 0.55
+        else:
+            weight = 0.25
+        _bump(trade.get("asset") or trade.get("canonical_asset"), trade.get("category"), weight)
+
+    category_recent = float(category_counts.get(category_key, 0.0) or 0.0)
+    asset_recent = float(asset_counts.get(asset_key, 0.0) or 0.0)
+    max_category_recent = max(category_counts.values()) if category_counts else 0.0
+    max_asset_recent = max(asset_counts.values()) if asset_counts else 0.0
+    if max_category_recent < 2.0:
+        return {
+            "active": False,
+            "relief_strength": 0.0,
+            "category_recent_count": round(category_recent, 4),
+            "asset_recent_count": round(asset_recent, 4),
+        }
+
+    category_gap = max(0.0, (max_category_recent - category_recent) / max(max_category_recent, 1.0))
+    asset_gap = 0.0
+    if max_asset_recent > 0.0:
+        asset_gap = max(0.0, (max_asset_recent - asset_recent) / max(max_asset_recent, 1.0))
+    relief_strength = _clip(category_gap * 0.78 + asset_gap * 0.22, 0.0, 1.0)
+    return {
+        "active": bool(relief_strength >= 0.18),
+        "relief_strength": round(float(relief_strength), 4),
+        "category_recent_count": round(category_recent, 4),
+        "asset_recent_count": round(asset_recent, 4),
+    }
+
+
+def _merge_context_relief_profiles(
+    base_profile: Optional[Dict[str, Any]],
+    participation_relief: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    profile = dict(base_profile or {})
+    participation = participation_relief if isinstance(participation_relief, dict) else {}
+    category_recent_count = round(_safe_float(participation.get("category_recent_count"), 0.0), 4)
+    asset_recent_count = round(_safe_float(participation.get("asset_recent_count"), 0.0), 4)
+    raw_equity_relief_strength = _clip(_safe_float(participation.get("relief_strength"), 0.0), 0.0, 1.0)
+    equity_relief = bool(participation.get("active")) and raw_equity_relief_strength > 0.0
+    equity_relief_strength = (
+        _clip(0.12 + raw_equity_relief_strength * 0.88, 0.0, 1.0)
+        if equity_relief
+        else 0.0
+    )
+
+    profile["equity_relief"] = equity_relief
+    profile["equity_relief_strength"] = round(float(equity_relief_strength), 4)
+    profile["category_recent_count"] = category_recent_count
+    profile["asset_recent_count"] = asset_recent_count
+
+    if equity_relief:
+        current_relief_strength = _clip(_safe_float(profile.get("relief_strength"), 0.0), 0.0, 1.0)
+        profile["active"] = True
+        profile["relief_strength"] = round(max(current_relief_strength, equity_relief_strength), 4)
+
+    return profile
 
 
 def _session_matches(current: str, allowed: str) -> bool:
@@ -708,7 +841,7 @@ _CATEGORY_PLANS: Dict[str, _AssetPlaybookPlan] = {
 _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     "EUR/USD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
-        ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.60,
         0.58,
         2,
@@ -716,7 +849,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "GBP/USD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
-        ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.60,
         0.58,
         2,
@@ -732,15 +865,23 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "EUR/JPY": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
-        ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.61,
         0.59,
         2,
         1,
     ),
+    "EUR/GBP": _AssetPlaybookPlan(
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        0.60,
+        0.58,
+        2,
+        1,
+    ),
     "GBP/JPY": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
-        ("europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.62,
         0.60,
         2,
@@ -764,7 +905,15 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "USD/CAD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
-        ("europe_core", "us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        0.60,
+        0.58,
+        2,
+        1,
+    ),
+    "USD/CHF": _AssetPlaybookPlan(
+        ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "news_impulse"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.60,
         0.58,
         2,
@@ -796,7 +945,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US30": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -804,7 +953,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US100": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -812,7 +961,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US500": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -820,7 +969,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "UK100": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("europe_open", "europe_core"),
+        ("europe_open", "europe_core", "us_overlap"),
         0.58,
         0.56,
         2,
@@ -828,7 +977,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "GER40": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("europe_open", "europe_core"),
+        ("europe_open", "europe_core", "us_overlap"),
         0.58,
         0.56,
         2,
@@ -836,7 +985,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "AUS200": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("asia_core",),
+        ("asia_core", "europe_open"),
         0.58,
         0.56,
         2,
@@ -844,7 +993,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "JPN225": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("asia_core",),
+        ("asia_core", "europe_open"),
         0.58,
         0.56,
         2,
@@ -868,7 +1017,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "BNB-USD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
-        ("europe_core", "us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.62,
         0.60,
         2,
@@ -876,7 +1025,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "SOL-USD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
-        ("europe_core", "us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.62,
         0.60,
         2,
@@ -884,7 +1033,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "XRP-USD": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "crypto_orderflow_continuation"),
-        ("europe_core", "us_overlap", "us_open", "us_core"),
+        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
         0.63,
         0.61,
         2,
@@ -1134,7 +1283,7 @@ class PlaybookService:
         allow_early_trend_relief = False
         inactivity_profile = inactivity_profile if isinstance(inactivity_profile, dict) else {}
         inactivity_relief_strength = _safe_float(inactivity_profile.get("relief_strength"), 0.0)
-        inactivity_flat_book = bool(inactivity_profile.get("flat_book"))
+        inactivity_flat_book = bool(inactivity_profile.get("flat_book")) or bool(inactivity_profile.get("equity_relief"))
         liquidity_sweep_directional = (
             (direction == "BUY" and liquidity_sweep_buy)
             or (direction == "SELL" and liquidity_sweep_sell)
@@ -1343,7 +1492,7 @@ class PlaybookService:
         downside_exhaustion_score = float(structure.get("downside_exhaustion_score", 0.0) or 0.0)
         inactivity_profile = inactivity_profile if isinstance(inactivity_profile, dict) else {}
         inactivity_relief_strength = _safe_float(inactivity_profile.get("relief_strength"), 0.0)
-        inactivity_flat_book = bool(inactivity_profile.get("flat_book"))
+        inactivity_flat_book = bool(inactivity_profile.get("flat_book")) or bool(inactivity_profile.get("equity_relief"))
         inactivity_seed_relief = bool(inactivity_flat_book and inactivity_relief_strength > 0.0)
 
         directional_pullback = pullback_score if direction == "BUY" else -pullback_score
@@ -2806,7 +2955,14 @@ class PlaybookService:
 
         plan = self._asset_plan(asset, category)
         session_allowed, session, allowed_sessions = self._session_allowed(asset, category)
-        inactivity_profile = _context_inactivity_profile(context)
+        inactivity_profile = _merge_context_relief_profiles(
+            _context_inactivity_profile(context),
+            _context_participation_relief(
+                context,
+                asset=asset,
+                category=category,
+            ),
+        )
         if not session_allowed:
             return {
                 "asset": asset,

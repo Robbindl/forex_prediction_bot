@@ -796,6 +796,11 @@ class SignalDecisionEngine:
             signal.metadata["velocity_bps"] = round(velocity_bps, 4)
             signal.metadata["depth_available"] = bool(micro.get("depth_available"))
             signal.metadata["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
+            signal.metadata["depth_levels"] = int(micro.get("depth_levels", 0) or 0)
+            signal.metadata["bid_level_count"] = int(micro.get("bid_level_count", micro.get("visible_bid_levels", 0)) or 0)
+            signal.metadata["ask_level_count"] = int(micro.get("ask_level_count", micro.get("visible_ask_levels", 0)) or 0)
+            signal.metadata["depth_quality"] = round(float(micro.get("depth_quality", 0.0) or 0.0), 4)
+            signal.metadata["depth_quality_tier"] = str(micro.get("depth_quality_tier") or "")
             signal.metadata["microstructure_source"] = str(micro.get("microstructure_source") or "")
             data["microstructure_score"] = round(micro_score, 3)
             data["stop_hunt_risk"] = round(stop_hunt_risk, 3)
@@ -804,6 +809,8 @@ class SignalDecisionEngine:
             data["book_imbalance"] = round(book_imbalance, 4)
             data["velocity_bps"] = round(velocity_bps, 4)
             data["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
+            data["depth_levels"] = int(micro.get("depth_levels", 0) or 0)
+            data["depth_quality"] = round(float(micro.get("depth_quality", 0.0) or 0.0), 4)
             if stop_hunt_risk >= 0.45:
                 notes.append("stop_hunt_penalty")
             if exhaustion_risk >= 0.42:
@@ -1388,6 +1395,7 @@ class SignalDecisionEngine:
         dominant_exhaustion = float(structure.get("dominant_exhaustion_score", 0.0) or 0.0)
         bias_exhausted = bool(structure.get("bias_exhausted"))
         alignment_score = float(structure.get("alignment_score", signal.metadata.get("alignment_score", 0.0)) or 0.0)
+        structure_bias = str(structure.get("structure_bias", signal.metadata.get("structure_bias", "")) or "").strip().lower()
         setup_quality = float(structure.get("setup_quality", signal.metadata.get("setup_quality", 0.0)) or 0.0)
         vwap_distance_atr = float(structure.get("vwap_distance_atr", signal.metadata.get("vwap_distance_atr", 0.0)) or 0.0)
         session_quality_score = float(structure.get("session_quality_score", signal.metadata.get("session_quality_score", 0.0)) or 0.0)
@@ -1419,7 +1427,7 @@ class SignalDecisionEngine:
         confirmation_needed = bool(recent_review.get("confirmation_needed"))
         inactivity_relief_strength = float(inactivity_profile.get("relief_strength", 0.0) or 0.0)
         inactivity_relief_active = bool(inactivity_profile.get("active")) and inactivity_relief_strength > 0.0
-        inactivity_flat_book = bool(inactivity_profile.get("flat_book"))
+        inactivity_flat_book = bool(inactivity_profile.get("flat_book")) or bool(inactivity_profile.get("equity_relief"))
         inactivity_hours_since_last_entry = float(inactivity_profile.get("hours_since_last_entry", 0.0) or 0.0)
         elite_pattern_rank = max(
             float(recent_review.get("pattern_rank_score", 0.0) or 0.0),
@@ -1600,6 +1608,11 @@ class SignalDecisionEngine:
 
         if failed_opposite_move_confirmed:
             risk_score -= 0.06
+            if (signal.direction == "BUY" and structure_bias == "sell") or (
+                signal.direction == "SELL" and structure_bias == "buy"
+            ):
+                risk_score += 0.28
+                reasons.append("failed opposite reclaim now favors the other side")
         if strong_market_candidate and extension_score <= 1.18 and target_efficiency_score >= 0.22 and impulse_age_bars <= 6:
             risk_score -= 0.04
         if elite_supported_candidate and cluster_penalty < 0.22:
@@ -1699,6 +1712,11 @@ class SignalDecisionEngine:
             exhaustion_risk >= 0.45 or dominant_exhaustion >= 0.60 or bias_exhausted
         ):
             hard_blocks.append("extended entry is combining with exhaustion risk")
+        if failed_opposite_move_confirmed and (
+            (signal.direction == "BUY" and structure_bias == "sell")
+            or (signal.direction == "SELL" and structure_bias == "buy")
+        ):
+            hard_blocks.append("failed opposite reclaim is confirmed against the trade direction")
         if stop_hunt_risk >= 0.48 and synthetic_depth_only:
             hard_blocks.append("stop-hunt risk is elevated while only synthetic depth is available")
         if directional_extension >= 0.82 and supportive_structure_distance > 0 and supportive_structure_distance <= 0.0018:

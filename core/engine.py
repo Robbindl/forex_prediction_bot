@@ -48,6 +48,22 @@ def _get_news_event(category: str) -> dict:
 
 
 def _seed_inactivity_profile(context: Dict[str, Any]) -> Dict[str, Any]:
+    playbook_decision = context.get("playbook_decision")
+    if isinstance(playbook_decision, dict):
+        inactivity = playbook_decision.get("inactivity_profile")
+        if isinstance(inactivity, dict):
+            return {
+                "active": bool(inactivity.get("active")),
+                "hours_since_last_entry": float(inactivity.get("hours_since_last_entry", 0.0) or 0.0),
+                "relief_strength": max(0.0, min(1.0, float(inactivity.get("relief_strength", 0.0) or 0.0))),
+                "flat_book": bool(inactivity.get("flat_book")),
+                "open_position_count": int(inactivity.get("open_position_count", 0) or 0),
+                "equity_relief": bool(inactivity.get("equity_relief")),
+                "equity_relief_strength": max(0.0, min(1.0, float(inactivity.get("equity_relief_strength", 0.0) or 0.0))),
+                "category_recent_count": float(inactivity.get("category_recent_count", 0.0) or 0.0),
+                "asset_recent_count": float(inactivity.get("asset_recent_count", 0.0) or 0.0),
+            }
+
     adaptive_policy = context.get("adaptive_policy")
     if isinstance(adaptive_policy, dict):
         raw_policy = adaptive_policy.get("raw") if isinstance(adaptive_policy.get("raw"), dict) else adaptive_policy
@@ -59,6 +75,10 @@ def _seed_inactivity_profile(context: Dict[str, Any]) -> Dict[str, Any]:
                 "relief_strength": max(0.0, min(1.0, float(inactivity.get("relief_strength", 0.0) or 0.0))),
                 "flat_book": bool(inactivity.get("flat_book")),
                 "open_position_count": int(inactivity.get("open_position_count", 0) or 0),
+                "equity_relief": bool(inactivity.get("equity_relief")),
+                "equity_relief_strength": max(0.0, min(1.0, float(inactivity.get("equity_relief_strength", 0.0) or 0.0))),
+                "category_recent_count": float(inactivity.get("category_recent_count", 0.0) or 0.0),
+                "asset_recent_count": float(inactivity.get("asset_recent_count", 0.0) or 0.0),
             }
 
     engine = context.get("engine")
@@ -70,6 +90,10 @@ def _seed_inactivity_profile(context: Dict[str, Any]) -> Dict[str, Any]:
             "relief_strength": 0.0,
             "flat_book": False,
             "open_position_count": 0,
+            "equity_relief": False,
+            "equity_relief_strength": 0.0,
+            "category_recent_count": 0.0,
+            "asset_recent_count": 0.0,
         }
 
     try:
@@ -82,6 +106,10 @@ def _seed_inactivity_profile(context: Dict[str, Any]) -> Dict[str, Any]:
             "relief_strength": 0.0,
             "flat_book": False,
             "open_position_count": 0,
+            "equity_relief": False,
+            "equity_relief_strength": 0.0,
+            "category_recent_count": 0.0,
+            "asset_recent_count": 0.0,
         }
 
     if hours_since_last_entry is None:
@@ -91,6 +119,10 @@ def _seed_inactivity_profile(context: Dict[str, Any]) -> Dict[str, Any]:
             "relief_strength": 0.0,
             "flat_book": open_position_count == 0,
             "open_position_count": open_position_count,
+            "equity_relief": False,
+            "equity_relief_strength": 0.0,
+            "category_recent_count": 0.0,
+            "asset_recent_count": 0.0,
         }
 
     start_hours = max(0.0, float(INACTIVITY_RELIEF_START_HOURS or 0.0))
@@ -104,6 +136,10 @@ def _seed_inactivity_profile(context: Dict[str, Any]) -> Dict[str, Any]:
         "relief_strength": round(float(relief_strength), 4),
         "flat_book": open_position_count == 0,
         "open_position_count": open_position_count,
+        "equity_relief": False,
+        "equity_relief_strength": 0.0,
+        "category_recent_count": 0.0,
+        "asset_recent_count": 0.0,
     }
 
 
@@ -1948,7 +1984,34 @@ class TradingCore:
         limit: int = 3,
     ) -> List[Signal]:
         max_count = max(1, int(limit or 1))
-        return survivors[:max_count]
+        if len(survivors) <= max_count:
+            return survivors[:max_count]
+
+        selected: List[Signal] = []
+        seen_signal_ids: set[int] = set()
+        seen_categories: set[str] = set()
+
+        for signal in survivors:
+            category_key = str(getattr(signal, "category", "") or "").strip().lower()
+            if category_key in seen_categories:
+                continue
+            selected.append(signal)
+            seen_signal_ids.add(id(signal))
+            if category_key:
+                seen_categories.add(category_key)
+            if len(selected) >= max_count:
+                return selected
+
+        for signal in survivors:
+            signal_id = id(signal)
+            if signal_id in seen_signal_ids:
+                continue
+            selected.append(signal)
+            seen_signal_ids.add(signal_id)
+            if len(selected) >= max_count:
+                break
+
+        return selected
 
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
         selected_survivors = self._select_execution_survivors(survivors, limit=limit)
@@ -3113,7 +3176,10 @@ class TradingCore:
             f"cluster={self._fmt_metric(structure.get('cluster_penalty'))} "
             f"inactivity={int(bool(inactivity_profile.get('active')))} "
             f"flat_book={int(bool(inactivity_profile.get('flat_book')))} "
+            f"equity={int(bool(inactivity_profile.get('equity_relief')))} "
             f"relief={self._fmt_metric(inactivity_profile.get('relief_strength'))} "
+            f"cat_recent={self._fmt_metric(inactivity_profile.get('category_recent_count'))} "
+            f"asset_recent={self._fmt_metric(inactivity_profile.get('asset_recent_count'))} "
             f"predictor={self._fmt_predictor_pair(context.get('predictor_prediction', context.get('ml_prediction')), context.get('predictor_confidence', context.get('ml_confidence')))} "
             f"sent={self._fmt_metric(context.get('sentiment_score'))} "
             f"funding={context.get('funding_bias', 'NEUTRAL')} "
@@ -3408,7 +3474,9 @@ class TradingCore:
         signal_drift_atr = abs(entry_price - signal_price) / atr_unit if signal_price > 0 else 0.0
         inactivity_profile = _seed_inactivity_profile(context)
         inactivity_relief_strength = float(inactivity_profile.get("relief_strength", 0.0) or 0.0)
-        inactivity_entry_relief = bool(inactivity_profile.get("active")) and bool(inactivity_profile.get("flat_book")) and inactivity_relief_strength > 0.0
+        inactivity_entry_relief = bool(inactivity_profile.get("active")) and (
+            bool(inactivity_profile.get("flat_book")) or bool(inactivity_profile.get("equity_relief"))
+        ) and inactivity_relief_strength > 0.0
         strong_seed_context = bool(
             float(structure.get("alignment_score", 0.0) or 0.0) >= 0.72
             and float(structure.get("setup_quality", 0.0) or 0.0) >= 0.66
@@ -4217,6 +4285,9 @@ class TradingCore:
         }
         current_pos["position_size"] = round(remaining_size, 8)
         current_pos["tp_hit"] = tp_idx + 1
+        current_pos["management_checkpoint_at"] = (
+            bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time)
+        )
         if break_even_after_partial:
             if direction == "BUY" and entry > float(current_pos.get("stop_loss", 0) or 0):
                 current_pos["stop_loss"] = round(entry, 6)
@@ -4302,6 +4373,29 @@ class TradingCore:
             logger.debug(f"[GapFill] Cannot parse open_time for {asset} — skipping")
             return None
 
+    @classmethod
+    def _resolve_gapfill_replay_start(
+        cls,
+        pos: Dict[str, Any],
+        *,
+        asset: str,
+        dt_trade_open: datetime,
+    ) -> datetime:
+        checkpoint = str(
+            pos.get("management_checkpoint_at")
+            or pos.get("last_runtime_update_at")
+            or ""
+        ).strip()
+        if not checkpoint:
+            return dt_trade_open
+
+        dt_checkpoint = cls._parse_gapfill_open_time(checkpoint, asset)
+        if dt_checkpoint is None:
+            return dt_trade_open
+        if dt_checkpoint < dt_trade_open:
+            return dt_trade_open
+        return dt_checkpoint
+
     def _load_gapfill_history(
         self,
         *,
@@ -4381,13 +4475,18 @@ class TradingCore:
         dt_open = self._parse_gapfill_open_time(open_time, asset)
         if dt_open is None:
             return None
-        minutes_offline = (datetime.now(tz=timezone.utc) - dt_open).total_seconds() / 60
+        dt_replay_start = self._resolve_gapfill_replay_start(
+            pos,
+            asset=asset,
+            dt_trade_open=dt_open,
+        )
+        minutes_offline = (datetime.now(tz=timezone.utc) - dt_replay_start).total_seconds() / 60
         if minutes_offline < 5:
             return None
         df = self._load_gapfill_history(
             asset=asset,
             category=category,
-            dt_open=dt_open,
+            dt_open=dt_replay_start,
             minutes_offline=minutes_offline,
         )
         if df is None:
@@ -4412,6 +4511,7 @@ class TradingCore:
             "metadata": metadata,
             "management": management,
             "dt_open": dt_open,
+            "dt_replay_start": dt_replay_start,
             "df": df,
             "current_pos": current_pos,
             "initial_risk": abs(entry - float(current_pos.get("original_sl", stop_loss) or stop_loss)),
@@ -4570,6 +4670,11 @@ class TradingCore:
     def _process_gapfill_runtime(self, runtime: Dict[str, Any]) -> None:
         breach = self._scan_gapfill_history(runtime)
         if breach is None:
+            if runtime["df"] is not None and not runtime["df"].empty:
+                last_bar_time = runtime["df"].index[-1]
+                runtime["current_pos"]["management_checkpoint_at"] = (
+                    last_bar_time.isoformat() if hasattr(last_bar_time, "isoformat") else str(last_bar_time)
+                )
             self._sync_gapfill_open_position(runtime["trade_id"], runtime["current_pos"])
             logger.debug(f"[GapFill] {runtime['asset']}: no breach found — position remains open")
             return

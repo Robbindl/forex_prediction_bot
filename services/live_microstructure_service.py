@@ -177,10 +177,16 @@ class LiveMicrostructureService:
         bid_depth = 0.0
         ask_depth = 0.0
         depth_levels = 0
+        bid_level_count = 0
+        ask_level_count = 0
         if latest.get("levels"):
             for level in latest["levels"]:
                 bid_size_level = _safe_float(level.get("bid_size"), 0.0)
                 ask_size_level = _safe_float(level.get("ask_size"), 0.0)
+                if level.get("bid") not in (None, "") and bid_size_level > 0:
+                    bid_level_count += 1
+                if level.get("ask") not in (None, "") and ask_size_level > 0:
+                    ask_level_count += 1
                 if bid_size_level > 0 or ask_size_level > 0:
                     depth_levels += 1
                 bid_depth += max(0.0, bid_size_level)
@@ -189,6 +195,8 @@ class LiveMicrostructureService:
             bid_depth = max(0.0, _safe_float(latest.get("bid_size"), 0.0))
             ask_depth = max(0.0, _safe_float(latest.get("ask_size"), 0.0))
             depth_levels = 1 if (bid_depth > 0 or ask_depth > 0) else 0
+            bid_level_count = 1 if bid_depth > 0 else 0
+            ask_level_count = 1 if ask_depth > 0 else 0
 
         total_depth = bid_depth + ask_depth
         synthetic_depth_available = False
@@ -211,14 +219,46 @@ class LiveMicrostructureService:
                 )
                 book_imbalance = synthetic_book_imbalance
 
+        visible_levels = max(depth_levels, bid_level_count, ask_level_count)
+        level_balance = 1.0
+        if max(bid_level_count, ask_level_count) > 0:
+            level_balance = min(bid_level_count, ask_level_count) / max(bid_level_count, ask_level_count)
+        if visible_levels >= 10:
+            depth_quality = 1.0
+            depth_quality_tier = "full"
+        elif visible_levels >= 8:
+            depth_quality = 0.88
+            depth_quality_tier = "strong"
+        elif visible_levels >= 6:
+            depth_quality = 0.74
+            depth_quality_tier = "solid"
+        elif visible_levels >= 4:
+            depth_quality = 0.58
+            depth_quality_tier = "partial"
+        elif visible_levels >= 2:
+            depth_quality = 0.36
+            depth_quality_tier = "thin"
+        elif visible_levels >= 1:
+            depth_quality = 0.18
+            depth_quality_tier = "top_only"
+        else:
+            depth_quality = 0.0
+            depth_quality_tier = "synthetic" if synthetic_depth_available else "none"
+        if visible_levels > 0:
+            depth_quality = _clip(depth_quality * (0.85 + level_balance * 0.15))
+
         return {
             "bid_depth": bid_depth,
             "ask_depth": ask_depth,
             "depth_levels": depth_levels,
+            "bid_level_count": bid_level_count,
+            "ask_level_count": ask_level_count,
             "total_depth": total_depth,
             "book_imbalance": book_imbalance,
             "synthetic_depth_available": synthetic_depth_available,
             "synthetic_book_imbalance": synthetic_book_imbalance,
+            "depth_quality": depth_quality,
+            "depth_quality_tier": depth_quality_tier,
         }
 
     @staticmethod
@@ -336,6 +376,10 @@ class LiveMicrostructureService:
             "depth_available": bool(depth["total_depth"] > 0),
             "synthetic_depth_available": bool(depth["synthetic_depth_available"]),
             "depth_levels": int(depth["depth_levels"]),
+            "bid_level_count": int(depth["bid_level_count"]),
+            "ask_level_count": int(depth["ask_level_count"]),
+            "depth_quality": round(float(depth["depth_quality"]), 4),
+            "depth_quality_tier": str(depth["depth_quality_tier"]),
             "quote_updates": int(len(events)),
             "score": round(risk["score"], 4),
             "microstructure_source": "live_store_depth" if depth["total_depth"] > 0 else ("live_store_synthetic_depth" if depth["synthetic_depth_available"] else "live_store"),

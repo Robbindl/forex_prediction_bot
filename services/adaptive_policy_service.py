@@ -316,26 +316,33 @@ def _apply_asset_performance_thresholds(
         thresholds["asset_performance_profile"] = profile
         return
 
-    if asset_score >= 0.62 and profit_factor >= 1.10 and avg_rr_realized >= 0.10 and pnl_total > 0:
+    strong_sample_count = max(max(1, int(ASSET_EDGE_MIN_SAMPLES or 4)), 6)
+
+    if sample_count >= strong_sample_count and asset_score >= 0.64 and profit_factor >= 1.12 and avg_rr_realized >= 0.12 and pnl_total > 0:
         bonus = min(
-            float(ASSET_EDGE_MAX_RISK_BONUS or 0.18),
+            float(ASSET_EDGE_MAX_RISK_BONUS or 0.18) * 0.75,
             0.03
-            + max(0.0, asset_score - 0.62) * 0.24
-            + max(0.0, profit_factor - 1.10) * 0.08
-            + max(0.0, avg_rr_realized - 0.10) * 0.06,
+            + max(0.0, asset_score - 0.64) * 0.18
+            + max(0.0, profit_factor - 1.12) * 0.06
+            + max(0.0, avg_rr_realized - 0.12) * 0.05,
         )
         thresholds["risk_multiplier"] += bonus
         thresholds["min_final_confidence"] -= min(0.012, 0.004 + bonus * 0.05)
         thresholds["target_rr_multiplier"] *= 1.0 + min(0.06, bonus * 0.28)
         thresholds["notes"].append("asset_edge_positive")
         profile["action"] = "boost"
-    elif asset_score <= 0.42 or profit_factor <= 0.92 or avg_rr_realized <= -0.08 or pnl_total < 0:
+    elif sample_count >= strong_sample_count and (
+        asset_score <= 0.38
+        or profit_factor <= 0.90
+        or avg_rr_realized <= -0.12
+        or (pnl_total < 0 and (profit_factor <= 0.96 or avg_rr_realized < 0.0))
+    ):
         penalty = min(
-            float(ASSET_EDGE_MAX_RISK_PENALTY or 0.20),
+            float(ASSET_EDGE_MAX_RISK_PENALTY or 0.20) * 0.65,
             0.03
-            + max(0.0, 0.42 - asset_score) * 0.28
-            + max(0.0, 0.92 - profit_factor) * 0.10
-            + max(0.0, -avg_rr_realized - 0.08) * 0.08,
+            + max(0.0, 0.38 - asset_score) * 0.20
+            + max(0.0, 0.90 - profit_factor) * 0.08
+            + max(0.0, -avg_rr_realized - 0.12) * 0.06,
         )
         thresholds["risk_multiplier"] -= penalty
         thresholds["min_final_confidence"] += min(0.015, 0.004 + penalty * 0.05)

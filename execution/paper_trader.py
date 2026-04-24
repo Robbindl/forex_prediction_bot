@@ -359,6 +359,7 @@ class PaperTrader:
             "requested_entry_price": entry,
             "metadata":           metadata,
         }
+        trade["management_checkpoint_at"] = trade["open_time"]
 
         with self._lock:
             self.open_positions[trade_id] = trade
@@ -858,7 +859,11 @@ class PaperTrader:
         if not self.on_position_updated:
             return
         try:
-            self.on_position_updated(dict(pos))
+            checkpoint_at = datetime.now(timezone.utc).isoformat()
+            pos["management_checkpoint_at"] = checkpoint_at
+            snapshot = dict(pos)
+            snapshot["management_checkpoint_at"] = checkpoint_at
+            self.on_position_updated(snapshot)
         except Exception as e:
             logger.error(f"[PaperTrader] on_position_updated error: {e}")
 
