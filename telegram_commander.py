@@ -4,7 +4,7 @@ import asyncio
 import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from telegram import (
@@ -26,7 +26,7 @@ from telegram.ext import (
     filters,
 )
 
-from config.config import ROBBIE_CHAT_TIMEOUT_SECONDS
+from config.config import ROBBIE_CHAT_TIMEOUT_SECONDS, ROBBIE_SCHEDULER_ENABLED, ROBBIE_SCHEDULER_POLL_SECONDS
 from core.assets import registry
 from services.live_position_pricing import resolve_live_position_snapshot
 from utils.display_time import (
@@ -121,7 +121,7 @@ def _main_menu_keyboard(summary: Optional[Dict[str, Any]] = None) -> InlineKeybo
         [("💰 Balance",   "balance"),  ("🎯 Signals",    "signals")],
         [("🎯 Asset Q&A",  "ask_asset_menu"), (diary_label, "diary")],
         [("😶 Mood",      "mood"),      ("📡 Market",    "market")],
-        [("🏠 Menu",      "menu"),      (run_label,      run_action)],
+        [("🧠 Chat",      "chat_menu"), (run_label,      run_action)],
     )
 
 def _back_button(dest: str = "menu") -> List:
@@ -227,6 +227,10 @@ def _bot_menu_commands() -> List[BotCommand]:
         BotCommand("status", "Show system status"),
         BotCommand("positions", "Show open positions"),
         BotCommand("balance", "Show account balance"),
+        BotCommand("chat", "Chat with Robbie"),
+        BotCommand("weekly", "Show the latest weekly summary"),
+        BotCommand("schedule", "Schedule reminders or updates"),
+        BotCommand("myschedules", "List scheduled reminders"),
         BotCommand("signal", "Review a signal for an asset"),
         BotCommand("why", "Explain the current signal for an asset"),
         BotCommand("history", "Show recent trade history"),
@@ -254,6 +258,7 @@ class TelegramCommander:
         self.is_running:    bool = False
         self._loop:         Optional[asyncio.AbstractEventLoop] = None
         self._thread:       Optional[threading.Thread] = None
+        self._schedule_thread: Optional[threading.Thread] = None
         # Rate limiter: (timestamp list)
         self._rl_times:     List[float] = []
         self._rl_lock       = threading.Lock()
@@ -286,6 +291,7 @@ class TelegramCommander:
                 time.sleep(0.1)
 
             logger.info("✅ TelegramCommander started")
+            self._start_schedule_worker()
             self.send_message(
                 "🤖 *Robbie is online*\n\nUse Menu or /menu to open the control panel.",
             )
@@ -365,6 +371,65 @@ class TelegramCommander:
         except Exception:
             pass
 
+    def _start_schedule_worker(self) -> None:
+        if not ROBBIE_SCHEDULER_ENABLED:
+            return
+        if self._schedule_thread and self._schedule_thread.is_alive():
+            return
+        self._schedule_thread = threading.Thread(
+            target=self._schedule_worker,
+            daemon=True,
+            name="telegram-scheduler",
+        )
+        self._schedule_thread.start()
+
+    def _schedule_worker(self) -> None:
+        sleep_seconds = max(5.0, float(ROBBIE_SCHEDULER_POLL_SECONDS or 15.0))
+        while self.is_running:
+            try:
+                self._dispatch_due_schedules_once()
+            except Exception as exc:
+                logger.debug(f"[Telegram] schedule worker error: {exc}")
+            time.sleep(sleep_seconds)
+
+    def _dispatch_due_schedules_once(self) -> None:
+        if not ROBBIE_SCHEDULER_ENABLED or not self.is_running:
+            return
+        try:
+            from services.robbie_schedule_service import get_schedule_service
+        except Exception as exc:
+            logger.debug(f"[Telegram] schedule service unavailable: {exc}")
+            return
+
+        for item in get_schedule_service().claim_due():
+            text = self._render_due_schedule_message(item)
+            if text:
+                self.send_message(text, chat_id=str(item.get("chat_id") or self.chat_id))
+
+    def _render_due_schedule_message(self, item: Dict[str, Any]) -> str:
+        kind = str(item.get("kind") or "reminder").strip().lower()
+        title = str(item.get("title") or "").strip()
+        if kind == "weekly_report":
+            header = f"📬 *{title or 'Weekly Report'}*\n\n"
+            return header + self._build_weekly_report()
+        if kind == "ai_update":
+            prompt = str(item.get("prompt") or item.get("message") or "").strip()
+            if not prompt:
+                prompt = "What is currently happening that affects trading right now?"
+            try:
+                from services.robbie_chat_service import get_chat_service
+
+                answer = get_chat_service().answer(
+                    question=prompt,
+                    trading_system=self.trading_system,
+                    chat_id=str(item.get("chat_id") or self.chat_id),
+                )
+            except Exception as exc:
+                answer = f"❌ Scheduled update failed: {exc}"
+            return f"⏰ *{title or 'Scheduled Update'}*\n\n{answer}" if title else answer
+        message = str(item.get("message") or "").strip() or "Scheduled reminder."
+        return f"⏰ *{title or 'Reminder'}*\n\n{message}"
+
     # ── Handler registration ──────────────────────────────────────────────────
 
     def _register_handlers(self) -> None:
@@ -378,6 +443,10 @@ class TelegramCommander:
         app.add_handler(CommandHandler("status",     self._cmd_status_direct))
         app.add_handler(CommandHandler("positions",  self._cmd_positions_direct))
         app.add_handler(CommandHandler("balance",    self._cmd_balance_direct))
+        app.add_handler(CommandHandler("weekly",     self._cmd_weekly_report))
+        app.add_handler(CommandHandler("schedule",   self._cmd_schedule_direct))
+        app.add_handler(CommandHandler("myschedules", self._cmd_my_schedules))
+        app.add_handler(CommandHandler("resetchat",  self._cmd_reset_chat))
         app.add_handler(CommandHandler("signal",     self._cmd_signal_direct))
         app.add_handler(CommandHandler("why",        self._cmd_why_direct))
         app.add_handler(CommandHandler("close",      self._cmd_close_direct))
@@ -403,6 +472,18 @@ class TelegramCommander:
             conversation_timeout=120,
         )
         app.add_handler(ask_conv)
+
+        chat_conv = ConversationHandler(
+            entry_points=[CommandHandler("chat", self._chat_entry)],
+            states={
+                WAITING_CHAT_MESSAGE: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self._chat_got_message)
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", self._chat_cancel), CommandHandler("resetchat", self._cmd_reset_chat)],
+            conversation_timeout=600,
+        )
+        app.add_handler(chat_conv)
 
         # All inline button presses
         app.add_handler(CallbackQueryHandler(self._on_button))
@@ -578,10 +659,10 @@ class TelegramCommander:
 
         return text
 
-    def _schedule_message_send(self, text: str, parse_mode: str, reply_markup):
+    def _schedule_message_send(self, text: str, parse_mode: str, reply_markup, *, chat_id: str = ""):
         async def _send():
             await self.application.bot.send_message(
-                chat_id=self.chat_id,
+                chat_id=str(chat_id or self.chat_id),
                 text=text,
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
@@ -599,9 +680,9 @@ class TelegramCommander:
         msg = str(error).lower()
         return "can't parse entities" in msg or "parse entities" in msg
 
-    def _send_plain_message(self, text: str, reply_markup) -> bool:
+    def _send_plain_message(self, text: str, reply_markup, *, chat_id: str = "") -> bool:
         try:
-            future = self._schedule_message_send(text, None, reply_markup)
+            future = self._schedule_message_send(text, None, reply_markup, chat_id=chat_id)
             future.result(timeout=15)
             return True
         except Exception as e:
@@ -615,13 +696,14 @@ class TelegramCommander:
         reply_markup,
         *,
         network_error: bool = False,
+        chat_id: str = "",
     ) -> bool:
         if self._is_shutdown_send_error(error):
             logger.debug(f"[Telegram] send skipped during shutdown: {error}")
             return False
         if self._is_parse_send_error(error):
             logger.warning(f"[Telegram] parse error: {error}. Retrying without markdown")
-            return self._send_plain_message(text, reply_markup)
+            return self._send_plain_message(text, reply_markup, chat_id=chat_id)
         if network_error:
             logger.warning(f"[Telegram] network error: {error}")
         else:
@@ -631,7 +713,7 @@ class TelegramCommander:
         return False
 
     def send_message(self, text: str, parse_mode: str = ParseMode.MARKDOWN,
-                     reply_markup=None) -> bool:
+                     reply_markup=None, *, chat_id: str = "") -> bool:
         if not str(text or "").strip():
             logger.debug("[Telegram] skipping empty message")
             return False
@@ -645,7 +727,7 @@ class TelegramCommander:
             text = self._sanitise_markdown(text)
 
         try:
-            future = self._schedule_message_send(text, parse_mode, reply_markup)
+            future = self._schedule_message_send(text, parse_mode, reply_markup, chat_id=chat_id)
             future.result(timeout=15)
             return True
         except FutureTimeoutError:
@@ -658,10 +740,10 @@ class TelegramCommander:
             wait = e.retry_after if isinstance(e.retry_after, (int, float)) else 30
             logger.warning(f"[Telegram] flood control — retry in {wait}s")
         except (TimedOut, NetworkError) as e:
-            if self._handle_send_message_error(e, text, reply_markup, network_error=True):
+            if self._handle_send_message_error(e, text, reply_markup, network_error=True, chat_id=chat_id):
                 return True
         except Exception as e:
-            if self._handle_send_message_error(e, text, reply_markup):
+            if self._handle_send_message_error(e, text, reply_markup, chat_id=chat_id):
                 return True
         return False
 
@@ -878,6 +960,40 @@ class TelegramCommander:
         text, kb = await self._build_balance()
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
+    async def _cmd_weekly_report(self, update, ctx):
+        await update.message.reply_text(
+            self._build_weekly_report(),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb([("🗓 Schedules", "chat_menu"), ("🏠 Menu", "menu")]),
+        )
+
+    async def _cmd_schedule_direct(self, update, ctx):
+        question = " ".join(ctx.args or []).strip()
+        if not question:
+            await update.message.reply_text(
+                "Usage examples:\n"
+                "`/schedule remind me in 2 hours to check gold`\n"
+                "`/schedule give me a gold update every day at 08:00`\n"
+                "`/schedule give me my weekly every Friday at 18:00`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        await update.message.chat.send_action("typing")
+        placeholder = await update.message.reply_text("⏳ *Scheduling...*", parse_mode=ParseMode.MARKDOWN)
+        text = await self._run_chat(question, chat_id=str(update.effective_chat.id))
+        await self._replace_placeholder_with_chunks(
+            placeholder,
+            text,
+            reply_markup=_chat_reply_keyboard(),
+        )
+
+    async def _cmd_my_schedules(self, update, ctx):
+        await update.message.reply_text(
+            self._build_schedule_list_text(str(update.effective_chat.id)),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_kb([("🧠 Chat shortcuts", "chat_menu"), ("🏠 Menu", "menu")]),
+        )
+
     async def _cmd_signal_direct(self, update, ctx):
         if ctx.args:
             raw   = " ".join(ctx.args).upper()
@@ -1031,6 +1147,9 @@ class TelegramCommander:
             "• `what have you learned recently?`\n"
             "• `what is currently happening that affects trading?`\n"
             "• `how should you adjust yourself right now?`\n"
+            "• `give me my weekly`\n"
+            "• `remind me in 2 hours to check gold`\n"
+            "• `give me a gold update every day at 08:00`\n"
             "• `what issues are you experiencing?`\n\n"
             "Send a message to start. Use the standalone DeepSeek bot for direct chat, or use `/resetchat`, `/cancel`, or the buttons below."
         )
@@ -1212,6 +1331,9 @@ class TelegramCommander:
             "balance": (self._btn_balance, ()),
             "signals": (self._btn_signals, ()),
             "ask_asset_menu": (self._btn_ask_asset_menu, ()),
+            "chat_menu": (self._btn_chat_menu, ()),
+            "chat_reset": (self._btn_chat_reset, ()),
+            "chat_cancel": (self._btn_chat_cancel, ()),
             "mood": (self._btn_mood, ()),
             "diary": (self._btn_diary, ()),
             "market": (self._btn_market, ()),
@@ -1239,6 +1361,7 @@ class TelegramCommander:
             ("askcat:", self._btn_ask_category, 7),
             ("askasset:", self._btn_ask_asset, 9),
             ("askq:", self._btn_ask_question, 5),
+            ("chatq:", self._btn_chat_prompt, 6),
             ("history_filter:", self._btn_history, 15),
             ("close_cat:", self._btn_close_category, 10),
         )
@@ -1431,6 +1554,13 @@ class TelegramCommander:
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=kb,
                 )
+
+    async def _btn_chat_menu(self, query) -> None:
+        await self._edit_query_text_or_reply(
+            query,
+            self._chat_intro_text(),
+            reply_markup=_chat_shortcuts_keyboard(),
+        )
 
     async def _btn_chat_prompt(self, query, prompt_key: str) -> None:
         prompt = _CHAT_QUICK_PROMPTS.get(prompt_key, "What is happening right now?")
@@ -2896,6 +3026,91 @@ class TelegramCommander:
                 f"Couldn't get full explanation: {e}\n"
                 f"Try `/ask {asset} explain`."
             )
+
+    def _build_schedule_list_text(self, chat_id: str) -> str:
+        if not ROBBIE_SCHEDULER_ENABLED:
+            return "Scheduling is disabled in this runtime."
+        try:
+            from services.robbie_schedule_service import get_schedule_service
+
+            rows = get_schedule_service().list_chat_schedules(chat_id)
+        except Exception as exc:
+            return f"❌ Could not load schedules: {exc}"
+        if not rows:
+            return (
+                "🗓 *Scheduled Updates*\n\n"
+                "No reminders or recurring updates are queued for this chat yet.\n\n"
+                "Try `/schedule give me my weekly every Friday at 18:00`."
+            )
+
+        lines = ["🗓 *Scheduled Updates*\n"]
+        for item in rows[:8]:
+            title = str(item.get("title") or item.get("kind") or "schedule")
+            kind = str(item.get("kind") or "schedule").replace("_", " ")
+            next_run = format_display_datetime(item.get("next_run_at"), "%Y-%m-%d %H:%M", default="—")
+            lines.append(f"• *{title}* — {kind}\n  Next: {next_run}")
+        return "\n".join(lines)
+
+    def _build_weekly_report(self) -> str:
+        try:
+            from services.personality_service import PersonalityDatabase
+
+            db = PersonalityDatabase()
+            report = db.get_personality_report()
+            db.close()
+        except Exception:
+            report = {"stats": {}}
+
+        stats = report.get("stats") if isinstance(report.get("stats"), dict) else {}
+        closed_trades: List[Dict[str, Any]] = []
+        core = self.trading_system
+        if core is not None:
+            try:
+                closed_trades = list(core.get_closed_trades(limit=200) or [])
+            except Exception:
+                closed_trades = []
+
+        cutoff = now_in_display_timezone() - timedelta(days=7)
+        weekly_rows: List[Dict[str, Any]] = []
+        for trade in closed_trades:
+            trade_dt = to_display_datetime(trade.get("exit_time") or trade.get("entry_time"))
+            if trade_dt is None or trade_dt < cutoff:
+                continue
+            weekly_rows.append(trade)
+
+        pnl_total = sum(float(item.get("pnl", 0.0) or 0.0) for item in weekly_rows)
+        wins = sum(1 for item in weekly_rows if float(item.get("pnl", 0.0) or 0.0) > 0)
+        losses = sum(1 for item in weekly_rows if float(item.get("pnl", 0.0) or 0.0) < 0)
+        gross_profit = sum(float(item.get("pnl", 0.0) or 0.0) for item in weekly_rows if float(item.get("pnl", 0.0) or 0.0) > 0)
+        gross_loss = sum(float(item.get("pnl", 0.0) or 0.0) for item in weekly_rows if float(item.get("pnl", 0.0) or 0.0) < 0)
+        avg_win = gross_profit / wins if wins else 0.0
+        avg_loss = abs(gross_loss) / losses if losses else 0.0
+
+        asset_totals: Dict[str, float] = {}
+        for item in weekly_rows:
+            asset = str(item.get("asset") or "").strip()
+            if not asset:
+                continue
+            asset_totals[asset] = asset_totals.get(asset, 0.0) + float(item.get("pnl", 0.0) or 0.0)
+        best_asset = max(asset_totals.items(), key=lambda kv: kv[1]) if asset_totals else None
+        worst_asset = min(asset_totals.items(), key=lambda kv: kv[1]) if asset_totals else None
+
+        lines = [
+            f"Period: last 7 days through {now_in_display_timezone():%Y-%m-%d %H:%M} {display_timezone_label()}",
+            f"Net P&L: ${pnl_total:+.2f}",
+            f"Trades: {len(weekly_rows)}",
+            f"Win Rate: {float(stats.get('weekly_win_rate', 0.0) or 0.0):.0f}%",
+        ]
+        if weekly_rows:
+            lines.append(f"Avg Win: ${avg_win:+.2f}")
+            lines.append(f"Avg Loss: -${avg_loss:.2f}")
+        if best_asset:
+            lines.append(f"Best Asset: {best_asset[0]} ${best_asset[1]:+.2f}")
+        if worst_asset and worst_asset != best_asset:
+            lines.append(f"Worst Asset: {worst_asset[0]} ${worst_asset[1]:+.2f}")
+        if pnl_total <= 0 and weekly_rows:
+            lines.append("Read: not reliable enough yet; the book spent too much time underwater for too little net gain.")
+        return "📬 *Weekly Report*\n\n" + "\n".join(lines)
 
     def _build_mood(self) -> str:
         try:

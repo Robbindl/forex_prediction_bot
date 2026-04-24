@@ -171,6 +171,7 @@ class PositionSizer:
         category: str = "forex",
         confidence: float = 0.7,
         asset: str = "",
+        risk_multiplier: float = 1.0,
     ) -> float:
         """
         Returns position size in base asset units (coins/oz/contracts).
@@ -198,11 +199,12 @@ class PositionSizer:
 
         # Scale lot size proportionally to account balance first, then cap it
         # by actual stop-risk so the final lots stay MT5-like and sane.
+        risk_scale = max(0.50, min(1.50, float(risk_multiplier or 1.0)))
         balance_factor    = max(0.0001, self.account_balance / REFERENCE_BALANCE)
-        scaled_base_lots  = base_lots * balance_factor
+        scaled_base_lots  = base_lots * balance_factor * risk_scale
         target_lots       = _confidence_lots(scaled_base_lots, confidence)
 
-        risk_budget_usd = max(0.0, self.account_balance * _risk_budget_fraction(category))
+        risk_budget_usd = max(0.0, self.account_balance * _risk_budget_fraction(category) * risk_scale)
         sl_pips = 0.0
         risk_per_lot = 0.0
         if entry_price and stop_loss:
@@ -232,7 +234,7 @@ class PositionSizer:
             else:
                 logger.debug(
                     f"[PositionSizer] {asset} bal=${self.account_balance:.2f} "
-                    f"target_lots={target_lots:.4f} below min lot {min_lot:.2f}; size=0"
+                    f"riskx={risk_scale:.2f} target_lots={target_lots:.4f} below min lot {min_lot:.2f}; size=0"
                 )
                 return 0.0
         else:
@@ -247,7 +249,7 @@ class PositionSizer:
             tp_usd   = tp_pips * pip_val * effective_lots
             logger.debug(
                 f"[PositionSizer] {asset} bal=${self.account_balance:.2f} "
-                f"factor={balance_factor:.4f} conf={confidence:.3f} → "
+                f"factor={balance_factor:.4f} riskx={risk_scale:.2f} conf={confidence:.3f} → "
                 f"display={lots:.4f} eff={effective_lots:.4f} lots ({size:.4f} units) | "
                 f"SL={sl_pips:.0f} pips risk=${risk_usd:.2f} | TP≈${tp_usd:.2f}"
             )

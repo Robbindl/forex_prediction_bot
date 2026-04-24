@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -79,12 +80,12 @@ class _FakeCore:
         ])[:limit])
 
 
-def _service(tmp_path: Path) -> RobbieChatService:
+def _service(tmp_path: Path, *, report: Dict[str, Any] | None = None) -> RobbieChatService:
     store = ChatSessionStore(path=tmp_path / "chat_sessions.json")
     return RobbieChatService(
         session_store=store,
         explainer_factory=_FakeExplainer,
-        report_provider=lambda: {"current_mood": "neutral", "status": "ready"},
+        report_provider=lambda: report or {"current_mood": "neutral", "status": "ready", "stats": {}},
     )
 
 
@@ -291,6 +292,110 @@ def test_robbie_chat_reports_next_holiday(tmp_path: Path, monkeypatch) -> None:
 
     assert "Memorial Day" in reply
     assert "2026-05-25" in reply
+
+
+def test_robbie_chat_calendar_response_uses_internal_calendar_snapshot(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "now_in_display_timezone",
+        lambda: datetime(2026, 4, 24, 16, 45, tzinfo=timezone(timedelta(hours=3))),
+    )
+    monkeypatch.setattr(
+        robbie_chat_module.MarketCalendar,
+        "get_high_impact_events",
+        lambda self, days=3: [
+            {
+                "date": "2026-04-24 15:30",
+                "event": "US CPI",
+                "impact": "HIGH",
+                "currency": "USD",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        robbie_chat_module.MarketCalendar,
+        "should_reduce_risk",
+        lambda self: {"risk_multiplier": 0.7, "reduce_trading": True},
+    )
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "_next_us_exchange_holiday",
+        lambda now=None: {"next_holiday": "Memorial Day", "next_holiday_date": "2026-05-25", "days_until": 31, "is_today": False},
+    )
+
+    service = _service(tmp_path)
+    reply = service.answer(
+        question="do you have an internal calendar?",
+        trading_system=_FakeCore(),
+        chat_id="chat-cal",
+    )
+
+    assert "internal market-calendar snapshot" in reply
+    assert "Friday, April 24, 2026 16:45 EAT" in reply
+    assert "US CPI" in reply
+    assert "Memorial Day" in reply
+
+
+def test_robbie_chat_weekly_response_uses_live_weekly_stats(tmp_path: Path, monkeypatch) -> None:
+    fixed_now = datetime(2026, 4, 24, 16, 45, tzinfo=timezone(timedelta(hours=3)))
+    monkeypatch.setattr(robbie_chat_module, "now_in_display_timezone", lambda: fixed_now)
+    monkeypatch.setattr(robbie_chat_module, "_utc_now", lambda: fixed_now.astimezone(timezone.utc))
+    service = _service(
+        tmp_path,
+        report={
+            "current_mood": "neutral",
+            "status": "ready",
+            "stats": {"weekly_trades": 4, "weekly_win_rate": 50.0},
+        },
+    )
+    core = _FakeCore(
+        closed_trades=[
+            {"asset": "XAU/USD", "pnl": 120.0, "exit_time": "2026-04-23T12:00:00+00:00"},
+            {"asset": "WTI", "pnl": -80.0, "exit_time": "2026-04-22T12:00:00+00:00"},
+            {"asset": "US500", "pnl": 45.0, "exit_time": "2026-04-21T12:00:00+00:00"},
+        ],
+    )
+
+    reply = service.answer(
+        question="give me my weekly",
+        trading_system=core,
+        chat_id="chat-weekly",
+    )
+
+    assert "Weekly snapshot" in reply
+    assert "$+85.00" in reply
+    assert "50.0%" in reply
+    assert "Best asset this week: XAU/USD" in reply
+
+
+def test_robbie_chat_schedule_response_creates_weekly_report(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {}
+    schedule_mod = __import__("services.robbie_schedule_service", fromlist=["get_schedule_service"])
+
+    class _FakeScheduleService:
+        def schedule_weekly_report(self, **kwargs):
+            captured.update(kwargs)
+            return {"next_run_at": "2026-04-24T15:00:00+00:00"}
+
+    monkeypatch.setattr(
+        schedule_mod,
+        "get_schedule_service",
+        lambda: _FakeScheduleService(),
+        raising=False,
+    )
+
+    service = _service(tmp_path)
+    reply = service.answer(
+        question="give me my weekly every friday at 6pm",
+        trading_system=_FakeCore(),
+        chat_id="chat-schedule",
+    )
+
+    assert captured["chat_id"] == "chat-schedule"
+    assert captured["weekday"] == 4
+    assert captured["hour"] == 18
+    assert "Weekly report scheduled" in reply
+    assert "every Friday at 18:00 EAT" in reply
 
 
 def test_robbie_chat_gives_scenario_forecast_for_bitcoin(tmp_path: Path, monkeypatch) -> None:

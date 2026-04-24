@@ -1941,6 +1941,7 @@ class SignalDecisionEngine:
                 category=signal.category,
                 confidence=sizing_confidence,
                 asset=signal.asset,
+                risk_multiplier=adaptive_risk_multiplier,
             )
             signal.position_size = size
             signal.risk_parameters["position_size"] = size

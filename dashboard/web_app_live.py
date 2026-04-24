@@ -6601,6 +6601,23 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
         "state": "running" if bool(getattr(telegram_manager, "is_running", False)) else "stopped",
         "meta": "command bot",
     }
+    try:
+        from config.config import ROBBIE_SCHEDULER_ENABLED
+        from services.robbie_schedule_service import get_schedule_service
+
+        scheduler_status = get_schedule_service().status() if ROBBIE_SCHEDULER_ENABLED else {}
+        next_run = str(scheduler_status.get("next_run_display") or "").strip()
+        schedule_count = int(scheduler_status.get("count", 0) or 0)
+        meta = f"{schedule_count} schedule(s)"
+        if next_run:
+            meta += f" · next {next_run}"
+        services["robbie_scheduler"] = {
+            "ok": bool(ROBBIE_SCHEDULER_ENABLED),
+            "state": "active" if ROBBIE_SCHEDULER_ENABLED else "disabled",
+            "meta": meta,
+        }
+    except Exception:
+        services["robbie_scheduler"] = {"ok": False, "state": "error", "meta": "scheduler unavailable"}
     services["monitoring_service"] = {
         "ok": True,
         "state": "active",

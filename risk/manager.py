@@ -146,11 +146,17 @@ class RiskManager:
         category:    str   = "forex",
         confidence:  float = 0.7,
         asset:       str   = "",  # Added for pip value calculation
+        risk_multiplier: float = 1.0,
     ) -> float:
         """Calculate position size with asset-aware pip values."""
         with self._lock:
             return self._sizer.calculate(
-                entry_price, stop_loss, category, confidence, asset
+                entry_price,
+                stop_loss,
+                category,
+                confidence,
+                asset,
+                risk_multiplier=risk_multiplier,
             )
 
     def validate_signal(

@@ -2297,6 +2297,14 @@ class TradingCore:
     def _build_executable_signal_payload(self, signal: Signal) -> Dict[str, Any]:
         signal_dict = signal.to_dict()
         if self._risk_manager and float(signal_dict.get("position_size", 0) or 0) <= 0:
+            metadata = signal_dict.get("metadata") if isinstance(signal_dict.get("metadata"), dict) else {}
+            adaptive_policy = metadata.get("adaptive_policy") if isinstance(metadata.get("adaptive_policy"), dict) else {}
+            risk_parameters = signal_dict.get("risk_parameters") if isinstance(signal_dict.get("risk_parameters"), dict) else {}
+            adaptive_risk_multiplier = float(
+                adaptive_policy.get("risk_multiplier")
+                or risk_parameters.get("adaptive_risk_multiplier")
+                or 1.0
+            )
             try:
                 signal_dict["position_size"] = self._risk_manager.calculate_position_size(
                     entry_price=float(signal_dict.get("entry_price", 0) or 0),
@@ -2304,6 +2312,7 @@ class TradingCore:
                     category=signal.category,
                     confidence=signal.confidence,
                     asset=signal.asset,
+                    risk_multiplier=adaptive_risk_multiplier,
                 )
             except Exception as _size_err:
                 logger.debug(f"[TradingCore] Position sizing error for {signal.asset}: {_size_err}")

@@ -31,6 +31,9 @@ from config.config import (
     ROBBIE_CHAT_PROVIDER,
     ROBBIE_CHAT_TEMPERATURE,
     ROBBIE_CHAT_TIMEOUT_SECONDS,
+    ROBBIE_DEFAULT_WEEKLY_REPORT_TIME,
+    ROBBIE_DEFAULT_WEEKLY_REPORT_WEEKDAY,
+    ROBBIE_SCHEDULER_ENABLED,
     TOP_OPPORTUNITIES_LIMIT,
 )
 from core.asset_profiles import get_profile
@@ -39,7 +42,7 @@ from core.state import rollup_closed_trade_history
 from market_calendar import MarketCalendar
 from services.market_hours_guard import build_market_status
 from services.personality_service import RobbieExplainer, personality
-from utils.display_time import display_timezone_label, now_in_display_timezone, to_display_datetime
+from utils.display_time import display_timezone_label, format_display_datetime, now_in_display_timezone, to_display_datetime
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -48,8 +51,18 @@ _SESSION_FILE = Path("data/robbie_chat_sessions.json")
 _SESSION_FILE.parent.mkdir(exist_ok=True)
 _MAX_HISTORY_MESSAGES = max(2, int(ROBBIE_CHAT_HISTORY_LIMIT or 6)) * 2
 _ASSET_ALIAS_PATTERNS: List[Tuple[re.Pattern[str], str]] = []
-_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why"}
-_WORLD_KNOWLEDGE_INTENTS = {"general", "macro", "forecast", "market", "trade_why", "stop_loss", "learning", "adjustment"}
+_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why", "calendar", "weekly", "schedule"}
+_WORLD_KNOWLEDGE_INTENTS = {"general", "macro", "forecast", "market", "trade_why", "stop_loss", "learning", "adjustment", "calendar", "weekly"}
+_WEEKDAY_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+_RELATIVE_SCHEDULE_RE = re.compile(r"\bin\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?)\b", re.IGNORECASE)
 
 
 def _build_asset_alias_patterns() -> List[Tuple[re.Pattern[str], str]]:
@@ -262,6 +275,73 @@ def _extract_horizon(question: str) -> str:
     return "the horizon you asked about"
 
 
+def _default_weekly_report_clock() -> tuple[int, int]:
+    raw = str(ROBBIE_DEFAULT_WEEKLY_REPORT_TIME or "18:00").strip()
+    try:
+        hour_text, minute_text = raw.split(":", 1)
+        return max(0, min(23, int(hour_text))), max(0, min(59, int(minute_text)))
+    except Exception:
+        return 18, 0
+
+
+def _default_weekly_report_weekday() -> int:
+    return int(_WEEKDAY_INDEX.get(str(ROBBIE_DEFAULT_WEEKLY_REPORT_WEEKDAY or "friday").strip().lower(), 4))
+
+
+def _extract_weekday(question: str, *, default: Optional[int] = None) -> Optional[int]:
+    q = str(question or "").lower()
+    for name, index in _WEEKDAY_INDEX.items():
+        if name in q:
+            return int(index)
+    return default
+
+
+def _extract_clock_time(question: str, *, default_hour: int, default_minute: int) -> tuple[int, int, bool]:
+    q = str(question or "")
+    match = re.search(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", q, re.IGNORECASE)
+    if match is None:
+        match = re.search(r"\b(\d{1,2}):(\d{2})\s*(am|pm)?\b", q, re.IGNORECASE)
+    if match is None:
+        return default_hour, default_minute, False
+
+    hour = max(0, min(23, int(match.group(1) or 0)))
+    minute = max(0, min(59, int(match.group(2) or 0)))
+    meridiem = str(match.group(3) or "").strip().lower()
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    return hour, minute, True
+
+
+def _relative_schedule_time(question: str) -> Optional[datetime]:
+    match = _RELATIVE_SCHEDULE_RE.search(str(question or ""))
+    if match is None:
+        return None
+    amount = max(1, int(match.group(1) or 1))
+    unit = str(match.group(2) or "").lower()
+    delta = timedelta(minutes=amount)
+    if unit.startswith("hour") or unit.startswith("hr"):
+        delta = timedelta(hours=amount)
+    elif unit.startswith("day"):
+        delta = timedelta(days=amount)
+    return _display_now() + delta
+
+
+def _relative_schedule_message(question: str) -> str:
+    text = str(question or "").strip()
+    match = _RELATIVE_SCHEDULE_RE.search(text)
+    if match is None:
+        return ""
+    tail = text[match.end() :].strip(" .")
+    lower_tail = tail.lower()
+    for prefix in ("to ", "about ", "for "):
+        if lower_tail.startswith(prefix):
+            tail = tail[len(prefix):].strip()
+            break
+    return tail
+
+
 def _news_terms_for_asset(asset: str, category: str) -> List[str]:
     canonical = registry.canonical(str(asset or "").strip()).upper()
     terms = {canonical, canonical.replace("/", "").replace("-", "")}
@@ -403,7 +483,7 @@ class RobbieChatService:
         focus_asset = _resolve_asset_from_text(question, asset_hint or session.get("last_asset", ""))
         runtime = self._build_runtime_context(trading_system, focus_asset)
         intent = self._classify_intent(question)
-        deterministic = self._answer_deterministic(question, runtime, session, intent=intent)
+        deterministic = self._answer_deterministic(question, runtime, session, intent=intent, chat_id=chat_id)
         response = self._answer_with_optional_deepseek(question, runtime, session, deterministic, intent)
         self._sessions.append_turn(
             chat_id,
@@ -1158,6 +1238,13 @@ class RobbieChatService:
 
     def _classify_intent(self, question: str) -> str:
         q = str(question or "").lower()
+        weekday_schedule = any(f"every {name}" in q or f"each {name}" in q for name in _WEEKDAY_INDEX)
+        if weekday_schedule or any(token in q for token in ("remind me", "set a reminder", "schedule", "daily at", "weekly at", "every day", "every week")):
+            return "schedule"
+        if any(token in q for token in ("my weekly", "weekly report", "weekly summary", "weekly update", "how did i do this week", "this week summary")):
+            return "weekly"
+        if any(token in q for token in ("calendar", "calender", "what day is it", "what date is it", "today's date", "todays date", "next holiday", "next bank holiday", "economic events", "what events are coming")):
+            return "calendar"
         if any(token in q for token in ("issue", "problem", "error", "health", "wrong", "degraded", "failing")):
             return "issues"
         if any(token in q for token in ("learned", "learnt", "learning", "lesson", "improve", "improved")):
@@ -1185,12 +1272,19 @@ class RobbieChatService:
         session: Dict[str, Any],
         *,
         intent: Optional[str] = None,
+        chat_id: str = "",
     ) -> str:
         intent = str(intent or self._classify_intent(question) or "general")
         focus_asset = str(runtime.get("focus_asset") or "")
         focus_analysis = runtime.get("focus_analysis") if isinstance(runtime.get("focus_analysis"), dict) else {}
         focus_signal = runtime.get("focus_signal") if isinstance(runtime.get("focus_signal"), dict) else {}
 
+        if intent == "schedule":
+            return self._schedule_response(question, runtime, chat_id=chat_id)
+        if intent == "calendar":
+            return self._calendar_response(runtime, chat_id=chat_id)
+        if intent == "weekly":
+            return self._weekly_response(runtime)
         if intent == "issues":
             return self._issues_response(runtime)
         if intent == "learning":
@@ -1503,6 +1597,203 @@ class RobbieChatService:
                 ).strip()
         return self._market_response(runtime, focus_asset)
 
+    def _calendar_response(self, runtime: Dict[str, Any], *, chat_id: str = "") -> str:
+        market_snapshot = runtime.get("market_snapshot") if isinstance(runtime.get("market_snapshot"), dict) else {}
+        risk = market_snapshot.get("risk_outlook") if isinstance(market_snapshot.get("risk_outlook"), dict) else {}
+        holiday = market_snapshot.get("exchange_holiday") if isinstance(market_snapshot.get("exchange_holiday"), dict) else {}
+        display_now = _display_now()
+        lines = [
+            "Yes. I do have an internal market-calendar snapshot and the bot's display clock.",
+            f"Right now it is {display_now.strftime(f'%A, %B %d, %Y %H:%M {display_timezone_label()}')}.",
+        ]
+
+        relevant_events = self._relevant_market_events(
+            market_snapshot,
+            focus_asset=str(runtime.get("focus_asset") or ""),
+            category=str(market_snapshot.get("focus_category") or ""),
+            limit=3,
+        )
+        if relevant_events:
+            lines.append("Nearest scheduled risk:")
+            for item in relevant_events[:2]:
+                lines.append(f"• {self._format_event_brief(item)}")
+        else:
+            lines.append("I do not see a high-impact calendar event in the current snapshot yet.")
+
+        if str(holiday.get("next_holiday") or "").strip():
+            lines.append(
+                f"Next US holiday on the snapshot is {holiday.get('next_holiday')} on {holiday.get('next_holiday_date')}."
+            )
+        if bool(risk.get("reduce_trading")):
+            lines.append(
+                f"Risk mode is already reduced at {float(risk.get('risk_multiplier', 1.0) or 1.0):.2f} because the current calendar is not clean."
+            )
+
+        if chat_id:
+            try:
+                from services.robbie_schedule_service import get_schedule_service
+
+                scheduled = get_schedule_service().list_chat_schedules(chat_id)
+            except Exception:
+                scheduled = []
+            if scheduled:
+                next_run = str((scheduled[0] or {}).get("next_run_at") or "").strip()
+                next_run_text = format_display_datetime(next_run, "%Y-%m-%d %H:%M", default="") if next_run else ""
+                suffix = f"; next run is {next_run_text}" if next_run_text else ""
+                lines.append(f"You also have {len(scheduled)} scheduled update(s) in this chat{suffix}.")
+        lines.append("I can also schedule reminders, recurring market updates, and weekly reports from this chat.")
+        return "\n".join(lines)
+
+    def _weekly_response(self, runtime: Dict[str, Any]) -> str:
+        report = runtime.get("report") if isinstance(runtime.get("report"), dict) else {}
+        stats = report.get("stats") if isinstance(report.get("stats"), dict) else {}
+        closed_trades = list(runtime.get("closed_trades") or [])
+        cutoff = _utc_now() - timedelta(days=7)
+        week_rows: List[Dict[str, Any]] = []
+        for trade in closed_trades:
+            trade_dt = to_display_datetime(trade.get("exit_time") or trade.get("entry_time"))
+            if trade_dt is None or trade_dt.astimezone(timezone.utc) < cutoff:
+                continue
+            week_rows.append(trade)
+
+        pnl_total = sum(_coerce_float(item.get("pnl"), 0.0) for item in week_rows)
+        wins = sum(1 for item in week_rows if _coerce_float(item.get("pnl"), 0.0) > 0)
+        losses = sum(1 for item in week_rows if _coerce_float(item.get("pnl"), 0.0) < 0)
+        gross_profit = sum(_coerce_float(item.get("pnl"), 0.0) for item in week_rows if _coerce_float(item.get("pnl"), 0.0) > 0)
+        gross_loss = sum(_coerce_float(item.get("pnl"), 0.0) for item in week_rows if _coerce_float(item.get("pnl"), 0.0) < 0)
+        avg_win = gross_profit / wins if wins else 0.0
+        avg_loss = abs(gross_loss) / losses if losses else 0.0
+
+        asset_totals: Dict[str, float] = {}
+        for item in week_rows:
+            asset = str(item.get("asset") or "").strip()
+            if not asset:
+                continue
+            asset_totals[asset] = asset_totals.get(asset, 0.0) + _coerce_float(item.get("pnl"), 0.0)
+        best_asset = max(asset_totals.items(), key=lambda kv: kv[1]) if asset_totals else None
+        worst_asset = min(asset_totals.items(), key=lambda kv: kv[1]) if asset_totals else None
+
+        lines = [
+            f"Weekly snapshot through {_display_now().strftime(f'%A, %B %d, %Y %H:%M {display_timezone_label()}')}.",
+            f"Net P&L is ${pnl_total:+.2f} from {len(week_rows)} closed trade(s) over the last 7 days.",
+            f"Recorded weekly win rate is {float(stats.get('weekly_win_rate', 0.0) or 0.0):.1f}% across {int(stats.get('weekly_trades', len(week_rows)) or len(week_rows))} trade(s).",
+        ]
+        if week_rows:
+            lines.append(f"Average winner is ${avg_win:+.2f} and average loser is -${avg_loss:.2f}.")
+        if best_asset:
+            lines.append(f"Best asset this week: {best_asset[0]} at ${best_asset[1]:+.2f}.")
+        if worst_asset and worst_asset != best_asset:
+            lines.append(f"Worst asset this week: {worst_asset[0]} at ${worst_asset[1]:+.2f}.")
+        if pnl_total <= 0 and week_rows:
+            lines.append("That is not strong enough. The current mix is still spending too much time underwater for too little net gain.")
+        return "\n".join(lines)
+
+    def _schedule_response(self, question: str, runtime: Dict[str, Any], *, chat_id: str) -> str:
+        if not ROBBIE_SCHEDULER_ENABLED:
+            return "Scheduling is disabled in this runtime, so I can answer calendar and weekly questions but I cannot queue reminders yet."
+        if not chat_id:
+            return "I need a Telegram chat context to schedule reminders or weekly reports."
+
+        try:
+            from services.robbie_schedule_service import get_schedule_service
+        except Exception as exc:
+            return f"Scheduling backend is unavailable right now: {exc}"
+
+        service = get_schedule_service()
+        q = str(question or "").strip()
+        lower = q.lower()
+        default_weekday = _default_weekly_report_weekday()
+        default_hour, default_minute = _default_weekly_report_clock()
+
+        weekly_request = "weekly" in lower and any(token in lower for token in ("report", "summary", "update", "my weekly"))
+        if weekly_request:
+            weekday = _extract_weekday(lower, default=default_weekday) or default_weekday
+            hour, minute, _ = _extract_clock_time(q, default_hour=default_hour, default_minute=default_minute)
+            item = service.schedule_weekly_report(chat_id=chat_id, weekday=weekday, hour=hour, minute=minute)
+            return (
+                f"Weekly report scheduled.\n"
+                f"Next run: {format_display_datetime(item.get('next_run_at'), '%Y-%m-%d %H:%M', default='')}\n"
+                f"Cadence: every {list(_WEEKDAY_INDEX.keys())[weekday].capitalize()} at {hour:02d}:{minute:02d} {display_timezone_label()}."
+            )
+
+        relative_when = _relative_schedule_time(q)
+        is_update = any(token in lower for token in ("update", "brief", "check in", "check-in"))
+        if relative_when is not None:
+            if is_update:
+                asset = str(runtime.get("focus_asset") or "")
+                prompt = (
+                    f"What is happening with {asset} right now, and what does the bot think of it?"
+                    if asset
+                    else "What is currently happening that affects trading right now?"
+                )
+                title = f"{asset or 'Market'} update"
+                item = service.schedule_ai_update(
+                    chat_id=chat_id,
+                    prompt=prompt,
+                    title=title,
+                    next_run_at=relative_when,
+                    recurrence={"kind": "once"},
+                )
+                return f"{title} scheduled for {format_display_datetime(item.get('next_run_at'), '%Y-%m-%d %H:%M', default='')}."
+            reminder_text = _relative_schedule_message(q) or "Scheduled reminder."
+            item = service.schedule_reminder(chat_id=chat_id, message=reminder_text, run_at=relative_when)
+            return f"Reminder scheduled for {format_display_datetime(item.get('next_run_at'), '%Y-%m-%d %H:%M', default='')}.\nMessage: {reminder_text}"
+
+        daily_request = any(token in lower for token in ("every day", "daily"))
+        weekly_update_request = is_update and (daily_request or "weekly" in lower or _extract_weekday(lower) is not None)
+        if weekly_update_request:
+            asset = str(runtime.get("focus_asset") or _resolve_asset_from_text(q, "") or "")
+            title = f"{asset or 'Market'} update"
+            prompt = (
+                f"What is happening with {asset} right now, and what does the bot think of it?"
+                if asset
+                else "What is currently happening that affects trading right now?"
+            )
+            if daily_request:
+                hour, minute, _ = _extract_clock_time(q, default_hour=8, default_minute=0)
+                next_run = _display_now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if next_run <= _display_now():
+                    next_run += timedelta(days=1)
+                item = service.schedule_ai_update(
+                    chat_id=chat_id,
+                    prompt=prompt,
+                    title=title,
+                    next_run_at=next_run,
+                    recurrence={"kind": "daily", "hour": hour, "minute": minute},
+                )
+                return (
+                    f"{title} scheduled.\n"
+                    f"Next run: {format_display_datetime(item.get('next_run_at'), '%Y-%m-%d %H:%M', default='')}\n"
+                    f"Cadence: daily at {hour:02d}:{minute:02d} {display_timezone_label()}."
+                )
+            weekday = _extract_weekday(lower, default=default_weekday) or default_weekday
+            hour, minute, _ = _extract_clock_time(q, default_hour=default_hour, default_minute=default_minute)
+            next_run = _display_now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+            days_ahead = (weekday - next_run.weekday()) % 7
+            next_run = next_run + timedelta(days=days_ahead or 0)
+            if next_run <= _display_now():
+                next_run += timedelta(days=7)
+            item = service.schedule_ai_update(
+                chat_id=chat_id,
+                prompt=prompt,
+                title=title,
+                next_run_at=next_run,
+                recurrence={"kind": "weekly", "weekday": weekday, "hour": hour, "minute": minute},
+            )
+            return (
+                f"{title} scheduled.\n"
+                f"Next run: {format_display_datetime(item.get('next_run_at'), '%Y-%m-%d %H:%M', default='')}\n"
+                f"Cadence: every {list(_WEEKDAY_INDEX.keys())[weekday].capitalize()} at {hour:02d}:{minute:02d} {display_timezone_label()}."
+            )
+
+        return (
+            "I can schedule reminders and recurring updates from this chat.\n"
+            "Try:\n"
+            "• remind me in 2 hours to check gold\n"
+            "• give me a gold update every day at 08:00\n"
+            "• give me my weekly every Friday at 18:00"
+        )
+
     @staticmethod
     def _general_response(runtime: Dict[str, Any]) -> str:
         report = runtime.get("report") if isinstance(runtime.get("report"), dict) else {}
@@ -1533,7 +1824,7 @@ class RobbieChatService:
         headlines = list(news_snapshot.get("articles") or [])[:2]
         if headlines:
             lines.append("Recent headlines: " + " | ".join(f"{str(item.get('title') or '')} [{str(item.get('source') or '')}]" for item in headlines))
-        lines.append("Ask me about issues, learning, CPI/FOMC, holidays, current market conditions, a specific asset, or why a stop loss happened.")
+        lines.append("Ask me about issues, learning, CPI/FOMC, holidays, current market conditions, a specific asset, weekly performance, or tell me to schedule reminders and updates.")
         return "\n".join(lines)
 
     @staticmethod
@@ -1628,6 +1919,8 @@ class RobbieChatService:
         deterministic: str,
         intent: str,
     ) -> str:
+        if intent in {"calendar", "weekly", "schedule"}:
+            return deterministic
         provider = str(ROBBIE_CHAT_PROVIDER or "auto").strip().lower()
         if provider not in {"auto", "deepseek"}:
             return deterministic

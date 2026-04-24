@@ -219,7 +219,32 @@ def test_position_sizer_uses_gold_base_of_point_one_lot_at_ten_thousand(monkeypa
     )
 
     assert size == 10.0
-    assert PositionSizer.lots_from_size("XAU/USD", "commodities", size) == 0.1
+
+
+def test_position_sizer_risk_multiplier_scales_lot_budget(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "COMMODITIES_RISK_PER_TRADE", 2.0, raising=False)
+    monkeypatch.setattr(cfg, "MAX_RISK_PER_TRADE", 3.0, raising=False)
+
+    sizer = PositionSizer(10_000.0)
+    base = sizer.calculate(
+        entry_price=4000.0,
+        stop_loss=3980.0,
+        category="commodities",
+        confidence=0.70,
+        asset="XAU/USD",
+        risk_multiplier=1.0,
+    )
+    boosted = sizer.calculate(
+        entry_price=4000.0,
+        stop_loss=3980.0,
+        category="commodities",
+        confidence=0.70,
+        asset="XAU/USD",
+        risk_multiplier=1.30,
+    )
+
+    assert boosted > base
+    assert PositionSizer.lots_from_size("XAU/USD", "commodities", base) == 0.1
 
 
 def test_position_sizer_uses_gold_equivalent_reference_for_eurusd(monkeypatch) -> None:

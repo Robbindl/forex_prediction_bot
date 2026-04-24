@@ -8,6 +8,10 @@ from config.config import (
     ASSET_EDGE_MAX_RISK_BONUS,
     ASSET_EDGE_MAX_RISK_PENALTY,
     ASSET_EDGE_MIN_SAMPLES,
+    BOOK_EDGE_LOOKBACK_DAYS,
+    BOOK_EDGE_MAX_RISK_BONUS,
+    BOOK_EDGE_MAX_RISK_PENALTY,
+    BOOK_EDGE_MIN_SAMPLES,
     GOVERNANCE_MIN_RISK_REWARD,
     INACTIVITY_RELIEF_FULL_HOURS,
     INACTIVITY_RELIEF_START_HOURS,
@@ -342,6 +346,92 @@ def _apply_asset_performance_thresholds(
     thresholds["asset_performance_profile"] = profile
 
 
+def _apply_book_performance_thresholds(thresholds: Dict[str, Any]) -> None:
+    profile: Dict[str, Any] = {
+        "sample_count": 0,
+        "profit_factor": 0.0,
+        "avg_rr_realized": 0.0,
+        "pnl_total": 0.0,
+        "max_drawdown": 0.0,
+        "book_score": 0.5,
+        "action": "neutral",
+    }
+    try:
+        from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+        summary = get_execution_feedback_service().summarize_context(
+            days_back=max(5, int(BOOK_EDGE_LOOKBACK_DAYS or 14)),
+            limit=220,
+        )
+    except Exception:
+        thresholds["book_performance_profile"] = profile
+        return
+
+    sample_count = _safe_int(summary.get("sample_count"), 0)
+    if sample_count < max(3, int(BOOK_EDGE_MIN_SAMPLES or 8)):
+        profile["sample_count"] = sample_count
+        thresholds["book_performance_profile"] = profile
+        return
+
+    profit_factor = _safe_float(summary.get("profit_factor"), 0.0)
+    avg_rr_realized = _safe_float(summary.get("avg_rr_realized"), 0.0)
+    pnl_total = _safe_float(summary.get("pnl_total"), 0.0)
+    max_drawdown = _safe_float(summary.get("max_drawdown"), 0.0)
+    win_rate = _safe_float(summary.get("win_rate"), 0.0)
+
+    book_score = 0.5
+    book_score += (win_rate - 0.5) * 0.22
+    book_score += (profit_factor - 1.0) * 0.24
+    book_score += avg_rr_realized * 0.30
+    if pnl_total > 0:
+        book_score += 0.07
+    elif pnl_total < 0:
+        book_score -= 0.09
+    if max_drawdown >= max(80.0, abs(pnl_total) * 0.90):
+        book_score -= 0.08
+    elif 0.0 < max_drawdown <= max(40.0, abs(pnl_total) * 0.35):
+        book_score += 0.03
+    book_score = _clip(book_score, 0.0, 1.0)
+
+    profile.update(
+        {
+            "sample_count": sample_count,
+            "profit_factor": round(profit_factor, 4),
+            "avg_rr_realized": round(avg_rr_realized, 4),
+            "pnl_total": round(pnl_total, 2),
+            "max_drawdown": round(max_drawdown, 2),
+            "book_score": round(book_score, 4),
+        }
+    )
+
+    if book_score >= 0.62 and profit_factor >= 1.08 and avg_rr_realized >= 0.08 and pnl_total > 0:
+        bonus = min(
+            float(BOOK_EDGE_MAX_RISK_BONUS or 0.16),
+            0.03
+            + max(0.0, book_score - 0.62) * 0.16
+            + max(0.0, profit_factor - 1.08) * 0.07
+            + max(0.0, avg_rr_realized - 0.08) * 0.12,
+        )
+        thresholds["risk_multiplier"] += bonus
+        thresholds["min_final_confidence"] -= 0.005
+        thresholds["notes"].append("book_edge_positive")
+        profile["action"] = "boost"
+    elif book_score <= 0.40 or profit_factor <= 0.95 or avg_rr_realized <= -0.05 or pnl_total < 0:
+        penalty = min(
+            float(BOOK_EDGE_MAX_RISK_PENALTY or 0.18),
+            0.04
+            + max(0.0, 0.40 - book_score) * 0.18
+            + max(0.0, 0.95 - profit_factor) * 0.09
+            + max(0.0, -0.05 - avg_rr_realized) * 0.14,
+        )
+        thresholds["risk_multiplier"] -= penalty
+        thresholds["min_rr"] += 0.04
+        thresholds["notes"].append("book_edge_negative")
+        profile["action"] = "reduce"
+
+    thresholds["book_performance_profile"] = profile
+
+
 def _apply_inactivity_thresholds(
     thresholds: Dict[str, Any],
     *,
@@ -504,6 +594,7 @@ class AdaptivePolicyService:
             "notes": [],
             "recent_review_profile": {},
             "asset_performance_profile": {},
+            "book_performance_profile": {},
             "inactivity_profile": {},
             "block_new_entries": False,
             "block_reason": "",
@@ -548,6 +639,7 @@ class AdaptivePolicyService:
             asset=asset,
             category_key=category_key,
         )
+        _apply_book_performance_thresholds(thresholds)
         _apply_recent_review_thresholds(
             thresholds,
             asset=asset,
@@ -589,6 +681,7 @@ class AdaptivePolicyService:
             "target_rr_multiplier": thresholds["target_rr_multiplier"],
             "recent_review_profile": thresholds["recent_review_profile"],
             "asset_performance_profile": thresholds["asset_performance_profile"],
+            "book_performance_profile": thresholds["book_performance_profile"],
             "inactivity_profile": thresholds["inactivity_profile"],
             "block_new_entries": thresholds["block_new_entries"],
             "block_reason": thresholds["block_reason"],
