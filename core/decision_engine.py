@@ -1962,15 +1962,15 @@ class SignalDecisionEngine:
                 return
             if signal.direction == "BUY":
                 signal.take_profit_levels = [
-                    round(entry + dist * 0.5, 6),
+                    round(entry + dist * 0.6, 6),
                     round(entry + dist, 6),
-                    round(entry + dist * 1.5, 6),
+                    round(entry + dist * 1.25, 6),
                 ]
             else:
                 signal.take_profit_levels = [
-                    round(entry - dist * 0.5, 6),
+                    round(entry - dist * 0.6, 6),
                     round(entry - dist, 6),
-                    round(entry - dist * 1.5, 6),
+                    round(entry - dist * 1.25, 6),
                 ]
         except Exception as exc:
             logger.debug(f"[DecisionEngine] TP level calculation failed for {signal.asset}: {exc}")

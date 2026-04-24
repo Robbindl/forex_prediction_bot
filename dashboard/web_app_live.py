@@ -98,14 +98,20 @@ try:
         DASHBOARD_BG_REFRESH_WORKERS,
         DASHBOARD_COMMAND_CENTER_WORKERS,
         DASHBOARD_CORRELATION_WORKERS,
+        DEEPSEEK_API_KEY,
+        DEEPSEEK_TELEGRAM_TOKEN,
         DASHBOARD_HEATMAP_WORKERS,
         DASHBOARD_SENTIMENT_ASSET_WORKERS,
         DASHBOARD_SENTIMENT_FETCH_WORKERS,
         DASHBOARD_WEAK_POSITIONS_LIMIT,
+        DUKASCOPY_HISTORY_ENABLED,
+        DUKASCOPY_LIVE_DEPTH_ENABLED,
+        LOCAL_CANDLE_STORE_ENABLED,
         NEWS_REDDIT_ENABLED,
         NEWS_RSS_ENABLED,
         NEWS_SENTIMENT_ENABLED,
         PLAYBOOK_ONLY_RUNTIME,
+        ROBBIE_CHAT_PROVIDER,
         TOP_OPPORTUNITIES_LIMIT,
         TRUST_PROXY_COUNT,
     )
@@ -124,6 +130,12 @@ except Exception:
     DASHBOARD_HEATMAP_WORKERS = 10
     DASHBOARD_SENTIMENT_ASSET_WORKERS = 10
     DASHBOARD_SENTIMENT_FETCH_WORKERS = 6
+    DEEPSEEK_API_KEY = ""
+    DEEPSEEK_TELEGRAM_TOKEN = ""
+    DUKASCOPY_HISTORY_ENABLED = True
+    DUKASCOPY_LIVE_DEPTH_ENABLED = False
+    LOCAL_CANDLE_STORE_ENABLED = True
+    ROBBIE_CHAT_PROVIDER = "auto"
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=TRUST_PROXY_COUNT, x_proto=TRUST_PROXY_COUNT, x_host=TRUST_PROXY_COUNT)
 CORS(app, resources={r"/api/*": {"origins": DASHBOARD_CORS_ORIGINS}})
@@ -6487,6 +6499,192 @@ def _collect_system_phase_health() -> Dict[str, Any]:
     return phase_health
 
 
+def _process_match_count(*needles: str) -> int:
+    try:
+        import psutil
+    except Exception:
+        return 0
+    wanted = [str(item or "").strip().lower() for item in needles if str(item or "").strip()]
+    if not wanted:
+        return 0
+    count = 0
+    for proc in psutil.process_iter(attrs=["name", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            name = str(proc.info.get("name") or "")
+            haystack = f"{name} {cmdline}".lower()
+        except Exception:
+            continue
+        if all(token in haystack for token in wanted):
+            count += 1
+    return count
+
+
+def _collect_runtime_service_details() -> Dict[str, Any]:
+    services: Dict[str, Any] = {}
+    try:
+        from services.deriv_bridge import deriv_bridge
+
+        deriv_profiles = deriv_bridge.list_profiles()
+        services["deriv_public_data"] = {
+            "ok": bool(deriv_profiles),
+            "state": "connected" if deriv_profiles else "disabled",
+            "meta": f"{len(deriv_profiles)} profile(s)" if deriv_profiles else "no profile",
+        }
+    except Exception:
+        services["deriv_public_data"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
+
+    try:
+        from services.binance_market_bridge import binance_market_bridge
+
+        binance_profiles = binance_market_bridge.list_profiles()
+        services["binance_public_data"] = {
+            "ok": bool(binance_profiles),
+            "state": "ready" if binance_profiles else "disabled",
+            "meta": f"{len(binance_profiles)} profile(s)" if binance_profiles else "no profile",
+        }
+    except Exception:
+        services["binance_public_data"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
+
+    try:
+        from services.ig_market_bridge import ig_market_bridge
+
+        ig_profiles = ig_market_bridge.list_profiles()
+        account = ig_market_bridge.get_account_summary() if ig_profiles else {}
+        authenticated = bool(account.get("authenticated", False))
+        services["ig_routed_data"] = {
+            "ok": bool(ig_profiles) and authenticated,
+            "state": "authenticated" if authenticated else ("configured" if ig_profiles else "disabled"),
+            "meta": str(account.get("environment") or "").upper() or ("profile ready" if ig_profiles else "no profile"),
+        }
+    except Exception:
+        services["ig_routed_data"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
+
+    try:
+        from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge
+
+        status = dukascopy_live_depth_bridge.status() if DUKASCOPY_LIVE_DEPTH_ENABLED else {}
+        assets = list(status.get("assets") or [])
+        running = bool(status.get("running", False))
+        services["dukascopy_live_depth"] = {
+            "ok": running,
+            "state": "streaming" if running else ("configured" if status.get("enabled") else "disabled"),
+            "meta": f"{len(assets)} assets" if assets else str(status.get("store_path") or "no assets"),
+        }
+    except Exception:
+        services["dukascopy_live_depth"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
+
+    services["dukascopy_history"] = {
+        "ok": bool(DUKASCOPY_HISTORY_ENABLED),
+        "state": "enabled" if DUKASCOPY_HISTORY_ENABLED else "disabled",
+        "meta": "backfill source",
+    }
+    services["local_candle_store"] = {
+        "ok": bool(LOCAL_CANDLE_STORE_ENABLED),
+        "state": "enabled" if LOCAL_CANDLE_STORE_ENABLED else "disabled",
+        "meta": "live/history spine",
+    }
+    deepseek_direct = _process_match_count("deepseek_bot.py")
+    deepseek_bot_count = max(deepseek_direct, 1 if _process_match_count("bot.py") > 1 else 0)
+    services["deepseek_bot"] = {
+        "ok": bool(deepseek_bot_count),
+        "state": "running" if deepseek_bot_count else ("configured" if DEEPSEEK_TELEGRAM_TOKEN else "disabled"),
+        "meta": f"{deepseek_bot_count} proc" if deepseek_bot_count else "telegram token missing",
+    }
+    services["deepseek_api"] = {
+        "ok": bool(DEEPSEEK_API_KEY),
+        "state": str(ROBBIE_CHAT_PROVIDER or "auto"),
+        "meta": "api key loaded" if DEEPSEEK_API_KEY else "api key missing",
+    }
+    services["command_telegram"] = {
+        "ok": bool(getattr(telegram_manager, "is_running", False)),
+        "state": "running" if bool(getattr(telegram_manager, "is_running", False)) else "stopped",
+        "meta": "command bot",
+    }
+    services["monitoring_service"] = {
+        "ok": True,
+        "state": "active",
+        "meta": "health telemetry",
+    }
+    return services
+
+
+def _collect_performance_guard_snapshot() -> Dict[str, Any]:
+    try:
+        from services.execution_feedback_service import get_service as get_execution_feedback_service
+        from services.db_pool import get_db
+    except Exception:
+        return {"portfolio_7d": {}, "portfolio_14d": {}, "worst_assets": [], "worst_playbooks": [], "worst_sessions": []}
+
+    service = get_execution_feedback_service()
+    portfolio_7d = service.summarize_context(days_back=7, limit=400)
+    portfolio_14d = service.summarize_context(days_back=14, limit=700)
+    try:
+        rows = get_db().get_execution_feedback_trades(
+            since=datetime.utcnow() - timedelta(days=14),
+            asset="",
+            category="",
+            limit=700,
+        )
+    except Exception:
+        rows = []
+
+    assets: Dict[str, Dict[str, Any]] = {}
+    playbooks: Dict[str, Dict[str, Any]] = {}
+    sessions: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        raw_meta = row.get("metadata") or row.get("trade_metadata") or {}
+        if isinstance(raw_meta, dict):
+            meta = dict(raw_meta)
+        else:
+            try:
+                meta = json.loads(raw_meta or "{}")
+                if not isinstance(meta, dict):
+                    meta = {}
+            except Exception:
+                meta = {}
+        pnl = float(row.get("pnl", 0.0) or 0.0)
+        keys = {
+            "asset": str(row.get("canonical_asset") or row.get("asset") or "").strip(),
+            "playbook": str(meta.get("playbook_name") or meta.get("seed_model") or "").strip().lower(),
+            "session": str(meta.get("session_label") or meta.get("playbook_session") or meta.get("session") or "").strip().lower(),
+        }
+        for bucket_name, key in keys.items():
+            if not key:
+                continue
+            bucket = {"asset": assets, "playbook": playbooks, "session": sessions}[bucket_name]
+            entry = bucket.setdefault(key, {"key": key, "sample_count": 0, "pnl_total": 0.0, "wins": 0, "losses": 0})
+            entry["sample_count"] += 1
+            entry["pnl_total"] += pnl
+            if pnl > 0:
+                entry["wins"] += 1
+            elif pnl < 0:
+                entry["losses"] += 1
+
+    def _top_losers(bucket: Dict[str, Dict[str, Any]], top: int = 4) -> List[Dict[str, Any]]:
+        rows = sorted(bucket.values(), key=lambda item: (float(item["pnl_total"]), -int(item["sample_count"])))
+        return [
+            {
+                "key": str(item["key"]),
+                "sample_count": int(item["sample_count"]),
+                "pnl_total": round(float(item["pnl_total"]), 2),
+                "win_rate": round(
+                    (float(item["wins"]) / max(1, int(item["sample_count"]))),
+                    4,
+                ),
+            }
+            for item in rows[:top]
+        ]
+
+    return {
+        "portfolio_7d": portfolio_7d,
+        "portfolio_14d": portfolio_14d,
+        "worst_assets": _top_losers(assets),
+        "worst_playbooks": _top_losers(playbooks),
+        "worst_sessions": _top_losers(sessions),
+    }
+
+
 def _collect_system_feed_connections() -> Dict[str, Any]:
     try:
         from websocket_dashboard import connection_status as _connection_status
@@ -6502,6 +6700,7 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
     redis_ok = _collect_redis_health()
     db_ok = _collect_database_health()
     tg_ok = bool(getattr(telegram_manager, "is_running", False))
+    runtime_services = _collect_runtime_service_details()
     processes = {
         "TradingCore": health.get("is_running", getattr(core, "is_running", False) if core else False),
         "Engine ready": health.get("engine_ready", getattr(core, "is_ready", False) if core else False),
@@ -6511,6 +6710,8 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
         "Telegram": tg_ok,
         "PredTracker": _pred_tracker is not None,
         "WebSocket streams": _ws_ok,
+        "DeepSeek Bot": bool((runtime_services.get("deepseek_bot") or {}).get("ok")),
+        "Dukascopy Sidecar": bool((runtime_services.get("dukascopy_live_depth") or {}).get("ok")),
     }
     return {
         "ram_pct": round(ram_pct, 1),
@@ -6519,7 +6720,9 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
         "process_mem_mb": proc_mb,
         "processes": processes,
         "phase_health": _collect_system_phase_health(),
+        "runtime_services": runtime_services,
         "feed_connections": _collect_system_feed_connections(),
+        "performance_guard": _collect_performance_guard_snapshot(),
     }
 
 

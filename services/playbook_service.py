@@ -629,10 +629,10 @@ class _AssetPlaybookPlan:
 
 
 _CATEGORY_PROFILES: Dict[str, _PlaybookProfile] = {
-    "forex": _PlaybookProfile(0.56, 0.58, 0.57, 0.57, 0.58, 0.58, 0.52, 0.66, 0.12, 0.32, 18, "5m", ("europe", "us"), 3, 0.18, 2.1, 1.0, 0.75),
-    "crypto": _PlaybookProfile(0.58, 0.60, 0.58, 0.59, 0.60, 0.60, 0.54, 0.68, 0.10, 0.36, 20, "5m", ("asia", "europe", "us"), 4, 0.25, 2.6, 1.0, 1.15),
-    "commodities": _PlaybookProfile(0.57, 0.58, 0.57, 0.58, 0.58, 0.59, 0.53, 0.67, 0.11, 0.34, 18, "5m", ("europe", "us"), 3, 0.22, 2.2, 1.0, 0.95),
-    "indices": _PlaybookProfile(0.57, 0.59, 0.57, 0.58, 0.58, 0.59, 0.53, 0.67, 0.11, 0.34, 18, "5m", ("us",), 3, 0.20, 2.0, 1.0, 0.90),
+    "forex": _PlaybookProfile(0.56, 0.58, 0.57, 0.57, 0.58, 0.58, 0.52, 0.66, 0.12, 0.32, 18, "5m", ("europe", "us"), 3, 0.18, 2.25, 1.15, 0.82),
+    "crypto": _PlaybookProfile(0.58, 0.60, 0.58, 0.59, 0.60, 0.60, 0.54, 0.68, 0.10, 0.36, 20, "5m", ("asia", "europe", "us"), 4, 0.25, 2.8, 1.15, 1.20),
+    "commodities": _PlaybookProfile(0.57, 0.58, 0.57, 0.58, 0.58, 0.59, 0.53, 0.67, 0.11, 0.34, 18, "5m", ("europe", "us"), 3, 0.22, 2.4, 1.20, 1.02),
+    "indices": _PlaybookProfile(0.57, 0.59, 0.57, 0.58, 0.58, 0.59, 0.53, 0.67, 0.11, 0.34, 18, "5m", ("us",), 3, 0.20, 2.2, 1.15, 0.96),
 }
 
 _TREND_PLAYBOOKS = {
@@ -893,22 +893,26 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
 }
 
 _ASSET_MANAGEMENT_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "EUR/USD": {"preferred_interval": "5m", "runner_target_rr": 2.0, "trail_activation_rr": 0.9, "trail_atr_multiple": 0.65},
-    "GBP/USD": {"preferred_interval": "5m", "runner_target_rr": 2.1, "trail_activation_rr": 0.9, "trail_atr_multiple": 0.68},
-    "USD/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 0.95, "trail_atr_multiple": 0.70},
-    "EUR/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 1.0, "trail_atr_multiple": 0.78},
-    "GBP/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.3, "trail_activation_rr": 1.0, "trail_atr_multiple": 0.80},
-    "AUD/USD": {"preferred_interval": "15m", "runner_target_rr": 2.0, "trail_activation_rr": 0.95, "trail_atr_multiple": 0.70},
-    "NZD/USD": {"preferred_interval": "15m", "runner_target_rr": 2.0, "trail_activation_rr": 0.95, "trail_atr_multiple": 0.70},
-    "USD/CAD": {"preferred_interval": "5m", "runner_target_rr": 2.0, "trail_activation_rr": 0.95, "trail_atr_multiple": 0.72},
-    "XAU/USD": {"preferred_interval": "5m", "runner_target_rr": 2.4, "trail_activation_rr": 1.0, "trail_atr_multiple": 0.85},
-    "XAG/USD": {"preferred_interval": "5m", "runner_target_rr": 2.6, "trail_activation_rr": 1.0, "trail_atr_multiple": 0.95},
-    "WTI": {"preferred_interval": "15m", "runner_target_rr": 2.7, "trail_activation_rr": 1.1, "trail_atr_multiple": 1.05},
-    "US30": {"preferred_interval": "5m", "runner_target_rr": 2.0, "trail_activation_rr": 0.85, "trail_atr_multiple": 0.80},
-    "US100": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 0.85, "trail_atr_multiple": 0.82},
-    "US500": {"preferred_interval": "5m", "runner_target_rr": 1.9, "trail_activation_rr": 0.85, "trail_atr_multiple": 0.75},
-    "UK100": {"preferred_interval": "5m", "runner_target_rr": 1.9, "trail_activation_rr": 0.85, "trail_atr_multiple": 0.75},
-    "GER40": {"preferred_interval": "5m", "runner_target_rr": 1.9, "trail_activation_rr": 0.85, "trail_atr_multiple": 0.75},
+    "EUR/USD": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 1.15, "trail_atr_multiple": 0.78},
+    "EUR/GBP": {"preferred_interval": "5m", "runner_target_rr": 2.1, "trail_activation_rr": 1.10, "trail_atr_multiple": 0.76},
+    "GBP/USD": {"preferred_interval": "5m", "runner_target_rr": 2.3, "trail_activation_rr": 1.15, "trail_atr_multiple": 0.82},
+    "USD/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.35, "trail_activation_rr": 1.20, "trail_atr_multiple": 0.84},
+    "USD/CHF": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 1.15, "trail_atr_multiple": 0.80},
+    "EUR/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.35, "trail_activation_rr": 1.20, "trail_atr_multiple": 0.88},
+    "GBP/JPY": {"preferred_interval": "5m", "runner_target_rr": 2.45, "trail_activation_rr": 1.20, "trail_atr_multiple": 0.90},
+    "AUD/USD": {"preferred_interval": "15m", "runner_target_rr": 2.2, "trail_activation_rr": 1.15, "trail_atr_multiple": 0.80},
+    "NZD/USD": {"preferred_interval": "15m", "runner_target_rr": 2.2, "trail_activation_rr": 1.15, "trail_atr_multiple": 0.80},
+    "USD/CAD": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 1.15, "trail_atr_multiple": 0.82},
+    "XAU/USD": {"preferred_interval": "5m", "runner_target_rr": 2.6, "trail_activation_rr": 1.20, "trail_atr_multiple": 1.00},
+    "XAG/USD": {"preferred_interval": "5m", "runner_target_rr": 2.8, "trail_activation_rr": 1.25, "trail_atr_multiple": 1.08},
+    "WTI": {"preferred_interval": "15m", "runner_target_rr": 2.9, "trail_activation_rr": 1.25, "trail_atr_multiple": 1.15},
+    "US30": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 1.10, "trail_atr_multiple": 0.92},
+    "US100": {"preferred_interval": "5m", "runner_target_rr": 2.35, "trail_activation_rr": 1.10, "trail_atr_multiple": 0.96},
+    "US500": {"preferred_interval": "5m", "runner_target_rr": 2.15, "trail_activation_rr": 1.10, "trail_atr_multiple": 0.90},
+    "UK100": {"preferred_interval": "5m", "runner_target_rr": 2.15, "trail_activation_rr": 1.10, "trail_atr_multiple": 0.90},
+    "GER40": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 1.10, "trail_atr_multiple": 0.92},
+    "AUS200": {"preferred_interval": "5m", "runner_target_rr": 2.15, "trail_activation_rr": 1.10, "trail_atr_multiple": 0.90},
+    "JPN225": {"preferred_interval": "5m", "runner_target_rr": 2.2, "trail_activation_rr": 1.15, "trail_atr_multiple": 0.94},
     "BTC-USD": {"preferred_interval": "5m", "runner_target_rr": 2.8, "trail_activation_rr": 1.1, "trail_atr_multiple": 1.15},
     "ETH-USD": {"preferred_interval": "5m", "runner_target_rr": 2.7, "trail_activation_rr": 1.05, "trail_atr_multiple": 1.12},
     "BNB-USD": {"preferred_interval": "15m", "runner_target_rr": 3.0, "trail_activation_rr": 1.15, "trail_atr_multiple": 1.18},
@@ -976,27 +980,41 @@ class PlaybookService:
         runner_target_rr = _safe_float(overrides.get("runner_target_rr", profile.runner_target_rr), profile.runner_target_rr)
         trail_activation_rr = _safe_float(overrides.get("trail_activation_rr", profile.trail_activation_rr), profile.trail_activation_rr)
         trail_atr_multiple = _safe_float(overrides.get("trail_atr_multiple", profile.trail_atr_multiple), profile.trail_atr_multiple)
-        partial_take_profit_rr = [1.0]
+        partial_take_profit_rr = {
+            "forex": [1.15, 1.75],
+            "commodities": [1.20, 1.90],
+            "indices": [1.15, 1.80],
+            "crypto": [1.30, 2.10],
+        }.get(str(category or "").strip().lower(), [1.15, 1.75])
+        partial_take_profit_size_fractions = [0.30, 0.40, 0.30]
 
         if playbook in _REVERSAL_PLAYBOOKS:
             runner_target_rr = max(1.6, runner_target_rr * 0.88)
-            trail_activation_rr = min(trail_activation_rr, 0.9)
+            trail_activation_rr = min(trail_activation_rr, 1.0)
+            partial_take_profit_rr = [1.0, 1.55]
+            partial_take_profit_size_fractions = [0.40, 0.35, 0.25]
         elif playbook == "early_inflection":
             runner_target_rr = max(1.5, runner_target_rr * 0.80)
-            trail_activation_rr = min(trail_activation_rr, 0.8)
-            trail_atr_multiple = min(trail_atr_multiple, 0.85)
+            trail_activation_rr = min(trail_activation_rr, 0.95)
+            trail_atr_multiple = min(trail_atr_multiple, 0.95)
+            partial_take_profit_rr = [1.0, 1.45]
+            partial_take_profit_size_fractions = [0.40, 0.35, 0.25]
         elif playbook == "opening_drive":
             runner_target_rr = max(1.7, runner_target_rr * 0.92)
-            trail_activation_rr = min(trail_activation_rr, 0.85)
+            trail_activation_rr = min(trail_activation_rr, 1.05)
+            partial_take_profit_rr = [1.2, 1.9]
         elif playbook == "news_impulse":
             runner_target_rr = max(1.8, runner_target_rr * 0.95)
-            trail_activation_rr = min(trail_activation_rr, 0.9)
+            trail_activation_rr = min(trail_activation_rr, 1.05)
+            partial_take_profit_rr = [1.25, 2.0]
         elif playbook == "intermarket_continuation":
             runner_target_rr = max(1.9, runner_target_rr * 0.98)
-            trail_activation_rr = min(trail_activation_rr, 0.9)
+            trail_activation_rr = min(trail_activation_rr, 1.05)
+            partial_take_profit_rr = [1.25, 2.0]
         elif playbook == "crypto_orderflow_continuation":
             runner_target_rr = max(runner_target_rr, 2.6)
             trail_atr_multiple = max(trail_atr_multiple, 1.05)
+            partial_take_profit_rr = [1.4, 2.25]
 
         return {
             "style": "intraday_playbook",
@@ -1004,6 +1022,7 @@ class PlaybookService:
             "asset": canonical,
             "category": str(category or "").strip().lower(),
             "partial_take_profit_rr": partial_take_profit_rr,
+            "partial_take_profit_size_fractions": partial_take_profit_size_fractions,
             "runner_target_rr": round(float(runner_target_rr), 4),
             "trail_activation_rr": round(float(trail_activation_rr), 4),
             "trail_atr_multiple": round(float(trail_atr_multiple), 4),

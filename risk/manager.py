@@ -30,7 +30,7 @@ _STOP_MAX_PCT = {
     "indices": 0.0090,
 }
 
-_DEFAULT_RISK_REWARD = 1.5
+_DEFAULT_RISK_REWARD = 1.8
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

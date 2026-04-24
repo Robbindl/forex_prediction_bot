@@ -191,6 +191,14 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div id="serviceList"><div class="empty">Loading…</div></div>
       </div>
 
+      <div class="panel panel-full">
+        <div class="panel-header">
+          <span class="panel-title">📉 Recent Performance Guard</span>
+          <span class="panel-badge" id="perfGuardBadge">—</span>
+        </div>
+        <div id="perfGuardPanel"><div class="empty">Loading…</div></div>
+      </div>
+
       <!-- Playbook runtime -->
       <div class="panel panel-full">
         <div class="panel-header">
@@ -343,6 +351,7 @@ function updateSpark(inst,hist,val){
 }
 
 function barColor(pct){return pct>85?'var(--rd)':pct>70?'var(--am)':'var(--gr)'}
+function fmtUsd(n){const num=Number(n||0);return (num>=0?'+$':'-$')+Math.abs(num).toFixed(2);}
 function signalMeta(signal){return signal && typeof signal.metadata === 'object' && signal.metadata ? signal.metadata : {};}
 function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] !== undefined ? meta[key] : signal ? signal[key] : undefined;}
 function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
@@ -512,23 +521,73 @@ async function load(){
 
     // Runtime services
     const services=d.phase_health||{};
-    const serviceNames={
-      phase1_data_feeds:   'Market Data Feeds',
-      phase2_whale_intel:  'Whale Intelligence',
-      phase3_order_flow:   'Order Flow',
-      phase4_narrative_ai: 'Narrative AI',
-      phase7_intel_alerts: 'Intelligence Alerts',
-    };
+    const runtimeServices=d.runtime_services||{};
+    const serviceRows=[
+      {name:'Market Data Feeds', ok:!!services.phase1_data_feeds, state:services.phase1_data_feeds?'active':'inactive', meta:'phase 1'},
+      {name:'Whale Intelligence', ok:!!services.phase2_whale_intel, state:services.phase2_whale_intel?'active':'inactive', meta:'phase 2'},
+      {name:'Order Flow', ok:!!services.phase3_order_flow, state:services.phase3_order_flow?'active':'inactive', meta:'phase 3'},
+      {name:'Narrative AI', ok:!!services.phase4_narrative_ai, state:services.phase4_narrative_ai?'active':'inactive', meta:'phase 4'},
+      {name:'Intelligence Alerts', ok:!!services.phase7_intel_alerts, state:services.phase7_intel_alerts?'active':'inactive', meta:'phase 7'},
+      {name:'Dukascopy Live Depth', ok:!!runtimeServices.dukascopy_live_depth?.ok, state:runtimeServices.dukascopy_live_depth?.state||'unknown', meta:runtimeServices.dukascopy_live_depth?.meta||''},
+      {name:'Dukascopy History', ok:!!runtimeServices.dukascopy_history?.ok, state:runtimeServices.dukascopy_history?.state||'unknown', meta:runtimeServices.dukascopy_history?.meta||''},
+      {name:'Local Candle Store', ok:!!runtimeServices.local_candle_store?.ok, state:runtimeServices.local_candle_store?.state||'unknown', meta:runtimeServices.local_candle_store?.meta||''},
+      {name:'IG Routed Data', ok:!!runtimeServices.ig_routed_data?.ok, state:runtimeServices.ig_routed_data?.state||'unknown', meta:runtimeServices.ig_routed_data?.meta||''},
+      {name:'Deriv Public Data', ok:!!runtimeServices.deriv_public_data?.ok, state:runtimeServices.deriv_public_data?.state||'unknown', meta:runtimeServices.deriv_public_data?.meta||''},
+      {name:'Binance Public Data', ok:!!runtimeServices.binance_public_data?.ok, state:runtimeServices.binance_public_data?.state||'unknown', meta:runtimeServices.binance_public_data?.meta||''},
+      {name:'DeepSeek Bot', ok:!!runtimeServices.deepseek_bot?.ok, state:runtimeServices.deepseek_bot?.state||'unknown', meta:runtimeServices.deepseek_bot?.meta||''},
+      {name:'DeepSeek API', ok:!!runtimeServices.deepseek_api?.ok, state:runtimeServices.deepseek_api?.state||'unknown', meta:runtimeServices.deepseek_api?.meta||''},
+      {name:'Monitoring Service', ok:!!runtimeServices.monitoring_service?.ok, state:runtimeServices.monitoring_service?.state||'unknown', meta:runtimeServices.monitoring_service?.meta||''},
+    ];
     const serviceEl=document.getElementById('serviceList');
     if(serviceEl){
-      serviceEl.innerHTML=Object.entries(serviceNames).map(([key,name])=>{
-        const ok=services[key];
+      serviceEl.innerHTML=serviceRows.map((item)=>{
+        const ok=!!item.ok;
         return `<div class="proc-row">
           <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
-          <div class="proc-name">${name}</div>
-          <div class="proc-status ${ok?'proc-on':'proc-off'}">${ok?'Active':'Inactive'}</div>
+          <div class="proc-name">${item.name}${item.meta ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${item.meta}</div>` : ''}</div>
+          <div class="proc-status ${ok?'proc-on':'proc-off'}">${item.state|| (ok?'Active':'Inactive')}</div>
         </div>`;
       }).join('');
+    }
+
+    const perf=d.performance_guard||{};
+    const perf7=perf.portfolio_7d||{};
+    const perf14=perf.portfolio_14d||{};
+    const worstAssets=Array.isArray(perf.worst_assets)?perf.worst_assets:[];
+    const worstPlaybooks=Array.isArray(perf.worst_playbooks)?perf.worst_playbooks:[];
+    const worstSessions=Array.isArray(perf.worst_sessions)?perf.worst_sessions:[];
+    const perfBadge=document.getElementById('perfGuardBadge');
+    const perfPanel=document.getElementById('perfGuardPanel');
+    if(perfBadge){
+      const sampleCount=Number(perf7.sample_count||0);
+      const pnl7=Number(perf7.pnl_total||0);
+      perfBadge.textContent=sampleCount?`${sampleCount} trades · ${fmtUsd(pnl7)}`:'warming';
+      perfBadge.style.color=pnl7<0?'var(--rd)':pnl7>0?'var(--gr)':'var(--tx2)';
+    }
+    if(perfPanel){
+      const renderLosers=(title, rows)=>`
+        <div class="train-card">
+          <div class="train-top"><div class="train-name">${title}</div><div class="train-state ${rows.length?'am':'gn'}">${rows.length||0}</div></div>
+          ${rows.length ? rows.map(item=>`<div class="train-meta">${item.key} · ${fmtUsd(item.pnl_total)} · ${(Number(item.win_rate||0)*100).toFixed(0)}% · ${item.sample_count} trades</div>`).join('') : '<div class="train-meta">No concentrated drag in this bucket.</div>'}
+        </div>`;
+      perfPanel.innerHTML=`
+        <div class="train-grid">
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Last 7 days</div><div class="train-state ${Number(perf7.pnl_total||0) < 0 ? 'rd' : Number(perf7.pnl_total||0) > 0 ? 'gn' : 'am'}">${fmtUsd(perf7.pnl_total||0)}</div></div>
+            <div class="train-meta">Win rate ${(Number(perf7.win_rate||0)*100).toFixed(1)}% · PF ${(Number(perf7.profit_factor||0)).toFixed(2)}</div>
+            <div class="train-meta">Avg R ${(Number(perf7.avg_rr_realized||0)).toFixed(2)} · Max DD ${fmtUsd(-(Number(perf7.max_drawdown||0)))}</div>
+            <div class="train-issue">${Number(perf7.premature_stop_rate||0) >= 0.4 ? 'Premature stops are still a major drag.' : 'Recent exits are not dominated by premature stopouts.'}</div>
+          </div>
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Last 14 days</div><div class="train-state ${Number(perf14.pnl_total||0) < 0 ? 'rd' : Number(perf14.pnl_total||0) > 0 ? 'gn' : 'am'}">${fmtUsd(perf14.pnl_total||0)}</div></div>
+            <div class="train-meta">Win rate ${(Number(perf14.win_rate||0)*100).toFixed(1)}% · PF ${(Number(perf14.profit_factor||0)).toFixed(2)}</div>
+            <div class="train-meta">Avg R ${(Number(perf14.avg_rr_realized||0)).toFixed(2)} · Avg quality ${(Number(perf14.avg_quality_score||50)).toFixed(1)}</div>
+            <div class="train-issue">${Number(perf14.avg_rr_realized||0) <= 0 ? 'The edge is not positive enough yet for aggressive live sizing.' : 'The edge is positive, but still needs consistency.'}</div>
+          </div>
+          ${renderLosers('Worst assets', worstAssets)}
+          ${renderLosers('Worst playbooks', worstPlaybooks)}
+          ${renderLosers('Worst sessions', worstSessions)}
+        </div>`;
     }
 
     const runtimePanel = document.getElementById('runtimePanel');
@@ -765,11 +824,15 @@ async function load(){
       {name:'Binance Fallback',ok:!!binanceFeed.connected, meta:binanceFeed.symbol_count?`${binanceFeed.symbol_count} symbols`:binanceFeed.assets||''},
       {name:'Exchange Feeds',ok:services['phase1_data_feeds']},
       {name:'IG Routed Data',ok:!!igFeed.connected, meta:igFeed.symbol_count?`${igFeed.symbol_count} assets`:igFeed.assets||''},
+      {name:'Dukascopy Depth',ok:!!runtimeServices.dukascopy_live_depth?.ok, meta:runtimeServices.dukascopy_live_depth?.meta||''},
       {name:'PostgreSQL',ok:procs['PostgreSQL']},
       {name:'Redis',ok:procs['Redis']},
       {name:'Command Bot',ok:procs['Telegram']},
+      {name:'DeepSeek Bot',ok:!!runtimeServices.deepseek_bot?.ok, meta:runtimeServices.deepseek_bot?.meta||''},
+      {name:'DeepSeek API',ok:!!runtimeServices.deepseek_api?.ok, meta:runtimeServices.deepseek_api?.meta||''},
       {name:'Outcome Tracker',ok:procs['PredTracker']},
       {name:'Intel Alerts',ok:services['phase7_intel_alerts']},
+      {name:'Local Candle Store',ok:!!runtimeServices.local_candle_store?.ok, meta:runtimeServices.local_candle_store?.meta||''},
     ];
     connEl.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px">'+
       connItems.map(c=>`<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--s2);border-radius:7px">

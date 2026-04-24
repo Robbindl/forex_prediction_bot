@@ -4,6 +4,10 @@ import os
 from typing import Any, Dict
 
 from config.config import (
+    ASSET_EDGE_LOOKBACK_DAYS,
+    ASSET_EDGE_MAX_RISK_BONUS,
+    ASSET_EDGE_MAX_RISK_PENALTY,
+    ASSET_EDGE_MIN_SAMPLES,
     GOVERNANCE_MIN_RISK_REWARD,
     INACTIVITY_RELIEF_FULL_HOURS,
     INACTIVITY_RELIEF_START_HOURS,
@@ -24,22 +28,29 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
 def _direction_sign(direction: str) -> int:
     return 1 if str(direction or "").upper() == "BUY" else -1
 
 
 _LIVE_CATEGORY_BASE_MIN_RR = {
-    "crypto": 1.35,
-    "commodities": 1.15,
-    "forex": 1.15,
-    "indices": 1.25,
+    "crypto": 1.55,
+    "commodities": 1.40,
+    "forex": 1.35,
+    "indices": 1.45,
 }
 
 _PAPER_CATEGORY_BASE_MIN_RR = {
-    "crypto": 1.20,
-    "commodities": 1.00,
-    "forex": 0.75,
-    "indices": 1.00,
+    "crypto": 1.30,
+    "commodities": 1.15,
+    "forex": 1.00,
+    "indices": 1.15,
 }
 
 
@@ -57,23 +68,23 @@ def _category_min_rr_floor(category: str, base_rr: float) -> float:
     category_key = str(category or "").lower()
     if _runtime_live():
         if category_key == "forex":
-            return 0.95
+            return 1.15
         if category_key == "commodities":
-            return 1.00
-        if category_key == "indices":
-            return 1.05
-        if category_key == "crypto":
             return 1.20
-        return max(1.0, base_rr - 0.10)
+        if category_key == "indices":
+            return 1.25
+        if category_key == "crypto":
+            return 1.35
+        return max(1.15, base_rr - 0.10)
     if category_key == "forex":
-        return 0.65
+        return 0.85
     if category_key == "commodities":
-        return 0.85
+        return 0.95
     if category_key == "indices":
-        return 0.85
-    if category_key == "crypto":
         return 1.00
-    return max(0.75, base_rr - 0.20)
+    if category_key == "crypto":
+        return 1.10
+    return max(0.90, base_rr - 0.20)
 
 
 def _apply_structure_thresholds(
@@ -233,6 +244,102 @@ def _apply_recent_review_thresholds(
         thresholds["recent_review_profile"] = recent_review_profile
     except Exception:
         thresholds["recent_review_profile"] = {}
+
+
+def _apply_asset_performance_thresholds(
+    thresholds: Dict[str, Any],
+    *,
+    asset: str,
+    category_key: str,
+) -> None:
+    profile: Dict[str, Any] = {
+        "asset": asset,
+        "sample_count": 0,
+        "profit_factor": 0.0,
+        "avg_rr_realized": 0.0,
+        "pnl_total": 0.0,
+        "premature_stop_rate": 0.0,
+        "target_hit_rate": 0.0,
+        "asset_score": 0.5,
+        "action": "neutral",
+    }
+    if not asset:
+        thresholds["asset_performance_profile"] = profile
+        return
+
+    try:
+        from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+        summary = get_execution_feedback_service().summarize_context(
+            asset=asset,
+            category=category_key,
+            days_back=max(3, int(ASSET_EDGE_LOOKBACK_DAYS or 14)),
+            limit=160,
+        )
+    except Exception:
+        thresholds["asset_performance_profile"] = profile
+        return
+
+    sample_count = _safe_int(summary.get("sample_count"), 0)
+    profit_factor = _safe_float(summary.get("profit_factor"), 0.0)
+    avg_rr_realized = _safe_float(summary.get("avg_rr_realized"), 0.0)
+    pnl_total = _safe_float(summary.get("pnl_total"), 0.0)
+    premature_stop_rate = _safe_float(summary.get("premature_stop_rate"), 0.0)
+    target_hit_rate = _safe_float(summary.get("target_hit_rate"), 0.0)
+    asset_score = _clip(
+        0.50
+        + (profit_factor - 1.0) * 0.24
+        + avg_rr_realized * 0.18
+        + (target_hit_rate - 0.45) * 0.16
+        - max(0.0, premature_stop_rate - 0.45) * 0.24,
+        0.0,
+        1.0,
+    )
+
+    profile.update(
+        {
+            "sample_count": sample_count,
+            "profit_factor": round(profit_factor, 4),
+            "avg_rr_realized": round(avg_rr_realized, 4),
+            "pnl_total": round(pnl_total, 4),
+            "premature_stop_rate": round(premature_stop_rate, 4),
+            "target_hit_rate": round(target_hit_rate, 4),
+            "asset_score": round(asset_score, 4),
+        }
+    )
+
+    if sample_count < max(1, int(ASSET_EDGE_MIN_SAMPLES or 4)):
+        thresholds["asset_performance_profile"] = profile
+        return
+
+    if asset_score >= 0.62 and profit_factor >= 1.10 and avg_rr_realized >= 0.10 and pnl_total > 0:
+        bonus = min(
+            float(ASSET_EDGE_MAX_RISK_BONUS or 0.18),
+            0.03
+            + max(0.0, asset_score - 0.62) * 0.24
+            + max(0.0, profit_factor - 1.10) * 0.08
+            + max(0.0, avg_rr_realized - 0.10) * 0.06,
+        )
+        thresholds["risk_multiplier"] += bonus
+        thresholds["min_final_confidence"] -= min(0.012, 0.004 + bonus * 0.05)
+        thresholds["target_rr_multiplier"] *= 1.0 + min(0.06, bonus * 0.28)
+        thresholds["notes"].append("asset_edge_positive")
+        profile["action"] = "boost"
+    elif asset_score <= 0.42 or profit_factor <= 0.92 or avg_rr_realized <= -0.08 or pnl_total < 0:
+        penalty = min(
+            float(ASSET_EDGE_MAX_RISK_PENALTY or 0.20),
+            0.03
+            + max(0.0, 0.42 - asset_score) * 0.28
+            + max(0.0, 0.92 - profit_factor) * 0.10
+            + max(0.0, -avg_rr_realized - 0.08) * 0.08,
+        )
+        thresholds["risk_multiplier"] -= penalty
+        thresholds["min_final_confidence"] += min(0.015, 0.004 + penalty * 0.05)
+        thresholds["cooldown_minutes"] += 2
+        thresholds["notes"].append("asset_edge_negative")
+        profile["action"] = "reduce"
+
+    thresholds["asset_performance_profile"] = profile
 
 
 def _apply_inactivity_thresholds(
@@ -396,6 +503,7 @@ class AdaptivePolicyService:
             "target_rr_multiplier": 1.0,
             "notes": [],
             "recent_review_profile": {},
+            "asset_performance_profile": {},
             "inactivity_profile": {},
             "block_new_entries": False,
             "block_reason": "",
@@ -434,6 +542,11 @@ class AdaptivePolicyService:
             memory_sample_count=memory_sample_count,
             memory_edge=memory_edge,
             memory_score=memory_score,
+        )
+        _apply_asset_performance_thresholds(
+            thresholds,
+            asset=asset,
+            category_key=category_key,
         )
         _apply_recent_review_thresholds(
             thresholds,
@@ -475,6 +588,7 @@ class AdaptivePolicyService:
             "min_rr": thresholds["min_rr"],
             "target_rr_multiplier": thresholds["target_rr_multiplier"],
             "recent_review_profile": thresholds["recent_review_profile"],
+            "asset_performance_profile": thresholds["asset_performance_profile"],
             "inactivity_profile": thresholds["inactivity_profile"],
             "block_new_entries": thresholds["block_new_entries"],
             "block_reason": thresholds["block_reason"],

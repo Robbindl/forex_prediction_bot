@@ -70,6 +70,10 @@ class ExecutionFeedbackService:
     def __init__(self) -> None:
         self._cache: Dict[Tuple[str, str, int, int], Tuple[float, List[Dict[str, Any]]]] = {}
         self._summary_cache: Dict[Tuple[str, str, int, int], Tuple[float, Dict[str, Any]]] = {}
+        self._context_summary_cache: Dict[
+            Tuple[str, str, str, str, int, int],
+            Tuple[float, Dict[str, Any]],
+        ] = {}
         self._lock = threading.RLock()
 
     def analyze_trade(self, trade: Dict[str, Any]) -> Dict[str, Any]:
@@ -480,16 +484,16 @@ class ExecutionFeedbackService:
 
             if premature_stop_rate > 0.24 and avg_mfe_rr > 0.80:
                 delta = min(
-                    0.12,
-                    (premature_stop_rate - 0.24) * 0.24 + max(0.0, avg_mfe_rr - 0.80) * 0.05,
+                    0.16,
+                    (premature_stop_rate - 0.24) * 0.28 + max(0.0, avg_mfe_rr - 0.80) * 0.06,
                 )
                 stop_buffer_multiplier += delta
                 notes.append("profits_given_back_before_stop")
 
             if stop_like_rate > 0.60 and avg_mae_rr > 1.05 and avg_mfe_rr < 0.45:
                 delta = min(
-                    0.08,
-                    max(0.0, avg_mae_rr - 1.05) * 0.08 + max(0.0, stop_like_rate - 0.60) * 0.08,
+                    0.10,
+                    max(0.0, avg_mae_rr - 1.05) * 0.10 + max(0.0, stop_like_rate - 0.60) * 0.09,
                 )
                 stop_buffer_multiplier += delta
                 notes.append("losses_extend_without_progress")
@@ -497,6 +501,14 @@ class ExecutionFeedbackService:
             if late_entry_rate > 0.30 and avg_mae_rr > 0.90:
                 target_rr_multiplier -= min(0.06, (late_entry_rate - 0.30) * 0.18)
                 notes.append("entries_arrive_late")
+
+            if avg_mfe_rr > 1.35 and avg_rr_realized < 0.95:
+                delta = min(
+                    0.10,
+                    max(0.0, avg_mfe_rr - 1.35) * 0.05 + max(0.0, 0.95 - avg_rr_realized) * 0.08,
+                )
+                target_rr_multiplier += delta
+                notes.append("winners_cut_short")
 
             if target_hit_rate > 0.52 and avg_rr_realized > 1.10 and avg_giveback_ratio < 0.20:
                 delta = min(
@@ -510,8 +522,8 @@ class ExecutionFeedbackService:
                 target_rr_multiplier -= 0.03
                 notes.append("execution_quality_soft_reduce")
 
-        target_rr_multiplier = round(_clip(target_rr_multiplier, 0.82, 1.18), 4)
-        stop_buffer_multiplier = round(_clip(stop_buffer_multiplier, 1.0, 1.18), 4)
+        target_rr_multiplier = round(_clip(target_rr_multiplier, 0.82, 1.24), 4)
+        stop_buffer_multiplier = round(_clip(stop_buffer_multiplier, 1.0, 1.28), 4)
 
         return {
             "version": 1,
@@ -525,6 +537,58 @@ class ExecutionFeedbackService:
             "notes": notes,
             "summary": summary,
         }
+
+    def summarize_context(
+        self,
+        *,
+        asset: str = "",
+        category: str = "",
+        playbook_name: str = "",
+        session: str = "",
+        days_back: int = 14,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        key = (
+            str(asset or ""),
+            str(category or ""),
+            str(playbook_name or "").strip().lower(),
+            str(session or "").strip().lower(),
+            int(days_back),
+            int(limit),
+        )
+        now = time.time()
+        with self._lock:
+            cached = self._context_summary_cache.get(key)
+            if cached and (now - cached[0]) < self._TTL_SECONDS:
+                return dict(cached[1])
+
+        rows = self._fetch_rows(asset=asset, category=category, days_back=days_back, limit=limit)
+        selected: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]] = []
+        want_playbook = str(playbook_name or "").strip().lower()
+        want_session = str(session or "").strip().lower()
+        for row in rows:
+            metadata = _parse_metadata(row.get("metadata") or row.get("trade_metadata"))
+            row_playbook = self._row_playbook_name(row, metadata)
+            row_session = self._row_session_name(row, metadata)
+            if want_playbook and row_playbook != want_playbook:
+                continue
+            if want_session and row_session != want_session:
+                continue
+            feedback = metadata.get("execution_feedback")
+            if not isinstance(feedback, dict):
+                feedback = self.analyze_trade(row)
+            selected.append((row, metadata, feedback))
+
+        summary = self._summarize_selected_rows(
+            selected,
+            asset=asset,
+            category=category,
+            playbook_name=playbook_name,
+            session=session,
+        )
+        with self._lock:
+            self._context_summary_cache[key] = (now, dict(summary))
+        return summary
 
     def _fetch_rows(self, asset: str, category: str, days_back: int, limit: int) -> List[Dict[str, Any]]:
         key = (asset, category, days_back, limit)
@@ -594,6 +658,134 @@ class ExecutionFeedbackService:
             "1d": 4320,
         }
         return mapping.get(timeframe, 180)
+
+    @staticmethod
+    def _row_playbook_name(row: Dict[str, Any], metadata: Dict[str, Any]) -> str:
+        return str(
+            metadata.get("playbook_name")
+            or metadata.get("seed_model")
+            or row.get("strategy_id")
+            or ""
+        ).strip().lower()
+
+    @staticmethod
+    def _row_session_name(row: Dict[str, Any], metadata: Dict[str, Any]) -> str:
+        return str(
+            metadata.get("session_label")
+            or metadata.get("playbook_session")
+            or metadata.get("session")
+            or row.get("session")
+            or ""
+        ).strip().lower()
+
+    @classmethod
+    def _summarize_selected_rows(
+        cls,
+        rows: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]],
+        *,
+        asset: str = "",
+        category: str = "",
+        playbook_name: str = "",
+        session: str = "",
+    ) -> Dict[str, Any]:
+        if not rows:
+            return {
+                "asset": asset,
+                "category": category,
+                "playbook_name": playbook_name,
+                "session": session,
+                "sample_count": 0,
+                "win_rate": 0.0,
+                "target_hit_rate": 0.0,
+                "premature_stop_rate": 0.0,
+                "late_entry_rate": 0.0,
+                "avg_rr_realized": 0.0,
+                "avg_quality_score": 50.0,
+                "avg_duration_minutes": 0.0,
+                "pnl_total": 0.0,
+                "gross_profit": 0.0,
+                "gross_loss": 0.0,
+                "avg_pnl": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown": 0.0,
+                "best_trade_pnl": 0.0,
+                "worst_trade_pnl": 0.0,
+            }
+
+        chronological = sorted(
+            rows,
+            key=lambda item: (
+                _coerce_datetime(item[0].get("exit_time") or item[0].get("entry_time")) or datetime.min.replace(tzinfo=timezone.utc)
+            ),
+        )
+        samples = len(chronological)
+        win_count = 0
+        target_hits = 0
+        premature_count = 0
+        late_count = 0
+        rr_total = 0.0
+        quality_total = 0.0
+        duration_total = 0.0
+        pnl_total = 0.0
+        gross_profit = 0.0
+        gross_loss = 0.0
+        best_trade = None
+        worst_trade = None
+        cumulative = 0.0
+        running_peak = 0.0
+        max_drawdown = 0.0
+
+        for row, _metadata, feedback in chronological:
+            pnl = _safe_float(row.get("pnl"), 0.0)
+            rr = _safe_float(feedback.get("rr_realized"), 0.0)
+            quality = _safe_float(feedback.get("quality_score"), 50.0)
+            duration = _safe_float(feedback.get("duration_minutes"), 0.0)
+            pnl_total += pnl
+            rr_total += rr
+            quality_total += quality
+            duration_total += duration
+            win_count += 1 if pnl > 0 else 0
+            target_hits += 1 if feedback.get("full_target") else 0
+            premature_count += 1 if feedback.get("premature_stop") else 0
+            late_count += 1 if feedback.get("late_entry") else 0
+            if pnl > 0:
+                gross_profit += pnl
+            elif pnl < 0:
+                gross_loss += pnl
+            best_trade = pnl if best_trade is None else max(best_trade, pnl)
+            worst_trade = pnl if worst_trade is None else min(worst_trade, pnl)
+            cumulative += pnl
+            running_peak = max(running_peak, cumulative)
+            max_drawdown = min(max_drawdown, cumulative - running_peak)
+
+        profit_factor = 0.0
+        if gross_profit > 0 and gross_loss < 0:
+            profit_factor = gross_profit / abs(gross_loss)
+        elif gross_profit > 0 and gross_loss == 0:
+            profit_factor = float(gross_profit)
+
+        return {
+            "asset": asset,
+            "category": category,
+            "playbook_name": playbook_name,
+            "session": session,
+            "sample_count": samples,
+            "win_rate": round(win_count / samples, 4),
+            "target_hit_rate": round(target_hits / samples, 4),
+            "premature_stop_rate": round(premature_count / samples, 4),
+            "late_entry_rate": round(late_count / samples, 4),
+            "avg_rr_realized": round(rr_total / samples, 4),
+            "avg_quality_score": round(quality_total / samples, 1),
+            "avg_duration_minutes": round(duration_total / samples, 1),
+            "pnl_total": round(pnl_total, 2),
+            "gross_profit": round(gross_profit, 2),
+            "gross_loss": round(gross_loss, 2),
+            "avg_pnl": round(pnl_total / samples, 2),
+            "profit_factor": round(profit_factor, 3),
+            "max_drawdown": round(abs(max_drawdown), 2),
+            "best_trade_pnl": round(_safe_float(best_trade, 0.0), 2),
+            "worst_trade_pnl": round(_safe_float(worst_trade, 0.0), 2),
+        }
 
     @staticmethod
     def _blend_summaries(

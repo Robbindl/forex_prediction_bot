@@ -345,6 +345,7 @@ class PaperTrader:
             "original_take_profit": take_profit,
             "take_profit_levels": tp_levels,
             "position_size":      pos_size,
+            "initial_position_size": pos_size,
             "lot_size":           round(lot_size, 4),
             "strategy_id":        strategy,
             "open_time":          datetime.now(timezone.utc).isoformat(),
@@ -372,6 +373,26 @@ class PaperTrader:
             score=round(confidence, 4),
         )
         return trade
+
+    @staticmethod
+    def _tp_size_shares(management: Dict[str, Any], total_tiers: int) -> List[float]:
+        if total_tiers <= 0:
+            return []
+        parsed: List[float] = []
+        for raw in list(management.get("partial_take_profit_size_fractions") or []):
+            try:
+                value = float(raw)
+            except Exception:
+                continue
+            if value > 0:
+                parsed.append(value)
+        if not parsed:
+            return [round(1.0 / total_tiers, 6) for _ in range(total_tiers)]
+        parsed = parsed[:total_tiers]
+        total = sum(parsed)
+        if total <= 0:
+            return [round(1.0 / total_tiers, 6) for _ in range(total_tiers)]
+        return [round(value / total, 6) for value in parsed]
 
     # ── Update open positions with current prices ─────────────────────────────
 
@@ -775,6 +796,7 @@ class PaperTrader:
     ) -> Optional[TradeDict]:
         if tp_levels:
             total_tiers = len(tp_levels)
+            size_shares = self._tp_size_shares(management, total_tiers)
             while True:
                 tp_idx = int(pos.get("tp_hit", 0))
                 if tp_idx >= total_tiers:
@@ -795,8 +817,9 @@ class PaperTrader:
                     )
 
                 original_size = float(pos.get("position_size", size))
-                close_fraction = 1.0 / max(2, total_tiers - tp_idx)
-                partial_size = original_size * close_fraction
+                initial_size = float(pos.get("initial_position_size", size) or size)
+                target_share = float(size_shares[tp_idx]) if tp_idx < len(size_shares) else (1.0 / max(2, total_tiers - tp_idx))
+                partial_size = min(original_size, initial_size * target_share)
                 remaining_size = max(0.0, original_size - partial_size)
                 partial_trade = self._close_partial_take_profit(
                     pos,

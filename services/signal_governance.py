@@ -13,6 +13,14 @@ from config.config import (
     GOVERNANCE_EXPECTANCY_MIN_QUALITY_SCORE,
     GOVERNANCE_EXPECTANCY_MIN_SAMPLES,
     GOVERNANCE_EXPECTANCY_MIN_TARGET_HIT_RATE,
+    GOVERNANCE_RECENT_GUARD_ASSET_MIN_AVG_R,
+    GOVERNANCE_RECENT_GUARD_DAYS,
+    GOVERNANCE_RECENT_GUARD_ENABLED,
+    GOVERNANCE_RECENT_GUARD_MAX_LOSS_USD,
+    GOVERNANCE_RECENT_GUARD_MAX_PREMATURE_STOP_RATE,
+    GOVERNANCE_RECENT_GUARD_MIN_SAMPLES,
+    GOVERNANCE_RECENT_GUARD_PLAYBOOK_MIN_AVG_R,
+    GOVERNANCE_RECENT_GUARD_SESSION_MIN_AVG_R,
     GOVERNANCE_MIN_LIVE_ACCURACY,
     GOVERNANCE_MIN_LIVE_SAMPLES,
     GOVERNANCE_MIN_SEED_CONFIDENCE,
@@ -62,14 +70,14 @@ _SOURCE_SCORE = {
 
 _LIVE_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
     "crypto": {
-        "min_risk_reward": 1.35,
+        "min_risk_reward": 1.55,
         "min_seed_confidence": 0.14,
         "min_live_accuracy": 45.0,
         "bootstrap_min_live_accuracy": 42.0,
         "expectancy_min_avg_r": -0.05,
     },
     "commodities": {
-        "min_risk_reward": 1.15,
+        "min_risk_reward": 1.40,
         "min_seed_confidence": 0.14,
         "min_live_accuracy": 50.0,
         "bootstrap_min_live_accuracy": 45.0,
@@ -77,10 +85,10 @@ _LIVE_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
         "allow_provisional_research_in_paper": True,
     },
     "forex": {
-        "min_risk_reward": 1.15,
+        "min_risk_reward": 1.35,
     },
     "indices": {
-        "min_risk_reward": 1.25,
+        "min_risk_reward": 1.45,
         "min_seed_confidence": 0.14,
         "min_live_accuracy": 50.0,
         "bootstrap_min_live_accuracy": 45.0,
@@ -89,14 +97,14 @@ _LIVE_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
 
 _PAPER_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
     "crypto": {
-        "min_risk_reward": 1.20,
+        "min_risk_reward": 1.30,
         "min_seed_confidence": 0.14,
         "min_live_accuracy": 25.0,
         "bootstrap_min_live_accuracy": 22.0,
         "expectancy_min_avg_r": -0.05,
     },
     "commodities": {
-        "min_risk_reward": 1.00,
+        "min_risk_reward": 1.10,
         "min_seed_confidence": 0.14,
         "min_live_accuracy": 50.0,
         "bootstrap_min_live_accuracy": 45.0,
@@ -104,10 +112,10 @@ _PAPER_CATEGORY_GOVERNANCE_PROFILES: Dict[str, Dict[str, float | bool]] = {
         "allow_provisional_research_in_paper": True,
     },
     "forex": {
-        "min_risk_reward": 0.75,
+        "min_risk_reward": 0.95,
     },
     "indices": {
-        "min_risk_reward": 1.00,
+        "min_risk_reward": 1.10,
         "min_seed_confidence": 0.14,
         "min_live_accuracy": 45.0,
         "bootstrap_min_live_accuracy": 40.0,
@@ -127,6 +135,7 @@ class SignalGovernance:
         self._apply_core_governance_rules(state, violations, warnings)
         self._apply_market_governance_rules(state, violations, warnings)
         self._apply_validation_governance_rules(state, violations, warnings)
+        self._apply_recent_performance_guard_rules(state, violations, warnings)
 
         score = self._score_governance(state, violations, warnings)
         score = max(0, min(100, round(score)))
@@ -175,6 +184,18 @@ class SignalGovernance:
             model_meta,
             category=category,
         )
+        session_label = str(
+            signal.metadata.get("session_label")
+            or signal.metadata.get("playbook_session")
+            or signal.metadata.get("session")
+            or ""
+        ).strip().lower()
+        recent_performance_guard = self._get_recent_performance_guard(
+            asset=asset,
+            category=category,
+            playbook_name=model_key,
+            session=session_label,
+        )
         return {
             "signal": signal,
             "context": context,
@@ -186,12 +207,14 @@ class SignalGovernance:
             "research_warning": research_warning,
             "research_ok": research_ok,
             "research_note": research_note,
+            "session_label": session_label,
             "market_data": market_data,
             "price_meta": price_meta,
             "ohlcv_meta": ohlcv_meta,
             "live_validation": live_validation,
             "registry_validation": registry_validation,
             "expectancy_validation": expectancy_validation,
+            "recent_performance_guard": recent_performance_guard,
             "adaptive_policy": adaptive_policy,
             "min_risk_reward": min_risk_reward,
             "min_seed_confidence": min_seed_confidence,
@@ -259,6 +282,16 @@ class SignalGovernance:
         )
         if not ohlcv_ok:
             violations.append(ohlcv_reason)
+
+    @staticmethod
+    def _apply_recent_performance_guard_rules(
+        state: Dict[str, Any],
+        violations: list[str],
+        warnings: list[str],
+    ) -> None:
+        guard = state.get("recent_performance_guard") or {}
+        violations.extend(list(guard.get("violations") or []))
+        warnings.extend(list(guard.get("warnings") or []))
 
         if state["category"] == "crypto":
             crypto_price_ok, crypto_price_note = self._check_crypto_price_source(state["price_meta"])
@@ -381,6 +414,7 @@ class SignalGovernance:
             "live_validation": state["live_validation"],
             "registry_validation": state["registry_validation"],
             "expectancy_validation": state["expectancy_validation"],
+            "recent_performance_guard": state["recent_performance_guard"],
             "market_data": {
                 "price": state["price_meta"],
                 "ohlcv": state["ohlcv_meta"],
@@ -899,6 +933,115 @@ class SignalGovernance:
         except Exception as exc:
             logger.debug(f"[SignalGovernance] Execution expectancy unavailable: {exc}")
             return {"scope": "unavailable", "sample_count": 0}
+
+    @staticmethod
+    def _get_recent_performance_guard(
+        *,
+        asset: str,
+        category: str,
+        playbook_name: str,
+        session: str,
+    ) -> Dict[str, Any]:
+        base = {
+            "enabled": bool(GOVERNANCE_RECENT_GUARD_ENABLED),
+            "days": int(GOVERNANCE_RECENT_GUARD_DAYS),
+            "violations": [],
+            "warnings": [],
+            "asset": {"sample_count": 0},
+            "playbook": {"sample_count": 0},
+            "session": {"sample_count": 0},
+        }
+        if not GOVERNANCE_RECENT_GUARD_ENABLED:
+            return base
+        try:
+            from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+            service = get_execution_feedback_service()
+            days_back = max(3, int(GOVERNANCE_RECENT_GUARD_DAYS))
+            asset_summary = service.summarize_context(
+                asset=asset,
+                category=category,
+                days_back=days_back,
+                limit=220,
+            )
+            playbook_summary = (
+                service.summarize_context(
+                    category=category,
+                    playbook_name=playbook_name,
+                    days_back=days_back,
+                    limit=260,
+                )
+                if playbook_name and playbook_name not in {"playbook_runtime", "playbook"}
+                else {"sample_count": 0}
+            )
+            session_summary = (
+                service.summarize_context(
+                    category=category,
+                    session=session,
+                    days_back=days_back,
+                    limit=260,
+                )
+                if session
+                else {"sample_count": 0}
+            )
+        except Exception as exc:
+            logger.debug(f"[SignalGovernance] Recent performance guard unavailable: {exc}")
+            base["warnings"] = ["recent performance guard unavailable"]
+            return base
+
+        violations: list[str] = []
+        warnings: list[str] = []
+        min_samples = max(2, int(GOVERNANCE_RECENT_GUARD_MIN_SAMPLES))
+
+        asset_samples = int(asset_summary.get("sample_count", 0) or 0)
+        asset_avg_r = float(asset_summary.get("avg_rr_realized", 0.0) or 0.0)
+        asset_pnl = float(asset_summary.get("pnl_total", 0.0) or 0.0)
+        asset_premature = float(asset_summary.get("premature_stop_rate", 0.0) or 0.0)
+        if asset_samples >= min_samples:
+            if (
+                asset_avg_r <= float(GOVERNANCE_RECENT_GUARD_ASSET_MIN_AVG_R)
+                and asset_pnl <= float(GOVERNANCE_RECENT_GUARD_MAX_LOSS_USD)
+            ):
+                violations.append(
+                    f"recent asset guard: {asset} {asset_avg_r:.2f}R / ${asset_pnl:+.2f} over {asset_samples} trades"
+                )
+            elif asset_premature >= float(GOVERNANCE_RECENT_GUARD_MAX_PREMATURE_STOP_RATE):
+                warnings.append(
+                    f"recent asset guard: {asset} premature stops {asset_premature * 100:.0f}% over {asset_samples} trades"
+                )
+
+        playbook_samples = int(playbook_summary.get("sample_count", 0) or 0)
+        playbook_avg_r = float(playbook_summary.get("avg_rr_realized", 0.0) or 0.0)
+        playbook_pnl = float(playbook_summary.get("pnl_total", 0.0) or 0.0)
+        if playbook_samples >= min_samples and (
+            playbook_avg_r <= float(GOVERNANCE_RECENT_GUARD_PLAYBOOK_MIN_AVG_R)
+            and playbook_pnl < 0.0
+        ):
+            violations.append(
+                f"recent playbook guard: {playbook_name} {playbook_avg_r:.2f}R / ${playbook_pnl:+.2f} over {playbook_samples} trades"
+            )
+
+        session_samples = int(session_summary.get("sample_count", 0) or 0)
+        session_avg_r = float(session_summary.get("avg_rr_realized", 0.0) or 0.0)
+        session_pnl = float(session_summary.get("pnl_total", 0.0) or 0.0)
+        if session_samples >= min_samples and (
+            session_avg_r <= float(GOVERNANCE_RECENT_GUARD_SESSION_MIN_AVG_R)
+            and session_pnl < 0.0
+        ):
+            warnings.append(
+                f"recent session guard: {session} {session_avg_r:.2f}R / ${session_pnl:+.2f} over {session_samples} trades"
+            )
+
+        base.update(
+            {
+                "violations": violations,
+                "warnings": warnings,
+                "asset": asset_summary,
+                "playbook": playbook_summary,
+                "session": session_summary,
+            }
+        )
+        return base
 
 
 signal_governance = SignalGovernance()

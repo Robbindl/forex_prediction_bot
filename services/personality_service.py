@@ -1445,7 +1445,7 @@ def _analysis_bot_paragraph(asset: str, analysis: Dict[str, Any], *, topic: str 
             pnl_text = ""
         return (
             f"The bot is already in a live {direction.lower()} on {asset} from {_fmt_asset_price(position.get('entry_price'))}."
-            f"{pnl_text} It is managing that position first, so it is not looking for a second fresh entry on the same asset."
+            f"{pnl_text} It is managing that position first; it will only consider a smaller add-on if the trade is already well in profit and a fresh same-direction setup still passes."
         )
 
     if signal and bool(signal.get("alive", True)):

@@ -31,7 +31,11 @@ from core.assets import registry
 from core.engine import TradingCore
 from core.signal import Signal
 from execution.paper_trader import PaperTrader
+from risk.manager import RiskManager
 from risk.position_sizer import PositionSizer
+from services.adaptive_policy_service import AdaptivePolicyService
+from services.execution_feedback_service import ExecutionFeedbackService
+from services.playbook_service import PlaybookService
 
 def _patch_db(monkeypatch, fake_db) -> None:
     monkeypatch.setattr(sys.modules["services.db_pool"], "get_db", lambda: fake_db, raising=False)
@@ -270,6 +274,126 @@ def test_position_sizer_returns_zero_when_even_min_lot_is_too_risky(monkeypatch)
     )
 
     assert size == 0.0
+
+
+def test_playbook_management_template_defers_first_partial_and_lets_runner_extend() -> None:
+    service = PlaybookService()
+    profile = service._profile("commodities")
+
+    management = service._management_template(
+        profile,
+        "breakout_continuation",
+        asset="XAU/USD",
+        category="commodities",
+    )
+
+    assert management["partial_take_profit_rr"] == [1.2, 1.9]
+    assert management["partial_take_profit_size_fractions"] == [0.30, 0.40, 0.30]
+    assert management["runner_target_rr"] >= 2.6
+    assert management["trail_activation_rr"] >= 1.2
+
+
+def test_execution_feedback_can_request_wider_stops_and_higher_targets_when_winners_are_cut() -> None:
+    service = ExecutionFeedbackService()
+    summary = {
+        "sample_count": 18,
+        "target_miss_rate": 0.16,
+        "avg_target_capture": 0.72,
+        "premature_stop_rate": 0.34,
+        "avg_mfe_rr": 1.7,
+        "stop_like_rate": 0.40,
+        "avg_mae_rr": 1.12,
+        "late_entry_rate": 0.10,
+        "target_hit_rate": 0.47,
+        "avg_rr_realized": 0.78,
+        "avg_giveback_ratio": 0.18,
+        "avg_quality_score": 56.0,
+    }
+    service.summarize_history = lambda **kwargs: dict(summary)
+
+    adjustment = service.get_exit_adjustment("XAU/USD", "commodities")
+
+    assert adjustment["target_rr_multiplier"] > 1.0
+    assert adjustment["stop_buffer_multiplier"] > 1.0
+    assert "winners_cut_short" in adjustment["notes"]
+
+
+def test_risk_manager_uses_stronger_default_target_rr() -> None:
+    manager = RiskManager()
+
+    assert manager.get_target_rr("forex") >= 1.8
+    assert manager.get_target_rr("indices") >= 1.9
+
+
+def test_default_take_profit_levels_no_longer_take_half_r_first() -> None:
+    levels = TradingCore._build_take_profit_levels(100.0, 110.0, "BUY")
+
+    assert levels == [106.0, 110.0, 112.5]
+
+
+def test_paper_trader_uses_three_tier_30_40_30_partial_model() -> None:
+    shares = PaperTrader._tp_size_shares({"partial_take_profit_size_fractions": [0.3, 0.4, 0.3]}, 3)
+
+    assert shares == [0.3, 0.4, 0.3]
+
+
+def test_adaptive_policy_boosts_assets_with_recent_positive_edge(monkeypatch) -> None:
+    profile = {
+        "sample_count": 8,
+        "profit_factor": 1.48,
+        "avg_rr_realized": 0.42,
+        "pnl_total": 188.0,
+        "premature_stop_rate": 0.18,
+        "target_hit_rate": 0.56,
+    }
+
+    monkeypatch.setattr(
+        "services.execution_feedback_service.get_service",
+        lambda: SimpleNamespace(summarize_context=lambda **kwargs: dict(profile)),
+    )
+
+    thresholds = AdaptivePolicyService().get_thresholds("XAU/USD", "commodities", context={}, signal=None, state=None)
+
+    assert thresholds["asset_performance_profile"]["action"] == "boost"
+    assert thresholds["risk_multiplier"] > 1.0
+
+
+def test_trading_core_winner_addon_plan_requires_live_progress_and_quality() -> None:
+    engine = TradingCore(balance=10_000.0)
+    engine.state = SimpleNamespace(
+        get_open_positions=lambda: [
+            {
+                "trade_id": "parent1",
+                "asset": "XAU/USD",
+                "canonical_asset": "XAU/USD",
+                "category": "commodities",
+                "direction": "BUY",
+                "entry_price": 100.0,
+                "stop_loss": 95.0,
+                "original_sl": 95.0,
+                "pnl": 42.0,
+                "metadata": {},
+            }
+        ],
+    )
+
+    signal = Signal(
+        asset="XAU/USD",
+        canonical_asset="XAU/USD",
+        category="commodities",
+        direction="BUY",
+        confidence=0.74,
+        entry_price=108.0,
+        stop_loss=103.0,
+        take_profit=118.0,
+    )
+
+    engine._extract_position_action_metrics = lambda pos, include_market_status=False: {"quality_score": 71.0}
+    plan = engine._build_winner_addon_plan("XAU/USD", "commodities", signal, 108.0)
+
+    assert plan["enabled"] is True
+    assert plan["parent_trade_id"] == "parent1"
+    assert plan["progress_rr"] >= 1.5
 
 
 def test_position_sizer_keeps_xag_proportional_below_broker_floor(monkeypatch) -> None:

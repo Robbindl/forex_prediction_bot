@@ -19,6 +19,12 @@ from config.config import (
     PLAYBOOK_ONLY_RUNTIME,
     TOP_OPPORTUNITIES_LIMIT,
     TRADE_CLOSE_COOLDOWN_MINUTES as CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES,
+    WINNER_ADDON_ENABLED,
+    WINNER_ADDON_MAX_POSITIONS_PER_ASSET,
+    WINNER_ADDON_MIN_CONFIDENCE,
+    WINNER_ADDON_MIN_PROGRESS_RR,
+    WINNER_ADDON_MIN_QUALITY_SCORE,
+    WINNER_ADDON_SIZE_FRACTION,
     get_timeframe_periods,
     get_trading_timeframe,
 )
@@ -443,6 +449,89 @@ class TradingCore:
             "market_reason": market_reason,
             "weak_reasons": weak_reasons,
             "is_weak": quality_ratio < 0.58 or len(weak_reasons) >= 2,
+        }
+
+    def _open_positions_for_asset(self, canonical_asset: str) -> List[Dict[str, Any]]:
+        return [
+            dict(pos)
+            for pos in self.state.get_open_positions()
+            if self.registry.canonical(
+                str(pos.get("canonical_asset") or pos.get("asset") or "")
+            ) == canonical_asset
+        ]
+
+    def _winner_addon_scan_allowed(self, canonical_asset: str) -> bool:
+        if not WINNER_ADDON_ENABLED:
+            return False
+        positions = self._open_positions_for_asset(canonical_asset)
+        if not positions:
+            return False
+        if len(positions) >= max(1, int(WINNER_ADDON_MAX_POSITIONS_PER_ASSET or 2)):
+            return False
+        return True
+
+    @staticmethod
+    def _position_progress_rr(pos: Dict[str, Any], current_price: float) -> float:
+        entry = float(pos.get("entry_price", 0.0) or 0.0)
+        stop_loss = float(pos.get("original_sl", pos.get("stop_loss", 0.0)) or 0.0)
+        if entry <= 0 or current_price <= 0:
+            return 0.0
+        risk = abs(entry - stop_loss)
+        if risk <= 0:
+            return 0.0
+        direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+        if direction == "BUY":
+            return (current_price - entry) / max(risk, 1e-9)
+        return (entry - current_price) / max(risk, 1e-9)
+
+    def _build_winner_addon_plan(
+        self,
+        canonical_asset: str,
+        category: str,
+        signal: Signal,
+        current_price: float,
+    ) -> Dict[str, Any]:
+        if not WINNER_ADDON_ENABLED:
+            return {}
+        positions = self._open_positions_for_asset(canonical_asset)
+        if not positions:
+            return {}
+        if len(positions) >= max(1, int(WINNER_ADDON_MAX_POSITIONS_PER_ASSET or 2)):
+            return {}
+
+        primary = next(
+            (
+                pos
+                for pos in positions
+                if not bool(((pos.get("metadata") or {}).get("winner_addon") or {}).get("enabled"))
+            ),
+            positions[0],
+        )
+        primary_direction = str(primary.get("direction") or primary.get("signal") or "BUY").upper()
+        if primary_direction != str(signal.direction or "BUY").upper():
+            return {}
+        if float(signal.confidence or 0.0) < float(WINNER_ADDON_MIN_CONFIDENCE or 0.66):
+            return {}
+
+        quality = self._extract_position_action_metrics(primary, include_market_status=False)
+        quality_score = float(quality.get("quality_score", 0.0) or 0.0)
+        progress_rr = self._position_progress_rr(primary, float(current_price or 0.0))
+        if progress_rr < float(WINNER_ADDON_MIN_PROGRESS_RR or 1.5):
+            return {}
+        if quality_score < float(WINNER_ADDON_MIN_QUALITY_SCORE or 62.0):
+            return {}
+        if float(primary.get("pnl", 0.0) or 0.0) <= 0.0:
+            return {}
+
+        return {
+            "enabled": True,
+            "asset": canonical_asset,
+            "category": category,
+            "parent_trade_id": str(primary.get("trade_id", "") or ""),
+            "parent_direction": primary_direction,
+            "progress_rr": round(progress_rr, 4),
+            "parent_quality_score": round(quality_score, 1),
+            "size_fraction": round(max(0.15, min(0.70, float(WINNER_ADDON_SIZE_FRACTION or 0.45))), 4),
         }
 
     def get_weak_positions(
@@ -1951,13 +2040,16 @@ class TradingCore:
         market_block_counts: Counter[str] = Counter()
         cooling_count = 0
         open_position_count = 0
+        addon_candidate_count = 0
         for canonical, category in asset_list:
             if self.state.is_cooling_down(canonical):
                 cooling_count += 1
                 continue
             if self.state.has_open_position_for(canonical):
-                open_position_count += 1
-                continue
+                if not self._winner_addon_scan_allowed(canonical):
+                    open_position_count += 1
+                    continue
+                addon_candidate_count += 1
             base_candidates.append((canonical, category))
             market_open, block_reason = self._market_hours_status(canonical, category)
             if market_open:
@@ -1970,6 +2062,7 @@ class TradingCore:
             "market_block_counts": market_block_counts,
             "cooling_count": cooling_count,
             "open_position_count": open_position_count,
+            "addon_candidate_count": addon_candidate_count,
         }
 
     def _log_signal_scan_overview(
@@ -2030,6 +2123,18 @@ class TradingCore:
                 canonical, canonical, category, price_data, ctx
             )
             if sig:
+                if self.state.has_open_position_for(canonical):
+                    addon_plan = self._build_winner_addon_plan(
+                        canonical,
+                        category,
+                        sig,
+                        float(ctx.get("current_price", 0.0) or sig.entry_price or 0.0),
+                    )
+                    if not addon_plan:
+                        logger.debug(f"[TradingCore] {canonical}: open position active but no valid winner add-on")
+                        return ("no_addon_signal", canonical)
+                    sig.metadata["winner_addon"] = dict(addon_plan)
+                    ctx["winner_addon"] = dict(addon_plan)
                 logger.info(
                     f"[TradingCore] CANDIDATE: {canonical} {sig.direction} seed_score={sig.confidence:.3f}"
                 )
@@ -2090,6 +2195,7 @@ class TradingCore:
             f"tradable={tradable_count}",
             f"generated={generated_count}",
             f"no_edge={status_counts.get('no_seed_signal', 0)}",
+            f"no_addon={status_counts.get('no_addon_signal', 0)}",
             f"no_price={status_counts.get('no_price_data', 0)}",
             f"market_closed={status_counts.get('market_closed', 0)}",
             f"errors={status_counts.get('error', 0) + status_counts.get('future_error', 0)}",
@@ -2201,6 +2307,19 @@ class TradingCore:
                 )
             except Exception as _size_err:
                 logger.debug(f"[TradingCore] Position sizing error for {signal.asset}: {_size_err}")
+        addon_meta = (
+            signal_dict.get("metadata", {}).get("winner_addon")
+            if isinstance(signal_dict.get("metadata"), dict)
+            else {}
+        )
+        if isinstance(addon_meta, dict) and addon_meta.get("enabled"):
+            try:
+                base_size = float(signal_dict.get("position_size", 0.0) or 0.0)
+                size_fraction = max(0.15, min(0.70, float(addon_meta.get("size_fraction", 0.45) or 0.45)))
+                if base_size > 0:
+                    signal_dict["position_size"] = round(base_size * size_fraction, 6)
+            except Exception as _addon_err:
+                logger.debug(f"[TradingCore] Winner add-on sizing error for {signal.asset}: {_addon_err}")
         return signal_dict
 
     def _apply_crypto_order_flow_gate(
@@ -2338,6 +2457,26 @@ class TradingCore:
         return None
 
     @staticmethod
+    def _normalize_tp_size_fractions(raw_fractions: Any, total_tiers: int) -> List[float]:
+        if total_tiers <= 0:
+            return []
+        parsed: List[float] = []
+        for raw in list(raw_fractions or []):
+            try:
+                value = float(raw)
+            except Exception:
+                continue
+            if value > 0:
+                parsed.append(value)
+        if not parsed:
+            return [round(1.0 / total_tiers, 6) for _ in range(total_tiers)]
+        parsed = parsed[:total_tiers]
+        total = sum(parsed)
+        if total <= 0:
+            return [round(1.0 / total_tiers, 6) for _ in range(total_tiers)]
+        return [round(value / total, 6) for value in parsed]
+
+    @staticmethod
     def _build_take_profit_levels(entry: float, take_profit: float, direction: str) -> List[float]:
         levels: List[float] = []
         try:
@@ -2345,9 +2484,9 @@ class TradingCore:
             if dist <= 0:
                 return levels
             if str(direction).upper() == "BUY":
-                levels = [round(entry + dist * 0.5, 6), round(entry + dist, 6), round(entry + dist * 1.5, 6)]
+                levels = [round(entry + dist * 0.6, 6), round(entry + dist, 6), round(entry + dist * 1.25, 6)]
             else:
-                levels = [round(entry - dist * 0.5, 6), round(entry - dist, 6), round(entry - dist * 1.5, 6)]
+                levels = [round(entry - dist * 0.6, 6), round(entry - dist, 6), round(entry - dist * 1.25, 6)]
         except Exception:
             return []
         return levels
@@ -2470,7 +2609,7 @@ class TradingCore:
             return float(take_profit)
 
         distance = abs(entry_price - stop_loss)
-        reward_distance = distance * 1.5 * max(0.80, min(1.20, target_rr_multiplier))
+        reward_distance = distance * 1.8 * max(0.82, min(1.24, target_rr_multiplier))
         if direction == "BUY":
             return float(entry_price + reward_distance)
         return float(entry_price - reward_distance)
@@ -2627,6 +2766,10 @@ class TradingCore:
                 continue
             if rr_value > 0.0:
                 partial_rrs.append(rr_value)
+        partial_size_fractions = TradingCore._normalize_tp_size_fractions(
+            playbook_management_template.get("partial_take_profit_size_fractions"),
+            len(partial_rrs) + 1,
+        )
 
         runner_target_rr = float(playbook_management_template.get("runner_target_rr", 0.0) or 0.0)
         current_rr = abs(float(take_profit) - float(entry_price)) / max(risk_distance, 1e-9)
@@ -2644,6 +2787,7 @@ class TradingCore:
         trade_management_plan = {
             **playbook_management_template,
             "partial_take_profit_rr": [round(float(rr), 4) for rr in partial_rrs],
+            "partial_take_profit_size_fractions": partial_size_fractions,
             "runner_target_rr": round(runner_target_rr or current_rr, 4),
             "preferred_interval": playbook_interval or playbook_management_template.get("preferred_interval") or "",
             "entry_style": playbook_entry_style,
@@ -4024,8 +4168,13 @@ class TradingCore:
         trail_atr_multiple: float,
     ) -> None:
         original_size = float(current_pos.get("position_size", size) or size)
-        close_fraction = 1.0 / max(1, total_tiers - tp_idx)
-        partial_size = max(0.0, original_size * close_fraction)
+        initial_size = float(current_pos.get("initial_position_size", size) or size)
+        size_fractions = self._normalize_tp_size_fractions(
+            management.get("partial_take_profit_size_fractions"),
+            total_tiers,
+        )
+        target_fraction = float(size_fractions[tp_idx]) if tp_idx < len(size_fractions) else (1.0 / max(1, total_tiers - tp_idx))
+        partial_size = min(original_size, max(0.0, initial_size * target_fraction))
         remaining_size = max(0.0, original_size - partial_size)
         partial_pnl = self._calculate_position_pnl(
             asset,

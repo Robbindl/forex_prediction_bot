@@ -114,6 +114,17 @@ class OpportunityRanker:
         strength = _clip(0.45 + confidence * 0.55, 0.45, 1.0)
         return round(_clip(0.5 + (base - 0.5) * strength), 4)
 
+    @staticmethod
+    def _asset_edge_score(signal) -> float:
+        metadata = dict(getattr(signal, "metadata", {}) or {})
+        adaptive = metadata.get("adaptive_policy") if isinstance(metadata.get("adaptive_policy"), dict) else {}
+        profile = adaptive.get("asset_performance_profile") if isinstance(adaptive, dict) else {}
+        if not isinstance(profile, dict):
+            return 0.5
+        if int(profile.get("sample_count", 0) or 0) <= 0:
+            return 0.5
+        return round(_clip(float(profile.get("asset_score", 0.5) or 0.5)), 4)
+
     def _score_pair(
         self,
         signal,
@@ -176,6 +187,7 @@ class OpportunityRanker:
         broker_score = self._broker_quality_score(signal)
         microstructure_score = self._microstructure_score(signal)
         cross_asset_score = self._cross_asset_score(signal)
+        asset_edge_score = self._asset_edge_score(signal)
 
         cat_open = sum(1 for p in open_positions if p.get("category") == category)
         same_dir_open = sum(
@@ -213,13 +225,14 @@ class OpportunityRanker:
             "broker_quality": round(broker_score, 4),
             "microstructure": round(microstructure_score, 4),
             "cross_asset": round(cross_asset_score, 4),
+            "asset_edge": round(asset_edge_score, 4),
             "portfolio_fit": round(portfolio_fit, 4),
         }
 
         score = (
-            confidence_score * 0.22
-            + structure_score * 0.14
-            + setup_score * 0.09
+            confidence_score * 0.20
+            + structure_score * 0.13
+            + setup_score * 0.08
             + sentiment_score * 0.07
             + whale_score * 0.04
             + orderflow_score * 0.05
@@ -229,6 +242,7 @@ class OpportunityRanker:
             + broker_score * 0.08
             + microstructure_score * 0.06
             + cross_asset_score * 0.05
+            + asset_edge_score * 0.04
             + portfolio_fit * 0.04
         )
 
