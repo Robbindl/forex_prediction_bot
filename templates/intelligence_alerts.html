@@ -31,7 +31,9 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .tb-balance{font-size:14px;font-weight:700;color:var(--gr)}
 .tb-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
 .badge-live{background:rgba(0,208,132,.13);color:var(--gr)}
-.content{flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:auto 1fr;gap:12px;min-height:0;grid-auto-flow:row dense}
+.content{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;min-height:0}
+.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.panel-columns{columns:2 420px;column-gap:12px}
 .panel{display:flex;flex-direction:column}
 .metric-card{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);padding:16px 18px;position:relative;overflow:hidden}
 .metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
@@ -43,7 +45,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .panel{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r3);overflow:hidden;min-height:80px}
 .metric-card{display:block}
 .panel-wide,.panel-full{min-height:0}
-.panel-wide{grid-column:span 2}.panel-full{grid-column:span 4}
+.panel-wide,.panel-full{grid-column:auto}
 .panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
 .panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
 .panel-badge{margin-left:auto;font-size:10px;padding:2px 8px;border-radius:20px;background:var(--s3);color:var(--tx3)}
@@ -52,6 +54,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .empty{text-align:center;padding:24px;color:var(--tx3);font-size:13px}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .metric-card,.panel{animation:fadeUp .3s ease both;min-width:0}
+.panel-columns>.panel{display:inline-flex;width:100%;margin:0 0 12px;break-inside:avoid;vertical-align:top}
 .outcome-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
 .outcome-card{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;min-width:0}
 .outcome-kicker{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
@@ -109,6 +112,8 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .j-chip-bad{color:var(--rd);border-color:rgba(255,69,96,.25)}
 .j-note{font-size:11px;color:var(--tx3);margin-top:8px;line-height:1.35}
 .alert-title,.outcome-value,.j-note{overflow-wrap:anywhere}
+#alertFeed{max-height:320px;overflow-y:auto}
+#journalFeed{max-height:340px;overflow-y:auto}
 
 /* ── MOBILE HAMBURGER & SIDEBAR OVERLAY ─────────────────────────────── */
 .hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;
@@ -132,13 +137,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 }
 
 @media(max-width:1480px){
-  .content{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .panel-wide,.panel-full{grid-column:1/-1}
+  .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 @media(max-width:980px){
-  .content{grid-template-columns:repeat(2,minmax(0,1fr));padding:14px}
-  .panel-wide,.panel-full{grid-column:1/-1}
+  .content{padding:14px}
+  .panel-columns{columns:1}
   .topbar{height:auto;min-height:52px;align-items:center;flex-wrap:wrap;padding:10px 14px}
   .tb-right{width:100%;justify-content:flex-end;flex-wrap:wrap}
 }
@@ -148,15 +152,15 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   html,body{overflow:auto!important}
   .layout{height:auto;min-height:100vh}
   .main{overflow:visible!important;height:auto}
-  .content{overflow:visible!important;height:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px}
-  .panel-wide,.panel-full{grid-column:1/-1}
+  .content{overflow:visible!important;height:auto;padding:12px}
+  .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .panel-columns{columns:1;column-gap:0}
 }
 
 @media(max-width:620px){
   .topbar{height:auto;min-height:52px;align-items:center;flex-wrap:wrap;padding:10px 12px}
   .tb-right{width:100%;justify-content:flex-end}
-  .content{display:block}
-  .content>*{margin-bottom:10px}
+  .metric-grid{grid-template-columns:minmax(0,1fr)}
 }
 </style>
 </head>
@@ -195,32 +199,34 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     </div>
 
     <div class="content">
-      <!-- Priority counters -->
-      <div class="metric-card mc-red" style="animation-delay:.05s">
-        <div class="mc-label">Critical</div>
-        <div class="mc-value rd" id="mCritical">—</div>
-        <div class="mc-sub">Immediate attention</div>
-        <span class="mc-icon">🚨</span>
-      </div>
-      <div class="metric-card mc-amber" style="animation-delay:.1s">
-        <div class="mc-label">High</div>
-        <div class="mc-value am" id="mHigh">—</div>
-        <div class="mc-sub">Significant events</div>
-        <span class="mc-icon">⚠️</span>
-      </div>
-      <div class="metric-card mc-blue" style="animation-delay:.15s">
-        <div class="mc-label">Medium</div>
-        <div class="mc-value bl" id="mMedium">—</div>
-        <div class="mc-sub">Notable updates</div>
-        <span class="mc-icon">📢</span>
-      </div>
-      <div class="metric-card mc-green" style="animation-delay:.2s">
-        <div class="mc-label">Total Alerts</div>
-        <div class="mc-value gn" id="mTotal">—</div>
-        <div class="mc-sub">All priorities</div>
-        <span class="mc-icon">📋</span>
+      <div class="metric-grid">
+        <div class="metric-card mc-red" style="animation-delay:.05s">
+          <div class="mc-label">Critical</div>
+          <div class="mc-value rd" id="mCritical">—</div>
+          <div class="mc-sub">Immediate attention</div>
+          <span class="mc-icon">🚨</span>
+        </div>
+        <div class="metric-card mc-amber" style="animation-delay:.1s">
+          <div class="mc-label">High</div>
+          <div class="mc-value am" id="mHigh">—</div>
+          <div class="mc-sub">Significant events</div>
+          <span class="mc-icon">⚠️</span>
+        </div>
+        <div class="metric-card mc-blue" style="animation-delay:.15s">
+          <div class="mc-label">Medium</div>
+          <div class="mc-value bl" id="mMedium">—</div>
+          <div class="mc-sub">Notable updates</div>
+          <span class="mc-icon">📢</span>
+        </div>
+        <div class="metric-card mc-green" style="animation-delay:.2s">
+          <div class="mc-label">Total Alerts</div>
+          <div class="mc-value gn" id="mTotal">—</div>
+          <div class="mc-sub">All priorities</div>
+          <span class="mc-icon">📋</span>
+        </div>
       </div>
 
+      <div class="panel-columns">
       <!-- Intelligence alerts feed -->
       <div class="panel panel-wide" style="animation-delay:.25s">
         <div class="tabs" id="alertTabs">
@@ -329,6 +335,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div style="flex:1;overflow-y:auto;min-height:200px" id="journalFeed">
           <div class="empty">Loading decision data…</div>
         </div>
+      </div>
       </div>
     </div>
   </div>
