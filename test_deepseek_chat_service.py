@@ -36,7 +36,7 @@ def test_deepseek_chat_service_uses_only_chat_context(tmp_path: Path, monkeypatc
         "_build_bot_snapshot",
         lambda: {
             "available": True,
-            "source": "read_only_persisted_state",
+            "source": "live_shared_state",
             "balance": 1234.5,
             "daily_pnl": 12.34,
             "daily_trades": 3,
@@ -59,7 +59,7 @@ def test_deepseek_chat_service_uses_only_chat_context(tmp_path: Path, monkeypatc
     assert captured["url"].endswith("/chat/completions")
     assert len(captured["json"]["messages"]) == 3
     assert "trading system" in captured["json"]["messages"][0]["content"].lower()
-    assert "read-only bot snapshot" in captured["json"]["messages"][1]["content"].lower()
+    assert "current bot runtime snapshot" in captured["json"]["messages"][1]["content"].lower()
     assert "open_positions_count" in captured["json"]["messages"][1]["content"]
     assert "1234.5" in captured["json"]["messages"][1]["content"]
 
@@ -102,9 +102,72 @@ def test_deepseek_chat_service_prompts_about_bot_snapshot(tmp_path: Path, monkey
     reply = service.answer(question="what is my bot doing?", chat_id="chat-2")
 
     assert reply == "bot answer"
-    assert "read-only bot snapshot" in captured["json"]["messages"][1]["content"].lower()
+    assert "current bot runtime snapshot" in captured["json"]["messages"][1]["content"].lower()
     assert "balance" in captured["json"]["messages"][1]["content"].lower()
     assert "open_positions_count" in captured["json"]["messages"][1]["content"]
+
+
+def test_deepseek_chat_service_includes_focus_asset_snapshot_for_live_market_question(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeDeepSeekResponse("focus answer")
+
+    monkeypatch.setattr(deepseek_module.requests, "post", fake_post)
+    monkeypatch.setattr(deepseek_module, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(deepseek_module, "_build_bot_snapshot", lambda: {"available": True, "balance": 2000.0})
+    monkeypatch.setattr(
+        deepseek_module,
+        "_build_focus_asset_snapshot",
+        lambda asset: {
+            "available": True,
+            "asset": asset,
+            "live_quote": {"price": 3345.12},
+            "recent_5m": {"bars": 24, "change_pct_last_6_bars": 0.41},
+        },
+    )
+
+    service = DeepSeekChatService(session_store=ChatSessionStore(path=tmp_path / "sessions.json"))
+    reply = service.answer(question="How is gold moving right now?", chat_id="chat-focus")
+
+    assert reply == "focus answer"
+    assert len(captured["json"]["messages"]) == 4
+    assert "current focus-asset runtime snapshot" in captured["json"]["messages"][2]["content"].lower()
+    assert "XAU/USD" in captured["json"]["messages"][2]["content"]
+    assert "3345.12" in captured["json"]["messages"][2]["content"]
+
+
+def test_deepseek_chat_service_includes_log_snapshot_for_trade_execution_questions(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeDeepSeekResponse("log answer")
+
+    monkeypatch.setattr(deepseek_module.requests, "post", fake_post)
+    monkeypatch.setattr(deepseek_module, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(deepseek_module, "_build_bot_snapshot", lambda: {"available": True})
+    monkeypatch.setattr(deepseek_module, "_build_focus_asset_snapshot", lambda asset: {"available": True, "asset": asset})
+    monkeypatch.setattr(
+        deepseek_module,
+        "_build_log_snapshot",
+        lambda question, focus_asset="": {
+            "available": True,
+            "source": "local_log_tail",
+            "focus_asset": focus_asset,
+            "asset_matches": [f"{focus_asset} stoploss hit at 08:12"],
+        },
+    )
+
+    service = DeepSeekChatService(session_store=ChatSessionStore(path=tmp_path / "sessions.json"))
+    reply = service.answer(question="Why did AUS200 hit stoploss?", chat_id="chat-log")
+
+    assert reply == "log answer"
+    assert len(captured["json"]["messages"]) == 5
+    assert "current focus-asset runtime snapshot" in captured["json"]["messages"][2]["content"].lower()
+    assert "recent local log tail" in captured["json"]["messages"][3]["content"].lower()
+    assert "AUS200 stoploss hit" in captured["json"]["messages"][3]["content"]
 
 
 def test_deepseek_chat_service_includes_macro_snapshot_for_nfp_and_oil(tmp_path: Path, monkeypatch) -> None:
@@ -117,6 +180,7 @@ def test_deepseek_chat_service_includes_macro_snapshot_for_nfp_and_oil(tmp_path:
     monkeypatch.setattr(deepseek_module.requests, "post", fake_post)
     monkeypatch.setattr(deepseek_module, "DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setattr(deepseek_module, "_build_bot_snapshot", lambda: {"available": True, "balance": 2000.0, "open_positions_count": 1})
+    monkeypatch.setattr(deepseek_module, "_build_focus_asset_snapshot", lambda asset: {"available": True, "asset": asset})
     monkeypatch.setattr(
         deepseek_module,
         "_build_macro_snapshot",
@@ -138,10 +202,11 @@ def test_deepseek_chat_service_includes_macro_snapshot_for_nfp_and_oil(tmp_path:
     reply = service.answer(question="How is the bot likely to handle the next NFP and what is affecting oil?", chat_id="chat-3")
 
     assert reply == "macro answer"
-    assert len(captured["json"]["messages"]) == 4
-    assert "read-only macro snapshot" in captured["json"]["messages"][2]["content"].lower()
-    assert "nfp" in captured["json"]["messages"][2]["content"].lower()
-    assert "oil" in captured["json"]["messages"][2]["content"].lower()
+    assert len(captured["json"]["messages"]) == 5
+    assert "current focus-asset runtime snapshot" in captured["json"]["messages"][2]["content"].lower()
+    assert "read-only macro snapshot" in captured["json"]["messages"][3]["content"].lower()
+    assert "nfp" in captured["json"]["messages"][3]["content"].lower()
+    assert "oil" in captured["json"]["messages"][3]["content"].lower()
 
 
 def test_deepseek_chat_service_includes_current_news_snapshot_for_latest_statement_questions(tmp_path: Path, monkeypatch) -> None:
@@ -180,3 +245,29 @@ def test_deepseek_chat_service_includes_current_news_snapshot_for_latest_stateme
     assert len(captured["json"]["messages"]) == 4
     assert "current news snapshot" in captured["json"]["messages"][2]["content"].lower()
     assert "trump" in captured["json"]["messages"][2]["content"].lower()
+
+
+def test_deepseek_chat_service_uses_attachment_context_from_session(tmp_path: Path, monkeypatch) -> None:
+    calls: list[Dict[str, Any]] = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json or {})
+        return _FakeDeepSeekResponse(f"attachment-reply-{len(calls)}")
+
+    monkeypatch.setattr(deepseek_module.requests, "post", fake_post)
+    monkeypatch.setattr(deepseek_module, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(deepseek_module, "_build_bot_snapshot", lambda: {"available": True})
+
+    service = DeepSeekChatService(session_store=ChatSessionStore(path=tmp_path / "sessions.json"))
+    first = service.answer(
+        question="Please analyze the attached image.",
+        chat_id="chat-attach",
+        attachment={"kind": "image", "caption": "Silver exit", "ocr_text": "XAG/USD Take Profit 2"},
+    )
+    second = service.answer(question="Can you see the image I posted?", chat_id="chat-attach")
+
+    assert first == "attachment-reply-1"
+    assert second == "attachment-reply-2"
+    assert any("recent telegram attachment summary" in msg["content"].lower() for msg in calls[0]["messages"])
+    assert any("recent telegram attachment summary" in msg["content"].lower() for msg in calls[1]["messages"])
+    assert any("Take Profit 2" in msg["content"] for msg in calls[1]["messages"])

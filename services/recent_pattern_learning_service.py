@@ -18,6 +18,11 @@ def _clip(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
 
 
+def _is_true_depth_source(source: str) -> bool:
+    token = str(source or "").strip().lower()
+    return token in {"order_flow_true_depth", "dukascopy_live_depth"}
+
+
 def _parse_metadata(raw: Any) -> Dict[str, Any]:
     if raw is None:
         return {}
@@ -265,7 +270,9 @@ def _pattern_learning_accumulate_match(
     totals["weighted_stop_hunt"] += weight * float(stop_hunt_risk >= 0.45)
     totals["weighted_exhaustion"] += weight * float(exhaustion_risk >= 0.42)
     totals["weighted_synthetic_depth_loss"] += weight * float(synthetic_depth_available and rr_realized <= -0.15)
-    totals["weighted_true_depth_win"] += weight * float(depth_available and micro_source == "order_flow_true_depth" and rr_realized > 0.15)
+    totals["weighted_true_depth_win"] += weight * float(
+        depth_available and _is_true_depth_source(micro_source) and rr_realized > 0.15
+    )
     totals["weighted_broker_confirmed_win"] += weight * float(
         broker_score >= 0.65 and agreement_state in {"strong", "aligned"} and rr_realized > 0.15
     )

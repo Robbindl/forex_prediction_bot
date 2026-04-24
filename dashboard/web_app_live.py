@@ -1252,6 +1252,7 @@ def _extract_signal_intelligence_fields(metadata: Any) -> Dict[str, Any]:
         "depth_available": bool(micro.get("depth_available")),
         "synthetic_depth_available": bool(micro.get("synthetic_depth_available")),
         "depth_mode": depth_mode,
+        "depth_provider": str(micro.get("depth_provider") or micro.get("source") or ""),
         "microstructure_source": str(micro.get("microstructure_source") or ""),
         "cross_asset_context": cross,
         "cross_asset_score": cross_score,
@@ -5995,6 +5996,84 @@ def api_phase3_stop_hunts():
     return jsonify({"success": True, "hunts": hunts,
                     "timestamp": datetime.now().isoformat()})
 
+
+@app.route("/api/phase3/live-depth")
+def api_phase3_live_depth():
+    cached = _cache_get("p3_live_depth")
+    if cached:
+        return jsonify(cached)
+    try:
+        from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge
+
+        bridge = dukascopy_live_depth_bridge
+        status = bridge.status() if bridge is not None else {}
+        supported_assets: List[str] = []
+        rows: List[Dict[str, Any]] = []
+
+        if bridge is not None:
+            for asset, category in ALL_ASSETS:
+                if category == "crypto" or not bridge.supports(asset, category=category):
+                    continue
+                supported_assets.append(asset)
+                snapshot = bridge.get_latest_snapshot(asset) or {}
+                micro = bridge.get_microstructure(asset, category=category) or {}
+                if not snapshot and not micro:
+                    continue
+
+                try:
+                    age_seconds = float(micro.get("depth_live_age_seconds", 0.0) or 0.0)
+                except Exception:
+                    age_seconds = 0.0
+
+                rows.append(
+                    {
+                        "asset": asset,
+                        "category": category,
+                        "price": float(snapshot.get("price", 0.0) or 0.0),
+                        "bid": snapshot.get("bid"),
+                        "ask": snapshot.get("ask"),
+                        "spread_bps": float(micro.get("spread_bps", 0.0) or 0.0),
+                        "score": float(micro.get("score", 0.0) or 0.0),
+                        "book_imbalance": float(micro.get("book_imbalance", 0.0) or 0.0),
+                        "pressure_direction": str(micro.get("pressure_direction") or ""),
+                        "depth_levels": int(micro.get("depth_levels", 0) or 0),
+                        "bid_vol": float(micro.get("bid_vol", 0.0) or 0.0),
+                        "ask_vol": float(micro.get("ask_vol", 0.0) or 0.0),
+                        "orderbook_top_bids": list(micro.get("orderbook_top_bids") or [])[:3],
+                        "orderbook_top_asks": list(micro.get("orderbook_top_asks") or [])[:3],
+                        "age_seconds": round(max(0.0, age_seconds), 3),
+                        "environment": str(snapshot.get("environment") or micro.get("environment") or "demo"),
+                        "dukascopy_symbol": str(snapshot.get("dukascopy_symbol") or micro.get("dukascopy_symbol") or ""),
+                        "as_of_utc": str(snapshot.get("as_of_utc") or micro.get("as_of_utc") or ""),
+                    }
+                )
+
+        rows.sort(
+            key=lambda row: (
+                1 if float(row.get("age_seconds", 999.0) or 999.0) > 30.0 else 0,
+                float(row.get("age_seconds", 999.0) or 999.0),
+                -int(row.get("depth_levels", 0) or 0),
+                -abs(float(row.get("book_imbalance", 0.0) or 0.0)),
+                str(row.get("asset") or ""),
+            )
+        )
+
+        payload = {
+            "success": True,
+            "enabled": bool(status.get("enabled")),
+            "running": bool(status.get("running")),
+            "profiles": list(status.get("profiles") or []),
+            "configured_assets": list(status.get("assets") or []),
+            "supported_assets": supported_assets,
+            "rows": rows,
+            "count": len(rows),
+            "timestamp": datetime.now().isoformat(),
+        }
+        _cache_set("p3_live_depth", payload, ttl=5)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"success": False, "rows": [], "error": str(e)})
+
 # ══════════════════════════════════════════════════════════════════════════════
 # API — PHASE 7: INTELLIGENCE ALERTS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6623,6 +6702,7 @@ def api_page_overview():
             "imbalance": _response_to_dict(_call_view(api_phase3_imbalance)),
             "walls": _response_to_dict(_call_view(api_phase3_walls)),
             "hunts": _response_to_dict(_call_view(api_phase3_stop_hunts)),
+            "depth": _response_to_dict(_call_view(api_phase3_live_depth)),
             "command_center": _command_center_snapshot(),
         }
         ttl = 5

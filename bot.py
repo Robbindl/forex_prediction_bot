@@ -255,6 +255,15 @@ def stop_telegram() -> None:
         logger.debug(f"[bot] Telegram shutdown skipped: {e}")
 
 
+def stop_dukascopy_live_depth() -> None:
+    try:
+        from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge
+
+        dukascopy_live_depth_bridge.stop()
+    except Exception as e:
+        logger.debug(f"[bot] Dukascopy live-depth shutdown skipped: {e}")
+
+
 def _perform_shutdown(engine, *, reason: str = "signal", exit_code: int = 0) -> None:
     with _shutdown_lock:
         logger.info(f"[bot] Shutdown sequence started — reason={reason}")
@@ -262,6 +271,10 @@ def _perform_shutdown(engine, *, reason: str = "signal", exit_code: int = 0) -> 
             stop_telegram()
         except Exception as e:
             logger.debug(f"[bot] Telegram stop during shutdown failed: {e}")
+        try:
+            stop_dukascopy_live_depth()
+        except Exception as e:
+            logger.debug(f"[bot] Dukascopy live-depth stop during shutdown failed: {e}")
         try:
             _stop_deepseek_background_bot()
         except Exception as e:
@@ -280,6 +293,7 @@ def _perform_shutdown(engine, *, reason: str = "signal", exit_code: int = 0) -> 
 
 atexit.register(stop_gateway)
 atexit.register(stop_telegram)
+atexit.register(stop_dukascopy_live_depth)
 atexit.register(lambda: _stop_deepseek_background_bot())
 
 
@@ -516,6 +530,14 @@ def _start_api_expiry_checker(engine) -> None:
 
 
 def _start_pre_bot_services(engine, args) -> None:
+    def _start_dukascopy_live_depth():
+        from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge
+
+        if not dukascopy_live_depth_bridge.list_profiles():
+            return
+        if not dukascopy_live_depth_bridge.start_background():
+            raise RuntimeError("configured but sidecar did not start")
+
     def _start_data_feeds():
         from data_ingestion import start_all as start_data_feeds
         start_data_feeds(exchanges=["binance", "bybit"])
@@ -561,6 +583,12 @@ def _start_pre_bot_services(engine, args) -> None:
         import data.cache as _cache_mod
         _cache_mod.cache = upgraded_cache
 
+    _run_optional_step(
+        _start_dukascopy_live_depth,
+        "[bot] Dukascopy live-depth sidecar started",
+        "[bot] Dukascopy live-depth sidecar failed: {error}",
+        failure_level="debug",
+    )
     _run_optional_step(_start_data_feeds, "[bot] Data feeds started", "[bot] Data feeds failed to start: {error}")
     _run_optional_step(
         _start_whale_intelligence,

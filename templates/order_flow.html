@@ -115,6 +115,23 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .flow-bridge-value.compact{font-size:16px;line-height:1.35}
 .flow-bridge-note{font-size:12px;color:var(--tx2);line-height:1.45}
 .flow-bridge-sub{font-size:11px;color:var(--tx3)}
+.depth-tape-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.depth-tape-card{background:var(--s2);border:1px solid rgba(38,48,69,.8);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:156px}
+.depth-tape-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.depth-tape-asset{font-size:14px;font-weight:700}
+.depth-tape-kicker{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.55px;margin-top:2px}
+.depth-tape-age{font-size:11px;color:var(--tx2);white-space:nowrap}
+.depth-tape-price{font-size:24px;font-weight:700;line-height:1}
+.depth-tape-meta{font-size:11px;color:var(--tx2);line-height:1.45}
+.depth-tape-book{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.depth-tape-side{padding:8px;border-radius:8px;background:rgba(255,255,255,.03)}
+.depth-tape-side.buy{border:1px solid rgba(0,208,132,.22)}
+.depth-tape-side.sell{border:1px solid rgba(255,69,96,.22)}
+.depth-tape-side-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--tx3);margin-bottom:4px}
+.depth-tape-level{font-size:12px;font-weight:600}
+.depth-tape-level.buy{color:var(--gr)}
+.depth-tape-level.sell{color:var(--rd)}
+.depth-tape-foot{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--tx3);margin-top:auto}
 
 @media(max-width:1280px){
   .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -178,11 +195,11 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   <div class="main">
     <div class="topbar">
       <button class="hamburger" id="menuBtn" aria-label="Menu" onclick="toggleSidebar()"><span></span><span></span><span></span></button>
-      <div class="page-title"><div class="dot"></div>Order Flow Intelligence</div>
+      <div class="page-title"><div class="dot"></div>Order Flow & Depth Intelligence</div>
       <div class="tb-right">
         <span class="tb-time" id="clock">—</span>
         <span class="tb-balance" id="topBalance">—</span>
-        <span class="tb-badge badge-live">Live Flow</span>
+        <span class="tb-badge badge-live">Live Flow + Depth</span>
       </div>
     </div>
 
@@ -257,6 +274,17 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <div class="panel-body" style="flex:1;overflow-y:auto;min-height:120px" id="huntList">
             <div class="empty">Loading…</div>
           </div>
+        </div>
+      </div>
+
+      <div class="panel panel-full" style="animation-delay:.425s">
+        <div class="panel-header">
+          <span>🧬</span>
+          <span class="panel-title">Dukascopy Live Depth</span>
+          <span class="panel-badge" id="depthTapeBadge">Loading…</span>
+        </div>
+        <div class="panel-body flow-bridge-body" id="depthTapeList">
+          <div class="empty">Loading…</div>
         </div>
       </div>
 
@@ -452,6 +480,102 @@ async function loadHunts() {
 
 function formatFlowAsset(asset){
   return String(asset || '').replace('USDT', '').replace('-USD', '');
+}
+
+function depthPriceDigits(price){
+  const value = Number(price || 0);
+  if(!Number.isFinite(value) || value <= 0) return 4;
+  if(value >= 1000) return 1;
+  if(value >= 100) return 2;
+  if(value >= 10) return 3;
+  return 5;
+}
+function fmtDepthPrice(value){
+  const price = Number(value);
+  if(!Number.isFinite(price) || price <= 0) return '—';
+  return price.toFixed(depthPriceDigits(price));
+}
+function fmtDepthLevel(level){
+  if(!Array.isArray(level) || level.length < 2) return '—';
+  const px = fmtDepthPrice(level[0]);
+  const size = Number(level[1]);
+  return Number.isFinite(size) ? `${px} · ${size.toFixed(size >= 100 ? 0 : 2)}` : px;
+}
+function fmtDepthAge(seconds){
+  const value = Number(seconds);
+  if(!Number.isFinite(value) || value < 0) return '—';
+  if(value < 1) return `${Math.max(1, Math.round(value * 1000))}ms`;
+  return `${value < 10 ? value.toFixed(1) : value.toFixed(0)}s`;
+}
+function depthPressureLabel(value){
+  const token = String(value || '').trim().toLowerCase();
+  if(!token) return 'Balanced';
+  return token.replace(/_/g,' ');
+}
+async function loadDepthTape() {
+  try {
+    const page = await fetchOrderFlowOverview();
+    const d = page.depth || {};
+    const badge = document.getElementById('depthTapeBadge');
+    const list = document.getElementById('depthTapeList');
+    if(!d.success){
+      badge.textContent = 'Unavailable';
+      list.innerHTML = '<div class="empty">Dukascopy depth feed unavailable</div>';
+      return;
+    }
+    const rows = Array.isArray(d.rows) ? d.rows : [];
+    if(!rows.length){
+      badge.textContent = d.running ? 'Waiting…' : (d.enabled ? 'Starting…' : 'Disabled');
+      const reason = !d.enabled
+        ? 'Dukascopy live depth is disabled in the environment.'
+        : d.running
+          ? 'The Dukascopy bridge is running, but no fresh depth snapshots have arrived yet.'
+          : 'The Dukascopy bridge is not running yet. Start the full bot after Java and Maven are available.';
+      list.innerHTML = `<div class="empty">${reason}</div>`;
+      return;
+    }
+    badge.textContent = `${rows.length} live`;
+    list.innerHTML = '<div class="depth-tape-grid">' + rows.map((row) => {
+      const price = fmtDepthPrice(row.price);
+      const topBid = fmtDepthLevel((row.orderbook_top_bids || [])[0]);
+      const topAsk = fmtDepthLevel((row.orderbook_top_asks || [])[0]);
+      const imbalance = Number(row.book_imbalance || 0);
+      const imbalanceText = `${imbalance >= 0 ? '+' : ''}${imbalance.toFixed(3)}`;
+      const spread = Number(row.spread_bps || 0);
+      const spreadText = Number.isFinite(spread) && spread > 0 ? `${spread.toFixed(2)} bps` : '—';
+      const ageText = fmtDepthAge(row.age_seconds);
+      const providerLine = `${String(row.environment || 'demo').toUpperCase()} · ${row.dukascopy_symbol || row.asset || '—'}`;
+      return `<div class="depth-tape-card">
+        <div class="depth-tape-head">
+          <div>
+            <div class="depth-tape-asset">${row.asset || '—'}</div>
+            <div class="depth-tape-kicker">${providerLine}</div>
+          </div>
+          <div class="depth-tape-age">${ageText}</div>
+        </div>
+        <div class="depth-tape-price" style="color:${imbalance >= 0 ? 'var(--gr)' : 'var(--rd)'}">${price}</div>
+        <div class="depth-tape-meta">Spread ${spreadText} · ${row.depth_levels || 0} levels · Pressure ${depthPressureLabel(row.pressure_direction)}</div>
+        <div class="depth-tape-book">
+          <div class="depth-tape-side buy">
+            <div class="depth-tape-side-label">Top Bid</div>
+            <div class="depth-tape-level buy">${topBid}</div>
+          </div>
+          <div class="depth-tape-side sell">
+            <div class="depth-tape-side-label">Top Ask</div>
+            <div class="depth-tape-level sell">${topAsk}</div>
+          </div>
+        </div>
+        <div class="depth-tape-foot">
+          <span>Bid vol ${Number(row.bid_vol || 0).toFixed(1)}</span>
+          <span>Ask vol ${Number(row.ask_vol || 0).toFixed(1)}</span>
+          <span>Book ${imbalanceText}</span>
+        </div>
+      </div>`;
+    }).join('') + '</div>';
+  } catch(e) {
+    document.getElementById('depthTapeBadge').textContent = 'Error';
+    document.getElementById('depthTapeList').innerHTML = '<div class="empty">Live depth feed unavailable</div>';
+  }
 }
 
 function wallWeight(wall){
@@ -991,6 +1115,7 @@ async function refresh() {
     loadImbalance(),
     loadWalls(),
     loadHunts(),
+    loadDepthTape(),
     loadWatchlist(),
     loadFlowBridge(),
   ]);

@@ -4,8 +4,12 @@ import argparse
 import asyncio
 import html
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
-from typing import Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -20,6 +24,7 @@ logger = get_logger()
 
 _CHAT_TIMEOUT_SECONDS = 60.0
 _MARKDOWNISH_TOKEN_RE = re.compile(r"(```[\s\S]+?```|`[^`\n]+`|\*\*[\s\S]+?\*\*|\*[^\*\n][^\n]*?\*)")
+_ATX_HEADING_RE = re.compile(r"^(\s{0,3})#{1,6}\s+(.+?)\s*$")
 
 
 def _keyboard() -> InlineKeyboardMarkup:
@@ -32,7 +37,7 @@ def _keyboard() -> InlineKeyboardMarkup:
 
 
 def _render_telegram_html(text: str) -> str:
-    raw = str(text or "").replace("\r\n", "\n")
+    raw = _strip_markdown_headings(str(text or "").replace("\r\n", "\n"))
     if not raw:
         return ""
 
@@ -54,6 +59,22 @@ def _render_telegram_html(text: str) -> str:
         cursor = match.end()
     parts.append(html.escape(raw[cursor:]))
     return "".join(parts)
+
+
+def _strip_markdown_headings(text: str) -> str:
+    lines = str(text or "").split("\n")
+    rendered: list[str] = []
+    in_fence = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            rendered.append(line)
+            continue
+        if not in_fence:
+            line = _ATX_HEADING_RE.sub(r"\1\2", line)
+        rendered.append(line)
+    return "\n".join(rendered)
 
 
 class DeepSeekTelegramBot:
@@ -94,11 +115,18 @@ class DeepSeekTelegramBot:
         if app is None:
             return
 
+        image_filter = filters.PHOTO
+        try:
+            image_filter = image_filter | filters.Document.IMAGE
+        except Exception:
+            pass
+
         app.add_handler(CommandHandler("start", self._cmd_start))
         app.add_handler(CommandHandler("help", self._cmd_start))
         app.add_handler(CommandHandler("chat", self._cmd_chat))
         app.add_handler(CommandHandler("reset", self._cmd_reset))
         app.add_handler(CommandHandler("resetchat", self._cmd_reset))
+        app.add_handler(MessageHandler(image_filter & ~filters.COMMAND, self._on_visual_message))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text))
         app.add_handler(CallbackQueryHandler(self._on_button))
         app.add_error_handler(self._on_error)
@@ -140,8 +168,8 @@ class DeepSeekTelegramBot:
         return (
             "DeepSeek private chat is ready.\n\n"
             "Use /chat or send me a message and I will answer directly.\n"
-            "I can discuss the latest read-only snapshot of your trading bot, including balance, positions, P&L, recent trades, and cooldowns.\n"
-            "I can also use current macro context for questions about NFP, CPI, Fed policy, and oil.\n"
+            "I can use the current bot runtime snapshot, recent trades, focused market context, and current macro/news snapshots when available.\n"
+            "I can also use recent local log tails for operational questions and extracted text/metadata from Telegram image attachments when available.\n"
             "This bot is separate from the trading control bot and does not expose live menus or controls.\n\n"
             "Use /reset to clear chat memory."
         )
@@ -185,6 +213,16 @@ class DeepSeekTelegramBot:
             return
         await self._answer_message(update, question)
 
+    async def _on_visual_message(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            await self._deny(update)
+            return
+        attachment = await self._extract_attachment_context(update)
+        question = str(update.message.caption or "").strip() or "Please analyze the attached image."
+        if "attach" not in question.lower() and "image" not in question.lower():
+            question = f"Use the attached image context for this question: {question}"
+        await self._answer_message(update, question, attachment=attachment)
+
     async def _on_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         if query is None:
@@ -200,19 +238,21 @@ class DeepSeekTelegramBot:
             return
         await query.message.reply_text(self._intro_text(), reply_markup=_keyboard())
 
-    async def _answer_message(self, update: Update, question: str) -> None:
+    async def _answer_message(self, update: Update, question: str, *, attachment: Optional[Dict[str, Any]] = None) -> None:
         await update.message.chat.send_action("typing")
-        placeholder = await update.message.reply_text("DeepSeek is thinking...")
-        answer = await self._run_answer(question, chat_id=str(update.effective_chat.id))
+        thinking_text = "DeepSeek is analyzing the attachment..." if attachment else "DeepSeek is thinking..."
+        placeholder = await update.message.reply_text(thinking_text)
+        answer = await self._run_answer(question, chat_id=str(update.effective_chat.id), attachment=attachment)
         await self._replace_placeholder_with_chunks(placeholder, answer)
 
-    async def _run_answer(self, question: str, *, chat_id: str) -> str:
+    async def _run_answer(self, question: str, *, chat_id: str, attachment: Optional[Dict[str, Any]] = None) -> str:
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
                     get_deepseek_chat_service().answer,
                     question=question,
                     chat_id=chat_id,
+                    attachment=attachment,
                 ),
                 timeout=_CHAT_TIMEOUT_SECONDS,
             )
@@ -222,6 +262,71 @@ class DeepSeekTelegramBot:
         except Exception as exc:
             logger.error(f"[DeepSeekBot] chat error: {exc}", exc_info=True)
             return f"DeepSeek hit an error: {exc}"
+
+    @staticmethod
+    def _ocr_image_text(path: Path) -> str:
+        tesseract = shutil.which("tesseract")
+        if not tesseract:
+            return ""
+        try:
+            proc = subprocess.run(
+                [tesseract, str(path), "stdout", "--psm", "6"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except Exception:
+            return ""
+        text = str(proc.stdout or "").strip()
+        text = re.sub(r"\s+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text[:4000]
+
+    async def _extract_attachment_context(self, update: Update) -> Dict[str, Any]:
+        message = update.message
+        if message is None:
+            return {}
+
+        payload: Dict[str, Any] = {
+            "kind": "image",
+            "caption": str(message.caption or "").strip(),
+        }
+        temp_path: Optional[Path] = None
+        try:
+            if message.photo:
+                photo = message.photo[-1]
+                payload["width"] = getattr(photo, "width", None)
+                payload["height"] = getattr(photo, "height", None)
+                tg_file = await photo.get_file()
+                suffix = ".jpg"
+            elif message.document is not None:
+                doc = message.document
+                payload["file_name"] = str(getattr(doc, "file_name", "") or "")
+                payload["mime_type"] = str(getattr(doc, "mime_type", "") or "")
+                tg_file = await doc.get_file()
+                suffix = Path(payload["file_name"] or "attachment.bin").suffix or ".bin"
+            else:
+                return payload
+
+            with tempfile.NamedTemporaryFile(prefix="deepseek_attach_", suffix=suffix, delete=False) as handle:
+                temp_path = Path(handle.name)
+            await tg_file.download_to_drive(custom_path=str(temp_path))
+
+            ocr_text = self._ocr_image_text(temp_path)
+            if ocr_text:
+                payload["ocr_text"] = ocr_text
+                payload["ocr_source"] = "tesseract"
+            payload["ocr_available"] = bool(shutil.which("tesseract"))
+        except Exception as exc:
+            payload["attachment_error"] = str(exc)
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        return payload
 
     async def _replace_placeholder_with_chunks(self, message, text: str) -> None:
         chunks = [str(text or "")[i:i + 4000] for i in range(0, max(len(str(text or "")), 1), 4000)]

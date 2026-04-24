@@ -79,6 +79,7 @@ class DataFetcher:
         self._rt_meta: Dict[str, Dict[str, Any]] = {}
         self._local_candle_store = None
         self._dukascopy_bridge = None
+        self._dukascopy_live_bridge = None
         self._fmp_bridge = None
         self._ig_bridge = None
         self._deriv_bridge = None
@@ -214,6 +215,19 @@ class DataFetcher:
         except Exception as exc:
             logger.debug(f"[DataFetcher] FMP bridge unavailable: {exc}")
 
+    def _init_dukascopy_live_bridge(self) -> None:
+        try:
+            from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge as _dukascopy_live_bridge
+
+            self._activate_bridge(
+                "_dukascopy_live_bridge",
+                _dukascopy_live_bridge,
+                "dukascopy_live_depth",
+                "[DataFetcher] Dukascopy live-depth bridge configured for true non-crypto order-book depth",
+            )
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] Dukascopy live-depth bridge unavailable: {exc}")
+
     def _init_ig_bridge(self) -> None:
         try:
             from services.ig_market_bridge import ig_market_bridge as _ig_bridge
@@ -256,6 +270,7 @@ class DataFetcher:
     def _init_clients(self) -> None:
         self._init_local_candle_store()
         self._init_dukascopy_bridge()
+        self._init_dukascopy_live_bridge()
         self._init_fmp_bridge()
         self._init_ig_bridge()
         self._init_deriv_bridge()
@@ -400,6 +415,64 @@ class DataFetcher:
             logger.debug(f"[DataFetcher] {bridge_name} microstructure {asset}: {exc}")
         return None
 
+    def _dukascopy_live_microstructure(self, asset: str, category: str) -> Dict[str, Any]:
+        bridge = self._dukascopy_live_bridge
+        if bridge is None:
+            return {}
+        try:
+            return bridge.get_microstructure(asset, category=category) or {}
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] Dukascopy live-depth {asset}: {exc}")
+            return {}
+
+    @staticmethod
+    def _overlay_external_true_depth(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(base or {})
+        extra = dict(overlay or {})
+        if not extra or not bool(extra.get("depth_available")):
+            return payload
+        age_seconds = extra.get("depth_live_age_seconds")
+        try:
+            if age_seconds not in (None, "") and float(age_seconds) > 30.0:
+                return payload
+        except Exception:
+            pass
+
+        if not payload:
+            return extra
+
+        for key in (
+            "tick_imbalance",
+            "book_imbalance",
+            "synthetic_book_imbalance",
+            "velocity_bps",
+            "latest_delta_bps",
+            "spread_stress",
+            "stop_hunt_risk",
+            "exhaustion_risk",
+            "pressure_direction",
+            "depth_available",
+            "synthetic_depth_available",
+            "depth_levels",
+            "quote_updates",
+            "score",
+            "bid_vol",
+            "ask_vol",
+            "orderbook_top_bids",
+            "orderbook_top_asks",
+            "microstructure_source",
+        ):
+            if key in extra:
+                payload[key] = extra[key]
+
+        payload["depth_provider"] = str(extra.get("depth_provider") or extra.get("source") or "Dukascopy")
+        payload["depth_provider_class"] = str(extra.get("source_class") or "sidecar")
+        payload["depth_as_of_utc"] = str(extra.get("as_of_utc") or payload.get("depth_as_of_utc") or "")
+        payload["depth_live_age_seconds"] = extra.get("depth_live_age_seconds")
+        if extra.get("dukascopy_symbol"):
+            payload["dukascopy_symbol"] = extra["dukascopy_symbol"]
+        return payload
+
     def _fallback_microstructure(
         self,
         asset: str,
@@ -443,24 +516,28 @@ class DataFetcher:
 
     def get_market_microstructure(self, asset: str, category: str) -> Dict[str, Any]:
         orderflow_snapshot = self._crypto_orderflow_snapshot(asset, category)
+        dukascopy_overlay = self._dukascopy_live_microstructure(asset, category)
 
         if self._ig_primary_category(category):
             micro = self._microstructure_from_bridge(self._ig_bridge, "IG", asset, category, orderflow_snapshot)
             if micro:
-                return micro
+                return self._overlay_external_true_depth(micro, dukascopy_overlay)
 
         micro = self._microstructure_from_bridge(self._deriv_bridge, "Deriv", asset, category, orderflow_snapshot)
         if micro:
-            return micro
+            return self._overlay_external_true_depth(micro, dukascopy_overlay)
 
         micro = self._microstructure_from_bridge(self._binance_bridge, "Binance", asset, category, orderflow_snapshot)
         if micro:
-            return micro
+            return self._overlay_external_true_depth(micro, dukascopy_overlay)
 
         price, spread = self.get_real_time_price(asset, category=category)
         if price is None:
-            return {}
-        return self._fallback_microstructure(asset, category, price, spread, orderflow_snapshot)
+            return dict(dukascopy_overlay or {})
+        return self._overlay_external_true_depth(
+            self._fallback_microstructure(asset, category, price, spread, orderflow_snapshot),
+            dukascopy_overlay,
+        )
 
     @staticmethod
     def _merge_orderflow_snapshot(micro: Dict[str, Any], orderflow_snapshot: Dict[str, Any]) -> Dict[str, Any]:

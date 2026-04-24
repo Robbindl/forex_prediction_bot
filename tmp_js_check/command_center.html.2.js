@@ -33,8 +33,9 @@ function fmtDashboardTime(raw){
   return new Intl.DateTimeFormat('en-GB',{timeZone:DASHBOARD_TIME_ZONE,day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false}).format(dt);
 }
 function depthLabel(item){
-  if(item.depth_mode)return humanToken(item.depth_mode)
-  if(item.depth_available)return 'true depth';
+  const provider = String(item.depth_provider||'').trim();
+  if(item.depth_mode)return provider?`${humanToken(item.depth_mode)} · ${provider}`:humanToken(item.depth_mode)
+  if(item.depth_available)return provider?`true depth · ${provider}`:'true depth';
   if(item.synthetic_depth_available)return 'synthetic depth';
   return 'top of book';
 }

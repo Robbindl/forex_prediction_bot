@@ -23,6 +23,11 @@ def _aligned_score(raw: float, direction: str) -> float:
     return _clip((float(raw or 0.0) * sign + 1.0) / 2.0)
 
 
+def _is_true_depth_source(source: str) -> bool:
+    token = str(source or "").strip().lower()
+    return token in {"order_flow_true_depth", "dukascopy_live_depth"}
+
+
 class OpportunityRanker:
     @staticmethod
     def _broker_quality_score(signal) -> float:
@@ -89,7 +94,7 @@ class OpportunityRanker:
 
         if bool(metadata.get("depth_available")):
             source = str(metadata.get("microstructure_source", "") or "").lower()
-            if source == "order_flow_true_depth":
+            if _is_true_depth_source(source):
                 score += 0.07
             else:
                 score += 0.04

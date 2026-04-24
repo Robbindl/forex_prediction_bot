@@ -539,6 +539,20 @@ class TelegramCommander:
         # Temporarily protect intentional *bold* and _italic_ and `code`
         # by checking they are balanced. If not — strip the markers entirely.
 
+        lines = text.split("\n")
+        rendered_lines = []
+        in_fence = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+                rendered_lines.append(line)
+                continue
+            if not in_fence:
+                line = re.sub(r"^(\s{0,3})#{1,6}\s+(.+?)\s*$", r"\1\2", line)
+            rendered_lines.append(line)
+        text = "\n".join(rendered_lines)
+
         def _balance(s: str, char: str) -> str:
             """If char count is odd, remove all bare occurrences of char."""            # Only strip if unbalanced AND not part of a word boundary pair
             count = s.count(char)

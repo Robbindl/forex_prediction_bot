@@ -60,6 +60,23 @@ IG_STREAMING_HOLDOFF_SEC = _parse_int(os.getenv("IG_STREAMING_HOLDOFF_SEC", "300
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
 DUKASCOPY_HISTORY_ENABLED = os.getenv("DUKASCOPY_HISTORY_ENABLED", "true").lower() == "true"
 DUKASCOPY_SYMBOL_MAP  = os.getenv("DUKASCOPY_SYMBOL_MAP", "").strip()
+DUKASCOPY_LIVE_DEPTH_ENABLED = os.getenv("DUKASCOPY_LIVE_DEPTH_ENABLED", "false").lower() == "true"
+DUKASCOPY_LIVE_DEPTH_JNLP_URL = (
+    os.getenv("DUKASCOPY_LIVE_DEPTH_JNLP_URL", "http://platform.dukascopy.com/demo_3/jforex_3.jnlp").strip()
+    or "http://platform.dukascopy.com/demo_3/jforex_3.jnlp"
+)
+DUKASCOPY_LIVE_DEPTH_USERNAME = os.getenv("DUKASCOPY_LIVE_DEPTH_USERNAME", "").strip()
+DUKASCOPY_LIVE_DEPTH_PASSWORD = os.getenv("DUKASCOPY_LIVE_DEPTH_PASSWORD", "").strip()
+DUKASCOPY_LIVE_DEPTH_PIN = os.getenv("DUKASCOPY_LIVE_DEPTH_PIN", "").strip()
+DUKASCOPY_LIVE_DEPTH_ASSETS = os.getenv("DUKASCOPY_LIVE_DEPTH_ASSETS", "").strip()
+DUKASCOPY_LIVE_DEPTH_CMD = os.getenv("DUKASCOPY_LIVE_DEPTH_CMD", "").strip()
+DUKASCOPY_LIVE_DEPTH_JAVA_BIN = os.getenv("DUKASCOPY_LIVE_DEPTH_JAVA_BIN", "").strip()
+DUKASCOPY_LIVE_DEPTH_AUTO_BUILD = os.getenv("DUKASCOPY_LIVE_DEPTH_AUTO_BUILD", "true").lower() == "true"
+DUKASCOPY_LIVE_DEPTH_MIN_EMIT_MS = _parse_int(os.getenv("DUKASCOPY_LIVE_DEPTH_MIN_EMIT_MS", "150"), 150)
+DUKASCOPY_LIVE_DEPTH_MAX_LEVELS = _parse_int(os.getenv("DUKASCOPY_LIVE_DEPTH_MAX_LEVELS", "20"), 20)
+DUKASCOPY_LIVE_DEPTH_STORE_PATH = Path(
+    os.getenv("DUKASCOPY_LIVE_DEPTH_STORE_PATH", "data/dukascopy_live_depth.json")
+)
 FMP_HISTORY_ENABLED   = os.getenv("FMP_HISTORY_ENABLED", "true").lower() == "true"
 FMP_API_KEY           = os.getenv("FMP_API_KEY", "").strip()
 FMP_SYMBOL_MAP        = os.getenv("FMP_SYMBOL_MAP", "").strip()

@@ -2209,7 +2209,8 @@ class TradingCore:
         signal_dict: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         # Order Flow Intelligence: Check liquidation walls & stop hunts
-        # Only active for crypto assets (forex/indices don't have order book data)
+        # This validator remains crypto-only. Non-crypto assets can still carry
+        # true depth through market_microstructure (for example Dukascopy DOM).
         if signal.category != "crypto":
             return signal_dict
 

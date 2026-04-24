@@ -22,6 +22,8 @@ from config.config import (
     ROBBIE_CHAT_TEMPERATURE,
     ROBBIE_CHAT_TIMEOUT_SECONDS,
 )
+from core.assets import registry
+from core.state import rollup_closed_trade_history
 from utils.display_time import display_timezone_label, format_display_datetime, now_in_display_timezone
 from utils.logger import get_logger
 
@@ -36,6 +38,7 @@ _MACRO_SNAPSHOT_LOCK = threading.Lock()
 _CURRENT_NEWS_SNAPSHOT_TTL_SECONDS = 300.0
 _CURRENT_NEWS_SNAPSHOT_CACHE: Dict[str, tuple[Dict[str, Any], float]] = {}
 _CURRENT_NEWS_SNAPSHOT_LOCK = threading.Lock()
+_ASSET_ALIAS_PATTERNS: List[tuple[re.Pattern[str], str]] = []
 
 _MACRO_QUESTION_TERMS = (
     "nfp",
@@ -159,6 +162,46 @@ _BOT_STATUS_TERMS = (
     "entry",
     "open position",
     "open positions",
+)
+
+_LOG_CONTEXT_TERMS = (
+    "log",
+    "logs",
+    "error",
+    "errors",
+    "traceback",
+    "server",
+    "kamatera",
+    "crash",
+    "failed",
+    "failure",
+)
+
+_ATTACHMENT_TERMS = (
+    "image",
+    "photo",
+    "screenshot",
+    "picture",
+    "attachment",
+    "chart",
+    "posted",
+    "upload",
+)
+
+_TRADE_EXECUTION_TERMS = (
+    "stoploss",
+    "stop loss",
+    "stopped out",
+    "hit stop",
+    "hit tp",
+    "tp1",
+    "tp2",
+    "take profit",
+    "preclose",
+    "pre-close",
+    "flatten",
+    "why did",
+    "what happened",
 )
 
 _NEWS_QUERY_STOP_WORDS = {
@@ -291,6 +334,40 @@ def _summarize_cooldowns(cooldowns: Dict[str, int], limit: int = 5) -> Dict[str,
     return {str(k): int(v) for k, v in trimmed}
 
 
+def _build_asset_alias_patterns() -> List[tuple[re.Pattern[str], str]]:
+    patterns: List[tuple[re.Pattern[str], str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for canonical, _category in registry.all_assets():
+        aliases = {canonical.upper(), canonical.replace("/", "").replace("-", "").upper()}
+        aliases.update(alias.upper() for alias in registry.all_aliases_for(canonical))
+        for alias in aliases:
+            clean = str(alias or "").strip().upper()
+            if not clean:
+                continue
+            pattern = re.compile(rf"(?<![A-Z0-9]){re.escape(clean)}(?![A-Z0-9])")
+            marker = (pattern.pattern, canonical)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            patterns.append((pattern, canonical))
+
+    patterns.sort(key=lambda item: len(item[0].pattern), reverse=True)
+    return patterns
+
+
+_ASSET_ALIAS_PATTERNS = _build_asset_alias_patterns()
+
+
+def _resolve_asset_from_text(question: str, fallback: str = "") -> str:
+    upper = str(question or "").upper()
+    for pattern, canonical in _ASSET_ALIAS_PATTERNS:
+        if pattern.search(upper):
+            return canonical
+    candidate = registry.canonical(str(fallback or "").strip())
+    return candidate if registry.is_known(candidate) else ""
+
+
 def _question_needs_macro_context(question: str) -> bool:
     text = str(question or "").lower()
     return any(term in text for term in _MACRO_QUESTION_TERMS)
@@ -308,6 +385,21 @@ def _question_needs_current_news_context(question: str) -> bool:
     if any(term in text for term in _BOT_STATUS_TERMS) and not any(term in text for term in _CURRENT_NEWS_ENTITY_TERMS):
         return False
     return any(term in text for term in _CURRENT_NEWS_CUE_TERMS) or any(term in text for term in _CURRENT_NEWS_ENTITY_TERMS)
+
+
+def _question_needs_log_context(question: str) -> bool:
+    text = str(question or "").lower()
+    return any(term in text for term in _LOG_CONTEXT_TERMS)
+
+
+def _question_mentions_attachment(question: str) -> bool:
+    text = str(question or "").lower()
+    return any(term in text for term in _ATTACHMENT_TERMS)
+
+
+def _question_needs_trade_execution_context(question: str) -> bool:
+    text = str(question or "").lower()
+    return any(term in text for term in _TRADE_EXECUTION_TERMS)
 
 
 def _derive_news_query(question: str) -> str:
@@ -620,7 +712,10 @@ def _build_bot_snapshot() -> Dict[str, Any]:
 
         performance = dict(shared_state.get_performance() or {})
         open_positions = list(shared_state.get_open_positions() or [])
-        closed_trades = list(shared_state.get_closed_positions(limit=5) or [])
+        closed_trades = rollup_closed_trade_history(
+            list(shared_state.get_closed_positions(limit=20) or []),
+            limit=10,
+        )
         cooldowns = dict(shared_state.get_all_cooldowns() or {})
         last_entry_time = shared_state.get_last_entry_time()
         last_entry_local = None
@@ -632,7 +727,7 @@ def _build_bot_snapshot() -> Dict[str, Any]:
 
         return {
             "available": True,
-            "source": "read_only_persisted_state",
+            "source": "live_shared_state",
             "display_now_local": now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M:%S {display_timezone_label()}"),
             "balance": round(float(performance.get("balance", shared_state.balance) or 0.0), 2),
             "daily_pnl": round(float(performance.get("daily_pnl", shared_state.daily_pnl) or 0.0), 2),
@@ -645,14 +740,171 @@ def _build_bot_snapshot() -> Dict[str, Any]:
             "last_entry_time_utc": last_entry_local,
             "cooldowns": _summarize_cooldowns(cooldowns),
             "open_positions": [_summarize_position(pos) for pos in open_positions[:5]],
-            "recent_closed_trades": [_summarize_closed_trade(trade) for trade in closed_trades[:5]],
+            "recent_closed_trades": [_summarize_closed_trade(trade) for trade in closed_trades[:10]],
         }
     except Exception as exc:
         return {
             "available": False,
-            "source": "read_only_persisted_state",
+            "source": "live_shared_state",
             "error": str(exc),
         }
+
+
+def _tail_log_lines(path: Path, limit: int = 12) -> List[str]:
+    if limit <= 0 or not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    lines = [line.rstrip() for line in text.splitlines() if str(line).strip()]
+    return lines[-limit:]
+
+
+def _build_log_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, Any]:
+    focus = str(focus_asset or "").strip().upper()
+    focus_tokens = {focus, focus.replace("/", ""), focus.replace("-", "")} if focus else set()
+    logs_dir = Path("logs")
+    result: Dict[str, Any] = {
+        "available": False,
+        "source": "local_log_tail",
+        "display_now_local": now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M:%S {display_timezone_label()}"),
+        "focus_asset": focus_asset,
+        "errors": _tail_log_lines(logs_dir / "errors.log", limit=8),
+        "trades": _tail_log_lines(logs_dir / "trades.log", limit=8),
+        "engine": _tail_log_lines(logs_dir / "trading_bot.log", limit=12),
+        "asset_matches": [],
+    }
+    if focus_tokens:
+        asset_matches: List[str] = []
+        for line in reversed(result["trades"] + result["engine"]):
+            upper = str(line or "").upper()
+            if any(token and token in upper for token in focus_tokens):
+                asset_matches.append(str(line))
+            if len(asset_matches) >= 8:
+                break
+        result["asset_matches"] = list(reversed(asset_matches))
+
+    result["available"] = any(bool(result.get(key)) for key in ("errors", "trades", "engine", "asset_matches"))
+    if not result["available"]:
+        result["message"] = "No local log tail was available."
+    return result
+
+
+def _build_focus_asset_snapshot(asset: str) -> Dict[str, Any]:
+    canonical = registry.canonical(str(asset or "").strip())
+    if not canonical or not registry.is_known(canonical):
+        return {"available": False, "asset": canonical, "message": "No canonical focus asset could be resolved."}
+
+    category = registry.category(canonical)
+    snapshot: Dict[str, Any] = {
+        "available": True,
+        "asset": canonical,
+        "category": category,
+        "source": "live_asset_snapshot",
+        "display_now_local": now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M:%S {display_timezone_label()}"),
+        "market_status": {},
+        "live_quote": {},
+        "recent_5m": {},
+        "recent_closed_trades": [],
+        "open_positions": [],
+        "market_intelligence": {},
+    }
+
+    try:
+        from services.market_data_router import get_market_status
+
+        status = get_market_status(canonical, category=category)
+        if isinstance(status, dict):
+            snapshot["market_status"] = dict(status)
+    except Exception:
+        snapshot["market_status"] = {}
+
+    try:
+        from data.fetcher import get_shared_fetcher
+
+        fetcher = get_shared_fetcher()
+        price, spread = fetcher.get_real_time_price(
+            canonical,
+            category,
+            prefer_live_stream=True,
+            allow_cached_quote=False,
+        )
+        quote_meta = dict(fetcher.get_last_price_metadata(canonical) or {})
+        if price is not None:
+            snapshot["live_quote"] = {
+                "price": round(float(price), 6),
+                "spread": round(float(spread or 0.0), 6),
+                "source": quote_meta.get("source"),
+                "realtime": quote_meta.get("realtime"),
+                "quote_freshness": quote_meta.get("quote_freshness"),
+                "live_age_seconds": quote_meta.get("live_age_seconds"),
+                "as_of_utc": quote_meta.get("as_of_utc"),
+            }
+
+        bars = fetcher.get_ohlcv(
+            canonical,
+            category,
+            interval="5m",
+            periods=24,
+            closed_only=True,
+            prefer_local=True,
+        )
+        bars_meta = dict(fetcher.get_last_ohlcv_metadata(canonical, "5m") or {})
+        if bars is not None and not bars.empty:
+            latest_close = float(bars["close"].iloc[-1])
+            prev_close = float(bars["close"].iloc[-2]) if len(bars) >= 2 else latest_close
+            sixth_close = float(bars["close"].iloc[-6]) if len(bars) >= 6 else prev_close
+            change_1 = ((latest_close - prev_close) / prev_close * 100.0) if prev_close else 0.0
+            change_6 = ((latest_close - sixth_close) / sixth_close * 100.0) if sixth_close else 0.0
+            snapshot["recent_5m"] = {
+                "bars": int(len(bars)),
+                "latest_close": round(latest_close, 6),
+                "prev_close": round(prev_close, 6),
+                "change_pct_last_bar": round(change_1, 4),
+                "change_pct_last_6_bars": round(change_6, 4),
+                "session_high": round(float(bars["high"].max()), 6),
+                "session_low": round(float(bars["low"].min()), 6),
+                "source": bars_meta.get("source"),
+                "as_of_utc": bars_meta.get("as_of_utc"),
+            }
+    except Exception as exc:
+        snapshot["quote_error"] = str(exc)
+
+    try:
+        from core.state import state as shared_state
+
+        open_positions = [
+            pos for pos in list(shared_state.get_open_positions() or [])
+            if registry.canonical(str(pos.get("asset") or pos.get("canonical_asset") or "")) == canonical
+        ]
+        closed_trades = rollup_closed_trade_history(
+            list(shared_state.get_closed_positions(limit=40) or []),
+            limit=20,
+        )
+        asset_trades = [
+            trade for trade in closed_trades
+            if registry.canonical(str(trade.get("asset") or trade.get("canonical_asset") or "")) == canonical
+        ]
+        snapshot["open_positions"] = [_summarize_position(pos) for pos in open_positions[:4]]
+        snapshot["recent_closed_trades"] = [_summarize_closed_trade(trade) for trade in asset_trades[:6]]
+    except Exception as exc:
+        snapshot["trade_error"] = str(exc)
+
+    try:
+        from services.market_intelligence_service import get_service as get_market_intelligence_service
+
+        intelligence = get_market_intelligence_service().get_asset_snapshot(canonical, category) or {}
+        snapshot["market_intelligence"] = {
+            "score": intelligence.get("market_intelligence_score"),
+            "sources": list(intelligence.get("market_intelligence_sources") or []),
+            "timestamp": intelligence.get("market_intelligence_timestamp") or intelligence.get("intelligence_timestamp"),
+            "free_market_intelligence": intelligence.get("free_market_intelligence") or {},
+        }
+    except Exception:
+        snapshot["market_intelligence"] = {}
+
+    return snapshot
 
 
 class ChatSessionStore:
@@ -690,9 +942,18 @@ class ChatSessionStore:
             session = dict(self._sessions.get(key, {}) or {})
             session.setdefault("messages", [])
             session.setdefault("updated_at", 0)
+            session.setdefault("last_asset", "")
+            session.setdefault("last_attachment", {})
             return session
 
-    def append_turn(self, chat_id: str, *, user_message: str, assistant_message: str) -> None:
+    def append_turn(
+        self,
+        chat_id: str,
+        *,
+        user_message: str,
+        assistant_message: str,
+        last_asset: str = "",
+    ) -> None:
         with self._lock:
             key = str(chat_id)
             session = dict(self._sessions.get(key, {}) or {})
@@ -700,6 +961,18 @@ class ChatSessionStore:
             messages.append({"role": "user", "content": str(user_message or "")})
             messages.append({"role": "assistant", "content": str(assistant_message or "")})
             session["messages"] = messages[-_MAX_HISTORY_MESSAGES:]
+            if last_asset:
+                session["last_asset"] = str(last_asset)
+            session["updated_at"] = int(time.time())
+            self._sessions[key] = session
+            self._persist()
+
+    def set_attachment(self, chat_id: str, attachment: Dict[str, Any]) -> None:
+        with self._lock:
+            key = str(chat_id)
+            session = dict(self._sessions.get(key, {}) or {})
+            session["messages"] = list(session.get("messages") or [])
+            session["last_attachment"] = dict(attachment or {})
             session["updated_at"] = int(time.time())
             self._sessions[key] = session
             self._persist()
@@ -717,17 +990,21 @@ class DeepSeekChatService:
     def reset(self, chat_id: str) -> None:
         self._sessions.reset(chat_id)
 
-    def answer(self, *, question: str, chat_id: str) -> str:
+    def answer(self, *, question: str, chat_id: str, attachment: Optional[Dict[str, Any]] = None) -> str:
         prompt = str(question or "").strip()
         if not prompt:
             return "Send me a message and I will answer it."
 
+        if isinstance(attachment, dict) and attachment:
+            self._sessions.set_attachment(chat_id, attachment)
         session = self._sessions.get(chat_id)
-        response = self._answer_via_deepseek(prompt, session)
+        focus_asset = _resolve_asset_from_text(prompt, session.get("last_asset", ""))
+        response = self._answer_via_deepseek(prompt, session, focus_asset=focus_asset)
         self._sessions.append_turn(
             chat_id,
             user_message=prompt,
             assistant_message=response,
+            last_asset=focus_asset,
         )
         return response
 
@@ -735,12 +1012,16 @@ class DeepSeekChatService:
         local_now = now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M:%S {display_timezone_label()}")
         return (
             "You are DeepSeek running as a dedicated private Telegram chat bot for the user's trading system. "
-            "A read-only snapshot of the latest persisted bot state is provided in a separate system message. "
+            "A current runtime bot snapshot may be provided in a separate system message. "
             "Use that snapshot first for questions about positions, balance, P&L, recent trades, cooldowns, and bot health. "
+            "If a focus-asset runtime snapshot is provided, use it for questions about how gold, silver, indices, forex, or crypto are moving right now. "
             "If a second system message provides macro context, use it for questions about NFP, CPI, FOMC, oil, and current market events. "
             "If another system message provides a current news snapshot, use it for latest-headline or public-statement questions instead of claiming you cannot browse. "
+            "If another system message provides recent local log tails, use them for operational or trade-explanation questions instead of claiming you cannot access logs. "
+            "If another system message provides a recent Telegram attachment summary, use that extracted text or metadata instead of claiming you cannot see images. "
             "Do not claim access to menus or controls. "
-            "If a detail is missing from the snapshot, say it is not available instead of inventing it. "
+            "If OCR text is missing from an attachment, say that only metadata or caption was available instead of pretending the image was unreadable or unseen. "
+            "If a detail is missing from the runtime facts, say it is not available instead of inventing it. "
             "Answer naturally and directly. "
             f"Current local time is {local_now}. "
             f"Use {display_timezone_label()} for relative date references."
@@ -749,10 +1030,19 @@ class DeepSeekChatService:
     @staticmethod
     def _bot_context_prompt(snapshot: Dict[str, Any]) -> str:
         return (
-            "Read-only bot snapshot from the latest persisted trading state. "
+            "Current bot runtime snapshot from shared in-process state. "
             "Treat this as the current known bot state for trading-bot questions, but not as a live control surface. "
             "Do not invent anything beyond it.\n"
             f"{_json_text(snapshot, 3500)}"
+        )
+
+    @staticmethod
+    def _focus_asset_context_prompt(snapshot: Dict[str, Any]) -> str:
+        return (
+            "Current focus-asset runtime snapshot. "
+            "Use this for questions about how a specific market is behaving right now, recent trade outcomes, and live quote behavior. "
+            "Do not invent prices or fills beyond it.\n"
+            f"{_json_text(snapshot, 3600)}"
         )
 
     @staticmethod
@@ -773,7 +1063,25 @@ class DeepSeekChatService:
             f"{_json_text(snapshot, 3500)}"
         )
 
-    def _answer_via_deepseek(self, question: str, session: Dict[str, Any]) -> str:
+    @staticmethod
+    def _log_context_prompt(snapshot: Dict[str, Any]) -> str:
+        return (
+            "Recent local log tail from the bot host. "
+            "Use this for questions about server issues, failures, fills, or why something closed. "
+            "Do not claim live shell access beyond these lines.\n"
+            f"{_json_text(snapshot, 3200)}"
+        )
+
+    @staticmethod
+    def _attachment_context_prompt(snapshot: Dict[str, Any]) -> str:
+        return (
+            "Recent Telegram attachment summary. "
+            "Use extracted text, caption, and metadata from the user's recent image or document when relevant. "
+            "If OCR text is empty, say only metadata/caption was available.\n"
+            f"{_json_text(snapshot, 2200)}"
+        )
+
+    def _answer_via_deepseek(self, question: str, session: Dict[str, Any], *, focus_asset: str = "") -> str:
         if not DEEPSEEK_API_KEY:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured")
 
@@ -785,12 +1093,21 @@ class DeepSeekChatService:
             {"role": "system", "content": self._system_prompt()},
             {"role": "system", "content": self._bot_context_prompt(bot_snapshot)},
         ]
+        if focus_asset:
+            focus_snapshot = _build_focus_asset_snapshot(focus_asset)
+            messages.append({"role": "system", "content": self._focus_asset_context_prompt(focus_snapshot)})
         if _question_needs_macro_context(question):
             macro_snapshot = _build_macro_snapshot(question)
             messages.append({"role": "system", "content": self._macro_context_prompt(macro_snapshot)})
         if _question_needs_current_news_context(question):
             current_news_snapshot = _build_current_news_snapshot(question)
             messages.append({"role": "system", "content": self._current_news_context_prompt(current_news_snapshot)})
+        if _question_needs_log_context(question) or (focus_asset and _question_needs_trade_execution_context(question)):
+            log_snapshot = _build_log_snapshot(question, focus_asset=focus_asset)
+            messages.append({"role": "system", "content": self._log_context_prompt(log_snapshot)})
+        last_attachment = dict(session.get("last_attachment") or {})
+        if last_attachment and _question_mentions_attachment(question):
+            messages.append({"role": "system", "content": self._attachment_context_prompt(last_attachment)})
         messages.extend(
             [
                 *history,
