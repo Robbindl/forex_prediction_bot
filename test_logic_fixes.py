@@ -14126,13 +14126,168 @@ def test_playbook_service_detects_reversal_exhaustion_for_alt_crypto(monkeypatch
                 "trend_1h": "trending_up",
                 "distance_to_support": 0.0017,
                 "distance_to_resistance": 0.0005,
-            }
+            },
+            "cross_asset_context": {"score": -0.48, "confidence": 0.62},
+            "market_microstructure": {"score": -0.44, "book_imbalance": -0.51, "depth_available": True},
+            "whale_dominant": "SELL",
+            "whale_ratio": 0.52,
         },
     )
 
     assert any(candidate["playbook"] == "reversal_exhaustion" for candidate in analysis["candidates"])
     reversal = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "reversal_exhaustion")
     assert reversal["direction"] == "SELL"
+    assert reversal["context_confluence"] > 0.18
+    assert reversal["micro_score"] > 0.18
+    assert reversal["cross_alignment"] > 0.18
+    assert any("ctx=" in str(note) for note in list(reversal.get("notes") or []))
+
+
+def test_playbook_service_context_confluence_unlocks_early_reversal_confirmation(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 16, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    plan = service._asset_plan("BTC-USD", "crypto")
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.55,
+        "setup_quality": 0.58,
+        "upside_exhaustion_score": 0.66,
+        "downside_exhaustion_score": 0.04,
+        "trend_5m": "trending_up",
+        "trend_15m": "trending_up",
+        "trend_1h": "trending_up",
+        "entry_confirmation_ready": False,
+        "entry_confirmation_count": 0,
+        "entry_confirmation_bars_required": 1,
+        "fast_entry_confirmation_ready": False,
+        "fast_entry_confirmation_count": 0,
+        "fast_entry_confirmation_bars_required": 1,
+        "trigger_trend_aligned": False,
+        "structure_promoted": False,
+        "external_confirmation_score": 0.0,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": True,
+        "pattern_family": "trending_up_generic",
+    }
+    candidate = {
+        "playbook": "reversal_exhaustion",
+        "direction": "SELL",
+        "score": 0.73,
+        "confidence": 0.76,
+        "entry_style": "reclaim_reversal",
+        "preferred_interval": "5m",
+        "notes": ["unit_test_reversal"],
+    }
+
+    rejected, rejected_reason = service._qualify_candidate(
+        dict(candidate),
+        asset="BTC-USD",
+        category="crypto",
+        structure=structure,
+        plan=plan,
+        inactivity_profile={},
+        context={},
+    )
+    assert rejected is False
+    assert rejected_reason == "alignment_too_weak:reversal_exhaustion"
+
+    accepted_candidate = dict(candidate)
+    accepted, accepted_reason = service._qualify_candidate(
+        accepted_candidate,
+        asset="BTC-USD",
+        category="crypto",
+        structure=structure,
+        plan=plan,
+        inactivity_profile={},
+        context={
+            "cross_asset_context": {"score": -0.64, "confidence": 0.76},
+            "market_microstructure": {
+                "score": -0.58,
+                "book_imbalance": -0.62,
+                "tick_imbalance": -0.37,
+                "depth_available": True,
+            },
+            "whale_dominant": "SELL",
+            "whale_ratio": 0.66,
+        },
+    )
+    assert accepted is True
+    assert accepted_reason == ""
+    assert accepted_candidate["qualification"]["context_confluence"] > 0.18
+    assert accepted_candidate["support_components"] >= 2
+
+
+def test_playbook_service_failed_break_reclaim_uses_playbook_confirmation_and_context(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 16, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    plan = service._asset_plan("BTC-USD", "crypto")
+    structure = {
+        "structure_bias": "buy",
+        "alignment_score": 0.57,
+        "setup_quality": 0.60,
+        "upside_exhaustion_score": 0.64,
+        "downside_exhaustion_score": 0.04,
+        "trend_5m": "trending_up",
+        "trend_15m": "trending_up",
+        "trend_1h": "ranging",
+        "entry_confirmation_ready": False,
+        "entry_confirmation_count": 0,
+        "entry_confirmation_bars_required": 1,
+        "fast_entry_confirmation_ready": False,
+        "fast_entry_confirmation_count": 0,
+        "fast_entry_confirmation_bars_required": 1,
+        "trigger_trend_aligned": False,
+        "structure_promoted": False,
+        "external_confirmation_score": 0.0,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": True,
+        "pattern_family": "trending_up_generic",
+        "failed_opposite_move_confirmed": False,
+    }
+    candidate = {
+        "playbook": "failed_break_reclaim",
+        "direction": "SELL",
+        "score": 0.77,
+        "confidence": 0.79,
+        "entry_style": "reclaim_failure",
+        "preferred_interval": "5m",
+        "notes": ["unit_test_reclaim"],
+        "reclaim_confirmed": True,
+    }
+
+    accepted, accepted_reason = service._qualify_candidate(
+        candidate,
+        asset="BTC-USD",
+        category="crypto",
+        structure=structure,
+        plan=plan,
+        inactivity_profile={},
+        context={
+            "cross_asset_context": {"score": -0.58, "confidence": 0.70},
+            "market_microstructure": {
+                "score": -0.54,
+                "book_imbalance": -0.60,
+                "tick_imbalance": -0.22,
+                "depth_available": True,
+            },
+            "whale_dominant": "SELL",
+            "whale_ratio": 0.58,
+        },
+    )
+    assert accepted is True
+    assert accepted_reason == ""
+    assert candidate["qualification"]["context_confluence"] > 0.18
+    assert candidate["support_components"] >= 2
 
 def test_playbook_service_detects_aggressive_expansion_trigger(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")

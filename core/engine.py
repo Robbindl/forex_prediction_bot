@@ -3180,6 +3180,12 @@ class TradingCore:
             f"relief={self._fmt_metric(inactivity_profile.get('relief_strength'))} "
             f"cat_recent={self._fmt_metric(inactivity_profile.get('category_recent_count'))} "
             f"asset_recent={self._fmt_metric(inactivity_profile.get('asset_recent_count'))} "
+            f"ctx={self._fmt_metric(playbook_decision.get('context_confluence'))} "
+            f"cross={self._fmt_metric(playbook_decision.get('cross_alignment'))} "
+            f"micro={self._fmt_metric(playbook_decision.get('micro_score'))} "
+            f"whale={self._fmt_metric(playbook_decision.get('whale_context_support'))} "
+            f"support={int(playbook_decision.get('support_components', 0) or 0)} "
+            f"conflict={int(playbook_decision.get('conflict_components', 0) or 0)} "
             f"predictor={self._fmt_predictor_pair(context.get('predictor_prediction', context.get('ml_prediction')), context.get('predictor_confidence', context.get('ml_confidence')))} "
             f"sent={self._fmt_metric(context.get('sentiment_score'))} "
             f"funding={context.get('funding_bias', 'NEUTRAL')} "
@@ -3248,6 +3254,13 @@ class TradingCore:
             "direction": playbook_direction,
             "confidence": round(playbook_confidence, 4),
             "score": round(float(playbook_primary.get("score", 0.0) or 0.0), 4),
+            "context_confluence": round(float(playbook_primary.get("context_confluence", 0.0) or 0.0), 4),
+            "cross_alignment": round(float(playbook_primary.get("cross_alignment", playbook_primary.get("cross_context_support", 0.0)) or 0.0), 4),
+            "cross_confidence": round(float(playbook_primary.get("cross_confidence", 0.0) or 0.0), 4),
+            "micro_score": round(float(playbook_primary.get("micro_score", playbook_primary.get("micro_context_support", 0.0)) or 0.0), 4),
+            "whale_context_support": round(float(playbook_primary.get("whale_context_support", 0.0) or 0.0), 4),
+            "support_components": int(playbook_primary.get("support_components", 0) or 0),
+            "conflict_components": int(playbook_primary.get("conflict_components", 0) or 0),
             "entry_style": playbook_entry_style,
             "session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
             "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
@@ -3800,6 +3813,13 @@ class TradingCore:
             "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
             "playbook_timeframe": playbook_interval or str(context.get("timeframe") or ""),
             "playbook_notes": list(playbook_primary.get("notes") or []),
+            "playbook_context_confluence": round(float(playbook_primary.get("context_confluence", 0.0) or 0.0), 4),
+            "playbook_cross_alignment": round(float(playbook_primary.get("cross_alignment", playbook_primary.get("cross_context_support", 0.0)) or 0.0), 4),
+            "playbook_cross_confidence": round(float(playbook_primary.get("cross_confidence", 0.0) or 0.0), 4),
+            "playbook_micro_score": round(float(playbook_primary.get("micro_score", playbook_primary.get("micro_context_support", 0.0)) or 0.0), 4),
+            "playbook_whale_context_support": round(float(playbook_primary.get("whale_context_support", 0.0) or 0.0), 4),
+            "playbook_support_components": int(playbook_primary.get("support_components", 0) or 0),
+            "playbook_conflict_components": int(playbook_primary.get("conflict_components", 0) or 0),
             "trade_management_plan": trade_management_plan,
             "market_data": context.get("market_data", {}),
             "atr": round(atr, 6) if atr > 0 else 0.0,

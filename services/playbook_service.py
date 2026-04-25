@@ -60,6 +60,96 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _context_directional_confluence(
+    context: Optional[Dict[str, Any]],
+    direction: str,
+) -> Dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
+    direction_sign = _playbook_direction_sign(direction)
+    if direction_sign == 0:
+        return {
+            "score": 0.0,
+            "cross_support": 0.0,
+            "micro_support": 0.0,
+            "whale_support": 0.0,
+            "support_components": 0,
+            "conflict_components": 0,
+            "cross_confidence": 0.0,
+            "depth_available": False,
+            "synthetic_depth": False,
+            "whale_dominant": "",
+            "whale_ratio": 0.0,
+        }
+
+    cross = dict(ctx.get("cross_asset_context") or {})
+    micro = dict(ctx.get("market_microstructure") or {})
+    cross_score = _safe_float(cross.get("score"), 0.0)
+    cross_confidence = _clip(_safe_float(cross.get("confidence"), 0.0), 0.0, 1.0)
+    cross_state = str(cross.get("state") or "").strip().lower()
+    if abs(cross_score) <= 1e-9:
+        if cross_state in {"supportive", "buy_support"}:
+            cross_score = 0.35
+        elif cross_state == "sell_support":
+            cross_score = -0.35
+        elif cross_state == "conflicted":
+            cross_score = -0.25
+    cross_support = _clip(cross_score * direction_sign, -1.0, 1.0)
+
+    micro_score = _safe_float(micro.get("score"), 0.0)
+    book_imbalance = _safe_float(micro.get("book_imbalance", micro_score), 0.0)
+    tick_imbalance = _safe_float(micro.get("tick_imbalance"), 0.0)
+    micro_support = _clip(
+        max(
+            micro_score * direction_sign,
+            book_imbalance * direction_sign,
+            tick_imbalance * direction_sign,
+        ),
+        -1.0,
+        1.0,
+    )
+
+    whale_dominant = str(ctx.get("whale_dominant") or "").strip().upper()
+    whale_ratio = _clip(_safe_float(ctx.get("whale_ratio"), 0.0), 0.0, 1.0)
+    whale_sign = 1.0 if whale_dominant == "BUY" else -1.0 if whale_dominant == "SELL" else 0.0
+    whale_support = _clip(whale_sign * direction_sign * whale_ratio, -1.0, 1.0)
+
+    depth_available = bool(micro.get("depth_available"))
+    synthetic_depth = bool(micro.get("synthetic_depth_available"))
+    depth_bias = 0.06 if depth_available else 0.03 if synthetic_depth else 0.0
+
+    score = _clip(
+        micro_support * 0.46
+        + cross_support * 0.34
+        + whale_support * 0.20
+        + depth_bias,
+        -1.0,
+        1.0,
+    )
+    support_components = sum(
+        1
+        for value in (micro_support, cross_support, whale_support)
+        if value >= 0.18
+    )
+    conflict_components = sum(
+        1
+        for value in (micro_support, cross_support, whale_support)
+        if value <= -0.18
+    )
+    return {
+        "score": round(score, 4),
+        "cross_support": round(cross_support, 4),
+        "micro_support": round(micro_support, 4),
+        "whale_support": round(whale_support, 4),
+        "support_components": int(support_components),
+        "conflict_components": int(conflict_components),
+        "cross_confidence": round(cross_confidence, 4),
+        "depth_available": depth_available,
+        "synthetic_depth": synthetic_depth,
+        "whale_dominant": whale_dominant,
+        "whale_ratio": round(whale_ratio, 4),
+    }
+
+
 def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
     adaptive_policy = ctx.get("adaptive_policy")
@@ -550,6 +640,7 @@ def _qualify_standard_candidate(
     setup_quality: float,
     inactivity_relief_strength: float = 0.0,
     inactivity_flat_book: bool = False,
+    context_confluence: float = 0.0,
 ) -> tuple[bool, str]:
     inactivity_seed_relief = bool(inactivity_flat_book and inactivity_relief_strength > 0.0)
     alignment_floor = float(plan.min_alignment_score)
@@ -557,6 +648,9 @@ def _qualify_standard_candidate(
     if inactivity_seed_relief:
         alignment_floor = max(0.50, alignment_floor - (0.03 + inactivity_relief_strength * 0.05))
         setup_floor = max(0.48, setup_floor - (0.03 + inactivity_relief_strength * 0.05))
+    if playbook in _REVERSAL_PLAYBOOKS and context_confluence >= 0.18:
+        alignment_floor = max(0.44, alignment_floor - 0.12)
+        setup_floor = max(0.42, setup_floor - 0.10)
     reason = _candidate_threshold_reason(alignment_score, alignment_floor, "alignment_too_weak", playbook)
     if reason:
         return False, reason
@@ -579,6 +673,9 @@ def _qualify_family_rules(
     strong_impulse_break: bool,
     direction: str,
     allow_early_trend_relief: bool = False,
+    reversal_context_support: float = 0.0,
+    reversal_support_components: int = 0,
+    reversal_candidate_score: float = 0.0,
 ) -> str:
     if playbook in _TREND_PLAYBOOKS and playbook != "crypto_orderflow_continuation":
         required_trends = int(plan.min_trend_agreement or 0)
@@ -608,22 +705,31 @@ def _qualify_family_rules(
     if playbook in _REVERSAL_PLAYBOOKS:
         if structure_bias in {"buy", "sell"} and bias_alignment:
             return f"reversal_not_countertrend:{playbook}"
-        if opposing_trends < max(0, int(plan.reversal_min_opposing_trend_agreement or 0)):
+        reversal_early_relief = bool(
+            reversal_context_support >= 0.18
+            and reversal_support_components >= 1
+            and reversal_candidate_score >= 0.52
+        )
+        required_opposing_trends = max(0, int(plan.reversal_min_opposing_trend_agreement or 0))
+        if reversal_early_relief:
+            required_opposing_trends = max(0, required_opposing_trends - 1)
+        if opposing_trends < required_opposing_trends:
             return f"reversal_unconfirmed:{playbook}"
 
     return ""
 
 
-def _elite_entry_gate_reason(*, playbook: str, structure: Dict[str, Any]) -> str:
+def _elite_entry_gate_reason(*, playbook: str, structure: Dict[str, Any], candidate: Optional[Dict[str, Any]] = None) -> str:
     breakout_retest_ready = bool(structure.get("breakout_retest_ready"))
     first_pullback_ready = bool(structure.get("first_pullback_ready"))
     failed_opposite_move_confirmed = bool(structure.get("failed_opposite_move_confirmed"))
+    reclaim_confirmed = bool((candidate or {}).get("reclaim_confirmed"))
 
     if playbook == "breakout_retest" and not breakout_retest_ready:
         return "retest_missing:breakout_retest"
     if playbook == "trend_pullback" and not first_pullback_ready:
         return "pullback_missing:trend_pullback"
-    if playbook == "failed_break_reclaim" and not failed_opposite_move_confirmed:
+    if playbook == "failed_break_reclaim" and not (failed_opposite_move_confirmed or reclaim_confirmed):
         return "reclaim_unconfirmed:failed_break_reclaim"
     return ""
 
@@ -1231,6 +1337,7 @@ class PlaybookService:
         structure: Dict[str, Any],
         plan: _AssetPlaybookPlan,
         inactivity_profile: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> tuple[bool, str]:
         playbook = str(candidate.get("playbook") or "").strip()
         if playbook not in plan.allowed_playbooks:
@@ -1288,6 +1395,7 @@ class PlaybookService:
             (direction == "BUY" and liquidity_sweep_buy)
             or (direction == "SELL" and liquidity_sweep_sell)
         )
+        context_confluence = _context_directional_confluence(context, direction)
         qualification: Dict[str, Any] = {
             "playbook": playbook,
             "direction": direction,
@@ -1314,6 +1422,12 @@ class PlaybookService:
             "liquidity_sweep_directional": bool(liquidity_sweep_directional),
             "inactivity_relief_strength": round(inactivity_relief_strength, 4),
             "inactivity_flat_book": inactivity_flat_book,
+            "context_confluence": round(_safe_float(context_confluence.get("score"), 0.0), 4),
+            "cross_context_support": round(_safe_float(context_confluence.get("cross_support"), 0.0), 4),
+            "micro_context_support": round(_safe_float(context_confluence.get("micro_support"), 0.0), 4),
+            "whale_context_support": round(_safe_float(context_confluence.get("whale_support"), 0.0), 4),
+            "support_components": int(context_confluence.get("support_components", 0) or 0),
+            "conflict_components": int(context_confluence.get("conflict_components", 0) or 0),
         }
 
         if playbook == "crypto_orderflow_continuation":
@@ -1377,6 +1491,7 @@ class PlaybookService:
                 setup_quality=setup_quality,
                 inactivity_relief_strength=inactivity_relief_strength,
                 inactivity_flat_book=inactivity_flat_book,
+                context_confluence=_safe_float(context_confluence.get("score"), 0.0),
             )
             if not ok:
                 qualification["reason"] = reason
@@ -1410,6 +1525,9 @@ class PlaybookService:
             strong_impulse_break=strong_impulse_break,
             direction=direction,
             allow_early_trend_relief=allow_early_trend_relief,
+            reversal_context_support=_safe_float(context_confluence.get("score"), 0.0),
+            reversal_support_components=int(context_confluence.get("support_components", 0) or 0),
+            reversal_candidate_score=float(candidate.get("score", 0.0) or 0.0),
         )
         if reason:
             qualification["reason"] = reason
@@ -1419,7 +1537,7 @@ class PlaybookService:
             candidate["qualification"] = qualification
             return False, reason
 
-        elite_gate_reason = _elite_entry_gate_reason(playbook=playbook, structure=structure)
+        elite_gate_reason = _elite_entry_gate_reason(playbook=playbook, structure=structure, candidate=candidate)
         if elite_gate_reason:
             qualification["reason"] = elite_gate_reason
             qualification["effective_required_trends"] = min(int(plan.min_trend_agreement or 0), 1) if allow_early_trend_relief else int(plan.min_trend_agreement or 0)
@@ -1427,6 +1545,28 @@ class PlaybookService:
             qualification["allow_early_trend_relief"] = bool(allow_early_trend_relief)
             candidate["qualification"] = qualification
             return False, elite_gate_reason
+
+        candidate["context_confluence"] = round(_safe_float(context_confluence.get("score"), 0.0), 4)
+        candidate["cross_context_support"] = round(_safe_float(context_confluence.get("cross_support"), 0.0), 4)
+        candidate["micro_context_support"] = round(_safe_float(context_confluence.get("micro_support"), 0.0), 4)
+        candidate["whale_context_support"] = round(_safe_float(context_confluence.get("whale_support"), 0.0), 4)
+        candidate["cross_confidence"] = round(_safe_float(context_confluence.get("cross_confidence"), 0.0), 4)
+        candidate["support_components"] = int(context_confluence.get("support_components", 0) or 0)
+        candidate["conflict_components"] = int(context_confluence.get("conflict_components", 0) or 0)
+        if "cross_alignment" not in candidate:
+            candidate["cross_alignment"] = round(_safe_float(context_confluence.get("cross_support"), 0.0), 4)
+        if "micro_score" not in candidate:
+            candidate["micro_score"] = round(_safe_float(context_confluence.get("micro_support"), 0.0), 4)
+        if abs(_safe_float(context_confluence.get("score"), 0.0)) >= 0.08:
+            notes = [str(note) for note in list(candidate.get("notes") or [])]
+            ctx_note = (
+                f"ctx={_safe_float(context_confluence.get('score'), 0.0):+0.2f}"
+                f"/micro={_safe_float(context_confluence.get('micro_support'), 0.0):+0.2f}"
+                f"/cross={_safe_float(context_confluence.get('cross_support'), 0.0):+0.2f}"
+            )
+            if ctx_note not in notes:
+                notes.append(ctx_note)
+            candidate["notes"] = notes
 
         candidate["asset_plan"] = {
             "allowed_playbooks": list(plan.allowed_playbooks),
@@ -2283,6 +2423,10 @@ class PlaybookService:
         structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
 
         def _candidate(direction: str, sweep_size: float, reclaim_dist: float, body_strength: float) -> Dict[str, Any]:
+            confluence = _context_directional_confluence(context, direction)
+            confluence_score = _safe_float(confluence.get("score"), 0.0)
+            support_components = int(confluence.get("support_components", 0) or 0)
+            conflict_components = int(confluence.get("conflict_components", 0) or 0)
             stretch_component = 0.10 if (
                 (direction == "SELL" and structure_bias == "buy")
                 or (direction == "BUY" and structure_bias == "sell")
@@ -2300,13 +2444,26 @@ class PlaybookService:
                 + _clip(alignment_score) * 0.10
                 + stretch_component
                 + regime_component
+                + max(0.0, confluence_score) * 0.16
+                + min(0.08, support_components * 0.03)
+                - max(0.0, -confluence_score) * 0.12
+                - min(0.06, conflict_components * 0.02)
             )
-            confidence = _clip(0.42 + score * 0.42, 0.0, 0.95)
+            confidence = _clip(0.42 + score * 0.42 + max(0.0, confluence_score) * 0.10, 0.0, 0.95)
             return {
                 "playbook": "reversal_exhaustion",
                 "direction": direction,
                 "score": round(score, 4),
                 "confidence": round(confidence, 4),
+                "context_confluence": round(confluence_score, 4),
+                "cross_alignment": round(_safe_float(confluence.get("cross_support"), 0.0), 4),
+                "cross_context_support": round(_safe_float(confluence.get("cross_support"), 0.0), 4),
+                "cross_confidence": round(_safe_float(confluence.get("cross_confidence"), 0.0), 4),
+                "micro_score": round(_safe_float(confluence.get("micro_support"), 0.0), 4),
+                "micro_context_support": round(_safe_float(confluence.get("micro_support"), 0.0), 4),
+                "whale_context_support": round(_safe_float(confluence.get("whale_support"), 0.0), 4),
+                "support_components": support_components,
+                "conflict_components": conflict_components,
                 "entry_style": "reclaim_reversal",
                 "session": session,
                 "preferred_interval": preferred_interval,
@@ -2315,6 +2472,7 @@ class PlaybookService:
                     "liquidity_sweep",
                     "reversal_exhaustion",
                     "bearish_reclaim_failure" if direction == "SELL" else "bullish_reclaim_failure",
+                    f"ctx={confluence_score:+.2f}",
                     f"session={session}",
                 ],
             }
@@ -2385,6 +2543,10 @@ class PlaybookService:
             reclaim = range_high - latest_close
             body_strength = latest_open - latest_close
             lower_high = max(0.0, prior_high - latest_high)
+            confluence = _context_directional_confluence(context, "SELL")
+            confluence_score = _safe_float(confluence.get("score"), 0.0)
+            support_components = int(confluence.get("support_components", 0) or 0)
+            conflict_components = int(confluence.get("conflict_components", 0) or 0)
             score = (
                 _clip(reclaim / max(atr, 1e-9)) * 0.30
                 + _clip(body_strength / max(avg_body * 2.0, 1e-9)) * 0.20
@@ -2392,8 +2554,12 @@ class PlaybookService:
                 + _clip(setup_quality) * 0.16
                 + _clip(alignment_score) * 0.10
                 + (0.10 if regime in {"trending_up", "volatile"} else 0.04)
+                + max(0.0, confluence_score) * 0.18
+                + min(0.08, support_components * 0.03)
+                - max(0.0, -confluence_score) * 0.12
+                - min(0.06, conflict_components * 0.02)
             )
-            confidence = _clip(0.42 + score * 0.42, 0.0, 0.94)
+            confidence = _clip(0.42 + score * 0.42 + max(0.0, confluence_score) * 0.10, 0.0, 0.94)
             if score >= profile.reversal_min_score:
                 candidates.append(
                     {
@@ -2401,6 +2567,16 @@ class PlaybookService:
                         "direction": "SELL",
                         "score": round(score, 4),
                         "confidence": round(confidence, 4),
+                        "context_confluence": round(confluence_score, 4),
+                        "cross_alignment": round(_safe_float(confluence.get("cross_support"), 0.0), 4),
+                        "cross_context_support": round(_safe_float(confluence.get("cross_support"), 0.0), 4),
+                        "cross_confidence": round(_safe_float(confluence.get("cross_confidence"), 0.0), 4),
+                        "micro_score": round(_safe_float(confluence.get("micro_support"), 0.0), 4),
+                        "micro_context_support": round(_safe_float(confluence.get("micro_support"), 0.0), 4),
+                        "whale_context_support": round(_safe_float(confluence.get("whale_support"), 0.0), 4),
+                        "support_components": support_components,
+                        "conflict_components": conflict_components,
+                        "reclaim_confirmed": True,
                         "entry_style": "reclaim_failure",
                         "session": session,
                         "preferred_interval": preferred_interval,
@@ -2409,6 +2585,7 @@ class PlaybookService:
                             "failed_breakout",
                             "lower_high",
                             "bearish_reclaim_failure",
+                            f"ctx={confluence_score:+.2f}",
                             f"session={session}",
                         ],
                     }
@@ -2418,6 +2595,10 @@ class PlaybookService:
             reclaim = latest_close - range_low
             body_strength = latest_close - latest_open
             higher_low = max(0.0, latest_low - prior_low)
+            confluence = _context_directional_confluence(context, "BUY")
+            confluence_score = _safe_float(confluence.get("score"), 0.0)
+            support_components = int(confluence.get("support_components", 0) or 0)
+            conflict_components = int(confluence.get("conflict_components", 0) or 0)
             score = (
                 _clip(reclaim / max(atr, 1e-9)) * 0.30
                 + _clip(body_strength / max(avg_body * 2.0, 1e-9)) * 0.20
@@ -2425,8 +2606,12 @@ class PlaybookService:
                 + _clip(setup_quality) * 0.16
                 + _clip(alignment_score) * 0.10
                 + (0.10 if regime in {"trending_down", "volatile"} else 0.04)
+                + max(0.0, confluence_score) * 0.18
+                + min(0.08, support_components * 0.03)
+                - max(0.0, -confluence_score) * 0.12
+                - min(0.06, conflict_components * 0.02)
             )
-            confidence = _clip(0.42 + score * 0.42, 0.0, 0.94)
+            confidence = _clip(0.42 + score * 0.42 + max(0.0, confluence_score) * 0.10, 0.0, 0.94)
             if score >= profile.reversal_min_score:
                 candidates.append(
                     {
@@ -2434,6 +2619,16 @@ class PlaybookService:
                         "direction": "BUY",
                         "score": round(score, 4),
                         "confidence": round(confidence, 4),
+                        "context_confluence": round(confluence_score, 4),
+                        "cross_alignment": round(_safe_float(confluence.get("cross_support"), 0.0), 4),
+                        "cross_context_support": round(_safe_float(confluence.get("cross_support"), 0.0), 4),
+                        "cross_confidence": round(_safe_float(confluence.get("cross_confidence"), 0.0), 4),
+                        "micro_score": round(_safe_float(confluence.get("micro_support"), 0.0), 4),
+                        "micro_context_support": round(_safe_float(confluence.get("micro_support"), 0.0), 4),
+                        "whale_context_support": round(_safe_float(confluence.get("whale_support"), 0.0), 4),
+                        "support_components": support_components,
+                        "conflict_components": conflict_components,
+                        "reclaim_confirmed": True,
                         "entry_style": "reclaim_failure",
                         "session": session,
                         "preferred_interval": preferred_interval,
@@ -2442,6 +2637,7 @@ class PlaybookService:
                             "failed_breakout",
                             "higher_low",
                             "bullish_reclaim_failure",
+                            f"ctx={confluence_score:+.2f}",
                             f"session={session}",
                         ],
                     }
@@ -3109,6 +3305,7 @@ class PlaybookService:
                     structure=structure,
                     plan=plan,
                     inactivity_profile=inactivity_profile,
+                    context=context,
                 )
                 if approved:
                     candidates.append(candidate)
@@ -3125,6 +3322,9 @@ class PlaybookService:
                             f":trends={int(detail.get('aligned_trends', 0) or 0)}/{int(detail.get('effective_required_trends', detail.get('required_trends', 0)) or 0)}"
                             f":early={int(bool(detail.get('allow_early_trend_relief')))}"
                             f":strong={int(bool(detail.get('strong_impulse_break')))}"
+                            f":ctx={_safe_float(detail.get('context_confluence', 0.0), 0.0):.3f}"
+                            f":support={int(detail.get('support_components', 0) or 0)}"
+                            f":conflict={int(detail.get('conflict_components', 0) or 0)}"
                             f":family={str(detail.get('pattern_family', 'unknown') or 'unknown')}"
                             f":confirm={int(detail.get('entry_confirmation_count', 0) or 0)}/{int(detail.get('entry_confirmation_bars_required', 0) or 0)}"
                         )
@@ -3147,6 +3347,7 @@ class PlaybookService:
                     structure=structure,
                     plan=plan,
                     inactivity_profile=inactivity_profile,
+                    context=context,
                 )
                 if approved:
                     candidates.append(fallback)
@@ -3163,6 +3364,9 @@ class PlaybookService:
                             f":trends={int(detail.get('aligned_trends', 0) or 0)}/{int(detail.get('effective_required_trends', detail.get('required_trends', 0)) or 0)}"
                             f":early={int(bool(detail.get('allow_early_trend_relief')))}"
                             f":strong={int(bool(detail.get('strong_impulse_break')))}"
+                            f":ctx={_safe_float(detail.get('context_confluence', 0.0), 0.0):.3f}"
+                            f":support={int(detail.get('support_components', 0) or 0)}"
+                            f":conflict={int(detail.get('conflict_components', 0) or 0)}"
                             f":family={str(detail.get('pattern_family', 'unknown') or 'unknown')}"
                             f":confirm={int(detail.get('entry_confirmation_count', 0) or 0)}/{int(detail.get('entry_confirmation_bars_required', 0) or 0)}"
                         )
