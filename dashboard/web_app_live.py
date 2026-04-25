@@ -1643,7 +1643,7 @@ def _summarize_signal_diagnostics(rows: Any) -> Dict[str, Any]:
 
 
 def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
+    items_by_asset: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for row in list(journals or []):
         if not isinstance(row, dict):
             continue
@@ -1664,9 +1664,8 @@ def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, A
             + max(0.0, alignment) * 0.15
             + max(0.0, final_score) * 0.1
         )
-        items.append(
-            _enrich_signal_like_row(
-                {
+        item = _enrich_signal_like_row(
+            {
                 "asset": asset,
                 "direction": str(row.get("direction") or "").upper(),
                 "killed_by": str(row.get("killed_by") or row.get("last_layer") or ""),
@@ -1683,11 +1682,29 @@ def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, A
                 "stop_hunt_risk": round(stop_hunt_risk, 3),
                 "exhaustion_risk": round(exhaustion_risk, 3),
                 "rank_score": round(rank_score, 4),
-                }
-            )
+                "event_time": _journal_event_iso(row),
+                "event_ts": _journal_event_sort_value(row),
+            }
         )
+        item_key = (
+            asset,
+            str(item.get("direction") or "").upper(),
+        )
+        existing = items_by_asset.get(item_key)
+        if existing is None:
+            items_by_asset[item_key] = item
+            continue
+        item_ts = float(item.get("event_ts", 0.0) or 0.0)
+        existing_ts = float(existing.get("event_ts", 0.0) or 0.0)
+        if item_ts > existing_ts or (
+            abs(item_ts - existing_ts) < 1e-6
+            and float(item.get("rank_score", 0.0) or 0.0) > float(existing.get("rank_score", 0.0) or 0.0)
+        ):
+            items_by_asset[item_key] = item
+    items = list(items_by_asset.values())
     items.sort(
         key=lambda item: (
+            float(item.get("event_ts", 0.0) or 0.0),
             float(item.get("rank_score", 0.0) or 0.0),
             float(item.get("opportunity_score", 0.0) or 0.0),
             float(item.get("setup_quality", 0.0) or 0.0),
@@ -1711,6 +1728,25 @@ def _journal_event_iso(row: Dict[str, Any]) -> str:
         if raw:
             return raw
     return ""
+
+
+def _journal_event_sort_value(row: Dict[str, Any]) -> float:
+    if not isinstance(row, dict):
+        return 0.0
+    raw_ts = row.get("ts")
+    try:
+        if raw_ts not in (None, ""):
+            return float(raw_ts)
+    except Exception:
+        pass
+    raw_iso = _journal_event_iso(row)
+    if raw_iso:
+        try:
+            normalized = raw_iso if raw_iso.endswith("Z") or "+" in raw_iso[10:] else raw_iso + "Z"
+            return datetime.fromisoformat(normalized.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+    return 0.0
 
 
 def _summarize_crypto_rejection_audit(journals: Any, *, limit: int = 8) -> Dict[str, Any]:

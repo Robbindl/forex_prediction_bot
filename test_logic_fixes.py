@@ -10503,6 +10503,39 @@ def test_command_center_includes_crypto_rejection_audit(monkeypatch) -> None:
     assert payload["crypto_rejection_audit"]["rows"][0]["rejected_reasons"] == ["pullback_missing:trend_pullback"]
     assert payload["crypto_rejection_audit"]["rows"][0]["audit_time"].startswith("2026-04-25T")
 
+
+def test_near_misses_prefers_latest_entry_for_same_asset_direction() -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    rows = [
+        {
+            "asset": "ETH-USD",
+            "category": "crypto",
+            "direction": "SELL",
+            "decision": "KILLED",
+            "kill_reason": "signal governance exception: name 'self' is not defined",
+            "setup_quality": 0.716,
+            "alignment_score": 1.0,
+            "ts": 1777122000.0,
+        },
+        {
+            "asset": "ETH-USD",
+            "category": "crypto",
+            "direction": "SELL",
+            "decision": "KILLED",
+            "kill_reason": "execution hard block on sell: pattern family ranks below elite threshold",
+            "setup_quality": 0.703,
+            "alignment_score": 0.96,
+            "ts": 1777122300.0,
+        },
+    ]
+
+    near_misses = dashboard_mod._summarize_near_misses(rows, limit=6)
+
+    assert len(near_misses) == 1
+    assert near_misses[0]["asset"] == "ETH-USD"
+    assert near_misses[0]["reason"] == "execution hard block on sell: pattern family ranks below elite threshold"
+
 def test_operator_action_endpoints_call_core_methods(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
     calls: dict[str, tuple] = {}
@@ -18058,6 +18091,164 @@ def test_execution_late_entry_gate_relaxes_strong_index_pattern_rank_and_impulse
     assert signal.metadata["execution_relief_flags"]["elite_supported_candidate"] is True
     assert signal.metadata["late_entry_risk_score"] < 0.58
     assert signal.metadata["execution_hard_blocks"] == []
+
+
+def test_execution_late_entry_gate_rescues_low_confidence_forex_continuation_with_live_flow_support() -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    signal = Signal(
+        asset="EUR/USD",
+        canonical_asset="EUR/USD",
+        category="forex",
+        direction="SELL",
+        confidence=0.52,
+        entry_price=1.1710,
+        stop_loss=1.1730,
+        take_profit=1.1670,
+        risk_reward=2.0,
+    )
+    signal.metadata.update(
+        {
+            "support_proximity": 0.14,
+            "resistance_proximity": 0.74,
+            "volatility_ratio": 1.12,
+            "exhaustion_risk": 0.18,
+            "playbook_entry_style": "elite_trend_continuation",
+            "orderflow_imbalance": -0.36,
+            "microstructure_alignment": 0.28,
+            "book_imbalance": -0.22,
+            "tick_imbalance": -0.26,
+        }
+    )
+    data = {}
+    notes = []
+    structure = {
+        "structure_bias": "sell",
+        "alignment_score": 0.92,
+        "setup_quality": 0.73,
+        "vwap_distance_atr": 0.92,
+        "session_quality_score": 0.49,
+        "candle_quality_score": 0.39,
+        "extension_score": 0.98,
+        "target_efficiency_score": 0.26,
+        "impulse_age_bars": 5,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": False,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": False,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 1,
+        "entry_confirmation_count": 1,
+        "entry_confirmation_ready": True,
+        "pattern_family": "trending_down_generic",
+        "elite_pattern_rank": 0.01,
+        "cluster_penalty": 0.08,
+        "distance_to_resistance": 0.0150,
+        "distance_to_support": 0.0064,
+        "regime_entry_policy": {
+            "min_setup_quality": 0.32,
+            "min_candle_quality": 0.30,
+            "max_extension_score": 1.24,
+            "min_target_efficiency": 0.18,
+            "max_impulse_age_bars": 6,
+        },
+        "dominant_exhaustion_score": 0.16,
+        "bias_exhausted": False,
+    }
+
+    approved = engine._execution_late_entry_risk_gate(
+        signal,
+        adaptive_policy={"raw": {"recent_review_profile": {"sample_count": 0}}},
+        conf_before=signal.confidence,
+        structure=structure,
+        data=data,
+        notes=notes,
+    )
+
+    assert approved is True
+    assert signal.alive is True
+    assert signal.metadata["execution_relief_flags"]["continuation_rescue_candidate"] is True
+    assert signal.metadata["execution_relief_flags"]["has_directional_flow_support"] is True
+    assert signal.metadata["execution_hard_blocks"] == []
+    assert data["late_entry_risk"]["recent_pattern_sample_count"] == 0
+
+
+def test_execution_late_entry_gate_keeps_low_rank_block_when_live_flow_conflicts_and_samples_are_real() -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    signal = Signal(
+        asset="ETH-USD",
+        canonical_asset="ETH-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.56,
+        entry_price=1840.0,
+        stop_loss=1860.0,
+        take_profit=1800.0,
+        risk_reward=2.0,
+    )
+    signal.metadata.update(
+        {
+            "support_proximity": 0.16,
+            "resistance_proximity": 0.72,
+            "volatility_ratio": 1.18,
+            "exhaustion_risk": 0.18,
+            "playbook_entry_style": "elite_trend_continuation",
+            "orderflow_imbalance": 0.42,
+            "microstructure_alignment": -0.24,
+            "book_imbalance": 0.26,
+            "tick_imbalance": 0.22,
+        }
+    )
+    structure = {
+        "structure_bias": "sell",
+        "alignment_score": 0.88,
+        "setup_quality": 0.70,
+        "vwap_distance_atr": 0.96,
+        "session_quality_score": 0.48,
+        "candle_quality_score": 0.37,
+        "extension_score": 1.01,
+        "target_efficiency_score": 0.24,
+        "impulse_age_bars": 5,
+        "breakout_retest_ready": False,
+        "first_pullback_ready": False,
+        "liquidity_sweep_buy": False,
+        "liquidity_sweep_sell": False,
+        "failed_opposite_move_confirmed": False,
+        "entry_confirmation_bars_required": 1,
+        "entry_confirmation_count": 1,
+        "entry_confirmation_ready": True,
+        "pattern_family": "trending_down_generic",
+        "elite_pattern_rank": 0.01,
+        "cluster_penalty": 0.08,
+        "distance_to_resistance": 0.0160,
+        "distance_to_support": 0.0065,
+        "regime_entry_policy": {
+            "min_setup_quality": 0.32,
+            "min_candle_quality": 0.30,
+            "max_extension_score": 1.24,
+            "min_target_efficiency": 0.18,
+            "max_impulse_age_bars": 6,
+        },
+        "dominant_exhaustion_score": 0.16,
+        "bias_exhausted": False,
+    }
+
+    approved = engine._execution_late_entry_risk_gate(
+        signal,
+        adaptive_policy={"raw": {"recent_review_profile": {"sample_count": 9}}},
+        conf_before=signal.confidence,
+        structure=structure,
+        data={},
+        notes=[],
+    )
+
+    assert approved is False
+    assert signal.alive is False
+    assert signal.metadata["execution_relief_flags"]["continuation_rescue_candidate"] is False
+    assert "pattern family ranks below elite threshold" in signal.kill_reason.lower()
 
 
 def test_execution_late_entry_gate_uses_inactivity_relief_for_strong_flat_book_candidate() -> None:

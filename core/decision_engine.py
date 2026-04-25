@@ -1492,16 +1492,89 @@ class SignalDecisionEngine:
         cross_asset_confidence = float(signal.metadata.get("cross_asset_confidence", 0.0) or 0.0)
         supportive_structure_distance = float(signal.metadata.get("supportive_structure_distance", 0.0) or 0.0)
         category_label = str(signal.category or signal.metadata.get("category") or "").strip().lower()
+        direction_sign = 1 if signal.direction == "BUY" else -1
+        orderflow_imbalance = float(signal.metadata.get("orderflow_imbalance", 0.0) or 0.0)
+        microstructure_alignment = float(signal.metadata.get("microstructure_alignment", 0.0) or 0.0)
+        aligned_book_pressure = float(signal.metadata.get("book_imbalance", 0.0) or 0.0) * direction_sign
+        aligned_tick_pressure = float(signal.metadata.get("tick_imbalance", 0.0) or 0.0) * direction_sign
+        recent_pattern_sample_count = int(recent_review.get("sample_count", 0) or 0)
+        entry_style = str(signal.metadata.get("playbook_entry_style") or "").strip().lower()
+        pattern_family_lower = pattern_family.strip().lower()
+        continuation_family = bool(
+            "continuation" in pattern_family_lower
+            or pattern_family_lower.endswith("generic")
+            or pattern_family_lower.endswith("liquidity_sweep")
+        )
+        continuation_entry = bool(
+            "continuation" in entry_style
+            or "breakout" in entry_style
+            or entry_style in {"breakout_close", "trend_close"}
+        )
+        structural_strength_score = max(
+            0.0,
+            min(
+                1.0,
+                alignment_score * 0.38
+                + setup_quality * 0.32
+                + candle_quality_score * 0.14
+                + session_quality_score * 0.10
+                + target_efficiency_score * 0.06,
+            ),
+        )
+        directional_flow_support = max(
+            orderflow_imbalance * direction_sign,
+            microstructure_alignment,
+            aligned_book_pressure,
+            aligned_tick_pressure,
+        )
+        directional_flow_conflict = min(
+            orderflow_imbalance * direction_sign,
+            microstructure_alignment,
+            aligned_book_pressure,
+            aligned_tick_pressure,
+        )
+        has_directional_flow_support = directional_flow_support >= 0.12
+        has_directional_flow_conflict = directional_flow_conflict <= -0.16
         strong_market_candidate = bool(
             category_label in {"crypto", "forex", "commodities", "indices"}
-            and float(signal.confidence or 0.0) >= 0.64
-            and alignment_score >= 0.68
-            and setup_quality >= 0.62
-            and candle_quality_score >= 0.36
-            and session_quality_score >= 0.40
+            and (
+                (
+                    float(signal.confidence or 0.0) >= 0.64
+                    and alignment_score >= 0.68
+                    and setup_quality >= 0.62
+                    and candle_quality_score >= 0.36
+                    and session_quality_score >= 0.40
+                )
+                or (
+                    structural_strength_score >= 0.56
+                    and alignment_score >= 0.74
+                    and setup_quality >= 0.64
+                    and candle_quality_score >= 0.30
+                    and session_quality_score >= 0.36
+                )
+            )
         )
         strong_fx_crypto_candidate = bool(
             category_label in {"crypto", "forex"} and strong_market_candidate
+        )
+        continuation_rescue_candidate = bool(
+            strong_market_candidate
+            and (continuation_family or continuation_entry)
+            and alignment_score >= 0.76
+            and setup_quality >= 0.64
+            and candle_quality_score >= 0.30
+            and session_quality_score >= 0.36
+            and target_efficiency_score >= 0.12
+            and impulse_age_bars <= 7
+            and not failed_opposite_move_confirmed
+            and not has_directional_flow_conflict
+            and (
+                has_directional_flow_support
+                or entry_confirmation_ready
+                or breakout_retest_ready
+                or first_pullback_ready
+                or elite_pattern_rank >= 0.08
+            )
         )
         elite_supported_candidate = bool(
             strong_market_candidate
@@ -1511,6 +1584,7 @@ class SignalDecisionEngine:
                 or breakout_retest_ready
                 or first_pullback_ready
                 or entry_confirmation_ready
+                or (continuation_rescue_candidate and has_directional_flow_support)
             )
         )
         inactivity_execution_relief = bool(
@@ -1680,6 +1754,12 @@ class SignalDecisionEngine:
         if avg_quality_score <= 46.0 and hard_loss_rate >= 0.28:
             risk_score += 0.08
             reasons.append("recent execution quality for this setup family is poor")
+        if continuation_rescue_candidate:
+            risk_score -= 0.05
+            if has_directional_flow_support:
+                risk_score -= 0.04
+            elif entry_confirmation_ready or breakout_retest_ready or first_pullback_ready:
+                risk_score -= 0.02
         if inactivity_execution_relief:
             risk_score -= 0.04 + inactivity_relief_strength * 0.08
 
@@ -1687,6 +1767,9 @@ class SignalDecisionEngine:
             hard_blocks.append("broker divergence and spread stress are both active")
         weak_candle_extension_limit = 1.32 if elite_supported_candidate else 1.25
         weak_candle_floor = 0.24 if elite_supported_candidate else 0.26
+        if continuation_rescue_candidate:
+            weak_candle_extension_limit += 0.03
+            weak_candle_floor = max(0.22, weak_candle_floor - 0.02)
         if inactivity_execution_relief:
             weak_candle_extension_limit += 0.02 + inactivity_relief_strength * 0.03
             weak_candle_floor = max(0.22, weak_candle_floor - (0.01 + inactivity_relief_strength * 0.02))
@@ -1694,6 +1777,9 @@ class SignalDecisionEngine:
             hard_blocks.append("entry is extended and the trigger candle is weak")
         target_efficiency_hard_floor = 0.11 if elite_supported_candidate else 0.15
         opposing_distance_hard_floor = 0.0030 if elite_supported_candidate else 0.0035
+        if continuation_rescue_candidate:
+            target_efficiency_hard_floor = max(0.09, target_efficiency_hard_floor - 0.02)
+            opposing_distance_hard_floor = max(0.0026, opposing_distance_hard_floor - 0.0003)
         if inactivity_execution_relief:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - (0.015 + inactivity_relief_strength * 0.03))
             opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - (0.0003 + inactivity_relief_strength * 0.0004))
@@ -1701,6 +1787,9 @@ class SignalDecisionEngine:
             hard_blocks.append("too little clean space remains to the target")
         impulse_age_hard_limit = 7 if elite_supported_candidate else 6
         directional_extension_hard_limit = 0.80 if elite_supported_candidate else 0.74
+        if continuation_rescue_candidate:
+            impulse_age_hard_limit += 1
+            directional_extension_hard_limit += 0.04
         if inactivity_execution_relief:
             impulse_age_hard_limit += 1 + (1 if inactivity_relief_strength >= 0.75 else 0)
             directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
@@ -1732,9 +1821,25 @@ class SignalDecisionEngine:
         if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
             hard_blocks.append("entry confirmation delay is still pending")
         pattern_rank_hard_floor = 0.08 if strong_market_candidate and setup_quality >= 0.66 and alignment_score >= 0.74 else 0.12
+        if continuation_rescue_candidate:
+            pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
-        if pattern_family != "unknown" and elite_pattern_rank <= pattern_rank_hard_floor:
+        low_pattern_rank_is_actionable = bool(
+            blocked_recent_pattern
+            or recent_pattern_sample_count >= 8
+            or (
+                recent_pattern_sample_count >= 5
+                and not has_directional_flow_support
+                and not entry_confirmation_ready
+            )
+            or not continuation_rescue_candidate
+        )
+        if (
+            pattern_family != "unknown"
+            and elite_pattern_rank <= pattern_rank_hard_floor
+            and low_pattern_rank_is_actionable
+        ):
             hard_blocks.append("pattern family ranks below elite threshold")
         cluster_hard_limit = 0.30 if elite_supported_candidate else 0.26
         if cluster_penalty >= cluster_hard_limit:
@@ -1752,6 +1857,9 @@ class SignalDecisionEngine:
             "strong_market_candidate": strong_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
             "elite_supported_candidate": elite_supported_candidate,
+            "continuation_rescue_candidate": continuation_rescue_candidate,
+            "has_directional_flow_support": has_directional_flow_support,
+            "has_directional_flow_conflict": has_directional_flow_conflict,
             "inactivity_execution_relief": inactivity_execution_relief,
             "inactivity_relief_strength": round(inactivity_relief_strength, 4),
             "inactivity_flat_book": inactivity_flat_book,
@@ -1774,6 +1882,7 @@ class SignalDecisionEngine:
             "blocked_recent_pattern": blocked_recent_pattern,
             "blocked_recent_pattern_reason": blocked_recent_pattern_reason,
             "confirmation_needed": confirmation_needed,
+            "recent_pattern_sample_count": recent_pattern_sample_count,
             "pattern_rank_score": round(elite_pattern_rank, 4),
             "trade_cluster_penalty": round(cluster_penalty, 4),
             "pattern_family": pattern_family,
@@ -1796,6 +1905,9 @@ class SignalDecisionEngine:
             "strong_market_candidate": strong_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
             "elite_supported_candidate": elite_supported_candidate,
+            "continuation_rescue_candidate": continuation_rescue_candidate,
+            "directional_flow_support": round(directional_flow_support, 4),
+            "directional_flow_conflict": round(directional_flow_conflict, 4),
             "hard_blocks": list(hard_blocks),
             "reasons": list(reasons),
         }
