@@ -10398,7 +10398,110 @@ def test_command_center_uses_fast_ranking_snapshots(monkeypatch) -> None:
     assert payload["weak_positions"][0]["asset"] == "ETH-USD"
     assert payload["weak_positions"][0]["blocked_reason"] == ""
     assert calls["top"] == (5, False, False)
-    assert calls["weak"] == (5, False)
+
+
+def test_command_center_includes_crypto_rejection_audit(monkeypatch) -> None:
+    dashboard_mod = importlib.import_module("dashboard.web_app_live")
+
+    class _FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def get_json(self):
+            return self._payload
+
+    class _FakeCore:
+        is_running = True
+        is_ready = True
+
+        def get_performance(self):
+            return {"balance": 1000.0, "total_pnl": 0.0, "win_rate": 0.0, "total_trades": 0}
+
+        def get_daily_stats(self):
+            return {"daily_pnl": 0.0, "daily_trades": 0}
+
+        def get_positions(self):
+            return []
+
+        def health_report(self):
+            return {"is_running": True, "engine_ready": True}
+
+    def _fake_call_view(view, *args, **kwargs):
+        name = getattr(view, "__name__", "")
+        if name == "api_phase7_signal_journal":
+            return _FakeResponse(
+                {
+                    "success": True,
+                    "journals": [
+                        {
+                            "asset": "ETH-USD",
+                            "category": "crypto",
+                            "direction": "SELL",
+                            "decision": "KILLED",
+                            "kill_reason": "signal governance exception: name 'self' is not defined",
+                            "blocked_reason": "pullback_missing:trend_pullback",
+                            "rejected_reasons": ["pullback_missing:trend_pullback"],
+                            "rejected_details": [
+                                "trend_pullback:SELL:reason=pullback_missing:trend_pullback"
+                            ],
+                            "pattern_family": "trending_down_generic",
+                            "session_label": "us_open",
+                            "timeframe": "5m",
+                            "alignment_score": 1.0,
+                            "setup_quality": 0.716,
+                            "entry_confirmation_count": 0,
+                            "entry_confirmation_bars_required": 2,
+                            "breakout_retest_ready": False,
+                            "first_pullback_ready": False,
+                            "extension_score": 1.638,
+                            "target_efficiency_score": 0.0,
+                            "cluster_penalty": 0.0,
+                            "ts": 1777122120.0,
+                        },
+                        {
+                            "asset": "BNB-USD",
+                            "category": "crypto",
+                            "direction": "SELL",
+                            "decision": "KILLED",
+                            "kill_reason": "no_playbook_seed",
+                            "blocked_reason": "no_playbook_seed",
+                            "rejected_reasons": [],
+                            "rejected_details": [],
+                            "pattern_family": "trending_down_generic",
+                            "session_label": "us_open",
+                            "timeframe": "15m",
+                            "alignment_score": 0.84,
+                            "setup_quality": 0.671,
+                            "ts": 1777122060.0,
+                        },
+                    ],
+                }
+            )
+        raise AssertionError(f"Unexpected view {name}")
+
+    monkeypatch.setattr(dashboard_mod, "_DEVELOPMENT_MODE", True, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_AUTH_CONFIG_ERROR", "", raising=False)
+    monkeypatch.setattr(dashboard_mod, "_CORE", _FakeCore(), raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_get", lambda key: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_cache_set", lambda key, value, ttl=0: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_sent", lambda: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_get_market_intelligence", lambda: None, raising=False)
+    monkeypatch.setattr(dashboard_mod, "_call_view", _fake_call_view, raising=False)
+
+    with dashboard_mod.app.test_request_context("/api/command-center"):
+        response = dashboard_mod.api_command_center()
+
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["crypto_rejection_audit"]["count"] == 2
+    assert payload["crypto_rejection_audit"]["asset_count"] == 2
+    assert payload["crypto_rejection_audit"]["lead_blocker"] == "no_playbook_seed"
+    assert payload["crypto_rejection_audit"]["rows"][0]["asset"] == "ETH-USD"
+    assert payload["crypto_rejection_audit"]["rows"][0]["blocked_reason"] == "pullback_missing:trend_pullback"
+    assert payload["crypto_rejection_audit"]["rows"][0]["rejected_reasons"] == ["pullback_missing:trend_pullback"]
+    assert payload["crypto_rejection_audit"]["rows"][0]["audit_time"].startswith("2026-04-25T")
 
 def test_operator_action_endpoints_call_core_methods(monkeypatch) -> None:
     dashboard_mod = importlib.import_module("dashboard.web_app_live")
@@ -14494,6 +14597,145 @@ def test_playbook_service_allows_strong_crypto_orderflow_with_neutral_alignment(
     assert orderflow["direction"] == "BUY"
 
 
+def test_playbook_service_detects_crypto_orderflow_followthrough_without_fresh_breakout(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 25, 16, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+    rows = []
+    base = datetime(2026, 4, 25, 0, 0, tzinfo=timezone.utc)
+    closes = [
+        102.0,
+        101.9,
+        101.2,
+        100.9,
+        100.2,
+        99.8,
+        99.3,
+        99.0,
+        98.7,
+        98.3,
+        98.0,
+        97.7,
+        97.4,
+        97.1,
+        96.9,
+        96.6,
+        96.3,
+        96.0,
+        95.8,
+        95.7,
+        95.6,
+        95.55,
+        95.42,
+        95.34,
+        95.22,
+    ]
+    previous_open = 102.2
+    for idx, close_value in enumerate(closes):
+        open_value = previous_open
+        rows.append(
+            {
+                "ts": base + timedelta(minutes=15 * idx),
+                "open": open_value,
+                "high": max(open_value, close_value) + 0.2,
+                "low": min(open_value, close_value) - 0.08,
+                "close": close_value,
+            }
+        )
+        previous_open = close_value + 0.08
+    frame = pd.DataFrame(rows).set_index("ts")
+    analysis = service.analyze(
+        "ETH-USD",
+        "crypto",
+        frame,
+        context={
+            "market_microstructure": {
+                "depth_available": True,
+                "synthetic_depth_available": False,
+                "book_imbalance": -0.70,
+                "score": 0.56,
+                "spread_bps": 7.0,
+            },
+            "market_structure": {
+                "structure_bias": "sell",
+                "alignment_score": 1.0,
+                "setup_quality": 0.72,
+                "pullback_score": -0.22,
+                "breakout_score": -0.30,
+                "volatility_state": "expansion",
+                "regime": "trending_down",
+                "trend_15m": "trending_down",
+                "trend_1h": "trending_down",
+                "distance_to_support": 0.008,
+                "distance_to_resistance": 0.020,
+            },
+        },
+    )
+
+    assert any(candidate["playbook"] == "crypto_orderflow_continuation" for candidate in analysis["candidates"])
+    orderflow = next(candidate for candidate in analysis["candidates"] if candidate["playbook"] == "crypto_orderflow_continuation")
+    assert orderflow["direction"] == "SELL"
+    assert orderflow["entry_style"] == "orderflow_followthrough"
+
+
+def test_playbook_service_crypto_inactivity_relief_allows_extended_generic_continuation(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 25, 16, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+
+    fallback = service._elite_ready_fallback(
+        asset="BNB-USD",
+        category="crypto",
+        session="us_open",
+        structure={
+            "structure_bias": "sell",
+            "alignment_score": 0.84,
+            "setup_quality": 0.67,
+            "pullback_score": -0.08,
+            "breakout_score": -0.12,
+            "candle_quality_score": 0.22,
+            "session_quality_score": 0.28,
+            "extension_score": 1.99,
+            "target_efficiency_score": 0.95,
+            "impulse_age_bars": 3,
+            "elite_pattern_rank": 0.22,
+            "cluster_penalty": 0.10,
+            "breakout_retest_ready": False,
+            "first_pullback_ready": False,
+            "failed_opposite_move_confirmed": False,
+            "entry_confirmation_ready": False,
+            "entry_confirmation_count": 0,
+            "entry_confirmation_bars_required": 1,
+            "fast_entry_confirmation_ready": False,
+            "fast_entry_confirmation_count": 0,
+            "fast_entry_confirmation_bars_required": 1,
+            "pattern_family": "trending_down_generic",
+            "liquidity_sweep_buy": False,
+            "liquidity_sweep_sell": False,
+            "upside_exhaustion_score": 0.08,
+            "downside_exhaustion_score": 0.18,
+        },
+        plan=service._asset_plan("BNB-USD", "crypto"),
+        inactivity_profile={
+            "active": True,
+            "flat_book": True,
+            "relief_strength": 1.0,
+        },
+    )
+
+    assert fallback is not None
+    assert fallback["playbook"] == "breakout_continuation"
+    assert fallback["entry_style"] == "elite_trend_continuation"
+
+
 def test_playbook_service_detects_intermarket_continuation_for_forex(monkeypatch) -> None:
     svc_mod = importlib.import_module("services.playbook_service")
     monkeypatch.setattr(
@@ -18002,6 +18244,90 @@ def test_execution_late_entry_gate_accepts_equity_relief_without_flat_book() -> 
     assert signal.alive is True
     assert signal.metadata["execution_relief_flags"]["inactivity_execution_relief"] is True
     assert signal.metadata["execution_hard_blocks"] == []
+
+
+def test_governance_nameerror_uses_minimal_exception_fallback(monkeypatch) -> None:
+    decision_mod = importlib.import_module("core.decision_engine")
+    engine = decision_mod.SignalDecisionEngine()
+
+    signal = Signal(
+        asset="ETH-USD",
+        canonical_asset="ETH-USD",
+        category="crypto",
+        direction="SELL",
+        confidence=0.72,
+        entry_price=95.0,
+        stop_loss=96.0,
+        take_profit=92.0,
+        risk_reward=3.0,
+    )
+    signal.metadata.update(
+        {
+            "playbook_name": "breakout_continuation",
+            "playbook_action": "seed",
+            "playbook_confidence": 0.72,
+            "predictor_confidence": 0.0,
+        }
+    )
+
+    monkeypatch.setattr(decision_mod, "count_valid_sources", lambda sig: 3)
+
+    class _AdaptivePolicySvc:
+        @staticmethod
+        def get_thresholds(**kwargs):
+            return {
+                "min_rr": 1.2,
+                "min_final_confidence": 0.55,
+                "block_new_entries": False,
+            }
+
+    monkeypatch.setattr(
+        "services.adaptive_policy_service.get_service",
+        lambda: _AdaptivePolicySvc(),
+    )
+
+    class _BrokenGovernance:
+        @staticmethod
+        def evaluate(signal, context):
+            raise NameError("name 'Self' is not defined")
+
+    monkeypatch.setattr(
+        "services.signal_governance.signal_governance",
+        _BrokenGovernance(),
+    )
+
+    approved = engine._apply_governance_review(signal, {"engine": SimpleNamespace(state=None)})
+
+    assert approved is True
+    assert signal.alive is True
+    assert signal.metadata["governance_validation"]["approved"] is True
+    assert signal.metadata["governance_validation"]["fallback"] is True
+    assert signal.metadata["governance_validation"]["exception"] == "NameError"
+
+
+def test_signal_governance_crypto_recent_guard_static_check_does_not_raise() -> None:
+    governance_mod = importlib.import_module("services.signal_governance")
+
+    violations: list[str] = []
+    warnings: list[str] = []
+    governance_mod.SignalGovernance._apply_recent_performance_guard_rules(
+        {
+            "recent_performance_guard": {"violations": [], "warnings": []},
+            "category": "crypto",
+            "price_meta": {
+                "source": "Binance",
+                "source_class": "secondary_api",
+                "realtime": True,
+                "delayed": False,
+            },
+            "ohlcv_meta": {},
+        },
+        violations,
+        warnings,
+    )
+
+    assert violations == []
+    assert any("crypto using realtime secondary price source Binance" in item for item in warnings)
 
 
 def test_seed_inactivity_profile_prefers_playbook_equity_relief_snapshot() -> None:

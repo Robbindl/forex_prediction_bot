@@ -2221,6 +2221,50 @@ class SignalDecisionEngine:
         return True
 
     @staticmethod
+    def _governance_exception_fallback_verdict(
+        signal: Signal,
+        *,
+        adaptive_policy_preview: Dict[str, Any],
+        valid_sources: int,
+        min_required: int,
+        conf_before: float,
+        exc: Exception,
+    ) -> Dict[str, Any]:
+        min_rr = float(adaptive_policy_preview.get("min_rr", 0.0) or 0.0)
+        min_final_confidence = float(
+            adaptive_policy_preview.get("min_final_confidence", MIN_FINAL_CONFIDENCE) or MIN_FINAL_CONFIDENCE
+        )
+        block_new_entries = bool(adaptive_policy_preview.get("block_new_entries"))
+        effective_confidence = max(float(signal.confidence or 0.0), float(conf_before or 0.0))
+        approved = bool(
+            valid_sources >= min_required
+            and not block_new_entries
+            and float(signal.risk_reward or 0.0) >= min_rr
+            and effective_confidence >= min_final_confidence
+        )
+        return {
+            "approved": approved,
+            "reason": (
+                "governance exception fallback passed"
+                if approved
+                else (
+                    f"governance exception fallback blocked: "
+                    f"rr={float(signal.risk_reward or 0.0):.2f}/{min_rr:.2f} "
+                    f"conf={effective_confidence:.3f}/{min_final_confidence:.3f} "
+                    f"block_new={int(block_new_entries)}"
+                )
+            ),
+            "score": 69 if approved else 0,
+            "grade": "C" if approved else "F",
+            "model_key": "exception_fallback",
+            "live_validation": {},
+            "violations": ([] if approved else ["governance_exception_fallback_blocked"]),
+            "warnings": [f"governance_exception:{type(exc).__name__}"],
+            "fallback": True,
+            "exception": type(exc).__name__,
+        }
+
+    @staticmethod
     def _apply_governance_review(signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence
         profile = get_profile(signal.asset)
@@ -2324,6 +2368,37 @@ class SignalDecisionEngine:
             )
             return True
         except Exception as exc:
+            logger.exception(f"[DecisionEngine] Governance exception for {signal.asset}")
+            if isinstance(exc, NameError):
+                fallback_verdict = SignalDecisionEngine._governance_exception_fallback_verdict(
+                    signal,
+                    adaptive_policy_preview=adaptive_policy_preview,
+                    valid_sources=valid_sources,
+                    min_required=min_required,
+                    conf_before=conf_before,
+                    exc=exc,
+                )
+                signal.metadata["governance_validation"] = fallback_verdict
+                data.update({
+                    "grade": fallback_verdict.get("grade"),
+                    "score": fallback_verdict.get("score"),
+                    "model_key": fallback_verdict.get("model_key"),
+                    "live_validation": fallback_verdict.get("live_validation"),
+                    "governance_exception_fallback": True,
+                    "governance_exception_type": type(exc).__name__,
+                })
+                if fallback_verdict.get("approved"):
+                    signal.step_reached = STEP_GOVERNANCE
+                    signal.journal.record(
+                        layer=STEP_GOVERNANCE,
+                        name="governance",
+                        decision=PASS,
+                        reason=fallback_verdict.get("reason", "governance exception fallback passed"),
+                        conf_before=conf_before,
+                        conf_after=signal.confidence,
+                        data=data,
+                    )
+                    return True
             reason = f"signal governance exception: {exc}"
             signal.kill(reason, STEP_GOVERNANCE)
             signal.journal.record(

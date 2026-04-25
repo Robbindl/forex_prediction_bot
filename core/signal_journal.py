@@ -581,6 +581,9 @@ class SignalJournal:
         policy = self._latest_named("policy", "agent")
         latest = self._latest_layer_entry()
         metadata = dict(getattr(signal, "metadata", {}) or {})
+        structure_data = metadata.get("market_structure")
+        if not isinstance(structure_data, dict):
+            structure_data = {}
 
         final_conf = None
         if policy and policy.data.get("final_confidence") is not None:
@@ -618,6 +621,13 @@ class SignalJournal:
         factor_attribution = self._extract_factor_attribution(signal)
         factor_extremes = self._factor_extremes(factor_attribution)
         setup_fingerprint = self._extract_setup_fingerprint(signal)
+        category = str(getattr(signal, "category", "") or metadata.get("category") or "").strip().lower()
+        blocked_reason = str(metadata.get("blocked_reason") or "").strip()
+        rejected_reasons = [str(item).strip() for item in list(metadata.get("rejected_reasons") or []) if str(item).strip()]
+        rejected_details = [str(item).strip() for item in list(metadata.get("rejected_details") or []) if str(item).strip()]
+        market_review_notes = [str(item).strip() for item in list(metadata.get("market_review_notes") or []) if str(item).strip()]
+        execution_review_notes = [str(item).strip() for item in list(metadata.get("execution_review_notes") or []) if str(item).strip()]
+        event_ts = latest.ts if latest else self._start_ts
 
         governance_score = _safe_int(
             metadata.get(
@@ -679,6 +689,7 @@ class SignalJournal:
             execution_feedback = {}
 
         return {
+            "category": category,
             "final_policy_decision": policy.decision if policy else "",
             "final_policy_reason": policy.reason if policy else "",
             "final_policy_score": final_score,
@@ -688,6 +699,7 @@ class SignalJournal:
             "killed_by": kill.name if kill else "",
             "kill_reason": kill.reason if kill else "",
             "last_layer": latest.name if latest else "",
+            "ts": event_ts,
             "opportunity_score": opportunity_score,
             "opportunity_rank": opportunity_rank,
             "opportunity_breakdown": opportunity_breakdown,
@@ -698,6 +710,66 @@ class SignalJournal:
             "setup_quality": setup_fingerprint.get("setup_quality"),
             "regime": setup_fingerprint.get("regime", ""),
             "volatility_state": setup_fingerprint.get("volatility_state", ""),
+            "pattern_family": str(
+                metadata.get("pattern_family")
+                or structure_data.get("pattern_family")
+                or ""
+            ),
+            "session_label": str(
+                metadata.get("session_label")
+                or metadata.get("playbook_session")
+                or metadata.get("session")
+                or ""
+            ),
+            "timeframe": str(
+                metadata.get("timeframe")
+                or metadata.get("playbook_interval")
+                or metadata.get("preferred_interval")
+                or ""
+            ),
+            "blocked_reason": blocked_reason,
+            "rejected_reasons": rejected_reasons,
+            "rejected_details": rejected_details,
+            "market_review_notes": market_review_notes,
+            "execution_review_notes": execution_review_notes,
+            "breakout_retest_ready": bool(metadata.get("breakout_retest_ready", structure_data.get("breakout_retest_ready"))),
+            "first_pullback_ready": bool(metadata.get("first_pullback_ready", structure_data.get("first_pullback_ready"))),
+            "entry_confirmation_ready": bool(metadata.get("entry_confirmation_ready", structure_data.get("entry_confirmation_ready"))),
+            "entry_confirmation_count": _safe_int(
+                metadata.get("entry_confirmation_count", structure_data.get("entry_confirmation_count")),
+                0,
+            ) or 0,
+            "entry_confirmation_bars_required": _safe_int(
+                metadata.get("entry_confirmation_bars_required", structure_data.get("entry_confirmation_bars_required")),
+                0,
+            ) or 0,
+            "failed_opposite_move_confirmed": bool(
+                metadata.get("failed_opposite_move_confirmed", structure_data.get("failed_opposite_move_confirmed"))
+            ),
+            "cluster_penalty": round(
+                _safe_float(metadata.get("cluster_penalty", structure_data.get("cluster_penalty")), 0.0) or 0.0,
+                4,
+            ),
+            "impulse_age_bars": _safe_int(
+                metadata.get("impulse_age_bars", structure_data.get("impulse_age_bars")),
+                0,
+            ) or 0,
+            "extension_score": round(
+                _safe_float(metadata.get("extension_score", structure_data.get("extension_score")), 0.0) or 0.0,
+                4,
+            ),
+            "candle_quality_score": round(
+                _safe_float(metadata.get("candle_quality_score", structure_data.get("candle_quality_score")), 0.0) or 0.0,
+                4,
+            ),
+            "session_quality_score": round(
+                _safe_float(metadata.get("session_quality_score", structure_data.get("session_quality_score")), 0.0) or 0.0,
+                4,
+            ),
+            "target_efficiency_score": round(
+                _safe_float(metadata.get("target_efficiency_score", structure_data.get("target_efficiency_score")), 0.0) or 0.0,
+                4,
+            ),
             "broker_quality_score": round(broker_quality_score, 4) if broker_quality_score is not None else None,
             "broker_primary_provider": setup_fingerprint.get("primary_provider", ""),
             "broker_comparison_provider": setup_fingerprint.get("comparison_provider", ""),

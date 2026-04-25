@@ -1608,6 +1608,28 @@ class PlaybookService:
             extension_ceiling += 0.05 + inactivity_relief_strength * 0.10
             alignment_floor = max(0.50, alignment_floor - (0.02 + inactivity_relief_strength * 0.04))
             setup_floor = max(0.48, setup_floor - (0.02 + inactivity_relief_strength * 0.04))
+        crypto_directional_relief_ready = bool(
+            category == "crypto"
+            and inactivity_seed_relief
+            and pattern_family.endswith("generic")
+            and family_directional_match
+            and alignment_score >= 0.82
+            and setup_quality >= 0.60
+            and max(directional_breakout, directional_pullback) >= 0.06
+            and impulse_age_bars <= 6
+            and cluster_penalty <= 0.14
+        )
+        if crypto_directional_relief_ready:
+            target_efficiency_floor = min(
+                target_efficiency_floor,
+                0.0 if alignment_score >= 0.92 else 0.16,
+            )
+            extension_ceiling = max(
+                extension_ceiling,
+                2.10 if target_efficiency_score >= 0.82 else 1.75,
+            )
+            alignment_floor = min(alignment_floor, 0.54)
+            setup_floor = min(setup_floor, 0.50)
 
         if alignment_score < alignment_floor:
             return None
@@ -1618,6 +1640,9 @@ class PlaybookService:
         if inactivity_seed_relief:
             candle_floor = max(0.20, candle_floor - (0.04 + inactivity_relief_strength * 0.04))
             session_floor = max(0.24, session_floor - (0.04 + inactivity_relief_strength * 0.05))
+        if crypto_directional_relief_ready:
+            candle_floor = max(0.18, candle_floor - 0.06)
+            session_floor = max(0.20, session_floor - 0.08)
         if not premium_generic_trend_ready and (
             effective_candle_quality_score < candle_floor or effective_session_quality_score < session_floor
         ):
@@ -1677,6 +1702,11 @@ class PlaybookService:
             and extension_score <= extension_ceiling
             and target_efficiency_score >= max(0.0, target_efficiency_floor)
             and impulse_age_bars <= impulse_age_limit
+        ):
+            emerging_generic_trend_ready = True
+        if crypto_directional_relief_ready and (
+            target_efficiency_score >= max(0.0, target_efficiency_floor)
+            or alignment_score >= 0.92
         ):
             emerging_generic_trend_ready = True
         if failed_opposite_move_confirmed and "failed_break_reclaim" in plan.allowed_playbooks:
@@ -2897,13 +2927,75 @@ class PlaybookService:
         body = abs(latest_close - latest_open)
         setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
         alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
+        structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
+        breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
+        trend_15m = str(structure.get("trend_15m", "unknown") or "unknown").lower()
+        trend_1h = str(structure.get("trend_1h", "unknown") or "unknown").lower()
+        entry_style = "orderflow_break"
+        directional_trend_ready = False
+        recent_mean = float(prior["close"].tail(min(6, len(prior))).mean() or 0.0)
+        recent_band_high = float(prior["high"].tail(min(6, len(prior))).max() or prev_high)
+        recent_band_low = float(prior["low"].tail(min(6, len(prior))).min() or prev_low)
+        followthrough_tolerance = max(atr * 0.18, abs(prev_high - prev_low) * 0.04, 1e-9)
+        down_trend_aligned = all(self._trend_sign(state) <= 0 for state in (trend_15m, trend_1h))
+        up_trend_aligned = all(self._trend_sign(state) >= 0 for state in (trend_15m, trend_1h))
 
         if imbalance > 0 and latest_close > prev_high and latest_close > latest_open:
             impulse = latest_close - prev_high
             direction = "BUY"
+            if (
+                impulse <= followthrough_tolerance
+                and structure_bias == "buy"
+                and alignment_score >= 0.72
+                and setup_quality >= 0.54
+                and latest_close >= recent_mean
+                and up_trend_aligned
+            ):
+                directional_trend_ready = True
+                entry_style = "orderflow_followthrough"
         elif imbalance < 0 and latest_close < prev_low and latest_close < latest_open:
             impulse = prev_low - latest_close
             direction = "SELL"
+            if (
+                impulse <= followthrough_tolerance
+                and structure_bias == "sell"
+                and alignment_score >= 0.72
+                and setup_quality >= 0.54
+                and latest_close <= recent_mean
+                and down_trend_aligned
+            ):
+                directional_trend_ready = True
+                entry_style = "orderflow_followthrough"
+        elif (
+            imbalance > 0
+            and structure_bias == "buy"
+            and alignment_score >= 0.72
+            and setup_quality >= 0.54
+            and latest_close > latest_open
+            and latest_close >= recent_mean
+            and latest_close >= recent_band_high - followthrough_tolerance
+            and up_trend_aligned
+            and breakout_score >= -0.08
+        ):
+            impulse = max(latest_close - recent_mean, latest_close - float(prior["close"].iloc[-1]), 0.0)
+            direction = "BUY"
+            directional_trend_ready = True
+            entry_style = "orderflow_followthrough"
+        elif (
+            imbalance < 0
+            and structure_bias == "sell"
+            and alignment_score >= 0.72
+            and setup_quality >= 0.54
+            and latest_close < latest_open
+            and latest_close <= recent_mean
+            and latest_close <= recent_band_low + followthrough_tolerance
+            and down_trend_aligned
+            and breakout_score <= 0.08
+        ):
+            impulse = max(recent_mean - latest_close, float(prior["close"].iloc[-1]) - latest_close, 0.0)
+            direction = "SELL"
+            directional_trend_ready = True
+            entry_style = "orderflow_followthrough"
         else:
             return None
 
@@ -2915,9 +3007,13 @@ class PlaybookService:
             + _clip(setup_quality) * 0.12
             + _clip(alignment_score) * 0.08
             + (0.06 if true_depth else 0.02)
+            + (0.03 if directional_trend_ready else 0.0)
         )
         confidence = _clip(0.43 + score * 0.43, 0.0, 0.96)
-        if score < max(profile.breakout_min_score, 0.60):
+        min_score_floor = max(profile.breakout_min_score, 0.60)
+        if directional_trend_ready:
+            min_score_floor = max(0.52, min_score_floor - 0.08)
+        if score < min_score_floor:
             return None
 
         return {
@@ -2928,7 +3024,7 @@ class PlaybookService:
             "book_imbalance": round(imbalance, 4),
             "micro_score": round(micro_score, 4),
             "spread_bps": round(spread_bps, 2),
-            "entry_style": "orderflow_break",
+            "entry_style": entry_style,
             "session": session,
             "preferred_interval": preferred_interval,
             "management": self._management_template(profile, "crypto_orderflow_continuation", asset=asset, category=category),
@@ -2937,6 +3033,7 @@ class PlaybookService:
                 "true_depth" if true_depth else "synthetic_depth",
                 f"imbalance={imbalance:.2f}",
                 f"spread_bps={spread_bps:.1f}",
+                "followthrough" if directional_trend_ready else "fresh_break",
                 f"session={session}",
             ],
         }

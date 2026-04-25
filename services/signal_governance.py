@@ -294,7 +294,7 @@ class SignalGovernance:
         warnings.extend(list(guard.get("warnings") or []))
 
         if state["category"] == "crypto":
-            crypto_price_ok, crypto_price_note = self._check_crypto_price_source(state["price_meta"])
+            crypto_price_ok, crypto_price_note = SignalGovernance._check_crypto_price_source(state["price_meta"])
             if not crypto_price_ok:
                 violations.append(crypto_price_note)
             elif crypto_price_note:

@@ -1697,6 +1697,104 @@ def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, A
     return items[: max(1, int(limit or 6))]
 
 
+def _journal_event_iso(row: Dict[str, Any]) -> str:
+    if not isinstance(row, dict):
+        return ""
+    raw_ts = row.get("ts")
+    try:
+        if raw_ts not in (None, ""):
+            return datetime.fromtimestamp(float(raw_ts), tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+    for key in ("event_time", "timestamp", "time", "created_at"):
+        raw = str(row.get(key) or "").strip()
+        if raw:
+            return raw
+    return ""
+
+
+def _summarize_crypto_rejection_audit(journals: Any, *, limit: int = 8) -> Dict[str, Any]:
+    items: List[Dict[str, Any]] = []
+    blocker_counts: Dict[str, int] = {}
+    asset_counts: Dict[str, int] = {}
+    for row in list(journals or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("decision") or "").upper() == "SURVIVED":
+            continue
+        asset = str(row.get("asset") or "").strip()
+        if not asset:
+            continue
+        category = str(row.get("category") or _CAT.get(asset, "") or "").strip().lower()
+        if category != "crypto":
+            continue
+        enriched = _enrich_signal_like_row(row)
+        rejected_reasons = _clean_text_list(
+            enriched.get("rejected_reasons") or row.get("rejected_reasons"),
+            limit=6,
+        )
+        rejected_details = _clean_text_list(
+            enriched.get("rejected_details") or row.get("rejected_details"),
+            limit=4,
+        )
+        blocker = str(
+            enriched.get("exact_kill_reason")
+            or enriched.get("blocked_reason")
+            or row.get("kill_reason")
+            or row.get("final_policy_reason")
+            or row.get("reason")
+            or row.get("killed_by")
+            or "no_candidate"
+        ).strip() or "no_candidate"
+        blocker_label = blocker.split(":", 1)[0].strip().lower() or "no_candidate"
+        blocker_counts[blocker_label] = blocker_counts.get(blocker_label, 0) + 1
+        asset_counts[asset] = asset_counts.get(asset, 0) + 1
+        enriched["category"] = "crypto"
+        enriched["blocked_reason"] = str(enriched.get("blocked_reason") or row.get("blocked_reason") or row.get("kill_reason") or "").strip()
+        enriched["rejected_reasons"] = rejected_reasons
+        enriched["rejected_details"] = rejected_details
+        enriched["audit_time"] = _journal_event_iso(row)
+        enriched["blocker_label"] = blocker_label
+        enriched["reject_count_for_asset"] = asset_counts[asset]
+        items.append(enriched)
+
+    items.sort(
+        key=lambda item: (
+            str(item.get("audit_time") or ""),
+            float(item.get("opportunity_score", 0.0) or 0.0),
+            float(item.get("setup_quality", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    limited: List[Dict[str, Any]] = []
+    per_asset_seen: Dict[str, int] = {}
+    for item in items:
+        asset = str(item.get("asset") or "").strip()
+        if per_asset_seen.get(asset, 0) >= 2:
+            continue
+        per_asset_seen[asset] = per_asset_seen.get(asset, 0) + 1
+        limited.append(item)
+        if len(limited) >= max(3, int(limit or 8)):
+            break
+
+    top_blockers = [
+        {"label": label, "count": count}
+        for label, count in sorted(blocker_counts.items(), key=lambda item: (-item[1], item[0]))
+    ][:3]
+    asset_summary = [
+        {"asset": asset, "count": count}
+        for asset, count in sorted(asset_counts.items(), key=lambda item: (-item[1], item[0]))
+    ][:5]
+    return {
+        "count": len(items),
+        "asset_count": len(asset_counts),
+        "lead_blocker": top_blockers[0]["label"] if top_blockers else "",
+        "top_blockers": top_blockers,
+        "assets": asset_summary,
+        "rows": limited,
+    }
+
+
 def _current_playbook_session(category: str = "") -> str:
     try:
         from services.playbook_service import _active_session
@@ -3334,6 +3432,7 @@ def _build_command_center_payload() -> Dict[str, Any]:
     _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
     _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
     near_misses = _summarize_near_misses(journals, limit=8)
+    crypto_rejection_audit = _summarize_crypto_rejection_audit(journals, limit=8)
     session_radar = _build_session_radar(limit=12)
     why_not_traded = _summarize_why_not_traded(journals, near_misses, limit=6)
     watchlist_ladder = _build_watchlist_ladder(top_opportunities, near_misses, session_radar, enriched_positions)
@@ -3360,6 +3459,7 @@ def _build_command_center_payload() -> Dict[str, Any]:
         "top_opportunities": top_opportunities,
         "weak_positions":    weak_positions,
         "near_misses":       near_misses,
+        "crypto_rejection_audit": crypto_rejection_audit,
         "why_not_traded":    why_not_traded,
         "session_radar":     session_radar,
         "watchlist_ladder":  watchlist_ladder,
