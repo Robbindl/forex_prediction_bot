@@ -408,9 +408,26 @@ class DataFetcher:
         if str(category or "").strip().lower() != "crypto":
             return {}
         try:
+            from order_flow import get_imbalance as get_orderflow_imbalance
             from order_flow import get_snapshot as get_orderflow_snapshot
 
-            return get_orderflow_snapshot(self._orderflow_symbol(asset)) or {}
+            symbol = self._orderflow_symbol(asset)
+            snapshot = dict(get_orderflow_snapshot(symbol) or {})
+            if snapshot:
+                return snapshot
+
+            imbalance = float(get_orderflow_imbalance(symbol) or 0.0)
+            if abs(imbalance) >= 0.05:
+                return {
+                    "asset": symbol,
+                    "imbalance": round(imbalance, 4),
+                    "bid_vol": 0.0,
+                    "ask_vol": 0.0,
+                    "top_bids": [],
+                    "top_asks": [],
+                    "synthetic_imbalance_only": True,
+                }
+            return {}
         except Exception:
             return {}
 
@@ -604,15 +621,20 @@ class DataFetcher:
         except Exception:
             existing_score = 0.0
 
+        top_bids = list(snapshot.get("top_bids", []) or [])
+        top_asks = list(snapshot.get("top_asks", []) or [])
+        depth_levels = max(len(top_bids), len(top_asks))
+        synthetic_only = bool(snapshot.get("synthetic_imbalance_only")) or depth_levels <= 0
+
         payload["book_imbalance"] = round(imbalance, 4)
-        payload["depth_available"] = True
-        payload["synthetic_depth_available"] = False
-        payload["depth_levels"] = max(len(snapshot.get("top_bids", []) or []), len(snapshot.get("top_asks", []) or []))
+        payload["depth_available"] = depth_levels > 0
+        payload["synthetic_depth_available"] = synthetic_only
+        payload["depth_levels"] = depth_levels
         payload["bid_vol"] = float(snapshot.get("bid_vol", 0.0) or 0.0)
         payload["ask_vol"] = float(snapshot.get("ask_vol", 0.0) or 0.0)
-        payload["orderbook_top_bids"] = list(snapshot.get("top_bids", []) or [])
-        payload["orderbook_top_asks"] = list(snapshot.get("top_asks", []) or [])
-        payload["microstructure_source"] = "order_flow_true_depth"
+        payload["orderbook_top_bids"] = top_bids
+        payload["orderbook_top_asks"] = top_asks
+        payload["microstructure_source"] = "order_flow_synthetic_imbalance" if synthetic_only else "order_flow_true_depth"
         if spread_pct > 0.0:
             payload["spread_bps"] = round(spread_pct * 100.0, 3)
         payload["score"] = round(

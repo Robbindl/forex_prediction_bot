@@ -150,6 +150,45 @@ def _context_directional_confluence(
     }
 
 
+def _dominant_context_snapshot(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    buy = _context_directional_confluence(context, "BUY")
+    sell = _context_directional_confluence(context, "SELL")
+
+    buy_key = (
+        _safe_float(buy.get("score"), 0.0),
+        int(buy.get("support_components", 0) or 0),
+        abs(_safe_float(buy.get("micro_support"), 0.0)),
+        abs(_safe_float(buy.get("cross_support"), 0.0)),
+        abs(_safe_float(buy.get("whale_support"), 0.0)),
+    )
+    sell_key = (
+        _safe_float(sell.get("score"), 0.0),
+        int(sell.get("support_components", 0) or 0),
+        abs(_safe_float(sell.get("micro_support"), 0.0)),
+        abs(_safe_float(sell.get("cross_support"), 0.0)),
+        abs(_safe_float(sell.get("whale_support"), 0.0)),
+    )
+    direction = "BUY" if buy_key >= sell_key else "SELL"
+    dominant = buy if direction == "BUY" else sell
+    dominant_score = _safe_float(dominant.get("score"), 0.0)
+    if dominant_score <= 0.0:
+        direction = ""
+    return {
+        "direction": direction,
+        "context_confluence": round(max(0.0, dominant_score), 4),
+        "cross_alignment": round(_safe_float(dominant.get("cross_support"), 0.0), 4),
+        "cross_confidence": round(_safe_float(dominant.get("cross_confidence"), 0.0), 4),
+        "micro_score": round(_safe_float(dominant.get("micro_support"), 0.0), 4),
+        "whale_context_support": round(_safe_float(dominant.get("whale_support"), 0.0), 4),
+        "support_components": int(dominant.get("support_components", 0) or 0),
+        "conflict_components": int(dominant.get("conflict_components", 0) or 0),
+        "depth_available": bool(dominant.get("depth_available")),
+        "synthetic_depth": bool(dominant.get("synthetic_depth")),
+        "whale_dominant": str(dominant.get("whale_dominant") or ""),
+        "whale_ratio": round(_safe_float(dominant.get("whale_ratio"), 0.0), 4),
+    }
+
+
 def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
     adaptive_policy = ctx.get("adaptive_policy")
@@ -596,6 +635,16 @@ def _qualify_impulse_candidate(
         )
     )
     if inactivity_fast_track_context:
+        allow_early_trend_relief = True
+    context_pressure_ready = bool(
+        entry_style_label == "elite_context_pressure"
+        and candidate_score >= max(0.44, float(profile.breakout_min_score) - 0.16)
+        and max(cross_strength, micro_strength) >= 0.28
+        and int(candidate.get("support_components", 0) or 0) >= 1
+        and int(candidate.get("conflict_components", 0) or 0) == 0
+    )
+    if context_pressure_ready:
+        strong_impulse_break = True
         allow_early_trend_relief = True
     if allow_early_trend_relief:
         strong_impulse_break = True
@@ -1601,11 +1650,27 @@ class PlaybookService:
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
-        if structure_bias not in {"buy", "sell"}:
+        context_direction = _dominant_context_snapshot(context)
+        context_pressure_direction = str(context_direction.get("direction") or "").upper()
+        context_pressure_ready = bool(
+            context_pressure_direction in {"BUY", "SELL"}
+            and _safe_float(context_direction.get("context_confluence"), 0.0) >= 0.24
+            and int(context_direction.get("support_components", 0) or 0) >= 1
+            and int(context_direction.get("conflict_components", 0) or 0) == 0
+            and (
+                _safe_float(context_direction.get("micro_score"), 0.0) >= 0.22
+                or _safe_float(context_direction.get("cross_alignment"), 0.0) >= 0.22
+                or _safe_float(context_direction.get("whale_context_support"), 0.0) >= 0.28
+            )
+        )
+        context_driven_direction = bool(structure_bias not in {"buy", "sell"} and context_pressure_ready)
+        if structure_bias in {"buy", "sell"}:
+            direction = "BUY" if structure_bias == "buy" else "SELL"
+        elif context_driven_direction:
+            direction = context_pressure_direction
+        else:
             return None
 
-        direction = "BUY" if structure_bias == "buy" else "SELL"
-        direction_sign = 1 if direction == "BUY" else -1
         alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
         setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
         pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
@@ -1645,18 +1710,47 @@ class PlaybookService:
         micro_context_support = _safe_float(context_confluence.get("micro_support"), 0.0)
         cross_context_support = _safe_float(context_confluence.get("cross_support"), 0.0)
         whale_context_support = _safe_float(context_confluence.get("whale_support"), 0.0)
+        effective_alignment_score = alignment_score
+        effective_setup_quality = setup_quality
+        if context_driven_direction:
+            effective_alignment_score = max(
+                effective_alignment_score,
+                max(0.0, abs(cross_context_support)),
+                max(0.0, abs(micro_context_support) * 0.85),
+            )
+            effective_setup_quality = max(
+                effective_setup_quality,
+                0.20
+                + max(0.0, abs(micro_context_support)) * 0.34
+                + max(0.0, abs(cross_context_support)) * 0.18
+                + max(0.0, abs(whale_context_support)) * 0.10,
+            )
         effective_candle_quality_score = candle_quality_score
         effective_session_quality_score = session_quality_score
         if inactivity_seed_relief:
             if effective_candle_quality_score <= 0.0:
                 effective_candle_quality_score = min(
                     1.0,
-                    0.18 + setup_quality * 0.34 + max(0.0, max(directional_breakout, directional_pullback)) * 0.16,
+                    0.18 + effective_setup_quality * 0.34 + max(0.0, max(directional_breakout, directional_pullback)) * 0.16,
                 )
             if effective_session_quality_score <= 0.0 and str(session or "").lower() != "off":
                 effective_session_quality_score = min(
                     1.0,
-                    0.20 + alignment_score * 0.28 + target_efficiency_score * 0.20,
+                    0.20 + effective_alignment_score * 0.28 + target_efficiency_score * 0.20,
+                )
+        if context_driven_direction:
+            if effective_candle_quality_score <= 0.0:
+                effective_candle_quality_score = min(
+                    1.0,
+                    0.22
+                    + effective_setup_quality * 0.22
+                    + max(0.0, confluence_score) * 0.24
+                    + max(0.0, abs(micro_context_support)) * 0.16,
+                )
+            if effective_session_quality_score <= 0.0 and str(session or "").lower() != "off":
+                effective_session_quality_score = min(
+                    1.0,
+                    0.24 + effective_alignment_score * 0.16 + max(0.0, confluence_score) * 0.22,
                 )
         near_confirmation = entry_confirmation_count >= max(0, entry_confirmation_bars_required - 1)
         fast_confirmation_ready, fast_confirmation_count, fast_confirmation_required, _ = _effective_confirmation_gate(
@@ -1815,10 +1909,15 @@ class PlaybookService:
             )
             alignment_floor = min(alignment_floor, 0.56)
             setup_floor = min(setup_floor, 0.52)
+        if context_driven_direction:
+            target_efficiency_floor = min(target_efficiency_floor, 0.0)
+            extension_ceiling = max(extension_ceiling, 1.75 if confluence_score >= 0.30 else 1.50)
+            alignment_floor = min(alignment_floor, 0.36)
+            setup_floor = min(setup_floor, 0.30)
 
-        if alignment_score < alignment_floor:
+        if effective_alignment_score < alignment_floor:
             return None
-        if setup_quality < setup_floor:
+        if effective_setup_quality < setup_floor:
             return None
         candle_floor = 0.30
         session_floor = 0.34
@@ -1831,6 +1930,9 @@ class PlaybookService:
         if context_continuation_ready:
             candle_floor = max(0.18, candle_floor - (0.04 if strong_context_continuation_ready else 0.02))
             session_floor = max(0.20, session_floor - (0.06 if strong_context_continuation_ready else 0.04))
+        if context_driven_direction:
+            candle_floor = max(0.18, candle_floor - 0.08)
+            session_floor = max(0.20, session_floor - 0.08)
         if not premium_generic_trend_ready and (
             effective_candle_quality_score < candle_floor or effective_session_quality_score < session_floor
         ):
@@ -1936,6 +2038,13 @@ class PlaybookService:
             entry_style = "elite_context_continuation"
             readiness_note = "context_flow_continuation"
         elif (
+            "breakout_continuation" in plan.allowed_playbooks
+            and context_driven_direction
+        ):
+            playbook = "breakout_continuation"
+            entry_style = "elite_context_pressure"
+            readiness_note = "dominant_context_pressure"
+        elif (
             inactivity_seed_relief
             and "breakout_continuation" in plan.allowed_playbooks
             and pattern_family.endswith("generic")
@@ -1980,17 +2089,22 @@ class PlaybookService:
                 structural_ready_bonus += 0.02
             if inactivity_seed_relief:
                 structural_ready_bonus += 0.03 + inactivity_relief_strength * 0.03
+        elif entry_style == "elite_context_pressure":
+            structural_ready_bonus += 0.08
         if near_confirmation:
             structural_ready_bonus += 0.05
         score = _clip(
             abs(directional_breakout) * 0.22
             + abs(directional_pullback) * 0.18
-            + _clip(setup_quality) * 0.18
-            + _clip(alignment_score) * 0.16
+            + _clip(effective_setup_quality) * 0.18
+            + _clip(effective_alignment_score) * 0.16
             + _clip(effective_candle_quality_score) * 0.10
             + _clip(effective_session_quality_score) * 0.08
             + _clip(target_efficiency_score) * 0.08
             + _clip(elite_pattern_rank) * 0.10
+            + (max(0.0, confluence_score) * 0.18 if context_driven_direction else 0.0)
+            + (max(0.0, abs(micro_context_support)) * 0.10 if context_driven_direction else 0.0)
+            + (max(0.0, abs(cross_context_support)) * 0.06 if context_driven_direction else 0.0)
             + (0.06 if failed_opposite_move_confirmed else 0.0)
             + (0.05 if breakout_retest_ready else 0.0)
             + (0.04 if first_pullback_ready else 0.0)
@@ -2011,6 +2125,8 @@ class PlaybookService:
                 score_floor = max(0.28, score_floor - (0.04 + inactivity_relief_strength * 0.08))
         elif entry_style == "elite_context_continuation":
             score_floor = 0.42 if strong_context_continuation_ready else 0.46
+        elif entry_style == "elite_context_pressure":
+            score_floor = 0.40 if confluence_score >= 0.32 else 0.44
         if score < score_floor:
             return None
 
@@ -2043,8 +2159,8 @@ class PlaybookService:
                 "elite_ready_fallback",
                 readiness_note,
                 f"session={session}",
-                f"align={alignment_score:.2f}",
-                f"setup={setup_quality:.2f}",
+                f"align={effective_alignment_score:.2f}",
+                f"setup={effective_setup_quality:.2f}",
                 f"ctx={confluence_score:+.2f}/micro={micro_context_support:+.2f}/cross={cross_context_support:+.2f}",
                 f"inactivity_relief={inactivity_relief_strength:.2f}" if inactivity_seed_relief else "inactivity_relief=0.00",
             ],
@@ -3201,6 +3317,14 @@ class PlaybookService:
         followthrough_tolerance = max(atr * 0.18, abs(prev_high - prev_low) * 0.04, 1e-9)
         down_trend_aligned = all(self._trend_sign(state) <= 0 for state in (trend_15m, trend_1h))
         up_trend_aligned = all(self._trend_sign(state) >= 0 for state in (trend_15m, trend_1h))
+        strong_pressure_override = bool(
+            abs(imbalance) >= (0.52 if true_depth else 0.62)
+            and abs(micro_score) >= 0.34
+            and body >= max(avg_body * 0.55, atr * 0.16, 1e-9)
+            and spread_bps <= 18.0
+        )
+        direction = ""
+        impulse = 0.0
 
         if imbalance > 0 and latest_close > prev_high and latest_close > latest_open:
             impulse = latest_close - prev_high
@@ -3261,6 +3385,31 @@ class PlaybookService:
         else:
             return None
 
+        if (
+            direction == "BUY"
+            and not directional_trend_ready
+            and strong_pressure_override
+            and latest_close > latest_open
+            and latest_close >= recent_mean
+            and latest_close >= recent_band_high - followthrough_tolerance
+            and breakout_score >= -0.16
+        ):
+            impulse = max(impulse, latest_close - recent_mean, latest_close - float(prior["close"].iloc[-1]))
+            directional_trend_ready = True
+            entry_style = "orderflow_pressure_followthrough"
+        elif (
+            direction == "SELL"
+            and not directional_trend_ready
+            and strong_pressure_override
+            and latest_close < latest_open
+            and latest_close <= recent_mean
+            and latest_close <= recent_band_low + followthrough_tolerance
+            and breakout_score <= 0.16
+        ):
+            impulse = max(impulse, recent_mean - latest_close, float(prior["close"].iloc[-1]) - latest_close)
+            directional_trend_ready = True
+            entry_style = "orderflow_pressure_followthrough"
+
         score = (
             _clip(abs(imbalance)) * 0.22
             + _clip(abs(micro_score)) * 0.16
@@ -3270,6 +3419,7 @@ class PlaybookService:
             + _clip(alignment_score) * 0.08
             + (0.06 if true_depth else 0.02)
             + (0.03 if directional_trend_ready else 0.0)
+            + (0.04 if entry_style == "orderflow_pressure_followthrough" else 0.0)
         )
         confidence = _clip(0.43 + score * 0.43, 0.0, 0.96)
         min_score_floor = max(profile.breakout_min_score, 0.60)
@@ -3474,6 +3624,7 @@ class PlaybookService:
         analysis = self.analyze(asset, category, price_data, context=context)
         best = analysis.get("primary")
         if not best:
+            context_snapshot = _dominant_context_snapshot(context)
             return {
                 "action": "",
                 "asset": asset,
@@ -3487,6 +3638,14 @@ class PlaybookService:
                 "rejected_details": list(analysis.get("rejected_details") or []),
                 "allowed_sessions": list(analysis.get("allowed_sessions") or []),
                 "asset_plan": dict(analysis.get("asset_plan") or {}),
+                "context_direction": str(context_snapshot.get("direction") or ""),
+                "context_confluence": round(_safe_float(context_snapshot.get("context_confluence"), 0.0), 4),
+                "cross_alignment": round(_safe_float(context_snapshot.get("cross_alignment"), 0.0), 4),
+                "cross_confidence": round(_safe_float(context_snapshot.get("cross_confidence"), 0.0), 4),
+                "micro_score": round(_safe_float(context_snapshot.get("micro_score"), 0.0), 4),
+                "whale_context_support": round(_safe_float(context_snapshot.get("whale_context_support"), 0.0), 4),
+                "support_components": int(context_snapshot.get("support_components", 0) or 0),
+                "conflict_components": int(context_snapshot.get("conflict_components", 0) or 0),
             }
 
         profile = self._profile(category)

@@ -3248,19 +3248,20 @@ class TradingCore:
         playbook_entry_style: str,
         playbook_interval: str,
     ) -> Dict[str, Any]:
+        decision_context = playbook_primary if playbook_primary else playbook_pick
         return {
             "action": playbook_action,
             "playbook": playbook_name,
             "direction": playbook_direction,
             "confidence": round(playbook_confidence, 4),
-            "score": round(float(playbook_primary.get("score", 0.0) or 0.0), 4),
-            "context_confluence": round(float(playbook_primary.get("context_confluence", 0.0) or 0.0), 4),
-            "cross_alignment": round(float(playbook_primary.get("cross_alignment", playbook_primary.get("cross_context_support", 0.0)) or 0.0), 4),
-            "cross_confidence": round(float(playbook_primary.get("cross_confidence", 0.0) or 0.0), 4),
-            "micro_score": round(float(playbook_primary.get("micro_score", playbook_primary.get("micro_context_support", 0.0)) or 0.0), 4),
-            "whale_context_support": round(float(playbook_primary.get("whale_context_support", 0.0) or 0.0), 4),
-            "support_components": int(playbook_primary.get("support_components", 0) or 0),
-            "conflict_components": int(playbook_primary.get("conflict_components", 0) or 0),
+            "score": round(float(decision_context.get("score", 0.0) or 0.0), 4),
+            "context_confluence": round(float(decision_context.get("context_confluence", 0.0) or 0.0), 4),
+            "cross_alignment": round(float(decision_context.get("cross_alignment", decision_context.get("cross_context_support", 0.0)) or 0.0), 4),
+            "cross_confidence": round(float(decision_context.get("cross_confidence", 0.0) or 0.0), 4),
+            "micro_score": round(float(decision_context.get("micro_score", decision_context.get("micro_context_support", 0.0)) or 0.0), 4),
+            "whale_context_support": round(float(decision_context.get("whale_context_support", 0.0) or 0.0), 4),
+            "support_components": int(decision_context.get("support_components", 0) or 0),
+            "conflict_components": int(decision_context.get("conflict_components", 0) or 0),
             "entry_style": playbook_entry_style,
             "session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
             "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
@@ -3272,7 +3273,7 @@ class TradingCore:
             "inactivity_profile": dict(playbook_pick.get("inactivity_profile") or {}),
             "allowed_sessions": list(playbook_pick.get("allowed_sessions") or []),
             "asset_plan": dict(playbook_pick.get("asset_plan") or {}),
-            "notes": list(playbook_primary.get("notes") or []),
+            "notes": list(decision_context.get("notes") or []),
         }
 
     def _resolve_playbook_seed_selection(
