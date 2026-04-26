@@ -51,11 +51,17 @@ _SESSION_FILE = Path("data/robbie_chat_sessions.json")
 _SESSION_FILE.parent.mkdir(exist_ok=True)
 _MAX_HISTORY_MESSAGES = max(2, int(ROBBIE_CHAT_HISTORY_LIMIT or 6)) * 2
 _ASSET_ALIAS_PATTERNS: List[Tuple[re.Pattern[str], str]] = []
-_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why", "calendar", "weekly", "schedule"}
+_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why", "calendar", "weekly", "schedule", "logs", "codebase"}
 _WORLD_KNOWLEDGE_INTENTS = {"general", "macro", "forecast", "market", "trade_why", "stop_loss", "learning", "adjustment", "calendar", "weekly"}
 _LOG_CONTEXT_TERMS = (
     "log",
     "logs",
+    "latest log",
+    "latest logs",
+    "log tail",
+    "tail log",
+    "tail -50",
+    "bot.log",
     "error",
     "errors",
     "traceback",
@@ -76,6 +82,7 @@ _LOG_CONTEXT_TERMS = (
 _CODE_CONTEXT_TERMS = (
     "code",
     "codebase",
+    "code base",
     "file",
     "files",
     "function",
@@ -90,16 +97,30 @@ _CODE_CONTEXT_TERMS = (
     "signals",
     "trade",
     "trades",
+    "repo",
+    "repository",
+    "filesystem",
+    "do you have access",
+    "can you inspect",
+    "can you see my code",
 )
-_OPERATIONS_CODE_FILES = (
-    Path("core/engine.py"),
-    Path("core/decision_engine.py"),
-    Path("services/playbook_service.py"),
-    Path("services/signal_governance.py"),
+_CODE_SEARCH_ROOTS = (
+    Path("core"),
+    Path("services"),
+    Path("execution"),
+    Path("risk"),
+    Path("dashboard"),
+    Path("data"),
+    Path("integrations"),
+    Path("templates"),
+)
+_CODE_SEARCH_TOP_LEVEL_FILES = (
     Path("bot.py"),
     Path("telegram_commander.py"),
-    Path("services/robbie_chat_service.py"),
+    Path("deepseek_bot.py"),
 )
+_CODE_SEARCH_SUFFIXES = {".py", ".html", ".js", ".json", ".md"}
+_CODE_SEARCH_EXCLUDE_DIRS = {".git", "__pycache__", "venv", "venv_tf", "node_modules", "tmp_js_check"}
 _WEEKDAY_INDEX = {
     "monday": 0,
     "tuesday": 1,
@@ -273,14 +294,46 @@ def _build_log_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, An
     return result
 
 
+def _iter_code_search_files() -> List[Path]:
+    files: List[Path] = []
+    seen: set[str] = set()
+
+    for path in _CODE_SEARCH_TOP_LEVEL_FILES:
+        if path.exists():
+            key = str(path).replace("\\", "/")
+            if key not in seen:
+                seen.add(key)
+                files.append(path)
+
+    for root in _CODE_SEARCH_ROOTS:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in _CODE_SEARCH_SUFFIXES:
+                continue
+            parts = set(path.parts)
+            if parts & _CODE_SEARCH_EXCLUDE_DIRS:
+                continue
+            key = str(path).replace("\\", "/")
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(path)
+    return files
+
+
 def _build_code_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, Any]:
     search_terms = _derive_code_search_terms(question, focus_asset=focus_asset)
     matches: List[Dict[str, Any]] = []
-    for path in _OPERATIONS_CODE_FILES:
+    scanned_files = 0
+    for path in _iter_code_search_files():
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
             continue
+        scanned_files += 1
         for idx, line in enumerate(lines, start=1):
             lower = line.lower()
             if not any(term.lower() in lower for term in search_terms):
@@ -303,6 +356,7 @@ def _build_code_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, A
         "available": bool(matches),
         "source": "local_codebase_scan",
         "search_terms": search_terms,
+        "scanned_files": scanned_files,
         "matches": matches,
     }
 
@@ -1440,6 +1494,40 @@ class RobbieChatService:
         if any(
             token in q
             for token in (
+                "latest log",
+                "latest logs",
+                "show me the latest log",
+                "show me latest log",
+                "show me the log",
+                "show me the logs",
+                "log tail",
+                "tail log",
+                "tail -50",
+                "bot.log",
+            )
+        ):
+            return "logs"
+        if any(
+            token in q
+            for token in (
+                "codebase",
+                "code base",
+                "access to my code",
+                "access to my codebase",
+                "access to my code base",
+                "do you have access to my code",
+                "do you have access to my codebase",
+                "can you inspect my code",
+                "can you see my code",
+                "my repository",
+                "my repo",
+                "filesystem",
+            )
+        ):
+            return "codebase"
+        if any(
+            token in q
+            for token in (
                 "issue",
                 "problem",
                 "error",
@@ -1499,6 +1587,10 @@ class RobbieChatService:
             return self._calendar_response(runtime, chat_id=chat_id)
         if intent == "weekly":
             return self._weekly_response(runtime)
+        if intent == "logs":
+            return self._logs_response(runtime)
+        if intent == "codebase":
+            return self._codebase_response(runtime)
         if intent == "issues":
             return self._issues_response(runtime)
         if intent == "learning":
@@ -1591,6 +1683,73 @@ class RobbieChatService:
         if issues:
             lines.append("")
             lines.append("Execution bias: until those problems clear, I would trust ongoing position management more than forcing fresh entries.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _logs_response(runtime: Dict[str, Any]) -> str:
+        log_snapshot = runtime.get("log_snapshot") if isinstance(runtime.get("log_snapshot"), dict) else {}
+        if not log_snapshot:
+            return "I do not have a local log snapshot in this reply path."
+
+        available = bool(log_snapshot.get("available"))
+        if not available:
+            return str(log_snapshot.get("message") or "I could not read the local log files right now.")
+
+        display_now = str(log_snapshot.get("display_now_local") or "").strip()
+        scan_summary = [str(item).strip() for item in list(log_snapshot.get("signal_scan_summary") or []) if str(item).strip()]
+        blocker_matches = [str(item).strip() for item in list(log_snapshot.get("blocker_matches") or []) if str(item).strip()]
+        asset_matches = [str(item).strip() for item in list(log_snapshot.get("asset_matches") or []) if str(item).strip()]
+        runtime_err = [str(item).strip() for item in list(log_snapshot.get("runtime_err") or []) if str(item).strip()]
+        engine_tail = [str(item).strip() for item in list(log_snapshot.get("engine") or []) if str(item).strip()]
+
+        lines = [
+            "Yes. I can read the local server log tails available to Robbie in this chat path.",
+        ]
+        if display_now:
+            lines.append(f"Local time now: {display_now}.")
+        if scan_summary:
+            lines.append("")
+            lines.append("Latest signal scan line:")
+            lines.append(f"• {_clip_text(scan_summary[-1], 320)}")
+        if blocker_matches or asset_matches:
+            lines.append("Latest relevant log lines:")
+            for item in (blocker_matches or asset_matches)[:4]:
+                lines.append(f"• {_clip_text(item, 320)}")
+        elif engine_tail:
+            lines.append("Latest engine tail:")
+            for item in engine_tail[-4:]:
+                lines.append(f"• {_clip_text(item, 320)}")
+        if runtime_err:
+            lines.append("Recent runtime error tail:")
+            for item in runtime_err[-3:]:
+                lines.append(f"• {_clip_text(item, 280)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _codebase_response(runtime: Dict[str, Any]) -> str:
+        code_snapshot = runtime.get("code_snapshot") if isinstance(runtime.get("code_snapshot"), dict) else {}
+        if not code_snapshot:
+            return "I do not have a local code snapshot in this reply path."
+
+        scanned_files = int(code_snapshot.get("scanned_files", 0) or 0)
+        matches = [dict(item) for item in list(code_snapshot.get("matches") or []) if isinstance(item, dict)]
+        search_terms = [str(item).strip() for item in list(code_snapshot.get("search_terms") or []) if str(item).strip()]
+
+        lines = [
+            "Yes. I can inspect the local bot codebase on this server-side reply path.",
+            f"I scanned {scanned_files} local code/template file(s) for this question.",
+        ]
+        if search_terms:
+            lines.append("Search terms: " + ", ".join(search_terms[:8]) + ".")
+        if matches:
+            lines.append("Most relevant code matches:")
+            for item in matches[:5]:
+                file_name = str(item.get("file") or "").replace("\\", "/")
+                line_no = int(item.get("line") or 0)
+                snippet = _clip_text(item.get("snippet") or "", 180)
+                lines.append(f"• {file_name}:{line_no} — {snippet}")
+        else:
+            lines.append("I did not find a strong direct code match for that wording, but the codebase scan is active.")
         return "\n".join(lines)
 
     @staticmethod
@@ -2155,7 +2314,7 @@ class RobbieChatService:
         deterministic: str,
         intent: str,
     ) -> str:
-        if intent in {"calendar", "weekly", "schedule"}:
+        if intent in {"calendar", "weekly", "schedule", "logs", "codebase"}:
             return deterministic
         provider = str(ROBBIE_CHAT_PROVIDER or "auto").strip().lower()
         if provider not in {"auto", "deepseek"}:

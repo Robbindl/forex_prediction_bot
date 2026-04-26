@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from unittest.mock import MagicMock
 
 import services.robbie_chat_service as robbie_chat_module
 from services.robbie_chat_service import ChatSessionStore, RobbieChatService
@@ -171,6 +172,73 @@ def test_robbie_chat_classifies_no_trades_question_as_issues(tmp_path: Path) -> 
     service = _service(tmp_path)
 
     assert service._classify_intent("why am i not seeing any trades today") == "issues"
+
+
+def test_robbie_chat_classifies_latest_log_question_as_logs(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    assert service._classify_intent("give me the latest log") == "logs"
+
+
+def test_robbie_chat_classifies_codebase_access_question_as_codebase(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    assert service._classify_intent("do you have access to my code base") == "codebase"
+
+
+def test_robbie_chat_logs_intent_stays_deterministic(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "_build_log_snapshot",
+        lambda question, focus_asset="": {
+            "available": True,
+            "display_now_local": "2026-04-26 18:23:00 EAT",
+            "signal_scan_summary": ["Signal scan summary: tradable=5 generated=1 no_edge=4"],
+            "blocker_matches": ["Decision ETH-USD killed step=3 reason=execution hard block on sell"],
+            "asset_matches": [],
+            "runtime_err": [],
+            "engine": ["engine line"],
+        },
+    )
+    monkeypatch.setattr(robbie_chat_module, "DEEPSEEK_API_KEY", "test-key")
+    service = _service(tmp_path)
+    service._call_deepseek = MagicMock(return_value="llm should not be used")
+
+    reply = service.answer(
+        question="give me the latest log",
+        trading_system=_FakeCore(),
+        chat_id="chat-log",
+    )
+
+    service._call_deepseek.assert_not_called()
+    assert "Yes. I can read the local server log tails" in reply
+    assert "Signal scan summary" in reply
+
+
+def test_robbie_chat_codebase_intent_stays_deterministic(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "_build_code_snapshot",
+        lambda question, focus_asset="": {
+            "available": True,
+            "scanned_files": 42,
+            "search_terms": ["codebase", "access"],
+            "matches": [{"file": "services/robbie_chat_service.py", "line": 123, "snippet": "def answer(..."}],
+        },
+    )
+    monkeypatch.setattr(robbie_chat_module, "DEEPSEEK_API_KEY", "test-key")
+    service = _service(tmp_path)
+    service._call_deepseek = MagicMock(return_value="llm should not be used")
+
+    reply = service.answer(
+        question="do you have access to my code base",
+        trading_system=_FakeCore(),
+        chat_id="chat-code",
+    )
+
+    service._call_deepseek.assert_not_called()
+    assert "Yes. I can inspect the local bot codebase" in reply
+    assert "services/robbie_chat_service.py:123" in reply
 
 
 def test_robbie_chat_uses_session_asset_for_stop_loss_follow_up(tmp_path: Path) -> None:
