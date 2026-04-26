@@ -1559,7 +1559,23 @@ class RobbieChatService:
             return "macro"
         if any(token in q for token in ("adjust", "adapt", "self adjust", "self-adjust", "tune yourself", "how can you change")):
             return "adjustment"
-        if any(token in q for token in ("what is happening", "what's happening", "currently happening", "right now", "market now", "top setups", "opportunity", "affect trading")):
+        if any(
+            token in q
+            for token in (
+                "what is happening",
+                "what's happening",
+                "currently happening",
+                "right now",
+                "market now",
+                "top setups",
+                "opportunity",
+                "affect trading",
+                "what are you thinking",
+                "what is the bot thinking",
+                "what are you seeing",
+                "what do you think about",
+            )
+        ):
             return "market"
         if any(token in q for token in ("open position", "running trade", "current trade", "current position", "what are you in")):
             return "positions"

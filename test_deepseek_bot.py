@@ -64,6 +64,20 @@ class _FakeService:
         self.resets.append(chat_id)
 
 
+@dataclass
+class _FakeRobbieService:
+    answers: List[Tuple[str, Any, str]] = field(default_factory=list)
+    resets: List[str] = field(default_factory=list)
+    reply_text: str = "robbie reply"
+
+    def answer(self, *, question: str, trading_system: Any, chat_id: str) -> str:
+        self.answers.append((question, trading_system, chat_id))
+        return self.reply_text
+
+    def reset(self, chat_id: str) -> None:
+        self.resets.append(chat_id)
+
+
 def _build_update(text: str = "hello", chat_id: int = 5747207752, chat_type: str = "private", caption: str = ""):
     chat = _FakeChat(id=chat_id, type=chat_type)
     message = _FakeMessage(chat=chat, text=text, caption=caption)
@@ -77,18 +91,25 @@ def _build_update(text: str = "hello", chat_id: int = 5747207752, chat_type: str
 def test_deepseek_bot_replies_to_plain_text() -> None:
     bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
     fake_service = _FakeService()
+    fake_robbie = _FakeRobbieService()
     update = _build_update(text="hello DeepSeek")
     ctx = SimpleNamespace(args=[])
 
     async def run() -> None:
-        with patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service):
+        with (
+            patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service),
+            patch("services.robbie_chat_service.get_chat_service", return_value=fake_robbie),
+        ):
             await bot._on_text(update, ctx)
 
     asyncio.run(run())
 
-    assert fake_service.answers == [("hello DeepSeek", "5747207752", None)]
-    assert update.message.replies[0][0] == "DeepSeek is thinking..."
-    assert update.message.edits[0][0] == "deepseek reply"
+    assert fake_service.answers == []
+    assert len(fake_robbie.answers) == 1
+    assert fake_robbie.answers[0][0] == "hello DeepSeek"
+    assert fake_robbie.answers[0][2] == "5747207752"
+    assert update.message.replies[0][0] == "The bot is thinking..."
+    assert update.message.edits[0][0] == "robbie reply"
     assert update.message.edits[0][2] == ParseMode.HTML
     assert update.effective_chat.actions == ["typing"]
 
@@ -96,29 +117,39 @@ def test_deepseek_bot_replies_to_plain_text() -> None:
 def test_deepseek_bot_replies_to_chat_command() -> None:
     bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
     fake_service = _FakeService()
+    fake_robbie = _FakeRobbieService()
     update = _build_update(text="/chat how are markets looking?")
     ctx = SimpleNamespace(args=["how", "are", "markets", "looking?"])
 
     async def run() -> None:
-        with patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service):
+        with (
+            patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service),
+            patch("services.robbie_chat_service.get_chat_service", return_value=fake_robbie),
+        ):
             await bot._cmd_chat(update, ctx)
 
     asyncio.run(run())
 
-    assert fake_service.answers == [("how are markets looking?", "5747207752", None)]
-    assert update.message.replies[0][0] == "DeepSeek is thinking..."
-    assert update.message.edits[0][0] == "deepseek reply"
+    assert fake_service.answers == []
+    assert len(fake_robbie.answers) == 1
+    assert fake_robbie.answers[0][0] == "how are markets looking?"
+    assert update.message.replies[0][0] == "The bot is thinking..."
+    assert update.message.edits[0][0] == "robbie reply"
     assert update.message.edits[0][2] == ParseMode.HTML
 
 
 def test_deepseek_bot_renders_markdownish_output_for_telegram() -> None:
     bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
-    fake_service = _FakeService(reply_text="**Entry Time:** `BNB_USD`")
+    fake_service = _FakeService(reply_text="deepseek reply")
+    fake_robbie = _FakeRobbieService(reply_text="**Entry Time:** `BNB_USD`")
     update = _build_update(text="show entry")
     ctx = SimpleNamespace(args=[])
 
     async def run() -> None:
-        with patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service):
+        with (
+            patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service),
+            patch("services.robbie_chat_service.get_chat_service", return_value=fake_robbie),
+        ):
             await bot._on_text(update, ctx)
 
     asyncio.run(run())
@@ -129,12 +160,16 @@ def test_deepseek_bot_renders_markdownish_output_for_telegram() -> None:
 
 def test_deepseek_bot_strips_markdown_headings_for_telegram() -> None:
     bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
-    fake_service = _FakeService(reply_text="## What This Means\n- Gold is firm")
+    fake_service = _FakeService(reply_text="deepseek reply")
+    fake_robbie = _FakeRobbieService(reply_text="## What This Means\n- Gold is firm")
     update = _build_update(text="gold")
     ctx = SimpleNamespace(args=[])
 
     async def run() -> None:
-        with patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service):
+        with (
+            patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service),
+            patch("services.robbie_chat_service.get_chat_service", return_value=fake_robbie),
+        ):
             await bot._on_text(update, ctx)
 
     asyncio.run(run())
@@ -157,16 +192,17 @@ def test_deepseek_bot_requires_allowed_private_chat() -> None:
 
 def test_deepseek_bot_intro_mentions_bot_snapshot() -> None:
     intro = DeepSeekTelegramBot._intro_text().lower()
-    assert "current bot runtime snapshot" in intro
-    assert "recent trades" in intro
-    assert "focused market context" in intro
-    assert "local log tails" in intro
-    assert "image attachments" in intro
+    assert "bot speaking directly" in intro
+    assert "current thinking" in intro
+    assert "macro/news" in intro
+    assert "logs" in intro
+    assert "image and chart questions" in intro
 
 
 def test_deepseek_bot_handles_visual_messages_with_attachment_context() -> None:
     bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
     fake_service = _FakeService()
+    fake_robbie = _FakeRobbieService()
     update = _build_update(text="", caption="")
     ctx = SimpleNamespace(args=[])
     attachment = {"kind": "image", "ocr_text": "XAG/USD hit TP2", "ocr_available": True}
@@ -174,6 +210,7 @@ def test_deepseek_bot_handles_visual_messages_with_attachment_context() -> None:
     async def run() -> None:
         with (
             patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service),
+            patch("services.robbie_chat_service.get_chat_service", return_value=fake_robbie),
             patch.object(bot, "_extract_attachment_context", return_value=attachment),
         ):
             await bot._on_visual_message(update, ctx)
@@ -181,9 +218,50 @@ def test_deepseek_bot_handles_visual_messages_with_attachment_context() -> None:
     asyncio.run(run())
 
     assert fake_service.answers == [("Please analyze the attached image.", "5747207752", attachment)]
-    assert update.message.replies[0][0] == "DeepSeek is analyzing the attachment..."
+    assert fake_robbie.answers == []
+    assert update.message.replies[0][0] == "The bot is analyzing the attachment..."
     assert update.message.edits[0][0] == "deepseek reply"
     assert update.message.edits[0][2] == ParseMode.HTML
+
+
+def test_deepseek_bot_attachment_followup_text_stays_on_attachment_path() -> None:
+    bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
+    fake_service = _FakeService()
+    fake_robbie = _FakeRobbieService()
+    update = _build_update(text="can you see the image I posted")
+    ctx = SimpleNamespace(args=[])
+
+    async def run() -> None:
+        with (
+            patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service),
+            patch("services.robbie_chat_service.get_chat_service", return_value=fake_robbie),
+        ):
+            await bot._on_text(update, ctx)
+
+    asyncio.run(run())
+
+    assert fake_service.answers == [("can you see the image I posted", "5747207752", None)]
+    assert fake_robbie.answers == []
+
+
+def test_deepseek_bot_reset_clears_both_chat_services() -> None:
+    bot = DeepSeekTelegramBot(token="test-token", allowed_chat_id="5747207752")
+    fake_service = _FakeService()
+    fake_robbie = _FakeRobbieService()
+    update = _build_update(text="/reset")
+    ctx = SimpleNamespace(args=[])
+
+    async def run() -> None:
+        with (
+            patch("deepseek_bot.get_deepseek_chat_service", return_value=fake_service),
+            patch("services.robbie_chat_service.get_chat_service", return_value=fake_robbie),
+        ):
+            await bot._cmd_reset(update, ctx)
+
+    asyncio.run(run())
+
+    assert fake_service.resets == ["5747207752"]
+    assert fake_robbie.resets == ["5747207752"]
 
 
 def test_deepseek_bot_run_uses_compatible_run_polling_signature() -> None:

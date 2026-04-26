@@ -17,7 +17,12 @@ from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from config.config import DEEPSEEK_TELEGRAM_CHAT_ID, DEEPSEEK_TELEGRAM_TOKEN
-from services.deepseek_chat_service import get_deepseek_chat_service
+from services.deepseek_chat_service import (
+    _build_focus_asset_snapshot,
+    _build_log_snapshot,
+    _question_mentions_attachment,
+    get_deepseek_chat_service,
+)
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -25,6 +30,84 @@ logger = get_logger()
 _CHAT_TIMEOUT_SECONDS = 60.0
 _MARKDOWNISH_TOKEN_RE = re.compile(r"(```[\s\S]+?```|`[^`\n]+`|\*\*[\s\S]+?\*\*|\*[^\*\n][^\n]*?\*)")
 _ATX_HEADING_RE = re.compile(r"^(\s{0,3})#{1,6}\s+(.+?)\s*$")
+
+
+class _SharedRuntimeTradingSystemProxy:
+    """Expose enough runtime state for RobbieChatService in the standalone chat process."""
+
+    def __init__(self) -> None:
+        from core.state import state as shared_state
+
+        try:
+            shared_state.init_db()
+        except Exception:
+            pass
+        self._state = shared_state
+
+    def health_report(self) -> Dict[str, Any]:
+        snapshot = _build_log_snapshot("latest bot health")
+        runtime_err = [str(item).strip() for item in list(snapshot.get("runtime_err") or []) if str(item).strip()]
+        blocker_matches = [str(item).strip() for item in list(snapshot.get("blocker_matches") or []) if str(item).strip()]
+        scan_summary = [str(item).strip() for item in list(snapshot.get("signal_scan_summary") or []) if str(item).strip()]
+        issues = []
+        if runtime_err:
+            issues.append("Recent runtime errors were detected in the local log tail.")
+        if any("EXCEPTION" in item.upper() or "ERROR" in item.upper() for item in blocker_matches):
+            issues.append("Recent signal blockers include exception or error lines.")
+        status = "degraded" if issues else "running"
+        return {
+            "status": status,
+            "issues": issues,
+            "recent_error_count": len(runtime_err),
+            "stale_sources": [],
+            "never_seen_sources": [],
+            "signal_diagnostics": {
+                "summary_label": scan_summary[-1] if scan_summary else "",
+            },
+        }
+
+    def get_positions(self) -> list[Dict[str, Any]]:
+        try:
+            return list(self._state.get_open_positions() or [])
+        except Exception:
+            return []
+
+    def get_closed_trades(self, limit: int = 100) -> list[Dict[str, Any]]:
+        try:
+            return list(self._state.get_closed_positions(limit=limit) or [])
+        except Exception:
+            return []
+
+    def get_daily_stats(self) -> Dict[str, Any]:
+        perf = self.get_performance()
+        return {
+            "daily_trades": int(perf.get("daily_trades", 0) or 0),
+            "daily_pnl": float(perf.get("daily_pnl", 0.0) or 0.0),
+        }
+
+    def get_performance(self) -> Dict[str, Any]:
+        try:
+            return dict(self._state.get_performance() or {})
+        except Exception:
+            return {
+                "balance": float(getattr(self._state, "balance", 0.0) or 0.0),
+                "daily_trades": int(getattr(self._state, "daily_trades", 0) or 0),
+                "daily_pnl": float(getattr(self._state, "daily_pnl", 0.0) or 0.0),
+                "open_positions": len(self.get_positions()),
+            }
+
+    def get_balance(self) -> float:
+        performance = self.get_performance()
+        return float(performance.get("balance", getattr(self._state, "balance", 0.0)) or 0.0)
+
+    def get_runtime_asset_snapshot(self, asset: str) -> Dict[str, Any]:
+        return dict(_build_focus_asset_snapshot(asset) or {})
+
+    def get_top_ranked_opportunities(self, limit: int = 10, refresh: bool = False, allow_refresh_when_empty: bool = False) -> list[Dict[str, Any]]:
+        return []
+
+    def scan_top_ranked_opportunities(self, limit: int = 10) -> list[Dict[str, Any]]:
+        return []
 
 
 def _keyboard() -> InlineKeyboardMarkup:
@@ -166,11 +249,11 @@ class DeepSeekTelegramBot:
     @staticmethod
     def _intro_text() -> str:
         return (
-            "DeepSeek private chat is ready.\n\n"
-            "Use /chat or send me a message and I will answer directly.\n"
-            "I can use the current bot runtime snapshot, recent trades, focused market context, and current macro/news snapshots when available.\n"
-            "I can also use recent local log tails for operational questions and extracted text/metadata from Telegram image attachments when available.\n"
-            "This bot is separate from the trading control bot and does not expose live menus or controls.\n\n"
+            "The bot voice is ready.\n\n"
+            "Use /chat or send me a message and I will answer as the trading bot speaking directly from current runtime context.\n"
+            "Normal text questions use the live bot brain: positions, recent trades, current thinking, asset context, macro/news, logs, and code-path context when available.\n"
+            "Image and chart questions use the attachment analyzer, including OCR text when available.\n"
+            "This chat does not expose live trade-control menus or controls.\n\n"
             "Use /reset to clear chat memory."
         )
 
@@ -201,8 +284,14 @@ class DeepSeekTelegramBot:
             await self._deny(update)
             return
         get_deepseek_chat_service().reset(str(update.effective_chat.id))
+        try:
+            from services.robbie_chat_service import get_chat_service
+
+            get_chat_service().reset(str(update.effective_chat.id))
+        except Exception:
+            pass
         if update.message:
-            await update.message.reply_text("DeepSeek chat memory cleared for this chat.", reply_markup=_keyboard())
+            await update.message.reply_text("Bot chat memory cleared for this chat.", reply_markup=_keyboard())
 
     async def _on_text(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
@@ -234,34 +323,58 @@ class DeepSeekTelegramBot:
         data = str(query.data or "")
         if data == "reset":
             get_deepseek_chat_service().reset(str(update.effective_chat.id))
-            await query.message.reply_text("DeepSeek chat memory cleared for this chat.", reply_markup=_keyboard())
+            try:
+                from services.robbie_chat_service import get_chat_service
+
+                get_chat_service().reset(str(update.effective_chat.id))
+            except Exception:
+                pass
+            await query.message.reply_text("Bot chat memory cleared for this chat.", reply_markup=_keyboard())
             return
         await query.message.reply_text(self._intro_text(), reply_markup=_keyboard())
 
     async def _answer_message(self, update: Update, question: str, *, attachment: Optional[Dict[str, Any]] = None) -> None:
         await update.message.chat.send_action("typing")
-        thinking_text = "DeepSeek is analyzing the attachment..." if attachment else "DeepSeek is thinking..."
+        thinking_text = "The bot is analyzing the attachment..." if attachment else "The bot is thinking..."
         placeholder = await update.message.reply_text(thinking_text)
         answer = await self._run_answer(question, chat_id=str(update.effective_chat.id), attachment=attachment)
         await self._replace_placeholder_with_chunks(placeholder, answer)
 
+    @staticmethod
+    def _should_use_attachment_chat(question: str, attachment: Optional[Dict[str, Any]] = None) -> bool:
+        if isinstance(attachment, dict) and attachment:
+            return True
+        return _question_mentions_attachment(question)
+
     async def _run_answer(self, question: str, *, chat_id: str, attachment: Optional[Dict[str, Any]] = None) -> str:
         try:
+            if self._should_use_attachment_chat(question, attachment):
+                answer_fn = get_deepseek_chat_service().answer
+                kwargs = {
+                    "question": question,
+                    "chat_id": chat_id,
+                    "attachment": attachment,
+                }
+            else:
+                from services.robbie_chat_service import get_chat_service
+
+                runtime_proxy = _SharedRuntimeTradingSystemProxy()
+                answer_fn = get_chat_service().answer
+                kwargs = {
+                    "question": question,
+                    "trading_system": runtime_proxy,
+                    "chat_id": chat_id,
+                }
             return await asyncio.wait_for(
-                asyncio.to_thread(
-                    get_deepseek_chat_service().answer,
-                    question=question,
-                    chat_id=chat_id,
-                    attachment=attachment,
-                ),
+                asyncio.to_thread(answer_fn, **kwargs),
                 timeout=_CHAT_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            logger.warning(f"[DeepSeekBot] chat timed out after {_CHAT_TIMEOUT_SECONDS:.0f}s")
-            return "DeepSeek took too long to answer. Try a shorter message."
+            logger.warning(f"[DeepSeekBot] bot chat timed out after {_CHAT_TIMEOUT_SECONDS:.0f}s")
+            return "The bot took too long to answer. Try a shorter message."
         except Exception as exc:
             logger.error(f"[DeepSeekBot] chat error: {exc}", exc_info=True)
-            return f"DeepSeek hit an error: {exc}"
+            return f"The bot hit a chat error: {exc}"
 
     @staticmethod
     def _ocr_image_text(path: Path) -> str:

@@ -167,6 +167,14 @@ _BOT_STATUS_TERMS = (
 _LOG_CONTEXT_TERMS = (
     "log",
     "logs",
+    "latest log",
+    "latest logs",
+    "show me the latest log",
+    "show me the log",
+    "log tail",
+    "tail log",
+    "tail -50",
+    "bot.log",
     "error",
     "errors",
     "traceback",
@@ -176,6 +184,44 @@ _LOG_CONTEXT_TERMS = (
     "failed",
     "failure",
 )
+
+_CODE_CONTEXT_TERMS = (
+    "code",
+    "codebase",
+    "code base",
+    "repo",
+    "repository",
+    "filesystem",
+    "access to my code",
+    "access to my codebase",
+    "access to my code base",
+    "do you have access to my code",
+    "do you have access to my codebase",
+    "can you inspect my code",
+    "can you see my code",
+    "file",
+    "files",
+    "logic",
+    "source",
+)
+
+_CODE_SEARCH_ROOTS = (
+    Path("core"),
+    Path("services"),
+    Path("execution"),
+    Path("risk"),
+    Path("dashboard"),
+    Path("data"),
+    Path("integrations"),
+    Path("templates"),
+)
+_CODE_SEARCH_TOP_LEVEL_FILES = (
+    Path("bot.py"),
+    Path("telegram_commander.py"),
+    Path("deepseek_bot.py"),
+)
+_CODE_SEARCH_SUFFIXES = {".py", ".html", ".js", ".json", ".md"}
+_CODE_SEARCH_EXCLUDE_DIRS = {".git", "__pycache__", "venv", "venv_tf", "node_modules", "tmp_js_check"}
 
 _ATTACHMENT_TERMS = (
     "image",
@@ -390,6 +436,51 @@ def _question_needs_current_news_context(question: str) -> bool:
 def _question_needs_log_context(question: str) -> bool:
     text = str(question or "").lower()
     return any(term in text for term in _LOG_CONTEXT_TERMS)
+
+
+def _question_needs_code_context(question: str) -> bool:
+    text = str(question or "").lower()
+    return any(term in text for term in _CODE_CONTEXT_TERMS)
+
+
+def _question_requests_latest_log(question: str) -> bool:
+    text = str(question or "").lower()
+    return any(
+        term in text
+        for term in (
+            "latest log",
+            "latest logs",
+            "show me the latest log",
+            "show me latest log",
+            "show me the log",
+            "show me the logs",
+            "log tail",
+            "tail log",
+            "tail -50",
+            "bot.log",
+        )
+    )
+
+
+def _question_requests_codebase_access(question: str) -> bool:
+    text = str(question or "").lower()
+    return any(
+        term in text
+        for term in (
+            "codebase",
+            "code base",
+            "access to my code",
+            "access to my codebase",
+            "access to my code base",
+            "do you have access to my code",
+            "do you have access to my codebase",
+            "can you inspect my code",
+            "can you see my code",
+            "my repo",
+            "my repository",
+            "filesystem",
+        )
+    )
 
 
 def _question_mentions_attachment(question: str) -> bool:
@@ -774,7 +865,17 @@ def _build_log_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, An
         "trades": _tail_log_lines(logs_dir / "trades.log", limit=8),
         "engine": _tail_log_lines(logs_dir / "trading_bot.log", limit=12),
         "asset_matches": [],
+        "signal_scan_summary": [],
+        "blocker_matches": [],
     }
+    scan_matches: List[str] = []
+    blocker_matches: List[str] = []
+    for line in reversed(result["trades"] + result["engine"]):
+        upper = str(line or "").upper()
+        if "SIGNAL SCAN SUMMARY" in upper and len(scan_matches) < 4:
+            scan_matches.append(str(line))
+        if any(token in upper for token in ("NO_PLAYBOOK_SEED", "EXECUTION HARD BLOCK", "SIGNAL GOVERNANCE EXCEPTION", "PATTERN FAMILY RANKS BELOW ELITE THRESHOLD")) and len(blocker_matches) < 8:
+            blocker_matches.append(str(line))
     if focus_tokens:
         asset_matches: List[str] = []
         for line in reversed(result["trades"] + result["engine"]):
@@ -784,11 +885,110 @@ def _build_log_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, An
             if len(asset_matches) >= 8:
                 break
         result["asset_matches"] = list(reversed(asset_matches))
+    result["signal_scan_summary"] = list(reversed(scan_matches))
+    result["blocker_matches"] = list(reversed(blocker_matches))
 
-    result["available"] = any(bool(result.get(key)) for key in ("errors", "trades", "engine", "asset_matches"))
+    result["available"] = any(bool(result.get(key)) for key in ("errors", "trades", "engine", "asset_matches", "signal_scan_summary", "blocker_matches"))
     if not result["available"]:
         result["message"] = "No local log tail was available."
     return result
+
+
+def _iter_code_search_files() -> List[Path]:
+    files: List[Path] = []
+    seen: set[str] = set()
+    for path in _CODE_SEARCH_TOP_LEVEL_FILES:
+        if path.exists():
+            key = str(path).replace("\\", "/")
+            if key not in seen:
+                seen.add(key)
+                files.append(path)
+    for root in _CODE_SEARCH_ROOTS:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in _CODE_SEARCH_SUFFIXES:
+                continue
+            parts = set(path.parts)
+            if parts & _CODE_SEARCH_EXCLUDE_DIRS:
+                continue
+            key = str(path).replace("\\", "/")
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(path)
+    return files
+
+
+def _derive_code_search_terms(question: str, focus_asset: str = "") -> List[str]:
+    text = str(question or "").lower()
+    terms: List[str] = []
+    if _question_needs_log_context(question):
+        for term in (
+            "signal scan summary",
+            "no_playbook_seed",
+            "execution hard block",
+            "pattern family ranks below elite threshold",
+            "retest_missing",
+            "pullback_missing",
+            "setup_quality_too_weak",
+            "signal governance",
+            "playbook",
+            "decision",
+        ):
+            if term not in terms:
+                terms.append(term)
+    if _question_needs_code_context(question):
+        for term in ("answer(", "_answer_via_deepseek", "_build_log_snapshot", "_build_focus_asset_snapshot", "DeepSeekChatService", "log_snapshot", "codebase"):
+            if term not in terms:
+                terms.append(term)
+    asset = str(focus_asset or "").strip()
+    if asset:
+        for variant in {asset.lower(), asset.replace("/", "").replace("-", "").lower()}:
+            if variant and variant not in terms:
+                terms.append(variant)
+    if not terms:
+        terms.extend(["signal", "decision", "playbook"])
+    return terms[:12]
+
+
+def _build_code_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, Any]:
+    search_terms = _derive_code_search_terms(question, focus_asset=focus_asset)
+    matches: List[Dict[str, Any]] = []
+    scanned_files = 0
+    for path in _iter_code_search_files():
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        scanned_files += 1
+        for idx, line in enumerate(lines, start=1):
+            lower = line.lower()
+            if not any(term.lower() in lower for term in search_terms):
+                continue
+            start = max(1, idx - 1)
+            end = min(len(lines), idx + 1)
+            snippet = " | ".join(part.strip() for part in lines[start - 1 : end] if str(part).strip())
+            matches.append(
+                {
+                    "file": str(path).replace("\\", "/"),
+                    "line": idx,
+                    "snippet": _clip_text(snippet, 240),
+                }
+            )
+            if len(matches) >= 10:
+                break
+        if len(matches) >= 10:
+            break
+    return {
+        "available": bool(matches),
+        "source": "local_codebase_scan",
+        "search_terms": search_terms,
+        "scanned_files": scanned_files,
+        "matches": matches,
+    }
 
 
 def _build_focus_asset_snapshot(asset: str) -> Dict[str, Any]:
@@ -999,6 +1199,24 @@ class DeepSeekChatService:
             self._sessions.set_attachment(chat_id, attachment)
         session = self._sessions.get(chat_id)
         focus_asset = _resolve_asset_from_text(prompt, session.get("last_asset", ""))
+        if _question_requests_latest_log(prompt):
+            response = self._latest_log_response(prompt, focus_asset=focus_asset)
+            self._sessions.append_turn(
+                chat_id,
+                user_message=prompt,
+                assistant_message=response,
+                last_asset=focus_asset,
+            )
+            return response
+        if _question_requests_codebase_access(prompt):
+            response = self._codebase_access_response(prompt, focus_asset=focus_asset)
+            self._sessions.append_turn(
+                chat_id,
+                user_message=prompt,
+                assistant_message=response,
+                last_asset=focus_asset,
+            )
+            return response
         response = self._answer_via_deepseek(prompt, session, focus_asset=focus_asset)
         self._sessions.append_turn(
             chat_id,
@@ -1007,6 +1225,63 @@ class DeepSeekChatService:
             last_asset=focus_asset,
         )
         return response
+
+    @staticmethod
+    def _latest_log_response(question: str, *, focus_asset: str = "") -> str:
+        snapshot = _build_log_snapshot(question, focus_asset=focus_asset)
+        if not snapshot.get("available"):
+            return str(snapshot.get("message") or "I could not read the local bot log tail right now.")
+        display_now = str(snapshot.get("display_now_local") or "").strip()
+        scan_summary = [str(item).strip() for item in list(snapshot.get("signal_scan_summary") or []) if str(item).strip()]
+        blocker_matches = [str(item).strip() for item in list(snapshot.get("blocker_matches") or []) if str(item).strip()]
+        asset_matches = [str(item).strip() for item in list(snapshot.get("asset_matches") or []) if str(item).strip()]
+        engine_tail = [str(item).strip() for item in list(snapshot.get("engine") or []) if str(item).strip()]
+        error_tail = [str(item).strip() for item in list(snapshot.get("errors") or []) if str(item).strip()]
+
+        lines = ["Yes. I can read the local bot log tails available to this DeepSeek bot."]
+        if display_now:
+            lines.append(f"Local time now: {display_now}.")
+        if scan_summary:
+            lines.append("")
+            lines.append("Latest signal scan line:")
+            lines.append(f"• {_clip_text(scan_summary[-1], 320)}")
+        if blocker_matches or asset_matches:
+            lines.append("Latest relevant log lines:")
+            for item in (blocker_matches or asset_matches)[:4]:
+                lines.append(f"• {_clip_text(item, 320)}")
+        elif engine_tail:
+            lines.append("Latest engine tail:")
+            for item in engine_tail[-4:]:
+                lines.append(f"• {_clip_text(item, 320)}")
+        if error_tail:
+            lines.append("Recent error tail:")
+            for item in error_tail[-3:]:
+                lines.append(f"• {_clip_text(item, 280)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _codebase_access_response(question: str, *, focus_asset: str = "") -> str:
+        snapshot = _build_code_snapshot(question, focus_asset=focus_asset)
+        scanned_files = int(snapshot.get("scanned_files", 0) or 0)
+        matches = [dict(item) for item in list(snapshot.get("matches") or []) if isinstance(item, dict)]
+        search_terms = [str(item).strip() for item in list(snapshot.get("search_terms") or []) if str(item).strip()]
+
+        lines = [
+            "Yes. I can inspect the local bot codebase available to this DeepSeek bot reply path.",
+            f"I scanned {scanned_files} local code/template file(s) for this question.",
+        ]
+        if search_terms:
+            lines.append("Search terms: " + ", ".join(search_terms[:8]) + ".")
+        if matches:
+            lines.append("Most relevant code matches:")
+            for item in matches[:5]:
+                file_name = str(item.get("file") or "").replace("\\", "/")
+                line_no = int(item.get("line") or 0)
+                snippet = _clip_text(item.get("snippet") or "", 180)
+                lines.append(f"• {file_name}:{line_no} — {snippet}")
+        else:
+            lines.append("I did not find a strong direct code match for that wording, but the local code scan is active.")
+        return "\n".join(lines)
 
     def _system_prompt(self) -> str:
         local_now = now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M:%S {display_timezone_label()}")
@@ -1018,6 +1293,7 @@ class DeepSeekChatService:
             "If a second system message provides macro context, use it for questions about NFP, CPI, FOMC, oil, and current market events. "
             "If another system message provides a current news snapshot, use it for latest-headline or public-statement questions instead of claiming you cannot browse. "
             "If another system message provides recent local log tails, use them for operational or trade-explanation questions instead of claiming you cannot access logs. "
+            "If another system message provides a recent local codebase scan, use it for code-access or code-path questions instead of claiming you cannot inspect the codebase. "
             "If another system message provides a recent Telegram attachment summary, use that extracted text or metadata instead of claiming you cannot see images. "
             "Do not claim access to menus or controls. "
             "If OCR text is missing from an attachment, say that only metadata or caption was available instead of pretending the image was unreadable or unseen. "
@@ -1073,6 +1349,15 @@ class DeepSeekChatService:
         )
 
     @staticmethod
+    def _code_context_prompt(snapshot: Dict[str, Any]) -> str:
+        return (
+            "Recent local codebase scan from the bot host. "
+            "Use this for questions about whether you can inspect the codebase and which code paths are relevant. "
+            "Do not claim arbitrary shell access beyond this scan.\n"
+            f"{_json_text(snapshot, 2600)}"
+        )
+
+    @staticmethod
     def _attachment_context_prompt(snapshot: Dict[str, Any]) -> str:
         return (
             "Recent Telegram attachment summary. "
@@ -1105,6 +1390,9 @@ class DeepSeekChatService:
         if _question_needs_log_context(question) or (focus_asset and _question_needs_trade_execution_context(question)):
             log_snapshot = _build_log_snapshot(question, focus_asset=focus_asset)
             messages.append({"role": "system", "content": self._log_context_prompt(log_snapshot)})
+        if _question_needs_code_context(question):
+            code_snapshot = _build_code_snapshot(question, focus_asset=focus_asset)
+            messages.append({"role": "system", "content": self._code_context_prompt(code_snapshot)})
         last_attachment = dict(session.get("last_attachment") or {})
         if last_attachment and _question_mentions_attachment(question):
             messages.append({"role": "system", "content": self._attachment_context_prompt(last_attachment)})

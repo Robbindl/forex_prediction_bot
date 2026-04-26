@@ -170,6 +170,51 @@ def test_deepseek_chat_service_includes_log_snapshot_for_trade_execution_questio
     assert "AUS200 stoploss hit" in captured["json"]["messages"][3]["content"]
 
 
+def test_deepseek_chat_service_latest_log_question_stays_deterministic(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        deepseek_module,
+        "_build_log_snapshot",
+        lambda question, focus_asset="": {
+            "available": True,
+            "display_now_local": "2026-04-26 18:23:00 EAT",
+            "signal_scan_summary": ["Signal scan summary: tradable=5 generated=1 no_edge=4"],
+            "blocker_matches": ["Decision ETH-USD killed step=3 reason=execution hard block on sell"],
+            "asset_matches": [],
+            "engine": ["engine line"],
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(deepseek_module, "DEEPSEEK_API_KEY", "test-key")
+    service = DeepSeekChatService(session_store=ChatSessionStore(path=tmp_path / "sessions.json"))
+    service._answer_via_deepseek = lambda *args, **kwargs: "llm should not be used"
+
+    reply = service.answer(question="give me the latest log", chat_id="chat-log-direct")
+
+    assert "Yes. I can read the local bot log tails" in reply
+    assert "Signal scan summary" in reply
+
+
+def test_deepseek_chat_service_codebase_access_question_stays_deterministic(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        deepseek_module,
+        "_build_code_snapshot",
+        lambda question, focus_asset="": {
+            "available": True,
+            "scanned_files": 42,
+            "search_terms": ["codebase", "access"],
+            "matches": [{"file": "services/deepseek_chat_service.py", "line": 123, "snippet": "def answer(..."}],
+        },
+    )
+    monkeypatch.setattr(deepseek_module, "DEEPSEEK_API_KEY", "test-key")
+    service = DeepSeekChatService(session_store=ChatSessionStore(path=tmp_path / "sessions.json"))
+    service._answer_via_deepseek = lambda *args, **kwargs: "llm should not be used"
+
+    reply = service.answer(question="do you have access to my code base", chat_id="chat-code-direct")
+
+    assert "Yes. I can inspect the local bot codebase" in reply
+    assert "services/deepseek_chat_service.py:123" in reply
+
+
 def test_deepseek_chat_service_includes_macro_snapshot_for_nfp_and_oil(tmp_path: Path, monkeypatch) -> None:
     captured: Dict[str, Any] = {}
 
