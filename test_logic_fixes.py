@@ -742,6 +742,38 @@ def test_paper_trader_partial_tp_emits_partial_close_and_keeps_remainder() -> No
     assert partials[0]["parent_trade_id"] == "abc123"
     assert partials[0]["trade_id"] == "abc123-PT1"
 
+
+def test_paper_trader_partial_tp_respects_management_tier_sizes() -> None:
+    trader = PaperTrader(account_balance=10_000.0)
+
+    position = {
+        "trade_id": "tiered-pt",
+        "asset": "BTC-USD",
+        "category": "crypto",
+        "direction": "BUY",
+        "entry_price": 100.0,
+        "stop_loss": 90.0,
+        "original_sl": 90.0,
+        "take_profit": 130.0,
+        "take_profit_levels": [110.0, 120.0, 130.0],
+        "position_size": 3.0,
+        "open_time": datetime.utcnow().isoformat(),
+        "highest_price": 100.0,
+        "lowest_price": 100.0,
+        "tp_hit": 0,
+        "metadata": {
+            "trade_management_plan": {
+                "partial_take_profit_size_fractions": [0.3, 0.4, 0.3],
+            }
+        },
+    }
+
+    result = trader._check_exit(position, 111.0)
+
+    assert result is None
+    assert position["tp_hit"] == 1
+    assert position["position_size"] == pytest.approx(2.1)
+
 def test_paper_trader_applies_realistic_entry_and_exit_costs() -> None:
     trader = PaperTrader(account_balance=10_000.0)
 

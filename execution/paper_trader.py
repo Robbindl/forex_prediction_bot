@@ -480,6 +480,7 @@ class PaperTrader:
             tp_levels,
             size,
             metadata,
+            management,
         )
         if take_profit_result is not None:
             return take_profit_result
@@ -794,6 +795,7 @@ class PaperTrader:
         tp_levels: List[float],
         size: float,
         metadata: Dict[str, Any],
+        management: Dict[str, Any],
     ) -> Optional[TradeDict]:
         if tp_levels:
             total_tiers = len(tp_levels)
