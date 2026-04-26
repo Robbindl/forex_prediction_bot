@@ -25,7 +25,7 @@ def _aligned_score(raw: float, direction: str) -> float:
 
 def _is_true_depth_source(source: str) -> bool:
     token = str(source or "").strip().lower()
-    return token in {"order_flow_true_depth", "dukascopy_live_depth"}
+    return token in {"order_flow_true_depth", "dukascopy_live_depth", "ctrader_live_depth"}
 
 
 class OpportunityRanker:

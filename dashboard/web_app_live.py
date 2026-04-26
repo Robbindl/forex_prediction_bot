@@ -104,6 +104,7 @@ try:
         DASHBOARD_SENTIMENT_ASSET_WORKERS,
         DASHBOARD_SENTIMENT_FETCH_WORKERS,
         DASHBOARD_WEAK_POSITIONS_LIMIT,
+        CTRADER_LIVE_DEPTH_ENABLED,
         DUKASCOPY_HISTORY_ENABLED,
         DUKASCOPY_LIVE_DEPTH_ENABLED,
         LOCAL_CANDLE_STORE_ENABLED,
@@ -132,6 +133,7 @@ except Exception:
     DASHBOARD_SENTIMENT_FETCH_WORKERS = 6
     DEEPSEEK_API_KEY = ""
     DEEPSEEK_TELEGRAM_TOKEN = ""
+    CTRADER_LIVE_DEPTH_ENABLED = False
     DUKASCOPY_HISTORY_ENABLED = True
     DUKASCOPY_LIVE_DEPTH_ENABLED = False
     LOCAL_CANDLE_STORE_ENABLED = True
@@ -6707,6 +6709,20 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
         services["ig_routed_data"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
 
     try:
+        from services.ctrader_live_depth_bridge import ctrader_live_depth_bridge
+
+        status = ctrader_live_depth_bridge.status() if CTRADER_LIVE_DEPTH_ENABLED else {}
+        assets = list(status.get("assets") or [])
+        running = bool(status.get("running", False))
+        services["ctrader_live_depth"] = {
+            "ok": running,
+            "state": "streaming" if running else ("configured" if status.get("enabled") else "disabled"),
+            "meta": f"{len(assets)} assets" if assets else str(status.get("store_path") or "no assets"),
+        }
+    except Exception:
+        services["ctrader_live_depth"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
+
+    try:
         from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge
 
         status = dukascopy_live_depth_bridge.status() if DUKASCOPY_LIVE_DEPTH_ENABLED else {}
@@ -6874,6 +6890,7 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
         "PredTracker": _pred_tracker is not None,
         "WebSocket streams": _ws_ok,
         "DeepSeek Bot": bool((runtime_services.get("deepseek_bot") or {}).get("ok")),
+        "cTrader Sidecar": bool((runtime_services.get("ctrader_live_depth") or {}).get("ok")),
         "Dukascopy Sidecar": bool((runtime_services.get("dukascopy_live_depth") or {}).get("ok")),
     }
     return {

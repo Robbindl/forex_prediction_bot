@@ -14441,6 +14441,79 @@ def test_playbook_service_seeds_elite_ready_fallback_when_structure_is_confirmed
     assert pick["primary"]["playbook"] == "breakout_retest"
     assert "elite_ready_fallback" in pick["primary"]["notes"]
 
+
+def test_playbook_service_seeds_context_continuation_for_hot_trend_when_flow_confirms(monkeypatch) -> None:
+    svc_mod = importlib.import_module("services.playbook_service")
+    monkeypatch.setattr(
+        svc_mod,
+        "_utc_now",
+        lambda: datetime(2026, 4, 6, 18, 0, tzinfo=timezone.utc),
+    )
+    service = svc_mod.get_service()
+
+    pick = service.pick_seed(
+        "BTC-USD",
+        "crypto",
+        _build_trend_frame(68000.0, 12.0),
+        context={
+            "market_structure": {
+                "structure_bias": "buy",
+                "alignment_score": 0.96,
+                "setup_quality": 0.90,
+                "pullback_score": 0.06,
+                "breakout_score": 0.22,
+                "volatility_state": "expansion",
+                "regime": "trending_up",
+                "trend_15m": "trending_up",
+                "trend_1h": "trending_up",
+                "distance_to_support": 0.0100,
+                "distance_to_resistance": 0.0030,
+                "candle_quality_score": 0.32,
+                "session_quality_score": 0.36,
+                "extension_score": 2.0,
+                "target_efficiency_score": 0.22,
+                "impulse_age_bars": 4,
+                "elite_pattern_rank": 0.24,
+                "cluster_penalty": 0.08,
+                "breakout_retest_ready": False,
+                "first_pullback_ready": False,
+                "failed_opposite_move_confirmed": False,
+                "entry_confirmation_bars_required": 1,
+                "entry_confirmation_count": 0,
+                "entry_confirmation_ready": False,
+                "fast_entry_confirmation_bars_required": 1,
+                "fast_entry_confirmation_count": 0,
+                "fast_entry_confirmation_ready": False,
+                "upside_exhaustion_score": 0.20,
+                "downside_exhaustion_score": 0.0,
+                "pattern_family": "trending_up_generic",
+            },
+            "cross_asset_context": {"score": 0.46, "confidence": 0.74},
+            "market_microstructure": {
+                "score": 0.54,
+                "book_imbalance": 0.58,
+                "tick_imbalance": 0.31,
+                "depth_available": True,
+            },
+            "whale_dominant": "BUY",
+            "whale_ratio": 0.61,
+        },
+        ml_direction="",
+        ml_confidence=0.03,
+    )
+
+    assert pick["action"] == "seed"
+    assert pick["primary"]["playbook"] in {
+        "breakout_continuation",
+        "crypto_orderflow_continuation",
+    }
+    assert pick["primary"]["entry_style"] in {
+        "elite_context_continuation",
+        "orderflow_followthrough",
+    }
+    assert pick["primary"]["context_confluence"] > 0.18
+    assert pick["primary"]["support_components"] >= 2
+
 def test_market_structure_service_preserves_signed_directional_scores(monkeypatch) -> None:
     structure_mod = importlib.import_module("services.market_structure_service")
     service = structure_mod.MarketStructureService()

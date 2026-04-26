@@ -1598,6 +1598,7 @@ class PlaybookService:
         structure: Dict[str, Any],
         plan: _AssetPlaybookPlan,
         inactivity_profile: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
         if structure_bias not in {"buy", "sell"}:
@@ -1637,6 +1638,13 @@ class PlaybookService:
 
         directional_pullback = pullback_score if direction == "BUY" else -pullback_score
         directional_breakout = breakout_score if direction == "BUY" else -breakout_score
+        context_confluence = _context_directional_confluence(context, direction)
+        confluence_score = _safe_float(context_confluence.get("score"), 0.0)
+        support_components = int(context_confluence.get("support_components", 0) or 0)
+        conflict_components = int(context_confluence.get("conflict_components", 0) or 0)
+        micro_context_support = _safe_float(context_confluence.get("micro_support"), 0.0)
+        cross_context_support = _safe_float(context_confluence.get("cross_support"), 0.0)
+        whale_context_support = _safe_float(context_confluence.get("whale_support"), 0.0)
         effective_candle_quality_score = candle_quality_score
         effective_session_quality_score = session_quality_score
         if inactivity_seed_relief:
@@ -1759,6 +1767,32 @@ class PlaybookService:
             and impulse_age_bars <= 6
             and cluster_penalty <= 0.14
         )
+        context_continuation_ready = bool(
+            support_components >= 1
+            and conflict_components == 0
+            and confluence_score >= 0.18
+            and alignment_score >= max(0.60, float(plan.min_alignment_score) - 0.04)
+            and setup_quality >= max(0.56, float(plan.min_setup_quality) - 0.06)
+            and pattern_family.endswith("generic")
+            and family_directional_match
+            and impulse_age_bars <= 6
+            and cluster_penalty <= 0.16
+            and (
+                max(directional_breakout, directional_pullback) >= 0.04
+                or micro_context_support >= 0.22
+                or cross_context_support >= 0.22
+                or whale_context_support >= 0.28
+            )
+        )
+        strong_context_continuation_ready = bool(
+            context_continuation_ready
+            and confluence_score >= 0.28
+            and (
+                support_components >= 2
+                or micro_context_support >= 0.30
+                or cross_context_support >= 0.30
+            )
+        )
         if crypto_directional_relief_ready:
             target_efficiency_floor = min(
                 target_efficiency_floor,
@@ -1770,6 +1804,17 @@ class PlaybookService:
             )
             alignment_floor = min(alignment_floor, 0.54)
             setup_floor = min(setup_floor, 0.50)
+        if context_continuation_ready:
+            target_efficiency_floor = min(
+                target_efficiency_floor,
+                0.08 if strong_context_continuation_ready else 0.12,
+            )
+            extension_ceiling = max(
+                extension_ceiling,
+                2.20 if strong_context_continuation_ready else 1.85,
+            )
+            alignment_floor = min(alignment_floor, 0.56)
+            setup_floor = min(setup_floor, 0.52)
 
         if alignment_score < alignment_floor:
             return None
@@ -1783,6 +1828,9 @@ class PlaybookService:
         if crypto_directional_relief_ready:
             candle_floor = max(0.18, candle_floor - 0.06)
             session_floor = max(0.20, session_floor - 0.08)
+        if context_continuation_ready:
+            candle_floor = max(0.18, candle_floor - (0.04 if strong_context_continuation_ready else 0.02))
+            session_floor = max(0.20, session_floor - (0.06 if strong_context_continuation_ready else 0.04))
         if not premium_generic_trend_ready and (
             effective_candle_quality_score < candle_floor or effective_session_quality_score < session_floor
         ):
@@ -1881,6 +1929,13 @@ class PlaybookService:
             entry_style = "elite_early_continuation"
             readiness_note = "early_continuation_ready"
         elif (
+            "breakout_continuation" in plan.allowed_playbooks
+            and context_continuation_ready
+        ):
+            playbook = "breakout_continuation"
+            entry_style = "elite_context_continuation"
+            readiness_note = "context_flow_continuation"
+        elif (
             inactivity_seed_relief
             and "breakout_continuation" in plan.allowed_playbooks
             and pattern_family.endswith("generic")
@@ -1954,12 +2009,15 @@ class PlaybookService:
             score_floor = 0.40
             if inactivity_seed_relief:
                 score_floor = max(0.28, score_floor - (0.04 + inactivity_relief_strength * 0.08))
+        elif entry_style == "elite_context_continuation":
+            score_floor = 0.42 if strong_context_continuation_ready else 0.46
         if score < score_floor:
             return None
 
         confidence = _clip(
             0.42
             + score * 0.40
+            + max(0.0, confluence_score) * 0.08
             + (0.05 if entry_confirmation_ready else 0.0)
             + (0.03 if playbook in {"breakout_retest", "trend_pullback", "failed_break_reclaim"} else 0.0),
             0.0,
@@ -1970,6 +2028,13 @@ class PlaybookService:
             "direction": direction,
             "score": round(score, 4),
             "confidence": round(confidence, 4),
+            "context_confluence": round(confluence_score, 4),
+            "cross_alignment": round(cross_context_support, 4),
+            "cross_confidence": round(_safe_float(context_confluence.get("cross_confidence"), 0.0), 4),
+            "micro_score": round(micro_context_support, 4),
+            "whale_context_support": round(whale_context_support, 4),
+            "support_components": support_components,
+            "conflict_components": conflict_components,
             "entry_style": entry_style,
             "session": session,
             "preferred_interval": preferred_interval,
@@ -1980,6 +2045,7 @@ class PlaybookService:
                 f"session={session}",
                 f"align={alignment_score:.2f}",
                 f"setup={setup_quality:.2f}",
+                f"ctx={confluence_score:+.2f}/micro={micro_context_support:+.2f}/cross={cross_context_support:+.2f}",
                 f"inactivity_relief={inactivity_relief_strength:.2f}" if inactivity_seed_relief else "inactivity_relief=0.00",
             ],
         }
@@ -3338,6 +3404,7 @@ class PlaybookService:
                 structure=structure,
                 plan=plan,
                 inactivity_profile=inactivity_profile,
+                context=context,
             )
             if fallback:
                 approved, reason = self._qualify_candidate(
@@ -3436,6 +3503,8 @@ class PlaybookService:
             seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.04))
         elif entry_style == "elite_trend_continuation":
             seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.04))
+        elif entry_style == "elite_context_continuation":
+            seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.05))
         elif entry_style in {
             "breakout_close",
             "expansion_break",

@@ -77,6 +77,20 @@ DUKASCOPY_LIVE_DEPTH_MAX_LEVELS = _parse_int(os.getenv("DUKASCOPY_LIVE_DEPTH_MAX
 DUKASCOPY_LIVE_DEPTH_STORE_PATH = Path(
     os.getenv("DUKASCOPY_LIVE_DEPTH_STORE_PATH", "data/dukascopy_live_depth.json")
 )
+CTRADER_LIVE_DEPTH_ENABLED = os.getenv("CTRADER_LIVE_DEPTH_ENABLED", "false").lower() == "true"
+CTRADER_LIVE_DEPTH_ENVIRONMENT = os.getenv("CTRADER_LIVE_DEPTH_ENVIRONMENT", "demo").strip().lower() or "demo"
+CTRADER_LIVE_DEPTH_CLIENT_ID = os.getenv("CTRADER_LIVE_DEPTH_CLIENT_ID", "").strip()
+CTRADER_LIVE_DEPTH_CLIENT_SECRET = os.getenv("CTRADER_LIVE_DEPTH_CLIENT_SECRET", "").strip()
+CTRADER_LIVE_DEPTH_ACCESS_TOKEN = os.getenv("CTRADER_LIVE_DEPTH_ACCESS_TOKEN", "").strip()
+CTRADER_LIVE_DEPTH_REFRESH_TOKEN = os.getenv("CTRADER_LIVE_DEPTH_REFRESH_TOKEN", "").strip()
+CTRADER_LIVE_DEPTH_ACCOUNT_ID = os.getenv("CTRADER_LIVE_DEPTH_ACCOUNT_ID", "").strip()
+CTRADER_LIVE_DEPTH_REDIRECT_URI = os.getenv("CTRADER_LIVE_DEPTH_REDIRECT_URI", "http://localhost").strip() or "http://localhost"
+CTRADER_LIVE_DEPTH_ASSETS = os.getenv("CTRADER_LIVE_DEPTH_ASSETS", "").strip()
+CTRADER_LIVE_DEPTH_CMD = os.getenv("CTRADER_LIVE_DEPTH_CMD", "").strip()
+CTRADER_LIVE_DEPTH_MIN_EMIT_MS = _parse_int(os.getenv("CTRADER_LIVE_DEPTH_MIN_EMIT_MS", "150"), 150)
+CTRADER_LIVE_DEPTH_MAX_LEVELS = _parse_int(os.getenv("CTRADER_LIVE_DEPTH_MAX_LEVELS", "20"), 20)
+CTRADER_LIVE_DEPTH_STORE_PATH = Path(os.getenv("CTRADER_LIVE_DEPTH_STORE_PATH", "data/ctrader_live_depth.json"))
+CTRADER_LIVE_DEPTH_TOKEN_CACHE_PATH = Path(os.getenv("CTRADER_LIVE_DEPTH_TOKEN_CACHE_PATH", "data/ctrader_tokens.json"))
 FMP_HISTORY_ENABLED   = os.getenv("FMP_HISTORY_ENABLED", "true").lower() == "true"
 FMP_API_KEY           = os.getenv("FMP_API_KEY", "").strip()
 FMP_SYMBOL_MAP        = os.getenv("FMP_SYMBOL_MAP", "").strip()

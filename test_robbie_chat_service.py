@@ -126,6 +126,53 @@ def test_robbie_chat_reports_runtime_issues(tmp_path: Path) -> None:
     assert "sentiment" in reply
 
 
+def test_robbie_chat_issues_response_uses_log_and_code_context(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "_build_log_snapshot",
+        lambda question, focus_asset="": {
+            "available": True,
+            "signal_scan_summary": ["Signal scan summary: tradable=5 generated=0 no_edge=5"],
+            "blocker_matches": ["Decision ETH-USD killed step=3 reason=execution hard block on sell"],
+            "asset_matches": [],
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        robbie_chat_module,
+        "_build_code_snapshot",
+        lambda question, focus_asset="": {
+            "available": True,
+            "search_terms": ["signal scan summary", "execution hard block"],
+            "matches": [{"file": "core/decision_engine.py", "line": 123, "snippet": "execution hard block on sell"}],
+        },
+    )
+    service = _service(tmp_path)
+    core = _FakeCore(
+        health={
+            "status": "degraded",
+            "issues": ["Signal generation is thin"],
+            "recent_error_count": 1,
+            "signal_diagnostics": {"summary_label": "tradable=5 generated=0"},
+        }
+    )
+
+    reply = service.answer(
+        question="why am i not seeing any trades right now show me logs and code",
+        trading_system=core,
+        chat_id="chat-issues-logs",
+    )
+
+    assert "Latest signal scan read" in reply
+    assert "Code path in play" in reply
+
+
+def test_robbie_chat_classifies_no_trades_question_as_issues(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    assert service._classify_intent("why am i not seeing any trades today") == "issues"
+
+
 def test_robbie_chat_uses_session_asset_for_stop_loss_follow_up(tmp_path: Path) -> None:
     service = _service(tmp_path)
     review = {

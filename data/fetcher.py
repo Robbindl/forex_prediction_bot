@@ -79,6 +79,7 @@ class DataFetcher:
         self._rt_meta: Dict[str, Dict[str, Any]] = {}
         self._local_candle_store = None
         self._dukascopy_bridge = None
+        self._ctrader_live_bridge = None
         self._dukascopy_live_bridge = None
         self._fmp_bridge = None
         self._ig_bridge = None
@@ -228,6 +229,19 @@ class DataFetcher:
         except Exception as exc:
             logger.debug(f"[DataFetcher] Dukascopy live-depth bridge unavailable: {exc}")
 
+    def _init_ctrader_live_bridge(self) -> None:
+        try:
+            from services.ctrader_live_depth_bridge import ctrader_live_depth_bridge as _ctrader_live_bridge
+
+            self._activate_bridge(
+                "_ctrader_live_bridge",
+                _ctrader_live_bridge,
+                "ctrader_live_depth",
+                "[DataFetcher] cTrader live-depth bridge configured for preferred non-crypto order-book depth",
+            )
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] cTrader live-depth bridge unavailable: {exc}")
+
     def _init_ig_bridge(self) -> None:
         try:
             from services.ig_market_bridge import ig_market_bridge as _ig_bridge
@@ -270,6 +284,7 @@ class DataFetcher:
     def _init_clients(self) -> None:
         self._init_local_candle_store()
         self._init_dukascopy_bridge()
+        self._init_ctrader_live_bridge()
         self._init_dukascopy_live_bridge()
         self._init_fmp_bridge()
         self._init_ig_bridge()
@@ -304,6 +319,8 @@ class DataFetcher:
             return "deriv"
         if token.startswith("binance"):
             return "binance"
+        if token.startswith("ctrader"):
+            return "ctrader"
         if token.startswith("duka"):
             return "dukascopy"
         if token in {"financialmodelingprep", "fmp"}:
@@ -415,6 +432,16 @@ class DataFetcher:
             logger.debug(f"[DataFetcher] {bridge_name} microstructure {asset}: {exc}")
         return None
 
+    def _ctrader_live_microstructure(self, asset: str, category: str) -> Dict[str, Any]:
+        bridge = self._ctrader_live_bridge
+        if bridge is None:
+            return {}
+        try:
+            return bridge.get_microstructure(asset, category=category) or {}
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] cTrader live-depth {asset}: {exc}")
+            return {}
+
     def _dukascopy_live_microstructure(self, asset: str, category: str) -> Dict[str, Any]:
         bridge = self._dukascopy_live_bridge
         if bridge is None:
@@ -516,27 +543,40 @@ class DataFetcher:
 
     def get_market_microstructure(self, asset: str, category: str) -> Dict[str, Any]:
         orderflow_snapshot = self._crypto_orderflow_snapshot(asset, category)
+        ctrader_overlay = self._ctrader_live_microstructure(asset, category)
         dukascopy_overlay = self._dukascopy_live_microstructure(asset, category)
 
         if self._ig_primary_category(category):
             micro = self._microstructure_from_bridge(self._ig_bridge, "IG", asset, category, orderflow_snapshot)
             if micro:
-                return self._overlay_external_true_depth(micro, dukascopy_overlay)
+                return self._overlay_external_true_depth(
+                    self._overlay_external_true_depth(micro, dukascopy_overlay),
+                    ctrader_overlay,
+                )
 
         micro = self._microstructure_from_bridge(self._deriv_bridge, "Deriv", asset, category, orderflow_snapshot)
         if micro:
-            return self._overlay_external_true_depth(micro, dukascopy_overlay)
+            return self._overlay_external_true_depth(
+                self._overlay_external_true_depth(micro, dukascopy_overlay),
+                ctrader_overlay,
+            )
 
         micro = self._microstructure_from_bridge(self._binance_bridge, "Binance", asset, category, orderflow_snapshot)
         if micro:
-            return self._overlay_external_true_depth(micro, dukascopy_overlay)
+            return self._overlay_external_true_depth(
+                self._overlay_external_true_depth(micro, dukascopy_overlay),
+                ctrader_overlay,
+            )
 
         price, spread = self.get_real_time_price(asset, category=category)
         if price is None:
-            return dict(dukascopy_overlay or {})
+            return dict(ctrader_overlay or dukascopy_overlay or {})
         return self._overlay_external_true_depth(
-            self._fallback_microstructure(asset, category, price, spread, orderflow_snapshot),
-            dukascopy_overlay,
+            self._overlay_external_true_depth(
+                self._fallback_microstructure(asset, category, price, spread, orderflow_snapshot),
+                dukascopy_overlay,
+            ),
+            ctrader_overlay,
         )
 
     @staticmethod

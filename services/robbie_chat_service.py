@@ -53,6 +53,53 @@ _MAX_HISTORY_MESSAGES = max(2, int(ROBBIE_CHAT_HISTORY_LIMIT or 6)) * 2
 _ASSET_ALIAS_PATTERNS: List[Tuple[re.Pattern[str], str]] = []
 _RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why", "calendar", "weekly", "schedule"}
 _WORLD_KNOWLEDGE_INTENTS = {"general", "macro", "forecast", "market", "trade_why", "stop_loss", "learning", "adjustment", "calendar", "weekly"}
+_LOG_CONTEXT_TERMS = (
+    "log",
+    "logs",
+    "error",
+    "errors",
+    "traceback",
+    "server",
+    "kamatera",
+    "failed",
+    "failure",
+    "degraded",
+    "why am i not seeing",
+    "why no",
+    "no trade",
+    "no trades",
+    "no signal",
+    "no signals",
+    "not seeing any trade",
+    "not seeing any signal",
+)
+_CODE_CONTEXT_TERMS = (
+    "code",
+    "codebase",
+    "file",
+    "files",
+    "function",
+    "functions",
+    "logic",
+    "source",
+    "line",
+    "lines",
+    "bug",
+    "fix",
+    "signal",
+    "signals",
+    "trade",
+    "trades",
+)
+_OPERATIONS_CODE_FILES = (
+    Path("core/engine.py"),
+    Path("core/decision_engine.py"),
+    Path("services/playbook_service.py"),
+    Path("services/signal_governance.py"),
+    Path("bot.py"),
+    Path("telegram_commander.py"),
+    Path("services/robbie_chat_service.py"),
+)
 _WEEKDAY_INDEX = {
     "monday": 0,
     "tuesday": 1,
@@ -117,6 +164,147 @@ def _json_text(value: Any, limit: int = 1600) -> str:
 
 def _section_text(title: str, value: Any, limit: int = 1600) -> str:
     return f"{title}:\n{_json_text(value, limit)}"
+
+
+def _question_needs_log_context(question: str) -> bool:
+    text = str(question or "").lower()
+    return any(term in text for term in _LOG_CONTEXT_TERMS)
+
+
+def _question_needs_code_context(question: str) -> bool:
+    text = str(question or "").lower()
+    if not text:
+        return False
+    if any(term in text for term in _CODE_CONTEXT_TERMS):
+        return True
+    return _question_needs_log_context(question)
+
+
+def _tail_log_lines(path: Path, limit: int = 12) -> List[str]:
+    if limit <= 0 or not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    lines = [line.rstrip() for line in text.splitlines() if str(line).strip()]
+    return lines[-limit:]
+
+
+def _derive_code_search_terms(question: str, focus_asset: str = "") -> List[str]:
+    text = str(question or "").lower()
+    terms: List[str] = []
+    seed_terms = (
+        "signal scan summary",
+        "no_playbook_seed",
+        "execution hard block",
+        "pattern family ranks below elite threshold",
+        "retest_missing",
+        "pullback_missing",
+        "setup_quality_too_weak",
+        "elite_context_continuation",
+        "failed_break_reclaim",
+        "equity_relief",
+        "signal governance",
+        "playbook",
+        "decision",
+    )
+    if any(token in text for token in ("signal", "trade", "trades", "entry", "entries", "setup", "why no", "not seeing", "missed")):
+        for term in seed_terms:
+            if term not in terms:
+                terms.append(term)
+    if "robbie" in text or "telegram" in text or "chat" in text:
+        for term in ("_llm_context", "_issues_response", "_build_runtime_context", "answer("):
+            if term not in terms:
+                terms.append(term)
+    asset = str(focus_asset or "").strip()
+    if asset:
+        for variant in {asset.lower(), asset.replace("/", "").replace("-", "").lower()}:
+            if variant and variant not in terms:
+                terms.append(variant)
+    if not terms:
+        terms.extend(["playbook", "signal", "decision"])
+    return terms[:12]
+
+
+def _build_log_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, Any]:
+    focus = str(focus_asset or "").strip().upper()
+    focus_tokens = {focus, focus.replace("/", ""), focus.replace("-", "")} if focus else set()
+    source_paths = (
+        ("engine", Path("logs/trading_bot.log")),
+        ("errors", Path("logs/errors.log")),
+        ("trades", Path("logs/trades.log")),
+        ("runtime_out", Path("logs/live_runtime.out.log")),
+        ("runtime_err", Path("logs/live_runtime.err.log")),
+    )
+    sections: Dict[str, List[str]] = {
+        key: _tail_log_lines(path, limit=14 if key in {"engine", "runtime_out"} else 8)
+        for key, path in source_paths
+    }
+    scan_matches: List[str] = []
+    asset_matches: List[str] = []
+    blocker_matches: List[str] = []
+    for lines in sections.values():
+        for line in reversed(lines):
+            upper = str(line or "").upper()
+            if "SIGNAL SCAN SUMMARY" in upper and len(scan_matches) < 4:
+                scan_matches.append(str(line))
+            if any(token and token in upper for token in focus_tokens) and len(asset_matches) < 8:
+                asset_matches.append(str(line))
+            if any(token in upper for token in ("NO_PLAYBOOK_SEED", "EXECUTION HARD BLOCK", "SIGNAL GOVERNANCE EXCEPTION", "PATTERN FAMILY RANKS BELOW ELITE THRESHOLD")) and len(blocker_matches) < 8:
+                blocker_matches.append(str(line))
+
+    result: Dict[str, Any] = {
+        "available": any(bool(lines) for lines in sections.values()),
+        "source": "local_log_tail",
+        "display_now_local": now_in_display_timezone().strftime(f"%Y-%m-%d %H:%M:%S {display_timezone_label()}"),
+        "focus_asset": focus_asset,
+        "engine": sections["engine"],
+        "errors": sections["errors"],
+        "trades": sections["trades"],
+        "runtime_out": sections["runtime_out"],
+        "runtime_err": sections["runtime_err"],
+        "signal_scan_summary": list(reversed(scan_matches)),
+        "asset_matches": list(reversed(asset_matches)),
+        "blocker_matches": list(reversed(blocker_matches)),
+    }
+    if not result["available"]:
+        result["message"] = "No readable local logs were available."
+    return result
+
+
+def _build_code_snapshot(question: str, *, focus_asset: str = "") -> Dict[str, Any]:
+    search_terms = _derive_code_search_terms(question, focus_asset=focus_asset)
+    matches: List[Dict[str, Any]] = []
+    for path in _OPERATIONS_CODE_FILES:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        for idx, line in enumerate(lines, start=1):
+            lower = line.lower()
+            if not any(term.lower() in lower for term in search_terms):
+                continue
+            start = max(1, idx - 1)
+            end = min(len(lines), idx + 1)
+            snippet = " | ".join(part.strip() for part in lines[start - 1 : end] if str(part).strip())
+            matches.append(
+                {
+                    "file": str(path).replace("\\", "/"),
+                    "line": idx,
+                    "snippet": _clip_text(snippet, 240),
+                }
+            )
+            if len(matches) >= 10:
+                break
+        if len(matches) >= 10:
+            break
+    return {
+        "available": bool(matches),
+        "source": "local_codebase_scan",
+        "search_terms": search_terms,
+        "matches": matches,
+    }
 
 
 def _humanize_token(value: Any) -> str:
@@ -481,7 +669,7 @@ class RobbieChatService:
     ) -> str:
         session = self._sessions.get(chat_id)
         focus_asset = _resolve_asset_from_text(question, asset_hint or session.get("last_asset", ""))
-        runtime = self._build_runtime_context(trading_system, focus_asset)
+        runtime = self._build_runtime_context(trading_system, focus_asset, question=question)
         intent = self._classify_intent(question)
         deterministic = self._answer_deterministic(question, runtime, session, intent=intent, chat_id=chat_id)
         response = self._answer_with_optional_deepseek(question, runtime, session, deterministic, intent)
@@ -494,7 +682,7 @@ class RobbieChatService:
         )
         return response
 
-    def _build_runtime_context(self, trading_system: Any, focus_asset: str) -> Dict[str, Any]:
+    def _build_runtime_context(self, trading_system: Any, focus_asset: str, *, question: str = "") -> Dict[str, Any]:
         core = trading_system
         health: Dict[str, Any] = {}
         positions: List[Dict[str, Any]] = []
@@ -573,6 +761,8 @@ class RobbieChatService:
         except Exception:
             report = {}
         learning = self._learning_snapshot(closed_trades)
+        log_snapshot = _build_log_snapshot(question, focus_asset=focus_asset) if _question_needs_log_context(question) else {}
+        code_snapshot = _build_code_snapshot(question, focus_asset=focus_asset) if _question_needs_code_context(question) else {}
 
         return {
             "core": core,
@@ -599,6 +789,8 @@ class RobbieChatService:
                 or ""
             ),
             "news_snapshot": news_snapshot,
+            "log_snapshot": log_snapshot,
+            "code_snapshot": code_snapshot,
         }
 
     def _build_market_snapshot(
@@ -1245,7 +1437,29 @@ class RobbieChatService:
             return "weekly"
         if any(token in q for token in ("calendar", "calender", "what day is it", "what date is it", "today's date", "todays date", "next holiday", "next bank holiday", "economic events", "what events are coming")):
             return "calendar"
-        if any(token in q for token in ("issue", "problem", "error", "health", "wrong", "degraded", "failing")):
+        if any(
+            token in q
+            for token in (
+                "issue",
+                "problem",
+                "error",
+                "health",
+                "wrong",
+                "degraded",
+                "failing",
+                "no trade",
+                "no trades",
+                "no signal",
+                "no signals",
+                "not seeing any trade",
+                "not seeing any trades",
+                "not seeing any signal",
+                "not seeing any signals",
+                "why am i not seeing",
+                "why no trades",
+                "why no signals",
+            )
+        ):
             return "issues"
         if any(token in q for token in ("learned", "learnt", "learning", "lesson", "improve", "improved")):
             return "learning"
@@ -1325,6 +1539,8 @@ class RobbieChatService:
     @staticmethod
     def _issues_response(runtime: Dict[str, Any]) -> str:
         health = runtime.get("health") if isinstance(runtime.get("health"), dict) else {}
+        log_snapshot = runtime.get("log_snapshot") if isinstance(runtime.get("log_snapshot"), dict) else {}
+        code_snapshot = runtime.get("code_snapshot") if isinstance(runtime.get("code_snapshot"), dict) else {}
         status = str(health.get("status") or "unknown").lower()
         issues = [str(item).strip() for item in list(health.get("issues") or []) if str(item).strip()]
         stale = list(health.get("stale_sources") or [])
@@ -1332,6 +1548,10 @@ class RobbieChatService:
         recent_errors = int(health.get("recent_error_count", 0) or 0)
         diagnostics = health.get("signal_diagnostics") if isinstance(health.get("signal_diagnostics"), dict) else {}
         summary = str(diagnostics.get("summary_label") or "").strip()
+        scan_summary = [str(item).strip() for item in list(log_snapshot.get("signal_scan_summary") or []) if str(item).strip()]
+        blocker_matches = [str(item).strip() for item in list(log_snapshot.get("blocker_matches") or []) if str(item).strip()]
+        asset_matches = [str(item).strip() for item in list(log_snapshot.get("asset_matches") or []) if str(item).strip()]
+        code_matches = [dict(item) for item in list(code_snapshot.get("matches") or []) if isinstance(item, dict)]
 
         lines = [f"Robbie health is *{status.upper()}*."]
         if issues:
@@ -1353,6 +1573,21 @@ class RobbieChatService:
         if detail_bits:
             lines.append("")
             lines.append("Operational read: " + " | ".join(detail_bits) + ".")
+        if scan_summary:
+            lines.append("")
+            lines.append("Latest signal scan read:")
+            lines.append(f"• {_clip_text(scan_summary[-1], 260)}")
+        if blocker_matches or asset_matches:
+            lines.append("Recent blocker/log evidence:")
+            for item in (blocker_matches or asset_matches)[:3]:
+                lines.append(f"• {_clip_text(item, 260)}")
+        if code_matches:
+            lines.append("Code path in play:")
+            for item in code_matches[:3]:
+                file_name = str(item.get("file") or "").split("/")[-1] or "unknown"
+                line_no = int(item.get("line") or 0)
+                snippet = _clip_text(item.get("snippet") or "", 180)
+                lines.append(f"• {file_name}:{line_no} — {snippet}")
         if issues:
             lines.append("")
             lines.append("Execution bias: until those problems clear, I would trust ongoing position management more than forcing fresh entries.")
@@ -1887,6 +2122,7 @@ class RobbieChatService:
             "You are Robbie, the conversational intelligence layer for a live trading bot.",
             "Answer like a strong analytical LLM, not like a menu tree or canned FAQ.",
             "Runtime facts in the provided context are authoritative for bot state, trades, performance, health, and recorded market snapshots.",
+            "If runtime_facts_logs or runtime_facts_codebase are present, use them as authoritative local operational context instead of claiming you cannot inspect logs or code.",
             "Do not invent positions, trades, fills, P&L, health issues, headlines, prices, or event timestamps.",
             "If runtime facts are missing, say what is missing instead of fabricating it.",
             "Think through the mechanics before answering, but do not reveal chain-of-thought.",
@@ -2026,6 +2262,8 @@ class RobbieChatService:
         stop_trade = runtime.get("stop_trade") if isinstance(runtime.get("stop_trade"), dict) else {}
         market_snapshot = runtime.get("market_snapshot") if isinstance(runtime.get("market_snapshot"), dict) else {}
         news_snapshot = runtime.get("news_snapshot") if isinstance(runtime.get("news_snapshot"), dict) else {}
+        log_snapshot = runtime.get("log_snapshot") if isinstance(runtime.get("log_snapshot"), dict) else {}
+        code_snapshot = runtime.get("code_snapshot") if isinstance(runtime.get("code_snapshot"), dict) else {}
         setups = self._ensure_top_setups(runtime)
         focus_signal = runtime.get("focus_signal") if isinstance(runtime.get("focus_signal"), dict) else {}
         position_limit = max(2, int(ROBBIE_CHAT_OPEN_POSITIONS_LIMIT or 8))
@@ -2151,6 +2389,30 @@ class RobbieChatService:
                 limit=1200,
             ),
         ]
+        if log_snapshot:
+            sections.append(
+                _section_text(
+                    "runtime_facts_logs",
+                    {
+                        "signal_scan_summary": list(log_snapshot.get("signal_scan_summary") or [])[:4],
+                        "blocker_matches": list(log_snapshot.get("blocker_matches") or [])[:6],
+                        "asset_matches": list(log_snapshot.get("asset_matches") or [])[:6],
+                        "errors": list(log_snapshot.get("errors") or [])[:4],
+                    },
+                    limit=2200,
+                )
+            )
+        if code_snapshot:
+            sections.append(
+                _section_text(
+                    "runtime_facts_codebase",
+                    {
+                        "search_terms": list(code_snapshot.get("search_terms") or [])[:10],
+                        "matches": list(code_snapshot.get("matches") or [])[:6],
+                    },
+                    limit=2200,
+                )
+            )
         if include_local_draft and deterministic:
             sections.append(_section_text("local_baseline_answer", deterministic, limit=1400))
         text = "\n\n".join(section for section in sections if section.strip())
