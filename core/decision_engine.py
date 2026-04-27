@@ -15,7 +15,7 @@ from config.config import (
     SPREAD_THRESHOLDS,
     get_trading_timeframe,
 )
-from core.asset_profiles import get_profile
+from core.asset_profiles import get_execution_policy, get_profile
 from core.signal import Signal
 from core.signal_journal import INFO, KILLED, PASS
 from services.signal_intelligence import apply_cross_asset_review, apply_sentiment_review, apply_whale_review
@@ -1207,6 +1207,9 @@ class SignalDecisionEngine:
                 "block_new_entries": normalized["adaptive_block"],
                 "block_reason": normalized["adaptive_block_reason"],
                 "recent_review_profile": dict(adaptive_policy.get("recent_review_profile") or {}),
+                "asset_performance_profile": dict(adaptive_policy.get("asset_performance_profile") or {}),
+                "book_performance_profile": dict(adaptive_policy.get("book_performance_profile") or {}),
+                "inactivity_profile": dict(adaptive_policy.get("inactivity_profile") or {}),
                 "notes": list(adaptive_policy.get("notes") or []),
             }
         return normalized
@@ -1418,6 +1421,16 @@ class SignalDecisionEngine:
             if isinstance(raw_policy, dict) and isinstance(raw_policy.get("inactivity_profile"), dict)
             else {}
         )
+        asset_performance = (
+            raw_policy.get("asset_performance_profile")
+            if isinstance(raw_policy, dict) and isinstance(raw_policy.get("asset_performance_profile"), dict)
+            else {}
+        )
+        book_performance = (
+            raw_policy.get("book_performance_profile")
+            if isinstance(raw_policy, dict) and isinstance(raw_policy.get("book_performance_profile"), dict)
+            else {}
+        )
         late_entry_rate = float(recent_review.get("late_entry_rate", 0.0) or 0.0)
         hard_loss_rate = float(recent_review.get("hard_loss_rate", 0.0) or 0.0)
         avg_rr_realized = float(recent_review.get("avg_rr_realized", 0.0) or 0.0)
@@ -1429,6 +1442,12 @@ class SignalDecisionEngine:
         inactivity_relief_active = bool(inactivity_profile.get("active")) and inactivity_relief_strength > 0.0
         inactivity_flat_book = bool(inactivity_profile.get("flat_book")) or bool(inactivity_profile.get("equity_relief"))
         inactivity_hours_since_last_entry = float(inactivity_profile.get("hours_since_last_entry", 0.0) or 0.0)
+        asset_score = float(asset_performance.get("asset_score", 0.5) or 0.5)
+        asset_action = str(asset_performance.get("action") or "neutral").strip().lower()
+        asset_sample_count = int(asset_performance.get("sample_count", 0) or 0)
+        book_score = float(book_performance.get("book_score", 0.5) or 0.5)
+        book_action = str(book_performance.get("action") or "neutral").strip().lower()
+        book_sample_count = int(book_performance.get("sample_count", 0) or 0)
         elite_pattern_rank = max(
             float(recent_review.get("pattern_rank_score", 0.0) or 0.0),
             float(structure.get("elite_pattern_rank", signal.metadata.get("elite_pattern_rank", 0.0)) or 0.0),
@@ -1488,10 +1507,14 @@ class SignalDecisionEngine:
         broker_spread_regime = str(signal.metadata.get("broker_spread_regime", "") or "").lower()
         broker_quote_quality_state = str(signal.metadata.get("broker_quote_quality_state", "") or "").lower()
         synthetic_depth_only = bool(signal.metadata.get("synthetic_depth_available")) and not bool(signal.metadata.get("depth_available"))
+        depth_quality = float(signal.metadata.get("depth_quality", 0.0) or 0.0)
+        depth_quality_tier = str(signal.metadata.get("depth_quality_tier", "") or "").strip().lower()
+        microstructure_source = str(signal.metadata.get("microstructure_source", "") or "").strip().lower()
         cross_asset_alignment = float(signal.metadata.get("cross_asset_alignment", 0.0) or 0.0)
         cross_asset_confidence = float(signal.metadata.get("cross_asset_confidence", 0.0) or 0.0)
         supportive_structure_distance = float(signal.metadata.get("supportive_structure_distance", 0.0) or 0.0)
         category_label = str(signal.category or signal.metadata.get("category") or "").strip().lower()
+        execution_policy = get_execution_policy(signal.asset)
         direction_sign = 1 if signal.direction == "BUY" else -1
         orderflow_imbalance = float(signal.metadata.get("orderflow_imbalance", 0.0) or 0.0)
         microstructure_alignment = float(signal.metadata.get("microstructure_alignment", 0.0) or 0.0)
@@ -1576,6 +1599,20 @@ class SignalDecisionEngine:
                 or elite_pattern_rank >= 0.08
             )
         )
+        high_conviction_continuation_candidate = bool(
+            strong_market_candidate
+            and (continuation_family or continuation_entry)
+            and float(signal.confidence or 0.0) >= 0.67
+            and alignment_score >= 0.78
+            and setup_quality >= 0.68
+            and candle_quality_score >= 0.34
+            and session_quality_score >= 0.40
+            and target_efficiency_score >= 0.12
+            and extension_score <= 1.60
+            and impulse_age_bars <= 7
+            and not failed_opposite_move_confirmed
+            and not has_directional_flow_conflict
+        )
         elite_supported_candidate = bool(
             strong_market_candidate
             and (
@@ -1584,6 +1621,7 @@ class SignalDecisionEngine:
                 or breakout_retest_ready
                 or first_pullback_ready
                 or entry_confirmation_ready
+                or high_conviction_continuation_candidate
                 or (continuation_rescue_candidate and has_directional_flow_support)
             )
         )
@@ -1593,6 +1631,72 @@ class SignalDecisionEngine:
             and strong_market_candidate
             and float(signal.confidence or 0.0) >= 0.68
         )
+
+        base_risk_kill_threshold = float(execution_policy.get("risk_kill_threshold", 0.58) or 0.58)
+        base_weak_candle_extension_limit = float(
+            execution_policy.get("weak_candle_extension_limit", 1.25) or 1.25
+        )
+        base_weak_candle_floor = float(execution_policy.get("weak_candle_floor", 0.26) or 0.26)
+        base_target_efficiency_hard_floor = float(
+            execution_policy.get("target_efficiency_hard_floor", 0.15) or 0.15
+        )
+        base_opposing_distance_hard_floor = float(
+            execution_policy.get("opposing_distance_hard_floor", 0.0035) or 0.0035
+        )
+        base_impulse_age_hard_limit = int(execution_policy.get("impulse_age_hard_limit", 6) or 6)
+        base_directional_extension_hard_limit = float(
+            execution_policy.get("directional_extension_hard_limit", 0.74) or 0.74
+        )
+        base_pattern_rank_hard_floor = float(
+            execution_policy.get("pattern_rank_hard_floor", 0.12) or 0.12
+        )
+        base_pattern_rank_strong_floor = float(
+            execution_policy.get("pattern_rank_strong_floor", 0.08) or 0.08
+        )
+        preferred_true_depth_min_quality = float(
+            execution_policy.get("preferred_true_depth_min_quality", 0.50) or 0.50
+        )
+        asset_edge_bonus_scale = float(execution_policy.get("asset_edge_bonus_scale", 0.08) or 0.08)
+        asset_edge_penalty_scale = float(execution_policy.get("asset_edge_penalty_scale", 0.09) or 0.09)
+        book_edge_bonus_scale = float(execution_policy.get("book_edge_bonus_scale", 0.06) or 0.06)
+        book_edge_penalty_scale = float(execution_policy.get("book_edge_penalty_scale", 0.07) or 0.07)
+
+        true_depth_sources = {"order_flow_true_depth", "dukascopy_live_depth", "ctrader_live_depth"}
+        true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
+        preferred_true_depth = microstructure_source in true_depth_sources
+        asset_performance_relief = 0.0
+        asset_performance_penalty = 0.0
+        if asset_action == "boost" and asset_sample_count > 0:
+            asset_performance_relief = min(0.05, max(0.0, asset_score - 0.50) * asset_edge_bonus_scale)
+        elif asset_action == "reduce" and asset_sample_count > 0:
+            asset_performance_penalty = min(0.06, max(0.0, 0.50 - asset_score) * asset_edge_penalty_scale)
+
+        book_performance_relief = 0.0
+        book_performance_penalty = 0.0
+        if book_action == "boost" and book_sample_count > 0:
+            book_performance_relief = min(0.04, max(0.0, book_score - 0.50) * book_edge_bonus_scale)
+        elif book_action == "reduce" and book_sample_count > 0:
+            book_performance_penalty = min(0.05, max(0.0, 0.50 - book_score) * book_edge_penalty_scale)
+
+        true_depth_relief = 0.0
+        synthetic_depth_penalty = 0.0
+        if true_depth_available and depth_quality >= preferred_true_depth_min_quality:
+            true_depth_relief = min(
+                0.08,
+                float(execution_policy.get("true_depth_bonus", 0.03) or 0.03)
+                + max(0.0, depth_quality - preferred_true_depth_min_quality) * 0.05,
+            )
+            if preferred_true_depth:
+                true_depth_relief = min(0.08, true_depth_relief + 0.01)
+        elif synthetic_depth_only:
+            synthetic_depth_penalty = min(
+                0.12,
+                float(execution_policy.get("synthetic_depth_penalty", 0.04) or 0.04)
+                + (0.02 if category_label == "crypto" and (continuation_family or continuation_entry) else 0.0),
+            )
+
+        adaptive_policy_relief = asset_performance_relief + book_performance_relief + true_depth_relief
+        adaptive_policy_penalty = asset_performance_penalty + book_performance_penalty + synthetic_depth_penalty
 
         risk_score = 0.0
         reasons: List[str] = []
@@ -1760,36 +1864,98 @@ class SignalDecisionEngine:
                 risk_score -= 0.04
             elif entry_confirmation_ready or breakout_retest_ready or first_pullback_ready:
                 risk_score -= 0.02
+        if high_conviction_continuation_candidate:
+            risk_score -= 0.04
+            if extension_score >= 1.05 or abs(vwap_distance_atr) >= 1.25:
+                risk_score -= 0.06
+            if target_efficiency_score <= 0.18:
+                risk_score -= 0.08
+            if impulse_age_bars >= 6:
+                risk_score -= 0.08
+            if elite_pattern_rank <= 0.22 and recent_pattern_sample_count < 8 and not blocked_recent_pattern:
+                risk_score -= 0.12
+            if target_efficiency_score >= 0.14 and directional_extension <= 0.84:
+                risk_score -= 0.02
         if inactivity_execution_relief:
             risk_score -= 0.04 + inactivity_relief_strength * 0.08
+        if asset_performance_relief > 0.0:
+            risk_score -= asset_performance_relief
+        elif asset_performance_penalty > 0.0:
+            risk_score += asset_performance_penalty
+            reasons.append("recent asset-level execution has weakened")
+        if book_performance_relief > 0.0:
+            risk_score -= book_performance_relief
+        elif book_performance_penalty > 0.0:
+            risk_score += book_performance_penalty
+            reasons.append("recent book-level execution has cooled off")
+        if true_depth_relief > 0.0:
+            risk_score -= true_depth_relief
+            reasons.append("true depth confirms the late entry profile")
+        elif synthetic_depth_penalty > 0.0:
+            risk_score += synthetic_depth_penalty
+            reasons.append("only synthetic depth is available for this continuation profile")
 
         if broker_agreement_state in {"divergent", "severe_divergence"} and broker_spread_regime in {"stressed", "extreme", "wide"}:
             hard_blocks.append("broker divergence and spread stress are both active")
-        weak_candle_extension_limit = 1.32 if elite_supported_candidate else 1.25
-        weak_candle_floor = 0.24 if elite_supported_candidate else 0.26
+        weak_candle_extension_limit = base_weak_candle_extension_limit + (0.07 if elite_supported_candidate else 0.0)
+        weak_candle_floor = base_weak_candle_floor - (0.02 if elite_supported_candidate else 0.0)
+        weak_candle_extension_limit += adaptive_policy_relief * 0.60 - adaptive_policy_penalty * 0.35
+        weak_candle_floor = max(
+            0.20,
+            weak_candle_floor - adaptive_policy_relief * 0.18 + adaptive_policy_penalty * 0.12,
+        )
         if continuation_rescue_candidate:
             weak_candle_extension_limit += 0.03
             weak_candle_floor = max(0.22, weak_candle_floor - 0.02)
+        if high_conviction_continuation_candidate:
+            weak_candle_extension_limit += 0.04
+            weak_candle_floor = max(0.22, weak_candle_floor - 0.01)
         if inactivity_execution_relief:
             weak_candle_extension_limit += 0.02 + inactivity_relief_strength * 0.03
             weak_candle_floor = max(0.22, weak_candle_floor - (0.01 + inactivity_relief_strength * 0.02))
         if extension_score >= weak_candle_extension_limit and candle_quality_score <= weak_candle_floor:
             hard_blocks.append("entry is extended and the trigger candle is weak")
-        target_efficiency_hard_floor = 0.11 if elite_supported_candidate else 0.15
-        opposing_distance_hard_floor = 0.0030 if elite_supported_candidate else 0.0035
+        target_efficiency_hard_floor = base_target_efficiency_hard_floor - (0.04 if elite_supported_candidate else 0.0)
+        opposing_distance_hard_floor = base_opposing_distance_hard_floor - (
+            0.0005 if elite_supported_candidate else 0.0
+        )
+        target_efficiency_hard_floor = max(
+            0.08,
+            target_efficiency_hard_floor - adaptive_policy_relief * 0.22 + adaptive_policy_penalty * 0.20,
+        )
+        opposing_distance_hard_floor = max(
+            0.0020,
+            opposing_distance_hard_floor - adaptive_policy_relief * 0.0020 + adaptive_policy_penalty * 0.0015,
+        )
         if continuation_rescue_candidate:
             target_efficiency_hard_floor = max(0.09, target_efficiency_hard_floor - 0.02)
             opposing_distance_hard_floor = max(0.0026, opposing_distance_hard_floor - 0.0003)
+        if high_conviction_continuation_candidate:
+            target_efficiency_hard_floor = max(0.10, target_efficiency_hard_floor - 0.03)
+            opposing_distance_hard_floor = max(0.0028, opposing_distance_hard_floor - 0.0004)
         if inactivity_execution_relief:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - (0.015 + inactivity_relief_strength * 0.03))
             opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - (0.0003 + inactivity_relief_strength * 0.0004))
         if target_efficiency_score <= target_efficiency_hard_floor and opposing_distance <= opposing_distance_hard_floor:
             hard_blocks.append("too little clean space remains to the target")
-        impulse_age_hard_limit = 7 if elite_supported_candidate else 6
-        directional_extension_hard_limit = 0.80 if elite_supported_candidate else 0.74
+        impulse_age_hard_limit = base_impulse_age_hard_limit + (1 if elite_supported_candidate else 0)
+        directional_extension_hard_limit = base_directional_extension_hard_limit + (
+            0.06 if elite_supported_candidate else 0.0
+        )
+        impulse_age_hard_limit = max(
+            4,
+            int(round(impulse_age_hard_limit + adaptive_policy_relief * 4.0 - adaptive_policy_penalty * 3.0)),
+        )
+        directional_extension_hard_limit = max(
+            0.62,
+            directional_extension_hard_limit + adaptive_policy_relief * 0.20 - adaptive_policy_penalty * 0.12,
+        )
         if continuation_rescue_candidate:
             impulse_age_hard_limit += 1
             directional_extension_hard_limit += 0.04
+        if high_conviction_continuation_candidate:
+            impulse_age_hard_limit += 1
+            directional_extension_hard_limit += 0.05
         if inactivity_execution_relief:
             impulse_age_hard_limit += 1 + (1 if inactivity_relief_strength >= 0.75 else 0)
             directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
@@ -1820,9 +1986,19 @@ class SignalDecisionEngine:
             hard_blocks.append("recent pattern learning shows this entry shape keeps arriving too late")
         if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
             hard_blocks.append("entry confirmation delay is still pending")
-        pattern_rank_hard_floor = 0.08 if strong_market_candidate and setup_quality >= 0.66 and alignment_score >= 0.74 else 0.12
+        pattern_rank_hard_floor = (
+            base_pattern_rank_strong_floor
+            if strong_market_candidate and setup_quality >= 0.66 and alignment_score >= 0.74
+            else base_pattern_rank_hard_floor
+        )
+        pattern_rank_hard_floor = max(
+            0.02,
+            pattern_rank_hard_floor - adaptive_policy_relief * 0.10 + adaptive_policy_penalty * 0.10,
+        )
         if continuation_rescue_candidate:
             pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
+        if high_conviction_continuation_candidate:
+            pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - 0.03)
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
         low_pattern_rank_is_actionable = bool(
@@ -1833,7 +2009,7 @@ class SignalDecisionEngine:
                 and not has_directional_flow_support
                 and not entry_confirmation_ready
             )
-            or not continuation_rescue_candidate
+            or not (continuation_rescue_candidate or high_conviction_continuation_candidate)
         )
         if (
             pattern_family != "unknown"
@@ -1850,14 +2026,47 @@ class SignalDecisionEngine:
             ):
                 hard_blocks.append("regime-specific entry policy rejects the setup")
 
+        risk_kill_threshold = base_risk_kill_threshold + adaptive_policy_relief * 0.70 - adaptive_policy_penalty * 0.50
+        if high_conviction_continuation_candidate:
+            risk_kill_threshold += 0.04
+        if inactivity_execution_relief:
+            risk_kill_threshold += 0.02
+        risk_kill_threshold = max(0.50, min(0.70, risk_kill_threshold))
+
+        effective_execution_policy = {
+            "asset": signal.asset,
+            "category": category_label,
+            "microstructure_source": microstructure_source,
+            "depth_quality": round(depth_quality, 4),
+            "depth_quality_tier": depth_quality_tier,
+            "true_depth_available": true_depth_available,
+            "preferred_true_depth": preferred_true_depth,
+            "asset_score": round(asset_score, 4),
+            "asset_action": asset_action,
+            "book_score": round(book_score, 4),
+            "book_action": book_action,
+            "policy_relief": round(adaptive_policy_relief, 4),
+            "policy_penalty": round(adaptive_policy_penalty, 4),
+            "risk_kill_threshold": round(risk_kill_threshold, 4),
+            "weak_candle_extension_limit": round(weak_candle_extension_limit, 4),
+            "weak_candle_floor": round(weak_candle_floor, 4),
+            "target_efficiency_hard_floor": round(target_efficiency_hard_floor, 4),
+            "opposing_distance_hard_floor": round(opposing_distance_hard_floor, 6),
+            "impulse_age_hard_limit": int(impulse_age_hard_limit),
+            "directional_extension_hard_limit": round(directional_extension_hard_limit, 4),
+            "pattern_rank_hard_floor": round(pattern_rank_hard_floor, 4),
+        }
+
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
         signal.metadata["late_entry_risk_reasons"] = list(reasons)
         signal.metadata["execution_hard_blocks"] = list(hard_blocks)
+        signal.metadata["effective_execution_policy"] = dict(effective_execution_policy)
         signal.metadata["execution_relief_flags"] = {
             "strong_market_candidate": strong_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
             "elite_supported_candidate": elite_supported_candidate,
             "continuation_rescue_candidate": continuation_rescue_candidate,
+            "high_conviction_continuation_candidate": high_conviction_continuation_candidate,
             "has_directional_flow_support": has_directional_flow_support,
             "has_directional_flow_conflict": has_directional_flow_conflict,
             "inactivity_execution_relief": inactivity_execution_relief,
@@ -1906,8 +2115,12 @@ class SignalDecisionEngine:
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
             "elite_supported_candidate": elite_supported_candidate,
             "continuation_rescue_candidate": continuation_rescue_candidate,
+            "high_conviction_continuation_candidate": high_conviction_continuation_candidate,
             "directional_flow_support": round(directional_flow_support, 4),
             "directional_flow_conflict": round(directional_flow_conflict, 4),
+            "asset_performance_profile": dict(asset_performance),
+            "book_performance_profile": dict(book_performance),
+            "effective_execution_policy": dict(effective_execution_policy),
             "hard_blocks": list(hard_blocks),
             "reasons": list(reasons),
         }
@@ -1922,7 +2135,7 @@ class SignalDecisionEngine:
                 data=data,
             )
 
-        if risk_score >= 0.58:
+        if risk_score >= risk_kill_threshold:
             direction_label = "buy" if signal.direction == "BUY" else "sell"
             summary = "; ".join(reasons[:3]) if reasons else "entry is already too late"
             return self._kill_review(
@@ -1934,7 +2147,7 @@ class SignalDecisionEngine:
                 data=data,
             )
 
-        if risk_score >= 0.52:
+        if risk_score >= max(0.52, risk_kill_threshold - 0.06):
             notes.append("late_entry_risk")
         return True
 

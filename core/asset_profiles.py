@@ -256,6 +256,137 @@ _LEGACY_CANONICAL = {
     "NIKKEI225": "JPN225",
 }
 
+_DEFAULT_EXECUTION_POLICY: Dict[str, float | int] = {
+    "risk_kill_threshold": 0.58,
+    "weak_candle_extension_limit": 1.25,
+    "weak_candle_floor": 0.26,
+    "target_efficiency_hard_floor": 0.15,
+    "opposing_distance_hard_floor": 0.0035,
+    "impulse_age_hard_limit": 6,
+    "directional_extension_hard_limit": 0.74,
+    "pattern_rank_hard_floor": 0.12,
+    "pattern_rank_strong_floor": 0.08,
+    "preferred_true_depth_min_quality": 0.50,
+    "true_depth_bonus": 0.03,
+    "synthetic_depth_penalty": 0.04,
+    "asset_edge_bonus_scale": 0.08,
+    "asset_edge_penalty_scale": 0.09,
+    "book_edge_bonus_scale": 0.06,
+    "book_edge_penalty_scale": 0.07,
+}
+
+_CATEGORY_EXECUTION_POLICIES: Dict[str, Dict[str, float | int]] = {
+    "forex": {
+        "risk_kill_threshold": 0.60,
+        "weak_candle_extension_limit": 1.28,
+        "weak_candle_floor": 0.25,
+        "target_efficiency_hard_floor": 0.14,
+        "opposing_distance_hard_floor": 0.0032,
+        "directional_extension_hard_limit": 0.76,
+        "pattern_rank_hard_floor": 0.10,
+        "pattern_rank_strong_floor": 0.06,
+        "true_depth_bonus": 0.02,
+        "synthetic_depth_penalty": 0.02,
+        "asset_edge_bonus_scale": 0.09,
+    },
+    "indices": {
+        "risk_kill_threshold": 0.59,
+        "weak_candle_extension_limit": 1.27,
+        "weak_candle_floor": 0.25,
+        "target_efficiency_hard_floor": 0.14,
+        "opposing_distance_hard_floor": 0.0033,
+        "directional_extension_hard_limit": 0.75,
+        "pattern_rank_hard_floor": 0.10,
+        "pattern_rank_strong_floor": 0.07,
+        "true_depth_bonus": 0.03,
+        "synthetic_depth_penalty": 0.03,
+    },
+    "commodities": {
+        "risk_kill_threshold": 0.55,
+        "weak_candle_extension_limit": 1.20,
+        "weak_candle_floor": 0.28,
+        "target_efficiency_hard_floor": 0.18,
+        "opposing_distance_hard_floor": 0.0040,
+        "impulse_age_hard_limit": 5,
+        "directional_extension_hard_limit": 0.70,
+        "pattern_rank_hard_floor": 0.14,
+        "pattern_rank_strong_floor": 0.10,
+        "preferred_true_depth_min_quality": 0.60,
+        "true_depth_bonus": 0.02,
+        "synthetic_depth_penalty": 0.06,
+        "asset_edge_bonus_scale": 0.07,
+        "book_edge_bonus_scale": 0.05,
+    },
+    "crypto": {
+        "risk_kill_threshold": 0.56,
+        "weak_candle_extension_limit": 1.30,
+        "weak_candle_floor": 0.24,
+        "target_efficiency_hard_floor": 0.14,
+        "opposing_distance_hard_floor": 0.0032,
+        "directional_extension_hard_limit": 0.76,
+        "pattern_rank_hard_floor": 0.11,
+        "pattern_rank_strong_floor": 0.07,
+        "preferred_true_depth_min_quality": 0.45,
+        "true_depth_bonus": 0.05,
+        "synthetic_depth_penalty": 0.07,
+        "asset_edge_bonus_scale": 0.10,
+        "book_edge_bonus_scale": 0.07,
+    },
+    "unknown": {},
+}
+
+_ASSET_EXECUTION_POLICY_OVERRIDES: Dict[str, Dict[str, float | int]] = {
+    "US100": {
+        "risk_kill_threshold": 0.61,
+        "weak_candle_extension_limit": 1.31,
+        "pattern_rank_hard_floor": 0.09,
+    },
+    "US500": {
+        "risk_kill_threshold": 0.60,
+        "weak_candle_extension_limit": 1.29,
+        "pattern_rank_hard_floor": 0.09,
+    },
+    "XAU/USD": {
+        "risk_kill_threshold": 0.54,
+        "target_efficiency_hard_floor": 0.19,
+        "opposing_distance_hard_floor": 0.0042,
+        "synthetic_depth_penalty": 0.07,
+    },
+    "WTI": {
+        "risk_kill_threshold": 0.53,
+        "target_efficiency_hard_floor": 0.20,
+        "opposing_distance_hard_floor": 0.0044,
+        "impulse_age_hard_limit": 4,
+        "synthetic_depth_penalty": 0.08,
+    },
+    "BTC-USD": {
+        "risk_kill_threshold": 0.57,
+        "weak_candle_extension_limit": 1.32,
+        "true_depth_bonus": 0.06,
+    },
+    "ETH-USD": {
+        "risk_kill_threshold": 0.57,
+        "weak_candle_extension_limit": 1.31,
+        "true_depth_bonus": 0.055,
+    },
+    "BNB-USD": {
+        "risk_kill_threshold": 0.54,
+        "opposing_distance_hard_floor": 0.0036,
+        "synthetic_depth_penalty": 0.09,
+    },
+    "SOL-USD": {
+        "risk_kill_threshold": 0.54,
+        "opposing_distance_hard_floor": 0.0037,
+        "synthetic_depth_penalty": 0.09,
+    },
+    "XRP-USD": {
+        "risk_kill_threshold": 0.53,
+        "opposing_distance_hard_floor": 0.0038,
+        "pattern_rank_hard_floor": 0.12,
+        "synthetic_depth_penalty": 0.10,
+    },
+}
+
 for _asset in FOREX_ASSETS:
     _PROFILE_REGISTRY[_asset] = _FOREX_PROFILE
 
@@ -347,4 +478,12 @@ def is_australia_index(asset: str) -> bool:
 def is_japan_index(asset: str) -> bool:
     canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
     return canonical in JAPAN_INDEX_ASSETS
-    
+
+
+def get_execution_policy(asset: str) -> Dict[str, float | int]:
+    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
+    profile = get_profile(canonical)
+    policy = dict(_DEFAULT_EXECUTION_POLICY)
+    policy.update(_CATEGORY_EXECUTION_POLICIES.get(profile.category, {}))
+    policy.update(_ASSET_EXECUTION_POLICY_OVERRIDES.get(canonical, {}))
+    return policy
