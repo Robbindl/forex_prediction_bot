@@ -381,9 +381,15 @@ def _run_optional_step(
     *,
     success_level: str = "info",
     failure_level: str = "warning",
+    skipped_message: str | None = None,
+    skipped_level: str = "debug",
 ) -> bool:
     try:
-        action()
+        result = action()
+        if result is False:
+            if skipped_message:
+                getattr(logger, skipped_level)(skipped_message)
+            return False
         if success_message:
             getattr(logger, success_level)(success_message)
         return True
@@ -548,17 +554,19 @@ def _start_pre_bot_services(engine, args) -> None:
         from services.ctrader_live_depth_bridge import ctrader_live_depth_bridge
 
         if not ctrader_live_depth_bridge.list_profiles():
-            return
+            return False
         if not ctrader_live_depth_bridge.start_background():
             raise RuntimeError("configured but sidecar did not start")
+        return True
 
     def _start_dukascopy_live_depth():
         from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge
 
         if not dukascopy_live_depth_bridge.list_profiles():
-            return
+            return False
         if not dukascopy_live_depth_bridge.start_background():
             raise RuntimeError("configured but sidecar did not start")
+        return True
 
     def _start_data_feeds():
         from data_ingestion import start_all as start_data_feeds
@@ -610,12 +618,16 @@ def _start_pre_bot_services(engine, args) -> None:
         "[bot] cTrader live-depth sidecar started",
         "[bot] cTrader live-depth sidecar failed: {error}",
         failure_level="debug",
+        skipped_message="[bot] cTrader live-depth sidecar skipped — no active profiles",
+        skipped_level="info",
     )
     _run_optional_step(
         _start_dukascopy_live_depth,
         "[bot] Dukascopy live-depth sidecar started",
         "[bot] Dukascopy live-depth sidecar failed: {error}",
         failure_level="debug",
+        skipped_message="[bot] Dukascopy live-depth sidecar skipped — no active profiles",
+        skipped_level="info",
     )
     _run_optional_step(_start_data_feeds, "[bot] Data feeds started", "[bot] Data feeds failed to start: {error}")
     _run_optional_step(

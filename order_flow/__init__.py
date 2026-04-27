@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Dict, List
 
 from order_flow.orderbook_processor     import OrderbookProcessor
@@ -20,6 +21,10 @@ _stop_hunt_detectors: Dict[str, StopHuntDetector]  = {}
 
 _running    = False
 _sub_thread = None
+_subscribed = False
+_last_subscribed_at = 0.0
+_last_message_at = 0.0
+_last_error = ""
 
 TRACKED_ASSETS: List[str] = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -82,6 +87,7 @@ def _on_orderbook_update(event: dict) -> None:
 def _subscribe_loop() -> None:
     """Background thread — subscribes to Redis ORDER_BOOK_UPDATE channel."""
     import json
+    global _subscribed, _last_subscribed_at, _last_message_at, _last_error
     ps = None
     redis_unavailable_logged = False
     while _running:
@@ -97,17 +103,23 @@ def _subscribe_loop() -> None:
                 continue
             redis_unavailable_logged = False
             ps.subscribe("ORDER_BOOK_UPDATE")
+            _subscribed = True
+            _last_subscribed_at = time.time()
+            _last_error = ""
             logger.info("[OrderFlow] Subscribed to ORDER_BOOK_UPDATE")
 
             for msg in ps.listen():
                 if not _running:
                     break
                 if msg.get("type") == "message":
+                    _last_message_at = time.time()
                     try:
                         _on_orderbook_update(json.loads(msg["data"]))
                     except Exception as e:
                         logger.debug(f"[OrderFlow] Handler error: {e}")
         except Exception as e:
+            _subscribed = False
+            _last_error = str(e)
             logger.warning(f"[OrderFlow] Subscriber dropped ({e}) — retrying in 10s")
             if _running:
                 import time; time.sleep(10)
@@ -132,8 +144,9 @@ def start_all() -> None:
 
 def stop_all() -> None:
     """Graceful shutdown."""
-    global _running
+    global _running, _subscribed
     _running = False
+    _subscribed = False
     get_validator().stop()
 
 
@@ -149,8 +162,24 @@ def get_imbalance(asset: str) -> float:
     return det.current_score() if det else 0.0
 
 
+def status() -> dict:
+    thread = _sub_thread
+    now = time.time()
+    last_subscribed_age = max(0.0, now - _last_subscribed_at) if _last_subscribed_at > 0 else None
+    last_message_age = max(0.0, now - _last_message_at) if _last_message_at > 0 else None
+    return {
+        "running": bool(_running),
+        "thread_alive": bool(thread is not None and thread.is_alive()),
+        "subscribed": bool(_subscribed),
+        "tracked_assets": list(TRACKED_ASSETS),
+        "last_subscribed_age_seconds": round(last_subscribed_age, 3) if last_subscribed_age is not None else None,
+        "last_message_age_seconds": round(last_message_age, 3) if last_message_age is not None else None,
+        "last_error": str(_last_error or ""),
+    }
+
+
 __all__ = [
-    "start_all", "stop_all", "get_snapshot", "get_imbalance",
+    "start_all", "stop_all", "get_snapshot", "get_imbalance", "status",
     "OrderbookProcessor", "LiquidityWallDetector",
     "ImbalanceDetector", "StopHuntDetector",
     "get_validator", "OrderFlowSignalValidator",

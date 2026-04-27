@@ -531,12 +531,30 @@ class DukascopyLiveDepthBridge:
         with self._lock:
             proc = self._process
             running = bool(proc is not None and proc.poll() is None)
+            pid = int(proc.pid) if proc is not None else None
+            exit_code = None if proc is None or running else proc.poll()
             assets = sorted(self._latest.keys())
+            latest_timestamps = [
+                _safe_float(snapshot.get("timestamp"), 0.0)
+                for snapshot in self._latest.values()
+                if isinstance(snapshot, dict)
+            ]
+        store_exists = self._store_path.exists()
+        try:
+            store_mtime = self._store_path.stat().st_mtime if store_exists else 0.0
+        except Exception:
+            store_mtime = 0.0
+        freshest_ts = max((ts for ts in latest_timestamps if ts > 0.0), default=0.0)
         return {
             "enabled": self._enabled,
             "running": running,
+            "pid": pid,
+            "exit_code": exit_code,
             "assets": assets,
             "store_path": str(self._store_path),
+            "store_exists": store_exists,
+            "store_age_seconds": round(max(0.0, time.time() - store_mtime), 3) if store_mtime > 0.0 else None,
+            "last_snapshot_age_seconds": round(max(0.0, time.time() - freshest_ts), 3) if freshest_ts > 0.0 else None,
             "profiles": self.list_profiles(),
         }
 

@@ -563,7 +563,7 @@ class DataFetcher:
         ctrader_overlay = self._ctrader_live_microstructure(asset, category)
         dukascopy_overlay = self._dukascopy_live_microstructure(asset, category)
 
-        if self._ig_primary_category(category):
+        if self._ig_primary_asset(asset, category):
             micro = self._microstructure_from_bridge(self._ig_bridge, "IG", asset, category, orderflow_snapshot)
             if micro:
                 return self._overlay_external_true_depth(
