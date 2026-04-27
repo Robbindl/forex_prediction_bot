@@ -522,6 +522,49 @@ class DataFetcher:
             payload["dukascopy_symbol"] = extra["dukascopy_symbol"]
         return payload
 
+    @staticmethod
+    def _select_external_true_depth(*overlays: Dict[str, Any]) -> Dict[str, Any]:
+        best_overlay: Dict[str, Any] = {}
+        best_key: Optional[Tuple[float, float, int]] = None
+
+        for overlay in overlays:
+            extra = dict(overlay or {})
+            if not extra or not bool(extra.get("depth_available")):
+                continue
+
+            age_seconds = float("inf")
+            try:
+                if extra.get("depth_live_age_seconds") not in (None, ""):
+                    age_seconds = float(extra.get("depth_live_age_seconds"))
+            except Exception:
+                age_seconds = float("inf")
+            if math.isfinite(age_seconds) and age_seconds > 30.0:
+                continue
+
+            try:
+                depth_quality = float(extra.get("depth_quality", 0.0) or 0.0)
+            except Exception:
+                depth_quality = 0.0
+            try:
+                depth_levels = int(
+                    extra.get("depth_levels")
+                    or max(
+                        int(extra.get("visible_bid_levels") or 0),
+                        int(extra.get("visible_ask_levels") or 0),
+                    )
+                    or 0
+                )
+            except Exception:
+                depth_levels = 0
+
+            freshness_score = -age_seconds if math.isfinite(age_seconds) else float("-inf")
+            candidate_key = (depth_quality, freshness_score, depth_levels)
+            if best_key is None or candidate_key > best_key:
+                best_key = candidate_key
+                best_overlay = extra
+
+        return best_overlay
+
     def _fallback_microstructure(
         self,
         asset: str,
@@ -567,38 +610,27 @@ class DataFetcher:
         orderflow_snapshot = self._crypto_orderflow_snapshot(asset, category)
         ctrader_overlay = self._ctrader_live_microstructure(asset, category)
         dukascopy_overlay = self._dukascopy_live_microstructure(asset, category)
+        selected_external_depth = self._select_external_true_depth(dukascopy_overlay, ctrader_overlay)
 
         if self._ig_primary_asset(asset, category):
             micro = self._microstructure_from_bridge(self._ig_bridge, "IG", asset, category, orderflow_snapshot)
             if micro:
-                return self._overlay_external_true_depth(
-                    self._overlay_external_true_depth(micro, dukascopy_overlay),
-                    ctrader_overlay,
-                )
+                return self._overlay_external_true_depth(micro, selected_external_depth)
 
         micro = self._microstructure_from_bridge(self._deriv_bridge, "Deriv", asset, category, orderflow_snapshot)
         if micro:
-            return self._overlay_external_true_depth(
-                self._overlay_external_true_depth(micro, dukascopy_overlay),
-                ctrader_overlay,
-            )
+            return self._overlay_external_true_depth(micro, selected_external_depth)
 
         micro = self._microstructure_from_bridge(self._binance_bridge, "Binance", asset, category, orderflow_snapshot)
         if micro:
-            return self._overlay_external_true_depth(
-                self._overlay_external_true_depth(micro, dukascopy_overlay),
-                ctrader_overlay,
-            )
+            return self._overlay_external_true_depth(micro, selected_external_depth)
 
         price, spread = self.get_real_time_price(asset, category=category)
         if price is None:
-            return dict(ctrader_overlay or dukascopy_overlay or {})
+            return dict(selected_external_depth or {})
         return self._overlay_external_true_depth(
-            self._overlay_external_true_depth(
-                self._fallback_microstructure(asset, category, price, spread, orderflow_snapshot),
-                dukascopy_overlay,
-            ),
-            ctrader_overlay,
+            self._fallback_microstructure(asset, category, price, spread, orderflow_snapshot),
+            selected_external_depth,
         )
 
     @staticmethod

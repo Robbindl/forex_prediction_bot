@@ -1656,14 +1656,30 @@ class SignalDecisionEngine:
         preferred_true_depth_min_quality = float(
             execution_policy.get("preferred_true_depth_min_quality", 0.50) or 0.50
         )
+        minimum_usable_true_depth_quality = float(
+            execution_policy.get("minimum_usable_true_depth_quality", 0.0) or 0.0
+        )
         asset_edge_bonus_scale = float(execution_policy.get("asset_edge_bonus_scale", 0.08) or 0.08)
         asset_edge_penalty_scale = float(execution_policy.get("asset_edge_penalty_scale", 0.09) or 0.09)
         book_edge_bonus_scale = float(execution_policy.get("book_edge_bonus_scale", 0.06) or 0.06)
         book_edge_penalty_scale = float(execution_policy.get("book_edge_penalty_scale", 0.07) or 0.07)
+        thin_true_depth_penalty_scale = float(
+            execution_policy.get("thin_true_depth_penalty", 0.0) or 0.0
+        )
 
         true_depth_sources = {"order_flow_true_depth", "dukascopy_live_depth", "ctrader_live_depth"}
         true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
         preferred_true_depth = microstructure_source in true_depth_sources
+        usable_true_depth_available = bool(
+            true_depth_available
+            and (
+                minimum_usable_true_depth_quality <= 0.0
+                or depth_quality >= minimum_usable_true_depth_quality
+            )
+        )
+        thin_true_depth_untrusted = bool(
+            true_depth_available and preferred_true_depth and not usable_true_depth_available
+        )
         asset_performance_relief = 0.0
         asset_performance_penalty = 0.0
         if asset_action == "boost" and asset_sample_count > 0:
@@ -1680,7 +1696,8 @@ class SignalDecisionEngine:
 
         true_depth_relief = 0.0
         synthetic_depth_penalty = 0.0
-        if true_depth_available and depth_quality >= preferred_true_depth_min_quality:
+        thin_true_depth_penalty = 0.0
+        if usable_true_depth_available and depth_quality >= preferred_true_depth_min_quality:
             true_depth_relief = min(
                 0.08,
                 float(execution_policy.get("true_depth_bonus", 0.03) or 0.03)
@@ -1694,9 +1711,16 @@ class SignalDecisionEngine:
                 float(execution_policy.get("synthetic_depth_penalty", 0.04) or 0.04)
                 + (0.02 if category_label == "crypto" and (continuation_family or continuation_entry) else 0.0),
             )
+        elif thin_true_depth_untrusted:
+            thin_true_depth_penalty = min(0.12, thin_true_depth_penalty_scale)
 
         adaptive_policy_relief = asset_performance_relief + book_performance_relief + true_depth_relief
-        adaptive_policy_penalty = asset_performance_penalty + book_performance_penalty + synthetic_depth_penalty
+        adaptive_policy_penalty = (
+            asset_performance_penalty
+            + book_performance_penalty
+            + synthetic_depth_penalty
+            + thin_true_depth_penalty
+        )
 
         risk_score = 0.0
         reasons: List[str] = []
@@ -1894,6 +1918,9 @@ class SignalDecisionEngine:
         elif synthetic_depth_penalty > 0.0:
             risk_score += synthetic_depth_penalty
             reasons.append("only synthetic depth is available for this continuation profile")
+        elif thin_true_depth_penalty > 0.0:
+            risk_score += thin_true_depth_penalty
+            reasons.append("available book depth is too shallow to trust for execution timing")
 
         if broker_agreement_state in {"divergent", "severe_divergence"} and broker_spread_regime in {"stressed", "extreme", "wide"}:
             hard_blocks.append("broker divergence and spread stress are both active")
@@ -1972,8 +1999,8 @@ class SignalDecisionEngine:
             or (signal.direction == "SELL" and structure_bias == "buy")
         ):
             hard_blocks.append("failed opposite reclaim is confirmed against the trade direction")
-        if stop_hunt_risk >= 0.48 and synthetic_depth_only:
-            hard_blocks.append("stop-hunt risk is elevated while only synthetic depth is available")
+        if stop_hunt_risk >= 0.48 and (synthetic_depth_only or thin_true_depth_untrusted):
+            hard_blocks.append("stop-hunt risk is elevated while usable execution depth is unavailable")
         if directional_extension >= 0.82 and supportive_structure_distance > 0 and supportive_structure_distance <= 0.0018:
             hard_blocks.append("late entry profile has poor structure distance")
         if cross_asset_confidence >= 0.20 and cross_asset_alignment <= -0.20 and setup_quality <= 0.35:
@@ -2040,7 +2067,10 @@ class SignalDecisionEngine:
             "depth_quality": round(depth_quality, 4),
             "depth_quality_tier": depth_quality_tier,
             "true_depth_available": true_depth_available,
+            "usable_true_depth_available": usable_true_depth_available,
             "preferred_true_depth": preferred_true_depth,
+            "minimum_usable_true_depth_quality": round(minimum_usable_true_depth_quality, 4),
+            "thin_true_depth_untrusted": thin_true_depth_untrusted,
             "asset_score": round(asset_score, 4),
             "asset_action": asset_action,
             "book_score": round(book_score, 4),
