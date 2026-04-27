@@ -37,6 +37,45 @@ connection_status: dict = {
     'ig': {'connected': False, 'last_tick': None, 'symbol_count': 0, 'assets': 'Gold, Silver, WTI, GER40, AUS200, JPN225'},
 }
 
+_LIVE_PRICE_JUMP_LIMITS = {
+    "forex": {"fast": 0.03, "slow": 0.08},
+    "crypto": {"fast": 0.18, "slow": 0.35},
+    "commodities": {"fast": 0.08, "slow": 0.18},
+    "indices": {"fast": 0.06, "slow": 0.15},
+    "unknown": {"fast": 0.10, "slow": 0.20},
+}
+
+
+def _live_price_category(asset: str) -> str:
+    try:
+        from core.assets import registry
+
+        return str(registry.category(asset) or "unknown").strip().lower()
+    except Exception:
+        return "unknown"
+
+
+def _live_price_jump_limit(asset: str, age_seconds: float) -> float:
+    category = _live_price_category(asset)
+    limits = _LIVE_PRICE_JUMP_LIMITS.get(category, _LIVE_PRICE_JUMP_LIMITS["unknown"])
+    age = float(age_seconds or 0.0)
+    if age > 1800.0:
+        return float("inf")
+    return float(limits["slow"] if age > 120.0 else limits["fast"])
+
+
+def _is_implausible_live_price(asset: str, price: float, now_ts: float) -> bool:
+    current = live_prices.get(asset)
+    if current is None:
+        return False
+    prev_price, prev_ts, _prev_source = current
+    prev_price = float(prev_price or 0.0)
+    if prev_price <= 0.0 or float(price or 0.0) <= 0.0:
+        return False
+    age_seconds = max(0.0, float(now_ts or 0.0) - float(prev_ts or 0.0))
+    change_fraction = abs(float(price) - prev_price) / prev_price
+    return change_fraction > _live_price_jump_limit(asset, age_seconds)
+
 
 def _dashboard_state_connection():
     global _dashboard_state_conn
@@ -324,6 +363,8 @@ def set_live_price(asset: str, price: float, source: str = "WebSocket") -> None:
     """Store latest real-time price from WebSocket. Called by callback."""
     with live_prices_lock:
         ts = datetime.now().timestamp()
+        if _is_implausible_live_price(asset, float(price), ts):
+            return
         live_prices[asset] = (price, ts, source)
         history = live_price_history.setdefault(asset, deque(maxlen=5000))
         history.append((float(price), float(ts), str(source)))

@@ -10,12 +10,20 @@ MAX_CONF = 0.90   # confidence at which lot size doubles
 REFERENCE_BALANCE = 10_000.0
 DEFAULT_MIN_LOT = 0.01
 DEFAULT_LOT_STEP = 0.01
+GOLD_STANDARD_LOTS = 0.10
+GOLD_STANDARD_ASSET = "XAU/USD"
+GOLD_REFERENCE_PRICE = 2300.0
+GOLD_REFERENCE_MOVE_PCT = 0.0100
 
-# ── Reference contract specs ─────────────────────────────────────────────────
-# contract  = coins/units per 1 standard lot
-# pip       = minimum price movement
+# ── Broker-style symbol specs ────────────────────────────────────────────────
+# contract  = coins/units/contracts per 1 standard lot
+# pip       = minimum price movement used by the local P&L model
 # pip_val   = USD value per pip per 1 standard lot
-# base_lots = user-defined gold-equivalent reference lot at $10,000 balance
+# base_lots = compatibility fallback when dynamic sizing cannot be derived
+#
+# These specs are separated from the gold-standard calibration.  The broker
+# contract math should reflect symbol mechanics, while the gold-standard layer
+# decides what neutral lot size "feels like" across assets.
 CONTRACT_SPECS = {
     # ── FOREX ─────────────────────────────────────────────────────────────────
     # Reference lots below come from the user's MT5 screenshots so these assets
@@ -34,51 +42,76 @@ CONTRACT_SPECS = {
     # ── COMMODITIES ───────────────────────────────────────────────────────────
     "XAU/USD": {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
     "GC=F":    {"contract": 100,   "pip": 0.01,  "pip_val":  1.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
-    # Silver should sit on the same commodity output band as gold.  The old
-    # 0.002 reference lot made live P&L collapse into cents on a $10k account.
-    # Keep silver aligned with the commodity default so its output scales like
-    # the rest of the book instead of being floor-snapped.
-    "XAG/USD": {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
-    "SI=F":    {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.10,   "min_lot": 0.01, "lot_step": 0.01},
-    "WTI":     {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},
-    "WTI/USD": {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},
-    "CL=F":    {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 10.00,  "min_lot": 0.01, "lot_step": 0.01},
+    "XAG/USD": {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.08,   "min_lot": 0.01, "lot_step": 0.01},
+    "SI=F":    {"contract": 5_000, "pip": 0.001, "pip_val":  5.00, "base_lots": 0.08,   "min_lot": 0.01, "lot_step": 0.01},
+    "WTI":     {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 0.22,   "min_lot": 0.01, "lot_step": 0.01},
+    "WTI/USD": {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 0.22,   "min_lot": 0.01, "lot_step": 0.01},
+    "CL=F":    {"contract": 1_000, "pip": 0.01,  "pip_val": 10.00, "base_lots": 0.22,   "min_lot": 0.01, "lot_step": 0.01},
 
     # ── INDICES ───────────────────────────────────────────────────────────────
-    "US500": {"contract":  50,  "pip": 0.25, "pip_val": 12.50, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "^GSPC": {"contract":  50,  "pip": 0.25, "pip_val": 12.50, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "US30":  {"contract":   5,  "pip": 1.0,  "pip_val":  5.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "^DJI":  {"contract":   5,  "pip": 1.0,  "pip_val":  5.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "US100": {"contract":  20,  "pip": 0.25, "pip_val":  5.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "^IXIC": {"contract":  20,  "pip": 0.25, "pip_val":  5.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "UK100": {"contract":  10,  "pip": 1.0,  "pip_val": 12.60, "base_lots": 7.60,  "min_lot": 0.01, "lot_step": 0.01},
-    "^FTSE": {"contract":  10,  "pip": 1.0,  "pip_val": 12.60, "base_lots": 7.60,  "min_lot": 0.01, "lot_step": 0.01},
-    # IG publishes Germany 40 and Australia 200 at 25 local-currency units per
-    # point and Japan 225 at $5 per point. Base-lot calibration is normalized
-    # to the existing UK100/US30 index sizing band instead of the generic index
-    # fallback so the new indices sit closer to the repo's established sizing.
-    "GER40": {"contract":  25,  "pip": 1.0,  "pip_val": 28.95, "base_lots": 3.25,  "min_lot": 0.01, "lot_step": 0.01},
-    "AUS200": {"contract": 25,  "pip": 1.0,  "pip_val": 17.91, "base_lots": 5.35,  "min_lot": 0.01, "lot_step": 0.01},
-    "JPN225": {"contract":  5,  "pip": 1.0,  "pip_val":  5.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
+    "US500": {"contract":   1,  "pip": 1.0,  "pip_val":  1.00, "base_lots": 10.20, "min_lot": 0.01, "lot_step": 0.01},
+    "^GSPC": {"contract":   1,  "pip": 1.0,  "pip_val":  1.00, "base_lots": 10.20, "min_lot": 0.01, "lot_step": 0.01},
+    "US30":  {"contract":   1,  "pip": 1.0,  "pip_val":  1.00, "base_lots": 1.44,  "min_lot": 0.01, "lot_step": 0.01},
+    "^DJI":  {"contract":   1,  "pip": 1.0,  "pip_val":  1.00, "base_lots": 1.44,  "min_lot": 0.01, "lot_step": 0.01},
+    "US100": {"contract":   1,  "pip": 1.0,  "pip_val":  1.00, "base_lots": 2.56,  "min_lot": 0.01, "lot_step": 0.01},
+    "^IXIC": {"contract":   1,  "pip": 1.0,  "pip_val":  1.00, "base_lots": 2.56,  "min_lot": 0.01, "lot_step": 0.01},
+    "UK100": {"contract":   1,  "pip": 1.0,  "pip_val":  1.26, "base_lots": 2.56,  "min_lot": 0.01, "lot_step": 0.01},
+    "^FTSE": {"contract":   1,  "pip": 1.0,  "pip_val":  1.26, "base_lots": 2.56,  "min_lot": 0.01, "lot_step": 0.01},
+    "GER40": {"contract":   1,  "pip": 1.0,  "pip_val":  1.15, "base_lots": 1.92,  "min_lot": 0.01, "lot_step": 0.01},
+    "AUS200": {"contract":  1,  "pip": 1.0,  "pip_val":  0.72, "base_lots": 4.53,  "min_lot": 0.01, "lot_step": 0.01},
+    "JPN225": {"contract": 100,  "pip": 1.0,  "pip_val":  0.65, "base_lots": 1.18,  "min_lot": 0.01, "lot_step": 0.01},
 
     # ── CRYPTO ────────────────────────────────────────────────────────────────
-    "BTC-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "ETH-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "BNB-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
+    "BTC-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 0.11,  "min_lot": 0.01, "lot_step": 0.01},
+    "ETH-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 5.00,  "min_lot": 0.01, "lot_step": 0.01},
+    "BNB-USD": {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 15.33, "min_lot": 0.01, "lot_step": 0.01},
     # Keep SOL in the same crypto output band as BTC/ETH/BNB/XRP so the
     # crypto block scales consistently off the same reference style.
-    "SOL-USD": {"contract": 100,     "pip": 0.01,   "pip_val":  1.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
+    "SOL-USD": {"contract": 100,     "pip": 0.01,   "pip_val":  1.00, "base_lots": 0.43,  "min_lot": 0.01, "lot_step": 0.01},
     # XRP needs a materially larger reference lot to produce output that is
     # comparable to gold-style position sizing on the same account scale.
-    "XRP-USD": {"contract": 1_000,   "pip": 0.0001, "pip_val":  0.10, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
+    "XRP-USD": {"contract": 1_000,   "pip": 0.0001, "pip_val":  0.10, "base_lots": 11.50, "min_lot": 0.01, "lot_step": 0.01},
 }
 
 # Category defaults for any unlisted asset
 _DEFAULTS = {
-    "forex":       {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 1.00, "min_lot": 0.01, "lot_step": 0.01},
+    "forex":       {"contract": 100_000, "pip": 0.0001, "pip_val": 10.00, "base_lots": 0.60, "min_lot": 0.01, "lot_step": 0.01},
     "commodities": {"contract": 100,     "pip": 0.01,   "pip_val":  1.00, "base_lots": 0.10, "min_lot": 0.01, "lot_step": 0.01},
-    "indices":     {"contract":  50,     "pip": 0.25,   "pip_val": 12.50, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
-    "crypto":      {"contract":   1,     "pip": 1.0,    "pip_val":  1.00, "base_lots": 10.00, "min_lot": 0.01, "lot_step": 0.01},
+    "indices":     {"contract":   1,     "pip": 1.0,    "pip_val":  1.00, "base_lots": 2.00, "min_lot": 0.01, "lot_step": 0.01},
+    "crypto":      {"contract":   1,     "pip": 0.01,   "pip_val":  0.01, "base_lots": 5.00, "min_lot": 0.01, "lot_step": 0.01},
+}
+
+REFERENCE_MOVE_PCT_DEFAULTS = {
+    "forex": 0.0035,
+    "commodities": 0.0100,
+    "indices": 0.0050,
+    "crypto": 0.0200,
+}
+
+REFERENCE_MOVE_PCT_OVERRIDES = {
+    "XAU/USD": 0.0100,
+    "GC=F": 0.0100,
+    "XAG/USD": 0.0180,
+    "SI=F": 0.0180,
+    "WTI": 0.0150,
+    "WTI/USD": 0.0150,
+    "CL=F": 0.0150,
+    "US30": 0.0040,
+    "^DJI": 0.0040,
+    "US100": 0.0050,
+    "^IXIC": 0.0050,
+    "US500": 0.0045,
+    "^GSPC": 0.0045,
+    "UK100": 0.0050,
+    "^FTSE": 0.0050,
+    "GER40": 0.0060,
+    "AUS200": 0.0060,
+    "JPN225": 0.0060,
+    "BTC-USD": 0.0300,
+    "ETH-USD": 0.0200,
+    "BNB-USD": 0.0250,
+    "SOL-USD": 0.0300,
+    "XRP-USD": 0.0400,
 }
 
 
@@ -108,6 +141,36 @@ def _round_down_to_step(value: float, step: float) -> float:
         return round(float(value or 0.0), 6)
     floored = math.floor((float(value or 0.0) + 1e-12) / step) * step
     return round(floored, 6)
+
+
+def _reference_move_pct(asset: str, category: str) -> float:
+    if asset in REFERENCE_MOVE_PCT_OVERRIDES:
+        return float(REFERENCE_MOVE_PCT_OVERRIDES[asset])
+    return float(REFERENCE_MOVE_PCT_DEFAULTS.get((category or "").lower(), 0.0100))
+
+
+def _gold_reference_cash_move_usd() -> float:
+    gold_spec = CONTRACT_SPECS[GOLD_STANDARD_ASSET]
+    gold_move = (float(GOLD_REFERENCE_PRICE) * float(GOLD_REFERENCE_MOVE_PCT)) / float(gold_spec["pip"])
+    return round(float(GOLD_STANDARD_LOTS) * gold_move * float(gold_spec["pip_val"]), 6)
+
+
+def _reference_lots_for_entry(asset: str, category: str, entry_price: float) -> float:
+    spec = PositionSizer.get_spec(asset, category)
+    if asset in {GOLD_STANDARD_ASSET, "GC=F"}:
+        return GOLD_STANDARD_LOTS
+    if entry_price <= 0:
+        return float(spec.get("base_lots", 0.0) or 0.0)
+    move_pct = _reference_move_pct(asset, category)
+    pip = float(spec.get("pip", 0.0) or 0.0)
+    pip_val = float(spec.get("pip_val", 0.0) or 0.0)
+    if pip <= 0 or pip_val <= 0 or move_pct <= 0:
+        return float(spec.get("base_lots", 0.0) or 0.0)
+    reference_price_move = float(entry_price) * float(move_pct)
+    cash_per_lot = (reference_price_move / pip) * pip_val
+    if cash_per_lot <= 0:
+        return float(spec.get("base_lots", 0.0) or 0.0)
+    return round(_gold_reference_cash_move_usd() / cash_per_lot, 6)
 
 
 def _confidence_lots(base_lots: float, confidence: float) -> float:
@@ -142,8 +205,9 @@ class PositionSizer:
 
     Gold standard:
       0.10 base lots on XAU/USD at $10,000 balance.
-      Other assets inherit that benchmark through their gold-equivalent
-      reference lots, then get scaled by balance, confidence, and stop risk.
+      Other assets inherit that benchmark through a broker-style reference
+      move model: "how many lots does this symbol need so its typical move
+      produces the same cash effect as gold 0.10?"
     """
 
     def __init__(self, account_balance: float):
@@ -163,6 +227,10 @@ class PositionSizer:
         if contract <= 0:
             return 0.0
         return round(float(size or 0.0) / contract, 6)
+
+    @classmethod
+    def reference_lots(cls, asset: str, category: str, entry_price: float) -> float:
+        return round(float(_reference_lots_for_entry(asset, category, entry_price) or 0.0), 6)
 
     def calculate(
         self,
@@ -190,7 +258,7 @@ class PositionSizer:
             return 0.0
 
         spec      = self.get_spec(asset, category)
-        base_lots = spec["base_lots"]
+        base_lots = _reference_lots_for_entry(asset, category, float(entry_price))
         contract  = spec["contract"]
         pip_val   = spec["pip_val"]
         pip       = spec["pip"]
@@ -249,7 +317,8 @@ class PositionSizer:
             tp_usd   = tp_pips * pip_val * effective_lots
             logger.debug(
                 f"[PositionSizer] {asset} bal=${self.account_balance:.2f} "
-                f"factor={balance_factor:.4f} riskx={risk_scale:.2f} conf={confidence:.3f} → "
+                f"factor={balance_factor:.4f} riskx={risk_scale:.2f} conf={confidence:.3f} "
+                f"ref_move={_reference_move_pct(asset, category):.4%} base={base_lots:.4f} → "
                 f"display={lots:.4f} eff={effective_lots:.4f} lots ({size:.4f} units) | "
                 f"SL={sl_pips:.0f} pips risk=${risk_usd:.2f} | TP≈${tp_usd:.2f}"
             )
