@@ -150,6 +150,15 @@ def _context_directional_confluence(
     }
 
 
+def _pattern_family_direction(pattern_family: Any) -> str:
+    token = str(pattern_family or "").strip().lower()
+    if token.startswith("trending_up_"):
+        return "BUY"
+    if token.startswith("trending_down_"):
+        return "SELL"
+    return ""
+
+
 def _dominant_context_snapshot(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     buy = _context_directional_confluence(context, "BUY")
     sell = _context_directional_confluence(context, "SELL")
@@ -187,6 +196,20 @@ def _dominant_context_snapshot(context: Optional[Dict[str, Any]]) -> Dict[str, A
         "whale_dominant": str(dominant.get("whale_dominant") or ""),
         "whale_ratio": round(_safe_float(dominant.get("whale_ratio"), 0.0), 4),
     }
+
+
+def _best_rejected_reason(records: List[Dict[str, Any]]) -> str:
+    if not records:
+        return ""
+    best = max(
+        records,
+        key=lambda item: (
+            _safe_float(item.get("confidence"), 0.0),
+            _safe_float(item.get("score"), 0.0),
+            1 if str(item.get("reason") or "").strip() else 0,
+        ),
+    )
+    return str(best.get("reason") or "").strip()
 
 
 def _context_inactivity_profile(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -773,10 +796,12 @@ def _elite_entry_gate_reason(*, playbook: str, structure: Dict[str, Any], candid
     first_pullback_ready = bool(structure.get("first_pullback_ready"))
     failed_opposite_move_confirmed = bool(structure.get("failed_opposite_move_confirmed"))
     reclaim_confirmed = bool((candidate or {}).get("reclaim_confirmed"))
+    retest_confirmed = bool((candidate or {}).get("retest_confirmed"))
+    pullback_confirmed = bool((candidate or {}).get("pullback_confirmed"))
 
-    if playbook == "breakout_retest" and not breakout_retest_ready:
+    if playbook == "breakout_retest" and not (breakout_retest_ready or retest_confirmed):
         return "retest_missing:breakout_retest"
-    if playbook == "trend_pullback" and not first_pullback_ready:
+    if playbook == "trend_pullback" and not (first_pullback_ready or pullback_confirmed):
         return "pullback_missing:trend_pullback"
     if playbook == "failed_break_reclaim" and not (failed_opposite_move_confirmed or reclaim_confirmed):
         return "reclaim_unconfirmed:failed_break_reclaim"
@@ -914,6 +939,180 @@ class _AssetPlaybookPlan:
     min_setup_quality: float
     min_trend_agreement: int
     reversal_min_opposing_trend_agreement: int
+
+
+@dataclass(frozen=True)
+class _SeedState:
+    direction: str
+    direction_source: str
+    structure_bias: str
+    pattern_family: str
+    pattern_family_direction: str
+    alignment_score: float
+    setup_quality: float
+    pullback_score: float
+    breakout_score: float
+    extension_score: float
+    target_efficiency_score: float
+    elite_pattern_rank: float
+    first_pullback_ready: bool
+    breakout_retest_ready: bool
+    failed_opposite_move_confirmed: bool
+    entry_confirmation_ready: bool
+    fast_entry_confirmation_ready: bool
+    context_confluence: float
+    cross_alignment: float
+    cross_confidence: float
+    micro_score: float
+    whale_context_support: float
+    support_components: int
+    conflict_components: int
+    context_pressure_ready: bool
+    context_driven_direction: bool
+    strong_generic_pattern_ready: bool
+    pattern_driven_direction: bool
+    neutral_pattern_pullback_ready: bool
+
+
+def _build_seed_state(
+    *,
+    structure: Dict[str, Any],
+    plan: _AssetPlaybookPlan,
+    context: Optional[Dict[str, Any]] = None,
+    allow_breakout_direction: bool = False,
+) -> _SeedState:
+    structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
+    pattern_family = str(structure.get("pattern_family", "unknown") or "unknown").lower()
+    pattern_family_direction = _pattern_family_direction(pattern_family)
+    alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
+    setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
+    pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
+    breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
+    extension_score = float(structure.get("extension_score", 0.0) or 0.0)
+    target_efficiency_score = float(structure.get("target_efficiency_score", 0.0) or 0.0)
+    elite_pattern_rank = float(structure.get("elite_pattern_rank", 0.0) or 0.0)
+    first_pullback_ready = bool(structure.get("first_pullback_ready"))
+    breakout_retest_ready = bool(structure.get("breakout_retest_ready"))
+    failed_opposite_move_confirmed = bool(structure.get("failed_opposite_move_confirmed"))
+    entry_confirmation_ready = bool(structure.get("entry_confirmation_ready"))
+    fast_entry_confirmation_ready = bool(structure.get("fast_entry_confirmation_ready"))
+
+    dominant_context = _dominant_context_snapshot(context)
+    context_direction = str(dominant_context.get("direction") or "").upper()
+    context_confluence = _safe_float(dominant_context.get("context_confluence"), 0.0)
+    support_components = int(dominant_context.get("support_components", 0) or 0)
+    conflict_components = int(dominant_context.get("conflict_components", 0) or 0)
+    cross_alignment = _safe_float(dominant_context.get("cross_alignment"), 0.0)
+    cross_confidence = _safe_float(dominant_context.get("cross_confidence"), 0.0)
+    micro_score = _safe_float(dominant_context.get("micro_score"), 0.0)
+    whale_context_support = _safe_float(dominant_context.get("whale_context_support"), 0.0)
+
+    context_pressure_ready = bool(
+        context_direction in {"BUY", "SELL"}
+        and context_confluence >= 0.24
+        and support_components >= 1
+        and conflict_components == 0
+        and (
+            micro_score >= 0.22
+            or cross_alignment >= 0.22
+            or whale_context_support >= 0.28
+        )
+    )
+    context_driven_direction = bool(structure_bias not in {"buy", "sell"} and context_pressure_ready)
+
+    direction = ""
+    direction_source = ""
+    if structure_bias in {"buy", "sell"}:
+        direction = "BUY" if structure_bias == "buy" else "SELL"
+        direction_source = "structure"
+    elif context_driven_direction:
+        direction = context_direction
+        direction_source = "context"
+    elif pattern_family_direction in {"BUY", "SELL"}:
+        direction = pattern_family_direction
+        direction_source = "pattern"
+    elif allow_breakout_direction and breakout_score >= 0.18:
+        direction = "BUY"
+        direction_source = "breakout"
+    elif allow_breakout_direction and breakout_score <= -0.18:
+        direction = "SELL"
+        direction_source = "breakout"
+
+    strong_generic_pattern_ready = bool(
+        direction in {"BUY", "SELL"}
+        and pattern_family.endswith("generic")
+        and pattern_family_direction == direction
+        and alignment_score >= max(0.62, float(plan.min_alignment_score))
+        and setup_quality >= max(0.58, float(plan.min_setup_quality))
+        and extension_score <= 1.45
+        and target_efficiency_score >= 0.42
+    )
+    pattern_driven_direction = bool(
+        structure_bias not in {"buy", "sell"}
+        and direction in {"BUY", "SELL"}
+        and (
+            first_pullback_ready
+            or breakout_retest_ready
+            or failed_opposite_move_confirmed
+            or entry_confirmation_ready
+            or fast_entry_confirmation_ready
+            or elite_pattern_rank >= 0.45
+            or abs(breakout_score) >= 0.18
+            or abs(pullback_score) >= 0.18
+            or strong_generic_pattern_ready
+        )
+    )
+    neutral_pattern_pullback_ready = bool(
+        structure_bias not in {"buy", "sell"}
+        and direction in {"BUY", "SELL"}
+        and (
+            first_pullback_ready
+            or entry_confirmation_ready
+            or fast_entry_confirmation_ready
+            or pattern_family.endswith("first_pullback")
+            or (
+                pattern_family.endswith("generic")
+                and pattern_family_direction == direction
+                and alignment_score >= max(0.58, float(plan.min_alignment_score) - 0.04)
+                and setup_quality >= max(0.54, float(plan.min_setup_quality) - 0.04)
+                and target_efficiency_score >= 0.36
+                and extension_score <= 1.60
+            )
+            or elite_pattern_rank >= 0.34
+        )
+    )
+
+    return _SeedState(
+        direction=direction,
+        direction_source=direction_source,
+        structure_bias=structure_bias,
+        pattern_family=pattern_family,
+        pattern_family_direction=pattern_family_direction,
+        alignment_score=alignment_score,
+        setup_quality=setup_quality,
+        pullback_score=pullback_score,
+        breakout_score=breakout_score,
+        extension_score=extension_score,
+        target_efficiency_score=target_efficiency_score,
+        elite_pattern_rank=elite_pattern_rank,
+        first_pullback_ready=first_pullback_ready,
+        breakout_retest_ready=breakout_retest_ready,
+        failed_opposite_move_confirmed=failed_opposite_move_confirmed,
+        entry_confirmation_ready=entry_confirmation_ready,
+        fast_entry_confirmation_ready=fast_entry_confirmation_ready,
+        context_confluence=context_confluence,
+        cross_alignment=cross_alignment,
+        cross_confidence=cross_confidence,
+        micro_score=micro_score,
+        whale_context_support=whale_context_support,
+        support_components=support_components,
+        conflict_components=conflict_components,
+        context_pressure_ready=context_pressure_ready,
+        context_driven_direction=context_driven_direction,
+        strong_generic_pattern_ready=strong_generic_pattern_ready,
+        pattern_driven_direction=pattern_driven_direction,
+        neutral_pattern_pullback_ready=neutral_pattern_pullback_ready,
+    )
 
 
 _CATEGORY_PROFILES: Dict[str, _PlaybookProfile] = {
@@ -1649,26 +1848,11 @@ class PlaybookService:
         inactivity_profile: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
-        context_direction = _dominant_context_snapshot(context)
-        context_pressure_direction = str(context_direction.get("direction") or "").upper()
-        context_pressure_ready = bool(
-            context_pressure_direction in {"BUY", "SELL"}
-            and _safe_float(context_direction.get("context_confluence"), 0.0) >= 0.24
-            and int(context_direction.get("support_components", 0) or 0) >= 1
-            and int(context_direction.get("conflict_components", 0) or 0) == 0
-            and (
-                _safe_float(context_direction.get("micro_score"), 0.0) >= 0.22
-                or _safe_float(context_direction.get("cross_alignment"), 0.0) >= 0.22
-                or _safe_float(context_direction.get("whale_context_support"), 0.0) >= 0.28
-            )
-        )
-        context_driven_direction = bool(structure_bias not in {"buy", "sell"} and context_pressure_ready)
-        if structure_bias in {"buy", "sell"}:
-            direction = "BUY" if structure_bias == "buy" else "SELL"
-        elif context_driven_direction:
-            direction = context_pressure_direction
-        else:
+        seed_state = _build_seed_state(structure=structure, plan=plan, context=context)
+        structure_bias = seed_state.structure_bias
+        direction = seed_state.direction
+        context_driven_direction = seed_state.context_driven_direction
+        if not direction:
             return None
 
         alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
@@ -1691,11 +1875,15 @@ class PlaybookService:
         fast_entry_confirmation_ready = bool(structure.get("fast_entry_confirmation_ready"))
         fast_entry_confirmation_bars_required = int(structure.get("fast_entry_confirmation_bars_required", 0) or 0)
         fast_entry_confirmation_count = int(structure.get("fast_entry_confirmation_count", 0) or 0)
-        pattern_family = str(structure.get("pattern_family", "unknown") or "unknown").lower()
+        pattern_family = seed_state.pattern_family
         liquidity_sweep_buy = bool(structure.get("liquidity_sweep_buy"))
         liquidity_sweep_sell = bool(structure.get("liquidity_sweep_sell"))
         upside_exhaustion_score = float(structure.get("upside_exhaustion_score", 0.0) or 0.0)
         downside_exhaustion_score = float(structure.get("downside_exhaustion_score", 0.0) or 0.0)
+        strong_generic_pattern_ready = seed_state.strong_generic_pattern_ready
+        pattern_driven_direction = seed_state.pattern_driven_direction
+        if structure_bias not in {"buy", "sell"} and not context_driven_direction and not pattern_driven_direction:
+            return None
         inactivity_profile = inactivity_profile if isinstance(inactivity_profile, dict) else {}
         inactivity_relief_strength = _safe_float(inactivity_profile.get("relief_strength"), 0.0)
         inactivity_flat_book = bool(inactivity_profile.get("flat_book")) or bool(inactivity_profile.get("equity_relief"))
@@ -1725,6 +1913,16 @@ class PlaybookService:
                 + max(0.0, abs(cross_context_support)) * 0.18
                 + max(0.0, abs(whale_context_support)) * 0.10,
             )
+        if pattern_driven_direction:
+            directional_impulse = max(0.0, abs(directional_breakout), abs(directional_pullback))
+            effective_alignment_score = max(
+                effective_alignment_score,
+                0.22 + _clip(elite_pattern_rank) * 0.34 + directional_impulse * 0.20,
+            )
+            effective_setup_quality = max(
+                effective_setup_quality,
+                0.22 + _clip(elite_pattern_rank) * 0.28 + directional_impulse * 0.22,
+            )
         effective_candle_quality_score = candle_quality_score
         effective_session_quality_score = session_quality_score
         if inactivity_seed_relief:
@@ -1751,6 +1949,28 @@ class PlaybookService:
                 effective_session_quality_score = min(
                     1.0,
                     0.24 + effective_alignment_score * 0.16 + max(0.0, confluence_score) * 0.22,
+                )
+        pattern_family_ready = bool(
+            pattern_family.startswith("trending_")
+            and (
+                entry_confirmation_ready
+                or fast_entry_confirmation_ready
+                or first_pullback_ready
+                or breakout_retest_ready
+                or elite_pattern_rank >= 0.28
+                or strong_generic_pattern_ready
+            )
+        )
+        if pattern_family_ready:
+            if effective_candle_quality_score <= 0.0:
+                effective_candle_quality_score = min(
+                    1.0,
+                    0.24 + effective_setup_quality * 0.20 + _clip(elite_pattern_rank) * 0.20,
+                )
+            if effective_session_quality_score <= 0.0 and str(session or "").lower() != "off":
+                effective_session_quality_score = min(
+                    1.0,
+                    0.26 + effective_alignment_score * 0.18 + _clip(target_efficiency_score) * 0.18,
                 )
         near_confirmation = entry_confirmation_count >= max(0, entry_confirmation_bars_required - 1)
         fast_confirmation_ready, fast_confirmation_count, fast_confirmation_required, _ = _effective_confirmation_gate(
@@ -1808,6 +2028,7 @@ class PlaybookService:
                 max(directional_breakout, directional_pullback) >= 0.08
                 or structural_generic_rank_ready
                 or premium_generic_trend_ready
+                or strong_generic_pattern_ready
             )
         )
         directional_liquidity_sweep_ready = bool(
@@ -1914,6 +2135,14 @@ class PlaybookService:
             extension_ceiling = max(extension_ceiling, 1.75 if confluence_score >= 0.30 else 1.50)
             alignment_floor = min(alignment_floor, 0.36)
             setup_floor = min(setup_floor, 0.30)
+        if pattern_family_ready:
+            target_efficiency_floor = min(target_efficiency_floor, 0.0)
+            extension_ceiling = max(extension_ceiling, 1.70)
+            alignment_floor = min(alignment_floor, 0.44)
+            setup_floor = min(setup_floor, 0.36)
+        if pattern_driven_direction:
+            alignment_floor = min(alignment_floor, 0.30)
+            setup_floor = min(setup_floor, 0.24)
 
         if effective_alignment_score < alignment_floor:
             return None
@@ -1931,6 +2160,9 @@ class PlaybookService:
             candle_floor = max(0.18, candle_floor - (0.04 if strong_context_continuation_ready else 0.02))
             session_floor = max(0.20, session_floor - (0.06 if strong_context_continuation_ready else 0.04))
         if context_driven_direction:
+            candle_floor = max(0.18, candle_floor - 0.08)
+            session_floor = max(0.20, session_floor - 0.08)
+        if pattern_family_ready:
             candle_floor = max(0.18, candle_floor - 0.08)
             session_floor = max(0.20, session_floor - 0.08)
         if not premium_generic_trend_ready and (
@@ -2003,6 +2235,14 @@ class PlaybookService:
             playbook = "failed_break_reclaim"
             entry_style = "failed_move_reclaim"
             readiness_note = "failed_opposite_move_confirmed"
+        elif first_pullback_ready and pattern_driven_direction and "trend_pullback" in plan.allowed_playbooks:
+            playbook = "trend_pullback"
+            entry_style = "elite_pattern_pullback"
+            readiness_note = "pattern_pullback_ready"
+        elif breakout_retest_ready and pattern_driven_direction and "breakout_retest" in plan.allowed_playbooks:
+            playbook = "breakout_retest"
+            entry_style = "elite_pattern_retest"
+            readiness_note = "pattern_retest_ready"
         elif breakout_retest_ready and directional_breakout >= 0.18 and "breakout_retest" in plan.allowed_playbooks:
             playbook = "breakout_retest"
             entry_style = "elite_retest_ready"
@@ -2091,6 +2331,8 @@ class PlaybookService:
                 structural_ready_bonus += 0.03 + inactivity_relief_strength * 0.03
         elif entry_style == "elite_context_pressure":
             structural_ready_bonus += 0.08
+        elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
+            structural_ready_bonus += 0.10
         if near_confirmation:
             structural_ready_bonus += 0.05
         score = _clip(
@@ -2127,6 +2369,8 @@ class PlaybookService:
             score_floor = 0.42 if strong_context_continuation_ready else 0.46
         elif entry_style == "elite_context_pressure":
             score_floor = 0.40 if confluence_score >= 0.32 else 0.44
+        elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
+            score_floor = 0.40 if elite_pattern_rank >= 0.45 else 0.44
         if score < score_floor:
             return None
 
@@ -2177,7 +2421,9 @@ class PlaybookService:
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         profile = self._profile(category)
+        plan = self._asset_plan(asset, category)
         preferred_interval = self.preferred_interval(category, asset)
+        seed_state = _build_seed_state(structure=structure, plan=plan, context=context)
         lookback = min(profile.breakout_lookback, max(8, len(frame) - 1))
         recent = frame.tail(lookback + 1)
         prior = recent.iloc[:-1]
@@ -2203,9 +2449,15 @@ class PlaybookService:
             return None
 
         direction = "BUY" if breakout_up >= breakout_down else "SELL"
-        structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
-        pattern_family = str(structure.get("pattern_family", "unknown") or "unknown").lower()
-        if structure_bias == "buy" and breakout_up > 0.0 and pattern_family.startswith("trending_up_"):
+        structure_bias = seed_state.structure_bias
+        pattern_family = seed_state.pattern_family
+        if seed_state.direction == "BUY" and breakout_up > 0.0:
+            if breakout_down <= breakout_up * 1.45:
+                direction = "BUY"
+        elif seed_state.direction == "SELL" and breakout_down > 0.0:
+            if breakout_up <= breakout_down * 1.45:
+                direction = "SELL"
+        elif structure_bias == "buy" and breakout_up > 0.0 and pattern_family.startswith("trending_up_"):
             if breakout_down <= breakout_up * 1.45:
                 direction = "BUY"
         elif structure_bias == "sell" and breakout_down > 0.0 and pattern_family.startswith("trending_down_"):
@@ -2218,6 +2470,29 @@ class PlaybookService:
         setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
         volatility_state = str(structure.get("volatility_state", "unknown") or "unknown").lower()
         regime = str(structure.get("regime", "unknown") or "unknown").lower()
+        effective_alignment_score = max(
+            alignment_score,
+            0.22 + _clip(seed_state.elite_pattern_rank) * 0.24 if seed_state.pattern_driven_direction and seed_state.direction == direction else alignment_score,
+        )
+        effective_setup_quality = max(
+            setup_quality,
+            0.22
+            + _clip(seed_state.elite_pattern_rank) * 0.20
+            + max(0.0, seed_state.context_confluence) * 0.10
+            if (seed_state.pattern_driven_direction or seed_state.context_driven_direction) and seed_state.direction == direction
+            else setup_quality,
+        )
+        entry_style = "breakout_close"
+        structural_bonus = 0.0
+        if seed_state.pattern_driven_direction and seed_state.direction == direction:
+            entry_style = "pattern_breakout_followthrough"
+            structural_bonus += 0.08
+        elif seed_state.context_driven_direction and seed_state.direction == direction:
+            entry_style = "context_breakout_followthrough"
+            structural_bonus += 0.06
+        elif seed_state.strong_generic_pattern_ready and seed_state.direction == direction:
+            entry_style = "generic_breakout_followthrough"
+            structural_bonus += 0.05
 
         direction_breakout = breakout_score if direction == "BUY" else -breakout_score
         breakout_norm = _clip(breakout_dist / max(atr * 0.75, range_span * 0.18, 1e-9))
@@ -2233,13 +2508,19 @@ class PlaybookService:
             breakout_norm * 0.34
             + body_norm * 0.20
             + wick_confirm * 0.10
-            + _clip(setup_quality) * 0.16
-            + _clip(alignment_score) * 0.10
+            + _clip(effective_setup_quality) * 0.16
+            + _clip(effective_alignment_score) * 0.10
             + structure_component * 0.10
+            + structural_bonus
         )
         confidence = _clip(0.42 + score * 0.40 + regime_component * 0.18, 0.0, 0.95)
 
-        if score < profile.breakout_min_score:
+        score_floor = profile.breakout_min_score
+        if entry_style == "pattern_breakout_followthrough":
+            score_floor = max(0.48, score_floor - 0.08)
+        elif entry_style in {"context_breakout_followthrough", "generic_breakout_followthrough"}:
+            score_floor = max(0.50, score_floor - 0.06)
+        if score < score_floor:
             return None
 
         notes = [
@@ -2253,9 +2534,10 @@ class PlaybookService:
             "direction": direction,
             "score": round(score, 4),
             "confidence": round(confidence, 4),
-            "entry_style": "breakout_close",
+            "entry_style": entry_style,
             "session": session,
             "preferred_interval": preferred_interval,
+            "breakout_confirmed": True,
             "management": self._management_template(profile, "breakout_continuation", asset=asset, category=category),
             "notes": notes,
         }
@@ -2271,7 +2553,9 @@ class PlaybookService:
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         profile = self._profile(category)
+        plan = self._asset_plan(asset, category)
         preferred_interval = self.preferred_interval(category, asset)
+        seed_state = _build_seed_state(structure=structure, plan=plan, context=context)
         if len(frame) < profile.breakout_lookback + profile.retest_window + 2:
             return None
 
@@ -2300,10 +2584,21 @@ class PlaybookService:
         setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
         breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
         regime = str(structure.get("regime", "unknown") or "unknown").lower()
+        preferred_direction = seed_state.direction
+        allow_buy_candidate = preferred_direction in {"", "BUY"}
+        allow_sell_candidate = preferred_direction in {"", "SELL"}
 
-        if buy_break_seen and latest_low <= range_high + tolerance and latest_close >= range_high:
+        if allow_buy_candidate and buy_break_seen and latest_low <= range_high + tolerance and latest_close >= range_high:
             hold_strength = _clip((latest_close - range_high + tolerance) / max(tolerance * 2.0, 1e-9))
             body_bias = _clip((latest_close - latest_open + tolerance) / max(tolerance * 2.5, 1e-9))
+            structural_bonus = 0.0
+            entry_style = "retest_hold"
+            if preferred_direction == "BUY" and seed_state.pattern_driven_direction:
+                entry_style = "pattern_retest_hold"
+                structural_bonus += 0.08
+            elif preferred_direction == "BUY" and seed_state.context_driven_direction:
+                entry_style = "context_retest_hold"
+                structural_bonus += 0.06
             score = (
                 hold_strength * 0.34
                 + body_bias * 0.16
@@ -2311,18 +2606,25 @@ class PlaybookService:
                 + _clip(setup_quality) * 0.15
                 + _clip(breakout_score, 0.0, 1.0) * 0.10
                 + (0.10 if regime == "trending_up" else 0.04)
+                + structural_bonus
             )
             confidence = _clip(0.43 + score * 0.42, 0.0, 0.94)
-            if score >= profile.retest_min_score:
+            score_floor = profile.retest_min_score
+            if entry_style == "pattern_retest_hold":
+                score_floor = max(0.50, score_floor - 0.08)
+            elif entry_style == "context_retest_hold":
+                score_floor = max(0.52, score_floor - 0.06)
+            if score >= score_floor:
                 candidates.append(
                     {
                         "playbook": "breakout_retest",
                         "direction": "BUY",
                         "score": round(score, 4),
                         "confidence": round(confidence, 4),
-                        "entry_style": "retest_hold",
+                        "entry_style": entry_style,
                         "session": session,
                         "preferred_interval": preferred_interval,
+                        "retest_confirmed": True,
                         "management": self._management_template(profile, "breakout_retest", asset=asset, category=category),
                         "notes": [
                             "retest_hold",
@@ -2333,9 +2635,17 @@ class PlaybookService:
                     }
                 )
 
-        if sell_break_seen and latest_high >= range_low - tolerance and latest_close <= range_low:
+        if allow_sell_candidate and sell_break_seen and latest_high >= range_low - tolerance and latest_close <= range_low:
             hold_strength = _clip((range_low - latest_close + tolerance) / max(tolerance * 2.0, 1e-9))
             body_bias = _clip((latest_open - latest_close + tolerance) / max(tolerance * 2.5, 1e-9))
+            structural_bonus = 0.0
+            entry_style = "retest_hold"
+            if preferred_direction == "SELL" and seed_state.pattern_driven_direction:
+                entry_style = "pattern_retest_hold"
+                structural_bonus += 0.08
+            elif preferred_direction == "SELL" and seed_state.context_driven_direction:
+                entry_style = "context_retest_hold"
+                structural_bonus += 0.06
             score = (
                 hold_strength * 0.34
                 + body_bias * 0.16
@@ -2343,18 +2653,25 @@ class PlaybookService:
                 + _clip(setup_quality) * 0.15
                 + _clip(-breakout_score, 0.0, 1.0) * 0.10
                 + (0.10 if regime == "trending_down" else 0.04)
+                + structural_bonus
             )
             confidence = _clip(0.43 + score * 0.42, 0.0, 0.94)
-            if score >= profile.retest_min_score:
+            score_floor = profile.retest_min_score
+            if entry_style == "pattern_retest_hold":
+                score_floor = max(0.50, score_floor - 0.08)
+            elif entry_style == "context_retest_hold":
+                score_floor = max(0.52, score_floor - 0.06)
+            if score >= score_floor:
                 candidates.append(
                     {
                         "playbook": "breakout_retest",
                         "direction": "SELL",
                         "score": round(score, 4),
                         "confidence": round(confidence, 4),
-                        "entry_style": "retest_hold",
+                        "entry_style": entry_style,
                         "session": session,
                         "preferred_interval": preferred_interval,
+                        "retest_confirmed": True,
                         "management": self._management_template(profile, "breakout_retest", asset=asset, category=category),
                         "notes": [
                             "retest_hold",
@@ -2383,49 +2700,68 @@ class PlaybookService:
         profile = self._profile(category)
         plan = self._asset_plan(asset, category)
         preferred_interval = self.preferred_interval(category, asset)
-        structure_bias = str(structure.get("structure_bias", "neutral") or "neutral").lower()
-        if structure_bias not in {"buy", "sell"}:
+        seed_state = _build_seed_state(
+            structure=structure,
+            plan=plan,
+            context=context,
+            allow_breakout_direction=True,
+        )
+        structure_bias = seed_state.structure_bias
+        pattern_family = seed_state.pattern_family
+        direction = seed_state.direction
+        if not direction:
             return None
 
-        direction = "BUY" if structure_bias == "buy" else "SELL"
-        pullback_score = float(structure.get("pullback_score", 0.0) or 0.0)
-        alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
-        setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
+        pullback_score = seed_state.pullback_score
+        breakout_score = seed_state.breakout_score
+        alignment_score = seed_state.alignment_score
+        setup_quality = seed_state.setup_quality
         regime = str(structure.get("regime", "unknown") or "unknown").lower()
         trend_15m = str(structure.get("trend_15m", "unknown") or "unknown").lower()
         trend_1h = str(structure.get("trend_1h", "unknown") or "unknown").lower()
-        breakout_score = float(structure.get("breakout_score", 0.0) or 0.0)
         upside_exhaustion_score = float(structure.get("upside_exhaustion_score", 0.0) or 0.0)
         downside_exhaustion_score = float(structure.get("downside_exhaustion_score", 0.0) or 0.0)
+        first_pullback_ready = seed_state.first_pullback_ready
+        entry_confirmation_ready = seed_state.entry_confirmation_ready
+        fast_entry_confirmation_ready = seed_state.fast_entry_confirmation_ready
+        elite_pattern_rank = seed_state.elite_pattern_rank
+        target_efficiency_score = seed_state.target_efficiency_score
+        extension_score = seed_state.extension_score
         distance_key = "distance_to_support" if direction == "BUY" else "distance_to_resistance"
         distance = float(structure.get(distance_key, 0.02) or 0.02)
         opposing_distance_key = "distance_to_resistance" if direction == "BUY" else "distance_to_support"
         opposing_distance = float(structure.get(opposing_distance_key, 0.02) or 0.02)
         directional_pullback = pullback_score if direction == "BUY" else -pullback_score
         direction_sign = 1 if direction == "BUY" else -1
+        neutral_pattern_pullback_ready = seed_state.neutral_pattern_pullback_ready
+        if structure_bias not in {"buy", "sell"} and not neutral_pattern_pullback_ready:
+            return None
         aligned_trends = sum(
             1
             for state in (trend_15m, trend_1h)
             if self._trend_sign(state) == direction_sign
         )
         required_trends = max(1, int(plan.min_trend_agreement or 0))
+        if neutral_pattern_pullback_ready:
+            required_trends = min(required_trends, 1)
 
-        if directional_pullback <= 0.12:
+        pullback_floor = 0.08 if neutral_pattern_pullback_ready else 0.12
+        if directional_pullback <= pullback_floor:
             return None
 
         if direction == "BUY":
             if aligned_trends < required_trends:
                 return None
-            if breakout_score <= -0.10:
+            if breakout_score <= (-0.18 if neutral_pattern_pullback_ready else -0.10):
                 return None
-            if upside_exhaustion_score >= 0.54:
+            if upside_exhaustion_score >= (0.62 if neutral_pattern_pullback_ready else 0.54):
                 return None
         else:
             if aligned_trends < required_trends:
                 return None
-            if breakout_score >= 0.10:
+            if breakout_score >= (0.18 if neutral_pattern_pullback_ready else 0.10):
                 return None
-            if downside_exhaustion_score >= 0.54:
+            if downside_exhaustion_score >= (0.62 if neutral_pattern_pullback_ready else 0.54):
                 return None
 
         close = frame["close"].astype(float)
@@ -2439,17 +2775,43 @@ class PlaybookService:
             (direction == "BUY" and regime == "trending_up")
             or (direction == "SELL" and regime == "trending_down")
         ) else 0.52
+        context_confluence = _context_directional_confluence(context, direction)
+        confluence_score = _safe_float(context_confluence.get("score"), 0.0)
+        support_components = int(context_confluence.get("support_components", 0) or 0)
+        conflict_components = int(context_confluence.get("conflict_components", 0) or 0)
+        effective_alignment_score = alignment_score
+        effective_setup_quality = setup_quality
+        if neutral_pattern_pullback_ready:
+            effective_alignment_score = max(
+                effective_alignment_score,
+                0.24 + _clip(elite_pattern_rank) * 0.28 + max(0.0, directional_pullback) * 0.18,
+            )
+            effective_setup_quality = max(
+                effective_setup_quality,
+                0.24
+                + _clip(elite_pattern_rank) * 0.24
+                + max(0.0, directional_pullback) * 0.18
+                + (0.08 if first_pullback_ready else 0.0)
+                + (0.06 if entry_confirmation_ready or fast_entry_confirmation_ready else 0.0),
+            )
 
         score = (
             _clip(directional_pullback) * 0.30
-            + _clip(setup_quality) * 0.20
-            + _clip(alignment_score) * 0.18
+            + _clip(effective_setup_quality) * 0.20
+            + _clip(effective_alignment_score) * 0.18
             + level_proximity * 0.18
             + trend_confirm * 0.14
+            + (_clip(elite_pattern_rank) * 0.10 if neutral_pattern_pullback_ready else 0.0)
+            + (0.06 if first_pullback_ready else 0.0)
+            + (0.05 if entry_confirmation_ready or fast_entry_confirmation_ready else 0.0)
+            + (max(0.0, confluence_score) * 0.08 if neutral_pattern_pullback_ready else 0.0)
         )
         confidence = _clip(0.40 + score * 0.40 + regime_component * 0.18, 0.0, 0.92)
 
-        if score < profile.pullback_min_score:
+        score_floor = profile.pullback_min_score
+        if neutral_pattern_pullback_ready:
+            score_floor = max(0.44, score_floor - 0.12)
+        if score < score_floor:
             return None
 
         notes = [
@@ -2458,6 +2820,15 @@ class PlaybookService:
             f"pullback={directional_pullback:.2f}",
             f"level_dist={distance:.4f}",
         ]
+        if neutral_pattern_pullback_ready:
+            notes.extend(
+                [
+                    "neutral_pattern_pullback_relief",
+                    f"ctx={confluence_score:+.2f}",
+                    f"support={support_components}",
+                    f"conflict={conflict_components}",
+                ]
+            )
         return {
             "playbook": "trend_pullback",
             "direction": direction,
@@ -2466,6 +2837,7 @@ class PlaybookService:
             "entry_style": "pullback_hold",
             "session": session,
             "preferred_interval": preferred_interval,
+            "pullback_confirmed": True,
             "management": self._management_template(profile, "trend_pullback", asset=asset, category=category),
             "notes": notes,
         }
@@ -3492,6 +3864,7 @@ class PlaybookService:
         candidates: List[Dict[str, Any]] = []
         rejected_reasons: List[str] = []
         rejected_details: List[str] = []
+        rejected_records: List[Dict[str, Any]] = []
         for builder in (
             self._news_impulse,
             self._opening_drive,
@@ -3528,6 +3901,14 @@ class PlaybookService:
                 elif reason:
                     rejected_reasons.append(reason)
                     detail = candidate.get("qualification") or {}
+                    rejected_records.append(
+                        {
+                            "reason": reason,
+                            "score": _safe_float(detail.get("score", candidate.get("score", 0.0)), 0.0),
+                            "confidence": _safe_float(detail.get("confidence", candidate.get("confidence", 0.0)), 0.0),
+                            "playbook": detail.get("playbook", candidate.get("playbook", "unknown")),
+                        }
+                    )
                     rejected_details.append(
                         (
                             f"{detail.get('playbook', candidate.get('playbook', 'unknown'))}:{detail.get('direction', candidate.get('direction', ''))}"
@@ -3571,6 +3952,14 @@ class PlaybookService:
                 elif reason:
                     rejected_reasons.append(reason)
                     detail = fallback.get("qualification") or {}
+                    rejected_records.append(
+                        {
+                            "reason": reason,
+                            "score": _safe_float(detail.get("score", fallback.get("score", 0.0)), 0.0),
+                            "confidence": _safe_float(detail.get("confidence", fallback.get("confidence", 0.0)), 0.0),
+                            "playbook": detail.get("playbook", fallback.get("playbook", "unknown")),
+                        }
+                    )
                     rejected_details.append(
                         (
                             f"{detail.get('playbook', fallback.get('playbook', 'unknown'))}:{detail.get('direction', fallback.get('direction', ''))}"
@@ -3599,7 +3988,7 @@ class PlaybookService:
             "inactivity_profile": dict(inactivity_profile),
             "candidates": candidates,
             "primary": primary,
-            "blocked_reason": "" if primary else (rejected_reasons[0] if rejected_reasons else ""),
+            "blocked_reason": "" if primary else _best_rejected_reason(rejected_records),
             "rejected_reasons": rejected_reasons[:5],
             "rejected_details": rejected_details[:5],
             "asset_plan": {
