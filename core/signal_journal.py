@@ -549,6 +549,23 @@ class SignalJournal:
             "microstructure_source": str(
                 ctx["metadata"].get("microstructure_source", ctx["market_microstructure"].get("microstructure_source", "")) or ""
             ),
+            "depth_quality": round(
+                _safe_float(
+                    ctx["metadata"].get("depth_quality", ctx["market_microstructure"].get("depth_quality")),
+                    0.0,
+                ) or 0.0,
+                4,
+            ),
+            "depth_quality_tier": str(
+                ctx["metadata"].get("depth_quality_tier", ctx["market_microstructure"].get("depth_quality_tier", "")) or ""
+            ),
+            "depth_levels": _safe_int(
+                ctx["metadata"].get("depth_levels", ctx["market_microstructure"].get("depth_levels")),
+                0,
+            ) or 0,
+            "depth_provider": str(
+                ctx["metadata"].get("depth_provider", ctx["market_microstructure"].get("depth_provider", "")) or ""
+            ),
             "microstructure_pressure": str(
                 ctx["market_microstructure"].get("pressure_direction", ctx["metadata"].get("micro_pressure_direction", "")) or ""
             ).upper(),
@@ -780,6 +797,20 @@ class SignalJournal:
             "microstructure_pressure": setup_fingerprint.get("microstructure_pressure", ""),
             "depth_mode": setup_fingerprint.get("depth_mode", "top_of_book"),
             "microstructure_source": setup_fingerprint.get("microstructure_source", ""),
+            "depth_quality": round(
+                _safe_float(metadata.get("depth_quality", setup_fingerprint.get("depth_quality")), 0.0) or 0.0,
+                4,
+            ),
+            "depth_quality_tier": str(
+                metadata.get("depth_quality_tier", setup_fingerprint.get("depth_quality_tier", "")) or ""
+            ),
+            "depth_levels": _safe_int(
+                metadata.get("depth_levels", setup_fingerprint.get("depth_levels")),
+                0,
+            ) or 0,
+            "depth_provider": str(
+                metadata.get("depth_provider", setup_fingerprint.get("depth_provider", "")) or ""
+            ),
             "stop_hunt_risk": round(stop_hunt_risk, 4) if stop_hunt_risk is not None else None,
             "exhaustion_risk": round(exhaustion_risk, 4) if exhaustion_risk is not None else None,
             "governance_score": governance_score,
@@ -789,6 +820,7 @@ class SignalJournal:
             "memory_sample_count": memory_sample_count,
             "late_entry_risk_score": round(_safe_float(metadata.get("late_entry_risk_score"), 0.0) or 0.0, 4),
             "late_entry_risk_reasons": list(metadata.get("late_entry_risk_reasons") or []),
+            "effective_execution_policy": dict(metadata.get("effective_execution_policy") or {}),
             "blocked_recent_pattern": bool(recent_review_profile.get("block_new_entries")),
             "blocked_recent_pattern_reason": str(recent_review_profile.get("block_reason") or ""),
             "recent_pattern_late_entry_rate": round(_safe_float(recent_review_profile.get("late_entry_rate"), 0.0) or 0.0, 4),
