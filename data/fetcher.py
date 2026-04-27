@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 import math
 import threading
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
@@ -625,6 +626,33 @@ class DataFetcher:
         top_asks = list(snapshot.get("top_asks", []) or [])
         depth_levels = max(len(top_bids), len(top_asks))
         synthetic_only = bool(snapshot.get("synthetic_imbalance_only")) or depth_levels <= 0
+        depth_metrics: Dict[str, Any] = {}
+        if not synthetic_only and (top_bids or top_asks):
+            try:
+                from services.live_microstructure_service import estimate_true_depth_metrics
+
+                levels = []
+                for idx in range(depth_levels):
+                    level: Dict[str, Any] = {}
+                    if idx < len(top_bids):
+                        bid_level = list(top_bids[idx] or [])
+                        if len(bid_level) >= 2:
+                            level["bid"] = bid_level[0]
+                            level["bid_size"] = bid_level[1]
+                    if idx < len(top_asks):
+                        ask_level = list(top_asks[idx] or [])
+                        if len(ask_level) >= 2:
+                            level["ask"] = ask_level[0]
+                            level["ask_size"] = ask_level[1]
+                    if level:
+                        levels.append(level)
+                depth_metrics = estimate_true_depth_metrics(
+                    levels,
+                    bid_size=snapshot.get("bid_vol"),
+                    ask_size=snapshot.get("ask_vol"),
+                )
+            except Exception:
+                depth_metrics = {}
 
         payload["book_imbalance"] = round(imbalance, 4)
         payload["depth_available"] = depth_levels > 0
@@ -635,6 +663,26 @@ class DataFetcher:
         payload["orderbook_top_bids"] = top_bids
         payload["orderbook_top_asks"] = top_asks
         payload["microstructure_source"] = "order_flow_synthetic_imbalance" if synthetic_only else "order_flow_true_depth"
+        if depth_metrics:
+            payload["depth_quality"] = round(float(depth_metrics.get("depth_quality", 0.0) or 0.0), 4)
+            payload["depth_quality_tier"] = str(depth_metrics.get("depth_quality_tier") or "none")
+            payload["bid_level_count"] = int(depth_metrics.get("bid_level_count", 0) or 0)
+            payload["ask_level_count"] = int(depth_metrics.get("ask_level_count", 0) or 0)
+        elif synthetic_only:
+            payload["depth_quality"] = 0.0
+            payload["depth_quality_tier"] = "synthetic"
+        if depth_levels > 0 or synthetic_only:
+            payload["depth_provider"] = "OrderFlow"
+            payload["depth_provider_class"] = "redis_subscriber"
+        ts_value = snapshot.get("ts")
+        try:
+            ts_float = float(ts_value or 0.0)
+            if ts_float > 10_000_000_000:
+                ts_float /= 1000.0
+            if ts_float > 1_000_000:
+                payload["depth_live_age_seconds"] = round(max(0.0, time.time() - ts_float), 3)
+        except Exception:
+            pass
         if spread_pct > 0.0:
             payload["spread_bps"] = round(spread_pct * 100.0, 3)
         payload["score"] = round(
