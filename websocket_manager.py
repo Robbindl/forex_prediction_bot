@@ -10,7 +10,11 @@ import websockets
 from config.config import DERIV_APP_ID
 from services.binance_market_bridge import binance_market_bridge
 from services.deriv_bridge import deriv_bridge
-from services.market_data_router import filter_deriv_stream_assets, filter_ig_primary_assets
+from services.market_data_router import (
+    filter_deriv_stream_assets,
+    filter_ig_primary_assets,
+    is_binance_primary_crypto_asset,
+)
 from utils.logger import logger
 
 _DERIV_PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
@@ -21,9 +25,10 @@ class WebSocketManager:
     Routed market stream manager with Deriv/Binance live streams.
 
     Deriv remains the live-stream source for non-IG-routed assets where it has
-    coverage. Binance is used only for unsupported spot crypto assets such as
-    BNB, SOL, and XRP. IG-routed assets are filtered out defensively so this
-    manager cannot silently pull routed commodities back onto Deriv.
+    coverage. Binance is used for selected spot crypto assets such as BNB, SOL,
+    and XRP, even if Deriv later advertises a symbol for them. IG-routed assets
+    are filtered out defensively so this manager cannot silently pull routed
+    commodities back onto Deriv.
     """
 
     def __init__(self):
@@ -175,6 +180,8 @@ class WebSocketManager:
 
         for asset, category in items:
             if asset in self._asset_to_symbol:
+                continue
+            if is_binance_primary_crypto_asset(asset, category):
                 continue
             resolved = deriv_bridge.resolve_symbol_info(asset, category=category)
             if not resolved:

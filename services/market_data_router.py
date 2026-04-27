@@ -13,6 +13,8 @@ from core.assets import registry
 from core.asset_profiles import get_profile
 from services.market_hours_guard import build_market_status
 
+_DERIV_PRIMARY_CRYPTO_ASSETS = frozenset({"BTC-USD", "ETH-USD"})
+
 
 @lru_cache(maxsize=1)
 def _configured_ig_routed_assets() -> frozenset[str]:
@@ -53,6 +55,40 @@ def is_ig_primary_asset(asset: str, category: str = "") -> bool:
     ):
         return False
     return _ig_supported_asset(canonical, resolved_category)
+
+
+def is_deriv_primary_crypto_asset(asset: str, category: str = "") -> bool:
+    canonical = registry.canonical(str(asset or "").strip())
+    resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
+    return resolved_category == "crypto" and canonical in _DERIV_PRIMARY_CRYPTO_ASSETS
+
+
+def is_binance_primary_crypto_asset(asset: str, category: str = "") -> bool:
+    canonical = registry.canonical(str(asset or "").strip())
+    resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
+    if resolved_category != "crypto" or canonical in _DERIV_PRIMARY_CRYPTO_ASSETS:
+        return False
+    try:
+        from services.binance_market_bridge import binance_market_bridge
+
+        return bool(binance_market_bridge.supports(canonical, category=resolved_category))
+    except Exception:
+        return False
+
+
+def preferred_quote_provider_order(asset: str, category: str = "") -> tuple[str, ...]:
+    canonical = registry.canonical(str(asset or "").strip())
+    resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
+
+    if is_ig_primary_asset(canonical, resolved_category):
+        return ("ig", "deriv")
+    if is_binance_primary_crypto_asset(canonical, resolved_category):
+        return ("binance",)
+    if is_deriv_primary_crypto_asset(canonical, resolved_category):
+        return ("deriv", "binance")
+    if resolved_category == "crypto":
+        return ("deriv", "binance")
+    return ("deriv",)
 
 
 def _ig_supported_asset(asset: str, category: str = "") -> bool:

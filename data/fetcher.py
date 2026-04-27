@@ -328,6 +328,34 @@ class DataFetcher:
             return "fmp"
         return token
 
+    @staticmethod
+    def _preferred_quote_provider_order(asset: str, category: str) -> Tuple[str, ...]:
+        try:
+            from services.market_data_router import preferred_quote_provider_order
+
+            order = tuple(
+                str(token or "").strip().lower()
+                for token in preferred_quote_provider_order(asset, category)
+                if str(token or "").strip()
+            )
+            if order:
+                return order
+        except Exception:
+            pass
+        return ("deriv", "binance") if str(category or "").strip().lower() == "crypto" else ("deriv",)
+
+    @classmethod
+    def _live_stream_source_allowed(cls, asset: str, category: str, source: str) -> bool:
+        if str(category or "").strip().lower() != "crypto":
+            return True
+        preferred_order = cls._preferred_quote_provider_order(asset, category)
+        if not preferred_order:
+            return True
+        preferred_provider = str(preferred_order[0] or "").strip().lower()
+        if not preferred_provider:
+            return True
+        return cls._normalize_provider(source) == preferred_provider
+
     def _ohlcv_bridge_catalog(self, *, ig_primary: bool) -> Dict[str, Tuple[Any, str, str, bool, bool, bool]]:
         return {
             "ig": (self._ig_bridge if ig_primary else None, "IG", "primary_api", False, False, False),
@@ -837,33 +865,40 @@ class DataFetcher:
             if price is not None:
                 return price, spread
 
-        price, spread = self._fetch_standard_real_time_price(
-            self._deriv_bridge,
-            asset,
-            category,
-            meta_key,
-            cache_key,
-            source="Deriv",
-            source_class="primary_api",
-            log_label="Deriv",
-            realtime=False,
-        )
-        if price is not None:
-            return price, spread
-
-        price, spread = self._fetch_standard_real_time_price(
-            self._binance_bridge,
-            asset,
-            category,
-            meta_key,
-            cache_key,
-            source="Binance",
-            source_class="secondary_api",
-            log_label="Binance",
-            realtime=True,
-        )
-        if price is not None:
-            return price, spread
+        bridge_catalog = {
+            "deriv": (
+                self._deriv_bridge,
+                "Deriv",
+                "primary_api",
+                "Deriv",
+                False,
+            ),
+            "binance": (
+                self._binance_bridge,
+                "Binance",
+                "secondary_api",
+                "Binance",
+                True,
+            ),
+        }
+        for provider in self._preferred_quote_provider_order(asset, category):
+            bridge_entry = bridge_catalog.get(str(provider or "").strip().lower())
+            if bridge_entry is None:
+                continue
+            bridge, source, source_class, log_label, realtime = bridge_entry
+            price, spread = self._fetch_standard_real_time_price(
+                bridge,
+                asset,
+                category,
+                meta_key,
+                cache_key,
+                source=source,
+                source_class=source_class,
+                log_label=log_label,
+                realtime=realtime,
+            )
+            if price is not None:
+                return price, spread
 
         if not prefer_live_stream:
             live_price = self._live_stream_real_time_price(asset, category, meta_key)
@@ -921,6 +956,13 @@ class DataFetcher:
             if live_snapshot is not None:
                 live_price = float(live_snapshot.get("price", 0.0) or 0.0)
                 live_source = str(live_snapshot.get("source") or "LiveCache")
+                if live_price <= 0:
+                    return None
+                if not self._live_stream_source_allowed(asset, category, live_source):
+                    logger.debug(
+                        f"[DataFetcher] ignoring live stream source {live_source} for {asset}; preferred provider mismatch"
+                    )
+                    return None
                 meta = self._stream_metadata(asset, category, live_source)
                 meta["live_age_seconds"] = round(float(live_snapshot.get("age_seconds", 0.0) or 0.0), 3)
                 if meta["live_age_seconds"] <= 2.0:

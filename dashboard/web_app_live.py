@@ -3859,14 +3859,29 @@ def _chart_asset_descriptor(asset: str, category: str) -> Dict[str, Any]:
         routing_label = "ig_primary_stream_deriv_fallback"
     else:
         try:
-            from services.binance_market_bridge import binance_market_bridge
+            from services.market_data_router import preferred_quote_provider_order
 
-            if normalized_category == "crypto" and binance_market_bridge.supports(
-                normalized_asset,
-                category=normalized_category,
-            ):
-                secondary_provider = "Binance"
-                routing_label = "deriv_primary_binance_fallback"
+            provider_order = tuple(
+                str(token or "").strip().lower()
+                for token in preferred_quote_provider_order(normalized_asset, normalized_category)
+                if str(token or "").strip()
+            )
+            label_map = {
+                "ig": "IG",
+                "deriv": "Deriv",
+                "binance": "Binance",
+            }
+            if provider_order:
+                primary_provider = label_map.get(provider_order[0], provider_order[0].title())
+                secondary_provider = (
+                    label_map.get(provider_order[1], provider_order[1].title())
+                    if len(provider_order) > 1
+                    else ""
+                )
+                if primary_provider == "Binance":
+                    routing_label = "binance_primary"
+                elif secondary_provider == "Binance":
+                    routing_label = "deriv_primary_binance_fallback"
         except Exception:
             pass
 
@@ -3890,17 +3905,19 @@ def _chart_stream_live_quote(asset: str, category: str, *, allow_live_cache: boo
 
             live_snapshot = get_live_price_snapshot(asset, max_age_seconds=15.0)
             if live_snapshot is not None:
-                return (
-                    float(live_snapshot.get("price", 0.0) or 0.0),
-                    str(live_snapshot.get("source") or "LiveCache"),
-                )
+                live_source = str(live_snapshot.get("source") or "LiveCache")
+                if _chart_live_source_allowed(asset, category, live_source):
+                    return (
+                        float(live_snapshot.get("price", 0.0) or 0.0),
+                        live_source,
+                    )
         except Exception:
             pass
         try:
             from websocket_dashboard import get_live_price
 
             live_price, live_source = get_live_price(asset, max_age_seconds=15.0)
-            if live_price is not None:
+            if live_price is not None and _chart_live_source_allowed(asset, category, live_source):
                 return float(live_price), str(live_source or "LiveCache")
         except Exception:
             pass
@@ -4031,6 +4048,27 @@ def _provider_family(value: Any) -> str:
     if token.startswith("FMP"):
         return "FMP"
     return token
+
+
+def _chart_live_source_allowed(asset: str, category: str, source: str) -> bool:
+    if str(category or "").strip().lower() != "crypto":
+        return True
+    source_family = _provider_family(source).strip().lower()
+    if not source_family:
+        return False
+    try:
+        from services.market_data_router import preferred_quote_provider_order
+
+        provider_order = tuple(
+            str(token or "").strip().lower()
+            for token in preferred_quote_provider_order(asset, category)
+            if str(token or "").strip()
+        )
+    except Exception:
+        provider_order = ()
+    if not provider_order:
+        return True
+    return source_family == provider_order[0]
 
 
 def _history_allows_live_overlay(descriptor: Dict[str, Any], meta: Dict[str, Any]) -> bool:
