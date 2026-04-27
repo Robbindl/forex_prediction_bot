@@ -474,7 +474,10 @@ class DukascopyLiveDepthBridge:
         age_seconds = max(0.0, time.time() - _safe_float(snapshot.get("timestamp"), time.time()))
 
         try:
-            from services.live_microstructure_service import get_service as get_live_microstructure_service
+            from services.live_microstructure_service import (
+                estimate_true_depth_metrics,
+                get_service as get_live_microstructure_service,
+            )
 
             metrics = get_live_microstructure_service().get_snapshot(
                 "dukascopy",
@@ -484,6 +487,7 @@ class DukascopyLiveDepthBridge:
             )
         except Exception:
             metrics = {}
+            estimate_true_depth_metrics = None
 
         top_bids = [
             [level["bid"], level["bid_size"]]
@@ -517,7 +521,22 @@ class DukascopyLiveDepthBridge:
             "visible_ask_levels": int(len(top_asks)),
             "microstructure_source": "dukascopy_live_depth",
         }
+        fallback_depth = (
+            estimate_true_depth_metrics(
+                snapshot.get("levels"),
+                bid_size=snapshot.get("bid_size"),
+                ask_size=snapshot.get("ask_size"),
+            )
+            if callable(estimate_true_depth_metrics)
+            else {}
+        )
+        payload.update(fallback_depth or {})
         payload.update(metrics or {})
+        if (fallback_depth or {}) and float(payload.get("depth_quality", 0.0) or 0.0) <= 0.0:
+            payload["depth_quality"] = round(float((fallback_depth or {}).get("depth_quality", 0.0) or 0.0), 4)
+            payload["depth_quality_tier"] = str((fallback_depth or {}).get("depth_quality_tier") or "none")
+        if (fallback_depth or {}) and float(payload.get("book_imbalance", 0.0) or 0.0) == 0.0:
+            payload["book_imbalance"] = round(float((fallback_depth or {}).get("book_imbalance", 0.0) or 0.0), 4)
         payload["depth_available"] = bool((metrics or {}).get("depth_available")) or bool(top_bids or top_asks)
         payload["synthetic_depth_available"] = bool((metrics or {}).get("synthetic_depth_available"))
         payload["depth_levels"] = int((metrics or {}).get("depth_levels") or max(len(top_bids), len(top_asks)))

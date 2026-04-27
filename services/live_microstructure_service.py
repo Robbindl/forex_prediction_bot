@@ -48,6 +48,88 @@ def _normalize_provider(provider: str) -> str:
     return token or "unknown"
 
 
+def estimate_true_depth_metrics(
+    levels: Optional[List[Dict[str, Any]]] = None,
+    *,
+    bid_size: Any = None,
+    ask_size: Any = None,
+) -> Dict[str, Any]:
+    bid_depth = 0.0
+    ask_depth = 0.0
+    depth_levels = 0
+    bid_level_count = 0
+    ask_level_count = 0
+
+    normalized_levels = list(levels or [])
+    if normalized_levels:
+        for level in normalized_levels:
+            if not isinstance(level, dict):
+                continue
+            bid_size_level = _safe_float(level.get("bid_size"), 0.0)
+            ask_size_level = _safe_float(level.get("ask_size"), 0.0)
+            if level.get("bid") not in (None, "") and bid_size_level > 0:
+                bid_level_count += 1
+            if level.get("ask") not in (None, "") and ask_size_level > 0:
+                ask_level_count += 1
+            if bid_size_level > 0 or ask_size_level > 0:
+                depth_levels += 1
+            bid_depth += max(0.0, bid_size_level)
+            ask_depth += max(0.0, ask_size_level)
+    else:
+        bid_depth = max(0.0, _safe_float(bid_size, 0.0))
+        ask_depth = max(0.0, _safe_float(ask_size, 0.0))
+        depth_levels = 1 if (bid_depth > 0 or ask_depth > 0) else 0
+        bid_level_count = 1 if bid_depth > 0 else 0
+        ask_level_count = 1 if ask_depth > 0 else 0
+
+    total_depth = bid_depth + ask_depth
+    book_imbalance = (bid_depth - ask_depth) / total_depth if total_depth > 0 else 0.0
+    synthetic_depth_available = False
+    synthetic_book_imbalance = 0.0
+
+    visible_levels = max(depth_levels, bid_level_count, ask_level_count)
+    level_balance = 1.0
+    if max(bid_level_count, ask_level_count) > 0:
+        level_balance = min(bid_level_count, ask_level_count) / max(bid_level_count, ask_level_count)
+    if visible_levels >= 10:
+        depth_quality = 1.0
+        depth_quality_tier = "full"
+    elif visible_levels >= 8:
+        depth_quality = 0.88
+        depth_quality_tier = "strong"
+    elif visible_levels >= 6:
+        depth_quality = 0.74
+        depth_quality_tier = "solid"
+    elif visible_levels >= 4:
+        depth_quality = 0.58
+        depth_quality_tier = "partial"
+    elif visible_levels >= 2:
+        depth_quality = 0.36
+        depth_quality_tier = "thin"
+    elif visible_levels >= 1:
+        depth_quality = 0.18
+        depth_quality_tier = "top_only"
+    else:
+        depth_quality = 0.0
+        depth_quality_tier = "none"
+    if visible_levels > 0:
+        depth_quality = _clip(depth_quality * (0.85 + level_balance * 0.15))
+
+    return {
+        "bid_depth": bid_depth,
+        "ask_depth": ask_depth,
+        "depth_levels": depth_levels,
+        "bid_level_count": bid_level_count,
+        "ask_level_count": ask_level_count,
+        "total_depth": total_depth,
+        "book_imbalance": book_imbalance,
+        "synthetic_depth_available": synthetic_depth_available,
+        "synthetic_book_imbalance": synthetic_book_imbalance,
+        "depth_quality": depth_quality,
+        "depth_quality_tier": depth_quality_tier,
+    }
+
+
 class LiveMicrostructureService:
     def __init__(self, maxlen: int = 64) -> None:
         self._lock = threading.RLock()
@@ -174,24 +256,15 @@ class LiveMicrostructureService:
         bid_series: List[float],
         ask_series: List[float],
     ) -> Dict[str, Any]:
+        if latest.get("levels"):
+            return estimate_true_depth_metrics(latest.get("levels"))
+
         bid_depth = 0.0
         ask_depth = 0.0
         depth_levels = 0
         bid_level_count = 0
         ask_level_count = 0
-        if latest.get("levels"):
-            for level in latest["levels"]:
-                bid_size_level = _safe_float(level.get("bid_size"), 0.0)
-                ask_size_level = _safe_float(level.get("ask_size"), 0.0)
-                if level.get("bid") not in (None, "") and bid_size_level > 0:
-                    bid_level_count += 1
-                if level.get("ask") not in (None, "") and ask_size_level > 0:
-                    ask_level_count += 1
-                if bid_size_level > 0 or ask_size_level > 0:
-                    depth_levels += 1
-                bid_depth += max(0.0, bid_size_level)
-                ask_depth += max(0.0, ask_size_level)
-        else:
+        if not latest.get("levels"):
             bid_depth = max(0.0, _safe_float(latest.get("bid_size"), 0.0))
             ask_depth = max(0.0, _safe_float(latest.get("ask_size"), 0.0))
             depth_levels = 1 if (bid_depth > 0 or ask_depth > 0) else 0

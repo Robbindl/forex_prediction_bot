@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
+from pathlib import Path
 from typing import Dict, List
 
 from order_flow.orderbook_processor     import OrderbookProcessor
@@ -25,6 +27,12 @@ _subscribed = False
 _last_subscribed_at = 0.0
 _last_message_at = 0.0
 _last_error = ""
+_snapshot_store_path = Path("data/order_flow_snapshots.json")
+_snapshot_store_lock = threading.RLock()
+_snapshot_store: Dict[str, dict] = {}
+_snapshot_store_mtime = 0.0
+_snapshot_store_last_write = 0.0
+_SNAPSHOT_STORE_WRITE_MIN_INTERVAL = 0.75
 
 TRACKED_ASSETS: List[str] = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -45,6 +53,69 @@ def _get_or_create(asset: str):
         _imbalance_detectors[asset],
         _stop_hunt_detectors[asset],
     )
+
+
+def _load_snapshot_store(*, force: bool = False) -> None:
+    global _snapshot_store_mtime
+    path = _snapshot_store_path
+    try:
+        mtime = path.stat().st_mtime if path.exists() else 0.0
+    except Exception:
+        mtime = 0.0
+    if not force and mtime <= 0.0:
+        return
+    if not force and mtime == _snapshot_store_mtime:
+        return
+
+    loaded: Dict[str, dict] = {}
+    if mtime > 0.0:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                loaded = {str(asset): dict(snapshot or {}) for asset, snapshot in raw.items() if isinstance(snapshot, dict)}
+        except Exception as exc:
+            logger.debug(f"[OrderFlow] Snapshot store load failed: {exc}")
+            loaded = {}
+
+    with _snapshot_store_lock:
+        _snapshot_store.clear()
+        _snapshot_store.update(loaded)
+        _snapshot_store_mtime = mtime
+
+
+def _persist_snapshot(asset: str, snapshot: dict, *, force: bool = False) -> None:
+    global _snapshot_store_last_write, _snapshot_store_mtime
+    asset_key = str(asset or "").strip()
+    if not asset_key or not isinstance(snapshot, dict) or not snapshot:
+        return
+
+    path = _snapshot_store_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with _snapshot_store_lock:
+        _snapshot_store[asset_key] = dict(snapshot)
+        now = time.time()
+        should_write = force or (now - _snapshot_store_last_write >= _SNAPSHOT_STORE_WRITE_MIN_INTERVAL)
+        if not should_write:
+            return
+        try:
+            path.write_text(json.dumps(_snapshot_store, ensure_ascii=True), encoding="utf-8")
+            _snapshot_store_last_write = now
+            try:
+                _snapshot_store_mtime = path.stat().st_mtime
+            except Exception:
+                _snapshot_store_mtime = now
+        except Exception as exc:
+            logger.debug(f"[OrderFlow] Snapshot store persist failed: {exc}")
+
+
+def _get_persisted_snapshot(asset: str) -> dict:
+    asset_key = str(asset or "").strip()
+    if not asset_key:
+        return {}
+    _load_snapshot_store(force=False)
+    with _snapshot_store_lock:
+        return dict(_snapshot_store.get(asset_key, {}) or {})
 
 
 def _on_orderbook_update(event: dict) -> None:
@@ -70,6 +141,7 @@ def _on_orderbook_update(event: dict) -> None:
     snapshot = proc.update(bids, asks)
     if not snapshot:
         return
+    _persist_snapshot(asset, snapshot)
 
     # 2. Scan for liquidity walls
     detected_walls = walls.scan(snapshot["top_bids"], snapshot["top_asks"])
@@ -153,13 +225,22 @@ def stop_all() -> None:
 def get_snapshot(asset: str) -> dict:
     """Return the latest order book snapshot for an asset (used by dashboard)."""
     proc = _processors.get(asset)
-    return proc.latest_snapshot() if proc else {}
+    snapshot = proc.latest_snapshot() if proc else {}
+    if snapshot:
+        return snapshot
+    return _get_persisted_snapshot(asset)
 
 
 def get_imbalance(asset: str) -> float:
     """Return current bid/ask imbalance score -1.0 … +1.0 (used by meta-model)."""
     det = _imbalance_detectors.get(asset)
-    return det.current_score() if det else 0.0
+    if det:
+        return det.current_score()
+    snapshot = _get_persisted_snapshot(asset)
+    try:
+        return round(float(snapshot.get("imbalance", 0.0) or 0.0), 4)
+    except Exception:
+        return 0.0
 
 
 def status() -> dict:
@@ -167,11 +248,21 @@ def status() -> dict:
     now = time.time()
     last_subscribed_age = max(0.0, now - _last_subscribed_at) if _last_subscribed_at > 0 else None
     last_message_age = max(0.0, now - _last_message_at) if _last_message_at > 0 else None
+    _load_snapshot_store(force=False)
+    try:
+        store_mtime = _snapshot_store_path.stat().st_mtime if _snapshot_store_path.exists() else 0.0
+    except Exception:
+        store_mtime = 0.0
+    with _snapshot_store_lock:
+        persisted_assets = sorted(_snapshot_store.keys())
     return {
         "running": bool(_running),
         "thread_alive": bool(thread is not None and thread.is_alive()),
         "subscribed": bool(_subscribed),
         "tracked_assets": list(TRACKED_ASSETS),
+        "persisted_assets": persisted_assets,
+        "snapshot_store_path": str(_snapshot_store_path),
+        "snapshot_store_age_seconds": round(max(0.0, now - store_mtime), 3) if store_mtime > 0 else None,
         "last_subscribed_age_seconds": round(last_subscribed_age, 3) if last_subscribed_age is not None else None,
         "last_message_age_seconds": round(last_message_age, 3) if last_message_age is not None else None,
         "last_error": str(_last_error or ""),
