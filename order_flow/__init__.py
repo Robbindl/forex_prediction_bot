@@ -170,7 +170,6 @@ def _subscribe_loop() -> None:
                 if not redis_unavailable_logged:
                     logger.warning("[OrderFlow] Redis unavailable — subscriber paused")
                     redis_unavailable_logged = True
-                import time
                 time.sleep(10)
                 continue
             redis_unavailable_logged = False
@@ -194,7 +193,7 @@ def _subscribe_loop() -> None:
             _last_error = str(e)
             logger.warning(f"[OrderFlow] Subscriber dropped ({e}) — retrying in 10s")
             if _running:
-                import time; time.sleep(10)
+                time.sleep(10)
 
 
 def start_all() -> None:
@@ -275,3 +274,5 @@ __all__ = [
     "ImbalanceDetector", "StopHuntDetector",
     "get_validator", "OrderFlowSignalValidator",
 ]
+
+
