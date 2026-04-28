@@ -220,9 +220,11 @@ class CTraderLiveDepthBridge:
         if not command:
             return False
         try:
+            # Use project root as cwd to avoid relative path issues
+            project_root = Path(__file__).parent.parent.resolve()
             proc = subprocess.Popen(
                 command,
-                cwd=str(_SIDECAR_SCRIPT.parent if not self._command_text else Path.cwd()),
+                cwd=str(project_root),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

@@ -11,7 +11,7 @@ _ROOT_DIR = Path(__file__).resolve().parents[1]
 _BASE_ENV = _ROOT_DIR / ".env"
 
 # Load the repo .env file only.
-load_dotenv(_BASE_ENV)
+load_dotenv(_BASE_ENV, override=True)
 
 
 def _parse_int(value: str, default=None):
