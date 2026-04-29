@@ -499,6 +499,138 @@ class DataFetcher:
             return {}
 
     @staticmethod
+    def _coerce_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value or default)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _top_level_price(levels: Any, *, index: int) -> float:
+        try:
+            entry = list(levels or [])[index]
+            return float(list(entry or [])[0] or 0.0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _book_mid_price(payload: Dict[str, Any]) -> Optional[float]:
+        price = DataFetcher._coerce_float(
+            payload.get("depth_mid_price", payload.get("quote_price", payload.get("price"))),
+            0.0,
+        )
+        if price > 0.0:
+            return float(price)
+
+        bid = DataFetcher._coerce_float(payload.get("depth_bid", payload.get("bid")), 0.0)
+        ask = DataFetcher._coerce_float(payload.get("depth_ask", payload.get("ask")), 0.0)
+        if bid > 0.0 and ask >= bid and ask > 0.0:
+            return round((bid + ask) / 2.0, 8)
+
+        top_bid = DataFetcher._top_level_price(payload.get("orderbook_top_bids"), index=0)
+        top_ask = DataFetcher._top_level_price(payload.get("orderbook_top_asks"), index=0)
+        if top_bid > 0.0 and top_ask >= top_bid and top_ask > 0.0:
+            return round((top_bid + top_ask) / 2.0, 8)
+        return None
+
+    @staticmethod
+    def _book_spread_bps(payload: Dict[str, Any]) -> Optional[float]:
+        bid = DataFetcher._coerce_float(payload.get("depth_bid", payload.get("bid")), 0.0)
+        ask = DataFetcher._coerce_float(payload.get("depth_ask", payload.get("ask")), 0.0)
+        if bid <= 0.0 or ask < bid or ask <= 0.0:
+            bid = DataFetcher._top_level_price(payload.get("orderbook_top_bids"), index=0)
+            ask = DataFetcher._top_level_price(payload.get("orderbook_top_asks"), index=0)
+        mid = DataFetcher._book_mid_price(payload)
+        if mid is None or mid <= 0.0 or bid <= 0.0 or ask < bid:
+            return None
+        return round(((ask - bid) / mid) * 10000.0, 4)
+
+    @staticmethod
+    def _external_true_depth_provider_trust(extra: Dict[str, Any]) -> float:
+        provider = str(extra.get("depth_provider") or extra.get("source") or "").strip().lower()
+        source_class = str(extra.get("depth_provider_class") or extra.get("source_class") or "").strip().lower()
+        environment = str(extra.get("depth_environment") or extra.get("environment") or "").strip().lower()
+
+        trust = 0.65
+        if source_class == "redis_subscriber" or "orderflow" in provider:
+            trust = 0.90
+        elif "dukascopy" in provider:
+            trust = 0.92
+        elif "ctrader" in provider:
+            trust = 0.78
+
+        if "ctrader" in provider and environment and environment not in {"live", "real", "production"}:
+            trust = min(trust, 0.58)
+
+        return round(max(0.0, min(1.0, trust)), 4)
+
+    @staticmethod
+    def _external_true_depth_quote_alignment(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+        execution_price = DataFetcher._book_mid_price(base) or 0.0
+        depth_price = DataFetcher._book_mid_price(overlay) or 0.0
+        if execution_price <= 0.0 or depth_price <= 0.0:
+            return {
+                "state": "unconfirmed",
+                "score": 0.55,
+                "divergence_bps": None,
+                "tolerance_bps": None,
+                "usable": True,
+            }
+
+        divergence_bps = abs(depth_price - execution_price) / max(execution_price, 1e-9) * 10000.0
+        execution_spread_bps = max(0.0, DataFetcher._coerce_float(base.get("spread_bps"), 0.0))
+        depth_spread_bps = max(0.0, DataFetcher._coerce_float(DataFetcher._book_spread_bps(overlay), 0.0))
+        tolerance_bps = max(1.5, execution_spread_bps * 2.5, depth_spread_bps * 2.5)
+        ratio = divergence_bps / max(tolerance_bps, 1e-9)
+
+        if ratio <= 0.50:
+            state = "strong"
+            score = 1.00
+            usable = True
+        elif ratio <= 1.00:
+            state = "aligned"
+            score = 0.82
+            usable = True
+        elif ratio <= 1.60:
+            state = "divergent"
+            score = 0.48
+            usable = False
+        else:
+            state = "severe_divergence"
+            score = 0.18
+            usable = False
+
+        return {
+            "state": state,
+            "score": round(score, 4),
+            "divergence_bps": round(divergence_bps, 4),
+            "tolerance_bps": round(tolerance_bps, 4),
+            "usable": usable,
+        }
+
+    @staticmethod
+    def _external_true_depth_information_key(extra: Dict[str, Any]) -> Tuple[int, float, float]:
+        signal_strength = max(
+            abs(DataFetcher._coerce_float(extra.get("book_imbalance"))),
+            abs(DataFetcher._coerce_float(extra.get("tick_imbalance"))),
+            abs(DataFetcher._coerce_float(extra.get("score"))),
+        )
+        depth_levels = int(
+            extra.get("depth_levels")
+            or max(
+                int(extra.get("visible_bid_levels") or 0),
+                int(extra.get("visible_ask_levels") or 0),
+            )
+            or 0
+        )
+        total_visible_volume = max(
+            0.0,
+            DataFetcher._coerce_float(extra.get("bid_vol")) + DataFetcher._coerce_float(extra.get("ask_vol")),
+        )
+        informative = int(depth_levels >= 2 and signal_strength >= 0.06)
+        return informative, round(signal_strength, 6), round(total_visible_volume, 6)
+
+    @staticmethod
     def _overlay_external_true_depth(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(base or {})
         extra = dict(overlay or {})
@@ -511,8 +643,41 @@ class DataFetcher:
         except Exception:
             pass
 
+        provider_trust = DataFetcher._external_true_depth_provider_trust(extra)
+        alignment = DataFetcher._external_true_depth_quote_alignment(payload, extra) if payload else {
+            "state": "unconfirmed",
+            "score": 0.55,
+            "divergence_bps": None,
+            "tolerance_bps": None,
+            "usable": True,
+        }
+
+        def _attach_overlay_meta(target: Dict[str, Any]) -> Dict[str, Any]:
+            target["depth_provider"] = str(extra.get("depth_provider") or extra.get("source") or "Dukascopy")
+            target["depth_provider_class"] = str(extra.get("source_class") or "sidecar")
+            target["depth_environment"] = str(extra.get("environment") or target.get("depth_environment") or "")
+            target["depth_as_of_utc"] = str(extra.get("as_of_utc") or target.get("depth_as_of_utc") or "")
+            target["depth_live_age_seconds"] = extra.get("depth_live_age_seconds")
+            target["depth_provider_trust_score"] = provider_trust
+            target["depth_quote_agreement_state"] = str(alignment.get("state") or "unconfirmed")
+            target["depth_quote_agreement_bps"] = alignment.get("divergence_bps")
+            target["depth_quote_tolerance_bps"] = alignment.get("tolerance_bps")
+            target["depth_quote_alignment_score"] = alignment.get("score")
+            target["external_depth_rejected"] = bool(not alignment.get("usable", True))
+            if target["external_depth_rejected"]:
+                target["external_depth_rejection_reason"] = "cross_provider_quote_divergence"
+            else:
+                target.pop("external_depth_rejection_reason", None)
+            if extra.get("dukascopy_symbol"):
+                target["dukascopy_symbol"] = extra["dukascopy_symbol"]
+            return target
+
         if not payload:
-            return extra
+            return _attach_overlay_meta(extra)
+
+        payload = _attach_overlay_meta(payload)
+        if not alignment.get("usable", True):
+            return payload
 
         for key in (
             "tick_imbalance",
@@ -541,19 +706,12 @@ class DataFetcher:
         ):
             if key in extra:
                 payload[key] = extra[key]
-
-        payload["depth_provider"] = str(extra.get("depth_provider") or extra.get("source") or "Dukascopy")
-        payload["depth_provider_class"] = str(extra.get("source_class") or "sidecar")
-        payload["depth_as_of_utc"] = str(extra.get("as_of_utc") or payload.get("depth_as_of_utc") or "")
-        payload["depth_live_age_seconds"] = extra.get("depth_live_age_seconds")
-        if extra.get("dukascopy_symbol"):
-            payload["dukascopy_symbol"] = extra["dukascopy_symbol"]
         return payload
 
     @staticmethod
     def _select_external_true_depth(*overlays: Dict[str, Any]) -> Dict[str, Any]:
         best_overlay: Dict[str, Any] = {}
-        best_key: Optional[Tuple[float, float, int]] = None
+        best_key: Optional[Tuple[int, float, float, float, float, int]] = None
 
         for overlay in overlays:
             extra = dict(overlay or {})
@@ -585,8 +743,17 @@ class DataFetcher:
             except Exception:
                 depth_levels = 0
 
+            informative, signal_strength, total_visible_volume = DataFetcher._external_true_depth_information_key(extra)
+            provider_trust = DataFetcher._external_true_depth_provider_trust(extra)
             freshness_score = -age_seconds if math.isfinite(age_seconds) else float("-inf")
-            candidate_key = (depth_quality, freshness_score, depth_levels)
+            candidate_key = (
+                informative,
+                signal_strength,
+                provider_trust,
+                depth_quality,
+                freshness_score,
+                depth_levels if depth_levels > 0 else int(total_visible_volume > 0.0),
+            )
             if best_key is None or candidate_key > best_key:
                 best_key = candidate_key
                 best_overlay = extra
@@ -614,7 +781,15 @@ class DataFetcher:
                 meta=meta,
             )
             if snapshot:
-                return self._merge_orderflow_snapshot({**meta, **snapshot}, orderflow_snapshot)
+                return self._merge_orderflow_snapshot(
+                    {
+                        **meta,
+                        "quote_price": float(price),
+                        "quote_spread": float(spread or 0.0),
+                        **snapshot,
+                    },
+                    orderflow_snapshot,
+                )
         except Exception:
             pass
         spread_bps = 0.0
@@ -626,6 +801,8 @@ class DataFetcher:
 
         base = {
             **meta,
+            "quote_price": float(price),
+            "quote_spread": float(spread or 0.0),
             "spread_bps": spread_bps,
             "tick_imbalance": 0.0,
             "book_imbalance": 0.0,
@@ -738,6 +915,15 @@ class DataFetcher:
         if depth_levels > 0 or synthetic_only:
             payload["depth_provider"] = "OrderFlow"
             payload["depth_provider_class"] = "redis_subscriber"
+            payload["depth_provider_trust_score"] = 0.90 if depth_levels > 0 else 0.52
+        top_bid = DataFetcher._top_level_price(top_bids, index=0)
+        top_ask = DataFetcher._top_level_price(top_asks, index=0)
+        if top_bid > 0.0 and top_ask >= top_bid and top_ask > 0.0:
+            mid = round((top_bid + top_ask) / 2.0, 8)
+            payload["depth_bid"] = top_bid
+            payload["depth_ask"] = top_ask
+            payload["depth_mid_price"] = mid
+            payload["depth_spread_bps"] = round(((top_ask - top_bid) / mid) * 10000.0, 4) if mid > 0.0 else 0.0
         ts_value = snapshot.get("ts")
         try:
             ts_float = float(ts_value or 0.0)

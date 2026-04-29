@@ -43,6 +43,7 @@ _TARGET_ALLOCATION = {
     "stocks":       5.0,
 }
 _ALLOCATION_TOLERANCE = 10.0   # ±10% from target is acceptable
+_MACRO_THEME_TRIGGER_FLOOR = 30.0
 
 
 def _signal_exposure(signal: dict, asset: str, category: str) -> float:
@@ -77,6 +78,54 @@ def _portfolio_category_exposure(open_positions: List[dict], category: str) -> f
         )
         for p in open_positions
         if p.get("category") == category
+    )
+
+
+def _macro_theme(asset: str, category: str, direction: str) -> str:
+    asset_token = str(asset or "").strip().upper()
+    category_token = str(category or "").strip().lower()
+    direction_token = str(direction or "BUY").strip().upper()
+    if direction_token not in {"BUY", "SELL"}:
+        direction_token = "BUY"
+
+    if category_token in {"crypto", "indices"}:
+        return "risk_on" if direction_token == "BUY" else "risk_off"
+
+    if asset_token in {"WTI", "BRENT", "USOIL", "UKOIL"}:
+        return "risk_on" if direction_token == "BUY" else "risk_off"
+
+    if asset_token in {"XAU/USD", "XAG/USD"}:
+        return "risk_off" if direction_token == "BUY" else "risk_on"
+
+    if category_token == "forex":
+        if asset_token.startswith("USD/"):
+            return "usd_strength" if direction_token == "BUY" else "usd_weakness"
+        if asset_token.endswith("/USD"):
+            return "usd_weakness" if direction_token == "BUY" else "usd_strength"
+        if asset_token.endswith("/JPY") or asset_token.endswith("/CHF"):
+            base = asset_token.split("/", 1)[0]
+            if base and base not in {"USD"}:
+                return "risk_on" if direction_token == "BUY" else "risk_off"
+
+    return ""
+
+
+def _portfolio_macro_theme_exposure(open_positions: List[dict], macro_theme: str) -> float:
+    if not macro_theme:
+        return 0.0
+    return sum(
+        _lot_exposure(
+            p.get("asset", ""),
+            p.get("category", "forex"),
+            float(p.get("position_size", 0)),
+            float(p.get("entry_price", 0)),
+        )
+        for p in open_positions
+        if _macro_theme(
+            p.get("asset", ""),
+            p.get("category", "unknown"),
+            p.get("direction") or p.get("signal", "BUY"),
+        ) == macro_theme
     )
 
 
@@ -300,6 +349,41 @@ class PortfolioRiskEngine:
                 adjustments.append(
                     f"correlation watch: {len(same_dir_cat)} existing {direction} {category} positions"
                 )
+
+            macro_theme = _macro_theme(asset, category, direction)
+            if macro_theme:
+                same_macro = [
+                    p for p in open_positions
+                    if _macro_theme(
+                        p.get("asset", ""),
+                        p.get("category", "unknown"),
+                        p.get("direction") or p.get("signal", "BUY"),
+                    ) == macro_theme
+                ]
+                macro_exposure = _portfolio_macro_theme_exposure(open_positions, macro_theme)
+                projected_macro_pct = (
+                    (macro_exposure + exposure) / balance * 100
+                    if balance > 0 else 100.0
+                )
+                macro_trigger_pct = max(
+                    _MACRO_THEME_TRIGGER_FLOOR,
+                    self._max_cat * (self._corr_cat_trigger_pct / 100.0),
+                )
+                macro_limit = max(3, self._max_same_dir)
+                if (
+                    len(same_macro) >= macro_limit
+                    and projected_macro_pct >= macro_trigger_pct
+                ):
+                    categories = sorted({str(p.get("category", "unknown")) for p in same_macro} | {category})
+                    return False, (
+                        f"Macro correlation risk: already {len(same_macro)} {macro_theme} positions across "
+                        f"{', '.join(categories)} with theme exposure {projected_macro_pct:.1f}% "
+                        f">= trigger {macro_trigger_pct:.1f}%"
+                    )
+                if len(same_macro) >= max(2, macro_limit - 1):
+                    adjustments.append(
+                        f"macro watch: {len(same_macro)} open {macro_theme} positions across categories"
+                    )
 
         return True, "; ".join(adjustments)
 

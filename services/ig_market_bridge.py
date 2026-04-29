@@ -835,12 +835,19 @@ class IGMarketBridge:
                 meta=meta,
             )
             if snapshot:
-                return {**meta, **snapshot}
+                return {
+                    **meta,
+                    "quote_price": float(price),
+                    "quote_spread": float(spread or 0.0),
+                    **snapshot,
+                }
         except Exception:
             pass
         spread_bps = round((float(spread or 0.0) / float(price)) * 10000, 3) if price else 0.0
         return {
             **meta,
+            "quote_price": float(price),
+            "quote_spread": float(spread or 0.0),
             "spread_bps": spread_bps,
             "tick_imbalance": 0.0,
             "book_imbalance": 0.0,

@@ -568,6 +568,37 @@ def _start_pre_bot_services(engine, args) -> None:
             raise RuntimeError("configured but sidecar did not start")
         return True
 
+    def _start_live_depth_watchdog():
+        from services.ctrader_live_depth_bridge import ctrader_live_depth_bridge
+        from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge
+
+        bridges = []
+        for label, bridge in (
+            ("cTrader", ctrader_live_depth_bridge),
+            ("Dukascopy", dukascopy_live_depth_bridge),
+        ):
+            if bridge.list_profiles():
+                bridges.append((label, bridge))
+        if not bridges:
+            return False
+
+        def _worker() -> None:
+            while True:
+                for label, bridge in bridges:
+                    try:
+                        status = bridge.ensure_running()
+                        if status.get("restart_attempted"):
+                            result = "ok" if status.get("restart_succeeded") else "failed"
+                            logger.warning(
+                                f"[bot] {label} live-depth watchdog restart {result} ({status.get('restart_reason') or 'unknown'})"
+                            )
+                    except Exception as exc:
+                        logger.debug(f"[bot] {label} live-depth watchdog error: {exc}")
+                time.sleep(20)
+
+        threading.Thread(target=_worker, name="LiveDepthWatchdog", daemon=True).start()
+        return True
+
     def _start_data_feeds():
         from data_ingestion import start_all as start_data_feeds
         start_data_feeds(exchanges=["binance", "bybit"])
@@ -627,6 +658,13 @@ def _start_pre_bot_services(engine, args) -> None:
         "[bot] Dukascopy live-depth sidecar failed: {error}",
         failure_level="debug",
         skipped_message="[bot] Dukascopy live-depth sidecar skipped — no active profiles",
+        skipped_level="info",
+    )
+    _run_optional_step(
+        _start_live_depth_watchdog,
+        "[bot] Live-depth watchdog started",
+        "[bot] Live-depth watchdog failed: {error}",
+        skipped_message="[bot] Live-depth watchdog skipped — no active sidecar profiles",
         skipped_level="info",
     )
     _run_optional_step(_start_data_feeds, "[bot] Data feeds started", "[bot] Data feeds failed to start: {error}")

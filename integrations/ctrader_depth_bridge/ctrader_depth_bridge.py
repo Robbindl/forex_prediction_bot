@@ -50,6 +50,20 @@ def _normalize_name(value: str) -> str:
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
 
 
+def _symbol_priority(asset: str, normalized_name: str, normalized_description: str) -> int:
+    if asset != "WTI":
+        return 0
+    tokens = {normalized_name, normalized_description}
+    # Prefer oil aliases that usually expose richer depth on broker feeds.
+    if "USOIL" in tokens:
+        return 3
+    if "USCRUDE" in tokens:
+        return 2
+    if "WTI" in tokens:
+        return 1
+    return 0
+
+
 _SUPPORTED_ASSETS: Dict[str, Dict[str, Any]] = {
     "EUR/USD": {"category": "forex", "aliases": ("EURUSD",)},
     "EUR/JPY": {"category": "forex", "aliases": ("EURJPY",)},
@@ -109,7 +123,7 @@ class CTraderDepthBridge:
         self.account_id: Optional[int] = None
         self.symbol_to_asset: Dict[int, str] = {}
         self.asset_state: Dict[str, Dict[str, Any]] = {}
-        self.last_emit = 0.0
+        self.last_emit_by_asset: Dict[str, float] = {}
 
         for asset in self.assets:
             self.asset_state[asset] = {
@@ -123,6 +137,7 @@ class CTraderDepthBridge:
                 "price": 0.0,
                 "timestamp": 0.0,
             }
+            self.last_emit_by_asset[asset] = 0.0
 
     def run(self) -> int:
         if not self.client_id or not self.client_secret:
@@ -266,6 +281,7 @@ class CTraderDepthBridge:
         _stderr(f"[DEBUG] Available cTrader symbols: {[(getattr(s, 'symbolName', ''), getattr(s, 'symbolId', '')) for s in symbols]}")
         _stderr(f"[DEBUG] Trying to match assets: {self.assets}")
         matched_symbol_ids: List[int] = []
+        candidate_symbols: Dict[str, List[Tuple[int, int, str]]] = defaultdict(list)
         for item in symbols:
             raw_name = str(getattr(item, "symbolName", "") or "")
             normalized = _normalize_name(raw_name)
@@ -274,13 +290,22 @@ class CTraderDepthBridge:
                 aliases = {_normalize_name(alias) for alias in _SUPPORTED_ASSETS[asset]["aliases"]}
                 if normalized in aliases or description in aliases:
                     symbol_id = int(getattr(item, "symbolId"))
-                    self.symbol_to_asset[symbol_id] = asset
-                    state = self.asset_state[asset]
-                    state["symbol_id"] = symbol_id
-                    state["symbol_name"] = raw_name
-                    matched_symbol_ids.append(symbol_id)
-                    _stderr(f"[DEBUG] Matched {asset} -> {raw_name} (ID: {symbol_id})")
+                    priority = _symbol_priority(asset, normalized, description)
+                    candidate_symbols[asset].append((priority, symbol_id, raw_name))
+                    _stderr(f"[DEBUG] Candidate {asset} -> {raw_name} (ID: {symbol_id}, priority={priority})")
                     break
+
+        for asset, entries in candidate_symbols.items():
+            if not entries:
+                continue
+            entries.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            _priority, symbol_id, raw_name = entries[0]
+            self.symbol_to_asset[symbol_id] = asset
+            state = self.asset_state[asset]
+            state["symbol_id"] = symbol_id
+            state["symbol_name"] = raw_name
+            matched_symbol_ids.append(symbol_id)
+            _stderr(f"[DEBUG] Matched {asset} -> {raw_name} (ID: {symbol_id})")
 
         matched_symbol_ids = sorted(set(matched_symbol_ids))
         _stderr(f"[DEBUG] Matched symbol IDs: {matched_symbol_ids}")
@@ -324,18 +349,18 @@ class CTraderDepthBridge:
         if hasattr(message, 'payload') and hasattr(message, 'payloadType'):
             payload_type = message.payloadType
             try:
-                if payload_type == 2115:  # ProtoOASpotEvent
+                if payload_type == 2131:  # ProtoOASpotEvent
                     spot = ProtoOASpotEvent()
                     spot.ParseFromString(message.payload)
                     self._handle_spot_event(spot)
                     return
-                elif payload_type == 2116:  # ProtoOADepthEvent
+                elif payload_type == 2155:  # ProtoOADepthEvent
                     depth = ProtoOADepthEvent()
                     depth.ParseFromString(message.payload)
                     _stderr(f"[DEBUG] Depth event received for symbol {getattr(depth, 'symbolId', '')}")
                     self._handle_depth_event(depth)
                     return
-                elif payload_type == 2117:  # ProtoOASubscribeDepthQuotesRes
+                elif payload_type == 2157:  # ProtoOASubscribeDepthQuotesRes
                     from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASubscribeDepthQuotesRes
                     depth_res = ProtoOASubscribeDepthQuotesRes()
                     depth_res.ParseFromString(message.payload)
@@ -443,7 +468,8 @@ class CTraderDepthBridge:
 
     def _maybe_emit(self, asset: str, *, force: bool = False) -> None:
         now = time.time()
-        if not force and (now - self.last_emit) * 1000.0 < self.min_emit_ms:
+        last_emit = float(self.last_emit_by_asset.get(asset, 0.0) or 0.0)
+        if not force and (now - last_emit) * 1000.0 < self.min_emit_ms:
             return
         state = self.asset_state[asset]
         symbol_id = state.get("symbol_id")
@@ -470,7 +496,7 @@ class CTraderDepthBridge:
         }
         self._persist_store(payload)
         _stdout(payload)
-        self.last_emit = now
+        self.last_emit_by_asset[asset] = now
 
     def _persist_store(self, payload: Dict[str, Any]) -> None:
         aggregate = {"updated_at": _now_iso(), "assets": {}}

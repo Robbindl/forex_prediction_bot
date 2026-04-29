@@ -35,6 +35,8 @@ HISTORY_WINDOW       = 3600
 
 FRESHNESS_THRESHOLDS: Dict[str, int] = {
     "order_book":   10,      # order book must update every 10s
+    "ctrader_live_depth": 30,
+    "dukascopy_live_depth": 30,
     "trades":       30,      # trade feed every 30s
     "liquidations": 60,      # liquidation feed every 60s
     "news":         3600,    # news every hour

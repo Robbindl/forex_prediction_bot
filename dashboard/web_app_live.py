@@ -6751,11 +6751,18 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
 
         status = ctrader_live_depth_bridge.status() if CTRADER_LIVE_DEPTH_ENABLED else {}
         assets = list(status.get("assets") or [])
-        running = bool(status.get("running", False))
+        healthy = bool(status.get("healthy", False))
+        state = str(status.get("state") or ("configured" if status.get("enabled") else "disabled"))
+        snapshot_age = status.get("last_snapshot_age_seconds")
+        meta_parts = [f"{len(assets)} assets" if assets else str(status.get("store_path") or "no assets")]
+        if snapshot_age not in (None, ""):
+            meta_parts.append(f"age {float(snapshot_age):.0f}s")
+        if status.get("environment"):
+            meta_parts.append(str(status.get("environment")).upper())
         services["ctrader_live_depth"] = {
-            "ok": running,
-            "state": "streaming" if running else ("configured" if status.get("enabled") else "disabled"),
-            "meta": f"{len(assets)} assets" if assets else str(status.get("store_path") or "no assets"),
+            "ok": healthy,
+            "state": state,
+            "meta": " | ".join(part for part in meta_parts if part),
         }
     except Exception:
         services["ctrader_live_depth"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
@@ -6765,11 +6772,16 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
 
         status = dukascopy_live_depth_bridge.status() if DUKASCOPY_LIVE_DEPTH_ENABLED else {}
         assets = list(status.get("assets") or [])
-        running = bool(status.get("running", False))
+        healthy = bool(status.get("healthy", False))
+        state = str(status.get("state") or ("configured" if status.get("enabled") else "disabled"))
+        snapshot_age = status.get("last_snapshot_age_seconds")
+        meta_parts = [f"{len(assets)} assets" if assets else str(status.get("store_path") or "no assets")]
+        if snapshot_age not in (None, ""):
+            meta_parts.append(f"age {float(snapshot_age):.0f}s")
         services["dukascopy_live_depth"] = {
-            "ok": running,
-            "state": "streaming" if running else ("configured" if status.get("enabled") else "disabled"),
-            "meta": f"{len(assets)} assets" if assets else str(status.get("store_path") or "no assets"),
+            "ok": healthy,
+            "state": state,
+            "meta": " | ".join(part for part in meta_parts if part),
         }
     except Exception:
         services["dukascopy_live_depth"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}

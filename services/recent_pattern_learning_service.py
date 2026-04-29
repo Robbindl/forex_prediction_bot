@@ -568,6 +568,10 @@ class RecentPatternLearningService:
         self._cache: Dict[Tuple[str, str, str, str, str, str, str], Tuple[float, Dict[str, Any]]] = {}
         self._lock = threading.RLock()
 
+    def invalidate_cache(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
     def get_profile(
         self,
         asset: str,

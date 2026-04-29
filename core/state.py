@@ -197,6 +197,24 @@ def _attach_execution_feedback(snapshot: Dict[str, Any]) -> None:
         logger.debug(f"[State] Execution feedback attach skipped: {e}")
 
 
+def _invalidate_post_trade_learning_caches() -> None:
+    try:
+        from services.execution_feedback_service import get_service as get_execution_feedback_service
+        from services.recent_pattern_learning_service import get_service as get_recent_pattern_learning_service
+        from services.setup_memory_service import get_service as get_setup_memory_service
+
+        for service in (
+            get_execution_feedback_service(),
+            get_recent_pattern_learning_service(),
+            get_setup_memory_service(),
+        ):
+            invalidate = getattr(service, "invalidate_cache", None)
+            if callable(invalidate):
+                invalidate()
+    except Exception as exc:
+        logger.debug(f"[State] Post-trade cache invalidation skipped: {exc}")
+
+
 class SystemState:
     """Single source of truth. Thread-safe. DB-persisted + JSON cache."""
 
@@ -345,6 +363,7 @@ class SystemState:
             db.save_trade(pos_snapshot)
             db.delete_open_position(trade_id)
             db.upsert_daily_stats(today, pnl, balance_now)
+            _invalidate_post_trade_learning_caches()
         except Exception as e:
             logger.error(f"[State] DB close_position failed: {e}")
 
@@ -702,6 +721,7 @@ class SystemState:
                 balance_now,
                 trade_count_delta=0,
             )
+            _invalidate_post_trade_learning_caches()
         except Exception as e:
             logger.error(f"[State] DB record_partial_close failed: {e}")
 

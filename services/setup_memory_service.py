@@ -69,6 +69,10 @@ class SetupMemoryService:
         self._cache: Dict[Tuple[str, str, int, int], Tuple[float, List[Dict[str, Any]]]] = {}
         self._lock = threading.RLock()
 
+    def invalidate_cache(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
     def build_fingerprint(self, signal, context: Dict[str, Any] | None = None) -> Dict[str, Any]:
         context = context or {}
         metadata = dict(getattr(signal, "metadata", {}) or {})

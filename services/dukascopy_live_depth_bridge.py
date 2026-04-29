@@ -38,6 +38,7 @@ else:
 _SIDECAR_JAR = _SIDEcar_PROJECT_DIR / "target" / "dukascopy-depth-bridge-1.0-shaded.jar"
 _STORE_WRITE_MIN_INTERVAL = 0.75
 _DEFAULT_STALE_SECONDS = 30.0
+_RESTART_COOLDOWN_SECONDS = 45.0
 
 _SUPPORTED_LIVE_SYMBOLS: Dict[str, Dict[str, str]] = {
     "EUR/USD": {"symbol": "EUR/USD", "category": "forex"},
@@ -155,6 +156,8 @@ class DukascopyLiveDepthBridge:
         self._stderr_thread: Optional[threading.Thread] = None
         self._last_store_mtime = 0.0
         self._last_persist = 0.0
+        self._last_restart_attempt = 0.0
+        self._restart_count = 0
         self._load_store(force=True)
 
     def list_profiles(self) -> list[str]:
@@ -207,7 +210,7 @@ class DukascopyLiveDepthBridge:
 
     def _ensure_sidecar_built(self) -> Optional[Path]:
         if _SIDECAR_JAR.exists():
-            return _SIDECAR_JAR
+            return _SIDECAR_JAR.resolve()
         if not self._auto_build:
             logger.warning(f"[DukascopyDepth] sidecar jar missing at {_SIDECAR_JAR}")
             return None
@@ -238,7 +241,7 @@ class DukascopyLiveDepthBridge:
         if not _SIDECAR_JAR.exists():
             logger.warning(f"[DukascopyDepth] sidecar build completed but jar is missing: {_SIDECAR_JAR}")
             return None
-        return _SIDECAR_JAR
+        return _SIDECAR_JAR.resolve()
 
     def _default_command(self) -> list[str]:
         jar = self._ensure_sidecar_built()
@@ -438,6 +441,13 @@ class DukascopyLiveDepthBridge:
             )
         except Exception:
             pass
+        try:
+            from monitoring.system_health_service import monitor as _monitor
+
+            _monitor.ping_source("order_book")
+            _monitor.ping_source("dukascopy_live_depth")
+        except Exception:
+            pass
 
         with self._lock:
             self._latest[canonical] = event
@@ -499,6 +509,8 @@ class DukascopyLiveDepthBridge:
             for level in list(snapshot.get("levels") or [])
             if level.get("ask") not in (None, "") and level.get("ask_size") not in (None, "")
         ]
+        depth_mid_price = round(float(price), 8) if price > 0.0 else 0.0
+        depth_spread_bps = round((spread / depth_mid_price) * 10000.0, 4) if depth_mid_price > 0.0 else 0.0
 
         payload = {
             "source": "Dukascopy",
@@ -513,6 +525,10 @@ class DukascopyLiveDepthBridge:
             "asset": canonical,
             "depth_provider": "Dukascopy",
             "depth_live_age_seconds": round(age_seconds, 3),
+            "depth_bid": _safe_float(bid, 0.0) if bid not in (None, "") else None,
+            "depth_ask": _safe_float(ask, 0.0) if ask not in (None, "") else None,
+            "depth_mid_price": depth_mid_price,
+            "depth_spread_bps": depth_spread_bps,
             "bid_vol": _safe_float(snapshot.get("total_bid_volume"), 0.0),
             "ask_vol": _safe_float(snapshot.get("total_ask_volume"), 0.0),
             "orderbook_top_bids": top_bids,
@@ -564,6 +580,22 @@ class DukascopyLiveDepthBridge:
         except Exception:
             store_mtime = 0.0
         freshest_ts = max((ts for ts in latest_timestamps if ts > 0.0), default=0.0)
+        snapshot_age = round(max(0.0, time.time() - freshest_ts), 3) if freshest_ts > 0.0 else None
+        profiles = self.list_profiles()
+        expected_assets = sorted(self._assets)
+        missing_assets = sorted(set(expected_assets) - set(assets))
+        stale = bool(expected_assets) and (snapshot_age is None or snapshot_age > _DEFAULT_STALE_SECONDS)
+        healthy = bool(self._enabled and running and not stale)
+        if not self._enabled:
+            state = "disabled"
+        elif healthy:
+            state = "streaming"
+        elif stale:
+            state = "stale"
+        elif running:
+            state = "warming"
+        else:
+            state = "stopped"
         return {
             "enabled": self._enabled,
             "running": running,
@@ -573,9 +605,61 @@ class DukascopyLiveDepthBridge:
             "store_path": str(self._store_path),
             "store_exists": store_exists,
             "store_age_seconds": round(max(0.0, time.time() - store_mtime), 3) if store_mtime > 0.0 else None,
-            "last_snapshot_age_seconds": round(max(0.0, time.time() - freshest_ts), 3) if freshest_ts > 0.0 else None,
-            "profiles": self.list_profiles(),
+            "last_snapshot_age_seconds": snapshot_age,
+            "profiles": profiles,
+            "expected_assets": expected_assets,
+            "missing_assets": missing_assets,
+            "stale": stale,
+            "healthy": healthy,
+            "state": state,
+            "restart_count": self._restart_count,
         }
+
+    def ensure_running(self, *, max_snapshot_age: float = _DEFAULT_STALE_SECONDS) -> Dict[str, Any]:
+        status = self.status()
+        profiles = list(status.get("profiles") or [])
+        now = time.time()
+        restart_attempted = False
+        restart_succeeded = False
+        restart_reason = ""
+
+        if not status.get("enabled") or not profiles:
+            status.update(
+                {
+                    "restart_attempted": restart_attempted,
+                    "restart_succeeded": restart_succeeded,
+                    "restart_reason": restart_reason,
+                }
+            )
+            return status
+
+        stale = bool(
+            status.get("last_snapshot_age_seconds") is None
+            or float(status.get("last_snapshot_age_seconds") or 0.0) > max_snapshot_age
+        )
+        needs_restart = bool(not status.get("running") or stale)
+        if needs_restart and (now - self._last_restart_attempt) >= _RESTART_COOLDOWN_SECONDS:
+            restart_attempted = True
+            restart_reason = "stale_depth" if stale else "process_not_running"
+            self._last_restart_attempt = now
+            if status.get("running"):
+                self.stop()
+            restart_succeeded = bool(self.start_background())
+            if restart_succeeded:
+                self._restart_count += 1
+                logger.warning(f"[DukascopyDepth] sidecar restarted ({restart_reason})")
+            else:
+                logger.warning(f"[DukascopyDepth] sidecar restart failed ({restart_reason})")
+            status = self.status()
+
+        status.update(
+            {
+                "restart_attempted": restart_attempted,
+                "restart_succeeded": restart_succeeded,
+                "restart_reason": restart_reason,
+            }
+        )
+        return status
 
 
 def _clip_text(text: str, limit: int = 300) -> str:

@@ -468,7 +468,12 @@ class DerivBridge:
                 meta=meta,
             )
             if snapshot:
-                return {**meta, **snapshot}
+                return {
+                    **meta,
+                    "quote_price": float(price),
+                    "quote_spread": float(spread or 0.0),
+                    **snapshot,
+                }
         except Exception:
             pass
         spread_bps = 0.0
@@ -478,6 +483,8 @@ class DerivBridge:
             spread_bps = 0.0
         return {
             **meta,
+            "quote_price": float(price),
+            "quote_spread": float(spread or 0.0),
             "spread_bps": spread_bps,
             "tick_imbalance": 0.0,
             "book_imbalance": 0.0,

@@ -76,6 +76,12 @@ class ExecutionFeedbackService:
         ] = {}
         self._lock = threading.RLock()
 
+    def invalidate_cache(self) -> None:
+        with self._lock:
+            self._cache.clear()
+            self._summary_cache.clear()
+            self._context_summary_cache.clear()
+
     def analyze_trade(self, trade: Dict[str, Any]) -> Dict[str, Any]:
         context = self._trade_context(trade)
         motion = self._trade_motion_profile(context)

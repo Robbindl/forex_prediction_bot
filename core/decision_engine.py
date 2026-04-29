@@ -801,6 +801,19 @@ class SignalDecisionEngine:
             signal.metadata["ask_level_count"] = int(micro.get("ask_level_count", micro.get("visible_ask_levels", 0)) or 0)
             signal.metadata["depth_quality"] = round(float(micro.get("depth_quality", 0.0) or 0.0), 4)
             signal.metadata["depth_quality_tier"] = str(micro.get("depth_quality_tier") or "")
+            signal.metadata["depth_provider"] = str(micro.get("depth_provider") or micro.get("source") or "")
+            signal.metadata["depth_provider_class"] = str(micro.get("depth_provider_class", micro.get("source_class", "")) or "")
+            signal.metadata["depth_environment"] = str(micro.get("depth_environment", micro.get("environment", "")) or "")
+            signal.metadata["depth_provider_trust_score"] = round(float(micro.get("depth_provider_trust_score", 0.0) or 0.0), 4)
+            signal.metadata["depth_quote_agreement_state"] = str(micro.get("depth_quote_agreement_state") or "")
+            signal.metadata["depth_quote_agreement_bps"] = (
+                round(float(micro.get("depth_quote_agreement_bps")), 4)
+                if micro.get("depth_quote_agreement_bps") not in (None, "")
+                else None
+            )
+            signal.metadata["depth_quote_alignment_score"] = round(float(micro.get("depth_quote_alignment_score", 0.0) or 0.0), 4)
+            signal.metadata["external_depth_rejected"] = bool(micro.get("external_depth_rejected"))
+            signal.metadata["external_depth_rejection_reason"] = str(micro.get("external_depth_rejection_reason") or "")
             signal.metadata["microstructure_source"] = str(micro.get("microstructure_source") or "")
             data["microstructure_score"] = round(micro_score, 3)
             data["stop_hunt_risk"] = round(stop_hunt_risk, 3)
@@ -811,12 +824,24 @@ class SignalDecisionEngine:
             data["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
             data["depth_levels"] = int(micro.get("depth_levels", 0) or 0)
             data["depth_quality"] = round(float(micro.get("depth_quality", 0.0) or 0.0), 4)
+            data["depth_provider"] = str(micro.get("depth_provider") or micro.get("source") or "")
+            data["depth_environment"] = str(micro.get("depth_environment", micro.get("environment", "")) or "")
+            data["depth_provider_trust_score"] = round(float(micro.get("depth_provider_trust_score", 0.0) or 0.0), 4)
+            data["depth_quote_agreement_state"] = str(micro.get("depth_quote_agreement_state") or "")
+            data["depth_quote_agreement_bps"] = (
+                round(float(micro.get("depth_quote_agreement_bps")), 4)
+                if micro.get("depth_quote_agreement_bps") not in (None, "")
+                else None
+            )
+            data["external_depth_rejected"] = bool(micro.get("external_depth_rejected"))
             if stop_hunt_risk >= 0.45:
                 notes.append("stop_hunt_penalty")
             if exhaustion_risk >= 0.42:
                 notes.append("micro_exhaustion")
             if micro.get("synthetic_depth_available"):
                 notes.append("synthetic_depth_proxy")
+            if micro.get("external_depth_rejected"):
+                notes.append("depth_quote_divergence")
             if aligned_micro >= 0.20:
                 notes.append("micro_boost")
             elif aligned_micro <= -0.20:
@@ -1509,7 +1534,37 @@ class SignalDecisionEngine:
         synthetic_depth_only = bool(signal.metadata.get("synthetic_depth_available")) and not bool(signal.metadata.get("depth_available"))
         depth_quality = float(signal.metadata.get("depth_quality", 0.0) or 0.0)
         depth_quality_tier = str(signal.metadata.get("depth_quality_tier", "") or "").strip().lower()
+        depth_levels = int(signal.metadata.get("depth_levels", 0) or 0)
+        if depth_levels <= 0:
+            depth_levels = max(
+                int(signal.metadata.get("bid_level_count", signal.metadata.get("visible_bid_levels", 0)) or 0),
+                int(signal.metadata.get("ask_level_count", signal.metadata.get("visible_ask_levels", 0)) or 0),
+            )
+        if depth_levels <= 0:
+            depth_levels = {
+                "full": 10,
+                "strong": 8,
+                "solid": 6,
+                "partial": 4,
+                "thin": 2,
+                "top_only": 1,
+            }.get(depth_quality_tier, 0)
         microstructure_source = str(signal.metadata.get("microstructure_source", "") or "").strip().lower()
+        depth_provider = str(signal.metadata.get("depth_provider", "") or "").strip().lower()
+        depth_provider_class = str(signal.metadata.get("depth_provider_class", "") or "").strip().lower()
+        depth_environment = str(signal.metadata.get("depth_environment", "") or "").strip().lower()
+        depth_provider_trust_score = float(signal.metadata.get("depth_provider_trust_score", 0.0) or 0.0)
+        if depth_provider_trust_score <= 0.0 and microstructure_source == "order_flow_true_depth":
+            depth_provider_trust_score = 0.90
+        elif depth_provider_trust_score <= 0.0 and "dukascopy" in depth_provider:
+            depth_provider_trust_score = 0.92
+        elif depth_provider_trust_score <= 0.0 and "ctrader" in depth_provider:
+            depth_provider_trust_score = 0.58 if depth_environment and depth_environment != "live" else 0.78
+        elif depth_provider_trust_score <= 0.0 and depth_provider_class == "redis_subscriber":
+            depth_provider_trust_score = 0.90
+        depth_quote_agreement_state = str(signal.metadata.get("depth_quote_agreement_state", "") or "").strip().lower()
+        depth_quote_alignment_score = float(signal.metadata.get("depth_quote_alignment_score", 0.0) or 0.0)
+        external_depth_rejected = bool(signal.metadata.get("external_depth_rejected"))
         cross_asset_alignment = float(signal.metadata.get("cross_asset_alignment", 0.0) or 0.0)
         cross_asset_confidence = float(signal.metadata.get("cross_asset_confidence", 0.0) or 0.0)
         supportive_structure_distance = float(signal.metadata.get("supportive_structure_distance", 0.0) or 0.0)
@@ -1613,6 +1668,23 @@ class SignalDecisionEngine:
             and not failed_opposite_move_confirmed
             and not has_directional_flow_conflict
         )
+        high_conviction_continuation_timing_intact = bool(
+            high_conviction_continuation_candidate
+            and extension_score <= 1.18
+            and abs(vwap_distance_atr) <= 1.20
+            and target_efficiency_score >= 0.16
+            and impulse_age_bars <= 6
+        )
+        high_conviction_continuation_supported = bool(
+            high_conviction_continuation_timing_intact
+            and (
+                elite_pattern_rank >= 0.22
+                or has_directional_flow_support
+                or entry_confirmation_ready
+                or breakout_retest_ready
+                or first_pullback_ready
+            )
+        )
         elite_supported_candidate = bool(
             strong_market_candidate
             and (
@@ -1621,7 +1693,7 @@ class SignalDecisionEngine:
                 or breakout_retest_ready
                 or first_pullback_ready
                 or entry_confirmation_ready
-                or high_conviction_continuation_candidate
+                or high_conviction_continuation_supported
                 or (continuation_rescue_candidate and has_directional_flow_support)
             )
         )
@@ -1659,6 +1731,12 @@ class SignalDecisionEngine:
         minimum_usable_true_depth_quality = float(
             execution_policy.get("minimum_usable_true_depth_quality", 0.0) or 0.0
         )
+        preferred_true_depth_min_trust_score = float(
+            execution_policy.get("preferred_true_depth_min_trust_score", 0.78) or 0.78
+        )
+        minimum_usable_true_depth_trust_score = float(
+            execution_policy.get("minimum_usable_true_depth_trust_score", 0.60) or 0.60
+        )
         asset_edge_bonus_scale = float(execution_policy.get("asset_edge_bonus_scale", 0.08) or 0.08)
         asset_edge_penalty_scale = float(execution_policy.get("asset_edge_penalty_scale", 0.09) or 0.09)
         book_edge_bonus_scale = float(execution_policy.get("book_edge_bonus_scale", 0.06) or 0.06)
@@ -1666,19 +1744,68 @@ class SignalDecisionEngine:
         thin_true_depth_penalty_scale = float(
             execution_policy.get("thin_true_depth_penalty", 0.0) or 0.0
         )
+        low_trust_true_depth_penalty_scale = float(
+            execution_policy.get("low_trust_true_depth_penalty", 0.0) or 0.0
+        )
+        misaligned_true_depth_penalty_scale = float(
+            execution_policy.get("misaligned_true_depth_penalty", 0.0) or 0.0
+        )
 
         true_depth_sources = {"order_flow_true_depth", "dukascopy_live_depth", "ctrader_live_depth"}
         true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
         preferred_true_depth = microstructure_source in true_depth_sources
-        usable_true_depth_available = bool(
+        true_depth_quote_aligned = bool(
+            not external_depth_rejected
+            and depth_quote_agreement_state not in {"divergent", "severe_divergence"}
+        )
+        meets_true_depth_trust_floor = bool(
+            true_depth_available
+            and (
+                minimum_usable_true_depth_trust_score <= 0.0
+                or depth_provider_trust_score >= minimum_usable_true_depth_trust_score
+            )
+        )
+        meets_true_depth_quality_floor = bool(
             true_depth_available
             and (
                 minimum_usable_true_depth_quality <= 0.0
                 or depth_quality >= minimum_usable_true_depth_quality
             )
         )
+        true_depth_signal_strength = max(abs(aligned_book_pressure), abs(aligned_tick_pressure))
+        true_depth_directional_support = max(aligned_book_pressure, aligned_tick_pressure)
+        true_depth_directional_conflict = min(aligned_book_pressure, aligned_tick_pressure)
+        true_depth_informative = bool(
+            meets_true_depth_quality_floor
+            and meets_true_depth_trust_floor
+            and true_depth_quote_aligned
+            and depth_levels >= 2
+            and true_depth_signal_strength >= 0.06
+        )
+        usable_true_depth_available = bool(
+            true_depth_available
+            and true_depth_informative
+        )
         thin_true_depth_untrusted = bool(
-            true_depth_available and preferred_true_depth and not usable_true_depth_available
+            true_depth_available and preferred_true_depth and not meets_true_depth_quality_floor
+        )
+        low_trust_true_depth_available = bool(
+            true_depth_available
+            and preferred_true_depth
+            and not meets_true_depth_trust_floor
+        )
+        misaligned_true_depth_available = bool(
+            true_depth_available
+            and preferred_true_depth
+            and not true_depth_quote_aligned
+        )
+        uninformative_true_depth_available = bool(
+            true_depth_available
+            and preferred_true_depth
+            and meets_true_depth_quality_floor
+            and meets_true_depth_trust_floor
+            and true_depth_quote_aligned
+            and not true_depth_informative
         )
         asset_performance_relief = 0.0
         asset_performance_penalty = 0.0
@@ -1697,7 +1824,16 @@ class SignalDecisionEngine:
         true_depth_relief = 0.0
         synthetic_depth_penalty = 0.0
         thin_true_depth_penalty = 0.0
-        if usable_true_depth_available and depth_quality >= preferred_true_depth_min_quality:
+        low_trust_true_depth_penalty = 0.0
+        misaligned_true_depth_penalty = 0.0
+        if (
+            usable_true_depth_available
+            and depth_quality >= preferred_true_depth_min_quality
+            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and depth_quote_alignment_score >= 0.80
+            and true_depth_directional_support >= 0.06
+            and true_depth_directional_conflict > -0.06
+        ):
             true_depth_relief = min(
                 0.08,
                 float(execution_policy.get("true_depth_bonus", 0.03) or 0.03)
@@ -1711,6 +1847,14 @@ class SignalDecisionEngine:
                 float(execution_policy.get("synthetic_depth_penalty", 0.04) or 0.04)
                 + (0.02 if category_label == "crypto" and (continuation_family or continuation_entry) else 0.0),
             )
+        elif misaligned_true_depth_available:
+            misaligned_true_depth_penalty = min(
+                0.12,
+                misaligned_true_depth_penalty_scale
+                + (0.02 if depth_quote_agreement_state == "severe_divergence" else 0.0),
+            )
+        elif low_trust_true_depth_available:
+            low_trust_true_depth_penalty = min(0.10, low_trust_true_depth_penalty_scale)
         elif thin_true_depth_untrusted:
             thin_true_depth_penalty = min(0.12, thin_true_depth_penalty_scale)
 
@@ -1719,6 +1863,8 @@ class SignalDecisionEngine:
             asset_performance_penalty
             + book_performance_penalty
             + synthetic_depth_penalty
+            + misaligned_true_depth_penalty
+            + low_trust_true_depth_penalty
             + thin_true_depth_penalty
         )
 
@@ -1890,16 +2036,17 @@ class SignalDecisionEngine:
                 risk_score -= 0.02
         if high_conviction_continuation_candidate:
             risk_score -= 0.04
-            if extension_score >= 1.05 or abs(vwap_distance_atr) >= 1.25:
-                risk_score -= 0.06
-            if target_efficiency_score <= 0.18:
-                risk_score -= 0.08
-            if impulse_age_bars >= 6:
-                risk_score -= 0.08
-            if elite_pattern_rank <= 0.22 and recent_pattern_sample_count < 8 and not blocked_recent_pattern:
-                risk_score -= 0.12
-            if target_efficiency_score >= 0.14 and directional_extension <= 0.84:
-                risk_score -= 0.02
+            if high_conviction_continuation_supported:
+                if extension_score <= 1.05 and abs(vwap_distance_atr) <= 1.10:
+                    risk_score -= 0.03
+                if target_efficiency_score >= 0.22:
+                    risk_score -= 0.03
+                if impulse_age_bars <= 4:
+                    risk_score -= 0.02
+                if elite_pattern_rank >= 0.22:
+                    risk_score -= 0.02
+                if target_efficiency_score >= 0.14 and directional_extension <= 0.84:
+                    risk_score -= 0.02
         if inactivity_execution_relief:
             risk_score -= 0.04 + inactivity_relief_strength * 0.08
         if asset_performance_relief > 0.0:
@@ -1918,9 +2065,17 @@ class SignalDecisionEngine:
         elif synthetic_depth_penalty > 0.0:
             risk_score += synthetic_depth_penalty
             reasons.append("only synthetic depth is available for this continuation profile")
+        elif misaligned_true_depth_penalty > 0.0:
+            risk_score += misaligned_true_depth_penalty
+            reasons.append("external book depth is diverging from the execution venue quote")
+        elif low_trust_true_depth_penalty > 0.0:
+            risk_score += low_trust_true_depth_penalty
+            reasons.append("available true depth is not trusted enough to lean on for timing")
         elif thin_true_depth_penalty > 0.0:
             risk_score += thin_true_depth_penalty
             reasons.append("available book depth is too shallow to trust for execution timing")
+        elif uninformative_true_depth_available:
+            reasons.append("true depth is present but too flat to improve execution timing")
 
         if broker_agreement_state in {"divergent", "severe_divergence"} and broker_spread_regime in {"stressed", "extreme", "wide"}:
             hard_blocks.append("broker divergence and spread stress are both active")
@@ -1934,7 +2089,7 @@ class SignalDecisionEngine:
         if continuation_rescue_candidate:
             weak_candle_extension_limit += 0.03
             weak_candle_floor = max(0.22, weak_candle_floor - 0.02)
-        if high_conviction_continuation_candidate:
+        if high_conviction_continuation_supported:
             weak_candle_extension_limit += 0.04
             weak_candle_floor = max(0.22, weak_candle_floor - 0.01)
         if inactivity_execution_relief:
@@ -1957,7 +2112,7 @@ class SignalDecisionEngine:
         if continuation_rescue_candidate:
             target_efficiency_hard_floor = max(0.09, target_efficiency_hard_floor - 0.02)
             opposing_distance_hard_floor = max(0.0026, opposing_distance_hard_floor - 0.0003)
-        if high_conviction_continuation_candidate:
+        if high_conviction_continuation_supported:
             target_efficiency_hard_floor = max(0.10, target_efficiency_hard_floor - 0.03)
             opposing_distance_hard_floor = max(0.0028, opposing_distance_hard_floor - 0.0004)
         if inactivity_execution_relief:
@@ -1980,7 +2135,7 @@ class SignalDecisionEngine:
         if continuation_rescue_candidate:
             impulse_age_hard_limit += 1
             directional_extension_hard_limit += 0.04
-        if high_conviction_continuation_candidate:
+        if high_conviction_continuation_supported:
             impulse_age_hard_limit += 1
             directional_extension_hard_limit += 0.05
         if inactivity_execution_relief:
@@ -1988,6 +2143,12 @@ class SignalDecisionEngine:
             directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
         if impulse_age_bars >= impulse_age_hard_limit and directional_extension >= directional_extension_hard_limit:
             hard_blocks.append("setup is too old and already stretched")
+        if (
+            high_conviction_continuation_candidate
+            and not high_conviction_continuation_timing_intact
+            and not has_directional_flow_support
+        ):
+            hard_blocks.append("high-conviction continuation has lost its timing edge")
         if wants_retest and not breakout_retest_ready and not first_pullback_ready:
             hard_blocks.append("breakout entry has not earned a clean retest or first pullback")
         if directional_extension >= 0.82 and (
@@ -1999,7 +2160,13 @@ class SignalDecisionEngine:
             or (signal.direction == "SELL" and structure_bias == "buy")
         ):
             hard_blocks.append("failed opposite reclaim is confirmed against the trade direction")
-        if stop_hunt_risk >= 0.48 and (synthetic_depth_only or thin_true_depth_untrusted):
+        if stop_hunt_risk >= 0.48 and (
+            synthetic_depth_only
+            or misaligned_true_depth_available
+            or low_trust_true_depth_available
+            or thin_true_depth_untrusted
+            or uninformative_true_depth_available
+        ):
             hard_blocks.append("stop-hunt risk is elevated while usable execution depth is unavailable")
         if directional_extension >= 0.82 and supportive_structure_distance > 0 and supportive_structure_distance <= 0.0018:
             hard_blocks.append("late entry profile has poor structure distance")
@@ -2024,7 +2191,7 @@ class SignalDecisionEngine:
         )
         if continuation_rescue_candidate:
             pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
-        if high_conviction_continuation_candidate:
+        if high_conviction_continuation_supported:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - 0.03)
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
@@ -2054,7 +2221,7 @@ class SignalDecisionEngine:
                 hard_blocks.append("regime-specific entry policy rejects the setup")
 
         risk_kill_threshold = base_risk_kill_threshold + adaptive_policy_relief * 0.70 - adaptive_policy_penalty * 0.50
-        if high_conviction_continuation_candidate:
+        if high_conviction_continuation_supported:
             risk_kill_threshold += 0.04
         if inactivity_execution_relief:
             risk_kill_threshold += 0.02
@@ -2064,13 +2231,32 @@ class SignalDecisionEngine:
             "asset": signal.asset,
             "category": category_label,
             "microstructure_source": microstructure_source,
+            "depth_provider": depth_provider,
+            "depth_provider_class": depth_provider_class,
+            "depth_environment": depth_environment,
             "depth_quality": round(depth_quality, 4),
             "depth_quality_tier": depth_quality_tier,
+            "depth_provider_trust_score": round(depth_provider_trust_score, 4),
+            "preferred_true_depth_min_trust_score": round(preferred_true_depth_min_trust_score, 4),
+            "minimum_usable_true_depth_trust_score": round(minimum_usable_true_depth_trust_score, 4),
+            "depth_quote_agreement_state": depth_quote_agreement_state,
+            "depth_quote_alignment_score": round(depth_quote_alignment_score, 4),
+            "external_depth_rejected": external_depth_rejected,
             "true_depth_available": true_depth_available,
             "usable_true_depth_available": usable_true_depth_available,
             "preferred_true_depth": preferred_true_depth,
             "minimum_usable_true_depth_quality": round(minimum_usable_true_depth_quality, 4),
+            "meets_true_depth_quality_floor": meets_true_depth_quality_floor,
+            "meets_true_depth_trust_floor": meets_true_depth_trust_floor,
+            "true_depth_quote_aligned": true_depth_quote_aligned,
+            "misaligned_true_depth_available": misaligned_true_depth_available,
+            "low_trust_true_depth_available": low_trust_true_depth_available,
             "thin_true_depth_untrusted": thin_true_depth_untrusted,
+            "uninformative_true_depth_available": uninformative_true_depth_available,
+            "true_depth_informative": true_depth_informative,
+            "true_depth_signal_strength": round(true_depth_signal_strength, 4),
+            "true_depth_directional_support": round(true_depth_directional_support, 4),
+            "true_depth_directional_conflict": round(true_depth_directional_conflict, 4),
             "asset_score": round(asset_score, 4),
             "asset_action": asset_action,
             "book_score": round(book_score, 4),
@@ -2097,6 +2283,8 @@ class SignalDecisionEngine:
             "elite_supported_candidate": elite_supported_candidate,
             "continuation_rescue_candidate": continuation_rescue_candidate,
             "high_conviction_continuation_candidate": high_conviction_continuation_candidate,
+            "high_conviction_continuation_timing_intact": high_conviction_continuation_timing_intact,
+            "high_conviction_continuation_supported": high_conviction_continuation_supported,
             "has_directional_flow_support": has_directional_flow_support,
             "has_directional_flow_conflict": has_directional_flow_conflict,
             "inactivity_execution_relief": inactivity_execution_relief,
@@ -2146,6 +2334,8 @@ class SignalDecisionEngine:
             "elite_supported_candidate": elite_supported_candidate,
             "continuation_rescue_candidate": continuation_rescue_candidate,
             "high_conviction_continuation_candidate": high_conviction_continuation_candidate,
+            "high_conviction_continuation_timing_intact": high_conviction_continuation_timing_intact,
+            "high_conviction_continuation_supported": high_conviction_continuation_supported,
             "directional_flow_support": round(directional_flow_support, 4),
             "directional_flow_conflict": round(directional_flow_conflict, 4),
             "asset_performance_profile": dict(asset_performance),
