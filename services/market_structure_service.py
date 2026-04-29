@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
@@ -25,6 +26,68 @@ _VOLATILITY_FIT = {
     "normal": 1.00,
     "expansion": 0.85,
     "extreme": 0.35,
+}
+
+_SESSION_FIT_BY_CATEGORY: Dict[str, Dict[str, float]] = {
+    "forex": {
+        "asia_core": 0.72,
+        "europe_open": 0.92,
+        "europe_core": 1.00,
+        "us_overlap": 0.98,
+        "us_open": 0.92,
+        "us_core": 0.88,
+        "off": 0.25,
+    },
+    "commodities": {
+        "asia_core": 0.45,
+        "europe_open": 0.88,
+        "europe_core": 0.96,
+        "us_overlap": 1.00,
+        "us_open": 1.00,
+        "us_core": 0.90,
+        "off": 0.25,
+    },
+    "indices": {
+        "asia_core": 0.35,
+        "europe_open": 0.55,
+        "europe_core": 0.62,
+        "us_overlap": 0.98,
+        "us_open": 1.00,
+        "us_core": 0.94,
+        "off": 0.25,
+    },
+    "crypto": {
+        "asia_core": 0.86,
+        "europe_open": 0.92,
+        "europe_core": 0.96,
+        "us_overlap": 1.00,
+        "us_open": 1.00,
+        "us_core": 0.96,
+        "off": 0.55,
+    },
+}
+
+_SESSION_FIT_BY_ASSET: Dict[str, Dict[str, float]] = {
+    "US30": {"asia_core": 0.30, "europe_open": 0.42, "europe_core": 0.48, "us_overlap": 0.98, "us_open": 1.00, "us_core": 0.96, "off": 0.20},
+    "US100": {"asia_core": 0.30, "europe_open": 0.42, "europe_core": 0.48, "us_overlap": 0.98, "us_open": 1.00, "us_core": 0.96, "off": 0.20},
+    "US500": {"asia_core": 0.30, "europe_open": 0.42, "europe_core": 0.48, "us_overlap": 0.98, "us_open": 1.00, "us_core": 0.96, "off": 0.20},
+    "UK100": {"asia_core": 0.40, "europe_open": 1.00, "europe_core": 1.00, "us_overlap": 0.90, "us_open": 0.60, "us_core": 0.50, "off": 0.20},
+    "GER40": {"asia_core": 0.40, "europe_open": 1.00, "europe_core": 1.00, "us_overlap": 0.90, "us_open": 0.60, "us_core": 0.50, "off": 0.20},
+    "AUS200": {"asia_core": 1.00, "europe_open": 0.82, "europe_core": 0.55, "us_overlap": 0.40, "us_open": 0.34, "us_core": 0.30, "off": 0.20},
+    "JPN225": {"asia_core": 1.00, "europe_open": 0.84, "europe_core": 0.58, "us_overlap": 0.42, "us_open": 0.36, "us_core": 0.32, "off": 0.20},
+    "WTI": {"asia_core": 0.25, "europe_open": 0.35, "europe_core": 0.45, "us_overlap": 1.00, "us_open": 1.00, "us_core": 0.92, "off": 0.20},
+    "XAU/USD": {"asia_core": 0.52, "europe_open": 0.96, "europe_core": 1.00, "us_overlap": 1.00, "us_open": 0.98, "us_core": 0.86, "off": 0.20},
+    "XAG/USD": {"asia_core": 0.50, "europe_open": 0.94, "europe_core": 1.00, "us_overlap": 1.00, "us_open": 0.98, "us_core": 0.86, "off": 0.20},
+    "EUR/USD": {"asia_core": 0.62, "europe_open": 0.95, "europe_core": 1.00, "us_overlap": 0.98, "us_open": 0.92, "us_core": 0.88, "off": 0.20},
+    "GBP/USD": {"asia_core": 0.62, "europe_open": 0.95, "europe_core": 1.00, "us_overlap": 0.98, "us_open": 0.92, "us_core": 0.88, "off": 0.20},
+    "EUR/GBP": {"asia_core": 0.60, "europe_open": 0.98, "europe_core": 1.00, "us_overlap": 0.90, "us_open": 0.82, "us_core": 0.78, "off": 0.20},
+    "USD/CAD": {"asia_core": 0.60, "europe_open": 0.88, "europe_core": 0.94, "us_overlap": 1.00, "us_open": 0.98, "us_core": 0.94, "off": 0.20},
+    "USD/CHF": {"asia_core": 0.60, "europe_open": 0.92, "europe_core": 0.98, "us_overlap": 0.98, "us_open": 0.92, "us_core": 0.88, "off": 0.20},
+    "USD/JPY": {"asia_core": 0.88, "europe_open": 0.95, "europe_core": 0.94, "us_overlap": 0.96, "us_open": 0.90, "us_core": 0.84, "off": 0.20},
+    "EUR/JPY": {"asia_core": 0.84, "europe_open": 0.94, "europe_core": 0.96, "us_overlap": 0.96, "us_open": 0.90, "us_core": 0.84, "off": 0.20},
+    "GBP/JPY": {"asia_core": 0.84, "europe_open": 0.96, "europe_core": 0.98, "us_overlap": 0.96, "us_open": 0.90, "us_core": 0.84, "off": 0.20},
+    "AUD/USD": {"asia_core": 0.94, "europe_open": 0.86, "europe_core": 0.80, "us_overlap": 0.78, "us_open": 0.74, "us_core": 0.70, "off": 0.20},
+    "NZD/USD": {"asia_core": 0.94, "europe_open": 0.86, "europe_core": 0.80, "us_overlap": 0.78, "us_open": 0.74, "us_core": 0.70, "off": 0.20},
 }
 
 
@@ -104,20 +167,83 @@ def _estimate_vwap(df: pd.DataFrame, window: int = 30) -> float:
         return 0.0
 
 
-def _session_quality(interval: str, atr_pct: float) -> tuple[str, float]:
+def _utc_now() -> datetime:
+    return datetime.now(tz=timezone.utc)
+
+
+def _active_session(*, category: str = "") -> str:
+    now = _utc_now()
+    hour = now.hour
+    weekday = now.weekday()
+    category_key = str(category or "").strip().lower()
+    if category_key == "crypto":
+        if 0 <= hour < 6:
+            return "asia_core"
+        if 6 <= hour < 14:
+            return "europe_open" if hour < 8 else "europe_core"
+        if 14 <= hour < 16:
+            return "us_overlap"
+        if 16 <= hour < 19:
+            return "us_open"
+        return "us_core"
+    if weekday == 5 or weekday == 6:
+        if weekday == 6 and hour >= 22:
+            return "asia_core"
+        return "off"
+    if weekday == 4 and hour >= 22:
+        return "off"
+    if 0 <= hour < 6:
+        return "asia_core"
+    if 6 <= hour < 8:
+        return "europe_open"
+    if 8 <= hour < 13:
+        return "europe_core"
+    if 13 <= hour < 15:
+        return "us_overlap"
+    if 15 <= hour < 17:
+        return "us_open"
+    if 17 <= hour < 22:
+        return "us_core"
+    return "off"
+
+
+def _session_context_fit(asset: str, category: str, session: str) -> float:
+    canonical = str(asset or "").strip().upper()
+    session_key = str(session or "").strip().lower() or "off"
+    asset_fit = _SESSION_FIT_BY_ASSET.get(canonical)
+    if isinstance(asset_fit, dict) and session_key in asset_fit:
+        return float(asset_fit[session_key])
+    category_fit = _SESSION_FIT_BY_CATEGORY.get(str(category or "").strip().lower(), {})
+    return float(category_fit.get(session_key, 0.60))
+
+
+def _session_quality(interval: str, atr_pct: float, *, asset: str = "", category: str = "") -> tuple[str, float]:
     london_intervals = {"5m", "15m", "30m", "1h"}
     scalp_intervals = {"1m", "5m"}
     if atr_pct >= 0.020:
-        return "chaotic", 0.26
-    if atr_pct <= 0.0018 and interval in scalp_intervals:
-        return "dead", 0.34
-    if atr_pct <= 0.0025 and interval in london_intervals:
-        return "quiet", 0.52
-    if 0.0025 < atr_pct <= 0.012:
-        return "active", 0.82
-    if 0.012 < atr_pct <= 0.020:
-        return "fast", 0.66
-    return "mixed", 0.58
+        base_label, base_score = "chaotic", 0.26
+    elif atr_pct <= 0.0018 and interval in scalp_intervals:
+        base_label, base_score = "dead", 0.34
+    elif atr_pct <= 0.0025 and interval in london_intervals:
+        base_label, base_score = "quiet", 0.52
+    elif 0.0025 < atr_pct <= 0.012:
+        base_label, base_score = "active", 0.82
+    elif 0.012 < atr_pct <= 0.020:
+        base_label, base_score = "fast", 0.66
+    else:
+        base_label, base_score = "mixed", 0.58
+
+    session = _active_session(category=category)
+    fit = _clip(_session_context_fit(asset, category, session), 0.0, 1.0)
+    adjusted_score = round(float(base_score) * fit, 4)
+
+    if session == "off" or fit <= 0.40:
+        adjusted_label = "off_session"
+    elif fit <= 0.60 and base_label in {"active", "fast", "mixed"}:
+        adjusted_label = "thin_session"
+    else:
+        adjusted_label = base_label
+    return adjusted_label, adjusted_score
 
 
 def _bar_metrics(
@@ -211,7 +337,7 @@ def _volatility_state(atr_pct: float) -> str:
     return "extreme"
 
 
-def _analyze_frame(interval: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+def _analyze_frame(interval: str, df: pd.DataFrame, *, asset: str = "", category: str = "") -> Optional[Dict[str, Any]]:
     if len(df) < 30:
         return None
 
@@ -303,7 +429,7 @@ def _analyze_frame(interval: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
 
     vwap = _estimate_vwap(df, window=min(36, len(df)))
     vwap_distance = ((current - vwap) / atr_ref) if vwap > 0 else 0.0
-    session_label, session_quality = _session_quality(interval, atr_pct)
+    session_label, session_quality = _session_quality(interval, atr_pct, asset=asset, category=category)
 
     bar_high = float(high.iloc[-1])
     bar_low = float(low.iloc[-1])
@@ -568,7 +694,7 @@ class MarketStructureService:
         frames: Mapping[str, pd.DataFrame],
         context: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
-        details, ordered_intervals = self._collect_frame_details(frames)
+        details, ordered_intervals = self._collect_frame_details(frames, asset=asset, category=category)
         if not details:
             return self._empty_analysis(asset, category)
 
@@ -835,11 +961,17 @@ class MarketStructureService:
             "frame_details": details,
         }
 
-    def _collect_frame_details(self, frames: Mapping[str, pd.DataFrame]) -> tuple[Dict[str, Dict[str, Any]], List[str]]:
+    def _collect_frame_details(
+        self,
+        frames: Mapping[str, pd.DataFrame],
+        *,
+        asset: str = "",
+        category: str = "",
+    ) -> tuple[Dict[str, Dict[str, Any]], List[str]]:
         details: Dict[str, Dict[str, Any]] = {}
         ordered_intervals = [str(interval).lower() for interval in frames.keys()]
         for interval, df in frames.items():
-            analyzed = _analyze_frame(str(interval).lower(), df)
+            analyzed = _analyze_frame(str(interval).lower(), df, asset=asset, category=category)
             if analyzed:
                 details[str(interval).lower()] = analyzed
         return details, ordered_intervals

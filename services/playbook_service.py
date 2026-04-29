@@ -1299,7 +1299,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US30": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        ("us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -1307,7 +1307,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US100": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        ("us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
@@ -1315,7 +1315,7 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     ),
     "US500": _AssetPlaybookPlan(
         ("breakout_continuation", "breakout_retest", "trend_pullback", "early_inflection", "failed_break_reclaim", "reversal_exhaustion", "aggressive_expansion", "intermarket_continuation", "opening_drive"),
-        ("asia_core", "europe_open", "europe_core", "us_overlap", "us_open", "us_core"),
+        ("us_overlap", "us_open", "us_core"),
         0.59,
         0.57,
         2,
