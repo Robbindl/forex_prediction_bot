@@ -49,12 +49,15 @@ button:hover,.chip:hover{background:var(--s3)}
 button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35);color:#9fc2ff}
 .ghost-btn{background:rgba(255,255,255,.02)}
 .ghost-btn.active{background:rgba(0,229,255,.12);border-color:rgba(0,229,255,.28);color:#bff7ff}
-.viz-shell{display:block;padding:0;min-height:auto}
-.viz-stage{position:relative;overflow:hidden;min-height:680px;height:min(78vh,860px);border-radius:14px;background:radial-gradient(circle at top,rgba(59,130,246,.10),transparent 28%),var(--s2);border:1px solid rgba(255,255,255,.04)}
+.viz-shell{display:grid;gap:12px;padding:0;min-height:auto}
+.viz-toolbar,.viz-meta-bar{padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.04);background:var(--s2);min-height:0}
+.viz-toolbar{display:grid;gap:8px}
+.viz-meta-bar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.viz-meta-copy{flex:1 1 320px;min-width:0}
+.viz-meta-actions{display:grid;gap:8px;justify-items:end;min-width:min(100%,520px)}
+.viz-stage{position:relative;overflow:hidden;min-height:700px;height:min(82vh,920px);border-radius:14px;background:radial-gradient(circle at top,rgba(59,130,246,.10),transparent 28%),var(--s2);border:1px solid rgba(255,255,255,.04)}
 #c3d{width:100%;height:100%;display:block}
 #tip{position:absolute;top:0;left:0;pointer-events:none;display:none;background:rgba(7,11,18,.96);border:1px solid var(--bd);border-radius:12px;padding:8px 12px;font-size:12px;color:var(--tx);white-space:nowrap;z-index:10;box-shadow:0 14px 28px rgba(0,0,0,.25)}
-.stage-hud{position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;gap:10px;pointer-events:none}
-.hud-stack{display:flex;flex-direction:column;gap:8px;pointer-events:auto}
 .search{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(7,11,18,.72);backdrop-filter:blur(8px)}
 .search input{flex:1;background:transparent;border:none;outline:none;color:var(--tx);font:inherit;font-size:12px}
 .search small{color:var(--tx3)}
@@ -265,7 +268,8 @@ body.mission-control .content{grid-template-columns:1fr;padding:10px;gap:10px}
 body.mission-control .left-col{grid-template-rows:minmax(0,1fr) auto;gap:10px}
 body.mission-control .viz-shell{padding:0}
 body.mission-control .viz-stage{min-height:calc(100vh - 300px);border-radius:18px}
-body.mission-control .stage-hud{top:18px;left:18px;right:18px}
+body.mission-control .viz-toolbar,
+body.mission-control .viz-meta-bar{background:rgba(7,11,18,.84)}
 body.mission-control .stage-footer{left:18px;right:18px;bottom:18px}
 body.mission-control .legend{max-width:380px}
 body.mission-control .mini-map-shell,
@@ -295,6 +299,8 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
   .tb-right{display:none}
   .viz-stage{min-height:560px;height:min(72vh,620px)}
   .legend{grid-template-columns:1fr}
+  .viz-toolbar,.viz-meta-bar{padding:12px}
+  .viz-meta-actions,.footer-stack{justify-items:stretch}
   .footer-stack{justify-items:stretch}
   .stage-control-row,.stage-status-row{justify-content:flex-start}
   .summary-row,.metric-grid,.neighbor-grid,.pulse-grid,.inspector-metrics,.dep-columns,.split-grid,.inspector-body,.storyboard,.node-detail-layout{grid-template-columns:1fr}
@@ -357,32 +363,36 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
         </div>
 
         <div class="viz-shell">
+          <div class="viz-toolbar">
+            <div class="search">
+              <input id="nodeSearch" type="text" placeholder="Search node, module, service, or broker">
+              <small id="searchHint">all layers</small>
+            </div>
+            <div class="view-row" id="viewRow"></div>
+            <div class="layer-row" id="layerRow"></div>
+            <div class="mode-row" id="modeRow"></div>
+            <div class="variant-row" id="variantRow"></div>
+            <div class="overlay-row" id="overlayRow"></div>
+          </div>
+          <div class="viz-meta-bar">
+            <div class="viz-meta-copy">
+              <div class="stage-note" id="stageNote">drag to rotate · scroll to zoom · click to inspect · double click to jump</div>
+            </div>
+            <div class="viz-meta-actions">
+              <div class="stage-control-row">
+                <button class="ghost-btn" id="followPlaybackBtn">Follow Route</button>
+                <button class="ghost-btn" id="playbackFocusBtn">Jump Replay</button>
+                <button class="ghost-btn" id="missionControlBtn">Mission Control</button>
+              </div>
+              <div class="stage-status-row" id="stageStatusRow"></div>
+            </div>
+          </div>
           <div class="viz-stage">
             <canvas id="c3d"></canvas>
             <div id="tip"></div>
-            <div class="stage-hud">
-              <div class="hud-stack">
-                <div class="search">
-                  <input id="nodeSearch" type="text" placeholder="Search node, module, service, or broker">
-                  <small id="searchHint">all layers</small>
-                </div>
-                <div class="view-row" id="viewRow"></div>
-                <div class="layer-row" id="layerRow"></div>
-                <div class="mode-row" id="modeRow"></div>
-                <div class="variant-row" id="variantRow"></div>
-                <div class="overlay-row" id="overlayRow"></div>
-              </div>
-            </div>
             <div class="stage-footer">
               <div class="legend" id="legend"></div>
               <div class="footer-stack">
-                <div class="stage-control-row">
-                  <button class="ghost-btn" id="followPlaybackBtn">Follow Route</button>
-                  <button class="ghost-btn" id="playbackFocusBtn">Jump Replay</button>
-                  <button class="ghost-btn" id="missionControlBtn">Mission Control</button>
-                </div>
-                <div class="stage-status-row" id="stageStatusRow"></div>
-                <div class="stage-note" id="stageNote">drag to rotate · scroll to zoom · click to inspect · double click to jump</div>
                 <div class="replay-clock">
                   <div class="replay-clock-top">
                     <strong id="replayClockTitle">Route Clock</strong>
@@ -712,7 +722,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setClearColor(0x000000, 0);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 200);
-camera.position.set(0,1,18);
+camera.position.set(0,1,16);
 camera.lookAt(0,-0.5,0);
 const cameraLookAt = new THREE.Vector3(0,-0.5,0);
 const cameraLookAtTarget = new THREE.Vector3(0,-0.5,0);
@@ -732,7 +742,9 @@ const routeTrailDots = [];
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const tip = document.getElementById('tip');
-let drag = false, px = 0, py = 0, rotX = 0.25, rotY = 0.3, autoY = 0, camZ = 18, hovMesh = null;
+let drag = false, px = 0, py = 0, rotX = 0.25, rotY = 0.3, autoY = 0, camZ = 16, hovMesh = null;
+let activeSearchTerm = '';
+let activeSearchMatchCount = 0;
 
 function resize(){
   const w = canvas.parentElement.clientWidth;
@@ -1651,7 +1663,7 @@ function buildScene(){
 
 function setNodeVisualState(mesh){
   const node = mesh.userData;
-  const visible = activeGroups.has(node.group);
+  const visible = activeGroups.has(node.group) && nodeMatchesSearch(node);
   mesh.visible = visible;
   const status = resolveNodeStatus(node);
   const routeSet = displayedRouteSet();
@@ -1668,22 +1680,41 @@ function setNodeVisualState(mesh){
   if(inRoute && status.kind === 'live') mesh.material.color.setHex(overlayColor());
 }
 
+function nodeMatchesSearch(node){
+  if(!activeSearchTerm) return true;
+  const hay = [
+    node.id,
+    node.label,
+    node.group,
+    node.sub,
+    node.desc,
+    ...(node.capabilities || []),
+    ...Object.keys(node.facts || {}),
+    ...Object.values(node.facts || {})
+  ].join(' ').toLowerCase();
+  return hay.includes(activeSearchTerm);
+}
+
 function refreshVisibility(){
   ensureReplaySelection();
   const routeSet = displayedRouteSet();
   const variantGroups = resolvedVariantGroups();
-  meshes.forEach(setNodeVisualState);
+  activeSearchMatchCount = 0;
+  meshes.forEach(mesh => {
+    setNodeVisualState(mesh);
+    if(mesh.visible) activeSearchMatchCount += 1;
+  });
   labels.forEach(label => {
     const nodeId = label.userData.nodeId;
     const node = nodesById[nodeId];
-    label.visible = !!node && activeGroups.has(node.group);
+    label.visible = !!node?.mesh?.visible;
     label.material.opacity = routeSet.size && routeSet.has(nodeId) ? 1 : variantGroups.has(node?.group) ? 0.95 : 0.88;
   });
   const edgeSet = activeRouteEdgeSet();
   lines.forEach(line => {
     const fromNode = nodesById[line.userData.from];
     const toNode = nodesById[line.userData.to];
-    const show = activeGroups.has(fromNode.group) && activeGroups.has(toNode.group);
+    const show = !!fromNode?.mesh?.visible && !!toNode?.mesh?.visible;
     line.visible = show;
     if(!show) return;
     const edgeKey = `${line.userData.from}>${line.userData.to}`;
@@ -1693,7 +1724,10 @@ function refreshVisibility(){
     line.material.opacity = edgeSet.has(edgeKey) ? 0.95 : touchesRoute ? 0.42 : touchesVariant ? Math.max(DESIGN_MODES[activeDesignMode].lineOpacity, 0.24) : DESIGN_MODES[activeDesignMode].lineOpacity;
   });
   const activeLabels = [...activeGroups].map(g => GROUP_META[g]?.label || g);
-  document.getElementById('searchHint').textContent = activeLabels.length === Object.keys(GROUP_META).length ? 'all layers' : activeLabels.join(' · ');
+  const layerLabel = activeLabels.length === Object.keys(GROUP_META).length ? 'all layers' : activeLabels.join(' · ');
+  document.getElementById('searchHint').textContent = activeSearchTerm
+    ? `${activeSearchMatchCount} match${activeSearchMatchCount === 1 ? '' : 'es'} · ${layerLabel}`
+    : layerLabel;
 }
 
 function buildLegend(){
@@ -2744,34 +2778,19 @@ function highlightGroup(group){
 function resetView(){
   activeView = 'all';
   activeGroups = new Set(VIEW_PRESETS.all);
-  rotX = 0.25; rotY = 0.3; autoY = 0; camZ = 18;
+  rotX = 0.25; rotY = 0.3; autoY = 0; camZ = 16;
   buildControls();
   renderArchitecturePanels();
   refreshVisibility();
 }
 
 function applySearch(term){
-  const q = term.trim().toLowerCase();
-  if(!q){
-    refreshVisibility();
-    return;
+  activeSearchTerm = term.trim().toLowerCase();
+  refreshVisibility();
+  const match = meshes.find(mesh => mesh.visible)?.userData?.id || '';
+  if(match && match !== selectedNodeId){
+    focusNode(match);
   }
-  let match = null;
-  meshes.forEach(mesh => {
-    const node = mesh.userData;
-    const hay = `${node.label} ${node.sub} ${node.desc} ${(node.capabilities || []).join(' ')}`.toLowerCase();
-    mesh.visible = activeGroups.has(node.group) && hay.includes(q);
-    if(mesh.visible && !match) match = node.id;
-  });
-  labels.forEach(label => {
-    const node = nodesById[label.userData.nodeId];
-    label.visible = !!node?.mesh?.visible;
-  });
-  lines.forEach(line => {
-    const from = nodesById[line.userData.from], to = nodesById[line.userData.to];
-    line.visible = !!from?.mesh?.visible && !!to?.mesh?.visible;
-  });
-  if(match) renderNodeDetails(match);
 }
 
 canvas.addEventListener('mousedown', e => { drag = true; px = e.clientX; py = e.clientY; canvas.style.cursor = 'grabbing'; pauseFollowCamera(2600); });
