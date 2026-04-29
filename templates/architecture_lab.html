@@ -64,6 +64,8 @@ button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35)
 .view-row,.layer-row,.mode-row,.overlay-row,.variant-row{display:flex;flex-wrap:wrap;gap:8px}
 .chip.active{background:rgba(41,121,255,.16);border-color:rgba(41,121,255,.38);color:#9fc2ff}
 .stage-footer{position:absolute;left:14px;right:14px;bottom:14px;display:flex;justify-content:space-between;align-items:flex-end;gap:12px;pointer-events:none}
+.stage-mobile-tabs{display:none}
+.stage-mobile-tab.active{background:rgba(41,121,255,.16);border-color:rgba(41,121,255,.38);color:#9fc2ff}
 .legend{display:grid;grid-template-columns:repeat(2,minmax(120px,1fr));gap:6px 10px;padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(7,11,18,.74);max-width:430px;pointer-events:auto}
 .legend-item{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--tx2)}
 .legend-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
@@ -300,11 +302,19 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
   .viz-stage{display:grid;grid-template-rows:minmax(360px,56vh) auto;min-height:0;height:auto;overflow:visible}
   #c3d{grid-row:1;min-height:360px;height:100%}
   .stage-footer{grid-row:2;position:static;left:auto;right:auto;bottom:auto;display:grid;grid-template-columns:1fr;align-items:stretch;gap:12px;padding:12px;pointer-events:auto;background:linear-gradient(180deg,rgba(7,11,18,.08),rgba(7,11,18,.62))}
+  .stage-mobile-tabs{display:flex;flex-wrap:wrap;gap:8px}
+  .stage-mobile-tab{padding:7px 11px;border-radius:999px;background:rgba(255,255,255,.03)}
+  .stage-footer[data-mobile-stage-panel=""] .footer-stack,
+  .stage-footer[data-mobile-stage-panel=""] > .legend{display:none}
+  .stage-footer[data-mobile-stage-panel="replay"] .mini-map-shell,
+  .stage-footer[data-mobile-stage-panel="replay"] > .legend{display:none}
+  .stage-footer[data-mobile-stage-panel="radar"] .replay-clock{display:none}
   .stage-footer > .footer-stack{order:1}
   .stage-footer > .legend{order:2;max-width:none}
   .legend{grid-template-columns:1fr}
   .viz-toolbar,.viz-meta-bar{padding:12px}
   .viz-meta-actions,.footer-stack{justify-items:stretch}
+  .footer-stack{justify-items:stretch}
   .footer-stack{justify-items:stretch;gap:12px}
   .stage-control-row,.stage-status-row{justify-content:flex-start}
   .replay-clock,.mini-map-shell,.legend{min-width:0;background:var(--s2)}
@@ -397,10 +407,14 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
           <div class="viz-stage">
             <canvas id="c3d"></canvas>
             <div id="tip"></div>
-            <div class="stage-footer">
+            <div class="stage-footer" id="stageFooter" data-mobile-stage-panel="">
+              <div class="stage-mobile-tabs" id="stageMobileTabs">
+                <button type="button" class="stage-mobile-tab" data-stage-mobile="replay" aria-pressed="false">Replay</button>
+                <button type="button" class="stage-mobile-tab" data-stage-mobile="radar" aria-pressed="false">Radar</button>
+              </div>
               <div class="legend" id="legend"></div>
               <div class="footer-stack">
-                <div class="replay-clock">
+                <div class="replay-clock" id="stageReplayDock">
                   <div class="replay-clock-top">
                     <strong id="replayClockTitle">Route Clock</strong>
                     <span id="replayClockStep">waiting</span>
@@ -409,7 +423,7 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
                   <div class="clock-track"><div class="clock-fill" id="replayClockFill" style="width:0%"></div></div>
                   <div class="clock-caption" id="replayClockCaption">Select a route card to start a cinematic replay trace.</div>
                 </div>
-                <div class="mini-map-shell">
+                <div class="mini-map-shell" id="stageRadarDock">
                   <div class="mini-map-head">
                     <span class="subhead">Scene Radar</span>
                     <small id="miniMapCaption">full stack</small>
@@ -752,6 +766,7 @@ const tip = document.getElementById('tip');
 let drag = false, px = 0, py = 0, rotX = 0.25, rotY = 0.3, autoY = 0, camZ = 16, hovMesh = null;
 let activeSearchTerm = '';
 let activeSearchMatchCount = 0;
+let mobileStagePanel = '';
 
 function resize(){
   const w = canvas.parentElement.clientWidth;
@@ -759,6 +774,7 @@ function resize(){
   renderer.setSize(w,h);
   camera.aspect = w/h;
   camera.updateProjectionMatrix();
+  renderMobileStageDock();
   if(window.innerWidth > 768){
     const sb = document.querySelector('.sidebar');
     if(sb?.classList.contains('open')) toggleSidebar(false);
@@ -1606,6 +1622,23 @@ function renderMiniMap(){
     : `${visibleNodes.length} visible nodes · ${displayedRouteIds().length} route steps revealed`;
 }
 
+function renderMobileStageDock(){
+  const footer = document.getElementById('stageFooter');
+  if(!footer) return;
+  const isMobile = window.innerWidth <= 760;
+  footer.dataset.mobileStagePanel = isMobile ? mobileStagePanel : 'desktop';
+  document.querySelectorAll('[data-stage-mobile]').forEach(btn => {
+    const active = isMobile && btn.dataset.stageMobile === mobileStagePanel;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function setMobileStagePanel(panel){
+  mobileStagePanel = mobileStagePanel === panel ? '' : panel;
+  renderMobileStageDock();
+}
+
 function renderArchitecturePanels(){
   const items = stampReplayItems(ensureReplaySelection(), activeOverlayMode);
   renderRoutePills(items);
@@ -1617,6 +1650,7 @@ function renderArchitecturePanels(){
   renderTimelineList();
   updateStageNote();
   renderMiniMap();
+  renderMobileStageDock();
   renderDeepInspector();
 }
 
@@ -2878,6 +2912,9 @@ document.getElementById('replayMode').addEventListener('change', e => setOverlay
 document.getElementById('playbackSlider').addEventListener('input', e => setPlaybackIndex(e.target.value));
 document.getElementById('playbackToggle').addEventListener('click', togglePlaybackAuto);
 document.getElementById('playbackReset').addEventListener('click', resetPlayback);
+document.querySelectorAll('[data-stage-mobile]').forEach(btn => {
+  btn.addEventListener('click', () => setMobileStagePanel(btn.dataset.stageMobile));
+});
 
 window.addEventListener('keydown', event => {
   if(!canUseGlobalShortcut(event)) return;
