@@ -357,7 +357,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-gateway",   action="store_true")
     p.add_argument("--no-ml-service", action="store_true")
     p.add_argument("--port",         type=int,   default=5000)
-    p.add_argument("--host",         type=str,   default="0.0.0.0")
+    p.add_argument("--host",         type=str,   default="127.0.0.1")
     p.add_argument("--http2", action="store_true", help="Enable HTTP/2 server if available")
     p.add_argument("--ssl-cert", type=str,   default=None, help="Path to TLS certificate for HTTPS / HTTP/2 (default: generated cert.pem)")
     p.add_argument("--ssl-key",  type=str,   default=None, help="Path to TLS private key for HTTPS / HTTP/2 (default: generated key.pem)")

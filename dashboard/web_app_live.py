@@ -21,6 +21,7 @@ from flask_cors import CORS
 from functools import wraps
 import hashlib
 from werkzeug.middleware.proxy_fix import ProxyFix
+from urllib.parse import splitport
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -110,6 +111,8 @@ try:
         CTRADER_LIVE_DEPTH_ENABLED,
         DUKASCOPY_HISTORY_ENABLED,
         DUKASCOPY_LIVE_DEPTH_ENABLED,
+        DASHBOARD_ALLOWED_HOSTS,
+        DEVELOPMENT_MODE,
         LOCAL_CANDLE_STORE_ENABLED,
         NEWS_REDDIT_ENABLED,
         NEWS_RSS_ENABLED,
@@ -121,7 +124,9 @@ try:
     )
 except Exception:
     DASHBOARD_CORS_ORIGINS = ["http://localhost:5000"]
+    DASHBOARD_ALLOWED_HOSTS = []
     TRUST_PROXY_COUNT = 1
+    DEVELOPMENT_MODE = False
     PLAYBOOK_ONLY_RUNTIME = False
     NEWS_SENTIMENT_ENABLED = True
     NEWS_REDDIT_ENABLED = False
@@ -144,6 +149,40 @@ except Exception:
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=TRUST_PROXY_COUNT, x_proto=TRUST_PROXY_COUNT, x_host=TRUST_PROXY_COUNT)
 CORS(app, resources={r"/api/*": {"origins": DASHBOARD_CORS_ORIGINS}})
+
+
+def _normalize_host_name(value: str) -> str:
+    host = (value or "").strip().lower()
+    if not host:
+        return ""
+    if host.startswith("[") and "]" in host:
+        host = host[1:].split("]", 1)[0]
+        return host
+    maybe_host, _ = splitport(host)
+    return maybe_host or host
+
+
+_DASHBOARD_ALLOWED_HOSTS = {
+    normalized
+    for normalized in (
+        _normalize_host_name(host)
+        for host in DASHBOARD_ALLOWED_HOSTS
+    )
+    if normalized
+}
+_DASHBOARD_ALLOWED_HOSTS.update({"127.0.0.1", "localhost", "::1"})
+
+
+@app.before_request
+def _enforce_allowed_hosts():
+    if DEVELOPMENT_MODE or not _DASHBOARD_ALLOWED_HOSTS:
+        return None
+    request_host = _normalize_host_name(request.host)
+    if request_host in _DASHBOARD_ALLOWED_HOSTS:
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"success": False, "error": "Host not allowed"}), 421
+    return Response("Host not allowed", status=421, mimetype="text/plain")
 
 # ── Flask Error Handlers ──────────────────────────────────────────────────────
 
@@ -7587,7 +7626,7 @@ def _dashboard_refresh_ig_quotes_loop(stream_state: Dict[str, Dict[str, str]]) -
         time.sleep(5)
 
 
-def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool = False, ssl_cert: str | None = None, ssl_key: str | None = None) -> None:
+def start_dashboard(core, host: str = "127.0.0.1", port: int = 5000, http2: bool = False, ssl_cert: str | None = None, ssl_key: str | None = None) -> None:
     """Called by bot.py after engine.start(). Blocking — never returns."""
     inject_core(core)
     _init_api_key()  # FIX SEC-05: Initialize API key authentication
@@ -7648,4 +7687,4 @@ def start_dashboard(core, host: str = "0.0.0.0", port: int = 5000, http2: bool =
 # Standalone mode (python -m dashboard.web_app_live)
 if __name__ == "__main__":
     logger.info("[dashboard] Standalone mode — engine not connected")
-    app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)
+    app.run(debug=False, host="127.0.0.1", port=5000, threaded=True)

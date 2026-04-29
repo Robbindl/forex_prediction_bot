@@ -30,6 +30,9 @@ sudo systemctl restart "${SERVICE_NAME}"
 echo "Installing Nginx site..."
 sudo cp deploy/oraclecloud/nginx-forex-bot.conf "/etc/nginx/sites-available/${NGINX_SITE_NAME}"
 sudo ln -sf "/etc/nginx/sites-available/${NGINX_SITE_NAME}" "/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
+if [[ -L /etc/nginx/sites-enabled/default ]]; then
+  sudo rm -f /etc/nginx/sites-enabled/default
+fi
 sudo nginx -t
 sudo systemctl reload nginx
 

@@ -53,6 +53,7 @@ python3 -m venv venv_tf
   - `DASHBOARD_API_KEY` is set
   - `TRUST_PROXY_COUNT=1`
   - `DASHBOARD_CORS_ORIGINS` matches your real dashboard origin
+  - `DASHBOARD_ALLOWED_HOSTS` matches the real dashboard host/domain that should be served
   - `DATABASE_URL` points to the real database
   - `REDIS_URL` points to the real Redis instance
   - `COMMAND_BOT_TOKEN` / `COMMAND_BOT_CHAT_ID` are set if you expect command alerts
@@ -116,6 +117,12 @@ sudo systemctl reload nginx
 
 Then add TLS with Certbot or your preferred certificate manager.
 
+Important:
+
+- keep the bot bound to `127.0.0.1:5000`
+- do not expose port `5000` publicly
+- let Nginx own public `80/443`
+
 ## 7. Oracle network rules
 
 Allow inbound:
@@ -129,6 +136,20 @@ Do not expose publicly:
 - `8081`
 - `9100`
 - `5432`
+
+If you use `ufw`, a safe baseline is:
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw deny 5000/tcp
+sudo ufw deny 8081/tcp
+sudo ufw deny 9100/tcp
+sudo ufw deny 5432/tcp
+sudo ufw --force enable
+sudo ufw status verbose
+```
 
 Allow outbound access to:
 

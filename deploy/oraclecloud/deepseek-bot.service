@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Oracle Cloud images typically use the `ubuntu` account.
+# On other hosts, change User/Group to an existing service account before enabling the unit.
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/forex_prediction_bot

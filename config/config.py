@@ -251,6 +251,11 @@ DEVELOPMENT_MODE = os.getenv("DEVELOPMENT_MODE", "false").lower() == "true"
 DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
 SESSION_TOKEN_TTL = int(os.getenv("SESSION_TOKEN_TTL", "3600"))  # 1 hour default
 TRUST_PROXY_COUNT = int(os.getenv("TRUST_PROXY_COUNT", "1"))
+DASHBOARD_ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv("DASHBOARD_ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+]
 DASHBOARD_BG_REFRESH_WORKERS = _parse_int(os.getenv("DASHBOARD_BG_REFRESH_WORKERS", "6"), 6)
 DASHBOARD_COMMAND_CENTER_WORKERS = _parse_int(os.getenv("DASHBOARD_COMMAND_CENTER_WORKERS", "4"), 4)
 DASHBOARD_CORRELATION_WORKERS = _parse_int(os.getenv("DASHBOARD_CORRELATION_WORKERS", "8"), 8)
