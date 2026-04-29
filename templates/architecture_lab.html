@@ -49,7 +49,7 @@ button:hover,.chip:hover{background:var(--s3)}
 button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35);color:#9fc2ff}
 .ghost-btn{background:rgba(255,255,255,.02)}
 .ghost-btn.active{background:rgba(0,229,255,.12);border-color:rgba(0,229,255,.28);color:#bff7ff}
-.viz-shell{display:grid;grid-template-columns:minmax(0,1.22fr) minmax(320px,380px);gap:14px;padding:0;align-items:start;min-height:auto}
+.viz-shell{display:block;padding:0;min-height:auto}
 .viz-stage{position:relative;overflow:hidden;min-height:680px;height:min(78vh,860px);border-radius:14px;background:radial-gradient(circle at top,rgba(59,130,246,.10),transparent 28%),var(--s2);border:1px solid rgba(255,255,255,.04)}
 #c3d{width:100%;height:100%;display:block}
 #tip{position:absolute;top:0;left:0;pointer-events:none;display:none;background:rgba(7,11,18,.96);border:1px solid var(--bd);border-radius:12px;padding:8px 12px;font-size:12px;color:var(--tx);white-space:nowrap;z-index:10;box-shadow:0 14px 28px rgba(0,0,0,.25)}
@@ -87,6 +87,7 @@ button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35)
 .mini-map-head small{font-size:11px;color:var(--tx2)}
 #miniMap{width:210px;height:210px;display:block;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
 .mini-map-meta{font-size:11px;color:var(--tx2);line-height:1.45}
+.summary-row{display:grid;grid-template-columns:minmax(300px,.46fr) minmax(0,1fr);gap:14px;align-items:start}
 .right-col{grid-auto-rows:min-content;align-content:start}
 .overlay-band{padding:14px 16px;display:grid;gap:12px}
 .overlay-band h2{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--tx2)}
@@ -117,7 +118,13 @@ button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35)
 .tab.active{background:rgba(41,121,255,.16);border-color:rgba(41,121,255,.38);color:#9fc2ff}
 .detail-pane{display:grid;gap:10px}
 .detail-pane[hidden]{display:none}
+.node-detail-panel{align-content:start}
+.node-detail-layout{display:grid;grid-template-columns:minmax(240px,.7fr) minmax(0,1.3fr);gap:14px;align-items:start}
+.detail-summary{display:grid;gap:12px;align-content:start}
+.detail-body{display:grid;gap:12px;min-width:0}
 .kv{display:grid;gap:10px}
+.detail-body #detailPaneOverview{grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);align-items:start}
+.detail-body #detailPaneOverview .actions{grid-column:1 / -1}
 .kv-row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px}
 .kv-row:last-child{border:none;padding-bottom:0}
 .kv-row span:first-child{color:var(--tx3)}
@@ -252,10 +259,10 @@ button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35)
 body.mission-control .sidebar,
 body.mission-control .topbar,
 body.mission-control .hero,
-body.mission-control .right-col{display:none}
+body.mission-control .summary-row{display:none}
 body.mission-control .content{grid-template-columns:1fr;padding:10px;gap:10px}
 body.mission-control .left-col{grid-template-rows:minmax(0,1fr) auto;gap:10px}
-body.mission-control .viz-shell{padding:0;grid-template-columns:1fr}
+body.mission-control .viz-shell{padding:0}
 body.mission-control .viz-stage{min-height:calc(100vh - 300px);border-radius:18px}
 body.mission-control .stage-hud{top:18px;left:18px;right:18px}
 body.mission-control .stage-footer{left:18px;right:18px;bottom:18px}
@@ -265,9 +272,9 @@ body.mission-control .replay-clock,
 body.mission-control .stage-note{background:rgba(7,11,18,.84)}
 body.mission-control .surface.inspector-panel{border-radius:18px}
 @media (max-width:1200px){
-  .viz-shell{grid-template-columns:1fr}
+  .summary-row{grid-template-columns:1fr}
   .storyboard{grid-template-columns:1fr}
-  .inspector-body,.split-grid,.dep-columns{grid-template-columns:1fr}
+  .inspector-body,.split-grid,.dep-columns,.node-detail-layout,.detail-body #detailPaneOverview{grid-template-columns:1fr}
   .viz-stage{height:min(70vh,760px)}
 }
 @media (max-width:768px){
@@ -285,12 +292,11 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
   .hero{display:grid}
   .hero-actions{justify-content:flex-start}
   .tb-right{display:none}
-  .viz-shell{grid-template-columns:1fr}
   .viz-stage{min-height:560px;height:min(72vh,620px)}
   .legend{grid-template-columns:1fr}
   .footer-stack{justify-items:stretch}
   .stage-control-row,.stage-status-row{justify-content:flex-start}
-  .metric-grid,.neighbor-grid,.pulse-grid,.inspector-metrics,.dep-columns,.split-grid,.inspector-body,.storyboard{grid-template-columns:1fr}
+  .summary-row,.metric-grid,.neighbor-grid,.pulse-grid,.inspector-metrics,.dep-columns,.split-grid,.inspector-body,.storyboard,.node-detail-layout{grid-template-columns:1fr}
   .route-pills,.heat-grid,.replay-cards,.timeline-list,.live-log{grid-auto-flow:row;grid-auto-columns:auto;grid-template-columns:1fr;overflow:visible;padding-bottom:0}
   #miniMap{width:100%;height:auto;aspect-ratio:1}
 }
@@ -396,53 +402,59 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
               </div>
             </div>
           </div>
-          <aside class="right-col">
-            <div class="surface panel">
-              <h2>Runtime Snapshot</h2>
-              <div class="stat-grid">
-                <div class="stat"><div class="label">Healthy services</div><div class="value" id="healthyServices">--</div><div class="sub" id="serviceSub">Loading</div></div>
-                <div class="stat"><div class="label">Processes up</div><div class="value" id="healthyProcesses">--</div><div class="sub" id="processSub">Loading</div></div>
-                <div class="stat"><div class="label">Live feeds</div><div class="value" id="liveFeeds">--</div><div class="sub" id="feedSub">Broker + stream state</div></div>
-                <div class="stat"><div class="label">Open positions</div><div class="value" id="openPositions">--</div><div class="sub" id="positionSub">Current engine state</div></div>
-              </div>
-              <div class="mini-trend">
-                <div class="trend-head"><strong>Runtime Drift</strong><span id="trendCaption">Building history</span></div>
-                <div class="trend-bars" id="trendBars"></div>
-              </div>
-            </div>
+        </div>
 
-            <div class="surface panel">
-              <h2>Node Detail</h2>
-              <div class="detail-head">
-                <div>
-                  <div class="detail-title" id="detailTitle">Decision Engine</div>
-                  <div class="detail-sub" id="detailSub">Core · live signal gate</div>
+        <div class="summary-row">
+          <div class="surface panel">
+            <h2>Runtime Snapshot</h2>
+            <div class="stat-grid">
+              <div class="stat"><div class="label">Healthy services</div><div class="value" id="healthyServices">--</div><div class="sub" id="serviceSub">Loading</div></div>
+              <div class="stat"><div class="label">Processes up</div><div class="value" id="healthyProcesses">--</div><div class="sub" id="processSub">Loading</div></div>
+              <div class="stat"><div class="label">Live feeds</div><div class="value" id="liveFeeds">--</div><div class="sub" id="feedSub">Broker + stream state</div></div>
+              <div class="stat"><div class="label">Open positions</div><div class="value" id="openPositions">--</div><div class="sub" id="positionSub">Current engine state</div></div>
+            </div>
+            <div class="mini-trend">
+              <div class="trend-head"><strong>Runtime Drift</strong><span id="trendCaption">Building history</span></div>
+              <div class="trend-bars" id="trendBars"></div>
+            </div>
+          </div>
+
+          <div class="surface panel node-detail-panel">
+            <h2>Node Detail</h2>
+            <div class="node-detail-layout">
+              <div class="detail-summary">
+                <div class="detail-head">
+                  <div>
+                    <div class="detail-title" id="detailTitle">Decision Engine</div>
+                    <div class="detail-sub" id="detailSub">Core · live signal gate</div>
+                  </div>
+                  <div class="status-badge status-unk" id="detailStatus">Loading</div>
                 </div>
-                <div class="status-badge status-unk" id="detailStatus">Loading</div>
+                <div class="detail-copy" id="detailDescription"></div>
+                <div class="tab-row" id="detailTabs"></div>
               </div>
-              <div class="detail-copy" id="detailDescription"></div>
-              <div class="tab-row" id="detailTabs"></div>
-              <div class="detail-pane" id="detailPaneOverview">
-                <div class="kv" id="detailFacts"></div>
-                <ul class="list" id="detailCapabilities"></ul>
-                <div class="actions" id="detailActions"></div>
-              </div>
-              <div class="detail-pane" id="detailPaneMetrics" hidden>
-                <div class="metric-grid" id="detailMetrics"></div>
-              </div>
-              <div class="detail-pane" id="detailPaneErrors" hidden>
-                <div class="list" id="detailErrors"></div>
-              </div>
-              <div class="detail-pane" id="detailPaneSource" hidden>
-                <div class="source-grid" id="detailSource"></div>
-                <div class="source-grid" id="detailSourcePeek"></div>
-              </div>
-              <div class="detail-pane" id="detailPaneNeighbors" hidden>
-                <div class="neighbor-grid" id="detailNeighbors"></div>
+              <div class="detail-body">
+                <div class="detail-pane" id="detailPaneOverview">
+                  <div class="kv" id="detailFacts"></div>
+                  <ul class="list" id="detailCapabilities"></ul>
+                  <div class="actions" id="detailActions"></div>
+                </div>
+                <div class="detail-pane" id="detailPaneMetrics" hidden>
+                  <div class="metric-grid" id="detailMetrics"></div>
+                </div>
+                <div class="detail-pane" id="detailPaneErrors" hidden>
+                  <div class="list" id="detailErrors"></div>
+                </div>
+                <div class="detail-pane" id="detailPaneSource" hidden>
+                  <div class="source-grid" id="detailSource"></div>
+                  <div class="source-grid" id="detailSourcePeek"></div>
+                </div>
+                <div class="detail-pane" id="detailPaneNeighbors" hidden>
+                  <div class="neighbor-grid" id="detailNeighbors"></div>
+                </div>
               </div>
             </div>
-
-          </aside>
+          </div>
         </div>
 
         <div class="surface overlay-band" style="min-height:0">
