@@ -297,15 +297,22 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
   .hero{display:grid}
   .hero-actions{justify-content:flex-start}
   .tb-right{display:none}
-  .viz-stage{min-height:560px;height:min(72vh,620px)}
+  .viz-stage{display:grid;grid-template-rows:minmax(360px,56vh) auto;min-height:0;height:auto;overflow:visible}
+  #c3d{grid-row:1;min-height:360px;height:100%}
+  .stage-footer{grid-row:2;position:static;left:auto;right:auto;bottom:auto;display:grid;grid-template-columns:1fr;align-items:stretch;gap:12px;padding:12px;pointer-events:auto;background:linear-gradient(180deg,rgba(7,11,18,.08),rgba(7,11,18,.62))}
+  .stage-footer > .footer-stack{order:1}
+  .stage-footer > .legend{order:2;max-width:none}
   .legend{grid-template-columns:1fr}
   .viz-toolbar,.viz-meta-bar{padding:12px}
   .viz-meta-actions,.footer-stack{justify-items:stretch}
-  .footer-stack{justify-items:stretch}
+  .footer-stack{justify-items:stretch;gap:12px}
   .stage-control-row,.stage-status-row{justify-content:flex-start}
+  .replay-clock,.mini-map-shell,.legend{min-width:0;background:var(--s2)}
+  .replay-clock{width:100%}
+  .mini-map-shell{width:100%}
   .summary-row,.metric-grid,.neighbor-grid,.pulse-grid,.inspector-metrics,.dep-columns,.split-grid,.inspector-body,.storyboard,.node-detail-layout{grid-template-columns:1fr}
   .route-pills,.heat-grid,.replay-cards,.timeline-list,.live-log{grid-auto-flow:row;grid-auto-columns:auto;grid-template-columns:1fr;overflow:visible;padding-bottom:0}
-  #miniMap{width:100%;height:auto;aspect-ratio:1}
+  #miniMap{width:min(100%,240px);height:auto;aspect-ratio:1;margin:0 auto}
 }
 </style>
 </head>
