@@ -34,23 +34,23 @@ body.mode-ops{--bg:#0b0f13;--s1:#11161b;--s2:#171d24;--s3:#202831;--s4:#1a222b;-
 .tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
 .pill{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:999px;border:1px solid var(--bd);background:rgba(255,255,255,.03);font-size:11px;color:var(--tx2)}
 .pill strong{color:var(--tx);font-size:12px}
-.content{flex:1;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(360px,430px);gap:16px;align-items:start;overflow-y:auto;padding:14px 14px 24px;min-height:0}
+.content{flex:1;display:block;overflow-y:auto;padding:14px 14px 24px;min-height:0}
 .surface{background:var(--s1);border:1px solid var(--bd);border-radius:14px;min-height:0}
 .left-col,.right-col{display:grid;gap:14px;min-height:0}
-.left-col,.right-col{align-content:start}
-.hero{padding:14px 16px;display:grid;gap:8px}
-.hero-copy{max-width:900px}
+.left-col{grid-template-rows:auto auto auto;align-content:start}
+.hero{padding:16px 18px;display:flex;justify-content:space-between;gap:18px;align-items:flex-start}
+.hero-copy{max-width:760px}
 .eyebrow{font-size:11px;letter-spacing:.8px;text-transform:uppercase;color:var(--tx3);margin-bottom:8px}
-.hero h1{font-size:22px;line-height:1.12;margin-bottom:4px}
-.hero p{font-size:13px;line-height:1.5;color:var(--tx2);max-width:760px}
+.hero h1{font-size:24px;line-height:1.15;margin-bottom:8px}
+.hero p{font-size:13px;line-height:1.6;color:var(--tx2);max-width:640px}
 .hero-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
 button,.chip{appearance:none;border:1px solid var(--bd);background:var(--s2);color:var(--tx);border-radius:10px;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer;transition:.12s}
 button:hover,.chip:hover{background:var(--s3)}
 button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35);color:#9fc2ff}
 .ghost-btn{background:rgba(255,255,255,.02)}
 .ghost-btn.active{background:rgba(0,229,255,.12);border-color:rgba(0,229,255,.28);color:#bff7ff}
-.viz-shell{display:block}
-.viz-stage{position:relative;overflow:hidden;min-height:720px;height:min(78vh,860px);border-radius:14px;background:radial-gradient(circle at top,rgba(59,130,246,.10),transparent 28%),var(--s2);border:1px solid rgba(255,255,255,.04)}
+.viz-shell{display:grid;grid-template-columns:minmax(0,1.22fr) minmax(320px,380px);gap:14px;padding:0;align-items:start;min-height:auto}
+.viz-stage{position:relative;overflow:hidden;min-height:680px;height:min(78vh,860px);border-radius:14px;background:radial-gradient(circle at top,rgba(59,130,246,.10),transparent 28%),var(--s2);border:1px solid rgba(255,255,255,.04)}
 #c3d{width:100%;height:100%;display:block}
 #tip{position:absolute;top:0;left:0;pointer-events:none;display:none;background:rgba(7,11,18,.96);border:1px solid var(--bd);border-radius:12px;padding:8px 12px;font-size:12px;color:var(--tx);white-space:nowrap;z-index:10;box-shadow:0 14px 28px rgba(0,0,0,.25)}
 .stage-hud{position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;gap:10px;pointer-events:none}
@@ -88,13 +88,6 @@ button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35)
 #miniMap{width:210px;height:210px;display:block;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
 .mini-map-meta{font-size:11px;color:var(--tx2);line-height:1.45}
 .right-col{grid-auto-rows:min-content;align-content:start}
-.stage-tools-panel{padding:14px 16px;display:grid;gap:12px}
-.stage-tools-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
-.stage-tools-copy{font-size:12px;color:var(--tx2);line-height:1.45;max-width:560px}
-.tool-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-.tool-block{display:grid;gap:8px;padding:12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2)}
-.tool-block-wide{grid-column:1 / -1}
-.stage-summary-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(240px,.9fr) minmax(220px,.8fr);gap:12px;align-items:start}
 .panel{padding:14px 16px;display:grid;gap:12px}
 .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--tx2)}
 .mini-trend{padding:12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2);display:grid;gap:8px}
@@ -270,8 +263,6 @@ body.mission-control .replay-clock,
 body.mission-control .stage-note{background:rgba(7,11,18,.84)}
 body.mission-control .surface.inspector-panel{border-radius:18px}
 @media (max-width:1200px){
-  .content{grid-template-columns:1fr}
-  .tool-grid,.stage-summary-grid{grid-template-columns:1fr}
   .viz-shell{grid-template-columns:1fr}
   .storyboard{grid-template-columns:1fr}
   .inspector-body,.split-grid,.dep-columns{grid-template-columns:1fr}
@@ -288,7 +279,7 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
   body{overflow:auto}
   .layout{display:block;height:auto;min-height:100vh}
   .main{min-height:100vh;overflow:visible}
-  .content{grid-template-columns:1fr;padding:12px 12px 20px;overflow:visible}
+  .content{padding:12px 12px 20px;overflow:visible}
   .hero{display:grid}
   .hero-actions{justify-content:flex-start}
   .tb-right{display:none}
@@ -297,7 +288,6 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
   .legend{grid-template-columns:1fr}
   .footer-stack{justify-items:stretch}
   .stage-control-row,.stage-status-row{justify-content:flex-start}
-  .tool-grid,.stage-summary-grid{grid-template-columns:1fr}
   .metric-grid,.neighbor-grid,.heat-grid,.pulse-grid,.inspector-metrics,.dep-columns,.split-grid,.inspector-body,.storyboard{grid-template-columns:1fr}
   #miniMap{width:100%;height:auto;aspect-ratio:1}
 }
@@ -345,56 +335,14 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
             <h1>Interactive 3D architecture for the whole trading stack.</h1>
             <p>This turns the bot into something you can inspect spatially: entry points, decision logic, risk, order flow, brokers, data stores, and the live runtime status sitting on top of the structure.</p>
           </div>
-        </div>
-
-        <div class="surface panel stage-tools-panel">
-          <div class="stage-tools-head">
-            <div>
-              <h2>Stage Controls</h2>
-              <div class="stage-tools-copy">Everything that drives the architecture view lives here now, so the 3D scene stays readable.</div>
-            </div>
-            <div class="stage-control-row">
-              <button class="primary" id="focusCoreBtn">Focus Core</button>
-              <button id="focusExecutionBtn">Focus Execution</button>
-              <button id="focusDataBtn">Focus Data</button>
-              <button id="focusIntelBtn">Focus Intelligence</button>
-              <button class="ghost-btn" id="followPlaybackBtn">Follow Route</button>
-              <button class="ghost-btn" id="playbackFocusBtn">Jump Replay</button>
-              <button class="ghost-btn" id="missionControlBtn">Mission Control</button>
-              <button id="resetViewBtn">Reset View</button>
-            </div>
-          </div>
-          <div class="search">
-            <input id="nodeSearch" type="text" placeholder="Search node, module, service, or broker">
-            <small id="searchHint">all layers</small>
-          </div>
-          <div class="tool-grid">
-            <div class="tool-block"><span class="subhead">Views</span><div class="view-row" id="viewRow"></div></div>
-            <div class="tool-block"><span class="subhead">Layers</span><div class="layer-row" id="layerRow"></div></div>
-            <div class="tool-block"><span class="subhead">Design</span><div class="mode-row" id="modeRow"></div></div>
-            <div class="tool-block"><span class="subhead">Variant</span><div class="variant-row" id="variantRow"></div></div>
-            <div class="tool-block tool-block-wide"><span class="subhead">Overlay</span><div class="overlay-row" id="overlayRow"></div></div>
-          </div>
-          <div class="stage-status-row" id="stageStatusRow"></div>
-          <div class="stage-summary-grid">
-            <div class="stage-note" id="stageNote">drag to rotate · scroll to zoom · click to inspect · double click to jump</div>
-            <div class="replay-clock">
-              <div class="replay-clock-top">
-                <strong id="replayClockTitle">Route Clock</strong>
-                <span id="replayClockStep">waiting</span>
-              </div>
-              <div class="replay-clock-meta" id="replayClockMeta"></div>
-              <div class="clock-track"><div class="clock-fill" id="replayClockFill" style="width:0%"></div></div>
-              <div class="clock-caption" id="replayClockCaption">Select a route card to start a cinematic replay trace.</div>
-            </div>
-            <div class="mini-map-shell">
-              <div class="mini-map-head">
-                <span class="subhead">Scene Radar</span>
-                <small id="miniMapCaption">full stack</small>
-              </div>
-              <canvas id="miniMap" width="210" height="210"></canvas>
-              <div class="mini-map-meta" id="miniMapMeta">route and layer emphasis update live as you filter the graph.</div>
-            </div>
+          <div class="hero-actions">
+            <button class="primary" id="focusCoreBtn">Focus Core</button>
+            <button id="focusExecutionBtn">Focus Execution</button>
+            <button id="focusDataBtn">Focus Data</button>
+            <button id="focusIntelBtn">Focus Intelligence</button>
+            <button class="ghost-btn" id="followPlaybackHeroBtn">Follow Route</button>
+            <button class="ghost-btn" id="missionControlHeroBtn">Mission Control</button>
+            <button id="resetViewBtn">Reset View</button>
           </div>
         </div>
 
@@ -402,7 +350,122 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
           <div class="viz-stage">
             <canvas id="c3d"></canvas>
             <div id="tip"></div>
+            <div class="stage-hud">
+              <div class="hud-stack">
+                <div class="search">
+                  <input id="nodeSearch" type="text" placeholder="Search node, module, service, or broker">
+                  <small id="searchHint">all layers</small>
+                </div>
+                <div class="view-row" id="viewRow"></div>
+                <div class="layer-row" id="layerRow"></div>
+                <div class="mode-row" id="modeRow"></div>
+                <div class="variant-row" id="variantRow"></div>
+                <div class="overlay-row" id="overlayRow"></div>
+              </div>
+            </div>
+            <div class="stage-footer">
+              <div class="legend" id="legend"></div>
+              <div class="footer-stack">
+                <div class="stage-control-row">
+                  <button class="ghost-btn" id="followPlaybackBtn">Follow Route</button>
+                  <button class="ghost-btn" id="playbackFocusBtn">Jump Replay</button>
+                  <button class="ghost-btn" id="missionControlBtn">Mission Control</button>
+                </div>
+                <div class="stage-status-row" id="stageStatusRow"></div>
+                <div class="stage-note" id="stageNote">drag to rotate · scroll to zoom · click to inspect · double click to jump</div>
+                <div class="replay-clock">
+                  <div class="replay-clock-top">
+                    <strong id="replayClockTitle">Route Clock</strong>
+                    <span id="replayClockStep">waiting</span>
+                  </div>
+                  <div class="replay-clock-meta" id="replayClockMeta"></div>
+                  <div class="clock-track"><div class="clock-fill" id="replayClockFill" style="width:0%"></div></div>
+                  <div class="clock-caption" id="replayClockCaption">Select a route card to start a cinematic replay trace.</div>
+                </div>
+                <div class="mini-map-shell">
+                  <div class="mini-map-head">
+                    <span class="subhead">Scene Radar</span>
+                    <small id="miniMapCaption">full stack</small>
+                  </div>
+                  <canvas id="miniMap" width="210" height="210"></canvas>
+                  <div class="mini-map-meta" id="miniMapMeta">route and layer emphasis update live as you filter the graph.</div>
+                </div>
+              </div>
+            </div>
           </div>
+          <aside class="right-col">
+            <div class="surface panel">
+              <h2>Runtime Snapshot</h2>
+              <div class="stat-grid">
+                <div class="stat"><div class="label">Healthy services</div><div class="value" id="healthyServices">--</div><div class="sub" id="serviceSub">Loading</div></div>
+                <div class="stat"><div class="label">Processes up</div><div class="value" id="healthyProcesses">--</div><div class="sub" id="processSub">Loading</div></div>
+                <div class="stat"><div class="label">Live feeds</div><div class="value" id="liveFeeds">--</div><div class="sub" id="feedSub">Broker + stream state</div></div>
+                <div class="stat"><div class="label">Open positions</div><div class="value" id="openPositions">--</div><div class="sub" id="positionSub">Current engine state</div></div>
+              </div>
+              <div class="mini-trend">
+                <div class="trend-head"><strong>Runtime Drift</strong><span id="trendCaption">Building history</span></div>
+                <div class="trend-bars" id="trendBars"></div>
+              </div>
+            </div>
+
+            <div class="surface panel">
+              <h2>Node Detail</h2>
+              <div class="detail-head">
+                <div>
+                  <div class="detail-title" id="detailTitle">Decision Engine</div>
+                  <div class="detail-sub" id="detailSub">Core · live signal gate</div>
+                </div>
+                <div class="status-badge status-unk" id="detailStatus">Loading</div>
+              </div>
+              <div class="detail-copy" id="detailDescription"></div>
+              <div class="tab-row" id="detailTabs"></div>
+              <div class="detail-pane" id="detailPaneOverview">
+                <div class="kv" id="detailFacts"></div>
+                <ul class="list" id="detailCapabilities"></ul>
+                <div class="actions" id="detailActions"></div>
+              </div>
+              <div class="detail-pane" id="detailPaneMetrics" hidden>
+                <div class="metric-grid" id="detailMetrics"></div>
+              </div>
+              <div class="detail-pane" id="detailPaneErrors" hidden>
+                <div class="list" id="detailErrors"></div>
+              </div>
+              <div class="detail-pane" id="detailPaneSource" hidden>
+                <div class="source-grid" id="detailSource"></div>
+                <div class="source-grid" id="detailSourcePeek"></div>
+              </div>
+              <div class="detail-pane" id="detailPaneNeighbors" hidden>
+                <div class="neighbor-grid" id="detailNeighbors"></div>
+              </div>
+            </div>
+
+            <div class="surface panel" style="min-height:0">
+              <h2>Overlay Deck</h2>
+              <div class="select-shell">
+                <span class="subhead">Replay lane</span>
+                <select id="replayMode"></select>
+              </div>
+              <div class="route-pills" id="routePills"></div>
+              <div class="heat-grid" id="heatGrid"></div>
+              <div class="replay-cards" id="replayCards"></div>
+              <div class="playback-shell">
+                <div class="playback-top">
+                  <span class="subhead">Route Playback</span>
+                  <div class="playback-actions">
+                    <button type="button" id="playbackToggle">Auto Play</button>
+                    <button type="button" id="playbackReset">Reset</button>
+                  </div>
+                </div>
+                <input id="playbackSlider" class="playback-slider" type="range" min="1" max="1" value="1">
+                <div class="playback-caption" id="playbackCaption">Waiting for a route</div>
+                <div class="storyboard" id="routeStoryboard"></div>
+              </div>
+              <div class="subhead">Recent Timeline</div>
+              <div class="timeline-list" id="timelineList"></div>
+              <div class="subhead">Live Notes</div>
+              <div class="live-log" id="liveNotes"></div>
+            </div>
+          </aside>
         </div>
 
         <div class="surface inspector-panel">
@@ -423,80 +486,6 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
           </div>
         </div>
       </section>
-
-      <aside class="right-col">
-        <div class="surface panel">
-          <h2>Runtime Snapshot</h2>
-          <div class="stat-grid">
-            <div class="stat"><div class="label">Healthy services</div><div class="value" id="healthyServices">--</div><div class="sub" id="serviceSub">Loading</div></div>
-            <div class="stat"><div class="label">Processes up</div><div class="value" id="healthyProcesses">--</div><div class="sub" id="processSub">Loading</div></div>
-            <div class="stat"><div class="label">Live feeds</div><div class="value" id="liveFeeds">--</div><div class="sub" id="feedSub">Broker + stream state</div></div>
-            <div class="stat"><div class="label">Open positions</div><div class="value" id="openPositions">--</div><div class="sub" id="positionSub">Current engine state</div></div>
-          </div>
-          <div class="mini-trend">
-            <div class="trend-head"><strong>Runtime Drift</strong><span id="trendCaption">Building history</span></div>
-            <div class="trend-bars" id="trendBars"></div>
-          </div>
-        </div>
-
-        <div class="surface panel">
-          <h2>Node Detail</h2>
-          <div class="detail-head">
-            <div>
-              <div class="detail-title" id="detailTitle">Decision Engine</div>
-              <div class="detail-sub" id="detailSub">Core · live signal gate</div>
-            </div>
-            <div class="status-badge status-unk" id="detailStatus">Loading</div>
-          </div>
-          <div class="detail-copy" id="detailDescription"></div>
-          <div class="tab-row" id="detailTabs"></div>
-          <div class="detail-pane" id="detailPaneOverview">
-            <div class="kv" id="detailFacts"></div>
-            <ul class="list" id="detailCapabilities"></ul>
-            <div class="actions" id="detailActions"></div>
-          </div>
-          <div class="detail-pane" id="detailPaneMetrics" hidden>
-            <div class="metric-grid" id="detailMetrics"></div>
-          </div>
-          <div class="detail-pane" id="detailPaneErrors" hidden>
-            <div class="list" id="detailErrors"></div>
-          </div>
-          <div class="detail-pane" id="detailPaneSource" hidden>
-            <div class="source-grid" id="detailSource"></div>
-            <div class="source-grid" id="detailSourcePeek"></div>
-          </div>
-          <div class="detail-pane" id="detailPaneNeighbors" hidden>
-            <div class="neighbor-grid" id="detailNeighbors"></div>
-          </div>
-        </div>
-
-        <div class="surface panel" style="min-height:0">
-          <h2>Overlay Deck</h2>
-          <div class="select-shell">
-            <span class="subhead">Replay lane</span>
-            <select id="replayMode"></select>
-          </div>
-          <div class="route-pills" id="routePills"></div>
-          <div class="heat-grid" id="heatGrid"></div>
-          <div class="replay-cards" id="replayCards"></div>
-          <div class="playback-shell">
-            <div class="playback-top">
-              <span class="subhead">Route Playback</span>
-              <div class="playback-actions">
-                <button type="button" id="playbackToggle">Auto Play</button>
-                <button type="button" id="playbackReset">Reset</button>
-              </div>
-            </div>
-            <input id="playbackSlider" class="playback-slider" type="range" min="1" max="1" value="1">
-            <div class="playback-caption" id="playbackCaption">Waiting for a route</div>
-            <div class="storyboard" id="routeStoryboard"></div>
-          </div>
-          <div class="subhead">Recent Timeline</div>
-          <div class="timeline-list" id="timelineList"></div>
-          <div class="subhead">Live Notes</div>
-          <div class="live-log" id="liveNotes"></div>
-        </div>
-      </aside>
     </div>
   </div>
 </div>
@@ -1429,10 +1418,10 @@ function renderReplayClock(){
 }
 
 function renderStageControls(){
-  const followButtons = ['followPlaybackBtn']
+  const followButtons = ['followPlaybackBtn','followPlaybackHeroBtn']
     .map(id => document.getElementById(id))
     .filter(Boolean);
-  const missionButtons = ['missionControlBtn']
+  const missionButtons = ['missionControlBtn','missionControlHeroBtn']
     .map(id => document.getElementById(id))
     .filter(Boolean);
   followButtons.forEach(btn => {
@@ -2754,7 +2743,9 @@ document.getElementById('focusExecutionBtn').addEventListener('click', () => { a
 document.getElementById('focusDataBtn').addEventListener('click', () => { activeView='data'; activeGroups=new Set(VIEW_PRESETS.data); buildControls(); refreshVisibility(); focusNode('fetcher'); });
 document.getElementById('focusIntelBtn').addEventListener('click', () => { activeView='intel'; activeGroups=new Set(VIEW_PRESETS.intel); buildControls(); refreshVisibility(); focusNode('intel_svc'); });
 document.getElementById('missionControlBtn').addEventListener('click', () => setMissionControl());
+document.getElementById('missionControlHeroBtn').addEventListener('click', () => setMissionControl());
 document.getElementById('followPlaybackBtn').addEventListener('click', () => setFollowPlayback());
+document.getElementById('followPlaybackHeroBtn').addEventListener('click', () => setFollowPlayback());
 document.getElementById('playbackFocusBtn').addEventListener('click', jumpToReplayFocus);
 document.getElementById('replayMode').addEventListener('change', e => setOverlayMode(e.target.value));
 document.getElementById('playbackSlider').addEventListener('input', e => setPlaybackIndex(e.target.value));
