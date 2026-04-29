@@ -88,6 +88,8 @@ button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35)
 #miniMap{width:210px;height:210px;display:block;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
 .mini-map-meta{font-size:11px;color:var(--tx2);line-height:1.45}
 .right-col{grid-auto-rows:min-content;align-content:start}
+.overlay-band{padding:14px 16px;display:grid;gap:12px}
+.overlay-band h2{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--tx2)}
 .panel{padding:14px 16px;display:grid;gap:12px}
 .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--tx2)}
 .mini-trend{padding:12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2);display:grid;gap:8px}
@@ -440,33 +442,34 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
               </div>
             </div>
 
-            <div class="surface panel" style="min-height:0">
-              <h2>Overlay Deck</h2>
-              <div class="select-shell">
-                <span class="subhead">Replay lane</span>
-                <select id="replayMode"></select>
-              </div>
-              <div class="route-pills" id="routePills"></div>
-              <div class="heat-grid" id="heatGrid"></div>
-              <div class="replay-cards" id="replayCards"></div>
-              <div class="playback-shell" id="playbackShell">
-                <div class="playback-top">
-                  <span class="subhead">Route Playback</span>
-                  <div class="playback-actions">
-                    <button type="button" id="playbackToggle">Auto Play</button>
-                    <button type="button" id="playbackReset">Reset</button>
-                  </div>
-                </div>
-                <input id="playbackSlider" class="playback-slider" type="range" min="1" max="1" value="1">
-                <div class="playback-caption" id="playbackCaption">Waiting for a route</div>
-                <div class="storyboard" id="routeStoryboard"></div>
-              </div>
-              <div class="subhead" id="timelineSubhead" style="display:none">Recent Timeline</div>
-              <div class="timeline-list" id="timelineList" style="display:none"></div>
-              <div class="subhead" id="liveNotesSubhead" style="display:none">Live Notes</div>
-              <div class="live-log" id="liveNotes" style="display:none"></div>
-            </div>
           </aside>
+        </div>
+
+        <div class="surface overlay-band" style="min-height:0">
+          <h2>Overlay Deck</h2>
+          <div class="select-shell">
+            <span class="subhead">Replay lane</span>
+            <select id="replayMode"></select>
+          </div>
+          <div class="route-pills" id="routePills"></div>
+          <div class="heat-grid" id="heatGrid"></div>
+          <div class="replay-cards" id="replayCards"></div>
+          <div class="playback-shell" id="playbackShell">
+            <div class="playback-top">
+              <span class="subhead">Route Playback</span>
+              <div class="playback-actions">
+                <button type="button" id="playbackToggle">Auto Play</button>
+                <button type="button" id="playbackReset">Reset</button>
+              </div>
+            </div>
+            <input id="playbackSlider" class="playback-slider" type="range" min="1" max="1" value="1">
+            <div class="playback-caption" id="playbackCaption">Waiting for a route</div>
+            <div class="storyboard" id="routeStoryboard"></div>
+          </div>
+          <div class="subhead" id="timelineSubhead" style="display:none">Recent Timeline</div>
+          <div class="timeline-list" id="timelineList" style="display:none"></div>
+          <div class="subhead" id="liveNotesSubhead" style="display:none">Live Notes</div>
+          <div class="live-log" id="liveNotes" style="display:none"></div>
         </div>
 
         <div class="surface inspector-panel">
