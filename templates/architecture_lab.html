@@ -299,7 +299,7 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
   .tb-right{display:none}
   .viz-stage{display:grid;grid-template-rows:minmax(360px,56vh) auto;min-height:0;height:auto;overflow:visible}
   #c3d{grid-row:1;min-height:360px;height:100%}
-  .stage-footer{grid-row:2;position:static;left:auto;right:auto;bottom:auto;display:grid;grid-template-columns:1fr;align-items:stretch;gap:12px;padding:12px;pointer-events:auto;background:var(--s1);border-top:1px solid rgba(255,255,255,.05)}
+  .stage-footer{grid-row:2;position:static;left:auto;right:auto;bottom:auto;display:grid;grid-template-columns:1fr;align-items:stretch;gap:12px;padding:12px;pointer-events:auto;background:linear-gradient(180deg,rgba(7,11,18,.08),rgba(7,11,18,.62))}
   .stage-footer > .footer-stack{order:1}
   .stage-footer > .legend{order:2;max-width:none}
   .legend{grid-template-columns:1fr}
@@ -754,8 +754,8 @@ let activeSearchTerm = '';
 let activeSearchMatchCount = 0;
 
 function resize(){
-  const w = Math.max(1, canvas.clientWidth || canvas.parentElement.clientWidth);
-  const h = Math.max(1, canvas.clientHeight || canvas.parentElement.clientHeight);
+  const w = canvas.parentElement.clientWidth;
+  const h = canvas.parentElement.clientHeight;
   renderer.setSize(w,h);
   camera.aspect = w/h;
   camera.updateProjectionMatrix();
