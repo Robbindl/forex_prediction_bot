@@ -171,6 +171,7 @@ class CTraderLiveDepthBridge:
         self._last_store_mtime = 0.0
         self._last_persist = 0.0
         self._last_restart_attempt = 0.0
+        self._last_started_at = 0.0
         self._restart_count = 0
         self._load_store(force=True)
 
@@ -249,6 +250,7 @@ class CTraderLiveDepthBridge:
 
         with self._lock:
             self._process = proc
+            self._last_started_at = time.time()
             self._stdout_thread = threading.Thread(target=self._stdout_loop, daemon=True, name="CTraderDepthStdout")
             self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True, name="CTraderDepthStderr")
             self._stdout_thread.start()
@@ -602,11 +604,19 @@ class CTraderLiveDepthBridge:
             )
             return status
 
+        # A freshly started sidecar often needs a few seconds before the first
+        # persisted snapshot lands. Treat that as warmup, not stale data.
+        warming_no_snapshot = bool(
+            status.get("running")
+            and status.get("last_snapshot_age_seconds") is None
+            and self._last_started_at > 0.0
+            and (now - self._last_started_at) < max_snapshot_age
+        )
         stale = bool(
             status.get("last_snapshot_age_seconds") is None
             or float(status.get("last_snapshot_age_seconds") or 0.0) > max_snapshot_age
         )
-        needs_restart = bool(not status.get("running") or stale)
+        needs_restart = bool(not status.get("running") or (stale and not warming_no_snapshot))
         if needs_restart and (now - self._last_restart_attempt) >= _RESTART_COOLDOWN_SECONDS:
             restart_attempted = True
             restart_reason = "stale_depth" if stale else "process_not_running"
