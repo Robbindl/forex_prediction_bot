@@ -31,6 +31,8 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 if sys.platform == "linux":
     _SIDECAR_SCRIPT = Path("/opt/forex_prediction_bot/integrations/ctrader_depth_bridge/ctrader_depth_bridge.py")
 else:
@@ -73,6 +75,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value if value not in (None, "") else default)
     except Exception:
         return default
+
+
+def _resolve_runtime_path(path_like: Path | str) -> Path:
+    candidate = Path(path_like).expanduser()
+    if not candidate.is_absolute():
+        candidate = _PROJECT_ROOT / candidate
+    return candidate.resolve(strict=False)
 
 
 def _normalize_asset_list(raw: str) -> tuple[str, ...]:
@@ -139,9 +148,9 @@ class CTraderLiveDepthBridge:
         max_levels: int = CTRADER_LIVE_DEPTH_MAX_LEVELS or 20,
     ) -> None:
         self._enabled = bool(CTRADER_LIVE_DEPTH_ENABLED if enabled is None else enabled)
-        self._store_path = Path(store_path)
+        self._store_path = _resolve_runtime_path(store_path)
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
-        self._token_cache_path = Path(token_cache_path)
+        self._token_cache_path = _resolve_runtime_path(token_cache_path)
         self._token_cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._assets = tuple(assets or _normalize_asset_list(CTRADER_LIVE_DEPTH_ASSETS))
         self._environment = str(environment or "demo").strip().lower() or "demo"
@@ -275,7 +284,10 @@ class CTraderLiveDepthBridge:
                 logger.debug(f"[CTraderDepth] non-JSON stdout: {_clip_text(line, 200)}")
                 continue
             if isinstance(payload, dict):
-                self.ingest_snapshot(payload)
+                try:
+                    self.ingest_snapshot(payload)
+                except Exception as exc:
+                    logger.warning(f"[CTraderDepth] snapshot ingest failed: {exc}")
 
     def _stderr_loop(self) -> None:
         proc = self._process
@@ -284,7 +296,10 @@ class CTraderLiveDepthBridge:
         for raw_line in proc.stderr:
             line = str(raw_line or "").strip()
             if line:
-                logger.info(f"[CTraderDepth] {line}")
+                if line.startswith("[DEBUG]"):
+                    logger.debug(f"[CTraderDepth] {line}")
+                else:
+                    logger.info(f"[CTraderDepth] {line}")
 
     def _load_store(self, *, force: bool = False) -> None:
         if not self._store_path.exists():
@@ -317,14 +332,23 @@ class CTraderLiveDepthBridge:
         if not force and now - self._last_persist < _STORE_WRITE_MIN_INTERVAL:
             return
         payload = {"updated_at": _utc_now_iso(), "assets": self._latest}
-        tmp = self._store_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
-        tmp.replace(self._store_path)
-        self._last_persist = now
+        tmp = self._store_path.with_name(f"{self._store_path.name}.{os.getpid()}.tmp")
         try:
-            self._last_store_mtime = self._store_path.stat().st_mtime
-        except Exception:
-            pass
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
+            tmp.replace(self._store_path)
+            self._last_persist = now
+            try:
+                self._last_store_mtime = self._store_path.stat().st_mtime
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning(f"[CTraderDepth] store persist failed: {exc}")
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
 
     def ingest_snapshot(self, payload: Dict[str, Any]) -> None:
         canonical = registry.canonical(str(payload.get("asset") or "").strip())

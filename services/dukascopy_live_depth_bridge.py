@@ -29,6 +29,8 @@ from utils.logger import get_logger
 
 logger = get_logger()
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 import sys
 
 if sys.platform == "linux":
@@ -80,6 +82,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value if value not in (None, "") else default)
     except Exception:
         return default
+
+
+def _resolve_runtime_path(path_like: Path | str) -> Path:
+    candidate = Path(path_like).expanduser()
+    if not candidate.is_absolute():
+        candidate = _PROJECT_ROOT / candidate
+    return candidate.resolve(strict=False)
 
 
 def _normalize_asset_list(raw: str) -> tuple[str, ...]:
@@ -137,7 +146,7 @@ class DukascopyLiveDepthBridge:
         max_levels: int = DUKASCOPY_LIVE_DEPTH_MAX_LEVELS or 20,
     ) -> None:
         self._enabled = bool(DUKASCOPY_LIVE_DEPTH_ENABLED if enabled is None else enabled)
-        self._store_path = Path(store_path)
+        self._store_path = _resolve_runtime_path(store_path)
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
         self._assets = tuple(assets or _normalize_asset_list(DUKASCOPY_LIVE_DEPTH_ASSETS))
         self._jnlp_url = str(jnlp_url or DUKASCOPY_LIVE_DEPTH_JNLP_URL).strip()
@@ -367,14 +376,23 @@ class DukascopyLiveDepthBridge:
             "updated_at": _utc_now_iso(),
             "assets": self._latest,
         }
-        tmp = self._store_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
-        tmp.replace(self._store_path)
-        self._last_persist = now
+        tmp = self._store_path.with_name(f"{self._store_path.name}.{os.getpid()}.tmp")
         try:
-            self._last_store_mtime = self._store_path.stat().st_mtime
-        except Exception:
-            pass
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
+            tmp.replace(self._store_path)
+            self._last_persist = now
+            try:
+                self._last_store_mtime = self._store_path.stat().st_mtime
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning(f"[DukascopyDepth] store persist failed: {exc}")
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
 
     def ingest_snapshot(self, payload: Dict[str, Any]) -> None:
         canonical = registry.canonical(str(payload.get("asset") or "").strip())

@@ -24,10 +24,17 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
 )
 from twisted.internet import reactor
 
+_DEBUG_ENABLED = str(os.getenv("CTRADER_LIVE_DEPTH_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _stderr(message: str) -> None:
     sys.stderr.write(str(message).rstrip() + "\n")
     sys.stderr.flush()
+
+
+def _debug(message: str) -> None:
+    if _DEBUG_ENABLED:
+        _stderr(f"[DEBUG] {message}")
 
 
 def _stdout(payload: Dict[str, Any]) -> None:
@@ -208,27 +215,27 @@ class CTraderDepthBridge:
         self.client.send(req).addCallbacks(self._after_account_list, self._fatal)
 
     def _after_account_list(self, response: Any) -> None:
-        # Debug: print full response to see what cTrader returns
-        _stderr(f"[DEBUG] Account list response: {response}")
-        _stderr(f"[DEBUG] Response type: {type(response)}")
-        _stderr(f"[DEBUG] Response dir: {[a for a in dir(response) if not a.startswith('_')]}")
-        
+        # Optional debug tracing for account discovery.
+        _debug(f"Account list response: {response}")
+        _debug(f"Response type: {type(response)}")
+        _debug(f"Response dir: {[a for a in dir(response) if not a.startswith('_')]}")
+
         # Try to parse the payload
         try:
             payload_bytes = response.payload
-            _stderr(f"[DEBUG] Payload bytes length: {len(payload_bytes)}")
+            _debug(f"Payload bytes length: {len(payload_bytes)}")
             # Try parsing as the account list response message
             from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAGetAccountListByAccessTokenRes
             parsed = ProtoOAGetAccountListByAccessTokenRes()
             parsed.ParseFromString(payload_bytes)
-            _stderr(f"[DEBUG] Parsed payload: {parsed}")
-            _stderr(f"[DEBUG] Parsed accounts: {list(parsed.ctidTraderAccount)}")
+            _debug(f"Parsed payload: {parsed}")
+            _debug(f"Parsed accounts: {list(parsed.ctidTraderAccount)}")
             accounts = list(parsed.ctidTraderAccount)
         except Exception as e:
-            _stderr(f"[DEBUG] Failed to parse payload: {e}")
+            _debug(f"Failed to parse payload: {e}")
             accounts = list(getattr(response, "ctidTraderAccount", []) or [])
-        
-        _stderr(f"[DEBUG] Found {len(accounts)} accounts")
+
+        _debug(f"Found {len(accounts)} accounts")
         if not accounts:
             self._fatal(RuntimeError("No cTrader accounts were returned for the access token."))
             return
@@ -262,24 +269,24 @@ class CTraderDepthBridge:
         self.client.send(req).addCallbacks(self._after_symbols, self._fatal)
 
     def _after_symbols(self, response: Any) -> None:
-        # Debug: print full response to see what cTrader returns
-        _stderr(f"[DEBUG] Symbols response: {response}")
-        _stderr(f"[DEBUG] Symbols response type: {type(response)}")
-        
+        # Optional debug tracing for symbol mapping.
+        _debug(f"Symbols response: {response}")
+        _debug(f"Symbols response type: {type(response)}")
+
         # Try to parse the payload
         try:
             from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASymbolsListRes
             parsed = ProtoOASymbolsListRes()
             parsed.ParseFromString(response.payload)
-            _stderr(f"[DEBUG] Parsed symbols response: {parsed}")
+            _debug(f"Parsed symbols response: {parsed}")
             symbols = list(parsed.symbol)
-            _stderr(f"[DEBUG] Parsed symbols list: {symbols}")
+            _debug(f"Parsed symbols list: {symbols}")
         except Exception as e:
-            _stderr(f"[DEBUG] Failed to parse symbols: {e}")
+            _debug(f"Failed to parse symbols: {e}")
             symbols = list(getattr(response, "symbol", []) or [])
-        
-        _stderr(f"[DEBUG] Available cTrader symbols: {[(getattr(s, 'symbolName', ''), getattr(s, 'symbolId', '')) for s in symbols]}")
-        _stderr(f"[DEBUG] Trying to match assets: {self.assets}")
+
+        _debug(f"Available cTrader symbols: {[(getattr(s, 'symbolName', ''), getattr(s, 'symbolId', '')) for s in symbols]}")
+        _debug(f"Trying to match assets: {self.assets}")
         matched_symbol_ids: List[int] = []
         candidate_symbols: Dict[str, List[Tuple[int, int, str]]] = defaultdict(list)
         for item in symbols:
@@ -292,7 +299,7 @@ class CTraderDepthBridge:
                     symbol_id = int(getattr(item, "symbolId"))
                     priority = _symbol_priority(asset, normalized, description)
                     candidate_symbols[asset].append((priority, symbol_id, raw_name))
-                    _stderr(f"[DEBUG] Candidate {asset} -> {raw_name} (ID: {symbol_id}, priority={priority})")
+                    _debug(f"Candidate {asset} -> {raw_name} (ID: {symbol_id}, priority={priority})")
                     break
 
         for asset, entries in candidate_symbols.items():
@@ -305,11 +312,11 @@ class CTraderDepthBridge:
             state["symbol_id"] = symbol_id
             state["symbol_name"] = raw_name
             matched_symbol_ids.append(symbol_id)
-            _stderr(f"[DEBUG] Matched {asset} -> {raw_name} (ID: {symbol_id})")
+            _debug(f"Matched {asset} -> {raw_name} (ID: {symbol_id})")
 
         matched_symbol_ids = sorted(set(matched_symbol_ids))
-        _stderr(f"[DEBUG] Matched symbol IDs: {matched_symbol_ids}")
-        _stderr(f"[DEBUG] Symbol to asset mapping: {self.symbol_to_asset}")
+        _debug(f"Matched symbol IDs: {matched_symbol_ids}")
+        _debug(f"Symbol to asset mapping: {self.symbol_to_asset}")
         if not matched_symbol_ids:
             self._fatal(RuntimeError("No configured assets could be mapped to cTrader symbols on this account."))
             return
@@ -334,10 +341,10 @@ class CTraderDepthBridge:
         _stderr(f"Disconnected from cTrader: {reason}")
 
     def _on_message(self, _client: Client, message: Any) -> None:
-        # Debug: Log ALL incoming messages with their payload types
+        # Optional low-level protocol tracing.
         if hasattr(message, 'payloadType'):
-            _stderr(f"[DEBUG] Incoming message payloadType: {message.payloadType}")
-        
+            _debug(f"Incoming message payloadType: {message.payloadType}")
+
         # Handle raw ProtoMessage - need to parse payload manually
         if isinstance(message, ProtoOAErrorRes):
             description = str(getattr(message, "description", "") or "")
@@ -357,28 +364,28 @@ class CTraderDepthBridge:
                 elif payload_type == 2155:  # ProtoOADepthEvent
                     depth = ProtoOADepthEvent()
                     depth.ParseFromString(message.payload)
-                    _stderr(f"[DEBUG] Depth event received for symbol {getattr(depth, 'symbolId', '')}")
+                    _debug(f"Depth event received for symbol {getattr(depth, 'symbolId', '')}")
                     self._handle_depth_event(depth)
                     return
                 elif payload_type == 2157:  # ProtoOASubscribeDepthQuotesRes
                     from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASubscribeDepthQuotesRes
                     depth_res = ProtoOASubscribeDepthQuotesRes()
                     depth_res.ParseFromString(message.payload)
-                    _stderr(f"[DEBUG] Depth subscription response: {depth_res}")
+                    _debug(f"Depth subscription response: {depth_res}")
                     return
                 else:
-                    _stderr(f"[DEBUG] Unknown payloadType: {payload_type}")
+                    _debug(f"Unknown payloadType: {payload_type}")
             except Exception as e:
-                _stderr(f"[DEBUG] Failed to parse message type {payload_type}: {e}")
-        
+                _debug(f"Failed to parse message type {payload_type}: {e}")
+
         if isinstance(message, ProtoOASpotEvent):
             self._handle_spot_event(message)
             return
         if isinstance(message, ProtoOADepthEvent):
-            _stderr(f"[DEBUG] Depth event received for symbol {getattr(message, 'symbolId', '')}")
+            _debug(f"Depth event received for symbol {getattr(message, 'symbolId', '')}")
             self._handle_depth_event(message)
             return
-        _stderr(f"[DEBUG] Unknown message type: {type(message)}")
+        _debug(f"Unknown message type: {type(message)}")
 
     def _handle_spot_event(self, message: ProtoOASpotEvent) -> None:
         symbol_id = int(getattr(message, "symbolId", 0) or 0)
@@ -402,8 +409,7 @@ class CTraderDepthBridge:
             state["price"] = float(state["ask"])
         state["timestamp"] = time.time()
         
-        # Debug: log spot updates
-        _stderr(f"[DEBUG] Spot {asset}: bid={bid_val}, ask={ask_val}, price={state.get('price')}")
+        _debug(f"Spot {asset}: bid={bid_val}, ask={ask_val}, price={state.get('price')}")
         
         self._maybe_emit(asset)
 
@@ -413,10 +419,9 @@ class CTraderDepthBridge:
         if not asset:
             return
         
-        # Debug: log depth event details
         new_quotes = list(getattr(message, "newQuotes", []) or [])
         deleted_quotes = list(getattr(message, "deletedQuotes", []) or [])
-        _stderr(f"[DEBUG] Depth for {asset}: {len(new_quotes)} new quotes, {len(deleted_quotes)} deleted")
+        _debug(f"Depth for {asset}: {len(new_quotes)} new quotes, {len(deleted_quotes)} deleted")
         
         state = self.asset_state[asset]
         quotes: Dict[int, Dict[str, float]] = state["quotes"]
