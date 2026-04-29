@@ -1,0 +1,2797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Architecture Lab — Robbie</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--s4:#151b27;--bd:#1e2635;
+  --tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;
+  --bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--gold:#ef9f27;
+  --font:'Inter','JetBrains Mono',system-ui,sans-serif;
+}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:hidden}
+body.mode-blueprint{--bg:#061018;--s1:#0b1622;--s2:#102031;--s3:#14304b;--s4:#11263b;--bd:#1e4462;--tx:#d6edff;--tx2:#8fb6d3;--tx3:#56758f;--bl:#55b8ff;--cy:#67f0ff;--pu:#7bb4ff}
+body.mode-constellation{--bg:#090813;--s1:#11111d;--s2:#171629;--s3:#201c39;--s4:#18172d;--bd:#302b51;--tx:#ddd9f5;--tx2:#a39dca;--tx3:#6e6895;--bl:#7f77dd;--cy:#7ce9ff;--pu:#d07cff}
+body.mode-ops{--bg:#0b0f13;--s1:#11161b;--s2:#171d24;--s3:#202831;--s4:#1a222b;--bd:#313d49;--tx:#d3d9e2;--tx2:#95a2b1;--tx3:#62707e;--bl:#38a1ff;--cy:#65f0d0;--pu:#b8c0cf}
+.layout{display:flex;height:100vh}
+.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto}
+.sb-logo{padding:20px 16px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+.sb-logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--bl),var(--pu));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#fff}
+.sb-logo-text{font-size:15px;font-weight:700}.sb-logo-text span{color:var(--cy);font-size:11px;display:block;font-weight:400;text-transform:uppercase;letter-spacing:.5px}
+.sb-section{padding:10px 8px 4px;font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px}
+.sb-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;margin:1px 6px;font-size:13px;color:var(--tx2);text-decoration:none;transition:.12s}
+.sb-link:hover{background:var(--s3);color:var(--tx)}.sb-link.active{background:rgba(41,121,255,.12);color:var(--bl);border-left:2px solid var(--bl)}
+.sb-icon{font-size:16px;width:20px;text-align:center}
+.sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid var(--bd)}
+.main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.topbar{height:56px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 18px;gap:12px;flex-shrink:0}
+.page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--gr)}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:999px;border:1px solid var(--bd);background:rgba(255,255,255,.03);font-size:11px;color:var(--tx2)}
+.pill strong{color:var(--tx);font-size:12px}
+.content{flex:1;display:grid;grid-template-columns:minmax(0,1.65fr) minmax(340px,.95fr);gap:14px;padding:14px;min-height:0}
+.surface{background:var(--s1);border:1px solid var(--bd);border-radius:14px;min-height:0}
+.left-col,.right-col{display:grid;gap:14px;min-height:0}
+.left-col{grid-template-rows:auto minmax(0,1fr) auto}
+.hero{padding:16px 18px;display:flex;justify-content:space-between;gap:18px;align-items:flex-start}
+.hero-copy{max-width:760px}
+.eyebrow{font-size:11px;letter-spacing:.8px;text-transform:uppercase;color:var(--tx3);margin-bottom:8px}
+.hero h1{font-size:24px;line-height:1.15;margin-bottom:8px}
+.hero p{font-size:13px;line-height:1.6;color:var(--tx2);max-width:640px}
+.hero-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+button,.chip{appearance:none;border:1px solid var(--bd);background:var(--s2);color:var(--tx);border-radius:10px;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer;transition:.12s}
+button:hover,.chip:hover{background:var(--s3)}
+button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35);color:#9fc2ff}
+.ghost-btn{background:rgba(255,255,255,.02)}
+.ghost-btn.active{background:rgba(0,229,255,.12);border-color:rgba(0,229,255,.28);color:#bff7ff}
+.viz-shell{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:12px;padding:0 14px 14px;min-height:0}
+.viz-stage{position:relative;overflow:hidden;min-height:620px;border-radius:14px;background:radial-gradient(circle at top,rgba(59,130,246,.10),transparent 28%),var(--s2);border:1px solid rgba(255,255,255,.04)}
+#c3d{width:100%;height:100%;display:block}
+#tip{position:absolute;top:0;left:0;pointer-events:none;display:none;background:rgba(7,11,18,.96);border:1px solid var(--bd);border-radius:12px;padding:8px 12px;font-size:12px;color:var(--tx);white-space:nowrap;z-index:10;box-shadow:0 14px 28px rgba(0,0,0,.25)}
+.stage-hud{position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;gap:10px;pointer-events:none}
+.hud-stack{display:flex;flex-direction:column;gap:8px;pointer-events:auto}
+.search{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(7,11,18,.72);backdrop-filter:blur(8px)}
+.search input{flex:1;background:transparent;border:none;outline:none;color:var(--tx);font:inherit;font-size:12px}
+.search small{color:var(--tx3)}
+.view-row,.layer-row,.mode-row,.overlay-row,.variant-row{display:flex;flex-wrap:wrap;gap:8px}
+.chip.active{background:rgba(41,121,255,.16);border-color:rgba(41,121,255,.38);color:#9fc2ff}
+.stage-footer{position:absolute;left:14px;right:14px;bottom:14px;display:flex;justify-content:space-between;align-items:flex-end;gap:12px;pointer-events:none}
+.legend{display:grid;grid-template-columns:repeat(2,minmax(120px,1fr));gap:6px 10px;padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(7,11,18,.74);max-width:430px;pointer-events:auto}
+.legend-item{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--tx2)}
+.legend-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
+.stage-note{padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(7,11,18,.74);font-size:11px;color:var(--tx2);pointer-events:auto}
+.footer-stack{display:grid;gap:10px;justify-items:end;pointer-events:auto}
+.replay-clock{display:grid;gap:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(7,11,18,.78);min-width:248px}
+.replay-clock-top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.replay-clock-top strong{font-size:12px}
+.replay-clock-top span{font-size:11px;color:var(--tx2)}
+.replay-clock-meta{display:flex;flex-wrap:wrap;gap:6px}
+.clock-pill{padding:4px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.08);font-size:10px;color:var(--tx2);background:rgba(255,255,255,.03)}
+.clock-track{height:8px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden}
+.clock-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,rgba(127,119,221,.95),rgba(0,229,255,.85))}
+.clock-caption{font-size:11px;color:var(--tx2);line-height:1.4}
+.stage-control-row,.stage-status-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;pointer-events:auto}
+.stage-status-row{max-width:520px}
+.status-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;border:1px solid rgba(255,255,255,.08);font-size:10px;color:var(--tx2);background:rgba(255,255,255,.03)}
+.status-chip strong{font-size:10px;color:var(--tx)}
+.status-chip.info{border-color:rgba(0,229,255,.24);color:#bff7ff}
+.status-chip.live{border-color:rgba(0,208,132,.24);color:#a8ffd2}
+.status-chip.warn{border-color:rgba(255,165,0,.28);color:#ffd18c}
+.mini-map-shell{display:grid;gap:8px;padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(7,11,18,.74);min-width:214px}
+.mini-map-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.mini-map-head small{font-size:11px;color:var(--tx2)}
+#miniMap{width:210px;height:210px;display:block;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
+.mini-map-meta{font-size:11px;color:var(--tx2);line-height:1.45}
+.right-col{grid-template-rows:auto auto minmax(0,1fr)}
+.panel{padding:14px 16px;display:grid;gap:12px}
+.panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--tx2)}
+.mini-trend{padding:12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2);display:grid;gap:8px}
+.trend-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.trend-head strong{font-size:12px}
+.trend-head span{font-size:11px;color:var(--tx2)}
+.trend-bars{display:flex;align-items:flex-end;gap:4px;height:64px}
+.trend-bar{flex:1;border-radius:6px 6px 3px 3px;min-height:8px;background:linear-gradient(180deg,rgba(41,121,255,.95),rgba(0,208,132,.65));opacity:.85}
+.stat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.stat{padding:12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2)}
+.stat .label{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx3);margin-bottom:6px}
+.stat .value{font-size:20px;font-weight:700}
+.stat .sub{font-size:11px;color:var(--tx2);margin-top:4px}
+.detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.detail-title{font-size:20px;font-weight:700}
+.detail-sub{font-size:12px;color:var(--tx2);margin-top:4px}
+.status-badge{padding:6px 10px;border-radius:999px;font-size:11px;border:1px solid var(--bd)}
+.status-live{color:#8cffca;background:rgba(0,208,132,.12);border-color:rgba(0,208,132,.25)}
+.status-warn{color:#ffcf7d;background:rgba(255,165,0,.12);border-color:rgba(255,165,0,.25)}
+.status-down{color:#ff97a0;background:rgba(255,69,96,.12);border-color:rgba(255,69,96,.25)}
+.status-unk{color:var(--tx2);background:rgba(255,255,255,.04)}
+.detail-copy{font-size:13px;line-height:1.6;color:var(--tx2)}
+.tab-row{display:flex;flex-wrap:wrap;gap:8px}
+.tab{appearance:none;border:1px solid var(--bd);background:var(--s2);color:var(--tx2);border-radius:10px;padding:8px 10px;font:inherit;font-size:11px;cursor:pointer;transition:.12s}
+.tab.active{background:rgba(41,121,255,.16);border-color:rgba(41,121,255,.38);color:#9fc2ff}
+.detail-pane{display:grid;gap:10px}
+.detail-pane[hidden]{display:none}
+.kv{display:grid;gap:10px}
+.kv-row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px}
+.kv-row:last-child{border:none;padding-bottom:0}
+.kv-row span:first-child{color:var(--tx3)}
+.list{display:grid;gap:8px}
+.list li{list-style:none;padding:9px 10px;border:1px solid rgba(255,255,255,.04);border-radius:10px;background:var(--s2);font-size:12px;color:var(--tx2)}
+.metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.metric-card{padding:11px 12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2)}
+.metric-card .metric-label{font-size:10px;letter-spacing:.6px;text-transform:uppercase;color:var(--tx3);margin-bottom:6px}
+.metric-card .metric-value{font-size:16px;font-weight:700}
+.metric-card .metric-sub{font-size:11px;color:var(--tx2);margin-top:4px}
+.neighbor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.neighbor-btn{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:10px 11px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2);color:var(--tx);text-align:left}
+.neighbor-btn small{font-size:11px;color:var(--tx2)}
+.source-grid{display:grid;gap:10px}
+.source-card{padding:11px 12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2);display:grid;gap:6px}
+.source-card strong{font-size:12px}
+.source-card code{font-family:'JetBrains Mono',monospace;font-size:11px;color:#b9e0ff;word-break:break-word}
+.source-card span,.source-card small{font-size:11px;color:var(--tx2);line-height:1.5}
+.source-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.source-badges{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.source-badge{padding:4px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.08);font-size:10px;color:var(--tx2);background:rgba(255,255,255,.03)}
+.source-snippet{margin:0;padding:12px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:#09111b;color:#d5e6f7;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.55;white-space:pre;overflow:auto;max-height:280px}
+.source-empty{padding:11px 12px;border:1px dashed rgba(255,255,255,.12);border-radius:12px;font-size:12px;color:var(--tx3);background:rgba(255,255,255,.02)}
+.source-links{display:flex;flex-wrap:wrap;gap:8px}
+.source-links button{font-size:11px;padding:7px 10px}
+.error-card{padding:10px 12px;border:1px solid rgba(255,69,96,.18);border-radius:12px;background:rgba(255,69,96,.06);display:grid;gap:5px}
+.error-card strong{font-size:12px}
+.error-card span{font-size:11px;color:var(--tx2);line-height:1.5}
+.actions{display:flex;flex-wrap:wrap;gap:8px}
+.actions a,.actions button{font-size:12px;text-decoration:none}
+.subhead{font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:var(--tx3)}
+.select-shell{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2)}
+.select-shell select{flex:1;max-width:190px;background:var(--s1);border:1px solid var(--bd);border-radius:10px;color:var(--tx);padding:8px 10px;font:inherit;font-size:12px;outline:none}
+.route-pills{display:flex;flex-wrap:wrap;gap:8px}
+.route-pill{display:grid;gap:3px;padding:9px 10px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:var(--s2);min-width:136px;text-align:left;color:var(--tx);cursor:pointer}
+.route-pill strong{font-size:12px}
+.route-pill span{font-size:11px;color:var(--tx2)}
+.route-pill.active{border-color:rgba(41,121,255,.4);background:rgba(41,121,255,.12)}
+.route-pill.warn{border-color:rgba(255,165,0,.28)}
+.route-pill.down{border-color:rgba(255,69,96,.28)}
+.heat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.heat-card{padding:10px 11px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:var(--s2);display:grid;gap:6px}
+.heat-card strong{font-size:12px}
+.heat-card span,.heat-card small{font-size:11px;color:var(--tx2)}
+.heat-track{height:7px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden}
+.heat-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,rgba(41,121,255,.95),rgba(0,208,132,.75))}
+.replay-cards{display:grid;gap:8px}
+.replay-card{padding:11px 12px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:var(--s2);display:grid;gap:6px;cursor:pointer}
+.replay-card.active{border-color:rgba(0,229,255,.35);background:rgba(0,229,255,.08)}
+.replay-card strong{font-size:12px}
+.replay-card span,.replay-card small{font-size:11px;color:var(--tx2);line-height:1.45}
+.replay-meta{display:flex;flex-wrap:wrap;gap:6px}
+.meta-pill{padding:4px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.08);font-size:10px;color:var(--tx2);background:rgba(255,255,255,.03)}
+.playback-shell{display:grid;gap:10px;padding:11px 12px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:var(--s2)}
+.playback-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.playback-actions{display:flex;gap:8px;flex-wrap:wrap}
+.playback-slider{width:100%;accent-color:var(--cy)}
+.playback-caption{font-size:11px;color:var(--tx2)}
+.storyboard{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.story-step{padding:10px 11px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:var(--s2);display:grid;gap:4px}
+.story-step strong{font-size:12px}
+.story-step span,.story-step small{font-size:11px;color:var(--tx2);line-height:1.4}
+.story-step.active{border-color:rgba(0,229,255,.35);background:rgba(0,229,255,.08)}
+.timeline-list{display:grid;gap:8px;max-height:220px;overflow:auto;padding-right:4px}
+.timeline-item{padding:10px 11px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:var(--s2);display:grid;gap:5px;text-align:left;color:var(--tx);cursor:pointer}
+.timeline-item.active{border-color:rgba(0,229,255,.35);background:rgba(0,229,255,.08)}
+.timeline-item strong{font-size:12px}
+.timeline-item span,.timeline-item small{font-size:11px;color:var(--tx2);line-height:1.45}
+.inspector-panel{padding:14px 16px;display:grid;gap:14px}
+.inspector-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap}
+.inspector-copy{display:grid;gap:6px;max-width:760px}
+.inspector-copy p{font-size:12px;color:var(--tx2);line-height:1.55}
+.inspector-mode-row{display:flex;flex-wrap:wrap;gap:8px}
+.inspector-body{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(300px,.85fr);gap:14px}
+.inspector-card{padding:12px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:var(--s2);display:grid;gap:10px;min-height:0}
+.inspector-card h3{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--tx2)}
+.inspector-card h4{font-size:13px}
+.split-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:12px;min-height:0}
+.inspector-route{display:grid;gap:8px}
+.route-manifest{display:flex;flex-wrap:wrap;gap:8px}
+.route-node{padding:7px 9px;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.03);font-size:11px;color:var(--tx2)}
+.route-node.active{border-color:rgba(0,229,255,.35);background:rgba(0,229,255,.08);color:var(--tx)}
+.inspector-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.inspector-metric{padding:10px 11px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:rgba(255,255,255,.03);display:grid;gap:4px}
+.inspector-metric strong{font-size:16px}
+.inspector-metric span{font-size:11px;color:var(--tx2)}
+.dep-columns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.dep-stack{display:grid;gap:8px}
+.dep-item{padding:10px 11px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:rgba(255,255,255,.03);display:grid;gap:4px}
+.dep-item strong{font-size:12px}
+.dep-item span,.dep-item small{font-size:11px;color:var(--tx2);line-height:1.45}
+.filmstrip{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(230px,1fr);gap:10px;overflow:auto;padding-bottom:4px}
+.film-card{padding:12px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:rgba(255,255,255,.03);display:grid;gap:8px;text-align:left;color:var(--tx);cursor:pointer}
+.film-card.active{border-color:rgba(0,229,255,.35);background:rgba(0,229,255,.08)}
+.film-card.warn{border-color:rgba(255,165,0,.28)}
+.film-card.down{border-color:rgba(255,69,96,.28);background:rgba(255,69,96,.07)}
+.film-card strong{font-size:12px}
+.film-card span,.film-card small{font-size:11px;color:var(--tx2);line-height:1.45}
+.focus-rail{display:flex;flex-wrap:wrap;gap:8px}
+.telemetry-list{display:grid;gap:8px;max-height:360px;overflow:auto;padding-right:4px}
+.telemetry-item{padding:11px 12px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:rgba(255,255,255,.03);display:grid;gap:5px}
+.telemetry-item strong{font-size:12px}
+.telemetry-item span,.telemetry-item small{font-size:11px;color:var(--tx2);line-height:1.45}
+.telemetry-item.warn{border-color:rgba(255,165,0,.28)}
+.telemetry-item.down{border-color:rgba(255,69,96,.28);background:rgba(255,69,96,.07)}
+.beat-rail{display:flex;flex-wrap:wrap;gap:8px}
+.beat-pill{padding:6px 9px;border-radius:999px;border:1px solid rgba(255,255,255,.08);font-size:11px;background:rgba(255,255,255,.03);color:var(--tx2)}
+.pulse-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.pulse-card{padding:10px 11px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:rgba(255,255,255,.03);display:grid;gap:4px}
+.pulse-card strong{font-size:14px}
+.pulse-card span,.pulse-card small{font-size:11px;color:var(--tx2)}
+.scrub-shell{display:grid;gap:8px;padding:10px 11px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:rgba(255,255,255,.03)}
+.scrub-top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.scrub-slider{width:100%;accent-color:var(--cy)}
+.tail-list{display:grid;gap:8px;max-height:260px;overflow:auto;padding-right:4px}
+.tail-item{padding:10px 11px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:rgba(255,255,255,.03);display:grid;gap:4px}
+.tail-item.warn{border-color:rgba(255,165,0,.28)}
+.tail-item.down{border-color:rgba(255,69,96,.28);background:rgba(255,69,96,.07)}
+.tail-item strong{font-size:12px}
+.tail-item span,.tail-item small{font-size:11px;color:var(--tx2);line-height:1.45}
+.live-log{display:grid;gap:8px;min-height:0;overflow:auto;padding-right:4px}
+.live-item{padding:10px 12px;border:1px solid rgba(255,255,255,.04);border-radius:12px;background:var(--s2)}
+.live-item strong{display:block;font-size:12px;margin-bottom:4px}
+.live-item span{font-size:11px;color:var(--tx2)}
+.empty{font-size:12px;color:var(--tx3)}
+body.mission-control .sidebar,
+body.mission-control .topbar,
+body.mission-control .hero,
+body.mission-control .right-col{display:none}
+body.mission-control .content{grid-template-columns:1fr;padding:10px;gap:10px}
+body.mission-control .left-col{grid-template-rows:minmax(0,1fr) auto;gap:10px}
+body.mission-control .viz-shell{padding:0;grid-template-columns:1fr}
+body.mission-control .viz-stage{min-height:calc(100vh - 300px);border-radius:18px}
+body.mission-control .stage-hud{top:18px;left:18px;right:18px}
+body.mission-control .stage-footer{left:18px;right:18px;bottom:18px}
+body.mission-control .legend{max-width:380px}
+body.mission-control .mini-map-shell,
+body.mission-control .replay-clock,
+body.mission-control .stage-note{background:rgba(7,11,18,.84)}
+body.mission-control .surface.inspector-panel{border-radius:18px}
+@media (max-width:1200px){
+  .content{grid-template-columns:1fr}
+  .viz-shell{grid-template-columns:1fr}
+  .storyboard{grid-template-columns:1fr}
+  .inspector-body,.split-grid,.dep-columns{grid-template-columns:1fr}
+}
+@media (max-width:760px){
+  body{overflow:auto}
+  .layout{display:block;height:auto}
+  .sidebar{width:100%;height:auto;position:relative;border-right:none;border-bottom:1px solid var(--bd)}
+  .main{min-height:100vh}
+  .content{padding:12px}
+  .hero{display:grid}
+  .tb-right{display:none}
+  .viz-stage{min-height:500px}
+  .legend{grid-template-columns:1fr}
+  .footer-stack{justify-items:stretch}
+  #miniMap{width:100%;height:auto;aspect-ratio:1}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sb-logo">
+      <div class="sb-logo-icon">R</div>
+      <div class="sb-logo-text">Robbie<span>Trading Platform</span></div>
+    </div>
+    <div class="sb-section">Dashboards</div>
+    <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
+    <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
+    <a href="/playbook-intel" class="sb-link"><span class="sb-icon">🤖</span>Playbook Intel</a>
+    <a href="/architecture-lab" class="sb-link active"><span class="sb-icon">🧭</span>Architecture</a>
+    <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
+    <a href="/sentiment-intelligence" class="sb-link"><span class="sb-icon">💬</span>Sentiment</a>
+    <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
+    <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
+    <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
+    <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
+    <div class="sb-bottom"></div>
+  </nav>
+  <div class="main">
+    <div class="topbar">
+      <div class="page-title"><div class="dot" id="topDot"></div>Architecture Lab</div>
+      <div class="tb-right">
+        <div class="pill"><span>Services</span><strong id="svcOk">--/--</strong></div>
+        <div class="pill"><span>CPU</span><strong id="cpuPct">--</strong></div>
+        <div class="pill"><span>RAM</span><strong id="ramPct">--</strong></div>
+      </div>
+    </div>
+
+    <div class="content">
+      <section class="left-col">
+        <div class="surface hero">
+          <div class="hero-copy">
+            <div class="eyebrow">System Map</div>
+            <h1>Interactive 3D architecture for the whole trading stack.</h1>
+            <p>This turns the bot into something you can inspect spatially: entry points, decision logic, risk, order flow, brokers, data stores, and the live runtime status sitting on top of the structure.</p>
+          </div>
+          <div class="hero-actions">
+            <button class="primary" id="focusCoreBtn">Focus Core</button>
+            <button id="focusExecutionBtn">Focus Execution</button>
+            <button id="focusDataBtn">Focus Data</button>
+            <button id="focusIntelBtn">Focus Intelligence</button>
+            <button class="ghost-btn" id="followPlaybackHeroBtn">Follow Route</button>
+            <button class="ghost-btn" id="missionControlHeroBtn">Mission Control</button>
+            <button id="resetViewBtn">Reset View</button>
+          </div>
+        </div>
+
+        <div class="viz-shell">
+          <div class="viz-stage">
+            <canvas id="c3d"></canvas>
+            <div id="tip"></div>
+            <div class="stage-hud">
+              <div class="hud-stack">
+                <div class="search">
+                  <input id="nodeSearch" type="text" placeholder="Search node, module, service, or broker">
+                  <small id="searchHint">all layers</small>
+                </div>
+                <div class="view-row" id="viewRow"></div>
+                <div class="layer-row" id="layerRow"></div>
+                <div class="mode-row" id="modeRow"></div>
+                <div class="variant-row" id="variantRow"></div>
+                <div class="overlay-row" id="overlayRow"></div>
+              </div>
+            </div>
+            <div class="stage-footer">
+              <div class="legend" id="legend"></div>
+              <div class="footer-stack">
+                <div class="stage-control-row">
+                  <button class="ghost-btn" id="followPlaybackBtn">Follow Route</button>
+                  <button class="ghost-btn" id="playbackFocusBtn">Jump Replay</button>
+                  <button class="ghost-btn" id="missionControlBtn">Mission Control</button>
+                </div>
+                <div class="stage-status-row" id="stageStatusRow"></div>
+                <div class="stage-note" id="stageNote">drag to rotate · scroll to zoom · click to inspect · double click to jump</div>
+                <div class="replay-clock">
+                  <div class="replay-clock-top">
+                    <strong id="replayClockTitle">Route Clock</strong>
+                    <span id="replayClockStep">waiting</span>
+                  </div>
+                  <div class="replay-clock-meta" id="replayClockMeta"></div>
+                  <div class="clock-track"><div class="clock-fill" id="replayClockFill" style="width:0%"></div></div>
+                  <div class="clock-caption" id="replayClockCaption">Select a route card to start a cinematic replay trace.</div>
+                </div>
+                <div class="mini-map-shell">
+                  <div class="mini-map-head">
+                    <span class="subhead">Scene Radar</span>
+                    <small id="miniMapCaption">full stack</small>
+                  </div>
+                  <canvas id="miniMap" width="210" height="210"></canvas>
+                  <div class="mini-map-meta" id="miniMapMeta">route and layer emphasis update live as you filter the graph.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <aside class="right-col">
+            <div class="surface panel">
+              <h2>Runtime Snapshot</h2>
+              <div class="stat-grid">
+                <div class="stat"><div class="label">Healthy services</div><div class="value" id="healthyServices">--</div><div class="sub" id="serviceSub">Loading</div></div>
+                <div class="stat"><div class="label">Processes up</div><div class="value" id="healthyProcesses">--</div><div class="sub" id="processSub">Loading</div></div>
+                <div class="stat"><div class="label">Live feeds</div><div class="value" id="liveFeeds">--</div><div class="sub" id="feedSub">Broker + stream state</div></div>
+                <div class="stat"><div class="label">Open positions</div><div class="value" id="openPositions">--</div><div class="sub" id="positionSub">Current engine state</div></div>
+              </div>
+              <div class="mini-trend">
+                <div class="trend-head"><strong>Runtime Drift</strong><span id="trendCaption">Building history</span></div>
+                <div class="trend-bars" id="trendBars"></div>
+              </div>
+            </div>
+
+            <div class="surface panel">
+              <h2>Node Detail</h2>
+              <div class="detail-head">
+                <div>
+                  <div class="detail-title" id="detailTitle">Decision Engine</div>
+                  <div class="detail-sub" id="detailSub">Core · live signal gate</div>
+                </div>
+                <div class="status-badge status-unk" id="detailStatus">Loading</div>
+              </div>
+              <div class="detail-copy" id="detailDescription"></div>
+              <div class="tab-row" id="detailTabs"></div>
+              <div class="detail-pane" id="detailPaneOverview">
+                <div class="kv" id="detailFacts"></div>
+                <ul class="list" id="detailCapabilities"></ul>
+                <div class="actions" id="detailActions"></div>
+              </div>
+              <div class="detail-pane" id="detailPaneMetrics" hidden>
+                <div class="metric-grid" id="detailMetrics"></div>
+              </div>
+              <div class="detail-pane" id="detailPaneErrors" hidden>
+                <div class="list" id="detailErrors"></div>
+              </div>
+              <div class="detail-pane" id="detailPaneSource" hidden>
+                <div class="source-grid" id="detailSource"></div>
+                <div class="source-grid" id="detailSourcePeek"></div>
+              </div>
+              <div class="detail-pane" id="detailPaneNeighbors" hidden>
+                <div class="neighbor-grid" id="detailNeighbors"></div>
+              </div>
+            </div>
+
+            <div class="surface panel" style="min-height:0">
+              <h2>Overlay Deck</h2>
+              <div class="select-shell">
+                <span class="subhead">Replay lane</span>
+                <select id="replayMode"></select>
+              </div>
+              <div class="route-pills" id="routePills"></div>
+              <div class="heat-grid" id="heatGrid"></div>
+              <div class="replay-cards" id="replayCards"></div>
+              <div class="playback-shell">
+                <div class="playback-top">
+                  <span class="subhead">Route Playback</span>
+                  <div class="playback-actions">
+                    <button type="button" id="playbackToggle">Auto Play</button>
+                    <button type="button" id="playbackReset">Reset</button>
+                  </div>
+                </div>
+                <input id="playbackSlider" class="playback-slider" type="range" min="1" max="1" value="1">
+                <div class="playback-caption" id="playbackCaption">Waiting for a route</div>
+                <div class="storyboard" id="routeStoryboard"></div>
+              </div>
+              <div class="subhead">Recent Timeline</div>
+              <div class="timeline-list" id="timelineList"></div>
+              <div class="subhead">Live Notes</div>
+              <div class="live-log" id="liveNotes"></div>
+            </div>
+          </aside>
+        </div>
+
+        <div class="surface inspector-panel">
+          <div class="inspector-head">
+            <div class="inspector-copy">
+              <h2>Deep Inspector</h2>
+              <p>Split the architecture into route playback, code context, dependency traces, and incident filmstrips without leaving the scene.</p>
+            </div>
+            <div class="inspector-mode-row" id="inspectorModeRow"></div>
+          </div>
+          <div class="inspector-body">
+            <div class="inspector-card">
+              <div class="split-grid" id="inspectorPrimary"></div>
+            </div>
+            <div class="inspector-card">
+              <div id="inspectorSecondary"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script src="/static/dashboard_auth.js?v=20260429a"></script>
+<script>
+const COLORS = {
+  entry:'#7F77DD', core:'#1D9E75', dashboard:'#378ADD', risk:'#D85A30',
+  orderflow:'#EF9F27', execution:'#639922', intel:'#D4537E', services:'#A0A09A',
+  data:'#5DCAA5', brokers:'#F09595', config:'#B4B2A9'
+};
+
+const GROUP_META = {
+  entry:{label:'Entry',color:COLORS.entry},
+  core:{label:'Core',color:COLORS.core},
+  dashboard:{label:'Dashboard',color:COLORS.dashboard},
+  risk:{label:'Risk',color:COLORS.risk},
+  orderflow:{label:'Order Flow',color:COLORS.orderflow},
+  execution:{label:'Execution',color:COLORS.execution},
+  intel:{label:'Intelligence',color:COLORS.intel},
+  services:{label:'Services',color:COLORS.services},
+  data:{label:'Data',color:COLORS.data},
+  brokers:{label:'Brokers',color:COLORS.brokers},
+  config:{label:'Config',color:COLORS.config},
+};
+
+const NODE_PAGE_MAP = {
+  dash:'/command-center', ws:'/command-center', engine:'/command-center', decision:'/command-center',
+  risk:'/risk-dashboard', sizer:'/risk-dashboard', portrisk:'/risk-dashboard',
+  orderflow:'/order-flow', stophunt:'/order-flow', walls:'/order-flow',
+  ml:'/playbook-intel', playbook:'/playbook-intel',
+  whale:'/whale-intelligence', narrative:'/intelligence-alerts', intel_svc:'/intelligence-alerts',
+  sentiment:'/sentiment-intelligence', calendar:'/market-intelligence',
+  monitor:'/system-monitor', db:'/system-monitor', redis:'/system-monitor'
+};
+
+const NODES = [
+  {id:'bot',label:'bot.py',group:'entry',x:0,y:4,z:0,sub:'main orchestrator',desc:'Starts the runtime, restores state, launches data feeds, sidecars, Telegram bots, and the trading loop.',facts:{Role:'entrypoint',Mode:'runtime bootstrap'},capabilities:['Spawns core services','Initializes health + monitoring','Starts dashboard and bots']},
+  {id:'telegram',label:'Telegram',group:'entry',x:2.8,y:4,z:0,sub:'commands + alerts',desc:'User-facing command layer for notifications, commands, and fast operator intervention.',facts:{Role:'operator control',Channel:'Bot 1 / command bot'},capabilities:['Receives commands','Sends alerts','Surfaces system state']},
+  {id:'deepseek',label:'DeepSeek Bot',group:'entry',x:-2.8,y:4,z:0,sub:'AI chat interface',desc:'Companion bot for narrative and assistant-style interaction around the trading stack.',facts:{Role:'assistant',Mode:'standalone bot'},capabilities:['Conversational support','AI summaries','Operator copilot']},
+  {id:'intbot',label:'Intelligence Bot',group:'entry',x:0,y:4,z:2.2,sub:'market intelligence',desc:'Send-only intelligence channel for market alerts, whale notes, and system-level signal context.',facts:{Role:'alert channel',Mode:'send only'},capabilities:['Intel alerts','Whale broadcasts','Monitoring digests']},
+  {id:'dash',label:'Web Dashboard',group:'dashboard',x:4.5,y:2.2,z:-1,sub:'Flask / localhost:5000',desc:'Primary operator UI with command center, risk, intelligence, monitoring, and live signal context.',facts:{Route:'/command-center',Stack:'Flask + cached templates'},capabilities:['Multi-page dashboard','Live pages','Protected API access']},
+  {id:'ws',label:'WebSocket',group:'dashboard',x:4.5,y:0.8,z:-1,sub:'live feed fanout',desc:'Streams live book and command-center updates into the browser for fast dashboards.',facts:{Role:'browser feed',Mode:'stream + poll fallback'},capabilities:['SSE/WS updates','Price snapshots','Feed liveness']},
+  {id:'engine',label:'engine.py',group:'core',x:0,y:2.5,z:0,sub:'scan loop + signals',desc:'The main scan loop that evaluates assets, produces candidates, and manages signal flow through the runtime.',facts:{Role:'trading core',Loop:'continuous scan'},capabilities:['Runs asset scans','Coordinates approvals','Executes survivors']},
+  {id:'decision',label:'Decision Engine',group:'core',x:-1.8,y:1.2,z:0,sub:'market gate',desc:'Applies structure, intelligence, execution timing, governance, and memory rules to decide if a signal lives or dies.',facts:{Role:'approval gate',Focus:'signal quality + execution timing'},capabilities:['Market structure review','Execution timing gate','Governance filtering']},
+  {id:'signal',label:'Signal Pipeline',group:'core',x:1.8,y:1.2,z:0,sub:'confidence + journal',desc:'Carries signals through boosts, reductions, kills, and detailed journal records.',facts:{Role:'signal carrier',Artifact:'review journal'},capabilities:['Confidence updates','Kill reasons','Metadata trail']},
+  {id:'risk',label:'Risk Manager',group:'risk',x:-4.5,y:0.5,z:0,sub:'kelly + VaR',desc:'Validates position risk, daily risk limits, and trade admissibility before execution.',facts:{Role:'risk gate',Scope:'per trade + book'},capabilities:['Risk checks','Exposure validation','Drawdown protection']},
+  {id:'sizer',label:'Position Sizer',group:'risk',x:-4.5,y:-0.8,z:0,sub:'lot sizing',desc:'Converts risk budget into tradeable size for each asset family.',facts:{Role:'sizing',Output:'position size / lots'},capabilities:['Lot sizing','Asset normalization','Confidence scaling']},
+  {id:'portrisk',label:'Portfolio Risk',group:'risk',x:-3.2,y:-0.8,z:1.5,sub:'drawdown limits',desc:'Keeps the book from clustering or compounding risk across correlated positions.',facts:{Role:'portfolio guard',Scope:'cross-position'},capabilities:['Book-level limits','Category spread','Survivor selection']},
+  {id:'orderflow',label:'Order Flow',group:'orderflow',x:0,y:0.5,z:3.2,sub:'book processor',desc:'Processes order-book intelligence and microstructure context that can strengthen or weaken entries.',facts:{Role:'microstructure',Mode:'live depth analysis'},capabilities:['Book imbalance','Depth interpretation','Flow alignment']},
+  {id:'stophunt',label:'Stop Hunt Detect',group:'orderflow',x:1.5,y:-0.5,z:3.2,sub:'microstructure trap filter',desc:'Flags stop-hunt conditions where apparent continuation quality is likely fake or fragile.',facts:{Role:'trap detector',Effect:'raises execution risk'},capabilities:['Trap flags','Execution penalties','Stop-risk context']},
+  {id:'walls',label:'Liquidity Walls',group:'orderflow',x:-1.5,y:-0.5,z:3.2,sub:'wall detection',desc:'Tracks opposing walls and support structures that matter for clean target path and invalidation quality.',facts:{Role:'depth structure',Effect:'path to target'},capabilities:['Wall detection','Support distance','Opposing pressure']},
+  {id:'exec',label:'Execution Router',group:'execution',x:4.5,y:-0.2,z:0,sub:'paper + live',desc:'Routes approved signals into the execution layer, whether paper or live adapters.',facts:{Role:'execution bridge',Mode:'paper-first runtime'},capabilities:['Route trades','Fill abstraction','Execution bookkeeping']},
+  {id:'ml',label:'ML Features',group:'intel',x:-2,y:-0.2,z:-3,sub:'model features',desc:'Feature and model layer that can enrich decisions when predictors are active.',facts:{Role:'model support',Mode:'playbook-native runtime compatible'},capabilities:['Feature scoring','Predictor metadata','Signal enrichment']},
+  {id:'whale',label:'Whale Intel',group:'intel',x:2,y:-0.2,z:-3,sub:'on-chain + social',desc:'Pulls whale and flow-aware intelligence into the operator view and signal context.',facts:{Role:'whale intelligence',Scope:'multi-chain'},capabilities:['Wallet tracking','Whale alerts','Context enrichment']},
+  {id:'narrative',label:'Narrative AI',group:'intel',x:0,y:-0.2,z:-3,sub:'context synthesis',desc:'Builds story-level context around the market and the bot state for humans.',facts:{Role:'explainability',Output:'AI summaries'},capabilities:['Narrative summaries','Context clustering','Operator briefings']},
+  {id:'adaptive',label:'Adaptive Policy',group:'services',x:-2.5,y:-1.5,z:0,sub:'threshold tuning',desc:'Adjusts confidence, spread, risk, and cooldown thresholds based on asset/category conditions.',facts:{Role:'policy tuning',Effect:'dynamic thresholds'},capabilities:['Adaptive min RR','Spread tolerance','Risk modulation']},
+  {id:'sentiment',label:'Sentiment',group:'services',x:0,y:-1.5,z:-1.5,sub:'news + social',desc:'Aggregates sentiment and event context into a structured feed the decision engine can use.',facts:{Role:'context service',Scope:'news + social'},capabilities:['Sentiment aggregation','Event awareness','Asset-level signals']},
+  {id:'intel_svc',label:'Market Intel',group:'services',x:2.5,y:-1.5,z:0,sub:'signals + alerts',desc:'Combines market context and services into actionable intelligence surfaces.',facts:{Role:'intel service',Output:'alerts + summaries'},capabilities:['Overview payloads','Alert synthesis','Dashboard support']},
+  {id:'calendar',label:'Econ Calendar',group:'services',x:-4,y:-1.5,z:-2,sub:'event guard',desc:'Suppresses or contextualizes trades around scheduled macro risk.',facts:{Role:'macro event filter',Cadence:'polled'},capabilities:['Event windows','Macro blocking','Schedule awareness']},
+  {id:'playbook',label:'Playbook',group:'services',x:4,y:-1.5,z:-2,sub:'setup memory',desc:'Keeps setup families organized and determines which playbooks are even allowed in the first place.',facts:{Role:'playbook router',Effect:'seed selection'},capabilities:['Playbook selection','Session allowlists','Setup family constraints']},
+  {id:'fetcher',label:'Data Fetcher',group:'data',x:0,y:-3,z:0,sub:'market data orchestrator',desc:'Routes candles, prices, depth, and broker context from all configured providers.',facts:{Role:'data router',Scope:'multi-source market data'},capabilities:['Provider routing','Quote normalization','Depth source selection']},
+  {id:'candles',label:'Candle Store',group:'data',x:-2,y:-3,z:0,sub:'restart-safe OHLCV',desc:'Local continuity store so the runtime stays coherent across restarts and feed gaps.',facts:{Role:'local continuity',Store:'OHLCV cache'},capabilities:['Restart safety','Merged tails','Backfill continuity']},
+  {id:'redis',label:'Redis Cache',group:'data',x:2,y:-3,z:0,sub:'pub/sub + TTL',desc:'Cross-process pub/sub and cache layer for signals, alerts, and monitoring.',facts:{Role:'runtime bus',Mode:'shared cache'},capabilities:['Pub/sub','Shared cache','Live fanout']},
+  {id:'ingestion',label:'Data Ingestion',group:'data',x:0,y:-3,z:2,sub:'streams + OI',desc:'Exchange and broker-side ingestion layer for OI, liquidation, and market streams.',facts:{Role:'stream intake',Scope:'derivatives + crypto'},capabilities:['Stream consumers','OI feeds','Liquidation watch']},
+  {id:'ctrader',label:'cTrader',group:'brokers',x:-3,y:-4.5,z:0,sub:'depth bridge',desc:'External order-book feed used as one of the true-depth sources for non-crypto assets.',facts:{Role:'depth provider',Mode:'demo/live bridge'},capabilities:['External depth','Broker comparison','Order-book snapshots']},
+  {id:'deriv',label:'Deriv',group:'brokers',x:-1,y:-4.5,z:0,sub:'live fallback',desc:'Primary market-data source for routed assets and fallback routing in the dashboard.',facts:{Role:'primary price feed',Scope:'multi-asset'},capabilities:['Live quotes','Dashboard prices','Fallback routing']},
+  {id:'dukascopy',label:'Dukascopy',group:'brokers',x:1,y:-4.5,z:0,sub:'history + depth',desc:'Historical backfill and true-depth bridge for non-crypto assets.',facts:{Role:'history + depth',Mode:'sidecar bridge'},capabilities:['Backfill candles','True depth','Non-crypto support']},
+  {id:'ig',label:'IG Markets',group:'brokers',x:3,y:-4.5,z:0,sub:'routed assets',desc:'Routed market-data source for certain assets and live dashboard streaming.',facts:{Role:'routed feed',Scope:'selected assets'},capabilities:['Streaming quotes','Routed instruments','Broker sentiment']},
+  {id:'binance',label:'Binance',group:'brokers',x:0,y:-4.5,z:2,sub:'crypto data',desc:'Exchange-side crypto feed used for unsupported assets and flow-heavy context.',facts:{Role:'crypto feed',Scope:'exchange market data'},capabilities:['Crypto history','Public stream data','Fallback assets']},
+  {id:'config',label:'Config',group:'config',x:-1.5,y:-6,z:0,sub:'env vars',desc:'Environment and runtime configuration for providers, session controls, and runtime mode.',facts:{Role:'configuration',Artifact:'.env + config'},capabilities:['Provider toggles','Threshold config','Runtime mode']},
+  {id:'db',label:'Database',group:'config',x:0,y:-6,z:-1.5,sub:'PostgreSQL + local stores',desc:'Persistence for trades, tracking, and supporting runtime records.',facts:{Role:'persistence',Mode:'DB + local stores'},capabilities:['Trade history','Prediction tracking','State restore']},
+  {id:'monitor',label:'Monitoring',group:'config',x:1.5,y:-6,z:0,sub:'system health service',desc:'Tracks process liveness, service state, and performance health for the operator surface.',facts:{Role:'health surface',Output:'system health snapshot'},capabilities:['Health aggregation','Service checks','Runtime status']}
+];
+
+const EDGES = [
+  ['bot','engine'],['telegram','engine'],['deepseek','engine'],['intbot','engine'],
+  ['engine','decision'],['engine','signal'],['engine','dash'],['engine','fetcher'],
+  ['decision','risk'],['decision','orderflow'],['decision','exec'],['decision','ml'],['decision','adaptive'],['decision','sentiment'],
+  ['signal','decision'],['risk','sizer'],['risk','portrisk'],['sizer','exec'],
+  ['orderflow','stophunt'],['orderflow','walls'],['exec','ws'],['ml','narrative'],['ml','whale'],
+  ['sentiment','intel_svc'],['calendar','decision'],['playbook','decision'],['engine','intel_svc'],
+  ['fetcher','candles'],['fetcher','redis'],['fetcher','ctrader'],['fetcher','deriv'],['fetcher','dukascopy'],['fetcher','ig'],['fetcher','binance'],
+  ['ingestion','fetcher'],['ctrader','config'],['deriv','config'],['dukascopy','config'],['config','db'],['config','monitor'],
+  ['redis','engine'],['candles','engine']
+];
+
+const VIEW_PRESETS = {
+  all:['entry','core','dashboard','risk','orderflow','execution','intel','services','data','brokers','config'],
+  core:['entry','core','risk','execution','services'],
+  data:['data','brokers','config'],
+  intel:['intel','services','dashboard'],
+  flow:['orderflow','execution','brokers','data']
+};
+
+const DESIGN_MODES = {
+  topology:{label:'Topology',className:'',lineColor:0x8a96aa,lineOpacity:0.18,autoRotate:0.003,stageNote:'drag to rotate · scroll to zoom · click to inspect · double click to jump'},
+  blueprint:{label:'Blueprint',className:'mode-blueprint',lineColor:0x55b8ff,lineOpacity:0.28,autoRotate:0.0016,stageNote:'blueprint mode · slower orbit · stronger line work'},
+  constellation:{label:'Constellation',className:'mode-constellation',lineColor:0xd07cff,lineOpacity:0.22,autoRotate:0.0044,stageNote:'constellation mode · higher motion · cluster reading'},
+  ops:{label:'Ops',className:'mode-ops',lineColor:0x65f0d0,lineOpacity:0.24,autoRotate:0.0022,stageNote:'ops mode · calmer palette · monitoring emphasis'}
+};
+
+const OVERLAY_MODES = {
+  health:{label:'Health Lens',color:0x00d084,caption:'surface runtime health and process pressure'},
+  signal:{label:'Signal Routes',color:0x2979ff,caption:'trace how fresh opportunities move through the stack'},
+  data:{label:'Data Routes',color:0x00e5ff,caption:'follow providers, caches, and runtime data flow'},
+  risk:{label:'Risk Lanes',color:0xef9f27,caption:'see where sizing and exposure protection shape outcomes'},
+  incident:{label:'Incident Paths',color:0xff4560,caption:'spot error-heavy paths and fragile subsystems'},
+  trade:{label:'Trade Replay',color:0xb388ff,caption:'walk open and recent trades across the execution path'},
+  neighbors:{label:'Node Orbit',color:0x7f77dd,caption:'expand around the selected node and its dependencies'}
+};
+
+const RUNTIME_VARIANTS = {
+  auto:{label:'Auto Variant',caption:'derive the emphasis from the runtime mode'},
+  playbook:{label:'Playbook',caption:'highlight decision, playbook, and signal quality paths',groups:['core','services','risk']},
+  paper:{label:'Paper',caption:'lean into execution rehearsal, dashboards, and monitoring',groups:['dashboard','execution','risk','config']},
+  live:{label:'Live Routing',caption:'emphasize broker, execution, and routing dependencies',groups:['brokers','execution','data','risk']},
+  observer:{label:'Observer',caption:'center operator surfaces and monitoring',groups:['dashboard','config','services']},
+  intelligence:{label:'Intelligence',caption:'bring sentiment, whales, narratives, and overlays forward',groups:['intel','services','dashboard']}
+};
+
+const STATIC_ROUTE_PATHS = {
+  signal:['fetcher','decision','orderflow','adaptive','playbook','signal','engine','dash'],
+  data:['fetcher','candles','redis','engine','ws','dash'],
+  risk:['fetcher','decision','risk','sizer','portrisk','exec','db','dash'],
+  trade:['fetcher','decision','risk','exec','db','dash'],
+  incident:['monitor','redis','decision','engine','dash'],
+};
+
+const NODE_SOURCE_MAP = {
+  bot:'bot.py',
+  telegram:'telegram_commander.py',
+  deepseek:'intelligence_bot.py',
+  intbot:'intelligence_bot.py',
+  dash:'dashboard/web_app_live.py',
+  ws:'websocket_dashboard.py',
+  engine:'core/engine.py',
+  decision:'core/decision_engine.py',
+  signal:'core/signal_journal.py',
+  risk:'risk/manager.py',
+  sizer:'risk/position_sizer.py',
+  portrisk:'risk/portfolio_risk.py',
+  orderflow:'order_flow/__init__.py',
+  stophunt:'order_flow/__init__.py',
+  walls:'order_flow/__init__.py',
+  exec:'execution/exchange_router.py',
+  ml:'services/signal_intelligence.py',
+  whale:'whale_intelligence/__init__.py',
+  narrative:'narrative_ai/__init__.py',
+  adaptive:'services/adaptive_policy_service.py',
+  sentiment:'services/market_intelligence_service.py',
+  intel_svc:'services/market_intelligence_service.py',
+  calendar:'market_calendar.py',
+  playbook:'services/playbook_service.py',
+  fetcher:'data/fetcher.py',
+  candles:'data/cache.py',
+  redis:'services/redis_cache.py',
+  ingestion:'data_ingestion/exchange_stream_manager.py',
+  ctrader:'services/ctrader_live_depth_bridge.py',
+  deriv:'services/deriv_bridge.py',
+  dukascopy:'services/dukascopy_live_depth_bridge.py',
+  ig:'services/ig_market_bridge.py',
+  binance:'services/binance_market_bridge.py',
+  config:'config/config.py',
+  db:'services/database_service.py',
+  monitor:'monitoring/system_health_service.py'
+};
+
+let healthSnapshot = null;
+let overviewSnapshot = null;
+let healthHistory = [];
+let nodesById = Object.fromEntries(NODES.map(n => [n.id, n]));
+let activeGroups = new Set(VIEW_PRESETS.all);
+let activeView = 'all';
+let selectedNodeId = 'decision';
+let activeDesignMode = 'topology';
+let activeDetailTab = 'overview';
+let activeOverlayMode = 'health';
+let selectedReplayKey = '';
+let overlayRouteIds = [];
+let overlayRouteSet = new Set();
+let runtimeVariant = 'auto';
+let resolvedRuntimeVariant = 'observer';
+let playbackIndex = 1;
+let playbackAuto = false;
+let playbackTick = 0;
+let activeInspectorMode = 'split';
+let sourcePreviewCache = {};
+let sourcePreviewState = {};
+let sourcePreviewToken = 0;
+let layerPulseHistory = [];
+let replayMemory = {};
+let nodeActivityHistory = {};
+let incidentScrubIndex = 0;
+let missionControl = false;
+let followPlayback = false;
+let followCameraPauseUntil = 0;
+
+const INSPECTOR_MODES = {
+  split:{label:'Split View',caption:'code, route, and runtime context in one place'},
+  incidents:{label:'Incident Film',caption:'scrub failures, blocks, and warning paths'},
+  dependencies:{label:'Dependency Trace',caption:'follow inbound, outbound, and orbit wiring'},
+  telemetry:{label:'Telemetry Tape',caption:'track node-local activity, pulse, and noise over time'}
+};
+
+const canvas = document.getElementById('c3d');
+const miniMapCanvas = document.getElementById('miniMap');
+const miniMapCtx = miniMapCanvas.getContext('2d');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 0);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 200);
+camera.position.set(0,1,18);
+camera.lookAt(0,-0.5,0);
+const cameraLookAt = new THREE.Vector3(0,-0.5,0);
+const cameraLookAtTarget = new THREE.Vector3(0,-0.5,0);
+const root = new THREE.Group();
+const routeParticleGroup = new THREE.Group();
+const routeTrailGroup = new THREE.Group();
+scene.add(root);
+root.add(routeParticleGroup);
+root.add(routeTrailGroup);
+scene.add(new THREE.AmbientLight(0xffffff, 1));
+
+const meshes = [];
+const labels = [];
+const lines = [];
+const routeParticles = [];
+const routeTrailDots = [];
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+const tip = document.getElementById('tip');
+let drag = false, px = 0, py = 0, rotX = 0.25, rotY = 0.3, autoY = 0, camZ = 18, hovMesh = null;
+
+function resize(){
+  const w = canvas.parentElement.clientWidth;
+  const h = canvas.parentElement.clientHeight;
+  renderer.setSize(w,h);
+  camera.aspect = w/h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+
+function makeLabel(text, color){
+  const cv = document.createElement('canvas');
+  cv.width = 360; cv.height = 64;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0,0,360,64);
+  ctx.font = '600 20px Inter, sans-serif';
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 180, 32);
+  return new THREE.CanvasTexture(cv);
+}
+
+function hexToInt(hex){ return parseInt(hex.replace('#',''),16); }
+
+function formatNumber(value, digits = 0){
+  const num = Number(value);
+  if(!Number.isFinite(num)) return '--';
+  return num.toLocaleString(undefined, {maximumFractionDigits: digits, minimumFractionDigits: digits});
+}
+
+function formatSigned(value, digits = 2){
+  const num = Number(value);
+  if(!Number.isFinite(num)) return '--';
+  return `${num > 0 ? '+' : ''}${num.toFixed(digits)}`;
+}
+
+function formatElapsed(ms){
+  const safe = Math.max(0, Number(ms) || 0);
+  const secs = Math.round(safe / 1000);
+  if(secs < 60) return `${secs}s`;
+  const mins = Math.round(secs / 60);
+  if(mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if(hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+function escapeHtml(value){
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function normalizeAsset(value){
+  return String(value || '').trim().toUpperCase();
+}
+
+function isCryptoAsset(asset){
+  const tokenish = ['BTC-USD','ETH-USD','XRP-USD','BNB-USD','SOL-USD','DOGE-USD','ADA-USD'];
+  return asset.includes('-USD') || tokenish.includes(asset);
+}
+
+function brokerNodeForAsset(asset){
+  const key = normalizeAsset(asset);
+  if(!key) return 'fetcher';
+  if(isCryptoAsset(key)) return 'binance';
+  if(['XAU/USD','XAG/USD','WTI','AUS200','GER40','JPN225'].includes(key)) return 'ig';
+  if(['EUR/USD','GBP/USD','USD/JPY','USD/CHF','USD/CAD','AUD/USD','NZD/USD','EUR/JPY','EUR/GBP','GBP/JPY','US30','US100','US500','UK100'].includes(key)) return 'deriv';
+  return 'dukascopy';
+}
+
+function overlayColor(){
+  return OVERLAY_MODES[activeOverlayMode]?.color ?? DESIGN_MODES[activeDesignMode].lineColor;
+}
+
+function detectRuntimeVariant(){
+  if(runtimeVariant !== 'auto') return runtimeVariant;
+  const mode = String(healthSnapshot?.strategy_mode || overviewSnapshot?.health?.strategy_mode || '').toLowerCase();
+  if(mode.includes('playbook')) return 'playbook';
+  if(mode.includes('paper')) return 'paper';
+  if(mode.includes('live')) return 'live';
+  if(activeOverlayMode === 'incident' || activeOverlayMode === 'health') return 'observer';
+  if(activeOverlayMode === 'signal' || activeOverlayMode === 'trade') return 'playbook';
+  if(activeOverlayMode === 'data') return 'live';
+  if(activeOverlayMode === 'neighbors') return 'intelligence';
+  return 'observer';
+}
+
+function resolvedVariantGroups(){
+  resolvedRuntimeVariant = detectRuntimeVariant();
+  return new Set(RUNTIME_VARIANTS[resolvedRuntimeVariant]?.groups || []);
+}
+
+function displayedRouteIds(){
+  if(!overlayRouteIds.length) return [];
+  const bounded = Math.max(1, Math.min(playbackIndex || overlayRouteIds.length, overlayRouteIds.length));
+  return overlayRouteIds.slice(0, bounded);
+}
+
+function displayedRouteSet(){
+  return new Set(displayedRouteIds());
+}
+
+function syncPlaybackBounds(){
+  if(!overlayRouteIds.length){
+    playbackIndex = 1;
+    playbackAuto = false;
+    return;
+  }
+  playbackIndex = Math.max(1, Math.min(playbackIndex || overlayRouteIds.length, overlayRouteIds.length));
+}
+
+function setRuntimeVariant(mode){
+  runtimeVariant = RUNTIME_VARIANTS[mode] ? mode : 'auto';
+  buildControls();
+  renderArchitecturePanels();
+  refreshVisibility();
+}
+
+function renderPlaybackFrame(){
+  renderPlaybackControls();
+  renderReplayClock();
+  renderStageControls();
+  updateStageNote();
+  renderMiniMap();
+  renderDeepInspector();
+}
+
+function setPlaybackIndex(value){
+  playbackIndex = Number(value) || 1;
+  syncPlaybackBounds();
+  refreshVisibility();
+  renderPlaybackFrame();
+}
+
+function togglePlaybackAuto(){
+  if(!overlayRouteIds.length) return;
+  playbackAuto = !playbackAuto;
+  playbackTick = 0;
+  renderPlaybackFrame();
+}
+
+function resetPlayback(){
+  playbackAuto = false;
+  playbackIndex = 1;
+  syncPlaybackBounds();
+  refreshVisibility();
+  renderPlaybackFrame();
+}
+
+function collectGlobalErrors(){
+  return [
+    ...flattenErrorPayload(healthSnapshot?.recent_errors || []),
+    ...flattenErrorPayload(overviewSnapshot?.system_monitor?.errors || {})
+  ].slice(0, 16);
+}
+
+function inferErrorNodes(text){
+  const hay = String(text || '').toLowerCase();
+  const hits = [];
+  const push = (id) => { if(id && !hits.includes(id)) hits.push(id); };
+  if(hay.includes('ctrader')) push('ctrader');
+  if(hay.includes('dukascopy')) push('dukascopy');
+  if(hay.includes('deriv')) push('deriv');
+  if(hay.includes('ig')) push('ig');
+  if(hay.includes('binance')) push('binance');
+  if(hay.includes('redis')) push('redis');
+  if(hay.includes('database') || hay.includes('postgres')) push('db');
+  if(hay.includes('risk')) push('risk');
+  if(hay.includes('order flow') || hay.includes('orderflow') || hay.includes('depth')) push('orderflow');
+  if(hay.includes('signal')) push('signal');
+  if(hay.includes('decision')) push('decision');
+  if(hits.length === 0) push('monitor');
+  return hits;
+}
+
+function uniqueRoute(ids){
+  const seen = new Set();
+  return (ids || []).filter(id => id && nodesById[id] && !seen.has(id) && seen.add(id));
+}
+
+function routeForReplayItem(item, mode = activeOverlayMode){
+  if(!item) return [];
+  if(Array.isArray(item.routeIds) && item.routeIds.length) return uniqueRoute(item.routeIds);
+  if(mode === 'neighbors') return uniqueRoute([selectedNodeId, ...getNodeNeighbors(selectedNodeId).map(n => n.id)]);
+  if(mode === 'health') return uniqueRoute([item.nodeId || item.id, 'monitor', 'dash']);
+  if(mode === 'incident'){
+    const inferred = inferErrorNodes(item.error || item.text || item.label);
+    return uniqueRoute([...inferred, 'monitor', 'dash']);
+  }
+  const broker = brokerNodeForAsset(item.asset || item.symbol || item.label);
+  const seed = STATIC_ROUTE_PATHS[mode] || STATIC_ROUTE_PATHS.signal;
+  return uniqueRoute([broker, ...seed]);
+}
+
+function getReplayItems(mode = activeOverlayMode){
+  const cc = overviewSnapshot?.command_center || {};
+  const runtime = healthSnapshot?.runtime_services || {};
+  const processMap = healthSnapshot?.processes || {};
+  if(mode === 'signal'){
+    const top = listify(cc.top_opportunities).slice(0, 4).map((item, index) => ({
+      key:`signal-top-${index}-${item.asset || item.symbol || 'item'}`,
+      label:`${item.asset || item.symbol || 'Signal'} ${item.signal || item.direction || ''}`.trim(),
+      summary:`confidence ${formatNumber((item.confidence || item.final_score || item.score || 0) * 100, 0)} · ${item.playbook_name || item.playbook || item.reason || 'opportunity'}`,
+      meta:[item.session || item.session_label, item.category, item.timeframe].filter(Boolean),
+      asset:item.asset || item.symbol,
+      direction:item.signal || item.direction,
+      tone:'live'
+    }));
+    const misses = listify(cc.near_misses).slice(0, 3).map((item, index) => ({
+      key:`signal-miss-${index}-${item.asset || item.symbol || 'item'}`,
+      label:`${item.asset || item.symbol || 'Near miss'} ${item.signal || item.direction || ''}`.trim(),
+      summary:item.reason || item.headline || item.block_reason || 'filtered before execution',
+      meta:[item.session || item.session_label, item.category, item.timeframe].filter(Boolean),
+      asset:item.asset || item.symbol,
+      direction:item.signal || item.direction,
+      tone:'warn'
+    }));
+    return [...top, ...misses];
+  }
+  if(mode === 'data'){
+    return [
+      {key:'data-ctrader',label:'cTrader depth',summary:runtime.ctrader_live_depth?.state || 'not bound',meta:['depth','non-crypto'],routeIds:['ctrader','fetcher','orderflow','decision','engine','dash'],tone:runtime.ctrader_live_depth?.ok ? 'live' : 'warn'},
+      {key:'data-dukascopy',label:'Dukascopy depth',summary:runtime.dukascopy_live_depth?.state || 'not bound',meta:['depth','backfill'],routeIds:['dukascopy','fetcher','candles','decision','engine','dash'],tone:runtime.dukascopy_live_depth?.ok ? 'live' : 'warn'},
+      {key:'data-deriv',label:'Deriv routed feed',summary:(healthSnapshot?.source_health?.deriv?.ok ? 'healthy' : 'attention'),meta:['live quotes','routed'],routeIds:['deriv','fetcher','redis','engine','ws','dash'],tone:healthSnapshot?.source_health?.deriv?.ok ? 'live' : 'warn'},
+      {key:'data-binance',label:'Binance crypto feed',summary:(healthSnapshot?.source_health?.binance?.ok ? 'healthy' : 'attention'),meta:['crypto','exchange'],routeIds:['binance','ingestion','fetcher','redis','engine','dash'],tone:healthSnapshot?.source_health?.binance?.ok ? 'live' : 'warn'},
+    ].filter(item => item.summary !== 'not bound' || item.key !== 'data-ctrader');
+  }
+  if(mode === 'risk'){
+    const weak = listify(cc.weak_positions).slice(0, 4).map((item, index) => ({
+      key:`risk-weak-${index}-${item.asset || item.symbol || 'item'}`,
+      label:`${item.asset || item.symbol || 'Weak position'} ${item.signal || item.direction || ''}`.trim(),
+      summary:`pnl ${formatSigned(item.pnl ?? item.total_pnl ?? item.open_pnl, 2)} · risk ${formatNumber((item.risk_score || item.confidence || 0) * 100, 0)}`,
+      meta:[item.session || item.session_label, item.category, item.timeframe].filter(Boolean),
+      asset:item.asset || item.symbol,
+      direction:item.signal || item.direction,
+      tone:'warn'
+    }));
+    const open = listify(cc.positions).slice(0, 2).map((item, index) => ({
+      key:`risk-open-${index}-${item.asset || item.symbol || 'item'}`,
+      label:`${item.asset || item.symbol || 'Open'} ${item.signal || item.direction || ''}`.trim(),
+      summary:`rr ${formatNumber(item.rr_realized || item.risk_reward || 0, 2)} · open pnl ${formatSigned(item.pnl ?? item.open_pnl, 2)}`,
+      meta:[item.category, item.session || item.session_label].filter(Boolean),
+      asset:item.asset || item.symbol,
+      direction:item.signal || item.direction,
+      tone:'live'
+    }));
+    return [...weak, ...open];
+  }
+  if(mode === 'incident'){
+    return collectGlobalErrors().slice(0, 6).map((item, index) => ({
+      key:`incident-${index}`,
+      label:`Incident ${index + 1}`,
+      summary:String(item).slice(0, 120),
+      meta:['error path','monitoring'],
+      error:item,
+      routeIds:uniqueRoute([...inferErrorNodes(item), 'monitor', 'dash']),
+      tone:'down'
+    }));
+  }
+  if(mode === 'trade'){
+    const tape = listify(cc.trade_tape).slice(0, 5).map((item, index) => ({
+      key:`trade-${index}-${item.asset || item.symbol || 'item'}`,
+      label:`${item.asset || item.symbol || 'Trade'} ${item.signal || item.direction || ''}`.trim(),
+      summary:`${item.status || item.state || 'tracked'} · pnl ${formatSigned(item.pnl ?? item.total_pnl, 2)}`,
+      meta:[item.exit_reason || item.phase, item.session || item.session_label, item.category].filter(Boolean),
+      asset:item.asset || item.symbol,
+      direction:item.signal || item.direction,
+      tone:(Number(item.pnl ?? item.total_pnl) || 0) >= 0 ? 'live' : 'warn'
+    }));
+    const open = listify(cc.positions).slice(0, 2).map((item, index) => ({
+      key:`trade-open-${index}-${item.asset || item.symbol || 'item'}`,
+      label:`${item.asset || item.symbol || 'Open trade'} ${item.signal || item.direction || ''}`.trim(),
+      summary:`live trade · pnl ${formatSigned(item.pnl ?? item.open_pnl, 2)}`,
+      meta:[item.session || item.session_label, item.category].filter(Boolean),
+      asset:item.asset || item.symbol,
+      direction:item.signal || item.direction,
+      tone:'live'
+    }));
+    return [...open, ...tape];
+  }
+  if(mode === 'neighbors'){
+    const neighbors = getNodeNeighbors(selectedNodeId);
+    return [
+      {key:`neighbors-${selectedNodeId}`,label:`${nodesById[selectedNodeId]?.label || selectedNodeId} orbit`,summary:'selected node with its mapped dependencies',meta:['dependency view'],routeIds:[selectedNodeId, ...neighbors.map(n => n.id)],tone:'live'},
+      ...neighbors.map((node, index) => ({
+        key:`neighbors-${index}-${node.id}`,
+        label:node.label,
+        summary:node.sub,
+        meta:[GROUP_META[node.group]?.label || node.group],
+        routeIds:[selectedNodeId, node.id],
+        nodeId:node.id,
+        tone:'live'
+      }))
+    ];
+  }
+  const healthItems = NODES.map(node => {
+    const status = resolveNodeStatus(node);
+    if(status.kind === 'unknown') return null;
+    return {
+      key:`health-${node.id}`,
+      label:node.label,
+      summary:status.detail,
+      meta:[GROUP_META[node.group]?.label || node.group, node.sub],
+      nodeId:node.id,
+      tone:status.kind === 'down' ? 'down' : status.kind === 'warn' ? 'warn' : 'live'
+    };
+  }).filter(Boolean);
+  const priority = {down:0, warn:1, live:2};
+  return healthItems.sort((a,b) => priority[a.tone] - priority[b.tone]).slice(0, 8);
+}
+
+function listify(value){
+  return Array.isArray(value) ? value : [];
+}
+
+function ensureReplaySelection(){
+  const items = getReplayItems(activeOverlayMode);
+  const replaySelect = document.getElementById('replayMode');
+  if(replaySelect){
+    replaySelect.innerHTML = Object.entries(OVERLAY_MODES).map(([key, meta]) => `<option value="${key}" ${key===activeOverlayMode?'selected':''}>${meta.label}</option>`).join('');
+  }
+  if(!items.length){
+    selectedReplayKey = '';
+    overlayRouteIds = [];
+    overlayRouteSet = new Set();
+    playbackIndex = 1;
+    playbackAuto = false;
+    return [];
+  }
+  if(!items.some(item => item.key === selectedReplayKey)) selectedReplayKey = items[0].key;
+  const selected = items.find(item => item.key === selectedReplayKey) || items[0];
+  overlayRouteIds = routeForReplayItem(selected, activeOverlayMode);
+  overlayRouteSet = new Set(overlayRouteIds);
+  syncPlaybackBounds();
+  return items;
+}
+
+function setOverlayMode(mode){
+  activeOverlayMode = OVERLAY_MODES[mode] ? mode : 'health';
+  selectedReplayKey = '';
+  playbackIndex = 1;
+  playbackAuto = false;
+  buildControls();
+  renderArchitecturePanels();
+  refreshVisibility();
+}
+
+function selectReplay(key){
+  selectedReplayKey = key;
+  playbackAuto = false;
+  playbackIndex = 1;
+  renderArchitecturePanels();
+  refreshVisibility();
+}
+
+function currentPlaybackNodeId(){
+  const visibleIds = displayedRouteIds();
+  if(visibleIds.length) return visibleIds[Math.max(0, visibleIds.length - 1)];
+  if(overlayRouteIds.length) return overlayRouteIds[Math.max(0, Math.min((playbackIndex || 1) - 1, overlayRouteIds.length - 1))];
+  return selectedNodeId;
+}
+
+function pauseFollowCamera(ms = 2200){
+  followCameraPauseUntil = performance.now() + ms;
+}
+
+function setFollowPlayback(force){
+  followPlayback = typeof force === 'boolean' ? force : !followPlayback;
+  if(followPlayback) followCameraPauseUntil = 0;
+  renderPlaybackFrame();
+}
+
+function setMissionControl(force){
+  missionControl = typeof force === 'boolean' ? force : !missionControl;
+  document.body.classList.toggle('mission-control', missionControl);
+  renderStageControls();
+  renderReplayClock();
+  updateStageNote();
+  renderMiniMap();
+  resize();
+}
+
+function jumpToReplayFocus(){
+  const nodeId = currentPlaybackNodeId();
+  if(!nodeId) return;
+  focusNode(nodeId);
+  pauseFollowCamera(1200);
+}
+
+function nudgePlayback(delta){
+  if(!overlayRouteIds.length) return;
+  playbackAuto = false;
+  setPlaybackIndex(Math.max(1, Math.min(overlayRouteIds.length, playbackIndex + delta)));
+}
+
+function canUseGlobalShortcut(event){
+  const tag = String(event.target?.tagName || '').toLowerCase();
+  return !['input','textarea','select'].includes(tag) && !event.target?.isContentEditable;
+}
+
+function updateFollowCamera(nowMs){
+  const targetNode = followPlayback ? nodesById[currentPlaybackNodeId()] : null;
+  const canTrack = !!targetNode && !drag && nowMs >= followCameraPauseUntil;
+  if(canTrack){
+    const targetRotY = -targetNode.x * 0.08;
+    const targetRotX = Math.max(-0.68, Math.min(0.58, 0.16 - targetNode.y * 0.05));
+    const targetCamZ = Math.max(8.5, Math.min(20, 12.2 + Math.abs(targetNode.z) * 1.05));
+    rotY += (targetRotY - rotY) * 0.05;
+    rotX += (targetRotX - rotX) * 0.05;
+    camZ += (targetCamZ - camZ) * 0.06;
+    cameraLookAtTarget.set(targetNode.x * 0.14, (targetNode.y * 0.14) - 0.25, targetNode.z * 0.08);
+  } else {
+    cameraLookAtTarget.set(0,-0.5,0);
+  }
+  cameraLookAt.lerp(cameraLookAtTarget, canTrack ? 0.1 : 0.05);
+}
+
+function activeRouteEdgeSet(){
+  const pairs = new Set();
+  const routeIds = displayedRouteIds();
+  for(let i = 0; i < routeIds.length - 1; i += 1){
+    const a = routeIds[i];
+    const b = routeIds[i + 1];
+    pairs.add(`${a}>${b}`);
+    pairs.add(`${b}>${a}`);
+  }
+  return pairs;
+}
+
+function sampleRoutePoint(progress){
+  const routeIds = displayedRouteIds();
+  if(!routeIds.length){
+    return new THREE.Vector3(0, 0, 0);
+  }
+  if(routeIds.length === 1){
+    const only = nodesById[routeIds[0]];
+    return new THREE.Vector3(only?.x || 0, only?.y || 0, only?.z || 0);
+  }
+  const segments = [];
+  let total = 0;
+  for(let i = 0; i < routeIds.length - 1; i += 1){
+    const a = nodesById[routeIds[i]];
+    const b = nodesById[routeIds[i + 1]];
+    if(!a || !b) continue;
+    const av = new THREE.Vector3(a.x, a.y, a.z);
+    const bv = new THREE.Vector3(b.x, b.y, b.z);
+    const len = av.distanceTo(bv);
+    segments.push({av, bv, len});
+    total += len;
+  }
+  if(!segments.length || total <= 0){
+    const fallback = nodesById[routeIds[0]];
+    return new THREE.Vector3(fallback?.x || 0, fallback?.y || 0, fallback?.z || 0);
+  }
+  let remaining = Math.max(0, Math.min(0.999, progress)) * total;
+  for(const segment of segments){
+    if(remaining <= segment.len){
+      const ratio = segment.len ? remaining / segment.len : 0;
+      return segment.av.clone().lerp(segment.bv, ratio);
+    }
+    remaining -= segment.len;
+  }
+  const last = segments[segments.length - 1];
+  return last.bv.clone();
+}
+
+function syncRouteParticles(nowMs = 0){
+  const routeIds = displayedRouteIds();
+  const shouldShow = routeIds.length > 1;
+  const targetCount = shouldShow ? Math.min(8, Math.max(3, routeIds.length + 1)) : 0;
+  while(routeParticles.length < targetCount){
+    const geo = new THREE.SphereGeometry(0.08, 12, 12);
+    const mat = new THREE.MeshBasicMaterial({color:overlayColor(), transparent:true, opacity:0.92});
+    const particle = new THREE.Mesh(geo, mat);
+    particle.userData.offset = routeParticles.length / Math.max(targetCount, 1);
+    routeParticleGroup.add(particle);
+    routeParticles.push(particle);
+  }
+  while(routeParticles.length > targetCount){
+    const particle = routeParticles.pop();
+    routeParticleGroup.remove(particle);
+    particle.geometry.dispose();
+    particle.material.dispose();
+  }
+  routeParticles.forEach((particle, index) => {
+    particle.visible = shouldShow;
+    particle.material.color.setHex(overlayColor());
+    if(!shouldShow) return;
+    const progress = ((nowMs * 0.00012) + (index / Math.max(routeParticles.length, 1))) % 1;
+    const pos = sampleRoutePoint(progress);
+    particle.position.copy(pos);
+  });
+}
+
+function syncRouteTrails(nowMs = 0){
+  const routeIds = displayedRouteIds();
+  const shouldShow = routeIds.length > 1;
+  const targetCount = shouldShow ? Math.min(28, Math.max(10, routeIds.length * 4)) : 0;
+  while(routeTrailDots.length < targetCount){
+    const geo = new THREE.SphereGeometry(0.045, 10, 10);
+    const mat = new THREE.MeshBasicMaterial({color:overlayColor(), transparent:true, opacity:0.12});
+    const dot = new THREE.Mesh(geo, mat);
+    routeTrailGroup.add(dot);
+    routeTrailDots.push(dot);
+  }
+  while(routeTrailDots.length > targetCount){
+    const dot = routeTrailDots.pop();
+    routeTrailGroup.remove(dot);
+    dot.geometry.dispose();
+    dot.material.dispose();
+  }
+  routeTrailDots.forEach((dot, index) => {
+    dot.visible = shouldShow;
+    dot.material.color.setHex(overlayColor());
+    if(!shouldShow) return;
+    const base = ((nowMs * 0.00008) + (index / Math.max(routeTrailDots.length, 1))) % 1;
+    const pos = sampleRoutePoint(base);
+    dot.position.copy(pos);
+    dot.scale.setScalar(0.82 + (index / Math.max(routeTrailDots.length, 1)) * 0.34);
+    dot.material.opacity = 0.04 + (index / Math.max(routeTrailDots.length, 1)) * 0.2;
+  });
+}
+
+function buildTimelineEvents(){
+  const tradeEvents = stampReplayItems(
+    getReplayItems('trade').slice(0, 4).map(item => ({...item, overlay:'trade', mirrorKey:item.key})),
+    'trade'
+  );
+  const signalEvents = stampReplayItems(
+    getReplayItems('signal').slice(0, 3).map(item => ({...item, overlay:'signal', mirrorKey:item.key})),
+    'signal'
+  );
+  const incidentEvents = stampReplayItems(
+    getReplayItems('incident').slice(0, 3).map(item => ({...item, overlay:'incident', mirrorKey:item.key})),
+    'incident'
+  );
+  return [...tradeEvents, ...signalEvents, ...incidentEvents].slice(0, 8);
+}
+
+function activateTimelineEvent(overlay, key){
+  activeOverlayMode = OVERLAY_MODES[overlay] ? overlay : activeOverlayMode;
+  selectedReplayKey = key;
+  playbackAuto = false;
+  playbackIndex = 1;
+  buildControls();
+  renderArchitecturePanels();
+  refreshVisibility();
+}
+
+function renderRoutePills(items){
+  const host = document.getElementById('routePills');
+  if(!items.length){
+    host.innerHTML = '<div class="empty">No live items in this overlay right now.</div>';
+    return;
+  }
+  host.innerHTML = items.slice(0, 6).map(item => `
+    <button type="button" class="route-pill ${item.key===selectedReplayKey?'active':''} ${item.tone === 'warn' ? 'warn' : item.tone === 'down' ? 'down' : ''}" data-replay="${item.key}">
+      <strong>${item.label}</strong>
+      <span>${item.summary} · ${item.ageLabel || 'live'}</span>
+    </button>
+  `).join('');
+  host.querySelectorAll('[data-replay]').forEach(btn => btn.addEventListener('click', () => selectReplay(btn.dataset.replay)));
+}
+
+function renderHeatGrid(){
+  const host = document.getElementById('heatGrid');
+  const cards = Object.entries(GROUP_META).map(([key, meta]) => {
+    const groupNodes = NODES.filter(node => node.group === key);
+    const liveCount = groupNodes.filter(node => resolveNodeStatus(node).kind === 'live').length;
+    const overlayHits = groupNodes.filter(node => overlayRouteSet.has(node.id)).length;
+    const healthRatio = groupNodes.length ? liveCount / groupNodes.length : 0;
+    const fill = Math.max(8, Math.round((healthRatio * 72) + (overlayHits > 0 ? 18 : 0)));
+    const pulse = layerPulseSummary(key);
+    return `
+      <div class="heat-card">
+        <strong>${meta.label}</strong>
+        <span>${liveCount}/${groupNodes.length} healthy · ${overlayHits} on active route</span>
+        <div class="heat-track"><div class="heat-fill" style="width:${Math.min(fill, 100)}%; background:${overlayHits ? `linear-gradient(90deg, ${meta.color}, #00e5ff)` : `linear-gradient(90deg, ${meta.color}, rgba(255,255,255,.45))`}"></div></div>
+        <small>${overlayHits ? 'overlay engaged in this layer' : 'standing by'} · pulse ${pulse.label}</small>
+      </div>
+    `;
+  });
+  host.innerHTML = cards.join('');
+}
+
+function renderReplayCards(items){
+  const host = document.getElementById('replayCards');
+  if(!items.length){
+    host.innerHTML = '<div class="empty">Replay cards will appear when runtime payloads land.</div>';
+    return;
+  }
+  const selected = items.find(item => item.key === selectedReplayKey) || items[0];
+  const ranked = [selected, ...items.filter(item => item.key !== selected.key)].slice(0, 4);
+  host.innerHTML = ranked.map(item => `
+    <button type="button" class="replay-card ${item.key===selectedReplayKey?'active':''}" data-card="${item.key}">
+      <strong>${item.label}</strong>
+      <span>${item.summary}</span>
+      <div class="replay-meta">${[...(item.meta || []).slice(0, 4), item.ageLabel].filter(Boolean).map(meta => `<span class="meta-pill">${meta}</span>`).join('')}</div>
+      <small>${routeForReplayItem(item, activeOverlayMode).map(id => nodesById[id]?.label || id).join(' → ')}</small>
+    </button>
+  `).join('');
+  host.querySelectorAll('[data-card]').forEach(btn => btn.addEventListener('click', () => selectReplay(btn.dataset.card)));
+}
+
+function renderPlaybackControls(){
+  const slider = document.getElementById('playbackSlider');
+  const caption = document.getElementById('playbackCaption');
+  const toggle = document.getElementById('playbackToggle');
+  const storyboard = document.getElementById('routeStoryboard');
+  if(!slider || !caption || !toggle) return;
+  if(!overlayRouteIds.length){
+    slider.min = 1;
+    slider.max = 1;
+    slider.value = 1;
+    slider.disabled = true;
+    caption.textContent = 'Waiting for a route';
+    toggle.textContent = 'Auto Play';
+    if(storyboard) storyboard.innerHTML = '<div class="empty">A selected route will break into steps here.</div>';
+    return;
+  }
+  syncPlaybackBounds();
+  slider.disabled = false;
+  slider.min = 1;
+  slider.max = String(overlayRouteIds.length);
+  slider.value = String(playbackIndex);
+  const visible = displayedRouteIds();
+  caption.textContent = `Step ${playbackIndex}/${overlayRouteIds.length} · ${visible.map(id => nodesById[id]?.label || id).join(' → ')}`;
+  toggle.textContent = playbackAuto ? 'Pause' : 'Auto Play';
+  if(storyboard){
+    storyboard.innerHTML = overlayRouteIds.map((id, index) => {
+      const node = nodesById[id];
+      const active = index < playbackIndex;
+      return `
+        <div class="story-step ${active ? 'active' : ''}">
+          <strong>${index + 1}. ${node?.label || id}</strong>
+          <span>${node?.sub || 'mapped step'}</span>
+          <small>${GROUP_META[node?.group]?.label || node?.group || 'Unknown layer'}</small>
+        </div>
+      `;
+    }).join('');
+  }
+}
+
+function renderReplayClock(){
+  const title = document.getElementById('replayClockTitle');
+  const step = document.getElementById('replayClockStep');
+  const meta = document.getElementById('replayClockMeta');
+  const fill = document.getElementById('replayClockFill');
+  const caption = document.getElementById('replayClockCaption');
+  if(!title || !step || !meta || !fill || !caption) return;
+
+  const selected = getReplayItems(activeOverlayMode).find(item => item.key === selectedReplayKey) || null;
+  if(!overlayRouteIds.length || !selected){
+    title.textContent = 'Route Clock';
+    step.textContent = 'waiting';
+    meta.innerHTML = '<span class="clock-pill">idle</span><span class="clock-pill">no route selected</span>';
+    fill.style.width = '0%';
+    caption.textContent = 'Select a route card to start a cinematic replay trace.';
+    return;
+  }
+
+  const progress = Math.max(0, Math.min(1, playbackIndex / Math.max(overlayRouteIds.length, 1)));
+  const visibleLabels = displayedRouteIds().map(id => nodesById[id]?.label || id);
+  title.textContent = selected.label;
+  step.textContent = `step ${playbackIndex}/${overlayRouteIds.length}`;
+  meta.innerHTML = [
+    OVERLAY_MODES[activeOverlayMode]?.label || 'overlay',
+    selected.ageLabel || 'live',
+    `${Math.round(progress * 100)}% revealed`,
+    followPlayback ? 'follow cam' : 'free cam',
+    missionControl ? 'mission control' : 'workbench'
+  ].map(item => `<span class="clock-pill">${escapeHtml(item)}</span>`).join('');
+  fill.style.width = `${Math.max(4, Math.round(progress * 100))}%`;
+  caption.textContent = `${visibleLabels.join(' → ')} · ${selected.summary || 'route replay active'}`;
+}
+
+function renderStageControls(){
+  const followButtons = ['followPlaybackBtn','followPlaybackHeroBtn']
+    .map(id => document.getElementById(id))
+    .filter(Boolean);
+  const missionButtons = ['missionControlBtn','missionControlHeroBtn']
+    .map(id => document.getElementById(id))
+    .filter(Boolean);
+  followButtons.forEach(btn => {
+    btn.classList.toggle('active', followPlayback);
+    btn.textContent = followPlayback ? 'Free Camera' : 'Follow Route';
+  });
+  missionButtons.forEach(btn => {
+    btn.classList.toggle('active', missionControl);
+    btn.textContent = missionControl ? 'Exit Mission Control' : 'Mission Control';
+  });
+  const jumpBtn = document.getElementById('playbackFocusBtn');
+  const currentNode = nodesById[currentPlaybackNodeId?.() || selectedNodeId];
+  if(jumpBtn){
+    jumpBtn.textContent = currentNode ? `Jump ${currentNode.label}` : 'Jump Replay';
+  }
+  const host = document.getElementById('stageStatusRow');
+  if(!host) return;
+  const selected = getReplayItems(activeOverlayMode).find(item => item.key === selectedReplayKey) || null;
+  const chips = [
+    {cls:missionControl ? 'info' : '', label:'View', value:missionControl ? 'Mission control' : 'Workbench'},
+    {cls:followPlayback ? 'info' : '', label:'Camera', value:followPlayback ? 'Following active route' : 'Free orbit'},
+    {cls:overlayRouteIds.length ? 'live' : '', label:'Replay', value:selected ? `${playbackIndex}/${overlayRouteIds.length} · ${selected.label}` : 'No active route'},
+    {cls:'warn', label:'Keys', value:'M mission · F follow · Space play · arrows scrub'}
+  ];
+  host.innerHTML = chips.map(chip => `
+    <div class="status-chip ${chip.cls}">
+      <strong>${escapeHtml(chip.label)}</strong>
+      <span>${escapeHtml(chip.value)}</span>
+    </div>
+  `).join('');
+}
+
+function renderTimelineList(){
+  const host = document.getElementById('timelineList');
+  const items = buildTimelineEvents();
+  if(!items.length){
+    host.innerHTML = '<div class="empty">Timeline will fill as signals, trades, and incidents land.</div>';
+    return;
+  }
+  host.innerHTML = items.map(item => `
+    <button type="button" class="timeline-item ${activeOverlayMode===item.overlay && selectedReplayKey===item.mirrorKey ? 'active' : ''}" data-overlay="${item.overlay}" data-key="${item.mirrorKey}">
+      <strong>${item.label}</strong>
+      <span>${item.summary}</span>
+      <small>${item.overlay.toUpperCase()} · ${(item.meta || []).join(' · ')}${item.ageLabel ? ` · ${item.ageLabel}` : ''}</small>
+    </button>
+  `).join('');
+  host.querySelectorAll('[data-overlay][data-key]').forEach(btn => btn.addEventListener('click', () => activateTimelineEvent(btn.dataset.overlay, btn.dataset.key)));
+}
+
+function updateStageNote(){
+  const overlayMeta = OVERLAY_MODES[activeOverlayMode];
+  const selected = getReplayItems(activeOverlayMode).find(item => item.key === selectedReplayKey);
+  const base = DESIGN_MODES[activeDesignMode].stageNote;
+  const variant = detectRuntimeVariant();
+  const variantText = `variant: ${(RUNTIME_VARIANTS[variant]?.label || variant).toLowerCase()}`;
+  const overlayText = overlayMeta ? `overlay: ${overlayMeta.label.toLowerCase()} · ${overlayMeta.caption}` : '';
+  const focusText = selected ? `focus: ${selected.label}` : 'focus: full stack';
+  const controlText = missionControl ? 'mission control active · esc exits · m toggles · f follows replay' : 'm for mission control · f to follow replay · space to autoplay';
+  document.getElementById('stageNote').textContent = [base, variantText, overlayText, focusText, controlText].filter(Boolean).join(' · ');
+}
+
+function renderMiniMap(){
+  if(!miniMapCtx || !miniMapCanvas) return;
+  const width = miniMapCanvas.width;
+  const height = miniMapCanvas.height;
+  const pad = 18;
+  miniMapCtx.clearRect(0, 0, width, height);
+  miniMapCtx.fillStyle = 'rgba(10, 15, 24, 0.96)';
+  miniMapCtx.fillRect(0, 0, width, height);
+
+  miniMapCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+  miniMapCtx.lineWidth = 1;
+  for(let i = 1; i <= 3; i += 1){
+    const x = pad + (((width - (pad * 2)) / 4) * i);
+    const y = pad + (((height - (pad * 2)) / 4) * i);
+    miniMapCtx.beginPath();
+    miniMapCtx.moveTo(x, pad);
+    miniMapCtx.lineTo(x, height - pad);
+    miniMapCtx.stroke();
+    miniMapCtx.beginPath();
+    miniMapCtx.moveTo(pad, y);
+    miniMapCtx.lineTo(width - pad, y);
+    miniMapCtx.stroke();
+  }
+
+  const visibleNodes = NODES.filter(node => activeGroups.has(node.group));
+  const mapNodes = visibleNodes.length ? visibleNodes : NODES;
+  const xVals = mapNodes.map(node => node.x);
+  const zVals = mapNodes.map(node => node.z);
+  const minX = Math.min(...xVals, -6);
+  const maxX = Math.max(...xVals, 6);
+  const minZ = Math.min(...zVals, -6);
+  const maxZ = Math.max(...zVals, 6);
+  const xSpan = Math.max(1, maxX - minX);
+  const zSpan = Math.max(1, maxZ - minZ);
+  const project = (node) => ({
+    x: pad + (((node.x - minX) / xSpan) * (width - (pad * 2))),
+    y: height - pad - (((node.z - minZ) / zSpan) * (height - (pad * 2))),
+  });
+
+  const routeSet = displayedRouteSet();
+  const edgeSet = activeRouteEdgeSet();
+  EDGES.forEach(([fromId, toId]) => {
+    const fromNode = nodesById[fromId];
+    const toNode = nodesById[toId];
+    if(!fromNode || !toNode) return;
+    if(!activeGroups.has(fromNode.group) || !activeGroups.has(toNode.group)) return;
+    const from = project(fromNode);
+    const to = project(toNode);
+    const edgeKey = `${fromId}>${toId}`;
+    const active = edgeSet.has(edgeKey);
+    miniMapCtx.beginPath();
+    miniMapCtx.moveTo(from.x, from.y);
+    miniMapCtx.lineTo(to.x, to.y);
+    miniMapCtx.strokeStyle = active ? '#00e5ff' : routeSet.has(fromId) || routeSet.has(toId) ? 'rgba(0,229,255,0.35)' : 'rgba(255,255,255,0.10)';
+    miniMapCtx.lineWidth = active ? 2.2 : 1;
+    miniMapCtx.stroke();
+  });
+
+  visibleNodes.forEach(node => {
+    const point = project(node);
+    const status = resolveNodeStatus(node).kind;
+    const selected = node.id === selectedNodeId;
+    const onRoute = routeSet.has(node.id);
+    miniMapCtx.beginPath();
+    miniMapCtx.arc(point.x, point.y, selected ? 5.8 : onRoute ? 4.8 : 3.6, 0, Math.PI * 2);
+    miniMapCtx.fillStyle = onRoute ? '#00e5ff' : status === 'down' ? '#ff4560' : status === 'warn' ? '#ffa500' : GROUP_META[node.group]?.color || '#8a96aa';
+    miniMapCtx.fill();
+    if(selected){
+      miniMapCtx.beginPath();
+      miniMapCtx.arc(point.x, point.y, 9.5, 0, Math.PI * 2);
+      miniMapCtx.strokeStyle = 'rgba(255,255,255,0.75)';
+      miniMapCtx.lineWidth = 1.2;
+      miniMapCtx.stroke();
+    }
+  });
+
+  const selectedNode = nodesById[selectedNodeId];
+  document.getElementById('miniMapCaption').textContent = `${OVERLAY_MODES[activeOverlayMode]?.label || 'Health Lens'} · ${RUNTIME_VARIANTS[resolvedRuntimeVariant]?.label || resolvedRuntimeVariant}`;
+  document.getElementById('miniMapMeta').textContent = selectedNode
+    ? `${selectedNode.label} anchored · ${visibleNodes.length} visible nodes · ${displayedRouteIds().length} route steps revealed`
+    : `${visibleNodes.length} visible nodes · ${displayedRouteIds().length} route steps revealed`;
+}
+
+function renderArchitecturePanels(){
+  const items = stampReplayItems(ensureReplaySelection(), activeOverlayMode);
+  renderRoutePills(items);
+  renderHeatGrid();
+  renderReplayCards(items);
+  renderPlaybackControls();
+  renderReplayClock();
+  renderStageControls();
+  renderTimelineList();
+  updateStageNote();
+  renderMiniMap();
+  renderDeepInspector();
+}
+
+function buildScene(){
+  NODES.forEach(node => {
+    const color = GROUP_META[node.group]?.color || '#888888';
+    const geo = new THREE.BoxGeometry(0.42,0.42,0.42);
+    const mat = new THREE.MeshBasicMaterial({color:hexToInt(color)});
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(node.x,node.y,node.z);
+    mesh.userData = node;
+    root.add(mesh);
+    meshes.push(mesh);
+    node.mesh = mesh;
+
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: makeLabel(node.label, color),
+      transparent: true,
+      depthTest: false
+    }));
+    sprite.scale.set(2.8,0.5,1);
+    sprite.position.set(node.x,node.y+0.56,node.z);
+    sprite.userData = {nodeId: node.id, isLabel:true};
+    root.add(sprite);
+    labels.push(sprite);
+  });
+
+  EDGES.forEach(([a,b]) => {
+    const na = nodesById[a], nb = nodesById[b];
+    if(!na || !nb) return;
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(na.x,na.y,na.z),
+      new THREE.Vector3(nb.x,nb.y,nb.z)
+    ]);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({color:0x8a96aa, transparent:true, opacity:0.18}));
+    line.userData = {from:a,to:b};
+    root.add(line);
+    lines.push(line);
+  });
+
+  const gridGeo = new THREE.BufferGeometry();
+  const gridPts = [];
+  const gs = 12, gc = 12;
+  for(let i=-gc;i<=gc;i++){
+    gridPts.push(-gs,-6.5,i,gs,-6.5,i);
+    gridPts.push(i,-6.5,-gs,i,-6.5,gs);
+  }
+  gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridPts,3));
+  root.add(new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({color:0x333742, transparent:true, opacity:0.16})));
+}
+
+function setNodeVisualState(mesh){
+  const node = mesh.userData;
+  const visible = activeGroups.has(node.group);
+  mesh.visible = visible;
+  const status = resolveNodeStatus(node);
+  const routeSet = displayedRouteSet();
+  const inRoute = routeSet.has(node.id);
+  const variantGroups = resolvedVariantGroups();
+  const inVariant = variantGroups.has(node.group);
+  const baseScale = selectedNodeId === node.id ? 1.45 : hovMesh === mesh ? 1.25 : 1.0;
+  mesh.scale.setScalar(baseScale + (inRoute ? 0.22 : 0) + (inVariant ? 0.08 : 0));
+  mesh.material.opacity = visible ? (inRoute ? 1 : inVariant ? 0.96 : 0.9) : 0.08;
+  mesh.material.transparent = true;
+  if(status.kind === 'live') mesh.material.color.setHex(hexToInt(GROUP_META[node.group].color));
+  if(status.kind === 'warn') mesh.material.color.setHex(0xef9f27);
+  if(status.kind === 'down') mesh.material.color.setHex(0xff4560);
+  if(inRoute && status.kind === 'live') mesh.material.color.setHex(overlayColor());
+}
+
+function refreshVisibility(){
+  ensureReplaySelection();
+  const routeSet = displayedRouteSet();
+  const variantGroups = resolvedVariantGroups();
+  meshes.forEach(setNodeVisualState);
+  labels.forEach(label => {
+    const nodeId = label.userData.nodeId;
+    const node = nodesById[nodeId];
+    label.visible = !!node && activeGroups.has(node.group);
+    label.material.opacity = routeSet.size && routeSet.has(nodeId) ? 1 : variantGroups.has(node?.group) ? 0.95 : 0.88;
+  });
+  const edgeSet = activeRouteEdgeSet();
+  lines.forEach(line => {
+    const fromNode = nodesById[line.userData.from];
+    const toNode = nodesById[line.userData.to];
+    const show = activeGroups.has(fromNode.group) && activeGroups.has(toNode.group);
+    line.visible = show;
+    if(!show) return;
+    const edgeKey = `${line.userData.from}>${line.userData.to}`;
+    const touchesRoute = routeSet.has(line.userData.from) || routeSet.has(line.userData.to);
+    const touchesVariant = variantGroups.has(fromNode.group) || variantGroups.has(toNode.group);
+    line.material.color.setHex(edgeSet.has(edgeKey) ? overlayColor() : DESIGN_MODES[activeDesignMode].lineColor);
+    line.material.opacity = edgeSet.has(edgeKey) ? 0.95 : touchesRoute ? 0.42 : touchesVariant ? Math.max(DESIGN_MODES[activeDesignMode].lineOpacity, 0.24) : DESIGN_MODES[activeDesignMode].lineOpacity;
+  });
+  const activeLabels = [...activeGroups].map(g => GROUP_META[g]?.label || g);
+  document.getElementById('searchHint').textContent = activeLabels.length === Object.keys(GROUP_META).length ? 'all layers' : activeLabels.join(' · ');
+}
+
+function buildLegend(){
+  const legend = document.getElementById('legend');
+  legend.innerHTML = Object.entries(GROUP_META).map(([key, meta]) => `
+    <div class="legend-item">
+      <div class="legend-dot" style="background:${meta.color}"></div>
+      <span>${meta.label}</span>
+    </div>
+  `).join('');
+}
+
+function buildControls(){
+  const viewRow = document.getElementById('viewRow');
+  const layerRow = document.getElementById('layerRow');
+  const modeRow = document.getElementById('modeRow');
+  const variantRow = document.getElementById('variantRow');
+  const overlayRow = document.getElementById('overlayRow');
+  viewRow.innerHTML = [
+    ['all','Full map'],['core','Core stack'],['data','Data stack'],['intel','Intel stack'],['flow','Flow stack']
+  ].map(([key,label]) => `<button class="chip ${key===activeView?'active':''}" data-view="${key}">${label}</button>`).join('');
+  layerRow.innerHTML = Object.entries(GROUP_META).map(([key,meta]) => `
+    <button class="chip ${activeGroups.has(key)?'active':''}" data-layer="${key}">${meta.label}</button>
+  `).join('');
+  modeRow.innerHTML = Object.entries(DESIGN_MODES).map(([key,meta]) => `
+    <button class="chip ${activeDesignMode===key?'active':''}" data-mode="${key}">${meta.label}</button>
+  `).join('');
+  variantRow.innerHTML = Object.entries(RUNTIME_VARIANTS).map(([key,meta]) => `
+    <button class="chip ${runtimeVariant===key?'active':''}" data-variant="${key}">${meta.label}</button>
+  `).join('');
+  overlayRow.innerHTML = Object.entries(OVERLAY_MODES).map(([key,meta]) => `
+    <button class="chip ${activeOverlayMode===key?'active':''}" data-overlay="${key}">${meta.label}</button>
+  `).join('');
+
+  viewRow.querySelectorAll('[data-view]').forEach(btn => btn.addEventListener('click', () => {
+    activeView = btn.dataset.view;
+    activeGroups = new Set(VIEW_PRESETS[activeView]);
+    buildControls();
+    refreshVisibility();
+  }));
+  layerRow.querySelectorAll('[data-layer]').forEach(btn => btn.addEventListener('click', () => {
+    const key = btn.dataset.layer;
+    if(activeGroups.has(key)) activeGroups.delete(key); else activeGroups.add(key);
+    activeView = 'custom';
+    buildControls();
+    refreshVisibility();
+  }));
+  modeRow.querySelectorAll('[data-mode]').forEach(btn => btn.addEventListener('click', () => applyDesignMode(btn.dataset.mode)));
+  variantRow.querySelectorAll('[data-variant]').forEach(btn => btn.addEventListener('click', () => setRuntimeVariant(btn.dataset.variant)));
+  overlayRow.querySelectorAll('[data-overlay]').forEach(btn => btn.addEventListener('click', () => setOverlayMode(btn.dataset.overlay)));
+}
+
+function applyDesignMode(mode){
+  activeDesignMode = DESIGN_MODES[mode] ? mode : 'topology';
+  Object.values(DESIGN_MODES).forEach(meta => { if(meta.className) document.body.classList.remove(meta.className); });
+  if(DESIGN_MODES[activeDesignMode].className) document.body.classList.add(DESIGN_MODES[activeDesignMode].className);
+  lines.forEach(line => {
+    line.material.color.setHex(DESIGN_MODES[activeDesignMode].lineColor);
+    line.material.opacity = DESIGN_MODES[activeDesignMode].lineOpacity;
+  });
+  meshes.forEach(mesh => {
+    mesh.material.wireframe = activeDesignMode === 'blueprint';
+  });
+  buildControls();
+  renderArchitecturePanels();
+  refreshVisibility();
+}
+
+function resolveNodeStatus(node){
+  const unknown = {kind:'unknown',label:'Unknown',detail:'No runtime binding yet'};
+  if(!healthSnapshot) return unknown;
+  const processes = healthSnapshot.processes || {};
+  const runtime = healthSnapshot.runtime_services || {};
+  const statusMap = {
+    bot: processes['TradingCore'],
+    telegram: processes['Telegram'],
+    deepseek: runtime.deepseek_bot?.ok,
+    intbot: runtime.intelligence_bot?.ok ?? runtime.deepseek_bot?.ok,
+    dash: processes['Web dashboard'],
+    ws: processes['WebSocket streams'],
+    redis: processes['Redis'],
+    db: processes['PostgreSQL'],
+    ctrader: runtime.ctrader_live_depth?.ok,
+    dukascopy: runtime.dukascopy_live_depth?.ok,
+    deriv: healthSnapshot.source_health?.deriv?.ok ?? healthSnapshot.feed_connections?.deriv?.connected,
+    ig: healthSnapshot.source_health?.ig?.ok ?? healthSnapshot.feed_connections?.ig?.connected,
+    binance: healthSnapshot.source_health?.binance?.ok ?? healthSnapshot.feed_connections?.binance?.connected,
+    monitor: true,
+    engine: processes['Engine ready'] ?? processes['TradingCore'],
+    decision: processes['TradingCore'],
+    signal: processes['TradingCore'],
+    risk: processes['TradingCore'],
+    sizer: processes['TradingCore'],
+    portrisk: processes['TradingCore'],
+    orderflow: runtime.order_flow?.ok ?? processes['TradingCore'],
+    stophunt: runtime.order_flow?.ok ?? processes['TradingCore'],
+    walls: runtime.order_flow?.ok ?? processes['TradingCore'],
+    exec: processes['TradingCore'],
+    ml: processes['TradingCore'],
+    whale: runtime.whale_intelligence?.ok ?? true,
+    narrative: processes['TradingCore'],
+    adaptive: processes['TradingCore'],
+    sentiment: processes['TradingCore'],
+    intel_svc: processes['TradingCore'],
+    calendar: processes['TradingCore'],
+    playbook: processes['TradingCore'],
+    fetcher: processes['TradingCore'],
+    candles: processes['TradingCore'],
+    ingestion: processes['TradingCore'],
+    config: true,
+  };
+  const raw = statusMap[node.id];
+  if(raw === true) return {kind:'live',label:'Live',detail:'Healthy'};
+  if(raw === false) return {kind:'down',label:'Attention',detail:'Not healthy'};
+  if(raw == null) return unknown;
+  return unknown;
+}
+
+function getNodeNeighbors(nodeId){
+  const neighborIds = new Set();
+  EDGES.forEach(([from,to]) => {
+    if(from === nodeId) neighborIds.add(to);
+    if(to === nodeId) neighborIds.add(from);
+  });
+  return [...neighborIds].map(id => nodesById[id]).filter(Boolean);
+}
+
+function getInboundNodes(nodeId){
+  return EDGES.filter(([, to]) => to === nodeId).map(([from]) => nodesById[from]).filter(Boolean);
+}
+
+function getOutboundNodes(nodeId){
+  return EDGES.filter(([from]) => from === nodeId).map(([, to]) => nodesById[to]).filter(Boolean);
+}
+
+function getSelectedSourcePreview(){
+  const node = nodesById[selectedNodeId];
+  const sourcePath = node ? NODE_SOURCE_MAP[node.id] : '';
+  return sourcePath ? sourcePreviewCache[sourcePath] || null : null;
+}
+
+function getSelectedSourcePreviewRecord(){
+  const node = nodesById[selectedNodeId];
+  const sourcePath = node ? NODE_SOURCE_MAP[node.id] : '';
+  return sourcePath ? sourcePreviewState[sourcePath] || null : null;
+}
+
+function flattenErrorPayload(input){
+  if(!input) return [];
+  if(Array.isArray(input)) return input.flatMap(flattenErrorPayload);
+  if(typeof input === 'string') return [input];
+  if(typeof input === 'object'){
+    return Object.entries(input).flatMap(([key, value]) => {
+      if(Array.isArray(value)) return value.flatMap(v => [`${key}: ${typeof v === 'string' ? v : JSON.stringify(v)}`]);
+      if(typeof value === 'string') return [`${key}: ${value}`];
+      if(typeof value === 'number' || typeof value === 'boolean') return [`${key}: ${value}`];
+      return flattenErrorPayload(value).map(v => `${key}: ${v}`);
+    });
+  }
+  return [String(input)];
+}
+
+function nodeKeywords(node){
+  return Array.from(new Set([
+    node.id.toLowerCase(),
+    node.label.toLowerCase(),
+    ...(node.label.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)),
+    ...(node.sub.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+  ]));
+}
+
+function collectNodeMetrics(node){
+  const metrics = [];
+  const runtime = healthSnapshot?.runtime_services || {};
+  const processes = healthSnapshot?.processes || {};
+  const systemMonitor = overviewSnapshot?.system_monitor || {};
+  const feedConnections = healthSnapshot?.feed_connections || {};
+  const sourceHealth = healthSnapshot?.source_health || {};
+
+  metrics.push({label:'Runtime state',value:resolveNodeStatus(node).label,sub:resolveNodeStatus(node).detail});
+  if(healthSnapshot){
+    metrics.push({label:'CPU',value:`${healthSnapshot.cpu_pct ?? '--'}%`,sub:'global process pressure'});
+    metrics.push({label:'RAM',value:`${healthSnapshot.ram_pct ?? '--'}%`,sub:'global memory pressure'});
+  }
+  if(node.group === 'brokers'){
+    const feedKey = node.id === 'binance' ? 'binance' : node.id === 'ig' ? 'ig' : node.id === 'deriv' ? 'deriv' : null;
+    if(feedKey && sourceHealth[feedKey]) metrics.push({label:'Source health',value:sourceHealth[feedKey].ok ? 'healthy' : 'attention',sub:`${feedKey} source state`});
+    if(node.id === 'ctrader' && runtime.ctrader_live_depth) metrics.push({label:'Depth sidecar',value:runtime.ctrader_live_depth.state || 'unknown',sub:runtime.ctrader_live_depth.ok ? 'sidecar healthy' : 'sidecar attention'});
+    if(node.id === 'dukascopy' && runtime.dukascopy_live_depth) metrics.push({label:'Depth sidecar',value:runtime.dukascopy_live_depth.state || 'unknown',sub:runtime.dukascopy_live_depth.ok ? 'sidecar healthy' : 'sidecar attention'});
+  }
+  if(node.group === 'dashboard'){
+    metrics.push({label:'Web dashboard',value:processes['Web dashboard'] ? 'up' : 'down',sub:'ui process'});
+    metrics.push({label:'Live streams',value:processes['WebSocket streams'] ? 'up' : 'down',sub:'stream fanout'});
+  }
+  if(node.group === 'risk'){
+    metrics.push({label:'Open positions',value:String(healthSnapshot?.open_positions ?? 0),sub:'active book'});
+    metrics.push({label:'Cooldowns',value:String(healthSnapshot?.active_cooldowns ?? 0),sub:'risk pacing'});
+  }
+  if(node.group === 'data'){
+    metrics.push({label:'Feed count',value:String(Object.keys(feedConnections).length),sub:'tracked live feeds'});
+    metrics.push({label:'Stale sources',value:String((healthSnapshot?.stale_sources || []).length),sub:'freshness watch'});
+  }
+  if(node.group === 'orderflow'){
+    metrics.push({label:'Redis',value:processes['Redis'] ? 'connected' : 'down',sub:'pub/sub health'});
+    metrics.push({label:'Stale sources',value:String((healthSnapshot?.stale_sources || []).length),sub:'execution freshness'});
+  }
+  if(node.id === 'engine' || node.id === 'decision' || node.id === 'signal'){
+    metrics.push({label:'Engine ready',value:processes['Engine ready'] ? 'yes' : 'warming',sub:'core readiness'});
+    metrics.push({label:'Recent errors',value:String(healthSnapshot?.recent_error_count ?? 0),sub:'runtime error count'});
+  }
+  if(node.id === 'monitor'){
+    metrics.push({label:'Snapshot',value:systemMonitor.snapshot ? 'available' : 'missing',sub:'monitoring data'});
+    metrics.push({label:'Error families',value:String(Object.keys(systemMonitor.errors || {}).length),sub:'tracked error buckets'});
+  }
+  return metrics.slice(0, 6);
+}
+
+function collectNodeErrors(node){
+  const all = [];
+  const recentErrors = healthSnapshot?.recent_errors || [];
+  all.push(...flattenErrorPayload(recentErrors));
+  all.push(...flattenErrorPayload(overviewSnapshot?.system_monitor?.errors || {}));
+  const keywords = nodeKeywords(node);
+  const matched = all.filter(item => {
+    const text = String(item).toLowerCase();
+    return keywords.some(k => k.length >= 3 && text.includes(k));
+  });
+  return matched.slice(0, 8);
+}
+
+function buildSourcePreviewMarkup(node, payload, state = 'ready'){
+  const sourcePath = NODE_SOURCE_MAP[node.id];
+  if(!sourcePath){
+    return '<div class="source-empty">No source preview is mapped for this node yet.</div>';
+  }
+  if(state === 'loading'){
+    return `
+      <div class="source-card">
+        <strong>Live source preview</strong>
+        <span>Loading ${escapeHtml(sourcePath)}…</span>
+      </div>
+    `;
+  }
+  if(state === 'error'){
+    return `
+      <div class="source-card">
+        <strong>Live source preview</strong>
+        <code>${escapeHtml(sourcePath)}</code>
+        <span>${escapeHtml(payload?.error || 'Preview unavailable right now.')}</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="source-card">
+      <div class="source-toolbar">
+        <strong>Live source preview</strong>
+        <div class="source-badges">
+          <span class="source-badge">${escapeHtml(payload.language || 'text')}</span>
+          <span class="source-badge">lines ${escapeHtml(payload.start_line)}-${escapeHtml(payload.end_line)}</span>
+          <span class="source-badge">${escapeHtml(payload.total_lines)} total</span>
+        </div>
+      </div>
+      <code>${escapeHtml(payload.path || sourcePath)}</code>
+      <pre class="source-snippet">${escapeHtml(payload.snippet || '')}</pre>
+      <div class="source-links">
+        <button type="button" onclick="refreshSourcePreview()">Refresh snippet</button>
+        ${NODE_PAGE_MAP[node.id] ? `<button type="button" onclick="window.location.href='${NODE_PAGE_MAP[node.id]}'">Open related page</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderSourcePreviewCard(node, payload, state = 'ready'){
+  const host = document.getElementById('detailSourcePeek');
+  if(!host) return;
+  host.innerHTML = buildSourcePreviewMarkup(node, payload, state);
+}
+
+async function loadSourcePreview(nodeId, {force = false} = {}){
+  const node = nodesById[nodeId];
+  const sourcePath = node ? NODE_SOURCE_MAP[node.id] : '';
+  if(!node || !sourcePath){
+    sourcePreviewState[sourcePath || nodeId] = {state:'error', payload:{error:'No mapped source preview for this node.'}};
+    renderSourcePreviewCard(node || {id: nodeId}, null, 'error');
+    return;
+  }
+  const cacheKey = `${sourcePath}`;
+  if(!force && sourcePreviewCache[cacheKey]){
+    sourcePreviewState[cacheKey] = {state:'ready', payload:sourcePreviewCache[cacheKey]};
+    renderSourcePreviewCard(node, sourcePreviewCache[cacheKey], 'ready');
+    renderDeepInspector();
+    return;
+  }
+
+  const token = ++sourcePreviewToken;
+  sourcePreviewState[cacheKey] = {state:'loading', payload:null};
+  renderSourcePreviewCard(node, null, 'loading');
+  renderDeepInspector();
+  try{
+    if(window.dashboardAuthReady) await window.dashboardAuthReady;
+  }catch(_){}
+  try{
+    const url = `/api/source-peek?path=${encodeURIComponent(sourcePath)}`;
+    const payload = await window.dashboardFetchJson(url, {timeoutMs: 10000});
+    if(token !== sourcePreviewToken || selectedNodeId !== nodeId) return;
+    sourcePreviewCache[cacheKey] = payload;
+    sourcePreviewState[cacheKey] = {state:'ready', payload};
+    renderSourcePreviewCard(node, payload, 'ready');
+    renderDeepInspector();
+  }catch(err){
+    if(token !== sourcePreviewToken || selectedNodeId !== nodeId) return;
+    const payload = {error: err?.message || 'Preview unavailable right now.'};
+    sourcePreviewState[cacheKey] = {state:'error', payload};
+    renderSourcePreviewCard(node, payload, 'error');
+    renderDeepInspector();
+  }
+}
+
+function refreshSourcePreview(){
+  loadSourcePreview(selectedNodeId, {force: true});
+}
+
+function renderInspectorModeBar(){
+  const host = document.getElementById('inspectorModeRow');
+  if(!host) return;
+  host.innerHTML = Object.entries(INSPECTOR_MODES).map(([key, meta]) => `
+    <button type="button" class="chip ${activeInspectorMode===key?'active':''}" data-inspector-mode="${key}">${meta.label}</button>
+  `).join('');
+  host.querySelectorAll('[data-inspector-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeInspectorMode = btn.dataset.inspectorMode;
+      renderDeepInspector();
+    });
+  });
+}
+
+function buildDependencyColumn(nodes, emptyText){
+  if(!nodes.length) return `<div class="source-empty">${emptyText}</div>`;
+  return nodes.map(node => `
+    <button type="button" class="dep-item" onclick="renderNodeDetails('${node.id}');focusNode('${node.id}')">
+      <strong>${node.label}</strong>
+      <span>${GROUP_META[node.group]?.label || node.group}</span>
+      <small>${node.sub}</small>
+    </button>
+  `).join('');
+}
+
+function buildIncidentFilmItems(){
+  const incidentCards = stampReplayItems(
+    getReplayItems('incident').slice(0, 5).map(item => ({...item, overlay:'incident'})),
+    'incident-film'
+  );
+  const routeWarnings = buildTimelineEvents()
+    .filter(item => item.overlay !== 'incident')
+    .slice(0, 4)
+    .map(item => ({...item, tone:item.tone || 'warn'}));
+  return [...incidentCards, ...routeWarnings].slice(0, 8);
+}
+
+function stampReplayItems(items, overlay){
+  const now = Date.now();
+  return items.map((item, index) => {
+    const memoryKey = `${overlay}:${item.key}`;
+    const existing = replayMemory[memoryKey] || {firstSeen: now};
+    replayMemory[memoryKey] = {
+      ...existing,
+      lastSeen: now,
+      label: item.label,
+      overlay,
+      tone: item.tone || existing.tone || 'live',
+      index,
+    };
+    const ageMs = now - existing.firstSeen;
+    return {
+      ...item,
+      memoryKey,
+      ageMs,
+      ageLabel: ageMs < 1500 ? 'new' : `${formatElapsed(ageMs)} old`,
+    };
+  });
+}
+
+function recordNodeTelemetry(nodeId, items){
+  const now = Date.now();
+  const tail = [...(nodeActivityHistory[nodeId] || [])];
+  items.slice(0, 5).forEach(item => {
+    const signature = `${item.title}|${item.text}|${item.meta || ''}`;
+    const existingIndex = tail.findIndex(entry => entry.signature === signature);
+    if(existingIndex >= 0){
+      tail[existingIndex] = {...tail[existingIndex], lastSeen: now};
+      return;
+    }
+    tail.push({
+      signature,
+      title: item.title,
+      text: item.text,
+      tone: item.tone || 'live',
+      meta: item.meta || 'observer',
+      firstSeen: now,
+      lastSeen: now,
+    });
+  });
+  if(tail.length > 18) tail.splice(0, tail.length - 18);
+  nodeActivityHistory[nodeId] = tail;
+}
+
+function renderNodeActivityTail(nodeId){
+  const tail = [...(nodeActivityHistory[nodeId] || [])].slice(-8).reverse();
+  if(!tail.length) return '<div class="source-empty">No node-local tail yet. Select routes or let the page breathe for a minute.</div>';
+  const now = Date.now();
+  return tail.map(item => `
+    <div class="tail-item ${item.tone === 'warn' ? 'warn' : item.tone === 'down' ? 'down' : ''}">
+      <strong>${escapeHtml(item.title)}</strong>
+      <span>${escapeHtml(item.text)}</span>
+      <small>${escapeHtml(item.meta)} · seen ${formatElapsed(now - item.firstSeen)} ago</small>
+    </div>
+  `).join('');
+}
+
+function setIncidentScrubIndex(value){
+  const items = buildIncidentFilmItems();
+  if(!items.length) return;
+  const bounded = Math.max(0, Math.min(Number(value) || 0, items.length - 1));
+  incidentScrubIndex = bounded;
+  const item = items[bounded];
+  if(item){
+    activateTimelineEvent(item.overlay || 'incident', item.key);
+  }
+}
+
+function buildLiveNotesPayload(){
+  if(!healthSnapshot) return [];
+  const notes = [];
+  const runtime = healthSnapshot.runtime_services || {};
+  const processes = healthSnapshot.processes || {};
+  const selected = getReplayItems(activeOverlayMode).find(item => item.key === selectedReplayKey);
+  notes.push({title:'Overlay focus',text:`${OVERLAY_MODES[activeOverlayMode]?.label || 'Health Lens'} · ${selected?.label || 'stack-wide view'}`,tone:'live'});
+  notes.push({title:'TradingCore',text:`${processes['TradingCore'] ? 'Running' : 'Not running'} · engine ${processes['Engine ready'] ? 'ready' : 'warming'}`,tone:processes['TradingCore'] ? 'live' : 'warn'});
+  if(runtime.ctrader_live_depth) notes.push({title:'cTrader depth',text:`${runtime.ctrader_live_depth.state || 'unknown'} · ${runtime.ctrader_live_depth.ok ? 'healthy' : 'attention'}`,tone:runtime.ctrader_live_depth.ok ? 'live' : 'warn'});
+  if(runtime.dukascopy_live_depth) notes.push({title:'Dukascopy depth',text:`${runtime.dukascopy_live_depth.state || 'unknown'} · ${runtime.dukascopy_live_depth.ok ? 'healthy' : 'attention'}`,tone:runtime.dukascopy_live_depth.ok ? 'live' : 'warn'});
+  const stale = Array.isArray(healthSnapshot.stale_sources) ? healthSnapshot.stale_sources : [];
+  notes.push({title:'Source freshness',text: stale.length ? `Stale: ${stale.join(', ')}` : 'All tracked sources currently fresh',tone:stale.length ? 'warn' : 'live'});
+  notes.push({title:'Open positions',text:`${healthSnapshot.open_positions ?? 0} active · ${healthSnapshot.active_cooldowns ?? 0} cooldowns`,tone:'live'});
+  if((healthSnapshot.recent_errors || []).length){
+    notes.push({title:'Recent errors',text:`${healthSnapshot.recent_error_count || healthSnapshot.recent_errors.length} issues tracked in runtime health`,tone:'down'});
+  }
+  return notes;
+}
+
+function captureLayerPulse(){
+  const snapshot = {};
+  Object.keys(GROUP_META).forEach(key => {
+    const groupNodes = NODES.filter(node => node.group === key);
+    const liveCount = groupNodes.filter(node => resolveNodeStatus(node).kind === 'live').length;
+    snapshot[key] = groupNodes.length ? (liveCount / groupNodes.length) : 0;
+  });
+  layerPulseHistory.push(snapshot);
+  if(layerPulseHistory.length > 18) layerPulseHistory.shift();
+}
+
+function layerPulseSummary(groupKey){
+  if(!layerPulseHistory.length) return {label:'warming', delta:0};
+  const current = layerPulseHistory[layerPulseHistory.length - 1]?.[groupKey] ?? 0;
+  const previous = layerPulseHistory.length > 1 ? (layerPulseHistory[layerPulseHistory.length - 2]?.[groupKey] ?? current) : current;
+  const delta = current - previous;
+  if(delta > 0.08) return {label:'rising', delta};
+  if(delta < -0.08) return {label:'cooling', delta};
+  return {label:'steady', delta};
+}
+
+function buildTelemetryItems(node){
+  const keywords = nodeKeywords(node);
+  const routeIds = new Set(displayedRouteIds().length ? displayedRouteIds() : overlayRouteIds);
+  const items = [];
+
+  buildLiveNotesPayload().forEach(note => {
+    const text = `${note.title} ${note.text}`.toLowerCase();
+    if(keywords.some(k => k.length >= 3 && text.includes(k)) || routeIds.has(node.id) || note.title === 'Overlay focus'){
+      items.push({title:note.title, text:note.text, tone:note.tone || 'live', meta:'runtime note'});
+    }
+  });
+
+  collectNodeErrors(node).forEach(error => {
+    items.push({title:'Matched error', text:error, tone:'down', meta:'node error'});
+  });
+
+  buildTimelineEvents().forEach(event => {
+    const route = routeForReplayItem(event, event.overlay || activeOverlayMode);
+    if(route.includes(node.id)){
+      items.push({
+        title:event.label,
+        text:event.summary || 'Route event touching this node',
+        tone:event.tone || 'warn',
+        meta:`${(event.overlay || activeOverlayMode).toUpperCase()} route`
+      });
+    }
+  });
+
+  const previewRecord = getSelectedSourcePreviewRecord();
+  if(previewRecord && node.id === selectedNodeId){
+    items.push({
+      title:'Source preview',
+      text:previewRecord.state === 'ready' ? 'Snippet loaded and cached for this node.' : previewRecord.state === 'error' ? (previewRecord.payload?.error || 'Preview failed to load.') : 'Snippet is loading.',
+      tone:previewRecord.state === 'error' ? 'warn' : 'live',
+      meta:'code context'
+    });
+  }
+
+  if(!items.length){
+    items.push({title:'Telemetry idle', text:'No direct activity matched this node yet. Try another overlay or select a broker-heavy route.', tone:'live', meta:'observer'});
+  }
+  return items.slice(0, 10);
+}
+
+function renderDeepInspector(){
+  renderInspectorModeBar();
+  const primary = document.getElementById('inspectorPrimary');
+  const secondary = document.getElementById('inspectorSecondary');
+  if(!primary || !secondary) return;
+  const node = nodesById[selectedNodeId];
+  if(!node){
+    primary.innerHTML = '<div class="empty">Select a node to inspect.</div>';
+    secondary.innerHTML = '<div class="empty">Inspector is waiting for focus.</div>';
+    return;
+  }
+
+  const preview = getSelectedSourcePreview();
+  const previewRecord = getSelectedSourcePreviewRecord();
+  const previewState = previewRecord?.state || (preview ? 'ready' : 'loading');
+  const previewPayload = previewRecord?.payload || preview;
+  const routeIds = displayedRouteIds().length ? displayedRouteIds() : overlayRouteIds;
+  const routeLabels = routeIds.map(id => nodesById[id]?.label || id);
+  const inbound = getInboundNodes(node.id);
+  const outbound = getOutboundNodes(node.id);
+  const neighbors = getNodeNeighbors(node.id);
+  const metrics = collectNodeMetrics(node).slice(0, 4);
+  const activeReplayItem = getReplayItems(activeOverlayMode).find(item => item.key === selectedReplayKey) || null;
+
+  if(activeInspectorMode === 'dependencies'){
+    primary.innerHTML = `
+      <div class="inspector-card">
+        <h3>Dependency Trace</h3>
+        <div class="dep-columns">
+          <div class="dep-stack">
+            <h4>Inbound</h4>
+            ${buildDependencyColumn(inbound, 'No inbound edges mapped.')}
+          </div>
+          <div class="dep-stack">
+            <h4>Current Node</h4>
+            <div class="dep-item">
+              <strong>${escapeHtml(node.label)}</strong>
+              <span>${escapeHtml(node.sub)}</span>
+              <small>${escapeHtml(NODE_SOURCE_MAP[node.id] || 'runtime-generated / unmapped')}</small>
+            </div>
+          </div>
+          <div class="dep-stack">
+            <h4>Outbound</h4>
+            ${buildDependencyColumn(outbound, 'No outbound edges mapped.')}
+          </div>
+        </div>
+      </div>
+    `;
+    secondary.innerHTML = `
+      <div class="inspector-card">
+        <h3>Orbit Focus</h3>
+        <div class="focus-rail">
+          <button type="button" onclick="focusNeighborhood('${node.id}')">Focus neighborhood</button>
+          <button type="button" onclick="setOverlayMode('neighbors')">Open node orbit</button>
+          <button type="button" onclick="highlightGroup('${node.group}')">Isolate layer</button>
+        </div>
+        <div class="route-manifest">
+          ${neighbors.map(neighbor => `<span class="route-node">${escapeHtml(neighbor.label)}</span>`).join('') || '<span class="source-empty">No adjacent modules mapped.</span>'}
+        </div>
+        ${buildSourcePreviewMarkup(node, previewPayload, previewState)}
+      </div>
+    `;
+    return;
+  }
+
+  if(activeInspectorMode === 'incidents'){
+    const filmItems = buildIncidentFilmItems();
+    const selectedFilm = filmItems.find(item => item.key === selectedReplayKey) || filmItems[0] || null;
+    incidentScrubIndex = Math.max(0, filmItems.findIndex(item => selectedFilm && item.key === selectedFilm.key));
+    const filmRoute = selectedFilm ? routeForReplayItem(selectedFilm, selectedFilm.overlay || activeOverlayMode) : [];
+    primary.innerHTML = `
+      <div class="inspector-card">
+        <h3>Incident Filmstrip</h3>
+        <div class="scrub-shell">
+          <div class="scrub-top">
+            <strong>${escapeHtml(selectedFilm?.label || 'No incident selected')}</strong>
+            <small>${escapeHtml(selectedFilm?.ageLabel || 'waiting')}</small>
+          </div>
+          <input type="range" class="scrub-slider" id="incidentScrubber" min="0" max="${Math.max(0, filmItems.length - 1)}" value="${incidentScrubIndex}">
+          <small>${escapeHtml(selectedFilm?.summary || 'Scrub through incident and warning cards to replay their paths.')}</small>
+        </div>
+        <div class="filmstrip">
+          ${filmItems.length ? filmItems.map(item => `
+            <button type="button" class="film-card ${selectedFilm && item.key===selectedFilm.key ? 'active' : ''} ${item.tone === 'warn' ? 'warn' : item.tone === 'down' ? 'down' : ''}" data-film-overlay="${item.overlay || activeOverlayMode}" data-film-key="${item.key}">
+              <strong>${escapeHtml(item.label)}</strong>
+              <span>${escapeHtml(item.summary || '')}</span>
+              <small>${escapeHtml((item.meta || []).join(' · '))}${item.ageLabel ? ` · ${escapeHtml(item.ageLabel)}` : ''}</small>
+            </button>
+          `).join('') : '<div class="source-empty">No incidents or warning routes are available right now.</div>'}
+        </div>
+      </div>
+    `;
+    secondary.innerHTML = `
+      <div class="inspector-card">
+        <h3>Incident Route</h3>
+        <div class="route-manifest">
+          ${filmRoute.length ? filmRoute.map((id, index) => `<span class="route-node ${index < playbackIndex ? 'active' : ''}">${escapeHtml(nodesById[id]?.label || id)}</span>`).join('') : '<span class="source-empty">Pick a film card to light up its path.</span>'}
+        </div>
+        <div class="tail-list">
+          ${selectedFilm ? `
+            <div class="tail-item ${selectedFilm.tone === 'warn' ? 'warn' : selectedFilm.tone === 'down' ? 'down' : ''}">
+              <strong>${escapeHtml(selectedFilm.label)}</strong>
+              <span>${escapeHtml(selectedFilm.summary || 'incident route active')}</span>
+              <small>${escapeHtml((selectedFilm.meta || []).join(' · '))}${selectedFilm.ageLabel ? ` · ${escapeHtml(selectedFilm.ageLabel)}` : ''}</small>
+            </div>
+          ` : '<div class="source-empty">No incident selected yet.</div>'}
+        </div>
+        <div class="focus-rail">
+          ${selectedFilm ? `<button type="button" onclick="activateTimelineEvent('${selectedFilm.overlay || activeOverlayMode}','${selectedFilm.key}')">Load into timeline</button>` : ''}
+          <button type="button" onclick="setOverlayMode('incident')">Switch to incident overlay</button>
+          <button type="button" onclick="resetPlayback()">Reset playback</button>
+        </div>
+        ${selectedFilm && selectedFilm.error ? `<div class="source-card"><strong>Error detail</strong><span>${escapeHtml(selectedFilm.error)}</span></div>` : buildSourcePreviewMarkup(node, previewPayload, previewState)}
+      </div>
+    `;
+    document.querySelectorAll('[data-film-overlay][data-film-key]').forEach(btn => {
+      btn.addEventListener('click', () => activateTimelineEvent(btn.dataset.filmOverlay, btn.dataset.filmKey));
+    });
+    document.getElementById('incidentScrubber')?.addEventListener('input', e => setIncidentScrubIndex(e.target.value));
+    return;
+  }
+
+  if(activeInspectorMode === 'telemetry'){
+    const telemetryItems = buildTelemetryItems(node);
+    recordNodeTelemetry(node.id, telemetryItems);
+    const pulse = layerPulseSummary(node.group);
+    const routeIdsForNode = displayedRouteIds().length ? displayedRouteIds() : overlayRouteIds;
+    primary.innerHTML = `
+      <div class="inspector-card">
+        <h3>Telemetry Tape</h3>
+        <div class="telemetry-list">
+          ${telemetryItems.map(item => `
+            <div class="telemetry-item ${item.tone === 'warn' ? 'warn' : item.tone === 'down' ? 'down' : ''}">
+              <strong>${escapeHtml(item.title)}</strong>
+              <span>${escapeHtml(item.text)}</span>
+              <small>${escapeHtml(item.meta || 'observer')}</small>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    secondary.innerHTML = `
+      <div class="inspector-card">
+        <h3>Pulse + Aging</h3>
+        <div class="pulse-grid">
+          <div class="pulse-card">
+            <strong>${escapeHtml(pulse.label)}</strong>
+            <span>${escapeHtml(GROUP_META[node.group]?.label || node.group)} layer pulse</span>
+            <small>delta ${formatSigned(pulse.delta * 100, 1)} pts</small>
+          </div>
+          <div class="pulse-card">
+            <strong>${routeIdsForNode.length}</strong>
+            <span>route steps in play</span>
+            <small>${escapeHtml(OVERLAY_MODES[activeOverlayMode]?.label || 'overlay')} focus</small>
+          </div>
+          <div class="pulse-card">
+            <strong>${Array.isArray(healthSnapshot?.stale_sources) ? healthSnapshot.stale_sources.length : 0}</strong>
+            <span>stale sources</span>
+            <small>freshness pressure around the runtime</small>
+          </div>
+          <div class="pulse-card">
+            <strong>${collectNodeErrors(node).length}</strong>
+            <span>matched node errors</span>
+            <small>recent observer-side friction</small>
+          </div>
+        </div>
+        <div class="beat-rail">
+          ${routeIdsForNode.length ? routeIdsForNode.map((id, index) => `<span class="beat-pill">${index + 1}. ${escapeHtml(nodesById[id]?.label || id)}</span>`).join('') : '<span class="source-empty">No active route beat map right now.</span>'}
+        </div>
+        ${buildSourcePreviewMarkup(node, previewPayload, previewState)}
+        <div>
+          <h4>Node log tail</h4>
+          <div class="tail-list">${renderNodeActivityTail(node.id)}</div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  primary.innerHTML = `
+    <div class="inspector-card">
+      <h3>Split View</h3>
+      <div class="split-grid">
+        <div>${buildSourcePreviewMarkup(node, previewPayload, previewState)}</div>
+        <div class="inspector-route">
+          <h4>${escapeHtml(node.label)} in context</h4>
+          <div class="route-manifest">
+            ${routeLabels.length ? routeIds.map((id, index) => `<span class="route-node ${index < playbackIndex ? 'active' : ''}">${escapeHtml(nodesById[id]?.label || id)}</span>`).join('') : '<span class="source-empty">No active route selected yet.</span>'}
+          </div>
+          <div class="inspector-metrics">
+            ${metrics.map(metric => `
+              <div class="inspector-metric">
+                <strong>${escapeHtml(metric.value)}</strong>
+                <span>${escapeHtml(metric.label)}</span>
+              </div>
+            `).join('')}
+          </div>
+          <div class="focus-rail">
+            <button type="button" onclick="refreshSourcePreview()">Refresh snippet</button>
+            <button type="button" onclick="focusNode('${node.id}')">Center node</button>
+            <button type="button" onclick="setOverlayMode('trade')">Trade path</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  secondary.innerHTML = `
+    <div class="inspector-card">
+      <h3>Dependency Pulse</h3>
+      <div class="dep-columns">
+        <div class="dep-stack">
+          <h4>Inbound</h4>
+          ${buildDependencyColumn(inbound.slice(0, 4), 'No inbound edges mapped.')}
+        </div>
+        <div class="dep-stack">
+          <h4>Orbit</h4>
+          ${buildDependencyColumn(neighbors.slice(0, 4), 'No neighbors mapped.')}
+        </div>
+        <div class="dep-stack">
+          <h4>Outbound</h4>
+          ${buildDependencyColumn(outbound.slice(0, 4), 'No outbound edges mapped.')}
+        </div>
+      </div>
+      <div class="source-card">
+        <strong>Active replay focus</strong>
+        <span>${escapeHtml(activeReplayItem?.label || 'No replay item selected.')}</span>
+        <small>${escapeHtml(activeReplayItem?.summary || INSPECTOR_MODES.split.caption)}</small>
+      </div>
+    </div>
+  `;
+}
+
+function renderDetailTabs(){
+  const tabs = document.getElementById('detailTabs');
+  const tabDefs = [
+    ['overview','Overview'],
+    ['metrics','Metrics'],
+    ['errors','Errors'],
+    ['source','Source'],
+    ['neighbors','Neighbors']
+  ];
+  tabs.innerHTML = tabDefs.map(([key,label]) => `<button class="tab ${activeDetailTab===key?'active':''}" data-tab="${key}">${label}</button>`).join('');
+  tabs.querySelectorAll('[data-tab]').forEach(btn => btn.addEventListener('click', () => setDetailTab(btn.dataset.tab)));
+  ['overview','metrics','errors','source','neighbors'].forEach(key => {
+    document.getElementById(`detailPane${key.charAt(0).toUpperCase()}${key.slice(1)}`).hidden = activeDetailTab !== key;
+  });
+}
+
+function setDetailTab(tab){
+  activeDetailTab = tab;
+  renderDetailTabs();
+}
+
+function renderNodeDetails(nodeId){
+  const node = nodesById[nodeId];
+  if(!node) return;
+  selectedNodeId = nodeId;
+  refreshVisibility();
+
+  const status = resolveNodeStatus(node);
+  const badge = document.getElementById('detailStatus');
+  badge.textContent = status.label;
+  badge.className = `status-badge ${status.kind==='live'?'status-live':status.kind==='warn'?'status-warn':status.kind==='down'?'status-down':'status-unk'}`;
+  document.getElementById('detailTitle').textContent = node.label;
+  document.getElementById('detailSub').textContent = `${GROUP_META[node.group]?.label || node.group} · ${node.sub}`;
+  document.getElementById('detailDescription').textContent = node.desc;
+  renderDetailTabs();
+
+  const facts = {
+    Layer: GROUP_META[node.group]?.label || node.group,
+    Runtime: status.detail,
+    Route: NODE_PAGE_MAP[node.id] || 'Visualization only',
+    Source: NODE_SOURCE_MAP[node.id] || 'runtime-generated / unmapped',
+    ...node.facts,
+  };
+  document.getElementById('detailFacts').innerHTML = Object.entries(facts).map(([k,v]) => `
+    <div class="kv-row"><span>${k}</span><strong>${v}</strong></div>
+  `).join('');
+
+  document.getElementById('detailCapabilities').innerHTML = (node.capabilities || []).map(item => `<li>${item}</li>`).join('');
+
+  const actions = [];
+  if(NODE_PAGE_MAP[node.id]) actions.push(`<a class="primary" href="${NODE_PAGE_MAP[node.id]}">Open related page</a>`);
+  actions.push(`<button type="button" onclick="focusNode('${node.id}')">Focus node</button>`);
+  actions.push(`<button type="button" onclick="highlightGroup('${node.group}')">Focus layer</button>`);
+  actions.push(`<button type="button" onclick="focusNeighborhood('${node.id}')">Focus neighborhood</button>`);
+  actions.push(`<button type="button" onclick="setOverlayMode('neighbors')">Open node orbit</button>`);
+  document.getElementById('detailActions').innerHTML = actions.join('');
+
+  const metrics = collectNodeMetrics(node);
+  document.getElementById('detailMetrics').innerHTML = metrics.length ? metrics.map(metric => `
+    <div class="metric-card">
+      <div class="metric-label">${metric.label}</div>
+      <div class="metric-value">${metric.value}</div>
+      <div class="metric-sub">${metric.sub}</div>
+    </div>
+  `).join('') : '<div class="empty">No metrics bound for this node yet.</div>';
+
+  const errors = collectNodeErrors(node);
+  document.getElementById('detailErrors').innerHTML = errors.length ? errors.map((item, index) => `
+    <div class="error-card">
+      <strong>Signal ${index + 1}</strong>
+      <span>${item}</span>
+    </div>
+  `).join('') : '<div class="empty">No node-specific recent errors found.</div>';
+
+  const neighborIds = getNodeNeighbors(node.id).map(item => item.id);
+  const sourceCards = [
+    {
+      title:'Primary module',
+      code:NODE_SOURCE_MAP[node.id] || 'runtime-generated / unmapped',
+      text:`${node.label} anchors this part of the architecture.`,
+      small:`Route: ${NODE_PAGE_MAP[node.id] || 'visualization only'}`
+    },
+    {
+      title:'Adjacent wiring',
+      code:neighborIds.map(id => NODE_SOURCE_MAP[id] || id).slice(0, 4).join(' · ') || 'no mapped neighbors',
+      text:`${neighborIds.length} neighbor nodes connect directly to this module.`,
+      small:`Neighbors: ${neighborIds.map(id => nodesById[id]?.label || id).join(' → ') || 'none'}`
+    },
+    {
+      title:'Variant emphasis',
+      code:resolvedRuntimeVariant,
+      text:RUNTIME_VARIANTS[resolvedRuntimeVariant]?.caption || 'observer emphasis',
+      small:`Overlay route touches ${overlayRouteSet.has(node.id) ? 'this node right now' : 'other parts of the stack'}`
+    }
+  ];
+  document.getElementById('detailSource').innerHTML = sourceCards.map(card => `
+    <div class="source-card">
+      <strong>${card.title}</strong>
+      <code>${card.code}</code>
+      <span>${card.text}</span>
+      <small>${card.small}</small>
+    </div>
+  `).join('');
+  loadSourcePreview(node.id);
+
+  const neighbors = getNodeNeighbors(node.id);
+  document.getElementById('detailNeighbors').innerHTML = neighbors.length ? neighbors.map(neighbor => `
+    <button type="button" class="neighbor-btn" onclick="renderNodeDetails('${neighbor.id}');focusNode('${neighbor.id}')">
+      <strong>${neighbor.label}</strong>
+      <small>${GROUP_META[neighbor.group]?.label || neighbor.group}</small>
+    </button>
+  `).join('') : '<div class="empty">This node has no mapped neighbors.</div>';
+}
+
+function populateLiveNotes(){
+  const host = document.getElementById('liveNotes');
+  if(!healthSnapshot){
+    host.innerHTML = '<div class="empty">Waiting for runtime snapshot.</div>';
+    return;
+  }
+  const notes = buildLiveNotesPayload();
+  host.innerHTML = notes.map(note => `<div class="live-item"><strong>${note.title}</strong><span>${note.text}</span></div>`).join('');
+}
+
+function renderHistory(){
+  const bars = document.getElementById('trendBars');
+  const caption = document.getElementById('trendCaption');
+  if(!healthHistory.length){
+    bars.innerHTML = '<div class="empty">Collecting history</div>';
+    caption.textContent = 'Collecting history';
+    return;
+  }
+  bars.innerHTML = healthHistory.map(point => {
+    const height = Math.max(10, Math.min(100, Math.round(point.load)));
+    return `<div class="trend-bar" title="${point.label}" style="height:${height}%"></div>`;
+  }).join('');
+  const latest = healthHistory[healthHistory.length - 1];
+  caption.textContent = `${healthHistory.length} snapshots · latest ${latest.label}`;
+}
+
+function updateHealthSnapshot(payload){
+  const health = payload?.health?.success ? payload.health : (payload?.success ? payload : null);
+  if(!health) return;
+  healthSnapshot = health;
+  overviewSnapshot = payload || {};
+  const runtime = health.runtime_services || {};
+  const processes = health.processes || {};
+  const okServices = Object.values(runtime).filter(v => v && typeof v === 'object').length;
+  const liveServices = Object.values(runtime).filter(v => v && typeof v === 'object' && v.ok).length;
+  const processValues = Object.values(processes);
+  const liveProcesses = processValues.filter(Boolean).length;
+  document.getElementById('svcOk').textContent = `${liveServices}/${okServices || 0}`;
+  document.getElementById('cpuPct').textContent = `${health.cpu_pct ?? '--'}%`;
+  document.getElementById('ramPct').textContent = `${health.ram_pct ?? '--'}%`;
+  document.getElementById('healthyServices').textContent = liveServices;
+  document.getElementById('serviceSub').textContent = `${okServices || 0} tracked runtime services`;
+  document.getElementById('healthyProcesses').textContent = liveProcesses;
+  document.getElementById('processSub').textContent = `${processValues.length} tracked processes`;
+  const feedCount = Object.keys(health.feed_connections || {}).length;
+  document.getElementById('liveFeeds').textContent = feedCount;
+  document.getElementById('feedSub').textContent = `${Array.isArray(health.stale_sources) ? health.stale_sources.length : 0} stale sources`;
+  document.getElementById('openPositions').textContent = health.open_positions ?? 0;
+  document.getElementById('positionSub').textContent = `${health.active_cooldowns ?? 0} cooldowns active`;
+  document.getElementById('topDot').style.background = liveServices > 0 ? 'var(--gr)' : 'var(--am)';
+  const loadComposite = ((health.cpu_pct || 0) * 0.55) + ((health.ram_pct || 0) * 0.45);
+  const timeLabel = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  healthHistory.push({load: loadComposite, label: `${timeLabel} · ${Math.round(loadComposite)}%`});
+  if(healthHistory.length > 18) healthHistory.shift();
+  captureLayerPulse();
+  renderHistory();
+  renderArchitecturePanels();
+  populateLiveNotes();
+  renderNodeDetails(selectedNodeId);
+}
+
+async function loadOverview(){
+  try{
+    if(window.dashboardAuthReady) await window.dashboardAuthReady;
+  }catch(_){}
+  try{
+    const payload = await window.dashboardFetchJson('/api/page-overview?page=architecture_lab', {timeoutMs: 15000});
+    updateHealthSnapshot(payload);
+  }catch(err){
+    document.getElementById('liveNotes').innerHTML = `<div class="live-item"><strong>Architecture Lab</strong><span>${err?.message || 'Failed to load overview'}</span></div>`;
+  }
+}
+
+function focusNode(nodeId){
+  const node = nodesById[nodeId];
+  if(!node) return;
+  selectedNodeId = nodeId;
+  rotY = -node.x * 0.08;
+  rotX = Math.max(-0.6, Math.min(0.55, 0.18 - node.y * 0.05));
+  camZ = Math.max(8, Math.min(22, 14 + Math.abs(node.z) * 1.2));
+  renderNodeDetails(nodeId);
+  renderArchitecturePanels();
+}
+
+function focusNeighborhood(nodeId){
+  const seed = nodesById[nodeId];
+  if(!seed) return;
+  const groups = new Set([seed.group, ...getNodeNeighbors(nodeId).map(n => n.group)]);
+  activeView = 'custom';
+  activeGroups = groups;
+  activeDetailTab = 'neighbors';
+  activeOverlayMode = 'neighbors';
+  selectedReplayKey = '';
+  buildControls();
+  refreshVisibility();
+  renderNodeDetails(nodeId);
+  renderArchitecturePanels();
+}
+
+function highlightGroup(group){
+  activeView = 'custom';
+  activeGroups = new Set([group]);
+  buildControls();
+  renderArchitecturePanels();
+  refreshVisibility();
+}
+
+function resetView(){
+  activeView = 'all';
+  activeGroups = new Set(VIEW_PRESETS.all);
+  rotX = 0.25; rotY = 0.3; autoY = 0; camZ = 18;
+  buildControls();
+  renderArchitecturePanels();
+  refreshVisibility();
+}
+
+function applySearch(term){
+  const q = term.trim().toLowerCase();
+  if(!q){
+    refreshVisibility();
+    return;
+  }
+  let match = null;
+  meshes.forEach(mesh => {
+    const node = mesh.userData;
+    const hay = `${node.label} ${node.sub} ${node.desc} ${(node.capabilities || []).join(' ')}`.toLowerCase();
+    mesh.visible = activeGroups.has(node.group) && hay.includes(q);
+    if(mesh.visible && !match) match = node.id;
+  });
+  labels.forEach(label => {
+    const node = nodesById[label.userData.nodeId];
+    label.visible = !!node?.mesh?.visible;
+  });
+  lines.forEach(line => {
+    const from = nodesById[line.userData.from], to = nodesById[line.userData.to];
+    line.visible = !!from?.mesh?.visible && !!to?.mesh?.visible;
+  });
+  if(match) renderNodeDetails(match);
+}
+
+canvas.addEventListener('mousedown', e => { drag = true; px = e.clientX; py = e.clientY; canvas.style.cursor = 'grabbing'; pauseFollowCamera(2600); });
+window.addEventListener('mouseup', () => { drag = false; canvas.style.cursor = 'grab'; });
+window.addEventListener('mousemove', e => {
+  if(drag){
+    rotY += (e.clientX - px) * 0.008;
+    rotX += (e.clientY - py) * 0.006;
+    rotX = Math.max(-1.0, Math.min(1.0, rotX));
+    px = e.clientX; py = e.clientY;
+    return;
+  }
+  const r = canvas.getBoundingClientRect();
+  mouse.x = ((e.clientX-r.left)/r.width)*2-1;
+  mouse.y = -((e.clientY-r.top)/r.height)*2+1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(meshes.filter(m => m.visible));
+  if(hits.length){
+    const node = hits[0].object.userData;
+    tip.style.display = 'block';
+    tip.style.left = (e.clientX-r.left+14)+'px';
+    tip.style.top = (e.clientY-r.top-10)+'px';
+    const status = resolveNodeStatus(node);
+    tip.innerHTML = `<strong style="font-size:13px">${node.label}</strong><br><span style="color:var(--tx2);font-size:11px">${node.sub}</span><br><span style="font-size:11px">${status.label}</span>`;
+    canvas.style.cursor = 'pointer';
+    hovMesh = hits[0].object;
+  } else {
+    tip.style.display = 'none';
+    canvas.style.cursor = 'grab';
+    hovMesh = null;
+  }
+  refreshVisibility();
+});
+canvas.addEventListener('dblclick', e => {
+  const r = canvas.getBoundingClientRect();
+  mouse.x = ((e.clientX-r.left)/r.width)*2-1;
+  mouse.y = -((e.clientY-r.top)/r.height)*2+1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(meshes.filter(m => m.visible));
+  if(hits.length){
+    const node = hits[0].object.userData;
+    if(NODE_PAGE_MAP[node.id]) window.location.href = NODE_PAGE_MAP[node.id];
+  }
+});
+canvas.addEventListener('click', e => {
+  const r = canvas.getBoundingClientRect();
+  mouse.x = ((e.clientX-r.left)/r.width)*2-1;
+  mouse.y = -((e.clientY-r.top)/r.height)*2+1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(meshes.filter(m => m.visible));
+  if(hits.length) renderNodeDetails(hits[0].object.userData.id);
+});
+canvas.addEventListener('wheel', e => {
+  pauseFollowCamera(2600);
+  camZ = Math.max(7,Math.min(26,camZ + e.deltaY * 0.025));
+  e.preventDefault();
+},{passive:false});
+
+document.getElementById('nodeSearch').addEventListener('input', e => applySearch(e.target.value));
+document.getElementById('resetViewBtn').addEventListener('click', resetView);
+document.getElementById('focusCoreBtn').addEventListener('click', () => { activeView='core'; activeGroups=new Set(VIEW_PRESETS.core); buildControls(); refreshVisibility(); focusNode('engine'); });
+document.getElementById('focusExecutionBtn').addEventListener('click', () => { activeView='flow'; activeGroups=new Set(VIEW_PRESETS.flow); buildControls(); refreshVisibility(); focusNode('exec'); });
+document.getElementById('focusDataBtn').addEventListener('click', () => { activeView='data'; activeGroups=new Set(VIEW_PRESETS.data); buildControls(); refreshVisibility(); focusNode('fetcher'); });
+document.getElementById('focusIntelBtn').addEventListener('click', () => { activeView='intel'; activeGroups=new Set(VIEW_PRESETS.intel); buildControls(); refreshVisibility(); focusNode('intel_svc'); });
+document.getElementById('missionControlBtn').addEventListener('click', () => setMissionControl());
+document.getElementById('missionControlHeroBtn').addEventListener('click', () => setMissionControl());
+document.getElementById('followPlaybackBtn').addEventListener('click', () => setFollowPlayback());
+document.getElementById('followPlaybackHeroBtn').addEventListener('click', () => setFollowPlayback());
+document.getElementById('playbackFocusBtn').addEventListener('click', jumpToReplayFocus);
+document.getElementById('replayMode').addEventListener('change', e => setOverlayMode(e.target.value));
+document.getElementById('playbackSlider').addEventListener('input', e => setPlaybackIndex(e.target.value));
+document.getElementById('playbackToggle').addEventListener('click', togglePlaybackAuto);
+document.getElementById('playbackReset').addEventListener('click', resetPlayback);
+
+window.addEventListener('keydown', event => {
+  if(!canUseGlobalShortcut(event)) return;
+  if(event.key === 'm' || event.key === 'M'){
+    event.preventDefault();
+    setMissionControl();
+    return;
+  }
+  if(event.key === 'f' || event.key === 'F'){
+    event.preventDefault();
+    setFollowPlayback();
+    return;
+  }
+  if(event.key === 'Escape' && missionControl){
+    event.preventDefault();
+    setMissionControl(false);
+    return;
+  }
+  if(event.code === 'Space'){
+    event.preventDefault();
+    togglePlaybackAuto();
+    return;
+  }
+  if(event.key === 'ArrowRight' || event.key === ']'){
+    event.preventDefault();
+    nudgePlayback(1);
+    return;
+  }
+  if(event.key === 'ArrowLeft' || event.key === '['){
+    event.preventDefault();
+    nudgePlayback(-1);
+    return;
+  }
+  if(event.key === '0'){
+    event.preventDefault();
+    resetPlayback();
+    return;
+  }
+  if(event.key === 'r' || event.key === 'R'){
+    event.preventDefault();
+    jumpToReplayFocus();
+  }
+});
+
+function animate(){
+  requestAnimationFrame(animate);
+  const now = performance.now();
+  if(playbackAuto && overlayRouteIds.length){
+    if(!playbackTick) playbackTick = performance.now();
+    if(now - playbackTick > 950){
+      playbackTick = now;
+      if(playbackIndex >= overlayRouteIds.length){
+        playbackAuto = false;
+        renderPlaybackFrame();
+      } else {
+        playbackIndex += 1;
+        refreshVisibility();
+        renderPlaybackFrame();
+      }
+    }
+  }
+  if(!drag) autoY += DESIGN_MODES[activeDesignMode].autoRotate * (followPlayback ? 0.35 : 1);
+  updateFollowCamera(now);
+  root.rotation.y = rotY + autoY;
+  root.rotation.x = rotX;
+  camera.position.z = camZ;
+  camera.lookAt(cameraLookAt);
+  syncRouteParticles(now);
+  syncRouteTrails(now);
+  renderer.render(scene,camera);
+}
+
+buildScene();
+buildLegend();
+buildControls();
+applyDesignMode(activeDesignMode);
+resize();
+refreshVisibility();
+renderNodeDetails(selectedNodeId);
+renderArchitecturePanels();
+loadOverview();
+setInterval(loadOverview, 15000);
+animate();
+</script>
+</body>
+</html>

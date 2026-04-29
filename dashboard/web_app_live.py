@@ -13,6 +13,7 @@ import time
 import traceback
 from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory, stream_with_context
@@ -90,6 +91,8 @@ app = Flask(
     template_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"),
     static_folder  =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"),
 )
+_PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))).resolve()
+_SOURCE_PEEK_SUFFIXES = {".py", ".html", ".js", ".json", ".md", ".css"}
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 try:
@@ -631,6 +634,69 @@ def _response_to_dict(resp: Any) -> Any:
     except Exception:
         pass
     return resp
+
+
+def _language_from_suffix(path: Path) -> str:
+    return {
+        ".py": "python",
+        ".html": "html",
+        ".js": "javascript",
+        ".json": "json",
+        ".md": "markdown",
+        ".css": "css",
+    }.get(path.suffix.lower(), "text")
+
+
+def _build_source_peek_payload(raw_path: str, focus_line: Optional[int] = None) -> Dict[str, Any]:
+    rel_path = str(raw_path or "").strip().replace("\\", "/")
+    if not rel_path:
+        raise BadRequest("path query required")
+    if rel_path.startswith("/") or ":" in rel_path.split("/")[0]:
+        raise BadRequest("path must be repo-relative")
+
+    target = (_PROJECT_ROOT / rel_path).resolve()
+    try:
+        target.relative_to(_PROJECT_ROOT)
+    except ValueError as exc:
+        raise Forbidden("path escapes project root") from exc
+
+    if target.suffix.lower() not in _SOURCE_PEEK_SUFFIXES:
+        raise BadRequest("unsupported source preview type")
+    if not target.exists() or not target.is_file():
+        raise NotFound("source file not found")
+
+    try:
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise InternalError(f"failed to read source file: {exc}") from exc
+
+    total_lines = len(lines)
+    anchor = max(1, int(focus_line or 1))
+    anchor = min(anchor, total_lines or 1)
+    if total_lines <= 32:
+        start_line = 1
+        end_line = total_lines
+    else:
+        window = 16
+        start_line = max(1, anchor - window)
+        end_line = min(total_lines, start_line + 31)
+        start_line = max(1, end_line - 31)
+
+    snippet_lines = lines[start_line - 1:end_line]
+    numbered = "\n".join(
+        f"{lineno:>4} | {text}" for lineno, text in enumerate(snippet_lines, start=start_line)
+    )
+    return {
+        "success": True,
+        "path": rel_path,
+        "resolved_path": str(target),
+        "language": _language_from_suffix(target),
+        "total_lines": total_lines,
+        "start_line": start_line,
+        "end_line": end_line,
+        "anchor_line": anchor,
+        "snippet": numbered,
+    }
 
 
 def _get_command_center_top_opportunities(core: Any, limit: int = 5) -> List[Dict[str, Any]]:
@@ -2617,6 +2683,10 @@ def pg_sentiment_intelligence():
 @app.route("/risk-dashboard")
 def pg_risk_dashboard():
     return _render_cached_template("risk_dashboard.html", ttl=15)
+
+@app.route("/architecture-lab")
+def pg_architecture_lab():
+    return _render_cached_template("architecture_lab.html", ttl=15)
 
 @app.route("/system-monitor")
 def pg_system_monitor():
@@ -7166,6 +7236,15 @@ def api_page_overview():
             "command_center": _command_center_snapshot(),
         }
         ttl = 5
+    elif page == "architecture_lab":
+        payload = {
+            "success": True,
+            "status": _response_to_dict(_call_view(api_status)),
+            "health": _response_to_dict(_call_view(api_system_health)),
+            "system_monitor": _response_to_dict(_call_view(api_system_monitor_overview)),
+            "command_center": _command_center_snapshot(),
+        }
+        ttl = 5
     else:
         return handle_api_error(BadRequest(f"Unknown overview page '{page}'"), "/api/page-overview", 400)
 
@@ -7173,6 +7252,24 @@ def api_page_overview():
     if not force_refresh:
         _cache_set(cache_key, payload, ttl=ttl)
     return jsonify(payload)
+
+
+@app.route("/api/source-peek")
+@_check_api_auth
+@_check_rate_limit
+def api_source_peek():
+    raw_path = request.args.get("path", "")
+    focus_line_raw = request.args.get("line", "").strip()
+    try:
+        focus_line = int(focus_line_raw) if focus_line_raw else None
+    except ValueError:
+        return handle_api_error(BadRequest("line must be an integer"), "/api/source-peek", 400)
+    try:
+        payload = _build_source_peek_payload(raw_path, focus_line=focus_line)
+        return jsonify(payload)
+    except APIError as exc:
+        status_code = 404 if isinstance(exc, NotFound) else 403 if isinstance(exc, Forbidden) else 400 if isinstance(exc, BadRequest) else 500
+        return handle_api_error(exc, "/api/source-peek", status_code)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
