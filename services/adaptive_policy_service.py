@@ -199,7 +199,7 @@ def _apply_memory_thresholds(
     memory_edge: float,
     memory_score: float,
 ) -> None:
-    if memory_sample_count >= 6:
+    if memory_sample_count >= 8:
         if memory_edge >= 0.18 or memory_score >= 62.0:
             thresholds["min_final_confidence"] -= 0.012
             thresholds["max_spread"] *= 1.05
@@ -211,6 +211,16 @@ def _apply_memory_thresholds(
             thresholds["risk_multiplier"] -= 0.08
             thresholds["cooldown_minutes"] += 4
             thresholds["notes"].append("memory_negative_edge")
+
+
+def _recent_review_allows_hard_block(recent_review_profile: Dict[str, Any]) -> bool:
+    sample_count = _safe_int(recent_review_profile.get("sample_count"), 0)
+    avg_similarity = _safe_float(recent_review_profile.get("avg_similarity"), 0.0)
+    if sample_count < 8:
+        return False
+    if avg_similarity >= 0.68:
+        return True
+    return bool(sample_count >= 11 and avg_similarity >= 0.62)
 
 
 def _apply_recent_review_thresholds(
@@ -243,8 +253,9 @@ def _apply_recent_review_thresholds(
             thresholds["cooldown_minutes"] += int(recent_review_profile.get("cooldown_delta", 0) or 0)
             thresholds["target_rr_multiplier"] *= _safe_float(recent_review_profile.get("target_rr_multiplier"), 1.0)
             thresholds["notes"].extend(list(recent_review_profile.get("notes") or []))
-            thresholds["block_new_entries"] = bool(recent_review_profile.get("block_new_entries"))
-            thresholds["block_reason"] = str(recent_review_profile.get("block_reason") or "")
+            if bool(recent_review_profile.get("block_new_entries")) and _recent_review_allows_hard_block(recent_review_profile):
+                thresholds["block_new_entries"] = True
+                thresholds["block_reason"] = str(recent_review_profile.get("block_reason") or "")
         thresholds["recent_review_profile"] = recent_review_profile
     except Exception:
         thresholds["recent_review_profile"] = {}

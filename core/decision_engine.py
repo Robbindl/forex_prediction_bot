@@ -101,6 +101,179 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+_SESSION_TIMING_STRICTNESS_BY_CATEGORY: Dict[str, Dict[str, Dict[str, Any]]] = {
+    "indices": {
+        "thin_session": {
+            "risk_penalty": 0.04,
+            "weak_candle_extension_delta": -0.04,
+            "weak_candle_floor_delta": 0.01,
+            "target_efficiency_floor_delta": 0.03,
+            "opposing_distance_floor_delta": 0.00025,
+            "impulse_age_limit_delta": -1,
+            "directional_extension_limit_delta": -0.03,
+            "pattern_rank_floor_delta": 0.02,
+            "require_confirmation": False,
+        },
+        "off_session": {
+            "risk_penalty": 0.08,
+            "weak_candle_extension_delta": -0.08,
+            "weak_candle_floor_delta": 0.02,
+            "target_efficiency_floor_delta": 0.06,
+            "opposing_distance_floor_delta": 0.00055,
+            "impulse_age_limit_delta": -2,
+            "directional_extension_limit_delta": -0.08,
+            "pattern_rank_floor_delta": 0.05,
+            "require_confirmation": True,
+        },
+    },
+    "commodities": {
+        "thin_session": {
+            "risk_penalty": 0.035,
+            "weak_candle_extension_delta": -0.035,
+            "weak_candle_floor_delta": 0.01,
+            "target_efficiency_floor_delta": 0.025,
+            "opposing_distance_floor_delta": 0.00020,
+            "impulse_age_limit_delta": -1,
+            "directional_extension_limit_delta": -0.025,
+            "pattern_rank_floor_delta": 0.02,
+            "require_confirmation": False,
+        },
+        "off_session": {
+            "risk_penalty": 0.07,
+            "weak_candle_extension_delta": -0.07,
+            "weak_candle_floor_delta": 0.02,
+            "target_efficiency_floor_delta": 0.05,
+            "opposing_distance_floor_delta": 0.00045,
+            "impulse_age_limit_delta": -2,
+            "directional_extension_limit_delta": -0.07,
+            "pattern_rank_floor_delta": 0.04,
+            "require_confirmation": True,
+        },
+    },
+    "forex": {
+        "thin_session": {
+            "risk_penalty": 0.02,
+            "weak_candle_extension_delta": -0.02,
+            "weak_candle_floor_delta": 0.005,
+            "target_efficiency_floor_delta": 0.015,
+            "opposing_distance_floor_delta": 0.00012,
+            "impulse_age_limit_delta": 0,
+            "directional_extension_limit_delta": -0.02,
+            "pattern_rank_floor_delta": 0.01,
+            "require_confirmation": False,
+        },
+        "off_session": {
+            "risk_penalty": 0.05,
+            "weak_candle_extension_delta": -0.05,
+            "weak_candle_floor_delta": 0.01,
+            "target_efficiency_floor_delta": 0.03,
+            "opposing_distance_floor_delta": 0.00030,
+            "impulse_age_limit_delta": -1,
+            "directional_extension_limit_delta": -0.05,
+            "pattern_rank_floor_delta": 0.03,
+            "require_confirmation": False,
+        },
+    },
+    "crypto": {
+        "thin_session": {
+            "risk_penalty": 0.01,
+            "weak_candle_extension_delta": -0.01,
+            "weak_candle_floor_delta": 0.0,
+            "target_efficiency_floor_delta": 0.01,
+            "opposing_distance_floor_delta": 0.00010,
+            "impulse_age_limit_delta": 0,
+            "directional_extension_limit_delta": -0.01,
+            "pattern_rank_floor_delta": 0.0,
+            "require_confirmation": False,
+        },
+        "off_session": {
+            "risk_penalty": 0.02,
+            "weak_candle_extension_delta": -0.02,
+            "weak_candle_floor_delta": 0.005,
+            "target_efficiency_floor_delta": 0.015,
+            "opposing_distance_floor_delta": 0.00015,
+            "impulse_age_limit_delta": -1,
+            "directional_extension_limit_delta": -0.02,
+            "pattern_rank_floor_delta": 0.01,
+            "require_confirmation": False,
+        },
+    },
+}
+
+
+def _session_timing_strictness(
+    category: str,
+    session_quality_label: str,
+    session_quality_score: float,
+) -> Dict[str, Any]:
+    label = str(session_quality_label or "").strip().lower()
+    if label not in {"thin_session", "off_session"}:
+        if session_quality_score <= 0.28:
+            label = "off_session"
+        elif session_quality_score <= 0.42:
+            label = "thin_session"
+        else:
+            return {
+                "label": "normal",
+                "risk_penalty": 0.0,
+                "weak_candle_extension_delta": 0.0,
+                "weak_candle_floor_delta": 0.0,
+                "target_efficiency_floor_delta": 0.0,
+                "opposing_distance_floor_delta": 0.0,
+                "impulse_age_limit_delta": 0,
+                "directional_extension_limit_delta": 0.0,
+                "pattern_rank_floor_delta": 0.0,
+                "require_confirmation": False,
+                "reason": "",
+            }
+    category_key = str(category or "").strip().lower()
+    category_rules = _SESSION_TIMING_STRICTNESS_BY_CATEGORY.get(
+        category_key,
+        _SESSION_TIMING_STRICTNESS_BY_CATEGORY["forex"],
+    )
+    strictness = dict(category_rules.get(label, {}))
+    strictness.setdefault("risk_penalty", 0.0)
+    strictness.setdefault("weak_candle_extension_delta", 0.0)
+    strictness.setdefault("weak_candle_floor_delta", 0.0)
+    strictness.setdefault("target_efficiency_floor_delta", 0.0)
+    strictness.setdefault("opposing_distance_floor_delta", 0.0)
+    strictness.setdefault("impulse_age_limit_delta", 0)
+    strictness.setdefault("directional_extension_limit_delta", 0.0)
+    strictness.setdefault("pattern_rank_floor_delta", 0.0)
+    strictness.setdefault("require_confirmation", False)
+    strictness["label"] = label
+    strictness["reason"] = (
+        "session fit is off-peak for this asset"
+        if label == "off_session"
+        else "session fit is thin for this asset"
+    )
+    return strictness
+
+
+def _should_kill_for_negative_memory(
+    *,
+    sample_count: int,
+    same_asset_matches: int,
+    avg_similarity: float,
+    memory_edge: float,
+    memory_score: float,
+) -> bool:
+    if sample_count < 10:
+        return False
+    if avg_similarity < 0.72 and not (sample_count >= 14 and avg_similarity >= 0.66):
+        return False
+    if same_asset_matches < 4 and sample_count < 14:
+        return False
+    if memory_edge <= -0.22 or memory_score <= 34.0:
+        return True
+    return bool(
+        same_asset_matches >= 6
+        and avg_similarity >= 0.78
+        and memory_edge <= -0.18
+        and memory_score <= 38.0
+    )
+
+
 def _predictor_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     meta = metadata if isinstance(metadata, dict) else {}
     prediction = meta.get("predictor_prediction", meta.get("ml_prediction"))
@@ -872,6 +1045,7 @@ class SignalDecisionEngine:
         distance_to_support = structure.get("distance_to_support")
         distance_to_resistance = structure.get("distance_to_resistance")
         vwap_distance_atr = float(structure.get("vwap_distance_atr", 0.0) or 0.0)
+        session_quality_label = str(structure.get("session_quality_label", "unknown") or "unknown")
         session_quality_score = float(structure.get("session_quality_score", 0.0) or 0.0)
         candle_quality_score = float(structure.get("candle_quality_score", 0.0) or 0.0)
         extension_score = float(structure.get("extension_score", 0.0) or 0.0)
@@ -900,6 +1074,7 @@ class SignalDecisionEngine:
         signal.metadata["setup_quality"] = round(setup_quality, 4)
         signal.metadata["volatility_state"] = volatility_state
         signal.metadata["vwap_distance_atr"] = round(vwap_distance_atr, 4)
+        signal.metadata["session_quality_label"] = session_quality_label
         signal.metadata["session_quality_score"] = round(session_quality_score, 4)
         signal.metadata["candle_quality_score"] = round(candle_quality_score, 4)
         signal.metadata["extension_score"] = round(extension_score, 4)
@@ -932,6 +1107,7 @@ class SignalDecisionEngine:
             "distance_to_support": distance_to_support,
             "distance_to_resistance": distance_to_resistance,
             "vwap_distance_atr": round(vwap_distance_atr, 4),
+            "session_quality_label": session_quality_label,
             "session_quality_score": round(session_quality_score, 4),
             "candle_quality_score": round(candle_quality_score, 4),
             "extension_score": round(extension_score, 4),
@@ -1426,6 +1602,9 @@ class SignalDecisionEngine:
         structure_bias = str(structure.get("structure_bias", signal.metadata.get("structure_bias", "")) or "").strip().lower()
         setup_quality = float(structure.get("setup_quality", signal.metadata.get("setup_quality", 0.0)) or 0.0)
         vwap_distance_atr = float(structure.get("vwap_distance_atr", signal.metadata.get("vwap_distance_atr", 0.0)) or 0.0)
+        session_quality_label = str(
+            structure.get("session_quality_label", signal.metadata.get("session_quality_label", "unknown")) or "unknown"
+        ).strip().lower()
         session_quality_score = float(structure.get("session_quality_score", signal.metadata.get("session_quality_score", 0.0)) or 0.0)
         candle_quality_score = float(structure.get("candle_quality_score", signal.metadata.get("candle_quality_score", 0.0)) or 0.0)
         extension_score = float(structure.get("extension_score", signal.metadata.get("extension_score", 0.0)) or 0.0)
@@ -1569,6 +1748,11 @@ class SignalDecisionEngine:
         cross_asset_confidence = float(signal.metadata.get("cross_asset_confidence", 0.0) or 0.0)
         supportive_structure_distance = float(signal.metadata.get("supportive_structure_distance", 0.0) or 0.0)
         category_label = str(signal.category or signal.metadata.get("category") or "").strip().lower()
+        session_timing_strictness = _session_timing_strictness(
+            category_label,
+            session_quality_label,
+            session_quality_score,
+        )
         execution_policy = get_execution_policy(signal.asset)
         direction_sign = 1 if signal.direction == "BUY" else -1
         orderflow_imbalance = float(signal.metadata.get("orderflow_imbalance", 0.0) or 0.0)
@@ -1929,6 +2113,9 @@ class SignalDecisionEngine:
         elif session_quality_score <= 0.45:
             risk_score += 0.10
             reasons.append("session quality is only mediocre")
+        if session_timing_strictness["risk_penalty"] > 0.0:
+            risk_score += float(session_timing_strictness["risk_penalty"])
+            reasons.append(str(session_timing_strictness["reason"]))
 
         if target_efficiency_score <= 0.18:
             risk_score += 0.22
@@ -2095,6 +2282,14 @@ class SignalDecisionEngine:
         if inactivity_execution_relief:
             weak_candle_extension_limit += 0.02 + inactivity_relief_strength * 0.03
             weak_candle_floor = max(0.22, weak_candle_floor - (0.01 + inactivity_relief_strength * 0.02))
+        weak_candle_extension_limit = max(
+            0.50,
+            weak_candle_extension_limit + float(session_timing_strictness["weak_candle_extension_delta"]),
+        )
+        weak_candle_floor = min(
+            0.42,
+            weak_candle_floor + float(session_timing_strictness["weak_candle_floor_delta"]),
+        )
         if extension_score >= weak_candle_extension_limit and candle_quality_score <= weak_candle_floor:
             hard_blocks.append("entry is extended and the trigger candle is weak")
         target_efficiency_hard_floor = base_target_efficiency_hard_floor - (0.04 if elite_supported_candidate else 0.0)
@@ -2118,6 +2313,14 @@ class SignalDecisionEngine:
         if inactivity_execution_relief:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - (0.015 + inactivity_relief_strength * 0.03))
             opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - (0.0003 + inactivity_relief_strength * 0.0004))
+        target_efficiency_hard_floor = min(
+            0.32,
+            target_efficiency_hard_floor + float(session_timing_strictness["target_efficiency_floor_delta"]),
+        )
+        opposing_distance_hard_floor = min(
+            0.0100,
+            opposing_distance_hard_floor + float(session_timing_strictness["opposing_distance_floor_delta"]),
+        )
         if target_efficiency_score <= target_efficiency_hard_floor and opposing_distance <= opposing_distance_hard_floor:
             hard_blocks.append("too little clean space remains to the target")
         impulse_age_hard_limit = base_impulse_age_hard_limit + (1 if elite_supported_candidate else 0)
@@ -2141,6 +2344,14 @@ class SignalDecisionEngine:
         if inactivity_execution_relief:
             impulse_age_hard_limit += 1 + (1 if inactivity_relief_strength >= 0.75 else 0)
             directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
+        impulse_age_hard_limit = max(
+            3,
+            int(impulse_age_hard_limit + int(session_timing_strictness["impulse_age_limit_delta"])),
+        )
+        directional_extension_hard_limit = max(
+            0.56,
+            directional_extension_hard_limit + float(session_timing_strictness["directional_extension_limit_delta"]),
+        )
         if impulse_age_bars >= impulse_age_hard_limit and directional_extension >= directional_extension_hard_limit:
             hard_blocks.append("setup is too old and already stretched")
         if (
@@ -2180,6 +2391,14 @@ class SignalDecisionEngine:
             hard_blocks.append("recent pattern learning shows this entry shape keeps arriving too late")
         if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
             hard_blocks.append("entry confirmation delay is still pending")
+        if (
+            session_timing_strictness["require_confirmation"]
+            and not entry_confirmation_ready
+            and not breakout_retest_ready
+            and not first_pullback_ready
+            and not has_directional_flow_support
+        ):
+            hard_blocks.append("off-session entry has not earned cleaner confirmation")
         pattern_rank_hard_floor = (
             base_pattern_rank_strong_floor
             if strong_market_candidate and setup_quality >= 0.66 and alignment_score >= 0.74
@@ -2195,6 +2414,10 @@ class SignalDecisionEngine:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - 0.03)
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
+        pattern_rank_hard_floor = min(
+            0.28,
+            pattern_rank_hard_floor + float(session_timing_strictness["pattern_rank_floor_delta"]),
+        )
         low_pattern_rank_is_actionable = bool(
             blocked_recent_pattern
             or recent_pattern_sample_count >= 8
@@ -2261,6 +2484,8 @@ class SignalDecisionEngine:
             "asset_action": asset_action,
             "book_score": round(book_score, 4),
             "book_action": book_action,
+            "session_quality_label": session_quality_label,
+            "session_timing_strictness": dict(session_timing_strictness),
             "policy_relief": round(adaptive_policy_relief, 4),
             "policy_penalty": round(adaptive_policy_penalty, 4),
             "risk_kill_threshold": round(risk_kill_threshold, 4),
@@ -2319,6 +2544,7 @@ class SignalDecisionEngine:
             "entry_confirmation_ready": entry_confirmation_ready,
             "regime_entry_policy": regime_entry_policy,
             "vwap_distance_atr": round(vwap_distance_atr, 4),
+            "session_quality_label": session_quality_label,
             "session_quality_score": round(session_quality_score, 4),
             "candle_quality_score": round(candle_quality_score, 4),
             "extension_score": round(extension_score, 4),
@@ -2340,6 +2566,7 @@ class SignalDecisionEngine:
             "directional_flow_conflict": round(directional_flow_conflict, 4),
             "asset_performance_profile": dict(asset_performance),
             "book_performance_profile": dict(book_performance),
+            "session_timing_strictness": dict(session_timing_strictness),
             "effective_execution_policy": dict(effective_execution_policy),
             "hard_blocks": list(hard_blocks),
             "reasons": list(reasons),
@@ -2666,9 +2893,12 @@ class SignalDecisionEngine:
         signal.metadata["memory_win_rate"] = memory.get("win_rate")
         signal.metadata["memory_similarity"] = memory.get("avg_similarity")
         signal.metadata["memory_sample_count"] = memory.get("sample_count")
+        signal.metadata["memory_same_asset_matches"] = memory.get("same_asset_matches")
 
         adjustment = float(memory.get("adjustment", 0.0) or 0.0)
         sample_count = int(memory.get("sample_count", 0) or 0)
+        same_asset_matches = int(memory.get("same_asset_matches", 0) or 0)
+        avg_similarity = float(memory.get("avg_similarity", 0.0) or 0.0)
         memory_edge = float(memory.get("memory_edge", 0.0) or 0.0)
         memory_score = float(memory.get("memory_score", 50.0) or 50.0)
         memory_notes = list(memory.get("notes", []) or [])
@@ -2681,8 +2911,12 @@ class SignalDecisionEngine:
         signal.metadata["memory_adjustment_applied"] = round(adjustment, 4)
         signal.metadata["memory_notes"] = list(memory_notes)
 
-        strong_negative_memory = bool(
-            sample_count >= 8 and (memory_edge <= -0.18 or memory_score <= 36.0)
+        strong_negative_memory = _should_kill_for_negative_memory(
+            sample_count=sample_count,
+            same_asset_matches=same_asset_matches,
+            avg_similarity=avg_similarity,
+            memory_edge=memory_edge,
+            memory_score=memory_score,
         )
         if strong_negative_memory:
             reason = (

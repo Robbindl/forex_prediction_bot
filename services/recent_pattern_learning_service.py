@@ -439,8 +439,18 @@ def _pattern_learning_apply_bonus_rules(adjustments: Dict[str, Any], rates: Dict
             adjustments["notes"].append(note)
 
 
+def _recent_pattern_block_has_enough_evidence(rates: Dict[str, Any], block_samples: int) -> bool:
+    sample_count = int(rates.get("sample_count", 0) or 0)
+    avg_similarity = _safe_float(rates.get("avg_similarity"), 0.0)
+    if sample_count < max(block_samples, 8):
+        return False
+    if avg_similarity >= 0.68:
+        return True
+    return bool(sample_count >= max(block_samples + 3, 11) and avg_similarity >= 0.62)
+
+
 def _pattern_learning_apply_block_rules(adjustments: Dict[str, Any], rates: Dict[str, Any], *, block_samples: int, current_cross_relation: str) -> None:
-    if rates["sample_count"] < block_samples:
+    if not _recent_pattern_block_has_enough_evidence(rates, block_samples):
         return
 
     relation_label = current_cross_relation.replace("_", " ").strip() or "related-market"
@@ -561,7 +571,7 @@ def _pattern_learning_build_summary(
 class RecentPatternLearningService:
     _TTL_SECONDS = 180
     _MIN_SAMPLES = 4
-    _BLOCK_SAMPLES = 5
+    _BLOCK_SAMPLES = 8
     _SIMILARITY_FLOOR = 0.5
 
     def __init__(self) -> None:
