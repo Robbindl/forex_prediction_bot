@@ -198,7 +198,8 @@ button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35)
 .inspector-copy{display:grid;gap:6px;max-width:760px}
 .inspector-copy p{font-size:12px;color:var(--tx2);line-height:1.55}
 .inspector-mode-row{display:flex;flex-wrap:wrap;gap:8px}
-.inspector-body{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(300px,.85fr);gap:14px}
+.inspector-body{display:grid;grid-template-columns:1fr;gap:14px}
+.inspector-slot{display:grid;gap:14px;min-height:0}
 .inspector-card{padding:12px;border:1px solid rgba(255,255,255,.05);border-radius:12px;background:var(--s2);display:grid;gap:10px;min-height:0}
 .inspector-card h3{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--tx2)}
 .inspector-card h4{font-size:13px}
@@ -493,12 +494,8 @@ body.mission-control .surface.inspector-panel{border-radius:18px}
             <div class="inspector-mode-row" id="inspectorModeRow"></div>
           </div>
           <div class="inspector-body">
-            <div class="inspector-card">
-              <div class="split-grid" id="inspectorPrimary"></div>
-            </div>
-            <div class="inspector-card">
-              <div id="inspectorSecondary"></div>
-            </div>
+            <div class="inspector-slot" id="inspectorPrimary"></div>
+            <div class="inspector-slot" id="inspectorSecondary"></div>
           </div>
         </div>
       </section>
@@ -1962,8 +1959,8 @@ function buildSourcePreviewMarkup(node, payload, state = 'ready'){
       <code>${escapeHtml(payload.path || sourcePath)}</code>
       <pre class="source-snippet">${escapeHtml(payload.snippet || '')}</pre>
       <div class="source-links">
-        <button type="button" onclick="refreshSourcePreview()">Refresh snippet</button>
-        ${NODE_PAGE_MAP[node.id] ? `<button type="button" onclick="window.location.href='${NODE_PAGE_MAP[node.id]}'">Open related page</button>` : ''}
+        <button type="button" data-lab-action="refresh-source">Refresh snippet</button>
+        ${NODE_PAGE_MAP[node.id] ? `<button type="button" data-lab-action="open-related-page" data-href="${escapeHtml(NODE_PAGE_MAP[node.id])}">Open related page</button>` : ''}
       </div>
     </div>
   `;
@@ -2019,24 +2016,93 @@ function refreshSourcePreview(){
   loadSourcePreview(selectedNodeId, {force: true});
 }
 
+let labActionBindingsReady = false;
+
+function ensureLabActionBindings(){
+  if(labActionBindingsReady) return;
+  labActionBindingsReady = true;
+
+  document.addEventListener('click', event => {
+    const modeBtn = event.target.closest('[data-inspector-mode]');
+    if(modeBtn){
+      activeInspectorMode = modeBtn.dataset.inspectorMode;
+      renderDeepInspector();
+      return;
+    }
+
+    const filmBtn = event.target.closest('[data-film-overlay][data-film-key]');
+    if(filmBtn){
+      activateTimelineEvent(filmBtn.dataset.filmOverlay, filmBtn.dataset.filmKey);
+      return;
+    }
+
+    const actionBtn = event.target.closest('[data-lab-action]');
+    if(!actionBtn) return;
+
+    const action = actionBtn.dataset.labAction;
+    const nodeId = actionBtn.dataset.nodeId || selectedNodeId;
+
+    switch(action){
+      case 'inspect-node':
+        if(nodeId) focusNode(nodeId);
+        break;
+      case 'refresh-source':
+        refreshSourcePreview();
+        break;
+      case 'open-related-page':
+        if(actionBtn.dataset.href) window.location.href = actionBtn.dataset.href;
+        break;
+      case 'focus-node':
+        if(nodeId) focusNode(nodeId);
+        break;
+      case 'trade-path':
+        setOverlayMode('trade');
+        if(nodeId) focusNode(nodeId);
+        break;
+      case 'focus-neighborhood':
+        if(nodeId) focusNeighborhood(nodeId);
+        break;
+      case 'open-node-orbit':
+        activeDetailTab = 'neighbors';
+        setOverlayMode('neighbors');
+        if(nodeId) focusNode(nodeId);
+        break;
+      case 'highlight-group':
+        if(actionBtn.dataset.group) highlightGroup(actionBtn.dataset.group);
+        break;
+      case 'activate-timeline':
+        if(actionBtn.dataset.key) activateTimelineEvent(actionBtn.dataset.overlay || activeOverlayMode, actionBtn.dataset.key);
+        break;
+      case 'incident-overlay':
+        setOverlayMode('incident');
+        if(nodeId) focusNode(nodeId);
+        break;
+      case 'reset-playback':
+        resetPlayback();
+        break;
+      default:
+        break;
+    }
+  });
+
+  document.addEventListener('input', event => {
+    const scrubber = event.target.closest('[data-incident-scrubber]');
+    if(scrubber) setIncidentScrubIndex(scrubber.value);
+  });
+}
+
 function renderInspectorModeBar(){
   const host = document.getElementById('inspectorModeRow');
   if(!host) return;
   host.innerHTML = Object.entries(INSPECTOR_MODES).map(([key, meta]) => `
     <button type="button" class="chip ${activeInspectorMode===key?'active':''}" data-inspector-mode="${key}">${meta.label}</button>
   `).join('');
-  host.querySelectorAll('[data-inspector-mode]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      activeInspectorMode = btn.dataset.inspectorMode;
-      renderDeepInspector();
-    });
-  });
 }
 
 function buildDependencyColumn(nodes, emptyText){
   if(!nodes.length) return `<div class="source-empty">${emptyText}</div>`;
   return nodes.map(node => `
-    <button type="button" class="dep-item" onclick="renderNodeDetails('${node.id}');focusNode('${node.id}')">
+    <button type="button" class="dep-item" data-lab-action="inspect-node" data-node-id="${node.id}">
       <strong>${node.label}</strong>
       <span>${GROUP_META[node.group]?.label || node.group}</span>
       <small>${node.sub}</small>
@@ -2212,6 +2278,7 @@ function buildTelemetryItems(node){
 }
 
 function renderDeepInspector(){
+  ensureLabActionBindings();
   renderInspectorModeBar();
   const primary = document.getElementById('inspectorPrimary');
   const secondary = document.getElementById('inspectorSecondary');
@@ -2263,9 +2330,9 @@ function renderDeepInspector(){
       <div class="inspector-card">
         <h3>Orbit Focus</h3>
         <div class="focus-rail">
-          <button type="button" onclick="focusNeighborhood('${node.id}')">Focus neighborhood</button>
-          <button type="button" onclick="setOverlayMode('neighbors')">Open node orbit</button>
-          <button type="button" onclick="highlightGroup('${node.group}')">Isolate layer</button>
+          <button type="button" data-lab-action="focus-neighborhood" data-node-id="${node.id}">Focus neighborhood</button>
+          <button type="button" data-lab-action="open-node-orbit" data-node-id="${node.id}">Open node orbit</button>
+          <button type="button" data-lab-action="highlight-group" data-group="${node.group}">Isolate layer</button>
         </div>
         <div class="route-manifest">
           ${neighbors.map(neighbor => `<span class="route-node">${escapeHtml(neighbor.label)}</span>`).join('') || '<span class="source-empty">No adjacent modules mapped.</span>'}
@@ -2289,7 +2356,7 @@ function renderDeepInspector(){
             <strong>${escapeHtml(selectedFilm?.label || 'No incident selected')}</strong>
             <small>${escapeHtml(selectedFilm?.ageLabel || 'waiting')}</small>
           </div>
-          <input type="range" class="scrub-slider" id="incidentScrubber" min="0" max="${Math.max(0, filmItems.length - 1)}" value="${incidentScrubIndex}">
+          <input type="range" class="scrub-slider" id="incidentScrubber" data-incident-scrubber="1" min="0" max="${Math.max(0, filmItems.length - 1)}" value="${incidentScrubIndex}">
           <small>${escapeHtml(selectedFilm?.summary || 'Scrub through incident and warning cards to replay their paths.')}</small>
         </div>
         <div class="filmstrip">
@@ -2319,17 +2386,13 @@ function renderDeepInspector(){
           ` : '<div class="source-empty">No incident selected yet.</div>'}
         </div>
         <div class="focus-rail">
-          ${selectedFilm ? `<button type="button" onclick="activateTimelineEvent('${selectedFilm.overlay || activeOverlayMode}','${selectedFilm.key}')">Load into timeline</button>` : ''}
-          <button type="button" onclick="setOverlayMode('incident')">Switch to incident overlay</button>
-          <button type="button" onclick="resetPlayback()">Reset playback</button>
+          ${selectedFilm ? `<button type="button" data-lab-action="activate-timeline" data-overlay="${selectedFilm.overlay || activeOverlayMode}" data-key="${selectedFilm.key}">Load into timeline</button>` : ''}
+          <button type="button" data-lab-action="incident-overlay" data-node-id="${node.id}">Switch to incident overlay</button>
+          <button type="button" data-lab-action="reset-playback">Reset playback</button>
         </div>
         ${selectedFilm && selectedFilm.error ? `<div class="source-card"><strong>Error detail</strong><span>${escapeHtml(selectedFilm.error)}</span></div>` : buildSourcePreviewMarkup(node, previewPayload, previewState)}
       </div>
     `;
-    document.querySelectorAll('[data-film-overlay][data-film-key]').forEach(btn => {
-      btn.addEventListener('click', () => activateTimelineEvent(btn.dataset.filmOverlay, btn.dataset.filmKey));
-    });
-    document.getElementById('incidentScrubber')?.addEventListener('input', e => setIncidentScrubIndex(e.target.value));
     return;
   }
 
@@ -2409,9 +2472,9 @@ function renderDeepInspector(){
             `).join('')}
           </div>
           <div class="focus-rail">
-            <button type="button" onclick="refreshSourcePreview()">Refresh snippet</button>
-            <button type="button" onclick="focusNode('${node.id}')">Center node</button>
-            <button type="button" onclick="setOverlayMode('trade')">Trade path</button>
+            <button type="button" data-lab-action="refresh-source">Refresh snippet</button>
+            <button type="button" data-lab-action="focus-node" data-node-id="${node.id}">Center node</button>
+            <button type="button" data-lab-action="trade-path" data-node-id="${node.id}">Trade path</button>
           </div>
         </div>
       </div>
