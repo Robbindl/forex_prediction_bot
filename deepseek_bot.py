@@ -20,7 +20,6 @@ from config.config import DEEPSEEK_TELEGRAM_CHAT_ID, DEEPSEEK_TELEGRAM_TOKEN
 from services.deepseek_chat_service import (
     _build_focus_asset_snapshot,
     _build_log_snapshot,
-    _question_mentions_attachment,
     get_deepseek_chat_service,
 )
 from utils.logger import get_logger
@@ -340,31 +339,18 @@ class DeepSeekTelegramBot:
         answer = await self._run_answer(question, chat_id=str(update.effective_chat.id), attachment=attachment)
         await self._replace_placeholder_with_chunks(placeholder, answer)
 
-    @staticmethod
-    def _should_use_attachment_chat(question: str, attachment: Optional[Dict[str, Any]] = None) -> bool:
-        if isinstance(attachment, dict) and attachment:
-            return True
-        return _question_mentions_attachment(question)
-
     async def _run_answer(self, question: str, *, chat_id: str, attachment: Optional[Dict[str, Any]] = None) -> str:
         try:
-            if self._should_use_attachment_chat(question, attachment):
-                answer_fn = get_deepseek_chat_service().answer
-                kwargs = {
-                    "question": question,
-                    "chat_id": chat_id,
-                    "attachment": attachment,
-                }
-            else:
-                from services.robbie_chat_service import get_chat_service
+            from services.robbie_chat_service import get_chat_service
 
-                runtime_proxy = _SharedRuntimeTradingSystemProxy()
-                answer_fn = get_chat_service().answer
-                kwargs = {
-                    "question": question,
-                    "trading_system": runtime_proxy,
-                    "chat_id": chat_id,
-                }
+            runtime_proxy = _SharedRuntimeTradingSystemProxy()
+            answer_fn = get_chat_service().answer
+            kwargs = {
+                "question": question,
+                "trading_system": runtime_proxy,
+                "chat_id": chat_id,
+                "attachment": attachment,
+            }
             return await asyncio.wait_for(
                 asyncio.to_thread(answer_fn, **kwargs),
                 timeout=_CHAT_TIMEOUT_SECONDS,

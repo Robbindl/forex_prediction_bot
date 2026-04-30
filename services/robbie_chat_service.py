@@ -29,7 +29,9 @@ from config.config import (
     ROBBIE_CHAT_NEWS_LIMIT,
     ROBBIE_CHAT_OPEN_POSITIONS_LIMIT,
     ROBBIE_CHAT_PROVIDER,
+    ROBBIE_CHAT_REASONING_EFFORT,
     ROBBIE_CHAT_TEMPERATURE,
+    ROBBIE_CHAT_THINKING_ENABLED,
     ROBBIE_CHAT_TIMEOUT_SECONDS,
     ROBBIE_DEFAULT_WEEKLY_REPORT_TIME,
     ROBBIE_DEFAULT_WEEKLY_REPORT_WEEKDAY,
@@ -78,6 +80,16 @@ _LOG_CONTEXT_TERMS = (
     "no signals",
     "not seeing any trade",
     "not seeing any signal",
+)
+_ATTACHMENT_TERMS = (
+    "image",
+    "photo",
+    "screenshot",
+    "picture",
+    "attachment",
+    "chart",
+    "posted",
+    "upload",
 )
 _CODE_CONTEXT_TERMS = (
     "code",
@@ -199,6 +211,11 @@ def _question_needs_code_context(question: str) -> bool:
     if any(term in text for term in _CODE_CONTEXT_TERMS):
         return True
     return _question_needs_log_context(question)
+
+
+def _question_mentions_attachment(question: str) -> bool:
+    text = str(question or "").lower()
+    return any(term in text for term in _ATTACHMENT_TERMS)
 
 
 def _tail_log_lines(path: Path, limit: int = 12) -> List[str]:
@@ -666,6 +683,7 @@ class ChatSessionStore:
             session.setdefault("messages", [])
             session.setdefault("last_asset", "")
             session.setdefault("last_trade_id", "")
+            session.setdefault("last_attachment", {})
             return session
 
     def append_turn(
@@ -697,6 +715,16 @@ class ChatSessionStore:
             self._sessions.pop(str(chat_id), None)
             self._persist()
 
+    def set_attachment(self, chat_id: str, attachment: Dict[str, Any]) -> None:
+        with self._lock:
+            key = str(chat_id)
+            session = dict(self._sessions.get(key, {}) or {})
+            session["messages"] = list(session.get("messages") or [])
+            session["last_attachment"] = dict(attachment or {})
+            session["updated_at"] = int(time.time())
+            self._sessions[key] = session
+            self._persist()
+
 
 class RobbieChatService:
     def __init__(
@@ -720,10 +748,20 @@ class RobbieChatService:
         trading_system: Any,
         chat_id: str,
         asset_hint: str = "",
+        attachment: Optional[Dict[str, Any]] = None,
     ) -> str:
+        if isinstance(attachment, dict) and attachment:
+            self._sessions.set_attachment(chat_id, attachment)
         session = self._sessions.get(chat_id)
         focus_asset = _resolve_asset_from_text(question, asset_hint or session.get("last_asset", ""))
-        runtime = self._build_runtime_context(trading_system, focus_asset, question=question)
+        include_attachment_context = bool(attachment) or _question_mentions_attachment(question)
+        attachment_snapshot = dict(attachment or {}) if attachment else dict(session.get("last_attachment") or {})
+        runtime = self._build_runtime_context(
+            trading_system,
+            focus_asset,
+            question=question,
+            attachment=attachment_snapshot if include_attachment_context else None,
+        )
         intent = self._classify_intent(question)
         deterministic = self._answer_deterministic(question, runtime, session, intent=intent, chat_id=chat_id)
         response = self._answer_with_optional_deepseek(question, runtime, session, deterministic, intent)
@@ -736,7 +774,14 @@ class RobbieChatService:
         )
         return response
 
-    def _build_runtime_context(self, trading_system: Any, focus_asset: str, *, question: str = "") -> Dict[str, Any]:
+    def _build_runtime_context(
+        self,
+        trading_system: Any,
+        focus_asset: str,
+        *,
+        question: str = "",
+        attachment: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         core = trading_system
         health: Dict[str, Any] = {}
         positions: List[Dict[str, Any]] = []
@@ -845,6 +890,7 @@ class RobbieChatService:
             "news_snapshot": news_snapshot,
             "log_snapshot": log_snapshot,
             "code_snapshot": code_snapshot,
+            "attachment_snapshot": dict(attachment or {}),
         }
 
     def _build_market_snapshot(
@@ -2379,7 +2425,7 @@ class RobbieChatService:
             include_local_draft=include_local_draft,
         )
         payload = {
-            "model": str(ROBBIE_CHAT_MODEL or "deepseek-chat"),
+            "model": str(ROBBIE_CHAT_MODEL or "deepseek-v4-pro"),
             "messages": [
                 {
                     "role": "system",
@@ -2399,9 +2445,14 @@ class RobbieChatService:
                     "content": question,
                 },
             ],
-            "temperature": max(0.0, min(1.1, float(ROBBIE_CHAT_TEMPERATURE or 0.35))),
             "max_tokens": max(300, min(2000, int(ROBBIE_CHAT_MAX_TOKENS or 1100))),
         }
+        if ROBBIE_CHAT_THINKING_ENABLED:
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = str(ROBBIE_CHAT_REASONING_EFFORT or "high")
+        else:
+            payload["thinking"] = {"type": "disabled"}
+            payload["temperature"] = max(0.0, min(1.1, float(ROBBIE_CHAT_TEMPERATURE or 0.35)))
         resp = requests.post(
             endpoint,
             headers={
@@ -2419,6 +2470,23 @@ class RobbieChatService:
         message = choices[0].get("message") if isinstance(choices[0], dict) else {}
         content = str((message or {}).get("content") or "").strip()
         return content
+
+    @staticmethod
+    def _attachment_fact(attachment: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(attachment, dict):
+            return {}
+        return {
+            "kind": str(attachment.get("kind") or "").strip(),
+            "caption": _clip_text(attachment.get("caption") or "", 280),
+            "file_name": str(attachment.get("file_name") or "").strip(),
+            "mime_type": str(attachment.get("mime_type") or "").strip(),
+            "width": attachment.get("width"),
+            "height": attachment.get("height"),
+            "ocr_available": bool(attachment.get("ocr_available")),
+            "ocr_source": str(attachment.get("ocr_source") or "").strip(),
+            "ocr_text": _clip_text(attachment.get("ocr_text") or "", 1200),
+            "attachment_error": _clip_text(attachment.get("attachment_error") or "", 240),
+        }
 
     def _llm_context(
         self,
@@ -2439,6 +2507,7 @@ class RobbieChatService:
         news_snapshot = runtime.get("news_snapshot") if isinstance(runtime.get("news_snapshot"), dict) else {}
         log_snapshot = runtime.get("log_snapshot") if isinstance(runtime.get("log_snapshot"), dict) else {}
         code_snapshot = runtime.get("code_snapshot") if isinstance(runtime.get("code_snapshot"), dict) else {}
+        attachment_snapshot = runtime.get("attachment_snapshot") if isinstance(runtime.get("attachment_snapshot"), dict) else {}
         setups = self._ensure_top_setups(runtime)
         focus_signal = runtime.get("focus_signal") if isinstance(runtime.get("focus_signal"), dict) else {}
         position_limit = max(2, int(ROBBIE_CHAT_OPEN_POSITIONS_LIMIT or 8))
@@ -2586,6 +2655,14 @@ class RobbieChatService:
                         "matches": list(code_snapshot.get("matches") or [])[:6],
                     },
                     limit=2200,
+                )
+            )
+        if attachment_snapshot:
+            sections.append(
+                _section_text(
+                    "runtime_facts_attachment",
+                    self._attachment_fact(attachment_snapshot),
+                    limit=1800,
                 )
             )
         if include_local_draft and deterministic:

@@ -29,6 +29,17 @@ def _parse_float(value: str, default=None):
     except Exception:
         return default
 
+
+def _parse_bool(value: str, default: bool = False) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MARKET DATA
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,7 +151,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 ROBBIE_CHAT_PROVIDER = os.getenv("ROBBIE_CHAT_PROVIDER", "auto").strip().lower() or "auto"
-ROBBIE_CHAT_MODEL = os.getenv("ROBBIE_CHAT_MODEL", "deepseek-chat").strip() or "deepseek-chat"
+ROBBIE_CHAT_MODEL = os.getenv("ROBBIE_CHAT_MODEL", "deepseek-v4-pro").strip() or "deepseek-v4-pro"
 ROBBIE_CHAT_BASE_URL = os.getenv("ROBBIE_CHAT_BASE_URL", "https://api.deepseek.com").strip() or "https://api.deepseek.com"
 ROBBIE_CHAT_MODE = os.getenv("ROBBIE_CHAT_MODE", "hybrid").strip().lower() or "hybrid"
 if ROBBIE_CHAT_MODE not in {"strict", "hybrid", "llm"}:
@@ -149,6 +160,14 @@ ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE = os.getenv("ROBBIE_CHAT_ALLOW_WORLD_KNOWLEDGE
 ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT = os.getenv("ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT", "auto").strip().lower() or "auto"
 if ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT not in {"auto", "always", "never"}:
     ROBBIE_CHAT_INCLUDE_LOCAL_DRAFT = "auto"
+ROBBIE_CHAT_THINKING_ENABLED = _parse_bool(os.getenv("ROBBIE_CHAT_THINKING_ENABLED", "true"), True)
+ROBBIE_CHAT_REASONING_EFFORT = os.getenv("ROBBIE_CHAT_REASONING_EFFORT", "high").strip().lower() or "high"
+if ROBBIE_CHAT_REASONING_EFFORT in {"low", "medium"}:
+    ROBBIE_CHAT_REASONING_EFFORT = "high"
+elif ROBBIE_CHAT_REASONING_EFFORT == "xhigh":
+    ROBBIE_CHAT_REASONING_EFFORT = "max"
+elif ROBBIE_CHAT_REASONING_EFFORT not in {"high", "max"}:
+    ROBBIE_CHAT_REASONING_EFFORT = "high"
 ROBBIE_CHAT_TIMEOUT_SECONDS = int(os.getenv("ROBBIE_CHAT_TIMEOUT_SECONDS", "30"))
 ROBBIE_CHAT_HISTORY_LIMIT = int(os.getenv("ROBBIE_CHAT_HISTORY_LIMIT", "10"))
 ROBBIE_CHAT_CONTEXT_CHAR_LIMIT = int(os.getenv("ROBBIE_CHAT_CONTEXT_CHAR_LIMIT", "12000"))
