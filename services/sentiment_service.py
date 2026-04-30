@@ -46,13 +46,22 @@ class SentimentService:
 
         cat = _cat(asset)
         if cat == "crypto":
-            return self._crypto_sentiment(asset)
+            result = self._crypto_sentiment(asset)
         elif cat == "commodities":
-            return self._commodity_sentiment(asset)
+            result = self._commodity_sentiment(asset)
         elif cat == "forex":
-            return self._forex_sentiment(asset)
+            result = self._forex_sentiment(asset)
         else:
-            return self._index_sentiment(asset)
+            result = self._index_sentiment(asset)
+
+        if NEWS_SENTIMENT_ENABLED:
+            try:
+                shock = _NewsSentiment.headline_shock(asset)
+                if shock:
+                    result["headline_shock"] = dict(shock)
+            except Exception:
+                pass
+        return result
 
     def _global_sentiment(self) -> Dict:
         """Global market composite — used by command center."""

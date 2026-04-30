@@ -2422,6 +2422,30 @@ class SignalDecisionEngine:
         entry_confirmation_ready = bool(
             structure.get("entry_confirmation_ready", signal.metadata.get("entry_confirmation_ready"))
         )
+        fast_entry_confirmation_bars_required = int(
+            structure.get(
+                "fast_entry_confirmation_bars_required",
+                signal.metadata.get("fast_entry_confirmation_bars_required", 0),
+            )
+            or 0
+        )
+        fast_entry_confirmation_count = int(
+            structure.get(
+                "fast_entry_confirmation_count",
+                signal.metadata.get("fast_entry_confirmation_count", 0),
+            )
+            or 0
+        )
+        fast_entry_confirmation_ready = bool(
+            structure.get("fast_entry_confirmation_ready", signal.metadata.get("fast_entry_confirmation_ready"))
+        )
+        external_confirmation_score = float(
+            structure.get(
+                "external_confirmation_score",
+                signal.metadata.get("external_confirmation_score", 0.0),
+            )
+            or 0.0
+        )
         pattern_family = str(structure.get("pattern_family", signal.metadata.get("pattern_family", "unknown")) or "unknown")
         trend_5m = str(structure.get("trend_5m", signal.metadata.get("trend_5m", "unknown")) or "unknown").strip().lower()
         close_location = float(structure.get("close_location", signal.metadata.get("close_location", 0.5)) or 0.5)
@@ -2527,7 +2551,47 @@ class SignalDecisionEngine:
         aligned_book_pressure = float(signal.metadata.get("book_imbalance", 0.0) or 0.0) * direction_sign
         aligned_tick_pressure = float(signal.metadata.get("tick_imbalance", 0.0) or 0.0) * direction_sign
         recent_pattern_sample_count = int(recent_review.get("sample_count", 0) or 0)
+        playbook_name = str(
+            signal.metadata.get("playbook_name")
+            or signal.metadata.get("seed_model")
+            or signal.metadata.get("strategy_id")
+            or signal.strategy_id
+            or ""
+        ).strip().lower()
         entry_style = str(signal.metadata.get("playbook_entry_style") or "").strip().lower()
+        impulse_break_style = bool(
+            entry_style in {
+                "expansion_break",
+                "opening_drive_break",
+                "news_followthrough",
+                "intermarket_break",
+                "intermarket_confirmed_break",
+                "breakout_close",
+            }
+            or (
+                "break" in entry_style
+                and "pullback" not in entry_style
+                and "retest" not in entry_style
+            )
+        )
+        impulse_playbook = bool(
+            playbook_name in {
+                "aggressive_expansion",
+                "opening_drive",
+                "news_impulse",
+                "intermarket_continuation",
+                "breakout_continuation",
+            }
+        )
+        shock_score = float(signal.metadata.get("shock_score", 0.0) or 0.0)
+        shock_event_score = float(signal.metadata.get("shock_event_score", 0.0) or 0.0)
+        shock_displacement_score = float(signal.metadata.get("shock_displacement_score", 0.0) or 0.0)
+        shock_structure_score = float(signal.metadata.get("shock_structure_score", 0.0) or 0.0)
+        shock_liquidity_score = float(signal.metadata.get("shock_liquidity_score", 0.0) or 0.0)
+        shock_timing_score = float(signal.metadata.get("shock_timing_score", 0.0) or 0.0)
+        headline_shock_score = float(signal.metadata.get("headline_shock_score", 0.0) or 0.0)
+        shock_fresh_event = bool(signal.metadata.get("shock_fresh_event"))
+        shock_supported = bool(signal.metadata.get("shock_supported"))
         pattern_family_lower = pattern_family.strip().lower()
         continuation_family = bool(
             "continuation" in pattern_family_lower
@@ -2591,6 +2655,23 @@ class SignalDecisionEngine:
             or exhaustion_risk >= 0.28
             or dominant_exhaustion >= 0.45
             or bias_exhausted
+        )
+        shock_supported = bool(
+            shock_supported
+            or (
+                shock_score >= 0.60
+                and shock_displacement_score >= 0.58
+                and shock_structure_score >= 0.54
+                and shock_timing_score >= 0.50
+                and (shock_liquidity_score >= 0.42 or shock_fresh_event)
+            )
+            or (
+                headline_shock_score >= 0.56
+                and shock_displacement_score >= 0.55
+                and shock_structure_score >= 0.52
+                and shock_timing_score >= 0.48
+                and (shock_liquidity_score >= 0.40 or shock_fresh_event)
+            )
         )
         continuation_reclaim_pressure = bool(
             (continuation_family or continuation_entry)
@@ -2666,6 +2747,28 @@ class SignalDecisionEngine:
                 )
             )
         )
+        shock_market_candidate = bool(
+            strong_market_candidate
+            or (
+                category_label in {"crypto", "forex", "commodities", "indices"}
+                and (
+                    (
+                        float(signal.confidence or 0.0) >= 0.60
+                        and alignment_score >= 0.62
+                        and setup_quality >= 0.56
+                        and candle_quality_score >= 0.28
+                        and session_quality_score >= 0.32
+                    )
+                    or (
+                        structural_strength_score >= 0.52
+                        and alignment_score >= 0.68
+                        and setup_quality >= 0.58
+                        and candle_quality_score >= 0.26
+                        and session_quality_score >= 0.30
+                    )
+                )
+            )
+        )
         strong_fx_crypto_candidate = bool(
             category_label in {"crypto", "forex"} and strong_market_candidate
         )
@@ -2719,10 +2822,94 @@ class SignalDecisionEngine:
                 or first_pullback_ready
             )
         )
+        impulse_fast_path_candidate = bool(
+            impulse_playbook
+            and impulse_break_style
+            and strong_market_candidate
+            and float(signal.confidence or 0.0) >= 0.63
+            and alignment_score >= 0.68
+            and setup_quality >= 0.60
+            and candle_quality_score >= 0.32
+            and session_quality_score >= 0.38
+            and target_efficiency_score >= 0.12
+            and extension_score <= 1.24
+            and impulse_age_bars <= 5
+            and dominant_exhaustion <= 0.58
+            and not failed_opposite_move_confirmed
+            and not has_directional_flow_conflict
+        )
+        impulse_fast_path_timing_intact = bool(
+            impulse_fast_path_candidate
+            and extension_score <= 1.10
+            and abs(vwap_distance_atr) <= 1.20
+            and target_efficiency_score >= 0.14
+            and impulse_age_bars <= 4
+        )
+        impulse_fast_path_supported = bool(
+            impulse_fast_path_timing_intact
+            and (
+                fast_entry_confirmation_ready
+                or entry_confirmation_ready
+                or has_directional_flow_support
+                or external_confirmation_score >= 0.18
+                or (
+                    category_label in {"commodities", "indices"}
+                    and candle_quality_score >= 0.36
+                    and session_quality_score >= 0.42
+                )
+            )
+        )
+        shock_fast_path_candidate = bool(
+            impulse_playbook
+            and shock_market_candidate
+            and shock_supported
+            and shock_score >= 0.60
+            and shock_displacement_score >= 0.58
+            and shock_structure_score >= 0.54
+            and shock_timing_score >= 0.50
+            and candle_quality_score >= 0.28
+            and session_quality_score >= 0.32
+            and target_efficiency_score >= 0.10
+            and extension_score <= 1.32
+            and impulse_age_bars <= 6
+            and dominant_exhaustion <= 0.62
+            and not failed_opposite_move_confirmed
+            and not has_directional_flow_conflict
+        )
+        shock_fast_path_timing_intact = bool(
+            shock_fast_path_candidate
+            and extension_score <= 1.16
+            and abs(vwap_distance_atr) <= 1.30
+            and target_efficiency_score >= 0.12
+            and impulse_age_bars <= 5
+        )
+        shock_confirmation_override = bool(
+            shock_fast_path_timing_intact
+            and (
+                shock_fresh_event
+                or shock_event_score >= 0.48
+                or headline_shock_score >= 0.56
+                or shock_liquidity_score >= 0.54
+                or shock_displacement_score >= 0.70
+            )
+        )
+        shock_fast_path_supported = bool(
+            shock_fast_path_timing_intact
+            and broker_spread_regime not in {"stressed", "extreme"}
+            and broker_quote_quality_state not in {"stale", "delayed"}
+            and (
+                shock_liquidity_score >= 0.42
+                or has_directional_flow_support
+                or external_confirmation_score >= 0.16
+                or shock_fresh_event
+            )
+        )
         continuation_reclaim_hard_block = bool(
             continuation_reclaim_pressure
             and not has_directional_flow_support
             and not high_conviction_continuation_supported
+            and not impulse_fast_path_supported
+            and not shock_fast_path_supported
         )
         elite_supported_candidate = bool(
             strong_market_candidate
@@ -2732,7 +2919,10 @@ class SignalDecisionEngine:
                 or breakout_retest_ready
                 or first_pullback_ready
                 or entry_confirmation_ready
+                or fast_entry_confirmation_ready
                 or high_conviction_continuation_supported
+                or impulse_fast_path_supported
+                or shock_fast_path_supported
                 or (continuation_rescue_candidate and has_directional_flow_support)
             )
         )
@@ -3064,7 +3254,7 @@ class SignalDecisionEngine:
 
         entry_style = str(signal.metadata.get("playbook_entry_style") or "").strip().lower()
         wants_retest = "retest" in entry_style or "pullback" in entry_style or bool(signal.metadata.get("retest_entry_preferred"))
-        if wants_retest and not (breakout_retest_ready or first_pullback_ready):
+        if wants_retest and not impulse_fast_path_supported and not (breakout_retest_ready or first_pullback_ready):
             risk_score += 0.20
             reasons.append("retest quality is not confirmed yet")
 
@@ -3111,6 +3301,16 @@ class SignalDecisionEngine:
                     risk_score -= 0.02
                 if target_efficiency_score >= 0.14 and directional_extension <= 0.84:
                     risk_score -= 0.02
+        if impulse_fast_path_candidate:
+            risk_score -= 0.04
+            if impulse_fast_path_supported:
+                risk_score -= 0.05
+                if extension_score <= 1.02 and abs(vwap_distance_atr) <= 1.10:
+                    risk_score -= 0.03
+                if target_efficiency_score >= 0.18:
+                    risk_score -= 0.03
+                if impulse_age_bars <= 3:
+                    risk_score -= 0.02
         if inactivity_execution_relief:
             risk_score -= 0.04 + inactivity_relief_strength * 0.08
         if asset_performance_relief > 0.0:
@@ -3156,6 +3356,12 @@ class SignalDecisionEngine:
         if high_conviction_continuation_supported:
             weak_candle_extension_limit += 0.04
             weak_candle_floor = max(0.22, weak_candle_floor - 0.01)
+        if impulse_fast_path_supported:
+            weak_candle_extension_limit += 0.06
+            weak_candle_floor = max(0.20, weak_candle_floor - 0.03)
+        if shock_fast_path_supported:
+            weak_candle_extension_limit += 0.06
+            weak_candle_floor = max(0.20, weak_candle_floor - 0.02)
         if inactivity_execution_relief:
             weak_candle_extension_limit += 0.02 + inactivity_relief_strength * 0.03
             weak_candle_floor = max(0.22, weak_candle_floor - (0.01 + inactivity_relief_strength * 0.02))
@@ -3187,6 +3393,12 @@ class SignalDecisionEngine:
         if high_conviction_continuation_supported:
             target_efficiency_hard_floor = max(0.10, target_efficiency_hard_floor - 0.03)
             opposing_distance_hard_floor = max(0.0028, opposing_distance_hard_floor - 0.0004)
+        if impulse_fast_path_supported:
+            target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - 0.04)
+            opposing_distance_hard_floor = max(0.0022, opposing_distance_hard_floor - 0.0006)
+        if shock_fast_path_supported:
+            target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - 0.03)
+            opposing_distance_hard_floor = max(0.0023, opposing_distance_hard_floor - 0.0005)
         if inactivity_execution_relief:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - (0.015 + inactivity_relief_strength * 0.03))
             opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - (0.0003 + inactivity_relief_strength * 0.0004))
@@ -3218,6 +3430,12 @@ class SignalDecisionEngine:
         if high_conviction_continuation_supported:
             impulse_age_hard_limit += 1
             directional_extension_hard_limit += 0.05
+        if impulse_fast_path_supported:
+            impulse_age_hard_limit += 1
+            directional_extension_hard_limit += 0.08
+        if shock_fast_path_supported:
+            impulse_age_hard_limit += 1
+            directional_extension_hard_limit += 0.06
         if inactivity_execution_relief:
             impulse_age_hard_limit += 1 + (1 if inactivity_relief_strength >= 0.75 else 0)
             directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
@@ -3237,7 +3455,7 @@ class SignalDecisionEngine:
             and not has_directional_flow_support
         ):
             hard_blocks.append("high-conviction continuation has lost its timing edge")
-        if wants_retest and not breakout_retest_ready and not first_pullback_ready:
+        if wants_retest and not impulse_fast_path_supported and not shock_fast_path_supported and not breakout_retest_ready and not first_pullback_ready:
             hard_blocks.append("breakout entry has not earned a clean retest or first pullback")
         if directional_extension >= 0.82 and (
             exhaustion_risk >= 0.45 or dominant_exhaustion >= 0.60 or bias_exhausted
@@ -3270,11 +3488,18 @@ class SignalDecisionEngine:
             hard_blocks.append(blocked_recent_pattern_reason)
         if late_entry_rate >= 0.45 and hard_loss_rate >= 0.30 and directional_extension >= 0.74:
             hard_blocks.append("recent pattern learning shows this entry shape keeps arriving too late")
-        if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+        if (
+            entry_confirmation_bars_required > 1
+            and not entry_confirmation_ready
+            and not (impulse_fast_path_supported and fast_entry_confirmation_ready)
+            and not (shock_fast_path_supported and (fast_entry_confirmation_ready or shock_confirmation_override))
+        ):
             hard_blocks.append("entry confirmation delay is still pending")
         if (
             session_timing_strictness["require_confirmation"]
             and not entry_confirmation_ready
+            and not (impulse_fast_path_supported and fast_entry_confirmation_ready)
+            and not (shock_fast_path_supported and (fast_entry_confirmation_ready or shock_confirmation_override))
             and not breakout_retest_ready
             and not first_pullback_ready
             and not has_directional_flow_support
@@ -3293,6 +3518,10 @@ class SignalDecisionEngine:
             pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
         if high_conviction_continuation_supported:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - 0.03)
+        if impulse_fast_path_supported:
+            pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.05)
+        if shock_fast_path_supported:
+            pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
         pattern_rank_hard_floor = min(
@@ -3307,7 +3536,11 @@ class SignalDecisionEngine:
                 and not has_directional_flow_support
                 and not entry_confirmation_ready
             )
-            or not (continuation_rescue_candidate or high_conviction_continuation_candidate)
+            or not (
+                continuation_rescue_candidate
+                or high_conviction_continuation_candidate
+                or impulse_fast_path_candidate
+            )
         )
         if (
             pattern_family != "unknown"
@@ -3327,6 +3560,10 @@ class SignalDecisionEngine:
         risk_kill_threshold = base_risk_kill_threshold + adaptive_policy_relief * 0.70 - adaptive_policy_penalty * 0.50
         if high_conviction_continuation_supported:
             risk_kill_threshold += 0.04
+        if impulse_fast_path_supported:
+            risk_kill_threshold += 0.03
+        if shock_fast_path_supported:
+            risk_kill_threshold += 0.03
         if inactivity_execution_relief:
             risk_kill_threshold += 0.02
         risk_kill_threshold = max(0.50, min(0.70, risk_kill_threshold))
@@ -3395,6 +3632,29 @@ class SignalDecisionEngine:
             "impulse_age_hard_limit": int(impulse_age_hard_limit),
             "directional_extension_hard_limit": round(directional_extension_hard_limit, 4),
             "pattern_rank_hard_floor": round(pattern_rank_hard_floor, 4),
+            "playbook_name": playbook_name,
+            "entry_style": entry_style,
+            "fast_entry_confirmation_ready": bool(fast_entry_confirmation_ready),
+            "fast_entry_confirmation_count": int(fast_entry_confirmation_count),
+            "fast_entry_confirmation_bars_required": int(fast_entry_confirmation_bars_required),
+            "external_confirmation_score": round(external_confirmation_score, 4),
+            "shock_market_candidate": shock_market_candidate,
+            "shock_score": round(shock_score, 4),
+            "shock_event_score": round(shock_event_score, 4),
+            "shock_displacement_score": round(shock_displacement_score, 4),
+            "shock_structure_score": round(shock_structure_score, 4),
+            "shock_liquidity_score": round(shock_liquidity_score, 4),
+            "shock_timing_score": round(shock_timing_score, 4),
+            "headline_shock_score": round(headline_shock_score, 4),
+            "shock_fresh_event": bool(shock_fresh_event),
+            "shock_supported": bool(shock_supported),
+            "impulse_fast_path_candidate": impulse_fast_path_candidate,
+            "impulse_fast_path_timing_intact": impulse_fast_path_timing_intact,
+            "impulse_fast_path_supported": impulse_fast_path_supported,
+            "shock_fast_path_candidate": shock_fast_path_candidate,
+            "shock_fast_path_timing_intact": shock_fast_path_timing_intact,
+            "shock_fast_path_supported": shock_fast_path_supported,
+            "shock_confirmation_override": shock_confirmation_override,
         }
 
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
@@ -3403,12 +3663,29 @@ class SignalDecisionEngine:
         signal.metadata["effective_execution_policy"] = dict(effective_execution_policy)
         signal.metadata["execution_relief_flags"] = {
             "strong_market_candidate": strong_market_candidate,
+            "shock_market_candidate": shock_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
             "elite_supported_candidate": elite_supported_candidate,
             "continuation_rescue_candidate": continuation_rescue_candidate,
             "high_conviction_continuation_candidate": high_conviction_continuation_candidate,
             "high_conviction_continuation_timing_intact": high_conviction_continuation_timing_intact,
             "high_conviction_continuation_supported": high_conviction_continuation_supported,
+            "impulse_fast_path_candidate": impulse_fast_path_candidate,
+            "impulse_fast_path_timing_intact": impulse_fast_path_timing_intact,
+            "impulse_fast_path_supported": impulse_fast_path_supported,
+            "shock_score": round(shock_score, 4),
+            "shock_event_score": round(shock_event_score, 4),
+            "shock_displacement_score": round(shock_displacement_score, 4),
+            "shock_structure_score": round(shock_structure_score, 4),
+            "shock_liquidity_score": round(shock_liquidity_score, 4),
+            "shock_timing_score": round(shock_timing_score, 4),
+            "headline_shock_score": round(headline_shock_score, 4),
+            "shock_fresh_event": shock_fresh_event,
+            "shock_supported": shock_supported,
+            "shock_fast_path_candidate": shock_fast_path_candidate,
+            "shock_fast_path_timing_intact": shock_fast_path_timing_intact,
+            "shock_fast_path_supported": shock_fast_path_supported,
+            "shock_confirmation_override": shock_confirmation_override,
             "has_directional_flow_support": has_directional_flow_support,
             "has_directional_flow_conflict": has_directional_flow_conflict,
             "continuation_reclaim_pressure": continuation_reclaim_pressure,
@@ -3424,6 +3701,8 @@ class SignalDecisionEngine:
         }
         data["late_entry_risk"] = {
             "score": round(risk_score, 4),
+            "playbook_name": playbook_name,
+            "entry_style": entry_style,
             "directional_extension": round(directional_extension, 4),
             "opposing_distance": round(opposing_distance, 6),
             "supportive_structure_distance": round(supportive_structure_distance, 6),
@@ -3459,6 +3738,10 @@ class SignalDecisionEngine:
             "entry_confirmation_bars_required": int(entry_confirmation_bars_required),
             "entry_confirmation_count": int(entry_confirmation_count),
             "entry_confirmation_ready": entry_confirmation_ready,
+            "fast_entry_confirmation_bars_required": int(fast_entry_confirmation_bars_required),
+            "fast_entry_confirmation_count": int(fast_entry_confirmation_count),
+            "fast_entry_confirmation_ready": fast_entry_confirmation_ready,
+            "external_confirmation_score": round(external_confirmation_score, 4),
             "regime_entry_policy": regime_entry_policy,
             "vwap_distance_atr": round(vwap_distance_atr, 4),
             "session_quality_label": session_quality_label,
@@ -3486,6 +3769,9 @@ class SignalDecisionEngine:
             "high_conviction_continuation_candidate": high_conviction_continuation_candidate,
             "high_conviction_continuation_timing_intact": high_conviction_continuation_timing_intact,
             "high_conviction_continuation_supported": high_conviction_continuation_supported,
+            "impulse_fast_path_candidate": impulse_fast_path_candidate,
+            "impulse_fast_path_timing_intact": impulse_fast_path_timing_intact,
+            "impulse_fast_path_supported": impulse_fast_path_supported,
             "crypto_breadth_conflict": crypto_breadth_conflict,
             "crypto_breadth_support": crypto_breadth_support,
             "crypto_derivative_conflict": crypto_derivative_conflict,

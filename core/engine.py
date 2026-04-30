@@ -3231,6 +3231,10 @@ class TradingCore:
             f"cross={self._fmt_metric(playbook_decision.get('cross_alignment'))} "
             f"micro={self._fmt_metric(playbook_decision.get('micro_score'))} "
             f"whale={self._fmt_metric(playbook_decision.get('whale_context_support'))} "
+            f"shock={self._fmt_metric(playbook_decision.get('shock_score'))} "
+            f"shock_evt={self._fmt_metric(playbook_decision.get('shock_event_score'))} "
+            f"shock_liq={self._fmt_metric(playbook_decision.get('shock_liquidity_score'))} "
+            f"shock_ok={int(bool(playbook_decision.get('shock_supported')))} "
             f"support={int(playbook_decision.get('support_components', 0) or 0)} "
             f"conflict={int(playbook_decision.get('conflict_components', 0) or 0)} "
             f"predictor={self._fmt_predictor_pair(context.get('predictor_prediction', context.get('ml_prediction')), context.get('predictor_confidence', context.get('ml_confidence')))} "
@@ -3307,6 +3311,16 @@ class TradingCore:
             "cross_confidence": round(float(decision_context.get("cross_confidence", 0.0) or 0.0), 4),
             "micro_score": round(float(decision_context.get("micro_score", decision_context.get("micro_context_support", 0.0)) or 0.0), 4),
             "whale_context_support": round(float(decision_context.get("whale_context_support", 0.0) or 0.0), 4),
+            "shock_score": round(float(decision_context.get("shock_score", 0.0) or 0.0), 4),
+            "shock_event_score": round(float(decision_context.get("shock_event_score", 0.0) or 0.0), 4),
+            "headline_shock_score": round(float(decision_context.get("headline_shock_score", 0.0) or 0.0), 4),
+            "shock_displacement_score": round(float(decision_context.get("shock_displacement_score", 0.0) or 0.0), 4),
+            "shock_structure_score": round(float(decision_context.get("shock_structure_score", 0.0) or 0.0), 4),
+            "shock_liquidity_score": round(float(decision_context.get("shock_liquidity_score", 0.0) or 0.0), 4),
+            "shock_timing_score": round(float(decision_context.get("shock_timing_score", 0.0) or 0.0), 4),
+            "shock_fresh_event": bool(decision_context.get("shock_fresh_event")),
+            "shock_supported": bool(decision_context.get("shock_supported")),
+            "shock_event_label": str(decision_context.get("shock_event_label") or ""),
             "support_components": int(decision_context.get("support_components", 0) or 0),
             "conflict_components": int(decision_context.get("conflict_components", 0) or 0),
             "entry_style": playbook_entry_style,
@@ -3435,6 +3449,16 @@ class TradingCore:
             "playbook_confidence": round(playbook_confidence, 4),
             "playbook_entry_style": playbook_entry_style,
             "playbook_timeframe": playbook_interval or str(context.get("timeframe") or ""),
+            "shock_score": round(float((context.get("playbook_decision") or {}).get("shock_score", 0.0) or 0.0), 4),
+            "shock_event_score": round(float((context.get("playbook_decision") or {}).get("shock_event_score", 0.0) or 0.0), 4),
+            "headline_shock_score": round(float((context.get("playbook_decision") or {}).get("headline_shock_score", 0.0) or 0.0), 4),
+            "shock_displacement_score": round(float((context.get("playbook_decision") or {}).get("shock_displacement_score", 0.0) or 0.0), 4),
+            "shock_structure_score": round(float((context.get("playbook_decision") or {}).get("shock_structure_score", 0.0) or 0.0), 4),
+            "shock_liquidity_score": round(float((context.get("playbook_decision") or {}).get("shock_liquidity_score", 0.0) or 0.0), 4),
+            "shock_timing_score": round(float((context.get("playbook_decision") or {}).get("shock_timing_score", 0.0) or 0.0), 4),
+            "shock_fresh_event": bool((context.get("playbook_decision") or {}).get("shock_fresh_event")),
+            "shock_supported": bool((context.get("playbook_decision") or {}).get("shock_supported")),
+            "shock_event_label": str((context.get("playbook_decision") or {}).get("shock_event_label") or ""),
             "sentiment_score": context.get("sentiment_score", 0.0),
             "regime": structure.get("regime", context.get("regime", "unknown")),
             "confidence": seed_confidence,
@@ -3467,6 +3491,7 @@ class TradingCore:
     def _extract_seed_entry_price(
         self,
         asset: str,
+        category: str,
         direction: str,
         playbook_name: str,
         playbook_entry_style: str,
@@ -3494,6 +3519,7 @@ class TradingCore:
         structure = structure if isinstance(structure, dict) else {}
         atr = self._estimate_atr(signal_frame)
         atr_unit = max(float(atr or 0.0), entry_price * 0.0015, 1e-9)
+        asset_category = str(category or "").strip().lower()
         entry_style_label = str(playbook_entry_style or "").strip().lower()
         playbook_label = str(playbook_name or "").strip().lower()
 
@@ -3575,7 +3601,12 @@ class TradingCore:
                 self._reject_seed_signal(asset, context, f"missing_{anchor_role}")
                 return None
             anchor_distance_atr = abs(entry_price - anchor_price) / atr_unit
-            anchor_tolerance_atr = 0.30 if anchor_role == "pullback_anchor" else 0.26
+            if anchor_role == "pullback_anchor":
+                # Forex pullbacks can stay structurally valid a little farther away
+                # from the anchor than the tighter cross-asset default.
+                anchor_tolerance_atr = 0.38 if asset_category == "forex" else 0.30
+            else:
+                anchor_tolerance_atr = 0.26
             inactivity_anchor_tolerance = anchor_tolerance_atr
             if inactivity_entry_relief and strong_seed_context:
                 inactivity_anchor_tolerance += 0.04 + inactivity_relief_strength * 0.10
@@ -3781,6 +3812,7 @@ class TradingCore:
 
         entry_plan = self._extract_seed_entry_price(
             asset,
+            category=category,
             direction=direction,
             playbook_name=playbook_name,
             playbook_entry_style=playbook_entry_style,
@@ -3919,6 +3951,16 @@ class TradingCore:
             "playbook_entry_style": playbook_entry_style,
             "playbook_session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
             "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            "shock_score": round(float((context.get("playbook_decision") or {}).get("shock_score", 0.0) or 0.0), 4),
+            "shock_event_score": round(float((context.get("playbook_decision") or {}).get("shock_event_score", 0.0) or 0.0), 4),
+            "headline_shock_score": round(float((context.get("playbook_decision") or {}).get("headline_shock_score", 0.0) or 0.0), 4),
+            "shock_displacement_score": round(float((context.get("playbook_decision") or {}).get("shock_displacement_score", 0.0) or 0.0), 4),
+            "shock_structure_score": round(float((context.get("playbook_decision") or {}).get("shock_structure_score", 0.0) or 0.0), 4),
+            "shock_liquidity_score": round(float((context.get("playbook_decision") or {}).get("shock_liquidity_score", 0.0) or 0.0), 4),
+            "shock_timing_score": round(float((context.get("playbook_decision") or {}).get("shock_timing_score", 0.0) or 0.0), 4),
+            "shock_fresh_event": bool((context.get("playbook_decision") or {}).get("shock_fresh_event")),
+            "shock_supported": bool((context.get("playbook_decision") or {}).get("shock_supported")),
+            "shock_event_label": str((context.get("playbook_decision") or {}).get("shock_event_label") or ""),
             "trade_management_plan": trade_management_plan,
             "entry_plan": dict(entry_plan),
         }

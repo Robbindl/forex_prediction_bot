@@ -125,6 +125,8 @@ GNEWS_KEY       = os.getenv("GNEWS_KEY", "")
 NEWS_SENTIMENT_ENABLED = os.getenv("NEWS_SENTIMENT_ENABLED", "true").lower() == "true"
 NEWS_RSS_ENABLED = os.getenv("NEWS_RSS_ENABLED", "false").lower() == "true"
 NEWS_REDDIT_ENABLED = os.getenv("NEWS_REDDIT_ENABLED", "false").lower() == "true"
+NEWS_EXECUTION_MAX_AGE_MINUTES = int(os.getenv("NEWS_EXECUTION_MAX_AGE_MINUTES", "30"))
+NEWS_EXECUTION_CACHE_SECONDS = int(os.getenv("NEWS_EXECUTION_CACHE_SECONDS", "180"))
 WHALE_ALERT_KEY = os.getenv("WHALE_ALERT_KEY", "")
 FRED_API_KEY    = os.getenv("FRED_API_KEY", "")
 TRADING_ECONOMICS_CREDENTIALS = (

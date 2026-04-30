@@ -150,6 +150,187 @@ def _context_directional_confluence(
     }
 
 
+def _shared_shock_profile(
+    *,
+    candidate: Dict[str, Any],
+    structure: Dict[str, Any],
+    context: Optional[Dict[str, Any]],
+    direction: str,
+    category: str,
+) -> Dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
+    direction_sign = _playbook_direction_sign(direction)
+    if direction_sign == 0:
+        return {
+            "score": 0.0,
+            "event_score": 0.0,
+            "displacement_score": 0.0,
+            "structure_score": 0.0,
+            "liquidity_score": 0.0,
+            "timing_score": 0.0,
+            "fresh_event": False,
+            "supported": False,
+            "timing_intact": False,
+            "liquidity_clean": False,
+            "event_label": "",
+        }
+
+    entry_style = str(candidate.get("entry_style") or "").strip().lower()
+    playbook = str(candidate.get("playbook") or "").strip().lower()
+    news = dict(ctx.get("news_event") or {})
+    sentiment_details = dict(ctx.get("sentiment_details") or {})
+    if not sentiment_details and isinstance(ctx.get("market_intelligence"), dict):
+        sentiment_details = dict((ctx.get("market_intelligence") or {}).get("sentiment_details") or {})
+    headline_shock = dict(sentiment_details.get("headline_shock") or {})
+    micro = dict(ctx.get("market_microstructure") or {})
+    broker = dict(ctx.get("broker_quality") or {})
+
+    news_state = str(news.get("state") or "").strip().lower()
+    news_impact = str(news.get("impact") or "").strip().upper()
+    news_direction = str(news.get("direction") or "").strip().upper()
+    mins_to_event = abs(_safe_float(news.get("mins_to"), 999.0))
+    impact_weight = {"HIGH": 1.0, "MEDIUM": 0.72, "LOW": 0.40}.get(news_impact, 0.0)
+    state_weight = (
+        1.0
+        if news_state == "active"
+        else 0.82
+        if news_state == "post"
+        else 0.30
+        if news_state == "pre" and mins_to_event <= 5.0
+        else 0.0
+    )
+    direction_weight = 1.0 if news_direction in {"", direction} else 0.15
+    fresh_event_score = _clip(impact_weight * state_weight * direction_weight)
+    macro_impact = str(ctx.get("macro_impact") or "").strip().upper()
+    macro_score = {"HIGH": 0.60, "MEDIUM": 0.34}.get(macro_impact, 0.0)
+    headline_shock_score = _clip(_safe_float(headline_shock.get("score"), 0.0), 0.0, 1.0)
+    event_score = _clip(max(fresh_event_score, macro_score, headline_shock_score * 0.92))
+
+    alignment_score = _clip(_safe_float(structure.get("alignment_score"), 0.0))
+    setup_quality = _clip(_safe_float(structure.get("setup_quality"), 0.0))
+    breakout_score = _safe_float(structure.get("breakout_score"), 0.0) * direction_sign
+    pullback_score = _safe_float(structure.get("pullback_score"), 0.0) * direction_sign
+    candle_quality_score = _clip(_safe_float(structure.get("candle_quality_score"), 0.0))
+    session_quality_score = _clip(_safe_float(structure.get("session_quality_score"), 0.0))
+    extension_score = max(0.0, _safe_float(structure.get("extension_score"), 0.0))
+    target_efficiency_score = _clip(_safe_float(structure.get("target_efficiency_score"), 0.0))
+    impulse_age_bars = int(structure.get("impulse_age_bars", 0) or 0)
+
+    break_style = bool(
+        entry_style in {
+            "expansion_break",
+            "opening_drive_break",
+            "news_followthrough",
+            "intermarket_break",
+            "intermarket_confirmed_break",
+            "breakout_close",
+        }
+        or (
+            "break" in entry_style
+            and "pullback" not in entry_style
+            and "retest" not in entry_style
+        )
+        or playbook in {"aggressive_expansion", "opening_drive", "news_impulse"}
+    )
+    breakout_component = _clip(max(0.0, breakout_score) * 1.45)
+    pullback_component = _clip(max(0.0, pullback_score) * 1.10)
+
+    velocity_support = _clip((_safe_float(micro.get("velocity_bps"), 0.0) * direction_sign) / 0.45)
+    trade_flow_support = _clip(_safe_float(micro.get("trade_flow_score", micro.get("score", 0.0)), 0.0) * direction_sign)
+    book_support = _clip(_safe_float(micro.get("book_imbalance"), 0.0) * direction_sign)
+    tick_support = _clip(_safe_float(micro.get("tick_imbalance"), 0.0) * direction_sign)
+    micro_support = _clip(max(trade_flow_support, book_support * 0.85, tick_support * 0.75, velocity_support * 0.85))
+
+    displacement_score = _clip(
+        breakout_component * 0.46
+        + pullback_component * 0.16
+        + velocity_support * 0.20
+        + candle_quality_score * 0.12
+        + micro_support * 0.06
+        + (0.04 if break_style else 0.0)
+    )
+    structure_score = _clip(
+        breakout_component * 0.30
+        + pullback_component * 0.12
+        + alignment_score * 0.22
+        + setup_quality * 0.20
+        + target_efficiency_score * 0.10
+        + session_quality_score * 0.06
+        + (0.05 if break_style else 0.0)
+    )
+
+    age_score = 1.0 if impulse_age_bars <= 2 else 0.82 if impulse_age_bars <= 4 else 0.56 if impulse_age_bars <= 6 else 0.24
+    extension_tolerance = 1.0 if extension_score <= 0.90 else 0.84 if extension_score <= 1.12 else 0.60 if extension_score <= 1.35 else 0.20
+    timing_score = _clip(age_score * 0.55 + extension_tolerance * 0.45)
+
+    spread_regime = str(
+        broker.get("spread_regime")
+        or micro.get("spread_regime")
+        or micro.get("broker_spread_regime")
+        or ""
+    ).strip().lower()
+    quote_quality_state = str(
+        broker.get("quote_quality_state")
+        or broker.get("agreement_state")
+        or micro.get("quote_quality_state")
+        or ""
+    ).strip().lower()
+    spread_bps = _safe_float(broker.get("spread_bps", micro.get("spread_bps", 0.0)), 0.0)
+    spread_limit = 40.0 if category == "indices" else 24.0 if category == "commodities" else 18.0 if category == "forex" else 22.0
+    spread_score = (
+        0.18
+        if spread_regime in {"wide", "stressed", "extreme"}
+        else 0.56
+        if spread_bps > spread_limit
+        else 0.74
+        if spread_bps > spread_limit * 0.75
+        else 1.0
+    )
+    quote_score = 0.14 if quote_quality_state in {"stale", "delayed", "divergent", "severe_divergence"} else 1.0
+    depth_available = bool(micro.get("depth_available"))
+    synthetic_depth = bool(micro.get("synthetic_depth_available"))
+    depth_score = 0.12 if depth_available else 0.06 if synthetic_depth else 0.0
+    liquidity_score = _clip(
+        micro_support * 0.48
+        + spread_score * 0.26
+        + quote_score * 0.18
+        + depth_score
+    )
+
+    shock_score = _clip(
+        event_score * 0.12
+        + displacement_score * 0.30
+        + structure_score * 0.26
+        + liquidity_score * 0.18
+        + timing_score * 0.14
+    )
+    fresh_event = fresh_event_score >= 0.45 or headline_shock_score >= 0.55
+    timing_intact = timing_score >= 0.50
+    liquidity_clean = liquidity_score >= 0.46 and spread_regime not in {"wide", "stressed", "extreme"} and quote_score >= 0.40
+    supported = bool(
+        shock_score >= 0.60
+        and displacement_score >= 0.58
+        and structure_score >= 0.54
+        and timing_intact
+        and (liquidity_clean or fresh_event or micro_support >= 0.24)
+    )
+
+    return {
+        "score": round(shock_score, 4),
+        "event_score": round(event_score, 4),
+        "headline_shock_score": round(headline_shock_score, 4),
+        "displacement_score": round(displacement_score, 4),
+        "structure_score": round(structure_score, 4),
+        "liquidity_score": round(liquidity_score, 4),
+        "timing_score": round(timing_score, 4),
+        "fresh_event": bool(fresh_event),
+        "supported": bool(supported),
+        "timing_intact": bool(timing_intact),
+        "liquidity_clean": bool(liquidity_clean),
+        "event_label": f"{news_state}:{news_impact}" if news_state else "",
+    }
+
+
 def _pattern_family_direction(pattern_family: Any) -> str:
     token = str(pattern_family or "").strip().lower()
     if token.startswith("trending_up_"):
@@ -577,14 +758,38 @@ def _qualify_impulse_candidate(
     external_confirmation_score: float = 0.0,
     inactivity_relief_strength: float = 0.0,
     inactivity_flat_book: bool = False,
+    shock_score: float = 0.0,
+    shock_event_score: float = 0.0,
+    shock_displacement_score: float = 0.0,
+    shock_structure_score: float = 0.0,
+    shock_liquidity_score: float = 0.0,
+    shock_timing_score: float = 0.0,
+    shock_fresh_event: bool = False,
+    shock_supported: bool = False,
 ) -> tuple[bool, str, bool, bool]:
     candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
     entry_style_label = str(entry_style or "").strip().lower()
     cross_strength = abs(_safe_float(candidate.get("cross_alignment", 0.0), 0.0))
     micro_strength = abs(_safe_float(candidate.get("micro_score", 0.0), 0.0))
+    impulse_break_style = bool(
+        entry_style_label in {
+            "expansion_break",
+            "opening_drive_break",
+            "news_followthrough",
+            "intermarket_break",
+            "intermarket_confirmed_break",
+            "breakout_close",
+        }
+        or (
+            entry_style_label.endswith("_break")
+            and "pullback" not in entry_style_label
+            and "retest" not in entry_style_label
+        )
+    )
     impulse_floor = {
         "aggressive_expansion": max(profile.expansion_min_score, 0.68),
         "breakout_continuation": max(profile.breakout_min_score, 0.66),
+        "opening_drive": max(profile.breakout_min_score, 0.60),
         "news_impulse": max(profile.breakout_min_score, 0.62),
         "intermarket_continuation": max(profile.breakout_min_score, 0.60),
     }.get(playbook, 0.68)
@@ -602,6 +807,14 @@ def _qualify_impulse_candidate(
         early_relief_candidate_floor = max(0.30, float(profile.breakout_min_score) - 0.28)
     elif entry_style_label == "elite_trend_continuation":
         early_relief_candidate_floor = max(0.38, float(profile.breakout_min_score) - 0.18)
+    elif entry_style_label == "opening_drive_break":
+        early_relief_candidate_floor = max(0.40, float(profile.breakout_min_score) - 0.18)
+    elif entry_style_label == "expansion_break":
+        early_relief_candidate_floor = max(0.42, float(profile.breakout_min_score) - 0.16)
+    elif entry_style_label == "news_followthrough":
+        early_relief_candidate_floor = max(0.42, float(profile.breakout_min_score) - 0.16)
+    elif entry_style_label.startswith("intermarket_") and "pullback" not in entry_style_label and "retest" not in entry_style_label:
+        early_relief_candidate_floor = max(0.40, float(profile.breakout_min_score) - 0.18)
     elif family.endswith("liquidity_sweep"):
         early_relief_candidate_floor = max(0.44, float(profile.breakout_min_score) - 0.18)
     elif family.endswith("first_pullback") or family.endswith("breakout_retest"):
@@ -642,8 +855,36 @@ def _qualify_impulse_candidate(
             or fast_supportive_context
         )
     )
+    fast_impulse_context = bool(
+        playbook in {"breakout_continuation", "intermarket_continuation", "aggressive_expansion", "opening_drive", "news_impulse"}
+        and impulse_break_style
+        and fast_interval
+        and bias_alignment
+        and candidate_score >= early_relief_candidate_floor
+        and alignment_score >= max(0.50, float(plan.min_alignment_score) - 0.10)
+        and setup_quality >= max(0.48, float(plan.min_setup_quality) - 0.08)
+        and fast_supportive_context
+    )
+    fast_shock_context = bool(
+        playbook in {"breakout_continuation", "intermarket_continuation", "aggressive_expansion", "opening_drive", "news_impulse"}
+        and impulse_break_style
+        and bias_alignment
+        and shock_supported
+        and shock_score >= 0.60
+        and shock_displacement_score >= 0.58
+        and shock_structure_score >= 0.54
+        and shock_timing_score >= 0.50
+        and candidate_score >= max(0.40, early_relief_candidate_floor - 0.10)
+        and alignment_score >= max(0.48, float(plan.min_alignment_score) - 0.12)
+        and setup_quality >= max(0.46, float(plan.min_setup_quality) - 0.10)
+        and (
+            shock_liquidity_score >= 0.42
+            or shock_fresh_event
+            or fast_supportive_context
+        )
+    )
     allow_early_trend_relief = bool(
-        playbook in {"breakout_continuation", "intermarket_continuation", "aggressive_expansion", "news_impulse"}
+        playbook in {"breakout_continuation", "intermarket_continuation", "aggressive_expansion", "opening_drive", "news_impulse"}
         and fast_interval
         and bias_alignment
         and candidate_score >= early_relief_candidate_floor
@@ -657,6 +898,12 @@ def _qualify_impulse_candidate(
             or fast_supportive_context
         )
     )
+    if fast_impulse_context:
+        strong_impulse_break = True
+        allow_early_trend_relief = True
+    if fast_shock_context:
+        strong_impulse_break = True
+        allow_early_trend_relief = True
     if inactivity_fast_track_context:
         allow_early_trend_relief = True
     context_pressure_ready = bool(
@@ -1644,6 +1891,23 @@ class PlaybookService:
             or (direction == "SELL" and liquidity_sweep_sell)
         )
         context_confluence = _context_directional_confluence(context, direction)
+        shock_profile = _shared_shock_profile(
+            candidate=candidate,
+            structure=structure,
+            context=context,
+            direction=direction,
+            category=category,
+        )
+        candidate["shock_score"] = float(shock_profile.get("score", 0.0) or 0.0)
+        candidate["shock_event_score"] = float(shock_profile.get("event_score", 0.0) or 0.0)
+        candidate["headline_shock_score"] = float(shock_profile.get("headline_shock_score", 0.0) or 0.0)
+        candidate["shock_displacement_score"] = float(shock_profile.get("displacement_score", 0.0) or 0.0)
+        candidate["shock_structure_score"] = float(shock_profile.get("structure_score", 0.0) or 0.0)
+        candidate["shock_liquidity_score"] = float(shock_profile.get("liquidity_score", 0.0) or 0.0)
+        candidate["shock_timing_score"] = float(shock_profile.get("timing_score", 0.0) or 0.0)
+        candidate["shock_fresh_event"] = bool(shock_profile.get("fresh_event"))
+        candidate["shock_supported"] = bool(shock_profile.get("supported"))
+        candidate["shock_event_label"] = str(shock_profile.get("event_label") or "")
         qualification: Dict[str, Any] = {
             "playbook": playbook,
             "direction": direction,
@@ -1676,6 +1940,16 @@ class PlaybookService:
             "whale_context_support": round(_safe_float(context_confluence.get("whale_support"), 0.0), 4),
             "support_components": int(context_confluence.get("support_components", 0) or 0),
             "conflict_components": int(context_confluence.get("conflict_components", 0) or 0),
+            "shock_score": round(float(shock_profile.get("score", 0.0) or 0.0), 4),
+            "shock_event_score": round(float(shock_profile.get("event_score", 0.0) or 0.0), 4),
+            "headline_shock_score": round(float(shock_profile.get("headline_shock_score", 0.0) or 0.0), 4),
+            "shock_displacement_score": round(float(shock_profile.get("displacement_score", 0.0) or 0.0), 4),
+            "shock_structure_score": round(float(shock_profile.get("structure_score", 0.0) or 0.0), 4),
+            "shock_liquidity_score": round(float(shock_profile.get("liquidity_score", 0.0) or 0.0), 4),
+            "shock_timing_score": round(float(shock_profile.get("timing_score", 0.0) or 0.0), 4),
+            "shock_fresh_event": bool(shock_profile.get("fresh_event")),
+            "shock_supported": bool(shock_profile.get("supported")),
+            "shock_event_label": str(shock_profile.get("event_label") or ""),
         }
 
         if playbook == "crypto_orderflow_continuation":
@@ -1697,7 +1971,7 @@ class PlaybookService:
                 qualification["reason"] = reason
                 candidate["qualification"] = qualification
                 return False, reason
-        elif playbook in {"aggressive_expansion", "breakout_continuation", "news_impulse", "intermarket_continuation"}:
+        elif playbook in {"aggressive_expansion", "breakout_continuation", "news_impulse", "intermarket_continuation", "opening_drive"}:
             ok, reason, strong_impulse_break, allow_early_trend_relief = _qualify_impulse_candidate(
                 candidate=candidate,
                 profile=self._profile(category),
@@ -1723,6 +1997,14 @@ class PlaybookService:
                 external_confirmation_score=external_confirmation_score,
                 inactivity_relief_strength=inactivity_relief_strength,
                 inactivity_flat_book=inactivity_flat_book,
+                shock_score=float(shock_profile.get("score", 0.0) or 0.0),
+                shock_event_score=float(shock_profile.get("event_score", 0.0) or 0.0),
+                shock_displacement_score=float(shock_profile.get("displacement_score", 0.0) or 0.0),
+                shock_structure_score=float(shock_profile.get("structure_score", 0.0) or 0.0),
+                shock_liquidity_score=float(shock_profile.get("liquidity_score", 0.0) or 0.0),
+                shock_timing_score=float(shock_profile.get("timing_score", 0.0) or 0.0),
+                shock_fresh_event=bool(shock_profile.get("fresh_event")),
+                shock_supported=bool(shock_profile.get("supported")),
             )
             qualification["strong_impulse_break"] = bool(strong_impulse_break)
             qualification["allow_early_trend_relief"] = bool(allow_early_trend_relief)

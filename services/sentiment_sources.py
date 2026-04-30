@@ -28,12 +28,15 @@ try:
         NEWSAPI_KEY, GNEWS_KEY,
         ALPHA_VANTAGE_API_KEY, FINNHUB_API_KEY,
         NEWS_RSS_ENABLED, NEWS_REDDIT_ENABLED,
+        NEWS_EXECUTION_MAX_AGE_MINUTES, NEWS_EXECUTION_CACHE_SECONDS,
         SENTIMENT_MAX_AGE_HOURS,
     )
 except ImportError:
     NEWSAPI_KEY = GNEWS_KEY = ALPHA_VANTAGE_API_KEY = FINNHUB_API_KEY = ""
     NEWS_RSS_ENABLED = False
     NEWS_REDDIT_ENABLED = False
+    NEWS_EXECUTION_MAX_AGE_MINUTES = 30
+    NEWS_EXECUTION_CACHE_SECONDS = 180
 
 # ── QUOTA MANAGEMENT ──────────────────────────────────────────────────────────
 # Track daily API usage to avoid hitting quotas. Reset at midnight UTC.
@@ -367,15 +370,17 @@ class _NewsSentiment:
     Financial context scoring: adjusts for commodity/equity polarity mismatch.
     Uses simple but effective financial keyword boosters.
     
-    Caching: 1 hour (reduced API calls per signal — sentiment changes slowly).
+    Caching: short-lived for execution, broader for dashboard display.
     Quota management: Each news API respects daily limits with fallback logic.
     """
 
     _cache: Dict[str, Tuple[Any, float]] = {}
+    _headline_shock_cache: Dict[str, Tuple[Any, float]] = {}
     _lock  = threading.Lock()
-    _TTL   = 3600  # 1 hour — news sentiment changes slowly, reduce API calls
+    _TTL   = max(60, min(900, int(NEWS_EXECUTION_CACHE_SECONDS or 180)))
     _DASHBOARD_TTL = 300  # 5 min — keep dashboard news responsive between refreshes
-    _MAX_AGE_HOURS = max(1, min(12, SENTIMENT_MAX_AGE_HOURS))  # Use 6-12h as safe range in config
+    _EXECUTION_MAX_AGE_MINUTES = max(5, min(60, int(NEWS_EXECUTION_MAX_AGE_MINUTES or 30)))
+    _DASHBOARD_MAX_AGE_HOURS = max(1, min(12, SENTIMENT_MAX_AGE_HOURS))
 
     # Words that score BEARISH in financial headlines
     _BEARISH_WORDS = {
@@ -481,6 +486,25 @@ class _NewsSentiment:
     # Shared macro event cache — populated by any asset lookup, read by all
     _macro_event_cache: Dict[str, Tuple[float, float]] = {}  # category → (score, expiry)
     _macro_lock = threading.Lock()
+    _HEADLINE_RISK_OFF = {
+        "war", "attack", "missile", "strike", "drone", "invasion", "conflict",
+        "sanctions", "tariff", "tariffs", "emergency", "default", "collapse",
+        "downgrade", "liquidation", "crisis", "panic", "shutdown", "coup",
+        "escalation", "intervention", "earthquake", "blast",
+    }
+    _HEADLINE_RISK_ON = {
+        "ceasefire", "truce", "peace", "deal", "agreement", "de-escalation",
+        "resolution", "rescue", "bailout", "stimulus", "support package",
+    }
+    _HEADLINE_POLICY = {
+        "fomc", "fed", "powell", "ecb", "boe", "boj", "rate decision",
+        "interest rate", "surprise cut", "surprise hike", "emergency meeting",
+        "policy pivot", "verbal intervention", "currency intervention",
+    }
+    _GLOBAL_SHOCK_QUERIES = (
+        "war OR attack OR missile OR invasion OR sanctions OR tariff OR intervention OR emergency OR ceasefire",
+        "fomc OR fed OR ecb OR boe OR boj OR emergency meeting OR surprise rate OR verbal intervention",
+    )
 
     @classmethod
     def get(cls, asset: str) -> Optional[float]:
@@ -505,6 +529,20 @@ class _NewsSentiment:
             if entry and time.time() < entry[1]:
                 return round(float(entry[0]), 3)
         return None
+
+    @classmethod
+    def headline_shock(cls, asset: str) -> Optional[Dict[str, Any]]:
+        cache_key = str(asset or "").upper()
+        with cls._lock:
+            hit = cls._headline_shock_cache.get(cache_key)
+            if hit and time.time() < hit[1]:
+                return dict(hit[0]) if isinstance(hit[0], dict) else None
+
+        result = cls._compute_headline_shock(asset)
+        if result is not None:
+            with cls._lock:
+                cls._headline_shock_cache[cache_key] = (dict(result), time.time() + cls._TTL)
+        return result
 
     @classmethod
     def _compute(cls, asset: str) -> Optional[float]:
@@ -552,6 +590,58 @@ class _NewsSentiment:
         total_w  = sum(all_weights)
         base     = sum(s * w for s, w in zip(all_scores, all_weights)) / total_w
         return round(_clamp(base), 3)
+
+    @classmethod
+    def _compute_headline_shock(cls, asset: str) -> Optional[Dict[str, Any]]:
+        cat = _cat(asset)
+        asset_articles = cls._fetch_articles(asset)
+        global_articles = cls._fetch_global_shock_articles()
+        if not asset_articles and not global_articles:
+            return None
+
+        seen: set[str] = set()
+        ranked: List[Dict[str, Any]] = []
+        for source, article in [("asset", a) for a in asset_articles] + [("global", a) for a in global_articles]:
+            text = str(article or "").strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            signal = cls._classify_headline_shock(text, asset, cat)
+            if signal is None:
+                continue
+            signal["source_type"] = source
+            ranked.append(signal)
+
+        if not ranked:
+            return None
+
+        ranked.sort(key=lambda item: float(item.get("strength", 0.0) or 0.0), reverse=True)
+        top = ranked[:4]
+        risk_off = sum(float(item.get("risk_off", 0.0) or 0.0) for item in top)
+        risk_on = sum(float(item.get("risk_on", 0.0) or 0.0) for item in top)
+        policy = sum(float(item.get("policy", 0.0) or 0.0) for item in top)
+        intervention = sum(float(item.get("intervention", 0.0) or 0.0) for item in top)
+        strength = _clamp(max(risk_off, risk_on, policy, intervention))
+
+        label = "geopolitical_risk_off"
+        if intervention >= max(risk_off, risk_on, policy):
+            label = "intervention_or_fx_shock"
+        elif policy >= max(risk_off, risk_on):
+            label = "policy_shock"
+        elif risk_on > risk_off:
+            label = "geopolitical_relief"
+
+        return {
+            "score": round(strength, 3),
+            "label": label,
+            "article_count": len(top),
+            "fresh": True,
+            "headlines": [str(item.get("headline") or "")[:160] for item in top],
+            "sources": sorted({str(item.get("source_type") or "") for item in top if item.get("source_type")}),
+        }
 
     @classmethod
     def _fetch_reddit_scored(cls, asset: str) -> List[Tuple[float, float]]:
@@ -623,13 +713,124 @@ class _NewsSentiment:
         return results
 
     @classmethod
-    def _is_recent_time(cls, dt: Optional[datetime]) -> bool:
+    def _fetch_global_shock_articles(cls) -> List[str]:
+        cache_key = "__global_headline_shock_articles__"
+        with cls._lock:
+            hit = cls._cache.get(cache_key)
+            if hit and time.time() < hit[1]:
+                payload = hit[0]
+                return list(payload) if isinstance(payload, list) else []
+
+        articles: List[str] = []
+        try:
+            if NEWSAPI_KEY and _QuotaManager.can_call("newsapi"):
+                for query in cls._GLOBAL_SHOCK_QUERIES:
+                    try:
+                        r = requests.get(
+                            "https://newsapi.org/v2/everything",
+                            params={
+                                "q": query,
+                                "language": "en",
+                                "pageSize": 8,
+                                "sortBy": "publishedAt",
+                                "apiKey": NEWSAPI_KEY,
+                            },
+                            timeout=10,
+                        )
+                        if r.status_code == 200:
+                            _QuotaManager.record_call("newsapi")
+                            for a in r.json().get("articles", []):
+                                published = cls._parse_datetime(a.get("publishedAt"))
+                                if not cls._is_recent_time(published, execution=True):
+                                    continue
+                                articles.append(a.get("title", "") + " " + (a.get("description") or ""))
+                    except Exception:
+                        continue
+            if GNEWS_KEY and _QuotaManager.can_call("gnews"):
+                for query in cls._GLOBAL_SHOCK_QUERIES:
+                    try:
+                        r = requests.get(
+                            "https://gnews.io/api/v4/search",
+                            params={"q": query, "lang": "en", "max": 8, "token": GNEWS_KEY},
+                            timeout=10,
+                        )
+                        if r.status_code == 200:
+                            _QuotaManager.record_call("gnews")
+                            for a in r.json().get("articles", []):
+                                published = cls._parse_datetime(a.get("publishedAt"))
+                                if not cls._is_recent_time(published, execution=True):
+                                    continue
+                                articles.append(a.get("title", "") + " " + (a.get("description") or ""))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for item in articles:
+            key = str(item or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(str(item))
+        with cls._lock:
+            cls._cache[cache_key] = (list(deduped), time.time() + cls._TTL)
+        return deduped
+
+    @classmethod
+    def _classify_headline_shock(
+        cls,
+        text: str,
+        asset: str,
+        category: str,
+    ) -> Optional[Dict[str, Any]]:
+        lowered = str(text or "").lower()
+        if not lowered:
+            return None
+
+        risk_off_hits = sum(1 for kw in cls._HEADLINE_RISK_OFF if kw in lowered)
+        risk_on_hits = sum(1 for kw in cls._HEADLINE_RISK_ON if kw in lowered)
+        policy_hits = sum(1 for kw in cls._HEADLINE_POLICY if kw in lowered)
+        intervention_hits = sum(
+            1 for kw in {"intervention", "yen", "boj", "ministry of finance", "currency support"} if kw in lowered
+        )
+
+        total_hits = risk_off_hits + risk_on_hits + policy_hits + intervention_hits
+        if total_hits <= 0:
+            return None
+
+        asset_upper = str(asset or "").upper()
+        relevance = 1.0 if any(token in lowered for token in _ASSET_KEYWORDS.get(_canon_asset(asset), [])) else 0.72
+        if category == "forex" and any(code in asset_upper for code in ("JPY", "USD", "EUR", "GBP", "AUD", "CAD", "CHF")):
+            relevance += 0.06
+        if category == "commodities" and any(token in lowered for token in {"gold", "silver", "oil", "crude"}):
+            relevance += 0.08
+
+        base_strength = _clip(total_hits / 3.0)
+        strength = _clip(base_strength * min(1.0, relevance))
+
+        return {
+            "headline": text.strip(),
+            "strength": round(strength, 4),
+            "risk_off": round(_clip(risk_off_hits / 2.0) * strength, 4),
+            "risk_on": round(_clip(risk_on_hits / 2.0) * strength, 4),
+            "policy": round(_clip(policy_hits / 2.0) * strength, 4),
+            "intervention": round(_clip(intervention_hits / 2.0) * strength, 4),
+        }
+
+    @classmethod
+    def _is_recent_time(cls, dt: Optional[datetime], *, execution: bool) -> bool:
         if not dt:
             return False
         if dt.tzinfo is not None:
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-        age_hours = (datetime.utcnow() - dt).total_seconds() / 3600.0
-        return 0 <= age_hours <= cls._MAX_AGE_HOURS
+        age_seconds = (datetime.utcnow() - dt).total_seconds()
+        if age_seconds < 0:
+            return False
+        if execution:
+            return age_seconds <= cls._EXECUTION_MAX_AGE_MINUTES * 60
+        return age_seconds <= cls._DASHBOARD_MAX_AGE_HOURS * 3600.0
 
     @classmethod
     def _parse_datetime(cls, value: Any) -> Optional[datetime]:
@@ -722,7 +923,7 @@ class _NewsSentiment:
                     _QuotaManager.record_call("newsapi")
                     for a in r.json().get("articles", []):
                         published = cls._parse_datetime(a.get("publishedAt"))
-                        if not cls._is_recent_time(published):
+                        if not cls._is_recent_time(published, execution=True):
                             continue
                         articles.append(a.get("title", "") + " " + (a.get("description") or ""))
                 elif r.status_code == 429 or "quota" in r.text.lower():
@@ -749,7 +950,7 @@ class _NewsSentiment:
                     _QuotaManager.record_call("gnews")
                     for a in r.json().get("articles", []):
                         published = cls._parse_datetime(a.get("publishedAt"))
-                        if not cls._is_recent_time(published):
+                        if not cls._is_recent_time(published, execution=True):
                             continue
                         articles.append(a.get("title", "") + " " + (a.get("description") or ""))
                 elif r.status_code == 429 or "quota" in r.text.lower():
@@ -781,7 +982,7 @@ class _NewsSentiment:
                         _QuotaManager.record_call("av")
                         for a in r.json().get("feed", []):
                             published = cls._parse_datetime(a.get("time") or a.get("publishedAt"))
-                            if not cls._is_recent_time(published):
+                            if not cls._is_recent_time(published, execution=True):
                                 continue
                             articles.append(a.get("title", "") + " " + a.get("summary", ""))
                     elif r.status_code == 429 or "quota" in r.text.lower() or "limit" in r.text.lower():
@@ -806,7 +1007,7 @@ class _NewsSentiment:
                 kws = _ASSET_KEYWORDS.get(canonical_asset, [])
                 for n in news[:20]:
                     published = cls._parse_datetime(n.get("datetime") or n.get("publishedAt") or n.get("datetimeUTC"))
-                    if not cls._is_recent_time(published):
+                    if not cls._is_recent_time(published, execution=True):
                         continue
                     text = (n.get("headline", "") + " " + n.get("summary", "")).lower()
                     if any(kw in text for kw in kws):
@@ -950,6 +1151,9 @@ class _NewsSentiment:
                     title = (a.get("title") or "").strip()
                     if not title or "[Removed]" in title:
                         continue
+                    published = cls._parse_datetime(a.get("publishedAt"))
+                    if not cls._is_recent_time(published, execution=False):
+                        continue
                     text = title + " " + (a.get("description") or "")
                     score = cls._score_headline(text, "US500") or 0.0
                     articles_out.append(
@@ -983,6 +1187,9 @@ class _NewsSentiment:
                 for a in r.json().get("articles", []):
                     title = (a.get("title") or "").strip()
                     if not title:
+                        continue
+                    published = cls._parse_datetime(a.get("publishedAt"))
+                    if not cls._is_recent_time(published, execution=False):
                         continue
                     text = title + " " + (a.get("description") or "")
                     score = cls._score_headline(text, "US500") or 0.0
@@ -1041,6 +1248,9 @@ class _NewsSentiment:
                     title = (entry.get("title") or "").strip()
                     if not title or title in seen:
                         continue
+                    published = cls._parse_datetime(entry.get("published"))
+                    if not cls._is_recent_time(published, execution=False):
+                        continue
                     seen.add(title)
                     text = title + " " + (entry.get("summary") or "")
                     score = cls._score_headline(text, "US500") or 0.0
@@ -1078,6 +1288,9 @@ class _NewsSentiment:
                     d = p.get("data", {})
                     title = (d.get("title") or "").strip()
                     if not title:
+                        continue
+                    published = cls._parse_datetime(d.get("created_utc"))
+                    if not cls._is_recent_time(published, execution=False):
                         continue
                     score = cls._score_headline(title, "US500") or 0.0
                     import datetime as _dt
