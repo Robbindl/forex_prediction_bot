@@ -57,6 +57,18 @@ _PAPER_CATEGORY_BASE_MIN_RR = {
     "indices": 1.15,
 }
 
+_SESSION_EDGE_MIN_SAMPLES = 4
+_SESSION_EDGE_POSITIVE_MIN_SAMPLES = 6
+_SESSION_EDGE_HARD_BLOCK_MIN_SAMPLES = 7
+_SESSION_EDGE_CATEGORY_MULTIPLIER = {
+    "crypto": 0.65,
+    "commodities": 1.00,
+    "forex": 0.90,
+    "indices": 1.10,
+}
+_PLAYBOOK_SESSION_PROTECTION_MIN_SAMPLES = 4
+_PLAYBOOK_SESSION_PROTECTION_HARD_BLOCK_MIN_SAMPLES = 6
+
 
 def _runtime_live() -> bool:
     return os.getenv("BOT_LIVE_RUNTIME", "0") == "1"
@@ -89,6 +101,10 @@ def _category_min_rr_floor(category: str, base_rr: float) -> float:
     if category_key == "crypto":
         return 1.10
     return max(0.90, base_rr - 0.20)
+
+
+def _session_edge_multiplier(category: str) -> float:
+    return float(_SESSION_EDGE_CATEGORY_MULTIPLIER.get(str(category or "").lower(), 1.0))
 
 
 def _apply_structure_thresholds(
@@ -259,6 +275,347 @@ def _apply_recent_review_thresholds(
         thresholds["recent_review_profile"] = recent_review_profile
     except Exception:
         thresholds["recent_review_profile"] = {}
+
+
+def _apply_session_performance_thresholds(
+    thresholds: Dict[str, Any],
+    *,
+    category_key: str,
+    signal: Any | None,
+) -> None:
+    profile: Dict[str, Any] = {
+        "session": "",
+        "sample_count": 0,
+        "profit_factor": 0.0,
+        "avg_rr_realized": 0.0,
+        "avg_quality_score": 50.0,
+        "avg_pnl": 0.0,
+        "pnl_total": 0.0,
+        "win_rate": 0.0,
+        "premature_stop_rate": 0.0,
+        "late_entry_rate": 0.0,
+        "action": "neutral",
+    }
+    thresholds["session_performance_profile"] = profile
+    if signal is None:
+        return
+
+    metadata = dict(getattr(signal, "metadata", {}) or {})
+    session_label = str(
+        metadata.get("session_label")
+        or metadata.get("playbook_session")
+        or metadata.get("session")
+        or ""
+    ).strip().lower()
+    if not session_label:
+        return
+
+    try:
+        from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+        summary = get_execution_feedback_service().summarize_context(
+            category=category_key,
+            session=session_label,
+            days_back=14,
+            limit=260,
+        )
+    except Exception:
+        thresholds["session_performance_profile"] = {
+            **profile,
+            "session": session_label,
+        }
+        return
+
+    sample_count = _safe_int(summary.get("sample_count"), 0)
+    win_rate = _safe_float(summary.get("win_rate"), 0.0)
+    avg_rr_realized = _safe_float(summary.get("avg_rr_realized"), 0.0)
+    pnl_total = _safe_float(summary.get("pnl_total"), 0.0)
+    avg_quality_score = _safe_float(summary.get("avg_quality_score"), 50.0)
+    avg_pnl = _safe_float(summary.get("avg_pnl"), 0.0)
+    premature_stop_rate = _safe_float(summary.get("premature_stop_rate"), 0.0)
+    late_entry_rate = _safe_float(summary.get("late_entry_rate"), 0.0)
+    profit_factor = _safe_float(summary.get("profit_factor"), 0.0)
+    multiplier = _session_edge_multiplier(category_key)
+
+    profile = {
+        "session": session_label,
+        "sample_count": sample_count,
+        "profit_factor": round(profit_factor, 3),
+        "avg_rr_realized": round(avg_rr_realized, 4),
+        "avg_quality_score": round(avg_quality_score, 1),
+        "avg_pnl": round(avg_pnl, 2),
+        "pnl_total": round(pnl_total, 2),
+        "win_rate": round(win_rate, 4),
+        "premature_stop_rate": round(premature_stop_rate, 4),
+        "late_entry_rate": round(late_entry_rate, 4),
+        "action": "neutral",
+    }
+    thresholds["session_performance_profile"] = profile
+
+    if sample_count < _SESSION_EDGE_MIN_SAMPLES:
+        return
+
+    if avg_rr_realized <= -0.18 and pnl_total < 0.0:
+        confidence_penalty = min(
+            0.035,
+            (
+                0.008
+                + max(0.0, -avg_rr_realized - 0.18) * 0.035
+                + max(0.0, 0.46 - win_rate) * 0.035
+            ) * multiplier,
+        )
+        risk_penalty = min(
+            0.22,
+            (
+                0.05
+                + max(0.0, -avg_rr_realized - 0.18) * 0.16
+                + max(0.0, 0.46 - win_rate) * 0.18
+                + max(0.0, 50.0 - avg_quality_score) / 220.0
+            ) * multiplier,
+        )
+        rr_penalty = min(
+            0.14,
+            (
+                0.03
+                + max(0.0, -avg_rr_realized - 0.18) * 0.09
+                + max(0.0, late_entry_rate - 0.24) * 0.05
+            ) * multiplier,
+        )
+        cooldown_penalty = max(
+            2,
+            int(
+                round(
+                    min(
+                        14.0,
+                        (
+                            3.0
+                            + max(0, sample_count - _SESSION_EDGE_MIN_SAMPLES) * 0.9
+                            + max(0.0, premature_stop_rate - 0.30) * 14.0
+                        ) * multiplier,
+                    )
+                )
+            ),
+        )
+
+        thresholds["min_final_confidence"] += confidence_penalty
+        thresholds["risk_multiplier"] -= risk_penalty
+        thresholds["min_rr"] += rr_penalty
+        thresholds["cooldown_minutes"] += cooldown_penalty
+        thresholds["notes"].append("session_edge_negative")
+        profile["action"] = "reduce"
+
+        if premature_stop_rate >= 0.38:
+            thresholds["notes"].append("session_premature_stop_risk")
+        if late_entry_rate >= 0.30:
+            thresholds["notes"].append("session_late_entry_risk")
+
+        if (
+            sample_count >= _SESSION_EDGE_HARD_BLOCK_MIN_SAMPLES
+            and win_rate <= 0.34
+            and avg_rr_realized <= -0.28
+            and pnl_total <= -100.0
+            and avg_quality_score <= 46.0
+        ):
+            thresholds["block_new_entries"] = True
+            if not thresholds["block_reason"]:
+                thresholds["block_reason"] = f"recent session edge is deeply negative for {session_label}"
+            thresholds["notes"].append("session_edge_hard_block")
+        return
+
+    if (
+        sample_count >= _SESSION_EDGE_POSITIVE_MIN_SAMPLES
+        and avg_rr_realized >= 0.18
+        and pnl_total > 0.0
+        and win_rate >= 0.55
+        and avg_quality_score >= 58.0
+    ):
+        confidence_bonus = min(
+            0.010,
+            (
+                0.004
+                + max(0.0, avg_rr_realized - 0.18) * 0.015
+                + max(0.0, win_rate - 0.55) * 0.020
+            ) * multiplier,
+        )
+        risk_bonus = min(
+            0.06,
+            (
+                0.02
+                + max(0.0, avg_rr_realized - 0.18) * 0.10
+                + max(0.0, win_rate - 0.55) * 0.12
+            ) * multiplier,
+        )
+        rr_relief = min(
+            0.06,
+            (
+                0.02
+                + max(0.0, avg_quality_score - 58.0) / 260.0
+            ) * multiplier,
+        )
+
+        thresholds["min_final_confidence"] -= confidence_bonus
+        thresholds["risk_multiplier"] += risk_bonus
+        thresholds["min_rr"] -= rr_relief
+        thresholds["notes"].append("session_edge_positive")
+        profile["action"] = "boost"
+
+
+def _apply_playbook_session_protection_thresholds(
+    thresholds: Dict[str, Any],
+    *,
+    asset: str,
+    category_key: str,
+    signal: Any | None,
+) -> None:
+    profile: Dict[str, Any] = {
+        "scope": "category_playbook_session",
+        "asset": asset,
+        "playbook_name": "",
+        "session": "",
+        "sample_count": 0,
+        "profit_factor": 0.0,
+        "avg_rr_realized": 0.0,
+        "avg_quality_score": 50.0,
+        "avg_pnl": 0.0,
+        "pnl_total": 0.0,
+        "win_rate": 0.0,
+        "premature_stop_rate": 0.0,
+        "late_entry_rate": 0.0,
+        "action": "neutral",
+    }
+    thresholds["context_protection_profile"] = profile
+    if signal is None:
+        return
+
+    metadata = dict(getattr(signal, "metadata", {}) or {})
+    playbook_name = str(
+        metadata.get("playbook_name")
+        or metadata.get("seed_model")
+        or metadata.get("strategy_id")
+        or ""
+    ).strip().lower()
+    session_label = str(
+        metadata.get("session_label")
+        or metadata.get("playbook_session")
+        or metadata.get("session")
+        or ""
+    ).strip().lower()
+    if not playbook_name or not session_label:
+        return
+
+    try:
+        from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+        summary = get_execution_feedback_service().summarize_context(
+            category=category_key,
+            playbook_name=playbook_name,
+            session=session_label,
+            days_back=14,
+            limit=260,
+        )
+    except Exception:
+        thresholds["context_protection_profile"] = {
+            **profile,
+            "playbook_name": playbook_name,
+            "session": session_label,
+        }
+        return
+
+    sample_count = _safe_int(summary.get("sample_count"), 0)
+    win_rate = _safe_float(summary.get("win_rate"), 0.0)
+    avg_rr_realized = _safe_float(summary.get("avg_rr_realized"), 0.0)
+    pnl_total = _safe_float(summary.get("pnl_total"), 0.0)
+    avg_quality_score = _safe_float(summary.get("avg_quality_score"), 50.0)
+    avg_pnl = _safe_float(summary.get("avg_pnl"), 0.0)
+    premature_stop_rate = _safe_float(summary.get("premature_stop_rate"), 0.0)
+    late_entry_rate = _safe_float(summary.get("late_entry_rate"), 0.0)
+    profit_factor = _safe_float(summary.get("profit_factor"), 0.0)
+    multiplier = _session_edge_multiplier(category_key)
+
+    profile = {
+        "scope": "category_playbook_session",
+        "asset": asset,
+        "playbook_name": playbook_name,
+        "session": session_label,
+        "sample_count": sample_count,
+        "profit_factor": round(profit_factor, 3),
+        "avg_rr_realized": round(avg_rr_realized, 4),
+        "avg_quality_score": round(avg_quality_score, 1),
+        "avg_pnl": round(avg_pnl, 2),
+        "pnl_total": round(pnl_total, 2),
+        "win_rate": round(win_rate, 4),
+        "premature_stop_rate": round(premature_stop_rate, 4),
+        "late_entry_rate": round(late_entry_rate, 4),
+        "action": "neutral",
+    }
+    thresholds["context_protection_profile"] = profile
+
+    if sample_count < _PLAYBOOK_SESSION_PROTECTION_MIN_SAMPLES:
+        return
+
+    if avg_rr_realized <= -0.14 and profit_factor <= 0.95 and pnl_total < 0.0:
+        confidence_penalty = min(
+            0.026,
+            (
+                0.006
+                + max(0.0, -avg_rr_realized - 0.14) * 0.035
+                + max(0.0, 0.48 - win_rate) * 0.03
+            ) * multiplier,
+        )
+        risk_penalty = min(
+            0.18,
+            (
+                0.04
+                + max(0.0, -avg_rr_realized - 0.14) * 0.12
+                + max(0.0, 0.95 - profit_factor) * 0.06
+                + max(0.0, 50.0 - avg_quality_score) / 260.0
+            ) * multiplier,
+        )
+        rr_penalty = min(
+            0.10,
+            (
+                0.02
+                + max(0.0, -avg_rr_realized - 0.14) * 0.08
+                + max(0.0, late_entry_rate - 0.24) * 0.04
+            ) * multiplier,
+        )
+        cooldown_penalty = max(
+            2,
+            int(
+                round(
+                    min(
+                        12.0,
+                        (
+                            2.0
+                            + max(0, sample_count - _PLAYBOOK_SESSION_PROTECTION_MIN_SAMPLES) * 0.8
+                            + max(0.0, premature_stop_rate - 0.30) * 10.0
+                        ) * multiplier,
+                    )
+                )
+            ),
+        )
+
+        thresholds["min_final_confidence"] += confidence_penalty
+        thresholds["risk_multiplier"] -= risk_penalty
+        thresholds["min_rr"] += rr_penalty
+        thresholds["cooldown_minutes"] += cooldown_penalty
+        thresholds["notes"].append("playbook_session_protection_reduce")
+        profile["action"] = "reduce"
+
+        if (
+            sample_count >= _PLAYBOOK_SESSION_PROTECTION_HARD_BLOCK_MIN_SAMPLES
+            and win_rate <= 0.34
+            and avg_rr_realized <= -0.24
+            and profit_factor <= 0.72
+            and pnl_total <= -90.0
+            and avg_quality_score <= 46.0
+        ):
+            thresholds["block_new_entries"] = True
+            if not thresholds["block_reason"]:
+                thresholds["block_reason"] = (
+                    f"protection lock: {playbook_name} in {session_label} is underperforming for {category_key}"
+                )
+            thresholds["notes"].append("playbook_session_protection_lock")
 
 
 def _apply_asset_performance_thresholds(
@@ -613,6 +970,8 @@ class AdaptivePolicyService:
             "recent_review_profile": {},
             "asset_performance_profile": {},
             "book_performance_profile": {},
+            "context_protection_profile": {},
+            "session_performance_profile": {},
             "inactivity_profile": {},
             "block_new_entries": False,
             "block_reason": "",
@@ -665,6 +1024,17 @@ class AdaptivePolicyService:
             signal=signal,
             context=context,
         )
+        _apply_playbook_session_protection_thresholds(
+            thresholds,
+            asset=asset,
+            category_key=category_key,
+            signal=signal,
+        )
+        _apply_session_performance_thresholds(
+            thresholds,
+            category_key=category_key,
+            signal=signal,
+        )
         _apply_inactivity_thresholds(
             thresholds,
             state=state,
@@ -700,6 +1070,8 @@ class AdaptivePolicyService:
             "recent_review_profile": thresholds["recent_review_profile"],
             "asset_performance_profile": thresholds["asset_performance_profile"],
             "book_performance_profile": thresholds["book_performance_profile"],
+            "context_protection_profile": thresholds["context_protection_profile"],
+            "session_performance_profile": thresholds["session_performance_profile"],
             "inactivity_profile": thresholds["inactivity_profile"],
             "block_new_entries": thresholds["block_new_entries"],
             "block_reason": thresholds["block_reason"],

@@ -935,8 +935,30 @@ class DataFetcher:
             pass
         if spread_pct > 0.0:
             payload["spread_bps"] = round(spread_pct * 100.0, 3)
+        trade_flow_score = 0.0
+        try:
+            trade_flow_score = float(snapshot.get("trade_flow_score", 0.0) or 0.0)
+        except Exception:
+            trade_flow_score = 0.0
+        for key in (
+            "trade_buy_notional",
+            "trade_sell_notional",
+            "trade_delta_notional",
+            "trade_delta_ratio",
+            "trade_cvd",
+            "trade_cvd_slope",
+            "trade_flow_score",
+            "trade_pressure_direction",
+            "trade_buy_count",
+            "trade_sell_count",
+            "trade_count",
+            "trade_ts",
+            "trade_live_age_seconds",
+        ):
+            if key in snapshot:
+                payload[key] = snapshot[key]
         payload["score"] = round(
-            max(-1.0, min(1.0, existing_score * 0.45 + imbalance * 0.55)),
+            max(-1.0, min(1.0, existing_score * 0.35 + imbalance * 0.45 + trade_flow_score * 0.20)),
             4,
         )
         return payload

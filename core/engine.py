@@ -661,7 +661,12 @@ class TradingCore:
         snapshot = dict(pos)
         snapshot["stop_loss"] = float(round(effective_sl, 6))
         snapshot["take_profit"] = float(round(effective_tp, 6))
-        snapshot["take_profit_levels"] = self._build_take_profit_levels(entry, effective_tp, direction)
+        snapshot["take_profit_levels"] = self._build_take_profit_levels(
+            entry,
+            effective_tp,
+            direction,
+            structure=structure if isinstance(structure, dict) else {},
+        )
         snapshot["risk_reward"] = round(
             abs(snapshot["take_profit"] - entry) / max(abs(entry - snapshot["stop_loss"]), 1e-9),
             4,
@@ -2549,13 +2554,38 @@ class TradingCore:
         return [round(value / total, 6) for value in parsed]
 
     @staticmethod
-    def _build_take_profit_levels(entry: float, take_profit: float, direction: str) -> List[float]:
+    def _build_take_profit_levels(
+        entry: float,
+        take_profit: float,
+        direction: str,
+        structure: Optional[Dict[str, Any]] = None,
+    ) -> List[float]:
         levels: List[float] = []
         try:
             dist = abs(float(take_profit) - float(entry))
             if dist <= 0:
                 return levels
-            if str(direction).upper() == "BUY":
+            structure = structure if isinstance(structure, dict) else {}
+            direction_key = str(direction).upper()
+            target_key = "bullish_target_levels" if direction_key == "BUY" else "bearish_target_levels"
+            structural_levels: List[float] = []
+            for raw_level in list(structure.get(target_key) or []):
+                try:
+                    level = float(raw_level)
+                except Exception:
+                    continue
+                if direction_key == "BUY" and level > entry:
+                    structural_levels.append(round(level, 6))
+                elif direction_key == "SELL" and level < entry:
+                    structural_levels.append(round(level, 6))
+            if structural_levels:
+                levels = structural_levels[:3]
+                if direction_key == "BUY" and take_profit > levels[-1] + max(dist * 0.05, 1e-6):
+                    levels.append(round(float(take_profit), 6))
+                elif direction_key == "SELL" and take_profit < levels[-1] - max(dist * 0.05, 1e-6):
+                    levels.append(round(float(take_profit), 6))
+                levels = list(dict.fromkeys(levels))[:4]
+            elif direction_key == "BUY":
                 levels = [round(entry + dist * 0.6, 6), round(entry + dist, 6), round(entry + dist * 1.25, 6)]
             else:
                 levels = [round(entry - dist * 0.6, 6), round(entry - dist, 6), round(entry - dist * 1.25, 6)]
@@ -2811,6 +2841,7 @@ class TradingCore:
         entry_price: float,
         stop_loss: float,
         take_profit: float,
+        structure: Optional[Dict[str, Any]],
         playbook_direction: str,
         playbook_action: str,
         playbook_management_template: Dict[str, Any],
@@ -2820,7 +2851,13 @@ class TradingCore:
         playbook_primary: Dict[str, Any],
     ) -> Tuple[float, List[float], Dict[str, Any]]:
         trade_management_plan: Dict[str, Any] = {}
-        take_profit_levels = TradingCore._build_take_profit_levels(entry_price, take_profit, direction)
+        structure = structure if isinstance(structure, dict) else {}
+        take_profit_levels = TradingCore._build_take_profit_levels(
+            entry_price,
+            take_profit,
+            direction,
+            structure=structure,
+        )
         risk_distance = abs(entry_price - stop_loss)
         if not (
             playbook_direction == direction
@@ -2848,13 +2885,22 @@ class TradingCore:
         if runner_target_rr > 0.0:
             runner_target_rr = max(runner_target_rr, current_rr)
             reward_distance = risk_distance * runner_target_rr
-            take_profit = entry_price + reward_distance if direction == "BUY" else entry_price - reward_distance
-            take_profit_levels = []
-            level_rrs = sorted({round(rr, 4) for rr in partial_rrs + [runner_target_rr] if rr > 0.0})
-            for level_rr in level_rrs:
-                reward = risk_distance * level_rr
-                level_price = entry_price + reward if direction == "BUY" else entry_price - reward
-                take_profit_levels.append(round(level_price, 6))
+            runner_target = entry_price + reward_distance if direction == "BUY" else entry_price - reward_distance
+            if direction == "BUY":
+                take_profit = max(float(take_profit), float(runner_target))
+            else:
+                take_profit = min(float(take_profit), float(runner_target))
+            if take_profit_levels:
+                if direction == "BUY" and take_profit > float(take_profit_levels[-1]):
+                    take_profit_levels.append(round(float(take_profit), 6))
+                elif direction == "SELL" and take_profit < float(take_profit_levels[-1]):
+                    take_profit_levels.append(round(float(take_profit), 6))
+            else:
+                level_rrs = sorted({round(rr, 4) for rr in partial_rrs + [runner_target_rr] if rr > 0.0})
+                for level_rr in level_rrs:
+                    reward = risk_distance * level_rr
+                    level_price = entry_price + reward if direction == "BUY" else entry_price - reward
+                    take_profit_levels.append(round(level_price, 6))
 
         trade_management_plan = {
             **playbook_management_template,
@@ -2978,6 +3024,7 @@ class TradingCore:
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            structure=structure if isinstance(structure, dict) else {},
             playbook_direction=playbook_direction,
             playbook_action=playbook_action,
             playbook_management_template=playbook_management_template,

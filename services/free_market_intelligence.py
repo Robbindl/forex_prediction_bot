@@ -32,6 +32,7 @@ _FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
 _EIA_URL = "https://api.eia.gov/v2/seriesid"
 _CFTC_FINANCIAL_URL = "https://www.cftc.gov/files/dea/history/fut_fin_txt_{year}.zip"
 _CFTC_DISAGG_URL = "https://www.cftc.gov/files/dea/history/com_disagg_txt_{year}.zip"
+_COINGECKO_GLOBAL_URL = "https://api.coingecko.com/api/v3/global"
 
 _FINANCIAL_PATTERNS = {
     "EUR/USD": ["EURO FX - CHICAGO MERCANTILE EXCHANGE"],
@@ -93,12 +94,13 @@ class _CacheEntry:
 
 class FreeMarketIntelligence:
     """
-    Official free-data enrichment for non-crypto assets.
+    Official free-data enrichment for macro / positioning context.
 
     Sources:
       - FRED for US rates / dollar / volatility proxies
       - EIA for WTI crude stocks
       - CFTC COT for positioning
+      - CoinGecko global market-share data for crypto dominance
 
     The output is a small, cached directional intelligence bundle that can be
     blended into the existing sentiment and governance layers.
@@ -164,6 +166,15 @@ class FreeMarketIntelligence:
                 components["eia_inventory"] = eia["score"]
                 details["eia"] = eia
                 sources.append("eia")
+
+        if category == "crypto":
+            cg = self._coingecko_global_context()
+            if cg:
+                dominance_score = self._crypto_dominance_component(asset, cg)
+                if dominance_score is not None:
+                    components["btc_dominance"] = dominance_score
+                details["coingecko_global"] = cg
+                sources.append("coingecko")
 
         if not components:
             return self._empty(asset, category)
@@ -336,17 +347,74 @@ class FreeMarketIntelligence:
             delta_pct = (latest - previous) / abs(previous) if previous else 0.0
             # Falling stocks are bullish for oil.
             score = _clamp(-delta_pct * 8)
+            release_time_et = "10:30"
             return {
                 "series": EIA_CRUDE_STOCKS_SERIES,
                 "period": periods[0] if periods else "",
                 "latest": latest,
                 "previous": previous,
                 "delta_pct": delta_pct,
+                "release_day_et": "Wednesday",
+                "release_time_et": release_time_et,
+                "structure_reset_event": "eia_crude_release",
                 "score": round(score, 3),
             }
         except Exception as exc:
             logger.debug(f"[FreeIntel] EIA {EIA_CRUDE_STOCKS_SERIES}: {exc}")
             return None
+
+    def _coingecko_global_context(self) -> Optional[Dict[str, Any]]:
+        cache_key = "__coingecko_global__"
+        now = time.time()
+        prior_payload: Dict[str, Any] = {}
+        with self._lock:
+            hit = self._frame_cache.get(cache_key)
+            if hit:
+                prior_payload = dict(hit.payload)
+                if now < hit.expires_at:
+                    return prior_payload
+        try:
+            response = self._session.get(_COINGECKO_GLOBAL_URL, timeout=12)
+            response.raise_for_status()
+            payload = ((response.json() or {}).get("data") or {})
+            market_cap_pct = dict(payload.get("market_cap_percentage") or {})
+            btc_dom = float(market_cap_pct.get("btc", 0.0) or 0.0)
+            eth_dom = float(market_cap_pct.get("eth", 0.0) or 0.0)
+            prev_btc = float(prior_payload.get("btc_dominance", btc_dom) or btc_dom)
+            prev_eth = float(prior_payload.get("eth_dominance", eth_dom) or eth_dom)
+            result = {
+                "btc_dominance": round(btc_dom, 4),
+                "eth_dominance": round(eth_dom, 4),
+                "btc_dominance_delta": round(btc_dom - prev_btc, 4),
+                "eth_dominance_delta": round(eth_dom - prev_eth, 4),
+                "total_market_cap_usd": float(((payload.get("total_market_cap") or {}).get("usd") or 0.0) or 0.0),
+                "market_cap_change_pct_24h_usd": float(payload.get("market_cap_change_percentage_24h_usd", 0.0) or 0.0),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            with self._lock:
+                self._frame_cache[cache_key] = _CacheEntry(
+                    payload=dict(result),
+                    expires_at=now + max(300, FREE_INTEL_CACHE_SECONDS),
+                )
+            return result
+        except Exception as exc:
+            logger.debug(f"[FreeIntel] CoinGecko global: {exc}")
+            return None
+
+    @staticmethod
+    def _crypto_dominance_component(asset: str, payload: Dict[str, Any]) -> Optional[float]:
+        asset_key = str(asset or "").strip().upper()
+        btc_dom = float(payload.get("btc_dominance", 0.0) or 0.0)
+        eth_dom = float(payload.get("eth_dominance", 0.0) or 0.0)
+        btc_delta = float(payload.get("btc_dominance_delta", 0.0) or 0.0)
+        eth_delta = float(payload.get("eth_dominance_delta", 0.0) or 0.0)
+        if btc_dom <= 0.0 and eth_dom <= 0.0:
+            return None
+        if asset_key in {"BTC-USD", "BTC/USD", "XBTUSD", "BTCUSDT"}:
+            return round(_clamp(((btc_dom - 54.0) / 10.0) + btc_delta * 0.8), 3)
+        if asset_key in {"ETH-USD", "ETH/USD", "ETHUSDT"}:
+            return round(_clamp(((eth_dom - 16.0) / 8.0) - max(0.0, (btc_dom - 56.0) / 10.0) + eth_delta * 0.6), 3)
+        return round(_clamp(-max(0.0, (btc_dom - 56.0) / 9.0) - max(0.0, btc_delta) * 0.9 + max(0.0, eth_delta) * 0.35), 3)
 
     def _cftc_context(self, asset: str, as_of: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
         if not CFTC_ENABLED:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from order_flow.orderbook_processor     import OrderbookProcessor
+from order_flow.trade_flow_processor    import TradeFlowProcessor
 from order_flow.liquidity_wall_detector import LiquidityWallDetector
 from order_flow.imbalance_detector      import ImbalanceDetector
 from order_flow.stop_hunt_detector      import StopHuntDetector
@@ -17,6 +18,7 @@ logger = get_logger()
 
 # ── Per-asset state ───────────────────────────────────────────────────────────
 _processors: Dict[str, OrderbookProcessor]     = {}
+_trade_flow_processors: Dict[str, TradeFlowProcessor] = {}
 _wall_detectors: Dict[str, LiquidityWallDetector] = {}
 _imbalance_detectors: Dict[str, ImbalanceDetector] = {}
 _stop_hunt_detectors: Dict[str, StopHuntDetector]  = {}
@@ -44,11 +46,13 @@ def _get_or_create(asset: str):
     if asset not in _processors:
         validator = get_validator()
         _processors[asset]         = OrderbookProcessor(asset)
+        _trade_flow_processors[asset] = TradeFlowProcessor(asset)
         _wall_detectors[asset]     = LiquidityWallDetector(asset, on_wall_detected=validator.ingest_wall)
         _imbalance_detectors[asset] = ImbalanceDetector(asset)
         _stop_hunt_detectors[asset] = StopHuntDetector(asset, on_hunt_detected=validator.ingest_hunt)
     return (
         _processors[asset],
+        _trade_flow_processors[asset],
         _wall_detectors[asset],
         _imbalance_detectors[asset],
         _stop_hunt_detectors[asset],
@@ -135,13 +139,13 @@ def _on_orderbook_update(event: dict) -> None:
     if not asset or (not bids and not asks):
         return
 
-    proc, walls, imbalance, stop_hunt = _get_or_create(asset)
+    proc, trade_flow, walls, imbalance, stop_hunt = _get_or_create(asset)
 
     # 1. Update book state and get normalised snapshot
     snapshot = proc.update(bids, asks)
     if not snapshot:
         return
-    _persist_snapshot(asset, snapshot)
+    _persist_snapshot(asset, _merge_trade_flow(snapshot, trade_flow.latest_snapshot()))
 
     # 2. Scan for liquidity walls
     detected_walls = walls.scan(snapshot["top_bids"], snapshot["top_asks"])
@@ -154,6 +158,35 @@ def _on_orderbook_update(event: dict) -> None:
     if mid:
         stop_hunt.update_walls(detected_walls)
         stop_hunt.ingest_price(mid, snapshot["ts"])
+
+
+def _on_trade_update(event: dict) -> None:
+    asset = event.get("asset", "")
+    if not asset:
+        return
+
+    proc, trade_flow, *_ = _get_or_create(asset)
+    trade_snapshot = trade_flow.ingest_trade(
+        price=event.get("price"),
+        qty=event.get("qty"),
+        side=event.get("side"),
+        timestamp=event.get("ts"),
+    )
+    if not trade_snapshot:
+        return
+
+    combined = _merge_trade_flow(proc.latest_snapshot(), trade_snapshot)
+    if combined:
+        _persist_snapshot(asset, combined)
+
+
+def _merge_trade_flow(snapshot: dict, trade_snapshot: dict) -> dict:
+    payload = dict(snapshot or {})
+    extra = dict(trade_snapshot or {})
+    if not extra:
+        return payload
+    payload.update(extra)
+    return payload
 
 
 def _subscribe_loop() -> None:
@@ -173,11 +206,11 @@ def _subscribe_loop() -> None:
                 time.sleep(10)
                 continue
             redis_unavailable_logged = False
-            ps.subscribe("ORDER_BOOK_UPDATE")
+            ps.subscribe("ORDER_BOOK_UPDATE", "TRADE_UPDATE")
             _subscribed = True
             _last_subscribed_at = time.time()
             _last_error = ""
-            logger.info("[OrderFlow] Subscribed to ORDER_BOOK_UPDATE")
+            logger.info("[OrderFlow] Subscribed to ORDER_BOOK_UPDATE and TRADE_UPDATE")
 
             for msg in ps.listen():
                 if not _running:
@@ -185,7 +218,14 @@ def _subscribe_loop() -> None:
                 if msg.get("type") == "message":
                     _last_message_at = time.time()
                     try:
-                        _on_orderbook_update(json.loads(msg["data"]))
+                        payload = json.loads(msg["data"])
+                        channel = str(msg.get("channel", ""))
+                        if isinstance(channel, bytes):
+                            channel = channel.decode("utf-8", errors="ignore")
+                        if channel == "TRADE_UPDATE":
+                            _on_trade_update(payload)
+                        else:
+                            _on_orderbook_update(payload)
                     except Exception as e:
                         logger.debug(f"[OrderFlow] Handler error: {e}")
         except Exception as e:
@@ -232,14 +272,43 @@ def get_snapshot(asset: str) -> dict:
 
 def get_imbalance(asset: str) -> float:
     """Return current bid/ask imbalance score -1.0 … +1.0 (used by meta-model)."""
+    trade_score = 0.0
+    trade_snapshot = get_trade_flow_snapshot(asset)
+    try:
+        trade_score = float(trade_snapshot.get("trade_flow_score", 0.0) or 0.0)
+    except Exception:
+        trade_score = 0.0
+
     det = _imbalance_detectors.get(asset)
     if det:
-        return det.current_score()
+        book_score = det.current_score()
+        if abs(trade_score) > 0.0:
+            return round(max(-1.0, min(1.0, book_score * 0.55 + trade_score * 0.45)), 4)
+        return book_score
     snapshot = _get_persisted_snapshot(asset)
     try:
-        return round(float(snapshot.get("imbalance", 0.0) or 0.0), 4)
+        book_score = round(float(snapshot.get("imbalance", 0.0) or 0.0), 4)
+        if abs(trade_score) > 0.0:
+            return round(max(-1.0, min(1.0, book_score * 0.55 + trade_score * 0.45)), 4)
+        return book_score
     except Exception:
-        return 0.0
+        return round(trade_score, 4)
+
+
+def get_trade_flow_snapshot(asset: str) -> dict:
+    proc = _trade_flow_processors.get(asset)
+    if proc:
+        snapshot = proc.latest_snapshot()
+        if snapshot:
+            return snapshot
+    persisted = _get_persisted_snapshot(asset)
+    if persisted and any(key.startswith("trade_") for key in persisted.keys()):
+        return {
+            key: value
+            for key, value in persisted.items()
+            if key.startswith("trade_")
+        }
+    return {}
 
 
 def status() -> dict:
@@ -269,9 +338,9 @@ def status() -> dict:
 
 
 __all__ = [
-    "start_all", "stop_all", "get_snapshot", "get_imbalance", "status",
+    "start_all", "stop_all", "get_snapshot", "get_imbalance", "get_trade_flow_snapshot", "status",
     "OrderbookProcessor", "LiquidityWallDetector",
-    "ImbalanceDetector", "StopHuntDetector",
+    "ImbalanceDetector", "StopHuntDetector", "TradeFlowProcessor",
     "get_validator", "OrderFlowSignalValidator",
 ]
 

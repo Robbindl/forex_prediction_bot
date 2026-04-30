@@ -229,8 +229,24 @@ class RiskManager:
 
         cat = (category or "").lower()
         direction = str(direction or "").upper()
-        support_keys = ["support", "support_levels", "swing_low", "recent_low", "invalid_below"]
-        resistance_keys = ["resistance", "resistance_levels", "swing_high", "recent_high", "invalid_above"]
+        support_keys = [
+            "invalid_below",
+            "event_anchor_low",
+            "session_anchor_low",
+            "support_levels",
+            "support",
+            "swing_low",
+            "recent_low",
+        ]
+        resistance_keys = [
+            "invalid_above",
+            "event_anchor_high",
+            "session_anchor_high",
+            "resistance_levels",
+            "resistance",
+            "swing_high",
+            "recent_high",
+        ]
 
         raw_levels: List[float] = []
         for key in support_keys if direction == "BUY" else resistance_keys:
@@ -254,7 +270,14 @@ class RiskManager:
         anchor_level = protective_levels[-1] if direction == "BUY" else protective_levels[0]
         buffer_dist = 0.0
         if atr and atr > 0:
-            buffer_dist = max(buffer_dist, atr * 0.10)
+            session_mode = str(structure.get("session_structure_mode") or "").lower()
+            regime_phase = str(structure.get("regime_phase") or "").lower()
+            buffer_multiplier = 0.10
+            if session_mode in {"opening_range_breakout", "oil_cash_open", "metals_fix_build"}:
+                buffer_multiplier = 0.14
+            if regime_phase in {"trend_exhausted", "transition"}:
+                buffer_multiplier = max(buffer_multiplier, 0.12)
+            buffer_dist = max(buffer_dist, atr * buffer_multiplier)
         buffer_dist = max(
             buffer_dist,
             entry * (_STOP_MIN_PCT.get(cat, 0.0025) * 0.20),
@@ -301,14 +324,17 @@ class RiskManager:
 
     @staticmethod
     def _structure_level(structure: Dict[str, Any], direction: str) -> float:
-        target_key = "resistance" if direction == "BUY" else "support"
-        levels_key = "resistance_levels" if direction == "BUY" else "support_levels"
-        structure_level = _safe_float(structure.get(target_key), 0.0)
-        if structure_level <= 0:
-            levels = structure.get(levels_key)
-            if isinstance(levels, list) and levels:
-                structure_level = _safe_float(levels[0], 0.0)
-        return structure_level
+        if direction == "BUY":
+            for key in ("bullish_target_levels", "resistance_levels", "resistance", "session_anchor_high", "event_anchor_high"):
+                levels = _structure_price_candidates(structure.get(key))
+                if levels:
+                    return _safe_float(levels[0], 0.0)
+            return 0.0
+        for key in ("bearish_target_levels", "support_levels", "support", "session_anchor_low", "event_anchor_low"):
+            levels = _structure_price_candidates(structure.get(key))
+            if levels:
+                return _safe_float(levels[0], 0.0)
+        return 0.0
 
     @staticmethod
     def _structure_reward_cap(

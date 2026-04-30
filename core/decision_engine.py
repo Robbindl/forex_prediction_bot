@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -99,6 +99,37 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value if value is not None else default)
     except Exception:
         return default
+
+
+def _normalize_trade_direction_label(value: Any) -> str:
+    raw = str(value or "").strip().upper()
+    if raw in {
+        "BUY",
+        "BULL",
+        "BULLISH",
+        "LONG",
+        "ACCUMULATION",
+        "INFLOW",
+        "HIGH_LONG",
+        "EXTREME_LONG",
+        "RISK_ON",
+        "UP",
+    }:
+        return "BUY"
+    if raw in {
+        "SELL",
+        "BEAR",
+        "BEARISH",
+        "SHORT",
+        "DISTRIBUTION",
+        "OUTFLOW",
+        "HIGH_SHORT",
+        "EXTREME_SHORT",
+        "RISK_OFF",
+        "DOWN",
+    }:
+        return "SELL"
+    return ""
 
 
 _SESSION_TIMING_STRICTNESS_BY_CATEGORY: Dict[str, Dict[str, Dict[str, Any]]] = {
@@ -499,8 +530,12 @@ def _resolve_source_families(signal: Signal) -> tuple[List[str], List[str], Dict
 
     if "cftc" in market_intelligence_details:
         positioning_entries.append("detail:cftc")
+    if "coingecko_global" in market_intelligence_details:
+        positioning_entries.append("detail:coingecko_global")
     if "cftc_positioning" in market_intelligence_components:
         positioning_entries.append("component:cftc_positioning")
+    if "btc_dominance" in market_intelligence_components:
+        positioning_entries.append("component:btc_dominance")
     if "aaii" in sentiment_components:
         positioning_entries.append("component:aaii")
     if isinstance(metadata.get("ig_client_sentiment"), dict) and metadata.get("ig_client_sentiment"):
@@ -954,10 +989,14 @@ class SignalDecisionEngine:
             exhaustion_risk = float(micro.get("exhaustion_risk", 0.0) or 0.0)
             tick_imbalance = float(micro.get("tick_imbalance", 0.0) or 0.0)
             book_imbalance = float(micro.get("book_imbalance", 0.0) or 0.0)
+            trade_flow_score = float(micro.get("trade_flow_score", 0.0) or 0.0)
+            trade_delta_ratio = float(micro.get("trade_delta_ratio", 0.0) or 0.0)
+            trade_cvd_slope = float(micro.get("trade_cvd_slope", 0.0) or 0.0)
             velocity_bps = float(micro.get("velocity_bps", 0.0) or 0.0)
             aligned_micro = micro_score if signal.direction == "BUY" else -micro_score
             aligned_book = book_imbalance if signal.direction == "BUY" else -book_imbalance
             aligned_tick = tick_imbalance if signal.direction == "BUY" else -tick_imbalance
+            aligned_trade_flow = trade_flow_score if signal.direction == "BUY" else -trade_flow_score
             aligned_velocity = velocity_bps if signal.direction == "BUY" else -velocity_bps
             signal.metadata["market_microstructure"] = dict(micro)
             signal.metadata["microstructure_score"] = round(micro_score, 3)
@@ -966,6 +1005,9 @@ class SignalDecisionEngine:
             signal.metadata["microstructure_alignment"] = round(aligned_micro, 3)
             signal.metadata["tick_imbalance"] = round(tick_imbalance, 4)
             signal.metadata["book_imbalance"] = round(book_imbalance, 4)
+            signal.metadata["trade_flow_score"] = round(trade_flow_score, 4)
+            signal.metadata["trade_delta_ratio"] = round(trade_delta_ratio, 4)
+            signal.metadata["trade_cvd_slope"] = round(trade_cvd_slope, 4)
             signal.metadata["velocity_bps"] = round(velocity_bps, 4)
             signal.metadata["depth_available"] = bool(micro.get("depth_available"))
             signal.metadata["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
@@ -993,6 +1035,9 @@ class SignalDecisionEngine:
             data["exhaustion_risk"] = round(exhaustion_risk, 3)
             data["tick_imbalance"] = round(tick_imbalance, 4)
             data["book_imbalance"] = round(book_imbalance, 4)
+            data["trade_flow_score"] = round(trade_flow_score, 4)
+            data["trade_delta_ratio"] = round(trade_delta_ratio, 4)
+            data["trade_cvd_slope"] = round(trade_cvd_slope, 4)
             data["velocity_bps"] = round(velocity_bps, 4)
             data["synthetic_depth_available"] = bool(micro.get("synthetic_depth_available"))
             data["depth_levels"] = int(micro.get("depth_levels", 0) or 0)
@@ -1023,6 +1068,10 @@ class SignalDecisionEngine:
                 notes.append("book_pressure_support")
             elif aligned_book <= -0.18:
                 notes.append("book_pressure_conflict")
+            if aligned_trade_flow >= 0.18:
+                notes.append("trade_flow_support")
+            elif aligned_trade_flow <= -0.18:
+                notes.append("trade_flow_conflict")
             if aligned_tick >= 0.22 and aligned_velocity > 0:
                 notes.append("micro_momentum_support")
             elif aligned_tick <= -0.22 and aligned_velocity < 0:
@@ -1062,6 +1111,11 @@ class SignalDecisionEngine:
         pattern_family = str(structure.get("pattern_family", "unknown") or "unknown")
         elite_pattern_rank = float(structure.get("elite_pattern_rank", 0.0) or 0.0)
         cluster_penalty = float(structure.get("cluster_penalty", 0.0) or 0.0)
+        session_anchor_type = str(structure.get("session_anchor_type", "") or "")
+        session_anchor_label = str(structure.get("session_anchor_label", "") or "")
+        session_anchor_state = str(structure.get("session_anchor_state", "unavailable") or "unavailable")
+        session_anchor_bias = str(structure.get("session_anchor_bias", "neutral") or "neutral")
+        session_anchor_support_score = float(structure.get("session_anchor_support_score", 0.0) or 0.0)
         regime_entry_policy = (
             dict(structure.get("regime_entry_policy"))
             if isinstance(structure.get("regime_entry_policy"), dict)
@@ -1091,6 +1145,11 @@ class SignalDecisionEngine:
         signal.metadata["pattern_family"] = pattern_family
         signal.metadata["elite_pattern_rank"] = round(elite_pattern_rank, 4)
         signal.metadata["cluster_penalty"] = round(cluster_penalty, 4)
+        signal.metadata["session_anchor_type"] = session_anchor_type
+        signal.metadata["session_anchor_label"] = session_anchor_label
+        signal.metadata["session_anchor_state"] = session_anchor_state
+        signal.metadata["session_anchor_bias"] = session_anchor_bias
+        signal.metadata["session_anchor_support_score"] = round(session_anchor_support_score, 4)
         signal.metadata["regime_entry_policy"] = regime_entry_policy
 
         direction_sign = 1 if signal.direction == "BUY" else -1
@@ -1124,6 +1183,11 @@ class SignalDecisionEngine:
             "pattern_family": pattern_family,
             "elite_pattern_rank": round(elite_pattern_rank, 4),
             "cluster_penalty": round(cluster_penalty, 4),
+            "session_anchor_type": session_anchor_type,
+            "session_anchor_label": session_anchor_label,
+            "session_anchor_state": session_anchor_state,
+            "session_anchor_bias": session_anchor_bias,
+            "session_anchor_support_score": round(session_anchor_support_score, 4),
             "regime_entry_policy": regime_entry_policy,
         }
 
@@ -1148,6 +1212,10 @@ class SignalDecisionEngine:
             notes.append("weak_trigger_candle")
         if session_quality_score <= 0.40:
             notes.append("weak_session_quality")
+        if session_anchor_support_score >= 0.20:
+            notes.append("session_anchor_support")
+        elif session_anchor_support_score <= -0.20:
+            notes.append("session_anchor_conflict")
         if target_efficiency_score <= 0.30:
             notes.append("thin_target_path")
         if impulse_age_bars >= 5:
@@ -1249,6 +1317,359 @@ class SignalDecisionEngine:
                 notes.append("post_event_conflict")
         return news_state, event_name, impact, news_direction, mins
 
+    @staticmethod
+    def _market_post_news_guard(
+        signal: Signal,
+        *,
+        news_state: str,
+        event_name: str,
+        impact: str,
+        news_direction: str,
+        mins: int,
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> str:
+        if news_state != "post" or impact not in {"HIGH", "MEDIUM"}:
+            return ""
+
+        playbook_name = str(
+            signal.metadata.get("playbook_name")
+            or signal.metadata.get("seed_model")
+            or signal.metadata.get("strategy_id")
+            or signal.strategy_id
+            or ""
+        ).strip().lower()
+        entry_style = str(
+            signal.metadata.get("playbook_entry_style")
+            or signal.metadata.get("entry_style")
+            or ""
+        ).strip().lower()
+        is_news_followthrough = playbook_name == "news_impulse" or entry_style == "news_followthrough"
+        aligned_with_news = bool(news_direction) and str(news_direction).upper() == str(signal.direction).upper()
+
+        guard = {
+            "state": news_state,
+            "impact": impact,
+            "event": event_name,
+            "mins_since_event": int(mins),
+            "playbook_name": playbook_name,
+            "entry_style": entry_style,
+            "is_news_followthrough": is_news_followthrough,
+            "aligned_with_news": aligned_with_news,
+            "action": "none",
+        }
+        signal.metadata["post_news_guard"] = dict(guard)
+        data["post_news_guard"] = dict(guard)
+
+        if impact == "HIGH":
+            if mins <= 15:
+                if not aligned_with_news:
+                    guard["action"] = "block_conflict"
+                    signal.metadata["post_news_guard"] = dict(guard)
+                    data["post_news_guard"] = dict(guard)
+                    return f"post-HIGH-impact direction conflicts with trade: {event_name}"
+                if not is_news_followthrough:
+                    guard["action"] = "block_generic"
+                    signal.metadata["post_news_guard"] = dict(guard)
+                    data["post_news_guard"] = dict(guard)
+                    return f"generic entry is too early after HIGH impact event: {event_name}"
+                notes.append("post_high_news_followthrough")
+                guard["action"] = "allow_news_followthrough"
+                signal.metadata["post_news_guard"] = dict(guard)
+                data["post_news_guard"] = dict(guard)
+                return ""
+
+            if mins <= 30:
+                if news_direction and not aligned_with_news:
+                    guard["action"] = "block_conflict"
+                    signal.metadata["post_news_guard"] = dict(guard)
+                    data["post_news_guard"] = dict(guard)
+                    return f"post-HIGH-impact direction conflicts with trade during cooldown: {event_name}"
+                if not is_news_followthrough:
+                    penalty = 0.03 if signal.category in {"forex", "commodities", "indices"} else 0.02
+                    signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+                    signal.metadata["news_cooldown_penalty"] = penalty
+                    notes.append("post_high_event_cooldown")
+                    guard["action"] = "reduce_generic"
+                    guard["confidence_penalty"] = penalty
+                    signal.metadata["post_news_guard"] = dict(guard)
+                    data["post_news_guard"] = dict(guard)
+                else:
+                    notes.append("post_high_news_followthrough")
+                    guard["action"] = "allow_news_followthrough"
+                    signal.metadata["post_news_guard"] = dict(guard)
+                    data["post_news_guard"] = dict(guard)
+                return ""
+
+        if impact == "MEDIUM" and mins <= 15 and news_direction and not aligned_with_news:
+            penalty = 0.015 if signal.category in {"forex", "commodities", "indices"} else 0.01
+            signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+            signal.metadata["news_cooldown_penalty"] = penalty
+            notes.append("post_medium_event_conflict")
+            guard["action"] = "reduce_conflict"
+            guard["confidence_penalty"] = penalty
+            signal.metadata["post_news_guard"] = dict(guard)
+            data["post_news_guard"] = dict(guard)
+        return ""
+
+    @staticmethod
+    def _market_higher_timeframe_guard(
+        signal: Signal,
+        *,
+        structure: Dict[str, Any],
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> str:
+        if not isinstance(structure, dict) or not structure:
+            return ""
+
+        playbook_name = str(
+            signal.metadata.get("playbook_name")
+            or signal.metadata.get("seed_model")
+            or signal.metadata.get("strategy_id")
+            or signal.strategy_id
+            or ""
+        ).strip().lower()
+        entry_style = str(
+            signal.metadata.get("playbook_entry_style")
+            or signal.metadata.get("entry_style")
+            or ""
+        ).strip().lower()
+        continuation_like = any(token in entry_style for token in ("continuation", "breakout", "trend"))
+        if playbook_name in {"breakout_continuation"}:
+            continuation_like = True
+
+        direction_sign = 1 if str(signal.direction).upper() == "BUY" else -1
+
+        def _trend_sign(value: Any) -> int:
+            token = str(value or "").strip().lower()
+            if token == "trending_up":
+                return 1
+            if token == "trending_down":
+                return -1
+            return 0
+
+        trend_map = {
+            "1h": _trend_sign(structure.get("trend_1h")),
+            "4h": _trend_sign(structure.get("trend_4h")),
+        }
+        conflict_frames = [label for label, sign in trend_map.items() if sign and sign != direction_sign]
+        support_frames = [label for label, sign in trend_map.items() if sign and sign == direction_sign]
+        reversal_evidence = bool(structure.get("failed_opposite_move_confirmed")) or (
+            signal.direction == "BUY" and bool(structure.get("liquidity_sweep_sell"))
+        ) or (
+            signal.direction == "SELL" and bool(structure.get("liquidity_sweep_buy"))
+        )
+
+        guard = {
+            "playbook_name": playbook_name,
+            "entry_style": entry_style,
+            "continuation_like": continuation_like,
+            "conflict_frames": list(conflict_frames),
+            "support_frames": list(support_frames),
+            "reversal_evidence": reversal_evidence,
+            "action": "none",
+        }
+        signal.metadata["higher_timeframe_guard"] = dict(guard)
+        data["higher_timeframe_guard"] = dict(guard)
+
+        if len(conflict_frames) < 2 or support_frames:
+            return ""
+
+        if continuation_like and not reversal_evidence:
+            guard["action"] = "block"
+            signal.metadata["higher_timeframe_guard"] = dict(guard)
+            data["higher_timeframe_guard"] = dict(guard)
+            return (
+                "higher timeframe structure is aligned against the trade "
+                f"({', '.join(conflict_frames)})"
+            )
+
+        penalty = 0.03 if signal.category in {"forex", "commodities", "indices"} else 0.02
+        signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+        signal.metadata["higher_timeframe_conflict_penalty"] = penalty
+        notes.append("htf_conflict")
+        if reversal_evidence:
+            notes.append("htf_reversal_candidate")
+        guard["action"] = "reduce"
+        guard["confidence_penalty"] = penalty
+        signal.metadata["higher_timeframe_guard"] = dict(guard)
+        data["higher_timeframe_guard"] = dict(guard)
+        return ""
+
+    @staticmethod
+    def _market_open_spike_guard(
+        signal: Signal,
+        *,
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> str:
+        asset = str(signal.canonical_asset or signal.asset or "").strip()
+        if not asset:
+            return ""
+
+        try:
+            from services.market_hours_guard import open_spike_status
+
+            spike = open_spike_status(asset, signal.category)
+        except Exception:
+            return ""
+
+        if not isinstance(spike, dict) or not spike:
+            return ""
+
+        playbook_name = str(
+            signal.metadata.get("playbook_name")
+            or signal.metadata.get("seed_model")
+            or signal.metadata.get("strategy_id")
+            or signal.strategy_id
+            or ""
+        ).strip().lower()
+        entry_style = str(
+            signal.metadata.get("playbook_entry_style")
+            or signal.metadata.get("entry_style")
+            or ""
+        ).strip().lower()
+        combined = f"{playbook_name} {entry_style}"
+        continuation_like = any(token in combined for token in ("continuation", "breakout", "trend"))
+        open_specialist = any(token in combined for token in ("opening", "open_drive", "opening_range", "orb"))
+
+        guard = {
+            "active": bool(spike.get("active")),
+            "category": str(signal.category or ""),
+            "market": str(spike.get("market") or ""),
+            "label": str(spike.get("label") or ""),
+            "reason": str(spike.get("reason") or ""),
+            "minutes_since_open": spike.get("minutes_since_open"),
+            "window_minutes": int(spike.get("window_minutes") or 0),
+            "playbook_name": playbook_name,
+            "entry_style": entry_style,
+            "continuation_like": continuation_like,
+            "open_specialist": open_specialist,
+            "action": "none",
+        }
+        signal.metadata["open_spike_guard"] = dict(guard)
+        data["open_spike_guard"] = dict(guard)
+
+        if not guard["active"]:
+            return ""
+
+        label = guard["label"] or "market open"
+
+        if signal.category == "indices":
+            if open_specialist:
+                notes.append("open_spike_specialist")
+                guard["action"] = "allow_open_specialist"
+                signal.metadata["open_spike_guard"] = dict(guard)
+                data["open_spike_guard"] = dict(guard)
+                return ""
+
+            if continuation_like:
+                guard["action"] = "block_generic_continuation"
+                signal.metadata["open_spike_guard"] = dict(guard)
+                data["open_spike_guard"] = dict(guard)
+                return f"generic continuation is too early after {label}"
+
+            penalty = 0.03
+            signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+            signal.metadata["open_spike_penalty"] = penalty
+            notes.append("index_open_spike_cooldown")
+            guard["action"] = "reduce_generic"
+            guard["confidence_penalty"] = penalty
+            signal.metadata["open_spike_guard"] = dict(guard)
+            data["open_spike_guard"] = dict(guard)
+            return ""
+
+        if signal.category == "commodities":
+            if open_specialist:
+                notes.append("open_spike_specialist")
+                guard["action"] = "allow_open_specialist"
+                signal.metadata["open_spike_guard"] = dict(guard)
+                data["open_spike_guard"] = dict(guard)
+                return ""
+
+            penalty = 0.03 if continuation_like else 0.02
+            signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+            signal.metadata["open_spike_penalty"] = penalty
+            notes.append("commodity_reopen_cooldown")
+            guard["action"] = "reduce_generic"
+            guard["confidence_penalty"] = penalty
+            signal.metadata["open_spike_guard"] = dict(guard)
+            data["open_spike_guard"] = dict(guard)
+            return ""
+
+        return ""
+
+    @staticmethod
+    def _market_session_anchor_guard(
+        signal: Signal,
+        *,
+        structure: Dict[str, Any],
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> str:
+        if not isinstance(structure, dict) or not structure:
+            return ""
+
+        anchor_type = str(structure.get("session_anchor_type") or "").strip().lower()
+        anchor_label = str(structure.get("session_anchor_label") or anchor_type or "session anchor").strip()
+        anchor_state = str(structure.get("session_anchor_state") or "unavailable").strip().lower()
+        anchor_bias = str(structure.get("session_anchor_bias") or "neutral").strip().lower()
+        anchor_ready = bool(structure.get("session_anchor_ready"))
+        support_score = float(structure.get("session_anchor_support_score", 0.0) or 0.0)
+
+        playbook_name = str(
+            signal.metadata.get("playbook_name")
+            or signal.metadata.get("seed_model")
+            or signal.metadata.get("strategy_id")
+            or signal.strategy_id
+            or ""
+        ).strip().lower()
+        entry_style = str(
+            signal.metadata.get("playbook_entry_style")
+            or signal.metadata.get("entry_style")
+            or ""
+        ).strip().lower()
+        combined = f"{playbook_name} {entry_style}"
+        continuation_like = any(token in combined for token in ("continuation", "breakout", "trend", "pullback"))
+
+        guard = {
+            "anchor_type": anchor_type,
+            "anchor_label": anchor_label,
+            "anchor_state": anchor_state,
+            "anchor_bias": anchor_bias,
+            "anchor_ready": anchor_ready,
+            "support_score": round(support_score, 4),
+            "playbook_name": playbook_name,
+            "entry_style": entry_style,
+            "continuation_like": continuation_like,
+            "action": "none",
+        }
+        signal.metadata["session_anchor_guard"] = dict(guard)
+        data["session_anchor_guard"] = dict(guard)
+
+        if not anchor_type or not anchor_ready or abs(support_score) < 0.20:
+            return ""
+
+        if continuation_like and support_score <= -0.55:
+            guard["action"] = "block"
+            signal.metadata["session_anchor_guard"] = dict(guard)
+            data["session_anchor_guard"] = dict(guard)
+            return f"{anchor_label} is rejecting the trade"
+
+        if support_score <= -0.20:
+            penalty = 0.03 if signal.category in {"forex", "indices"} else 0.02
+            signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+            signal.metadata["session_anchor_penalty"] = penalty
+            notes.append("session_anchor_conflict_penalty")
+            if "failed_" in anchor_state:
+                notes.append("session_anchor_failed_break")
+            guard["action"] = "reduce"
+            guard["confidence_penalty"] = penalty
+            signal.metadata["session_anchor_guard"] = dict(guard)
+            data["session_anchor_guard"] = dict(guard)
+        return ""
+
     def _apply_market_review(self, signal: Signal, context: Dict[str, Any]) -> bool:
         conf_before = signal.confidence
         data: Dict[str, Any] = {}
@@ -1303,6 +1724,73 @@ class SignalDecisionEngine:
                 data=data,
             )
 
+        post_news_block_reason = self._market_post_news_guard(
+            signal,
+            news_state=news_state,
+            event_name=event_name,
+            impact=impact,
+            news_direction=_news_direction,
+            mins=mins,
+            data=data,
+            notes=notes,
+        )
+        if post_news_block_reason:
+            return self._kill_review(
+                signal,
+                step=STEP_MARKET,
+                name="market",
+                reason=post_news_block_reason,
+                conf_before=conf_before,
+                data=data,
+            )
+
+        open_spike_block_reason = self._market_open_spike_guard(
+            signal,
+            data=data,
+            notes=notes,
+        )
+        if open_spike_block_reason:
+            return self._kill_review(
+                signal,
+                step=STEP_MARKET,
+                name="market",
+                reason=open_spike_block_reason,
+                conf_before=conf_before,
+                data=data,
+            )
+
+        session_anchor_block_reason = self._market_session_anchor_guard(
+            signal,
+            structure=structure,
+            data=data,
+            notes=notes,
+        )
+        if session_anchor_block_reason:
+            return self._kill_review(
+                signal,
+                step=STEP_MARKET,
+                name="market",
+                reason=session_anchor_block_reason,
+                conf_before=conf_before,
+                data=data,
+            )
+
+        htf_block_reason = self._market_higher_timeframe_guard(
+            signal,
+            structure=structure,
+            data=data,
+            notes=notes,
+        )
+        if htf_block_reason:
+            return self._kill_review(
+                signal,
+                step=STEP_MARKET,
+                name="market",
+                reason=htf_block_reason,
+                conf_before=conf_before,
+                data=data,
+            )
+
         signal.metadata["market_review_notes"] = list(notes)
         data["notes"] = notes
         signal.step_reached = STEP_MARKET
@@ -1316,6 +1804,216 @@ class SignalDecisionEngine:
             data=data,
         )
         return True
+
+    @staticmethod
+    def _intelligence_crypto_major_guard(
+        signal: Signal,
+        *,
+        cross_asset: Dict[str, Any],
+        funding_bias: str,
+        oi_signal: str,
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> str:
+        category = str(signal.category or "").strip().lower()
+        canonical_asset = str(signal.canonical_asset or signal.asset or "").strip().upper()
+        is_major = canonical_asset.startswith("BTC") or canonical_asset.startswith("ETH")
+        dominant_peer = str(
+            cross_asset.get("dominant_peer")
+            or signal.metadata.get("cross_asset_primary_peer")
+            or ""
+        ).strip().upper()
+        dominant_relation = str(
+            cross_asset.get("dominant_relation")
+            or signal.metadata.get("cross_asset_primary_relation")
+            or ""
+        ).strip().lower()
+        supportive_direction = _normalize_trade_direction_label(
+            cross_asset.get("supportive_direction")
+            or signal.metadata.get("cross_asset_supportive_direction")
+        )
+        cross_alignment = float(
+            cross_asset.get("alignment", signal.metadata.get("cross_asset_alignment", 0.0)) or 0.0
+        )
+        cross_confidence = float(
+            cross_asset.get("confidence", signal.metadata.get("cross_asset_confidence", 0.0)) or 0.0
+        )
+        playbook_name = str(
+            signal.metadata.get("playbook_name")
+            or signal.metadata.get("seed_model")
+            or signal.metadata.get("strategy_id")
+            or signal.strategy_id
+            or ""
+        ).strip().lower()
+        entry_style = str(
+            signal.metadata.get("playbook_entry_style")
+            or signal.metadata.get("entry_style")
+            or ""
+        ).strip().lower()
+        continuation_like = any(token in f"{playbook_name} {entry_style}" for token in ("continuation", "breakout", "trend"))
+
+        direction_sign = 1 if str(signal.direction).upper() == "BUY" else -1
+        orderflow_imbalance = float(signal.metadata.get("orderflow_imbalance", 0.0) or 0.0)
+        microstructure_alignment = float(signal.metadata.get("microstructure_alignment", 0.0) or 0.0)
+        book_imbalance = float(signal.metadata.get("book_imbalance", 0.0) or 0.0)
+        tick_imbalance = float(signal.metadata.get("tick_imbalance", 0.0) or 0.0)
+        trade_flow_score = float(signal.metadata.get("trade_flow_score", 0.0) or 0.0)
+        aligned_orderflow = orderflow_imbalance * direction_sign
+        aligned_book = book_imbalance * direction_sign
+        aligned_tick = tick_imbalance * direction_sign
+        aligned_trade_flow = trade_flow_score * direction_sign
+        flow_conflict_score = min(
+            microstructure_alignment,
+            aligned_orderflow,
+            aligned_book,
+            aligned_tick,
+            aligned_trade_flow,
+        )
+        flow_support_score = max(
+            microstructure_alignment,
+            aligned_orderflow,
+            aligned_book,
+            aligned_tick,
+            aligned_trade_flow,
+        )
+        funding_direction = _normalize_trade_direction_label(funding_bias)
+        funding_supports_trade = bool(funding_direction and funding_direction == signal.direction)
+        funding_conflicts_trade = bool(funding_direction and funding_direction != signal.direction)
+        oi_signal_upper = str(oi_signal or "NEUTRAL").strip().upper()
+        derivative_conflict = funding_conflicts_trade or (
+            oi_signal_upper == "TREND_CONTINUATION"
+            and supportive_direction
+            and supportive_direction != signal.direction
+        )
+        derivative_support = funding_supports_trade or (
+            oi_signal_upper == "TREND_CONTINUATION"
+            and supportive_direction
+            and supportive_direction == signal.direction
+        )
+        major_led_context = bool(
+            dominant_peer in {"BTC-USD", "ETH-USD"}
+            or dominant_relation in {"btc_lead", "eth_confirmation", "crypto_breadth", "alt_breadth"}
+        )
+        setup_quality = float(signal.metadata.get("setup_quality", 0.0) or 0.0)
+        playbook_confidence = float(signal.metadata.get("playbook_confidence", 0.0) or 0.0)
+        weak_setup = bool(
+            float(signal.confidence) < 0.7
+            or (setup_quality > 0.0 and setup_quality < 0.68)
+            or (playbook_confidence > 0.0 and playbook_confidence < 0.74)
+        )
+
+        guard = {
+            "active": bool(category == "crypto" and not is_major and major_led_context),
+            "canonical_asset": canonical_asset,
+            "dominant_peer": dominant_peer,
+            "dominant_relation": dominant_relation,
+            "supportive_direction": supportive_direction or "",
+            "cross_alignment": round(cross_alignment, 4),
+            "cross_confidence": round(cross_confidence, 4),
+            "continuation_like": continuation_like,
+            "aligned_orderflow": round(aligned_orderflow, 4),
+            "aligned_microstructure": round(microstructure_alignment, 4),
+            "aligned_book": round(aligned_book, 4),
+            "aligned_tick": round(aligned_tick, 4),
+            "aligned_trade_flow": round(aligned_trade_flow, 4),
+            "flow_conflict_score": round(flow_conflict_score, 4),
+            "flow_support_score": round(flow_support_score, 4),
+            "funding_bias": str(funding_bias or "NEUTRAL"),
+            "oi_signal": oi_signal_upper,
+            "derivative_conflict": derivative_conflict,
+            "derivative_support": derivative_support,
+            "weak_setup": weak_setup,
+            "action": "none",
+        }
+        signal.metadata["crypto_major_guard"] = dict(guard)
+        data["crypto_major_guard"] = dict(guard)
+
+        if not guard["active"]:
+            return ""
+
+        conflict = bool(
+            cross_confidence >= 0.42
+            and cross_alignment <= -0.28
+            and (not supportive_direction or supportive_direction != signal.direction)
+        )
+        local_conflict = bool(flow_conflict_score <= -0.14 or derivative_conflict)
+        local_support = bool(flow_support_score >= 0.14 or derivative_support)
+        strong_conflict = bool(cross_confidence >= 0.55 and cross_alignment <= -0.42)
+
+        if not conflict:
+            if local_support:
+                notes.append("crypto_major_support")
+                guard["action"] = "allow_local_support"
+                signal.metadata["crypto_major_guard"] = dict(guard)
+                data["crypto_major_guard"] = dict(guard)
+            return ""
+
+        if continuation_like and weak_setup and strong_conflict and local_conflict and not local_support:
+            guard["action"] = "block"
+            signal.metadata["crypto_major_guard"] = dict(guard)
+            data["crypto_major_guard"] = dict(guard)
+            return "BTC/ETH leadership and local crypto flow are aligned against this alt setup"
+
+        penalty = 0.035 if local_conflict and not local_support else 0.02
+        signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+        signal.metadata["crypto_major_conflict_penalty"] = penalty
+        notes.append("crypto_major_conflict")
+        if local_support:
+            notes.append("crypto_local_support")
+            guard["action"] = "reduce_buffered_by_local_support"
+        else:
+            guard["action"] = "reduce"
+        guard["confidence_penalty"] = penalty
+        signal.metadata["crypto_major_guard"] = dict(guard)
+        data["crypto_major_guard"] = dict(guard)
+        return ""
+
+    @staticmethod
+    def _intelligence_crypto_dominance_guard(
+        signal: Signal,
+        *,
+        data: Dict[str, Any],
+        notes: List[str],
+    ) -> str:
+        category = str(signal.category or "").strip().lower()
+        canonical_asset = str(signal.canonical_asset or signal.asset or "").strip().upper()
+        if category != "crypto" or canonical_asset.startswith("BTC") or canonical_asset.startswith("ETH"):
+            return ""
+
+        details = signal.metadata.get("market_intelligence_details")
+        if not isinstance(details, dict):
+            return ""
+        cg = details.get("coingecko_global")
+        if not isinstance(cg, dict):
+            return ""
+
+        btc_dom = float(cg.get("btc_dominance", 0.0) or 0.0)
+        eth_dom = float(cg.get("eth_dominance", 0.0) or 0.0)
+        btc_delta = float(cg.get("btc_dominance_delta", 0.0) or 0.0)
+        guard = {
+            "active": True,
+            "btc_dominance": round(btc_dom, 4),
+            "eth_dominance": round(eth_dom, 4),
+            "btc_dominance_delta": round(btc_delta, 4),
+            "action": "none",
+        }
+
+        if signal.direction == "BUY" and btc_dom >= 58.0 and btc_delta >= 0.10:
+            penalty = 0.025 if float(signal.confidence or 0.0) < 0.72 else 0.015
+            signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+            guard["action"] = "reduce_alt_buy"
+            guard["confidence_penalty"] = penalty
+            notes.append("btc_dominance_rising_against_alt_buy")
+        elif signal.direction == "SELL" and btc_dom <= 52.0 and btc_delta <= -0.10:
+            penalty = 0.025 if float(signal.confidence or 0.0) < 0.72 else 0.015
+            signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+            guard["action"] = "reduce_alt_sell"
+            guard["confidence_penalty"] = penalty
+            notes.append("btc_dominance_falling_against_alt_sell")
+
+        signal.metadata["crypto_dominance_guard"] = dict(guard)
+        data["crypto_dominance_guard"] = dict(guard)
+        return ""
 
     @staticmethod
     def _apply_intelligence_review(signal: Signal, context: Dict[str, Any]) -> bool:
@@ -1332,6 +2030,48 @@ class SignalDecisionEngine:
         if intelligence_timestamp:
             signal.metadata["intelligence_timestamp"] = intelligence_timestamp
             signal.metadata["derivatives_timestamp"] = intelligence_timestamp
+        notes: List[str] = []
+        data = {
+            "sentiment_score": sentiment.get("score"),
+            "sentiment_sources": sentiment.get("sources", []),
+            "narrative": sentiment.get("dominant_narrative", ""),
+            "whale_dominant": whale.get("dominant"),
+            "whale_ratio": whale.get("ratio"),
+            "cross_asset_score": cross_asset.get("score"),
+            "cross_asset_alignment": cross_asset.get("alignment"),
+            "cross_asset_confidence": cross_asset.get("confidence"),
+            "cross_asset_state": cross_asset.get("state"),
+            "cross_asset_supportive_direction": cross_asset.get("supportive_direction"),
+            "cross_asset_primary_peer": cross_asset.get("dominant_peer"),
+            "cross_asset_primary_relation": cross_asset.get("dominant_relation"),
+            "cross_asset_peers": cross_asset.get("peers", []),
+            "market_intel_sources": signal.metadata.get("market_intelligence_sources", []),
+        }
+        crypto_major_block_reason = SignalDecisionEngine._intelligence_crypto_major_guard(
+            signal,
+            cross_asset=cross_asset,
+            funding_bias=funding_bias,
+            oi_signal=oi_signal,
+            data=data,
+            notes=notes,
+        )
+        SignalDecisionEngine._intelligence_crypto_dominance_guard(
+            signal,
+            data=data,
+            notes=notes,
+        )
+        if notes:
+            signal.metadata["intelligence_review_notes"] = list(notes)
+            data["notes"] = list(notes)
+        if crypto_major_block_reason:
+            return SignalDecisionEngine._kill_review(
+                signal,
+                step=STEP_INTELLIGENCE,
+                name="intelligence",
+                reason=crypto_major_block_reason,
+                conf_before=conf_before,
+                data=data,
+            )
         signal.step_reached = STEP_INTELLIGENCE
         signal.journal.record(
             layer=STEP_INTELLIGENCE,
@@ -1345,22 +2085,7 @@ class SignalDecisionEngine:
             ),
             conf_before=conf_before,
             conf_after=signal.confidence,
-            data={
-                "sentiment_score": sentiment.get("score"),
-                "sentiment_sources": sentiment.get("sources", []),
-                "narrative": sentiment.get("dominant_narrative", ""),
-                "whale_dominant": whale.get("dominant"),
-                "whale_ratio": whale.get("ratio"),
-                "cross_asset_score": cross_asset.get("score"),
-                "cross_asset_alignment": cross_asset.get("alignment"),
-                "cross_asset_confidence": cross_asset.get("confidence"),
-                "cross_asset_state": cross_asset.get("state"),
-                "cross_asset_supportive_direction": cross_asset.get("supportive_direction"),
-                "cross_asset_primary_peer": cross_asset.get("dominant_peer"),
-                "cross_asset_primary_relation": cross_asset.get("dominant_relation"),
-                "cross_asset_peers": cross_asset.get("peers", []),
-                "market_intel_sources": signal.metadata.get("market_intelligence_sources", []),
-            },
+            data=data,
         )
         return True
 
@@ -1410,6 +2135,8 @@ class SignalDecisionEngine:
                 "recent_review_profile": dict(adaptive_policy.get("recent_review_profile") or {}),
                 "asset_performance_profile": dict(adaptive_policy.get("asset_performance_profile") or {}),
                 "book_performance_profile": dict(adaptive_policy.get("book_performance_profile") or {}),
+                "context_protection_profile": dict(adaptive_policy.get("context_protection_profile") or {}),
+                "session_performance_profile": dict(adaptive_policy.get("session_performance_profile") or {}),
                 "inactivity_profile": dict(adaptive_policy.get("inactivity_profile") or {}),
                 "notes": list(adaptive_policy.get("notes") or []),
             }
@@ -1487,7 +2214,30 @@ class SignalDecisionEngine:
             return True
         try:
             liquidity = float(spread) / float(price)
+            broker_spread_regime = str(signal.metadata.get("broker_spread_regime", "") or "").strip().lower()
+            micro = signal.metadata.get("market_microstructure") if isinstance(signal.metadata.get("market_microstructure"), dict) else {}
+            spread_stress = float(signal.metadata.get("spread_stress", micro.get("spread_stress", 0.0)) or 0.0)
             data["liquidity_proxy"] = round(liquidity, 6)
+            data["spread_regime"] = broker_spread_regime
+            data["spread_stress"] = round(spread_stress, 4)
+            if broker_spread_regime in {"wide", "stressed", "extreme"}:
+                return self._kill_review(
+                    signal,
+                    step=STEP_EXECUTION,
+                    name="execution",
+                    reason=f"spread regime is {broker_spread_regime}",
+                    conf_before=conf_before,
+                    data=data,
+                )
+            if spread_stress >= 1.45:
+                return self._kill_review(
+                    signal,
+                    step=STEP_EXECUTION,
+                    name="execution",
+                    reason=f"spread stress {spread_stress:.2f} is too elevated",
+                    conf_before=conf_before,
+                    data=data,
+                )
             if liquidity > max_spread_pct:
                 return self._kill_review(
                     signal,
@@ -1673,6 +2423,8 @@ class SignalDecisionEngine:
             structure.get("entry_confirmation_ready", signal.metadata.get("entry_confirmation_ready"))
         )
         pattern_family = str(structure.get("pattern_family", signal.metadata.get("pattern_family", "unknown")) or "unknown")
+        trend_5m = str(structure.get("trend_5m", signal.metadata.get("trend_5m", "unknown")) or "unknown").strip().lower()
+        close_location = float(structure.get("close_location", signal.metadata.get("close_location", 0.5)) or 0.5)
         regime_entry_policy = (
             dict(structure.get("regime_entry_policy"))
             if isinstance(structure.get("regime_entry_policy"), dict)
@@ -1746,8 +2498,16 @@ class SignalDecisionEngine:
         external_depth_rejected = bool(signal.metadata.get("external_depth_rejected"))
         cross_asset_alignment = float(signal.metadata.get("cross_asset_alignment", 0.0) or 0.0)
         cross_asset_confidence = float(signal.metadata.get("cross_asset_confidence", 0.0) or 0.0)
+        cross_asset_supportive_direction = _normalize_trade_direction_label(
+            signal.metadata.get("cross_asset_supportive_direction")
+        )
+        cross_asset_primary_peer = str(signal.metadata.get("cross_asset_primary_peer") or "").strip().upper()
+        cross_asset_primary_relation = str(
+            signal.metadata.get("cross_asset_primary_relation") or ""
+        ).strip().lower()
         supportive_structure_distance = float(signal.metadata.get("supportive_structure_distance", 0.0) or 0.0)
         category_label = str(signal.category or signal.metadata.get("category") or "").strip().lower()
+        canonical_asset = str(signal.canonical_asset or signal.asset or "").strip().upper()
         session_timing_strictness = _session_timing_strictness(
             category_label,
             session_quality_label,
@@ -1755,8 +2515,15 @@ class SignalDecisionEngine:
         )
         execution_policy = get_execution_policy(signal.asset)
         direction_sign = 1 if signal.direction == "BUY" else -1
+        funding_bias = str(signal.metadata.get("funding_bias") or "NEUTRAL").strip().upper()
+        oi_signal = str(signal.metadata.get("oi_signal") or "NEUTRAL").strip().upper()
+        funding_direction = _normalize_trade_direction_label(funding_bias)
         orderflow_imbalance = float(signal.metadata.get("orderflow_imbalance", 0.0) or 0.0)
         microstructure_alignment = float(signal.metadata.get("microstructure_alignment", 0.0) or 0.0)
+        trade_flow_score = float(signal.metadata.get("trade_flow_score", 0.0) or 0.0)
+        trade_delta_ratio = float(signal.metadata.get("trade_delta_ratio", 0.0) or 0.0)
+        trade_cvd_slope = float(signal.metadata.get("trade_cvd_slope", 0.0) or 0.0)
+        aligned_trade_flow = trade_flow_score * direction_sign
         aligned_book_pressure = float(signal.metadata.get("book_imbalance", 0.0) or 0.0) * direction_sign
         aligned_tick_pressure = float(signal.metadata.get("tick_imbalance", 0.0) or 0.0) * direction_sign
         recent_pattern_sample_count = int(recent_review.get("sample_count", 0) or 0)
@@ -1786,17 +2553,100 @@ class SignalDecisionEngine:
         directional_flow_support = max(
             orderflow_imbalance * direction_sign,
             microstructure_alignment,
+            aligned_trade_flow,
             aligned_book_pressure,
             aligned_tick_pressure,
         )
         directional_flow_conflict = min(
             orderflow_imbalance * direction_sign,
             microstructure_alignment,
+            aligned_trade_flow,
             aligned_book_pressure,
             aligned_tick_pressure,
         )
         has_directional_flow_support = directional_flow_support >= 0.12
         has_directional_flow_conflict = directional_flow_conflict <= -0.16
+        trigger_reversal_against_trade = bool(
+            (signal.direction == "BUY" and trend_5m == "trending_down")
+            or (signal.direction == "SELL" and trend_5m == "trending_up")
+        )
+        opposing_liquidity_sweep = bool(
+            (signal.direction == "BUY" and liquidity_sweep_sell)
+            or (signal.direction == "SELL" and liquidity_sweep_buy)
+        )
+        opposing_trigger_close = bool(
+            (signal.direction == "BUY" and close_location <= 0.36)
+            or (signal.direction == "SELL" and close_location >= 0.64)
+        )
+        continuation_reclaim_evidence = (
+            int(trigger_reversal_against_trade)
+            + int(opposing_liquidity_sweep)
+            + int(opposing_trigger_close)
+            + int(has_directional_flow_conflict)
+        )
+        mature_continuation_profile = bool(
+            extension_score >= 0.92
+            or directional_extension >= 0.76
+            or impulse_age_bars >= 4
+            or exhaustion_risk >= 0.28
+            or dominant_exhaustion >= 0.45
+            or bias_exhausted
+        )
+        continuation_reclaim_pressure = bool(
+            (continuation_family or continuation_entry)
+            and mature_continuation_profile
+            and continuation_reclaim_evidence >= 2
+        )
+        is_crypto = category_label == "crypto"
+        is_crypto_major = canonical_asset in {"BTC-USD", "ETH-USD"}
+        is_crypto_alt = is_crypto and not is_crypto_major
+        crypto_breadth_relation = bool(
+            cross_asset_primary_peer in {"BTC-USD", "ETH-USD"}
+            or cross_asset_primary_relation
+            in {"btc_lead", "eth_confirmation", "crypto_breadth", "alt_breadth"}
+        )
+        crypto_breadth_conflict = bool(
+            is_crypto
+            and crypto_breadth_relation
+            and cross_asset_confidence >= (0.30 if is_crypto_major else 0.36)
+            and cross_asset_alignment <= (-0.24 if is_crypto_major else -0.32)
+            and cross_asset_supportive_direction in {"BUY", "SELL"}
+            and cross_asset_supportive_direction != signal.direction
+        )
+        crypto_breadth_support = bool(
+            is_crypto
+            and crypto_breadth_relation
+            and cross_asset_confidence >= (0.30 if is_crypto_major else 0.36)
+            and cross_asset_alignment >= (0.24 if is_crypto_major else 0.32)
+            and cross_asset_supportive_direction == signal.direction
+        )
+        funding_supports_trade = bool(funding_direction and funding_direction == signal.direction)
+        funding_conflicts_trade = bool(funding_direction and funding_direction != signal.direction)
+        oi_trend_continuation = oi_signal == "TREND_CONTINUATION"
+        oi_potential_reversal = oi_signal == "POTENTIAL_REVERSAL"
+        crypto_derivative_conflict = bool(
+            is_crypto
+            and (
+                funding_conflicts_trade
+                or (oi_trend_continuation and crypto_breadth_conflict)
+                or (oi_potential_reversal and (continuation_family or continuation_entry))
+            )
+        )
+        crypto_derivative_support = bool(
+            is_crypto
+            and (
+                funding_supports_trade
+                or (oi_trend_continuation and crypto_breadth_support)
+            )
+        )
+        crypto_flow_breadth_hard_block = bool(
+            crypto_breadth_conflict
+            and has_directional_flow_conflict
+            and (
+                is_crypto_alt
+                or (is_crypto_major and (continuation_family or continuation_entry) and mature_continuation_profile)
+            )
+        )
         strong_market_candidate = bool(
             category_label in {"crypto", "forex", "commodities", "indices"}
             and (
@@ -1868,6 +2718,11 @@ class SignalDecisionEngine:
                 or breakout_retest_ready
                 or first_pullback_ready
             )
+        )
+        continuation_reclaim_hard_block = bool(
+            continuation_reclaim_pressure
+            and not has_directional_flow_support
+            and not high_conviction_continuation_supported
         )
         elite_supported_candidate = bool(
             strong_market_candidate
@@ -2148,6 +3003,28 @@ class SignalDecisionEngine:
             ):
                 risk_score += 0.28
                 reasons.append("failed opposite reclaim now favors the other side")
+        if continuation_family or continuation_entry:
+            if trigger_reversal_against_trade:
+                risk_score += 0.14
+                reasons.append("trigger trend is now leaning against the continuation")
+            if opposing_liquidity_sweep:
+                risk_score += 0.12
+                reasons.append("opposite-side sweep is undermining the continuation")
+            if opposing_trigger_close and mature_continuation_profile:
+                risk_score += 0.10
+                reasons.append("trigger candle is closing against the continuation")
+            if continuation_reclaim_pressure:
+                risk_score += 0.18
+                reasons.append("continuation is colliding with opposite-side reclaim pressure")
+        if crypto_breadth_conflict:
+            risk_score += 0.16 if is_crypto_alt else 0.10
+            reasons.append("broad crypto breadth is leaning against the trade")
+        if is_crypto and aligned_trade_flow <= -0.18:
+            risk_score += 0.08 if is_crypto_alt else 0.05
+            reasons.append("crypto trade flow is leaning against the trade")
+        if crypto_derivative_conflict and not crypto_derivative_support:
+            risk_score += 0.08 if is_crypto_alt else 0.05
+            reasons.append("crypto derivatives are not backing the trade cleanly")
         if strong_market_candidate and extension_score <= 1.18 and target_efficiency_score >= 0.22 and impulse_age_bars <= 6:
             risk_score -= 0.04
         if elite_supported_candidate and cluster_penalty < 0.22:
@@ -2371,6 +3248,10 @@ class SignalDecisionEngine:
             or (signal.direction == "SELL" and structure_bias == "buy")
         ):
             hard_blocks.append("failed opposite reclaim is confirmed against the trade direction")
+        if crypto_flow_breadth_hard_block:
+            hard_blocks.append("broad crypto breadth and live flow are aligned against the trade")
+        if continuation_reclaim_hard_block:
+            hard_blocks.append("continuation entry is fighting an opposite-side reclaim")
         if stop_hunt_risk >= 0.48 and (
             synthetic_depth_only
             or misaligned_true_depth_available
@@ -2488,6 +3369,24 @@ class SignalDecisionEngine:
             "session_timing_strictness": dict(session_timing_strictness),
             "policy_relief": round(adaptive_policy_relief, 4),
             "policy_penalty": round(adaptive_policy_penalty, 4),
+            "trigger_reversal_against_trade": trigger_reversal_against_trade,
+            "opposing_liquidity_sweep": opposing_liquidity_sweep,
+            "opposing_trigger_close": opposing_trigger_close,
+            "continuation_reclaim_evidence": int(continuation_reclaim_evidence),
+            "mature_continuation_profile": mature_continuation_profile,
+            "continuation_reclaim_pressure": continuation_reclaim_pressure,
+            "cross_asset_primary_peer": cross_asset_primary_peer,
+            "cross_asset_primary_relation": cross_asset_primary_relation,
+            "cross_asset_supportive_direction": cross_asset_supportive_direction,
+            "crypto_breadth_conflict": crypto_breadth_conflict,
+            "crypto_breadth_support": crypto_breadth_support,
+            "crypto_derivative_conflict": crypto_derivative_conflict,
+            "crypto_derivative_support": crypto_derivative_support,
+            "trade_flow_score": round(trade_flow_score, 4),
+            "trade_delta_ratio": round(trade_delta_ratio, 4),
+            "trade_cvd_slope": round(trade_cvd_slope, 4),
+            "funding_bias": funding_bias,
+            "oi_signal": oi_signal,
             "risk_kill_threshold": round(risk_kill_threshold, 4),
             "weak_candle_extension_limit": round(weak_candle_extension_limit, 4),
             "weak_candle_floor": round(weak_candle_floor, 4),
@@ -2512,6 +3411,13 @@ class SignalDecisionEngine:
             "high_conviction_continuation_supported": high_conviction_continuation_supported,
             "has_directional_flow_support": has_directional_flow_support,
             "has_directional_flow_conflict": has_directional_flow_conflict,
+            "continuation_reclaim_pressure": continuation_reclaim_pressure,
+            "crypto_breadth_conflict": crypto_breadth_conflict,
+            "crypto_breadth_support": crypto_breadth_support,
+            "crypto_derivative_conflict": crypto_derivative_conflict,
+            "crypto_derivative_support": crypto_derivative_support,
+            "trade_flow_support": aligned_trade_flow >= 0.12,
+            "trade_flow_conflict": aligned_trade_flow <= -0.16,
             "inactivity_execution_relief": inactivity_execution_relief,
             "inactivity_relief_strength": round(inactivity_relief_strength, 4),
             "inactivity_flat_book": inactivity_flat_book,
@@ -2536,6 +3442,17 @@ class SignalDecisionEngine:
             "confirmation_needed": confirmation_needed,
             "recent_pattern_sample_count": recent_pattern_sample_count,
             "pattern_rank_score": round(elite_pattern_rank, 4),
+            "cross_asset_alignment": round(cross_asset_alignment, 4),
+            "cross_asset_confidence": round(cross_asset_confidence, 4),
+            "cross_asset_primary_peer": cross_asset_primary_peer,
+            "cross_asset_primary_relation": cross_asset_primary_relation,
+            "cross_asset_supportive_direction": cross_asset_supportive_direction,
+            "canonical_asset": canonical_asset,
+            "funding_bias": funding_bias,
+            "oi_signal": oi_signal,
+            "trade_flow_score": round(trade_flow_score, 4),
+            "trade_delta_ratio": round(trade_delta_ratio, 4),
+            "trade_cvd_slope": round(trade_cvd_slope, 4),
             "trade_cluster_penalty": round(cluster_penalty, 4),
             "pattern_family": pattern_family,
             "failed_opposite_move_confirmed": failed_opposite_move_confirmed,
@@ -2554,6 +3471,13 @@ class SignalDecisionEngine:
             "first_pullback_ready": first_pullback_ready,
             "liquidity_sweep_buy": liquidity_sweep_buy,
             "liquidity_sweep_sell": liquidity_sweep_sell,
+            "trend_5m": trend_5m,
+            "close_location": round(close_location, 4),
+            "trigger_reversal_against_trade": trigger_reversal_against_trade,
+            "opposing_liquidity_sweep": opposing_liquidity_sweep,
+            "opposing_trigger_close": opposing_trigger_close,
+            "continuation_reclaim_evidence": int(continuation_reclaim_evidence),
+            "continuation_reclaim_pressure": continuation_reclaim_pressure,
             "alignment_score": round(alignment_score, 4),
             "strong_market_candidate": strong_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
@@ -2562,6 +3486,10 @@ class SignalDecisionEngine:
             "high_conviction_continuation_candidate": high_conviction_continuation_candidate,
             "high_conviction_continuation_timing_intact": high_conviction_continuation_timing_intact,
             "high_conviction_continuation_supported": high_conviction_continuation_supported,
+            "crypto_breadth_conflict": crypto_breadth_conflict,
+            "crypto_breadth_support": crypto_breadth_support,
+            "crypto_derivative_conflict": crypto_derivative_conflict,
+            "crypto_derivative_support": crypto_derivative_support,
             "directional_flow_support": round(directional_flow_support, 4),
             "directional_flow_conflict": round(directional_flow_conflict, 4),
             "asset_performance_profile": dict(asset_performance),
@@ -2690,6 +3618,115 @@ class SignalDecisionEngine:
             logger.debug(f"[DecisionEngine] Signal scorecard unavailable for {signal.asset}: {exc}")
 
     @staticmethod
+    def _execution_source_floor_gate(
+        signal: Signal,
+        context: Dict[str, Any],
+        conf_before: float,
+        data: Dict[str, Any],
+    ) -> bool:
+        scorecard = signal.metadata.get("scorecard")
+        if not isinstance(scorecard, dict):
+            return True
+        breakdown = scorecard.get("breakdown")
+        if not isinstance(breakdown, dict) or not breakdown:
+            return True
+
+        category = str(signal.category or context.get("category") or "").strip().lower()
+        valid_families = set(str(item) for item in (signal.metadata.get("valid_source_families") or []))
+        checks: List[Tuple[str, float, float, bool]] = []
+
+        def _score(name: str) -> Optional[float]:
+            value = breakdown.get(name)
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except Exception:
+                return None
+
+        for name, floor in (("structure", 0.26), ("regime", 0.24), ("entry", 0.24)):
+            score = _score(name)
+            if score is not None:
+                checks.append((name, score, floor, True))
+
+        flow_score = max(
+            float(_score("microstructure") or 0.0),
+            float(_score("order_flow") or 0.0),
+        )
+        if ("flow" in valid_families or category == "crypto") and flow_score > 0.0:
+            checks.append(("flow", flow_score, 0.22 if category == "crypto" else 0.18, category == "crypto"))
+
+        if "cross_asset" in valid_families:
+            cross_score = _score("cross_asset")
+            if cross_score is not None:
+                checks.append(("cross_asset", cross_score, 0.18, False))
+
+        if "sentiment" in valid_families and category in {"crypto", "indices", "commodities", "forex"}:
+            sentiment_score = _score("sentiment")
+            if sentiment_score is not None:
+                checks.append(("sentiment", sentiment_score, 0.16 if category != "forex" else 0.14, False))
+
+        misses = [
+            {
+                "name": name,
+                "score": round(score, 4),
+                "floor": round(floor, 4),
+                "critical": critical,
+            }
+            for name, score, floor, critical in checks
+            if score < floor
+        ]
+        severe_misses = [item for item in misses if item["critical"] and item["score"] <= item["floor"] - 0.10]
+
+        guard = {
+            "checks": [
+                {
+                    "name": name,
+                    "score": round(score, 4),
+                    "floor": round(floor, 4),
+                    "critical": critical,
+                }
+                for name, score, floor, critical in checks
+            ],
+            "misses": list(misses),
+            "action": "pass",
+        }
+        signal.metadata["source_floor_guard"] = dict(guard)
+        data["source_floor_guard"] = dict(guard)
+
+        if not misses:
+            return True
+
+        if severe_misses or len(misses) >= 2:
+            reason = "source floor failure: " + ", ".join(
+                f"{item['name']} {item['score']:.2f}<{item['floor']:.2f}" for item in misses
+            )
+            signal.kill(reason, STEP_EXECUTION)
+            signal.journal.record(
+                layer=STEP_EXECUTION,
+                name="execution",
+                decision=KILLED,
+                reason=reason,
+                conf_before=conf_before,
+                conf_after=signal.confidence,
+                data=data,
+            )
+            guard["action"] = "block"
+            signal.metadata["source_floor_guard"] = dict(guard)
+            data["source_floor_guard"] = dict(guard)
+            return False
+
+        deficit = max(0.0, misses[0]["floor"] - misses[0]["score"])
+        penalty = round(min(0.05, max(0.015, deficit + 0.01)), 4)
+        signal.reduce(penalty)
+        guard["action"] = "reduce"
+        guard["confidence_penalty"] = penalty
+        signal.metadata["source_floor_penalty"] = penalty
+        signal.metadata["source_floor_guard"] = dict(guard)
+        data["source_floor_guard"] = dict(guard)
+        return True
+
+    @staticmethod
     def _execution_confidence_gate(
         signal: Signal,
         conf_before: float,
@@ -2748,6 +3785,19 @@ class SignalDecisionEngine:
         try:
             entry = signal.entry_price
             tp1 = signal.take_profit
+            structure = signal.metadata.get("market_structure") if isinstance(signal.metadata.get("market_structure"), dict) else {}
+            if signal.direction == "BUY":
+                levels = [round(float(level), 6) for level in list(structure.get("bullish_target_levels") or []) if float(level) > entry]
+            else:
+                levels = [round(float(level), 6) for level in list(structure.get("bearish_target_levels") or []) if float(level) < entry]
+            if levels:
+                signal.take_profit_levels = levels[:4]
+                if signal.direction == "BUY" and tp1 > signal.take_profit_levels[-1]:
+                    signal.take_profit_levels.append(round(float(tp1), 6))
+                elif signal.direction == "SELL" and tp1 < signal.take_profit_levels[-1]:
+                    signal.take_profit_levels.append(round(float(tp1), 6))
+                signal.take_profit_levels = list(dict.fromkeys(signal.take_profit_levels))[:4]
+                return
             dist = abs(tp1 - entry)
             if dist <= 0:
                 return
@@ -2848,6 +3898,8 @@ class SignalDecisionEngine:
         data["notes"] = list(notes)
 
         self._execution_apply_scorecard(signal, context, data)
+        if not self._execution_source_floor_gate(signal, context, conf_before, data):
+            return False
 
         if not self._execution_confidence_gate(signal, conf_before, min_final_conf, data):
             return False

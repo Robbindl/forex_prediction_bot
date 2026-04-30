@@ -26,6 +26,8 @@ except ImportError:  # pragma: no cover - Python < 3.9 fallback
 
 
 _CLOSE_BUFFER_MINUTES = 60
+_OPEN_SPIKE_WINDOW_MINUTES = 15
+_COMMODITY_REOPEN_WINDOW_MINUTES = 10
 
 
 def _utc_now(now_utc: Optional[datetime] = None) -> datetime:
@@ -45,6 +47,36 @@ def _now_in_tz(tz_name: str, now_utc: datetime) -> datetime:
 def _resolved_category(asset: str, category: str = "") -> str:
     resolved = str(category or get_profile(asset).category or "").strip().lower()
     return resolved
+
+
+def _open_window_result(
+    *,
+    asset: str,
+    category: str,
+    market: str,
+    timezone_name: str,
+    window_minutes: int,
+    minutes_since_open: int,
+    label: str,
+) -> Dict[str, Any]:
+    active = 0 <= int(minutes_since_open) < int(window_minutes)
+    reason = ""
+    if active:
+        reason = (
+            f"{label}: first {int(window_minutes)}m after the open "
+            f"({int(minutes_since_open)}m elapsed)"
+        )
+    return {
+        "asset": asset,
+        "category": category,
+        "market": market,
+        "timezone": timezone_name,
+        "label": label,
+        "window_minutes": int(window_minutes),
+        "minutes_since_open": int(minutes_since_open),
+        "active": active,
+        "reason": reason,
+    }
 
 
 def _parse_utc_datetime(value: Any) -> Optional[datetime]:
@@ -320,6 +352,135 @@ def session_market_status(
     if resolved_category == "commodities" or is_commodity(asset):
         return _commodity_status(asset, now)
     return False, f"Unknown asset type ({asset})"
+
+
+def open_spike_status(
+    asset: str,
+    category: str = "",
+    *,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Return whether the asset is inside its first-minutes open-chaos window.
+
+    This is intentionally narrow. It focuses on exchange-driven opens and the
+    daily/sunday futures reopen where generic entries are more vulnerable to
+    spread spikes and whipsaw than during the rest of the session.
+    """
+
+    resolved_category = _resolved_category(asset, category)
+    now = _utc_now(now_utc)
+    inactive = {
+        "asset": asset,
+        "category": resolved_category,
+        "market": "",
+        "timezone": "UTC",
+        "label": "",
+        "window_minutes": 0,
+        "minutes_since_open": None,
+        "active": False,
+        "reason": "",
+    }
+
+    if resolved_category == "crypto" or is_crypto(asset):
+        return dict(inactive)
+
+    if resolved_category == "indices":
+        if is_us_index(asset):
+            local_now = _now_in_tz("America/New_York", now)
+            if local_now.weekday() >= 5 or local_now.time() < dtime(9, 30):
+                return dict(inactive)
+            minutes = int((local_now - local_now.replace(hour=9, minute=30, second=0, microsecond=0)).total_seconds() // 60)
+            return _open_window_result(
+                asset=asset,
+                category=resolved_category,
+                market="us_index_open",
+                timezone_name="America/New_York",
+                window_minutes=_OPEN_SPIKE_WINDOW_MINUTES,
+                minutes_since_open=minutes,
+                label="US cash open",
+            )
+        if is_uk_index(asset):
+            local_now = _now_in_tz("Europe/London", now)
+            if local_now.weekday() >= 5 or local_now.time() < dtime(8, 0):
+                return dict(inactive)
+            minutes = int((local_now - local_now.replace(hour=8, minute=0, second=0, microsecond=0)).total_seconds() // 60)
+            return _open_window_result(
+                asset=asset,
+                category=resolved_category,
+                market="uk_index_open",
+                timezone_name="Europe/London",
+                window_minutes=_OPEN_SPIKE_WINDOW_MINUTES,
+                minutes_since_open=minutes,
+                label="UK cash open",
+            )
+        if is_europe_index(asset):
+            local_now = _now_in_tz("Europe/Berlin", now)
+            if local_now.weekday() >= 5 or local_now.time() < dtime(9, 0):
+                return dict(inactive)
+            minutes = int((local_now - local_now.replace(hour=9, minute=0, second=0, microsecond=0)).total_seconds() // 60)
+            return _open_window_result(
+                asset=asset,
+                category=resolved_category,
+                market="europe_index_open",
+                timezone_name="Europe/Berlin",
+                window_minutes=_OPEN_SPIKE_WINDOW_MINUTES,
+                minutes_since_open=minutes,
+                label="Europe cash open",
+            )
+        if is_australia_index(asset):
+            local_now = _now_in_tz("Australia/Sydney", now)
+            if local_now.weekday() >= 5 or local_now.time() < dtime(10, 0):
+                return dict(inactive)
+            minutes = int((local_now - local_now.replace(hour=10, minute=0, second=0, microsecond=0)).total_seconds() // 60)
+            return _open_window_result(
+                asset=asset,
+                category=resolved_category,
+                market="australia_index_open",
+                timezone_name="Australia/Sydney",
+                window_minutes=_OPEN_SPIKE_WINDOW_MINUTES,
+                minutes_since_open=minutes,
+                label="Australia cash open",
+            )
+        if is_japan_index(asset):
+            local_now = _now_in_tz("Asia/Tokyo", now)
+            if local_now.weekday() >= 5 or local_now.time() < dtime(9, 0):
+                return dict(inactive)
+            minutes = int((local_now - local_now.replace(hour=9, minute=0, second=0, microsecond=0)).total_seconds() // 60)
+            return _open_window_result(
+                asset=asset,
+                category=resolved_category,
+                market="japan_index_open",
+                timezone_name="Asia/Tokyo",
+                window_minutes=_OPEN_SPIKE_WINDOW_MINUTES,
+                minutes_since_open=minutes,
+                label="Japan cash open",
+            )
+        return dict(inactive)
+
+    if resolved_category == "commodities" or is_commodity(asset):
+        local_now = _now_in_tz("America/New_York", now)
+        wd = local_now.weekday()
+        if wd == 5:
+            return dict(inactive)
+        if local_now.time() < dtime(18, 0):
+            return dict(inactive)
+        if wd == 4:
+            return dict(inactive)
+        if wd not in {6, 0, 1, 2, 3}:
+            return dict(inactive)
+        minutes = int((local_now - local_now.replace(hour=18, minute=0, second=0, microsecond=0)).total_seconds() // 60)
+        return _open_window_result(
+            asset=asset,
+            category=resolved_category,
+            market="commodity_reopen",
+            timezone_name="America/New_York",
+            window_minutes=_COMMODITY_REOPEN_WINDOW_MINUTES,
+            minutes_since_open=minutes,
+            label="futures reopen",
+        )
+
+    return dict(inactive)
 
 
 def build_market_status(

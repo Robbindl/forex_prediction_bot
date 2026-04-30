@@ -300,7 +300,9 @@ nginx_http2.conf.sample
 
 # TEST SOURCE FILES
 # ------------------------------------------------
+tests/
 test_*.py
+*_test.py
 conftest.py
 pytest.ini
 

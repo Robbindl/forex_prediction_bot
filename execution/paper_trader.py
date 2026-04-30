@@ -785,6 +785,52 @@ class PaperTrader:
             ),
         )
 
+    def _protect_runner_after_partial(
+        self,
+        pos: TradeDict,
+        *,
+        price: float,
+        direction: str,
+        entry: float,
+        take_profit: float,
+        metadata: Dict[str, Any],
+        management: Dict[str, Any],
+    ) -> None:
+        current_stop = float(pos.get("stop_loss", entry) or entry)
+        original_stop = float(pos.get("original_sl", current_stop) or current_stop)
+        initial_risk = abs(entry - original_stop)
+        if initial_risk <= 0.0:
+            return
+
+        if bool(management.get("break_even_after_partial", False)):
+            if direction == "BUY":
+                pos["stop_loss"] = max(current_stop, entry)
+            else:
+                pos["stop_loss"] = min(current_stop, entry)
+
+        protected_stop = float(pos.get("stop_loss", current_stop) or current_stop)
+        if management:
+            self._apply_management_trailing_rules(
+                pos,
+                price,
+                direction,
+                entry,
+                protected_stop,
+                metadata,
+                management,
+                initial_risk,
+            )
+            return
+
+        self._apply_fallback_trailing_rules(
+            pos,
+            price,
+            direction,
+            entry,
+            protected_stop,
+            take_profit,
+        )
+
     def _process_take_profit_targets(
         self,
         pos: TradeDict,
@@ -834,15 +880,15 @@ class PaperTrader:
                 )
 
                 pos["position_size"] = remaining_size
-                initial_risk = abs(entry - float(pos.get("original_sl", pos.get("stop_loss", entry))))
-                be_buffer = initial_risk * 0.05
-                if direction == "BUY":
-                    improved_stop = max(float(pos.get("stop_loss", 0.0)), entry + be_buffer)
-                    pos["stop_loss"] = improved_stop
-                else:
-                    current_stop = float(pos.get("stop_loss", entry))
-                    improved_stop = min(current_stop, entry - be_buffer)
-                    pos["stop_loss"] = improved_stop
+                self._protect_runner_after_partial(
+                    pos,
+                    price=price,
+                    direction=direction,
+                    entry=entry,
+                    take_profit=take_profit,
+                    metadata=metadata,
+                    management=management,
+                )
 
                 self._notify_position_updated(pos)
                 if partial_trade and self.on_trade_closed:
