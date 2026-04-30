@@ -56,7 +56,7 @@ button.primary{background:rgba(41,121,255,.15);border-color:rgba(41,121,255,.35)
 .viz-meta-copy{flex:1 1 320px;min-width:0}
 .viz-meta-actions{display:grid;gap:8px;justify-items:end;min-width:min(100%,520px)}
 .viz-stage{position:relative;overflow:hidden;min-height:700px;height:min(82vh,920px);border-radius:14px;background:radial-gradient(circle at top,rgba(59,130,246,.10),transparent 28%),var(--s2);border:1px solid rgba(255,255,255,.04)}
-#c3d{width:100%;height:100%;display:block}
+#c3d{width:100%;height:100%;display:block;touch-action:none;cursor:grab;-webkit-user-select:none;user-select:none}
 #tip{position:absolute;top:0;left:0;pointer-events:none;display:none;background:rgba(7,11,18,.96);border:1px solid var(--bd);border-radius:12px;padding:8px 12px;font-size:12px;color:var(--tx);white-space:nowrap;z-index:10;box-shadow:0 14px 28px rgba(0,0,0,.25)}
 .search{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(7,11,18,.72);backdrop-filter:blur(8px)}
 .search input{flex:1;background:transparent;border:none;outline:none;color:var(--tx);font:inherit;font-size:12px}
@@ -767,6 +767,11 @@ let drag = false, px = 0, py = 0, rotX = 0.25, rotY = 0.3, autoY = 0, camZ = 16,
 let activeSearchTerm = '';
 let activeSearchMatchCount = 0;
 let mobileStagePanel = '';
+let touchMode = '';
+let pinchDistance = 0;
+let touchMoved = false;
+let touchTapX = 0;
+let touchTapY = 0;
 
 function resize(){
   const w = canvas.parentElement.clientWidth;
@@ -796,6 +801,16 @@ function makeLabel(text, color){
 }
 
 function hexToInt(hex){ return parseInt(hex.replace('#',''),16); }
+
+function clamp(value, min, max){
+  return Math.max(min, Math.min(max, value));
+}
+
+function touchGap(touches){
+  if(!touches || touches.length < 2) return 0;
+  const [a, b] = touches;
+  return Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+}
 
 function formatNumber(value, digits = 0){
   const num = Number(value);
@@ -2834,6 +2849,15 @@ function applySearch(term){
   }
 }
 
+function pickCanvasHit(clientX, clientY){
+  const r = canvas.getBoundingClientRect();
+  mouse.x = ((clientX-r.left)/r.width)*2-1;
+  mouse.y = -((clientY-r.top)/r.height)*2+1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(meshes.filter(m => m.visible));
+  return {rect:r, hit:hits[0] || null};
+}
+
 canvas.addEventListener('mousedown', e => { drag = true; px = e.clientX; py = e.clientY; canvas.style.cursor = 'grabbing'; pauseFollowCamera(2600); });
 window.addEventListener('mouseup', () => { drag = false; canvas.style.cursor = 'grab'; });
 window.addEventListener('mousemove', e => {
@@ -2844,20 +2868,16 @@ window.addEventListener('mousemove', e => {
     px = e.clientX; py = e.clientY;
     return;
   }
-  const r = canvas.getBoundingClientRect();
-  mouse.x = ((e.clientX-r.left)/r.width)*2-1;
-  mouse.y = -((e.clientY-r.top)/r.height)*2+1;
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(meshes.filter(m => m.visible));
-  if(hits.length){
-    const node = hits[0].object.userData;
+  const {rect:r, hit} = pickCanvasHit(e.clientX, e.clientY);
+  if(hit){
+    const node = hit.object.userData;
     tip.style.display = 'block';
     tip.style.left = (e.clientX-r.left+14)+'px';
     tip.style.top = (e.clientY-r.top-10)+'px';
     const status = resolveNodeStatus(node);
     tip.innerHTML = `<strong style="font-size:13px">${node.label}</strong><br><span style="color:var(--tx2);font-size:11px">${node.sub}</span><br><span style="font-size:11px">${status.label}</span>`;
     canvas.style.cursor = 'pointer';
-    hovMesh = hits[0].object;
+    hovMesh = hit.object;
   } else {
     tip.style.display = 'none';
     canvas.style.cursor = 'grab';
@@ -2866,29 +2886,104 @@ window.addEventListener('mousemove', e => {
   refreshVisibility();
 });
 canvas.addEventListener('dblclick', e => {
-  const r = canvas.getBoundingClientRect();
-  mouse.x = ((e.clientX-r.left)/r.width)*2-1;
-  mouse.y = -((e.clientY-r.top)/r.height)*2+1;
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(meshes.filter(m => m.visible));
-  if(hits.length){
-    const node = hits[0].object.userData;
+  const {hit} = pickCanvasHit(e.clientX, e.clientY);
+  if(hit){
+    const node = hit.object.userData;
     if(NODE_PAGE_MAP[node.id]) window.location.href = NODE_PAGE_MAP[node.id];
   }
 });
 canvas.addEventListener('click', e => {
-  const r = canvas.getBoundingClientRect();
-  mouse.x = ((e.clientX-r.left)/r.width)*2-1;
-  mouse.y = -((e.clientY-r.top)/r.height)*2+1;
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(meshes.filter(m => m.visible));
-  if(hits.length) renderNodeDetails(hits[0].object.userData.id);
+  const {hit} = pickCanvasHit(e.clientX, e.clientY);
+  if(hit) renderNodeDetails(hit.object.userData.id);
 });
 canvas.addEventListener('wheel', e => {
   pauseFollowCamera(2600);
-  camZ = Math.max(7,Math.min(26,camZ + e.deltaY * 0.025));
+  camZ = clamp(camZ + e.deltaY * 0.025, 7, 26);
   e.preventDefault();
 },{passive:false});
+canvas.addEventListener('touchstart', e => {
+  if(e.touches.length === 1){
+    const touch = e.touches[0];
+    drag = true;
+    touchMode = 'rotate';
+    touchMoved = false;
+    px = touch.clientX;
+    py = touch.clientY;
+    touchTapX = touch.clientX;
+    touchTapY = touch.clientY;
+    pauseFollowCamera(2600);
+  } else if(e.touches.length >= 2){
+    drag = false;
+    touchMode = 'pinch';
+    touchMoved = true;
+    pinchDistance = touchGap(e.touches);
+    pauseFollowCamera(2600);
+  }
+  e.preventDefault();
+},{passive:false});
+canvas.addEventListener('touchmove', e => {
+  if(touchMode === 'rotate' && e.touches.length === 1){
+    const touch = e.touches[0];
+    const dx = touch.clientX - px;
+    const dy = touch.clientY - py;
+    if(Math.abs(dx) > 2 || Math.abs(dy) > 2) touchMoved = true;
+    rotY += dx * 0.008;
+    rotX += dy * 0.006;
+    rotX = clamp(rotX, -1.0, 1.0);
+    px = touch.clientX;
+    py = touch.clientY;
+    e.preventDefault();
+    return;
+  }
+  if(e.touches.length >= 2){
+    const nextGap = touchGap(e.touches);
+    if(pinchDistance){
+      camZ = clamp(camZ - ((nextGap - pinchDistance) * 0.02), 7, 26);
+    }
+    pinchDistance = nextGap;
+    touchMode = 'pinch';
+    touchMoved = true;
+    e.preventDefault();
+  }
+},{passive:false});
+canvas.addEventListener('touchend', e => {
+  const wasTap = touchMode === 'rotate' && !touchMoved;
+  if(e.touches.length >= 2){
+    touchMode = 'pinch';
+    pinchDistance = touchGap(e.touches);
+    e.preventDefault();
+    return;
+  }
+  if(e.touches.length === 1){
+    const touch = e.touches[0];
+    touchMode = 'rotate';
+    px = touch.clientX;
+    py = touch.clientY;
+    touchTapX = touch.clientX;
+    touchTapY = touch.clientY;
+    touchMoved = false;
+    e.preventDefault();
+    return;
+  }
+  drag = false;
+  touchMode = '';
+  pinchDistance = 0;
+  if(wasTap){
+    const touch = e.changedTouches[0];
+    const {hit} = pickCanvasHit(touch?.clientX ?? touchTapX, touch?.clientY ?? touchTapY);
+    if(hit) renderNodeDetails(hit.object.userData.id);
+  }
+  e.preventDefault();
+},{passive:false});
+canvas.addEventListener('touchcancel', () => {
+  drag = false;
+  touchMode = '';
+  pinchDistance = 0;
+  touchMoved = false;
+});
+['gesturestart','gesturechange','gestureend'].forEach(type => {
+  canvas.addEventListener(type, e => e.preventDefault(), {passive:false});
+});
 
 document.getElementById('nodeSearch').addEventListener('input', e => applySearch(e.target.value));
 document.getElementById('menuBtn').addEventListener('click', () => toggleSidebar());
