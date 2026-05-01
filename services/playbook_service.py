@@ -98,11 +98,23 @@ def _context_directional_confluence(
     micro_score = _safe_float(micro.get("score"), 0.0)
     book_imbalance = _safe_float(micro.get("book_imbalance", micro_score), 0.0)
     tick_imbalance = _safe_float(micro.get("tick_imbalance"), 0.0)
+    trade_flow_support = _clip(
+        _safe_float(micro.get("trade_flow_score", micro_score), 0.0) * direction_sign,
+        -1.0,
+        1.0,
+    )
+    velocity_support = _clip(
+        (_safe_float(micro.get("velocity_bps"), 0.0) * direction_sign) / 0.45,
+        -1.0,
+        1.0,
+    )
     micro_support = _clip(
         max(
             micro_score * direction_sign,
-            book_imbalance * direction_sign,
-            tick_imbalance * direction_sign,
+            trade_flow_support,
+            book_imbalance * direction_sign * 0.90,
+            tick_imbalance * direction_sign * 0.75,
+            velocity_support * 0.85,
         ),
         -1.0,
         1.0,
@@ -115,7 +127,7 @@ def _context_directional_confluence(
 
     depth_available = bool(micro.get("depth_available"))
     synthetic_depth = bool(micro.get("synthetic_depth_available"))
-    depth_bias = 0.06 if depth_available else 0.03 if synthetic_depth else 0.0
+    depth_bias = 0.08 if depth_available else 0.03 if synthetic_depth else 0.0
 
     score = _clip(
         micro_support * 0.46
@@ -2265,21 +2277,94 @@ class PlaybookService:
             fast_entry_confirmation_bars_required=fast_entry_confirmation_bars_required,
         )
         near_fast_confirmation = fast_confirmation_count >= max(0, fast_confirmation_required - 1)
-        family_directional_match = bool(
+        context_has_true_depth = bool(context_confluence.get("depth_available"))
+        context_has_synthetic_depth = bool(context_confluence.get("synthetic_depth"))
+        directional_impulse = max(0.0, directional_breakout, directional_pullback)
+        strict_family_directional_match = bool(
             (direction == "BUY" and pattern_family.startswith("trending_up_"))
             or (direction == "SELL" and pattern_family.startswith("trending_down_"))
         )
+        live_flow_generic_override_source = ""
+        if (
+            pattern_family.endswith("generic")
+            and not strict_family_directional_match
+            and support_components >= 1
+            and conflict_components == 0
+            and directional_impulse >= 0.04
+        ):
+            if (
+                context_has_true_depth
+                and confluence_score >= 0.18
+                and micro_context_support >= 0.20
+                and (
+                    cross_context_support >= 0.10
+                    or whale_context_support >= 0.16
+                    or directional_impulse >= 0.08
+                )
+            ):
+                live_flow_generic_override_source = "true_depth"
+            elif (
+                confluence_score >= 0.24
+                and micro_context_support >= (0.22 if context_has_synthetic_depth else 0.24)
+                and (
+                    cross_context_support >= 0.16
+                    or whale_context_support >= 0.22
+                    or directional_impulse >= 0.10
+                )
+            ):
+                live_flow_generic_override_source = "flow"
+        live_flow_generic_override = bool(live_flow_generic_override_source)
+        family_directional_match = bool(strict_family_directional_match or live_flow_generic_override)
+        generic_alignment_floor = (
+            max(0.52, float(plan.min_alignment_score) - 0.08)
+            if live_flow_generic_override
+            else max(0.56, float(plan.min_alignment_score) - 0.04)
+        )
+        generic_setup_floor = (
+            max(0.50, float(plan.min_setup_quality) - 0.08)
+            if live_flow_generic_override
+            else max(0.52, float(plan.min_setup_quality) - 0.06)
+        )
+        generic_target_floor = 0.30 if context_has_true_depth and live_flow_generic_override else 0.32 if live_flow_generic_override else 0.40
+        generic_extension_ceiling = 1.60 if live_flow_generic_override else 1.45
+        context_alignment_floor = (
+            max(0.54, float(plan.min_alignment_score) - 0.08)
+            if live_flow_generic_override
+            else max(0.60, float(plan.min_alignment_score) - 0.04)
+        )
+        context_setup_floor = (
+            max(0.52, float(plan.min_setup_quality) - 0.08)
+            if live_flow_generic_override
+            else max(0.56, float(plan.min_setup_quality) - 0.06)
+        )
+        if live_flow_generic_override:
+            if effective_candle_quality_score <= 0.0:
+                effective_candle_quality_score = min(
+                    1.0,
+                    0.20
+                    + effective_setup_quality * 0.22
+                    + max(0.0, confluence_score) * 0.20
+                    + max(0.0, abs(micro_context_support)) * 0.18,
+                )
+            if effective_session_quality_score <= 0.0 and str(session or "").lower() != "off":
+                effective_session_quality_score = min(
+                    1.0,
+                    0.22
+                    + effective_alignment_score * 0.18
+                    + max(0.0, confluence_score) * 0.18
+                    + (0.06 if context_has_true_depth else 0.0),
+                )
         structural_generic_rank_ready = bool(
             pattern_family.endswith("generic")
             and family_directional_match
             and elite_pattern_rank >= 0.18
-            and alignment_score >= max(0.56, float(plan.min_alignment_score) - 0.04)
-            and setup_quality >= max(0.52, float(plan.min_setup_quality) - 0.06)
-            and effective_candle_quality_score >= 0.34
-            and effective_session_quality_score >= 0.42
-            and extension_score <= 1.45
-            and target_efficiency_score >= 0.40
-            and impulse_age_bars <= 5
+            and alignment_score >= generic_alignment_floor
+            and setup_quality >= generic_setup_floor
+            and effective_candle_quality_score >= (0.30 if live_flow_generic_override else 0.34)
+            and effective_session_quality_score >= (0.38 if live_flow_generic_override else 0.42)
+            and extension_score <= min(1.55, generic_extension_ceiling)
+            and target_efficiency_score >= max(0.34, generic_target_floor)
+            and impulse_age_bars <= (6 if live_flow_generic_override else 5)
         )
         premium_generic_trend_ready = bool(
             pattern_family.endswith("generic")
@@ -2297,13 +2382,16 @@ class PlaybookService:
         potential_generic_trend_ready = bool(
             pattern_family.endswith("generic")
             and family_directional_match
-            and alignment_score >= max(0.56, float(plan.min_alignment_score) - 0.04)
-            and setup_quality >= max(0.52, float(plan.min_setup_quality) - 0.06)
-            and extension_score <= 1.45
-            and target_efficiency_score >= 0.40
-            and impulse_age_bars <= 5
+            and alignment_score >= generic_alignment_floor
+            and setup_quality >= generic_setup_floor
+            and extension_score <= generic_extension_ceiling
+            and target_efficiency_score >= generic_target_floor
+            and impulse_age_bars <= (6 if live_flow_generic_override else 5)
             and (
-                (effective_candle_quality_score >= 0.34 and effective_session_quality_score >= 0.42)
+                (
+                    effective_candle_quality_score >= (0.30 if live_flow_generic_override else 0.34)
+                    and effective_session_quality_score >= (0.38 if live_flow_generic_override else 0.42)
+                )
                 or premium_generic_trend_ready
             )
             and (
@@ -2339,10 +2427,10 @@ class PlaybookService:
             alignment_floor = max(0.54, float(plan.min_alignment_score) - 0.06)
             setup_floor = max(0.50, float(plan.min_setup_quality) - 0.08)
         elif potential_generic_trend_ready:
-            target_efficiency_floor = 0.40
-            extension_ceiling = 1.45
-            alignment_floor = max(0.56, float(plan.min_alignment_score) - 0.04)
-            setup_floor = max(0.52, float(plan.min_setup_quality) - 0.06)
+            target_efficiency_floor = generic_target_floor
+            extension_ceiling = generic_extension_ceiling
+            alignment_floor = generic_alignment_floor
+            setup_floor = generic_setup_floor
         else:
             target_efficiency_floor = 0.20 if relaxed_target_gate else 0.32
             extension_ceiling = 1.10 if relaxed_target_gate else 1.05
@@ -2368,8 +2456,8 @@ class PlaybookService:
             support_components >= 1
             and conflict_components == 0
             and confluence_score >= 0.18
-            and alignment_score >= max(0.60, float(plan.min_alignment_score) - 0.04)
-            and setup_quality >= max(0.56, float(plan.min_setup_quality) - 0.06)
+            and alignment_score >= context_alignment_floor
+            and setup_quality >= context_setup_floor
             and pattern_family.endswith("generic")
             and family_directional_match
             and impulse_age_bars <= 6
@@ -2444,6 +2532,9 @@ class PlaybookService:
         if context_driven_direction:
             candle_floor = max(0.18, candle_floor - 0.08)
             session_floor = max(0.20, session_floor - 0.08)
+        if live_flow_generic_override:
+            candle_floor = max(0.18, candle_floor - (0.08 if context_has_true_depth else 0.06))
+            session_floor = max(0.20, session_floor - (0.10 if context_has_true_depth else 0.08))
         if pattern_family_ready:
             candle_floor = max(0.18, candle_floor - 0.08)
             session_floor = max(0.20, session_floor - 0.08)
@@ -2573,10 +2664,23 @@ class PlaybookService:
         elif (
             "breakout_continuation" in plan.allowed_playbooks
             and context_continuation_ready
+            and not live_flow_generic_override
         ):
             playbook = "breakout_continuation"
             entry_style = "elite_context_continuation"
             readiness_note = "context_flow_continuation"
+        elif (
+            "breakout_continuation" in plan.allowed_playbooks
+            and live_flow_generic_override
+            and pattern_family.endswith("generic")
+            and support_components >= 1
+            and conflict_components == 0
+            and confluence_score >= 0.24
+            and max(directional_breakout, directional_pullback) >= 0.08
+        ):
+            playbook = "breakout_continuation"
+            entry_style = "elite_flow_continuation"
+            readiness_note = f"generic_flow_{live_flow_generic_override_source}"
         elif (
             "breakout_continuation" in plan.allowed_playbooks
             and context_driven_direction
@@ -2627,10 +2731,14 @@ class PlaybookService:
                 structural_ready_bonus += 0.03
             if premium_generic_trend_ready:
                 structural_ready_bonus += 0.02
+            if live_flow_generic_override:
+                structural_ready_bonus += 0.04 + (0.02 if context_has_true_depth else 0.0)
             if inactivity_seed_relief:
                 structural_ready_bonus += 0.03 + inactivity_relief_strength * 0.03
         elif entry_style == "elite_context_continuation":
             structural_ready_bonus += 0.06 if strong_context_continuation_ready else 0.04
+        elif entry_style == "elite_flow_continuation":
+            structural_ready_bonus += 0.06 + (0.02 if context_has_true_depth else 0.0)
         elif entry_style == "elite_context_pressure":
             structural_ready_bonus += 0.08
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
@@ -2638,6 +2746,7 @@ class PlaybookService:
         if near_confirmation:
             structural_ready_bonus += 0.05
         context_continuation_bonus = entry_style == "elite_context_continuation"
+        live_flow_continuation_bonus = entry_style in {"elite_trend_continuation", "elite_flow_continuation"} and live_flow_generic_override
         score = _clip(
             abs(directional_breakout) * 0.22
             + abs(directional_pullback) * 0.18
@@ -2649,15 +2758,39 @@ class PlaybookService:
             + _clip(elite_pattern_rank) * 0.10
             + (
                 max(0.0, confluence_score)
-                * (0.18 if context_driven_direction else 0.14 if context_continuation_bonus else 0.0)
+                * (
+                    0.18
+                    if context_driven_direction
+                    else 0.14
+                    if context_continuation_bonus
+                    else 0.10
+                    if live_flow_continuation_bonus
+                    else 0.0
+                )
             )
             + (
                 max(0.0, abs(micro_context_support))
-                * (0.10 if context_driven_direction else 0.08 if context_continuation_bonus else 0.0)
+                * (
+                    0.10
+                    if context_driven_direction
+                    else 0.08
+                    if context_continuation_bonus
+                    else 0.08
+                    if live_flow_continuation_bonus
+                    else 0.0
+                )
             )
             + (
                 max(0.0, abs(cross_context_support))
-                * (0.06 if context_driven_direction else 0.05 if context_continuation_bonus else 0.0)
+                * (
+                    0.06
+                    if context_driven_direction
+                    else 0.05
+                    if context_continuation_bonus
+                    else 0.04
+                    if live_flow_continuation_bonus
+                    else 0.0
+                )
             )
             + (0.06 if failed_opposite_move_confirmed else 0.0)
             + (0.05 if breakout_retest_ready else 0.0)
@@ -2675,10 +2808,14 @@ class PlaybookService:
             score_floor = 0.52
         elif entry_style == "elite_trend_continuation":
             score_floor = 0.40
+            if live_flow_generic_override:
+                score_floor = 0.34 if context_has_true_depth else 0.36
             if inactivity_seed_relief:
                 score_floor = max(0.28, score_floor - (0.04 + inactivity_relief_strength * 0.08))
         elif entry_style == "elite_context_continuation":
             score_floor = 0.42 if strong_context_continuation_ready else 0.46
+        elif entry_style == "elite_flow_continuation":
+            score_floor = 0.34 if context_has_true_depth else 0.36
         elif entry_style == "elite_context_pressure":
             score_floor = 0.40 if confluence_score >= 0.32 else 0.44
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
@@ -2718,6 +2855,11 @@ class PlaybookService:
                 f"align={effective_alignment_score:.2f}",
                 f"setup={effective_setup_quality:.2f}",
                 f"ctx={confluence_score:+.2f}/micro={micro_context_support:+.2f}/cross={cross_context_support:+.2f}",
+                (
+                    f"generic_flow_override={live_flow_generic_override_source}"
+                    if live_flow_generic_override
+                    else "generic_flow_override=off"
+                ),
                 f"inactivity_relief={inactivity_relief_strength:.2f}" if inactivity_seed_relief else "inactivity_relief=0.00",
             ],
         }
@@ -3854,10 +3996,11 @@ class PlaybookService:
         cross_support = _clip(cross_alignment)
 
         micro_score = _safe_float(micro.get("score", 0.0), 0.0) * direction_sign
+        trade_flow_support = _safe_float(micro.get("trade_flow_score", micro.get("score", 0.0)), 0.0) * direction_sign
         book_support = _safe_float(micro.get("book_imbalance", 0.0), 0.0) * direction_sign
         tick_support = _safe_float(micro.get("tick_imbalance", 0.0), 0.0) * direction_sign
         velocity_support = _clip((_safe_float(micro.get("velocity_bps", 0.0), 0.0) * direction_sign) / 4.0)
-        micro_support = _clip(max(micro_score, book_support * 0.9, tick_support * 0.75, velocity_support))
+        micro_support = _clip(max(micro_score, trade_flow_support, book_support * 0.9, tick_support * 0.75, velocity_support))
         spread_bps = _safe_float(micro.get("spread_bps", 0.0), 0.0)
 
         if cross_support < 0.18 and micro_support < 0.18:

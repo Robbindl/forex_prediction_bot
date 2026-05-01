@@ -1423,6 +1423,7 @@ class SignalDecisionEngine:
         if not isinstance(structure, dict) or not structure:
             return ""
 
+        execution_policy = get_execution_policy(signal.asset)
         playbook_name = str(
             signal.metadata.get("playbook_name")
             or signal.metadata.get("seed_model")
@@ -1440,6 +1441,12 @@ class SignalDecisionEngine:
             continuation_like = True
 
         direction_sign = 1 if str(signal.direction).upper() == "BUY" else -1
+        alignment_score = float(structure.get("alignment_score", 0.0) or 0.0)
+        setup_quality = float(structure.get("setup_quality", 0.0) or 0.0)
+        flow_override_state = SignalDecisionEngine._depth_flow_override_state(
+            signal,
+            execution_policy=execution_policy,
+        )
 
         def _trend_sign(value: Any) -> int:
             token = str(value or "").strip().lower()
@@ -1455,10 +1462,17 @@ class SignalDecisionEngine:
         }
         conflict_frames = [label for label, sign in trend_map.items() if sign and sign != direction_sign]
         support_frames = [label for label, sign in trend_map.items() if sign and sign == direction_sign]
+        trigger_trend_sign = _trend_sign(structure.get("trend_5m"))
         reversal_evidence = bool(structure.get("failed_opposite_move_confirmed")) or (
             signal.direction == "BUY" and bool(structure.get("liquidity_sweep_sell"))
         ) or (
             signal.direction == "SELL" and bool(structure.get("liquidity_sweep_buy"))
+        )
+        depth_flow_override_supported = bool(
+            flow_override_state["override_supported"]
+            and alignment_score >= 0.56
+            and setup_quality >= 0.52
+            and trigger_trend_sign != -direction_sign
         )
 
         guard = {
@@ -1468,6 +1482,10 @@ class SignalDecisionEngine:
             "conflict_frames": list(conflict_frames),
             "support_frames": list(support_frames),
             "reversal_evidence": reversal_evidence,
+            "depth_flow_override_supported": depth_flow_override_supported,
+            "depth_flow_override_source": flow_override_state["override_source"],
+            "directional_flow_support": flow_override_state["directional_flow_support"],
+            "directional_flow_conflict": flow_override_state["directional_flow_conflict"],
             "action": "none",
         }
         signal.metadata["higher_timeframe_guard"] = dict(guard)
@@ -1477,6 +1495,23 @@ class SignalDecisionEngine:
             return ""
 
         if continuation_like and not reversal_evidence:
+            if depth_flow_override_supported:
+                penalty = float(execution_policy.get("htf_depth_override_penalty", 0.015) or 0.015)
+                if flow_override_state["override_source"] != "true_depth":
+                    penalty = max(penalty, 0.02)
+                signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+                signal.metadata["higher_timeframe_conflict_penalty"] = penalty
+                notes.append("htf_conflict")
+                notes.append(
+                    "htf_depth_override"
+                    if flow_override_state["override_source"] == "true_depth"
+                    else "htf_flow_override"
+                )
+                guard["action"] = "reduce_depth_override"
+                guard["confidence_penalty"] = penalty
+                signal.metadata["higher_timeframe_guard"] = dict(guard)
+                data["higher_timeframe_guard"] = dict(guard)
+                return ""
             guard["action"] = "block"
             signal.metadata["higher_timeframe_guard"] = dict(guard)
             data["higher_timeframe_guard"] = dict(guard)
@@ -1496,6 +1531,133 @@ class SignalDecisionEngine:
         signal.metadata["higher_timeframe_guard"] = dict(guard)
         data["higher_timeframe_guard"] = dict(guard)
         return ""
+
+    @staticmethod
+    def _depth_flow_override_state(
+        signal: Signal,
+        *,
+        execution_policy: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        execution_policy = execution_policy or get_execution_policy(signal.asset)
+        direction_sign = 1 if str(signal.direction).upper() == "BUY" else -1
+
+        orderflow_imbalance = float(signal.metadata.get("orderflow_imbalance", 0.0) or 0.0)
+        microstructure_alignment = float(signal.metadata.get("microstructure_alignment", 0.0) or 0.0)
+        trade_flow_score = float(signal.metadata.get("trade_flow_score", 0.0) or 0.0)
+        aligned_trade_flow = trade_flow_score * direction_sign
+        aligned_book_pressure = float(signal.metadata.get("book_imbalance", 0.0) or 0.0) * direction_sign
+        aligned_tick_pressure = float(signal.metadata.get("tick_imbalance", 0.0) or 0.0) * direction_sign
+        directional_flow_support = max(
+            orderflow_imbalance * direction_sign,
+            microstructure_alignment,
+            aligned_trade_flow,
+            aligned_book_pressure,
+            aligned_tick_pressure,
+        )
+        directional_flow_conflict = min(
+            orderflow_imbalance * direction_sign,
+            microstructure_alignment,
+            aligned_trade_flow,
+            aligned_book_pressure,
+            aligned_tick_pressure,
+        )
+
+        synthetic_depth_only = bool(signal.metadata.get("synthetic_depth_available")) and not bool(
+            signal.metadata.get("depth_available")
+        )
+        depth_quality = float(signal.metadata.get("depth_quality", 0.0) or 0.0)
+        depth_quality_tier = str(signal.metadata.get("depth_quality_tier", "") or "").strip().lower()
+        depth_levels = int(signal.metadata.get("depth_levels", 0) or 0)
+        if depth_levels <= 0:
+            depth_levels = max(
+                int(signal.metadata.get("bid_level_count", signal.metadata.get("visible_bid_levels", 0)) or 0),
+                int(signal.metadata.get("ask_level_count", signal.metadata.get("visible_ask_levels", 0)) or 0),
+            )
+        if depth_levels <= 0:
+            depth_levels = {
+                "full": 10,
+                "strong": 8,
+                "solid": 6,
+                "partial": 4,
+                "thin": 2,
+                "top_only": 1,
+            }.get(depth_quality_tier, 0)
+
+        microstructure_source = str(signal.metadata.get("microstructure_source", "") or "").strip().lower()
+        depth_provider = str(signal.metadata.get("depth_provider", "") or "").strip().lower()
+        depth_provider_class = str(signal.metadata.get("depth_provider_class", "") or "").strip().lower()
+        depth_environment = str(signal.metadata.get("depth_environment", "") or "").strip().lower()
+        depth_provider_trust_score = float(signal.metadata.get("depth_provider_trust_score", 0.0) or 0.0)
+        if depth_provider_trust_score <= 0.0 and microstructure_source == "order_flow_true_depth":
+            depth_provider_trust_score = 0.90
+        elif depth_provider_trust_score <= 0.0 and "dukascopy" in depth_provider:
+            depth_provider_trust_score = 0.92
+        elif depth_provider_trust_score <= 0.0 and "ctrader" in depth_provider:
+            depth_provider_trust_score = 0.58 if depth_environment and depth_environment != "live" else 0.78
+        elif depth_provider_trust_score <= 0.0 and depth_provider_class == "redis_subscriber":
+            depth_provider_trust_score = 0.90
+
+        depth_quote_agreement_state = str(signal.metadata.get("depth_quote_agreement_state", "") or "").strip().lower()
+        depth_quote_alignment_score = float(signal.metadata.get("depth_quote_alignment_score", 0.0) or 0.0)
+        external_depth_rejected = bool(signal.metadata.get("external_depth_rejected"))
+        true_depth_sources = {"order_flow_true_depth", "dukascopy_live_depth", "ctrader_live_depth"}
+        preferred_true_depth = microstructure_source in true_depth_sources
+        true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
+        preferred_true_depth_min_quality = float(
+            execution_policy.get("preferred_true_depth_min_quality", 0.50) or 0.50
+        )
+        preferred_true_depth_min_trust_score = float(
+            execution_policy.get("preferred_true_depth_min_trust_score", 0.78) or 0.78
+        )
+        depth_sovereignty_min_directional_flow = float(
+            execution_policy.get("depth_sovereignty_min_directional_flow", 0.22) or 0.22
+        )
+        depth_sovereignty_min_true_depth_support = float(
+            execution_policy.get("depth_sovereignty_min_true_depth_support", 0.12) or 0.12
+        )
+        depth_sovereignty_min_component = float(
+            execution_policy.get("depth_sovereignty_min_component", 0.18) or 0.18
+        )
+        true_depth_quote_aligned = bool(
+            not external_depth_rejected
+            and depth_quote_agreement_state not in {"divergent", "severe_divergence"}
+        )
+        true_depth_informative = bool(
+            true_depth_available
+            and preferred_true_depth
+            and depth_levels >= 2
+            and depth_quality >= preferred_true_depth_min_quality
+            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and depth_quote_alignment_score >= 0.80
+            and true_depth_quote_aligned
+        )
+        strong_true_depth_support = bool(
+            true_depth_informative
+            and directional_flow_support >= depth_sovereignty_min_directional_flow
+            and aligned_book_pressure >= depth_sovereignty_min_true_depth_support
+            and directional_flow_conflict > -0.10
+        )
+        strong_flow_support = bool(
+            directional_flow_support >= depth_sovereignty_min_directional_flow
+            and directional_flow_conflict > -0.12
+            and max(
+                microstructure_alignment,
+                aligned_trade_flow,
+                aligned_book_pressure,
+                aligned_tick_pressure,
+            )
+            >= depth_sovereignty_min_component
+        )
+        override_source = "true_depth" if strong_true_depth_support else "flow" if strong_flow_support else ""
+        return {
+            "directional_flow_support": round(directional_flow_support, 4),
+            "directional_flow_conflict": round(directional_flow_conflict, 4),
+            "strong_true_depth_support": strong_true_depth_support,
+            "strong_flow_support": strong_flow_support,
+            "true_depth_informative": true_depth_informative,
+            "override_supported": bool(override_source),
+            "override_source": override_source,
+        }
 
     @staticmethod
     def _market_open_spike_guard(
@@ -2931,28 +3093,6 @@ class SignalDecisionEngine:
                 or shock_fresh_event
             )
         )
-        continuation_reclaim_hard_block = bool(
-            continuation_reclaim_pressure
-            and not has_directional_flow_support
-            and not high_conviction_continuation_supported
-            and not impulse_fast_path_supported
-            and not shock_fast_path_supported
-        )
-        elite_supported_candidate = bool(
-            strong_market_candidate
-            and (
-                elite_pattern_rank >= 0.16
-                or failed_opposite_move_confirmed
-                or breakout_retest_ready
-                or first_pullback_ready
-                or entry_confirmation_ready
-                or fast_entry_confirmation_ready
-                or high_conviction_continuation_supported
-                or impulse_fast_path_supported
-                or shock_fast_path_supported
-                or (continuation_rescue_candidate and has_directional_flow_support)
-            )
-        )
         inactivity_execution_relief = bool(
             inactivity_relief_active
             and inactivity_flat_book
@@ -2992,6 +3132,15 @@ class SignalDecisionEngine:
         )
         minimum_usable_true_depth_trust_score = float(
             execution_policy.get("minimum_usable_true_depth_trust_score", 0.60) or 0.60
+        )
+        depth_sovereignty_min_directional_flow = float(
+            execution_policy.get("depth_sovereignty_min_directional_flow", 0.22) or 0.22
+        )
+        depth_sovereignty_min_true_depth_support = float(
+            execution_policy.get("depth_sovereignty_min_true_depth_support", 0.12) or 0.12
+        )
+        depth_sovereignty_min_component = float(
+            execution_policy.get("depth_sovereignty_min_component", 0.18) or 0.18
         )
         asset_edge_bonus_scale = float(execution_policy.get("asset_edge_bonus_scale", 0.08) or 0.08)
         asset_edge_penalty_scale = float(execution_policy.get("asset_edge_penalty_scale", 0.09) or 0.09)
@@ -3062,6 +3211,74 @@ class SignalDecisionEngine:
             and meets_true_depth_trust_floor
             and true_depth_quote_aligned
             and not true_depth_informative
+        )
+        strong_true_depth_support = bool(
+            usable_true_depth_available
+            and preferred_true_depth
+            and depth_quality >= preferred_true_depth_min_quality
+            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and depth_quote_alignment_score >= 0.80
+            and directional_flow_support >= depth_sovereignty_min_directional_flow
+            and aligned_book_pressure >= depth_sovereignty_min_true_depth_support
+            and directional_flow_conflict > -0.10
+        )
+        strong_flow_support = bool(
+            directional_flow_support >= depth_sovereignty_min_directional_flow
+            and directional_flow_conflict > -0.12
+            and max(
+                microstructure_alignment,
+                aligned_trade_flow,
+                aligned_book_pressure,
+                aligned_tick_pressure,
+            )
+            >= depth_sovereignty_min_component
+        )
+        depth_sovereignty_supported = bool(strong_true_depth_support or strong_flow_support)
+        depth_sovereignty_source = "true_depth" if strong_true_depth_support else "flow" if strong_flow_support else ""
+        depth_flow_sovereignty_candidate = bool(
+            depth_sovereignty_supported
+            and not has_directional_flow_conflict
+            and alignment_score >= 0.60
+            and setup_quality >= 0.56
+            and candle_quality_score >= 0.30
+            and session_quality_score >= 0.36
+            and target_efficiency_score >= 0.10
+            and extension_score <= 1.18
+            and impulse_age_bars <= 5
+            and not failed_opposite_move_confirmed
+        )
+        depth_flow_sovereignty_confirmation_override = bool(
+            depth_flow_sovereignty_candidate
+            and (
+                strong_true_depth_support
+                or directional_flow_support >= max(0.28, depth_sovereignty_min_directional_flow + 0.04)
+                or external_confirmation_score >= 0.16
+                or fast_entry_confirmation_ready
+            )
+        )
+        continuation_reclaim_hard_block = bool(
+            continuation_reclaim_pressure
+            and not has_directional_flow_support
+            and not high_conviction_continuation_supported
+            and not impulse_fast_path_supported
+            and not shock_fast_path_supported
+            and not depth_flow_sovereignty_candidate
+        )
+        elite_supported_candidate = bool(
+            strong_market_candidate
+            and (
+                elite_pattern_rank >= 0.16
+                or failed_opposite_move_confirmed
+                or breakout_retest_ready
+                or first_pullback_ready
+                or entry_confirmation_ready
+                or fast_entry_confirmation_ready
+                or high_conviction_continuation_supported
+                or impulse_fast_path_supported
+                or shock_fast_path_supported
+                or (continuation_rescue_candidate and has_directional_flow_support)
+                or depth_flow_sovereignty_candidate
+            )
         )
         asset_performance_relief = 0.0
         asset_performance_penalty = 0.0
@@ -3342,6 +3559,10 @@ class SignalDecisionEngine:
                     risk_score -= 0.03
                 if impulse_age_bars <= 3:
                     risk_score -= 0.02
+        if depth_flow_sovereignty_candidate:
+            risk_score -= 0.04
+            if depth_sovereignty_source == "true_depth":
+                risk_score -= 0.03
         if inactivity_execution_relief:
             risk_score -= 0.04 + inactivity_relief_strength * 0.08
         if asset_performance_relief > 0.0:
@@ -3430,6 +3651,9 @@ class SignalDecisionEngine:
         if shock_fast_path_supported:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - 0.03)
             opposing_distance_hard_floor = max(0.0023, opposing_distance_hard_floor - 0.0005)
+        if depth_flow_sovereignty_candidate:
+            target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - 0.02)
+            opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - 0.0003)
         if inactivity_execution_relief:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - (0.015 + inactivity_relief_strength * 0.03))
             opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - (0.0003 + inactivity_relief_strength * 0.0004))
@@ -3467,6 +3691,9 @@ class SignalDecisionEngine:
         if shock_fast_path_supported:
             impulse_age_hard_limit += 1
             directional_extension_hard_limit += 0.06
+        if depth_flow_sovereignty_candidate:
+            impulse_age_hard_limit += 1
+            directional_extension_hard_limit += 0.04
         if inactivity_execution_relief:
             impulse_age_hard_limit += 1 + (1 if inactivity_relief_strength >= 0.75 else 0)
             directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
@@ -3525,6 +3752,7 @@ class SignalDecisionEngine:
             and not (impulse_fast_path_supported and fast_entry_confirmation_ready)
             and not (shock_fast_path_supported and (fast_entry_confirmation_ready or shock_confirmation_override))
             and not context_confirmation_override
+            and not depth_flow_sovereignty_confirmation_override
         ):
             hard_blocks.append("entry confirmation delay is still pending")
         if (
@@ -3533,6 +3761,7 @@ class SignalDecisionEngine:
             and not (impulse_fast_path_supported and fast_entry_confirmation_ready)
             and not (shock_fast_path_supported and (fast_entry_confirmation_ready or shock_confirmation_override))
             and not context_confirmation_override
+            and not depth_flow_sovereignty_confirmation_override
             and not breakout_retest_ready
             and not first_pullback_ready
             and not has_directional_flow_support
@@ -3557,6 +3786,11 @@ class SignalDecisionEngine:
             pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
         if context_continuation_execution_candidate:
             pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
+        if depth_flow_sovereignty_candidate:
+            pattern_rank_hard_floor = max(
+                0.02,
+                pattern_rank_hard_floor - (0.05 if depth_sovereignty_source == "true_depth" else 0.03),
+            )
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
         pattern_rank_hard_floor = min(
@@ -3583,6 +3817,7 @@ class SignalDecisionEngine:
                 or impulse_fast_path_candidate
                 or shock_fast_path_candidate
                 or context_continuation_execution_candidate
+                or depth_flow_sovereignty_candidate
             )
         )
         if (
@@ -3607,6 +3842,8 @@ class SignalDecisionEngine:
             risk_kill_threshold += 0.03
         if shock_fast_path_supported:
             risk_kill_threshold += 0.03
+        if depth_flow_sovereignty_candidate:
+            risk_kill_threshold += 0.02
         if inactivity_execution_relief:
             risk_kill_threshold += 0.02
         risk_kill_threshold = max(0.50, min(0.70, risk_kill_threshold))
@@ -3700,6 +3937,12 @@ class SignalDecisionEngine:
             "shock_confirmation_override": shock_confirmation_override,
             "context_continuation_execution_candidate": context_continuation_execution_candidate,
             "context_confirmation_override": context_confirmation_override,
+            "depth_sovereignty_supported": depth_sovereignty_supported,
+            "depth_sovereignty_source": depth_sovereignty_source,
+            "strong_true_depth_support": strong_true_depth_support,
+            "strong_flow_support": strong_flow_support,
+            "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
+            "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
         }
 
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
@@ -3735,6 +3978,12 @@ class SignalDecisionEngine:
             "context_confirmation_override": context_confirmation_override,
             "has_directional_flow_support": has_directional_flow_support,
             "has_directional_flow_conflict": has_directional_flow_conflict,
+            "depth_sovereignty_supported": depth_sovereignty_supported,
+            "depth_sovereignty_source": depth_sovereignty_source,
+            "strong_true_depth_support": strong_true_depth_support,
+            "strong_flow_support": strong_flow_support,
+            "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
+            "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
             "continuation_reclaim_pressure": continuation_reclaim_pressure,
             "crypto_breadth_conflict": crypto_breadth_conflict,
             "crypto_breadth_support": crypto_breadth_support,
@@ -3825,6 +4074,12 @@ class SignalDecisionEngine:
             "crypto_derivative_support": crypto_derivative_support,
             "directional_flow_support": round(directional_flow_support, 4),
             "directional_flow_conflict": round(directional_flow_conflict, 4),
+            "depth_sovereignty_supported": depth_sovereignty_supported,
+            "depth_sovereignty_source": depth_sovereignty_source,
+            "strong_true_depth_support": strong_true_depth_support,
+            "strong_flow_support": strong_flow_support,
+            "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
+            "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
             "asset_performance_profile": dict(asset_performance),
             "book_performance_profile": dict(book_performance),
             "session_timing_strictness": dict(session_timing_strictness),

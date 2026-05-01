@@ -279,6 +279,10 @@ _DEFAULT_EXECUTION_POLICY: Dict[str, float | int] = {
     "asset_edge_penalty_scale": 0.09,
     "book_edge_bonus_scale": 0.06,
     "book_edge_penalty_scale": 0.07,
+    "depth_sovereignty_min_directional_flow": 0.22,
+    "depth_sovereignty_min_true_depth_support": 0.12,
+    "depth_sovereignty_min_component": 0.18,
+    "htf_depth_override_penalty": 0.015,
 }
 
 _CATEGORY_EXECUTION_POLICIES: Dict[str, Dict[str, float | int]] = {
