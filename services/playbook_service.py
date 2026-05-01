@@ -81,6 +81,11 @@ def _context_directional_confluence(
             "dom_ladder_ready": False,
             "dom_stream_snapshot_ready": False,
             "dom_source_fidelity": "none",
+            "dom_authority_tier": "none",
+            "dom_fragmented_market": False,
+            "dom_stream_health_score": 1.0,
+            "dom_stream_trust_decay": 0.0,
+            "dom_stream_degraded": False,
             "depth_update_mode": "none",
             "whale_dominant": "",
             "whale_ratio": 0.0,
@@ -136,6 +141,11 @@ def _context_directional_confluence(
     dom_ladder_ready = bool(micro.get("dom_ladder_ready"))
     dom_stream_snapshot_ready = bool(micro.get("dom_stream_snapshot_ready"))
     dom_source_fidelity = str(micro.get("dom_source_fidelity") or "").strip().lower() or "none"
+    dom_authority_tier = str(micro.get("dom_authority_tier") or "").strip().lower() or "none"
+    dom_fragmented_market = bool(micro.get("dom_fragmented_market"))
+    dom_stream_health_score = _clip(_safe_float(micro.get("dom_stream_health_score"), 1.0), 0.0, 1.0)
+    dom_stream_trust_decay = _clip(_safe_float(micro.get("dom_stream_trust_decay"), 0.0), 0.0, 1.0)
+    dom_stream_degraded = bool(micro.get("dom_stream_degraded"))
     depth_update_mode = str(micro.get("depth_update_mode") or "").strip().lower() or "none"
     depth_bias = (
         0.10
@@ -148,6 +158,11 @@ def _context_directional_confluence(
         if synthetic_depth
         else 0.0
     )
+    if dom_authority_tier in {"fragmented_event_ladder", "degraded_event_ladder"} or dom_fragmented_market:
+        depth_bias = min(depth_bias, 0.06)
+    if dom_stream_degraded or dom_stream_health_score < 0.58:
+        depth_bias = min(depth_bias, 0.04 if dom_ladder_ready else 0.03 if depth_available else depth_bias)
+    depth_bias *= max(0.35, 1.0 - dom_stream_trust_decay * 0.70)
 
     score = _clip(
         micro_support * 0.46
@@ -181,6 +196,11 @@ def _context_directional_confluence(
         "dom_ladder_ready": dom_ladder_ready,
         "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
         "dom_source_fidelity": dom_source_fidelity,
+        "dom_authority_tier": dom_authority_tier,
+        "dom_fragmented_market": dom_fragmented_market,
+        "dom_stream_health_score": round(dom_stream_health_score, 4),
+        "dom_stream_trust_decay": round(dom_stream_trust_decay, 4),
+        "dom_stream_degraded": dom_stream_degraded,
         "depth_update_mode": depth_update_mode,
         "whale_dominant": whale_dominant,
         "whale_ratio": round(whale_ratio, 4),
@@ -2309,7 +2329,24 @@ class PlaybookService:
         near_fast_confirmation = fast_confirmation_count >= max(0, fast_confirmation_required - 1)
         context_has_true_depth = bool(context_confluence.get("depth_available"))
         context_has_synthetic_depth = bool(context_confluence.get("synthetic_depth"))
-        context_has_event_backed_depth = bool(context_confluence.get("dom_ladder_ready"))
+        context_depth_authority_tier = str(context_confluence.get("dom_authority_tier") or "").strip().lower()
+        context_depth_stream_health = _safe_float(context_confluence.get("dom_stream_health_score"), 1.0)
+        context_depth_stream_decay = _safe_float(context_confluence.get("dom_stream_trust_decay"), 0.0)
+        context_depth_stream_degraded = bool(context_confluence.get("dom_stream_degraded"))
+        context_fragmented_event_depth = bool(
+            context_confluence.get("dom_ladder_ready")
+            and (
+                bool(context_confluence.get("dom_fragmented_market"))
+                or context_depth_authority_tier in {"fragmented_event_ladder", "degraded_event_ladder"}
+            )
+        )
+        context_has_event_backed_depth = bool(
+            context_confluence.get("dom_ladder_ready")
+            and not context_fragmented_event_depth
+            and context_depth_stream_health >= 0.58
+            and context_depth_stream_decay <= 0.35
+            and not context_depth_stream_degraded
+        )
         context_has_stream_snapshot_depth = bool(context_confluence.get("dom_stream_snapshot_ready"))
         directional_impulse = max(0.0, directional_breakout, directional_pullback)
         strict_family_directional_match = bool(
@@ -2335,6 +2372,29 @@ class PlaybookService:
                 )
             ):
                 live_flow_generic_override_source = "true_depth"
+            elif (
+                context_fragmented_event_depth
+                and confluence_score >= 0.20
+                and micro_context_support >= 0.22
+                and (
+                    cross_context_support >= 0.12
+                    or whale_context_support >= 0.18
+                    or directional_impulse >= 0.09
+                )
+            ):
+                live_flow_generic_override_source = "fragmented_event_ladder"
+            elif (
+                context_confluence.get("dom_ladder_ready")
+                and context_depth_authority_tier == "degraded_event_ladder"
+                and confluence_score >= 0.22
+                and micro_context_support >= 0.24
+                and (
+                    cross_context_support >= 0.14
+                    or whale_context_support >= 0.20
+                    or directional_impulse >= 0.10
+                )
+            ):
+                live_flow_generic_override_source = "snapshot_depth"
             elif (
                 context_has_true_depth
                 and confluence_score >= (0.19 if context_has_stream_snapshot_depth else 0.20)
@@ -2368,17 +2428,29 @@ class PlaybookService:
             if live_flow_generic_override
             else max(0.52, float(plan.min_setup_quality) - 0.06)
         )
-        generic_depth_override = live_flow_generic_override_source in {"true_depth", "snapshot_depth"}
+        generic_depth_override = live_flow_generic_override_source in {
+            "true_depth",
+            "fragmented_event_ladder",
+            "snapshot_depth",
+        }
         generic_target_floor = (
             0.30
             if live_flow_generic_override_source == "true_depth"
+            else 0.305
+            if live_flow_generic_override_source == "fragmented_event_ladder"
             else 0.31
             if live_flow_generic_override_source == "snapshot_depth"
             else 0.32
             if live_flow_generic_override
             else 0.40
         )
-        generic_extension_ceiling = 1.60 if live_flow_generic_override else 1.45
+        generic_extension_ceiling = (
+            1.55
+            if live_flow_generic_override_source == "fragmented_event_ladder"
+            else 1.60
+            if live_flow_generic_override
+            else 1.45
+        )
         context_alignment_floor = (
             max(0.54, float(plan.min_alignment_score) - 0.08)
             if live_flow_generic_override
@@ -2404,7 +2476,15 @@ class PlaybookService:
                     0.22
                     + effective_alignment_score * 0.18
                     + max(0.0, confluence_score) * 0.18
-                    + (0.06 if context_has_event_backed_depth else 0.03 if context_has_true_depth else 0.0),
+                    + (
+                        0.06
+                        if context_has_event_backed_depth
+                        else 0.04
+                        if context_fragmented_event_depth
+                        else 0.03
+                        if context_has_true_depth
+                        else 0.0
+                    ),
                 )
         structural_generic_rank_ready = bool(
             pattern_family.endswith("generic")

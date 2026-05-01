@@ -101,6 +101,74 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _effective_dom_stream_trust_metrics(
+    signal: Signal,
+    execution_policy: Dict[str, Any],
+    *,
+    base_trust_score: float,
+) -> Dict[str, Any]:
+    metadata = signal.metadata if isinstance(signal.metadata, dict) else {}
+    dom_authority_tier = str(metadata.get("dom_authority_tier") or "").strip().lower()
+    dom_ladder_ready = bool(metadata.get("dom_ladder_ready"))
+    health_known = bool(metadata.get("dom_stream_health_known"))
+    health_score = max(0.0, min(1.0, _safe_float(metadata.get("dom_stream_health_score"), 1.0)))
+    trust_decay = max(0.0, min(1.0, _safe_float(metadata.get("dom_stream_trust_decay"), 0.0)))
+    stream_degraded = bool(metadata.get("dom_stream_degraded"))
+    depth_stream_missing = bool(metadata.get("dom_depth_stream_missing"))
+    trade_stream_missing = bool(metadata.get("dom_trade_stream_missing"))
+    event_authority = dom_ladder_ready or dom_authority_tier in {
+        "event_ladder",
+        "fragmented_event_ladder",
+        "degraded_event_ladder",
+    }
+    min_sovereignty_score = _safe_float(
+        execution_policy.get("dom_stream_health_min_score_for_sovereignty"),
+        0.58,
+    )
+    hard_floor = _safe_float(execution_policy.get("dom_stream_health_hard_floor"), 0.34)
+    penalty_scale = _safe_float(execution_policy.get("dom_stream_trust_penalty_scale"), 0.60)
+    degraded_penalty = _safe_float(execution_policy.get("dom_stream_degraded_penalty"), 0.12)
+
+    effective_trust_score = float(base_trust_score or 0.0)
+    if health_known and event_authority:
+        effective_trust_score *= max(0.20, 1.0 - trust_decay * penalty_scale)
+        if health_score < min_sovereignty_score:
+            effective_trust_score *= max(0.45, health_score / max(min_sovereignty_score, 1e-6))
+        if stream_degraded or depth_stream_missing:
+            effective_trust_score = max(0.0, effective_trust_score - degraded_penalty)
+        if trade_stream_missing and dom_authority_tier == "event_ladder":
+            effective_trust_score = max(0.0, effective_trust_score - degraded_penalty * 0.5)
+
+    sovereignty_supported = bool(
+        not health_known
+        or not event_authority
+        or (
+            health_score >= min_sovereignty_score
+            and not stream_degraded
+            and not depth_stream_missing
+        )
+    )
+    hard_floor_breached = bool(
+        health_known
+        and event_authority
+        and (
+            health_score < hard_floor
+            or depth_stream_missing
+        )
+    )
+    return {
+        "health_known": health_known,
+        "health_score": round(health_score, 4),
+        "trust_decay": round(trust_decay, 4),
+        "stream_degraded": stream_degraded,
+        "depth_stream_missing": depth_stream_missing,
+        "trade_stream_missing": trade_stream_missing,
+        "effective_trust_score": round(max(0.0, effective_trust_score), 4),
+        "sovereignty_supported": sovereignty_supported,
+        "hard_floor_breached": hard_floor_breached,
+    }
+
+
 def _normalize_trade_direction_label(value: Any) -> str:
     raw = str(value or "").strip().upper()
     if raw in {
@@ -999,6 +1067,45 @@ class SignalDecisionEngine:
             dom_absorption_proxy = float(micro.get("dom_absorption_proxy", 0.0) or 0.0)
             dom_iceberg_proxy = float(micro.get("dom_iceberg_proxy", 0.0) or 0.0)
             dom_queue_persistence = float(micro.get("dom_queue_persistence", 0.0) or 0.0)
+            dom_add_intent_bias = float(micro.get("dom_add_intent_bias", 0.0) or 0.0)
+            dom_cancel_pressure_bias = float(micro.get("dom_cancel_pressure_bias", 0.0) or 0.0)
+            dom_queue_erosion_bias = float(micro.get("dom_queue_erosion_bias", 0.0) or 0.0)
+            dom_trade_absorption_proxy = float(micro.get("dom_trade_absorption_proxy", 0.0) or 0.0)
+            dom_refill_after_sweep_bias = float(micro.get("dom_refill_after_sweep_bias", 0.0) or 0.0)
+            dom_trade_aggression_bias = float(micro.get("dom_trade_aggression_bias", 0.0) or 0.0)
+            dom_trade_backed_iceberg_proxy = float(micro.get("dom_trade_backed_iceberg_proxy", 0.0) or 0.0)
+            dom_fragmentation_provider_count = int(micro.get("dom_fragmentation_provider_count", 0) or 0)
+            dom_cross_venue_mid_dislocation_bps = float(micro.get("dom_cross_venue_mid_dislocation_bps", 0.0) or 0.0)
+            dom_cross_venue_agreement = float(micro.get("dom_cross_venue_agreement", 0.0) or 0.0)
+            dom_primary_vs_consensus_gap = float(micro.get("dom_primary_vs_consensus_gap", 0.0) or 0.0)
+            dom_fragmentation_score = float(micro.get("dom_fragmentation_score", 0.0) or 0.0)
+            dom_fragmented_market = bool(micro.get("dom_fragmented_market"))
+            dom_ladder_ready = bool(micro.get("dom_ladder_ready"))
+            dom_stream_connected = bool(micro.get("dom_stream_connected"))
+            dom_stream_health_known = bool(micro.get("dom_stream_health_known"))
+            dom_stream_degraded = bool(micro.get("dom_stream_degraded"))
+            dom_stream_health_score = float(micro.get("dom_stream_health_score", 1.0) or 1.0)
+            dom_stream_trust_decay = float(micro.get("dom_stream_trust_decay", 0.0) or 0.0)
+            dom_stream_reconnect_count = int(micro.get("dom_stream_reconnect_count", 0) or 0)
+            dom_stream_sequence_gap_count = int(micro.get("dom_stream_sequence_gap_count", 0) or 0)
+            dom_stream_last_message_age_seconds = (
+                round(float(micro.get("dom_stream_last_message_age_seconds")), 3)
+                if micro.get("dom_stream_last_message_age_seconds") not in (None, "")
+                else None
+            )
+            dom_depth_stream_age_seconds = (
+                round(float(micro.get("dom_depth_stream_age_seconds")), 3)
+                if micro.get("dom_depth_stream_age_seconds") not in (None, "")
+                else None
+            )
+            dom_trade_stream_age_seconds = (
+                round(float(micro.get("dom_trade_stream_age_seconds")), 3)
+                if micro.get("dom_trade_stream_age_seconds") not in (None, "")
+                else None
+            )
+            dom_depth_stream_missing = bool(micro.get("dom_depth_stream_missing"))
+            dom_trade_stream_missing = bool(micro.get("dom_trade_stream_missing"))
+            dom_stream_reason = str(micro.get("dom_stream_reason") or "")
             aligned_micro = micro_score if signal.direction == "BUY" else -micro_score
             aligned_book = book_imbalance if signal.direction == "BUY" else -book_imbalance
             aligned_tick = tick_imbalance if signal.direction == "BUY" else -tick_imbalance
@@ -1009,6 +1116,15 @@ class SignalDecisionEngine:
             aligned_dom_refill_resilience = dom_refill_resilience_proxy if signal.direction == "BUY" else -dom_refill_resilience_proxy
             aligned_dom_absorption = dom_absorption_proxy if signal.direction == "BUY" else -dom_absorption_proxy
             aligned_dom_iceberg = dom_iceberg_proxy if signal.direction == "BUY" else -dom_iceberg_proxy
+            aligned_dom_add_intent = dom_add_intent_bias if signal.direction == "BUY" else -dom_add_intent_bias
+            aligned_dom_cancel_pressure = dom_cancel_pressure_bias if signal.direction == "BUY" else -dom_cancel_pressure_bias
+            aligned_dom_queue_erosion = dom_queue_erosion_bias if signal.direction == "BUY" else -dom_queue_erosion_bias
+            aligned_dom_trade_absorption = dom_trade_absorption_proxy if signal.direction == "BUY" else -dom_trade_absorption_proxy
+            aligned_dom_refill_after_sweep = dom_refill_after_sweep_bias if signal.direction == "BUY" else -dom_refill_after_sweep_bias
+            aligned_dom_trade_aggression = dom_trade_aggression_bias if signal.direction == "BUY" else -dom_trade_aggression_bias
+            aligned_dom_trade_backed_iceberg = (
+                dom_trade_backed_iceberg_proxy if signal.direction == "BUY" else -dom_trade_backed_iceberg_proxy
+            )
             signal.metadata["market_microstructure"] = dict(micro)
             signal.metadata["microstructure_score"] = round(micro_score, 3)
             signal.metadata["stop_hunt_risk"] = round(stop_hunt_risk, 3)
@@ -1056,6 +1172,36 @@ class SignalDecisionEngine:
             signal.metadata["dom_absorption_proxy"] = round(dom_absorption_proxy, 4)
             signal.metadata["dom_iceberg_proxy"] = round(dom_iceberg_proxy, 4)
             signal.metadata["dom_queue_persistence"] = round(dom_queue_persistence, 4)
+            signal.metadata["dom_add_intent_bias"] = round(dom_add_intent_bias, 4)
+            signal.metadata["dom_cancel_pressure_bias"] = round(dom_cancel_pressure_bias, 4)
+            signal.metadata["dom_queue_erosion_bias"] = round(dom_queue_erosion_bias, 4)
+            signal.metadata["dom_trade_absorption_proxy"] = round(dom_trade_absorption_proxy, 4)
+            signal.metadata["dom_refill_after_sweep_bias"] = round(dom_refill_after_sweep_bias, 4)
+            signal.metadata["dom_trade_aggression_bias"] = round(dom_trade_aggression_bias, 4)
+            signal.metadata["dom_trade_backed_iceberg_proxy"] = round(dom_trade_backed_iceberg_proxy, 4)
+            signal.metadata["dom_trade_backed_iceberg_hits"] = int(micro.get("dom_trade_backed_iceberg_hits", 0) or 0)
+            signal.metadata["dom_refill_after_sweep_hits"] = int(micro.get("dom_refill_after_sweep_hits", 0) or 0)
+            signal.metadata["dom_sweep_up_count"] = int(micro.get("dom_sweep_up_count", 0) or 0)
+            signal.metadata["dom_sweep_down_count"] = int(micro.get("dom_sweep_down_count", 0) or 0)
+            signal.metadata["dom_fragmentation_provider_count"] = dom_fragmentation_provider_count
+            signal.metadata["dom_cross_venue_mid_dislocation_bps"] = round(dom_cross_venue_mid_dislocation_bps, 4)
+            signal.metadata["dom_cross_venue_agreement"] = round(dom_cross_venue_agreement, 4)
+            signal.metadata["dom_primary_vs_consensus_gap"] = round(dom_primary_vs_consensus_gap, 4)
+            signal.metadata["dom_fragmentation_score"] = round(dom_fragmentation_score, 4)
+            signal.metadata["dom_fragmented_market"] = dom_fragmented_market
+            signal.metadata["dom_stream_connected"] = dom_stream_connected
+            signal.metadata["dom_stream_health_known"] = dom_stream_health_known
+            signal.metadata["dom_stream_degraded"] = dom_stream_degraded
+            signal.metadata["dom_stream_health_score"] = round(dom_stream_health_score, 4)
+            signal.metadata["dom_stream_trust_decay"] = round(dom_stream_trust_decay, 4)
+            signal.metadata["dom_stream_reconnect_count"] = dom_stream_reconnect_count
+            signal.metadata["dom_stream_sequence_gap_count"] = dom_stream_sequence_gap_count
+            signal.metadata["dom_stream_last_message_age_seconds"] = dom_stream_last_message_age_seconds
+            signal.metadata["dom_depth_stream_age_seconds"] = dom_depth_stream_age_seconds
+            signal.metadata["dom_trade_stream_age_seconds"] = dom_trade_stream_age_seconds
+            signal.metadata["dom_depth_stream_missing"] = dom_depth_stream_missing
+            signal.metadata["dom_trade_stream_missing"] = dom_trade_stream_missing
+            signal.metadata["dom_stream_reason"] = dom_stream_reason
             signal.metadata["dom_depth_window"] = int(micro.get("dom_depth_window", 0) or 0)
             signal.metadata["dom_supportive_reload_count"] = int(micro.get("dom_supportive_reload_count", 0) or 0)
             data["microstructure_score"] = round(micro_score, 3)
@@ -1091,6 +1237,36 @@ class SignalDecisionEngine:
             data["dom_absorption_proxy"] = round(dom_absorption_proxy, 4)
             data["dom_iceberg_proxy"] = round(dom_iceberg_proxy, 4)
             data["dom_queue_persistence"] = round(dom_queue_persistence, 4)
+            data["dom_add_intent_bias"] = round(dom_add_intent_bias, 4)
+            data["dom_cancel_pressure_bias"] = round(dom_cancel_pressure_bias, 4)
+            data["dom_queue_erosion_bias"] = round(dom_queue_erosion_bias, 4)
+            data["dom_trade_absorption_proxy"] = round(dom_trade_absorption_proxy, 4)
+            data["dom_refill_after_sweep_bias"] = round(dom_refill_after_sweep_bias, 4)
+            data["dom_trade_aggression_bias"] = round(dom_trade_aggression_bias, 4)
+            data["dom_trade_backed_iceberg_proxy"] = round(dom_trade_backed_iceberg_proxy, 4)
+            data["dom_trade_backed_iceberg_hits"] = int(micro.get("dom_trade_backed_iceberg_hits", 0) or 0)
+            data["dom_refill_after_sweep_hits"] = int(micro.get("dom_refill_after_sweep_hits", 0) or 0)
+            data["dom_sweep_up_count"] = int(micro.get("dom_sweep_up_count", 0) or 0)
+            data["dom_sweep_down_count"] = int(micro.get("dom_sweep_down_count", 0) or 0)
+            data["dom_fragmentation_provider_count"] = dom_fragmentation_provider_count
+            data["dom_cross_venue_mid_dislocation_bps"] = round(dom_cross_venue_mid_dislocation_bps, 4)
+            data["dom_cross_venue_agreement"] = round(dom_cross_venue_agreement, 4)
+            data["dom_primary_vs_consensus_gap"] = round(dom_primary_vs_consensus_gap, 4)
+            data["dom_fragmentation_score"] = round(dom_fragmentation_score, 4)
+            data["dom_fragmented_market"] = dom_fragmented_market
+            data["dom_stream_connected"] = dom_stream_connected
+            data["dom_stream_health_known"] = dom_stream_health_known
+            data["dom_stream_degraded"] = dom_stream_degraded
+            data["dom_stream_health_score"] = round(dom_stream_health_score, 4)
+            data["dom_stream_trust_decay"] = round(dom_stream_trust_decay, 4)
+            data["dom_stream_reconnect_count"] = dom_stream_reconnect_count
+            data["dom_stream_sequence_gap_count"] = dom_stream_sequence_gap_count
+            data["dom_stream_last_message_age_seconds"] = dom_stream_last_message_age_seconds
+            data["dom_depth_stream_age_seconds"] = dom_depth_stream_age_seconds
+            data["dom_trade_stream_age_seconds"] = dom_trade_stream_age_seconds
+            data["dom_depth_stream_missing"] = dom_depth_stream_missing
+            data["dom_trade_stream_missing"] = dom_trade_stream_missing
+            data["dom_stream_reason"] = dom_stream_reason
             if stop_hunt_risk >= 0.45:
                 notes.append("stop_hunt_penalty")
             if exhaustion_risk >= 0.42:
@@ -1099,6 +1275,12 @@ class SignalDecisionEngine:
                 notes.append("synthetic_depth_proxy")
             if micro.get("external_depth_rejected"):
                 notes.append("depth_quote_divergence")
+            if dom_stream_health_known and dom_stream_degraded:
+                notes.append("dom_stream_degraded")
+            if dom_ladder_ready and dom_depth_stream_missing:
+                notes.append("dom_depth_stream_gap")
+            if dom_ladder_ready and dom_trade_stream_missing:
+                notes.append("dom_trade_stream_gap")
             if aligned_micro >= 0.20:
                 notes.append("micro_boost")
             elif aligned_micro <= -0.20:
@@ -1132,6 +1314,20 @@ class SignalDecisionEngine:
                     aligned_dom_iceberg,
                 ) <= -0.16:
                     notes.append("snapshot_stream_conflict")
+            if aligned_dom_add_intent >= 0.14 and aligned_dom_cancel_pressure >= 0.12:
+                notes.append("dom_add_cancel_support")
+            elif aligned_dom_add_intent <= -0.14 and aligned_dom_cancel_pressure <= -0.12:
+                notes.append("dom_add_cancel_conflict")
+            if aligned_dom_trade_absorption >= 0.12 and aligned_dom_refill_after_sweep >= 0.10:
+                notes.append("dom_absorption_refill_support")
+            elif aligned_dom_trade_absorption <= -0.12 and aligned_dom_refill_after_sweep <= -0.10:
+                notes.append("dom_absorption_refill_conflict")
+            if aligned_dom_trade_backed_iceberg >= 0.14:
+                notes.append("dom_trade_backed_iceberg_support")
+            elif aligned_dom_trade_backed_iceberg <= -0.14:
+                notes.append("dom_trade_backed_iceberg_conflict")
+            if dom_fragmented_market and dom_fragmentation_score >= 0.42:
+                notes.append("dom_fragmented_market")
         except Exception:
             pass
 
@@ -1678,6 +1874,14 @@ class SignalDecisionEngine:
         depth_sovereignty_min_component = float(
             execution_policy.get("depth_sovereignty_min_component", 0.18) or 0.18
         )
+        dom_stream_trust_metrics = _effective_dom_stream_trust_metrics(
+            signal,
+            execution_policy,
+            base_trust_score=depth_provider_trust_score,
+        )
+        effective_depth_provider_trust_score = float(
+            dom_stream_trust_metrics["effective_trust_score"]
+        )
         true_depth_quote_aligned = bool(
             not external_depth_rejected
             and depth_quote_agreement_state not in {"divergent", "severe_divergence"}
@@ -1687,9 +1891,10 @@ class SignalDecisionEngine:
             and preferred_true_depth
             and depth_levels >= 2
             and depth_quality >= preferred_true_depth_min_quality
-            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and effective_depth_provider_trust_score >= preferred_true_depth_min_trust_score
             and depth_quote_alignment_score >= 0.80
             and true_depth_quote_aligned
+            and (not dom_ladder_ready or dom_stream_trust_metrics["sovereignty_supported"])
         )
         snapshot_true_depth_informative = bool(true_depth_informative and not dom_ladder_ready)
         strong_true_depth_support = bool(
@@ -1718,6 +1923,18 @@ class SignalDecisionEngine:
             "strong_flow_support": strong_flow_support,
             "true_depth_informative": true_depth_informative,
             "snapshot_true_depth_informative": snapshot_true_depth_informative,
+            "depth_provider_trust_score_effective": round(effective_depth_provider_trust_score, 4),
+            "depth_provider_trust_decay_applied": round(
+                max(0.0, depth_provider_trust_score - effective_depth_provider_trust_score),
+                4,
+            ),
+            "dom_stream_health_known": bool(dom_stream_trust_metrics["health_known"]),
+            "dom_stream_health_score": round(float(dom_stream_trust_metrics["health_score"]), 4),
+            "dom_stream_trust_decay": round(float(dom_stream_trust_metrics["trust_decay"]), 4),
+            "dom_stream_degraded": bool(dom_stream_trust_metrics["stream_degraded"]),
+            "depth_stream_health_hard_floor_breached": bool(
+                dom_stream_trust_metrics["hard_floor_breached"]
+            ),
             "dom_event_backed": dom_event_backed,
             "dom_ladder_ready": dom_ladder_ready,
             "dom_source_fidelity": dom_source_fidelity or ("event_ladder" if dom_ladder_ready else "snapshot_depth" if true_depth_available else "none"),
@@ -2828,6 +3045,24 @@ class SignalDecisionEngine:
             session_quality_score,
         )
         execution_policy = get_execution_policy(signal.asset)
+        dom_stream_trust_metrics = _effective_dom_stream_trust_metrics(
+            signal,
+            execution_policy,
+            base_trust_score=depth_provider_trust_score,
+        )
+        dom_stream_health_known = bool(dom_stream_trust_metrics["health_known"])
+        dom_stream_health_score = float(dom_stream_trust_metrics["health_score"])
+        dom_stream_trust_decay = float(dom_stream_trust_metrics["trust_decay"])
+        dom_stream_degraded = bool(dom_stream_trust_metrics["stream_degraded"])
+        dom_depth_stream_missing = bool(dom_stream_trust_metrics["depth_stream_missing"])
+        dom_trade_stream_missing = bool(dom_stream_trust_metrics["trade_stream_missing"])
+        depth_provider_trust_score_effective = float(
+            dom_stream_trust_metrics["effective_trust_score"]
+        )
+        dom_stream_sovereignty_supported = bool(
+            dom_stream_trust_metrics["sovereignty_supported"]
+        )
+        dom_stream_hard_floor_breached = bool(dom_stream_trust_metrics["hard_floor_breached"])
         direction_sign = 1 if signal.direction == "BUY" else -1
         funding_bias = str(signal.metadata.get("funding_bias") or "NEUTRAL").strip().upper()
         oi_signal = str(signal.metadata.get("oi_signal") or "NEUTRAL").strip().upper()
@@ -3316,15 +3551,40 @@ class SignalDecisionEngine:
         dom_absorption_proxy = float(signal.metadata.get("dom_absorption_proxy", 0.0) or 0.0)
         dom_iceberg_proxy = float(signal.metadata.get("dom_iceberg_proxy", 0.0) or 0.0)
         dom_queue_persistence = float(signal.metadata.get("dom_queue_persistence", 0.0) or 0.0)
+        dom_add_intent_bias = float(signal.metadata.get("dom_add_intent_bias", 0.0) or 0.0)
+        dom_cancel_pressure_bias = float(signal.metadata.get("dom_cancel_pressure_bias", 0.0) or 0.0)
+        dom_queue_erosion_bias = float(signal.metadata.get("dom_queue_erosion_bias", 0.0) or 0.0)
+        dom_trade_absorption_proxy = float(signal.metadata.get("dom_trade_absorption_proxy", 0.0) or 0.0)
+        dom_refill_after_sweep_bias = float(signal.metadata.get("dom_refill_after_sweep_bias", 0.0) or 0.0)
+        dom_trade_aggression_bias = float(signal.metadata.get("dom_trade_aggression_bias", 0.0) or 0.0)
+        dom_trade_backed_iceberg_proxy = float(signal.metadata.get("dom_trade_backed_iceberg_proxy", 0.0) or 0.0)
+        dom_fragmentation_score = float(signal.metadata.get("dom_fragmentation_score", 0.0) or 0.0)
+        dom_fragmented_market = bool(signal.metadata.get("dom_fragmented_market"))
         true_depth_quote_aligned = bool(
             not external_depth_rejected
             and depth_quote_agreement_state not in {"divergent", "severe_divergence"}
+        )
+        aligned_dom_add_intent = dom_add_intent_bias if signal.direction == "BUY" else -dom_add_intent_bias
+        aligned_dom_cancel_pressure = dom_cancel_pressure_bias if signal.direction == "BUY" else -dom_cancel_pressure_bias
+        aligned_dom_queue_erosion = dom_queue_erosion_bias if signal.direction == "BUY" else -dom_queue_erosion_bias
+        aligned_dom_trade_absorption = dom_trade_absorption_proxy if signal.direction == "BUY" else -dom_trade_absorption_proxy
+        aligned_dom_refill_after_sweep = dom_refill_after_sweep_bias if signal.direction == "BUY" else -dom_refill_after_sweep_bias
+        aligned_dom_trade_aggression = dom_trade_aggression_bias if signal.direction == "BUY" else -dom_trade_aggression_bias
+        aligned_dom_trade_backed_iceberg = (
+            dom_trade_backed_iceberg_proxy if signal.direction == "BUY" else -dom_trade_backed_iceberg_proxy
+        )
+        depth_fragmentation_untrusted = bool(
+            dom_fragmented_market
+            and (
+                dom_fragmentation_score >= 0.52
+                or float(signal.metadata.get("dom_primary_vs_consensus_gap", 0.0) or 0.0) >= 0.24
+            )
         )
         meets_true_depth_trust_floor = bool(
             true_depth_available
             and (
                 minimum_usable_true_depth_trust_score <= 0.0
-                or depth_provider_trust_score >= minimum_usable_true_depth_trust_score
+                or depth_provider_trust_score_effective >= minimum_usable_true_depth_trust_score
             )
         )
         meets_true_depth_quality_floor = bool(
@@ -3343,6 +3603,7 @@ class SignalDecisionEngine:
             and true_depth_quote_aligned
             and depth_levels >= 2
             and true_depth_signal_strength >= 0.06
+            and (not dom_ladder_ready or dom_stream_sovereignty_supported)
         )
         usable_true_depth_available = bool(
             true_depth_available
@@ -3381,11 +3642,12 @@ class SignalDecisionEngine:
             event_backed_true_depth_available
             and preferred_true_depth
             and depth_quality >= preferred_true_depth_min_quality
-            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
             and depth_quote_alignment_score >= 0.80
             and directional_flow_support >= depth_sovereignty_min_directional_flow
             and aligned_book_pressure >= depth_sovereignty_min_true_depth_support
             and directional_flow_conflict > -0.10
+            and not depth_fragmentation_untrusted
         )
         strong_flow_support = bool(
             directional_flow_support >= depth_sovereignty_min_directional_flow
@@ -3404,6 +3666,13 @@ class SignalDecisionEngine:
             dom_refill_resilience_proxy,
             dom_absorption_proxy,
             dom_iceberg_proxy,
+            aligned_dom_trade_backed_iceberg,
+            aligned_dom_add_intent,
+            aligned_dom_cancel_pressure,
+            aligned_dom_trade_absorption,
+            aligned_dom_refill_after_sweep,
+            aligned_dom_trade_aggression,
+            aligned_dom_queue_erosion,
         )
         snapshot_stream_supportive = bool(
             snapshot_true_depth_available
@@ -3411,7 +3680,7 @@ class SignalDecisionEngine:
             and aligned_snapshot_stream_proxy >= 0.12
             and dom_queue_persistence >= 0.35
         )
-        event_ladder_hostile_flow_component_count = sum(
+        hostile_core_component_count = sum(
             1
             for conflict in (
                 true_depth_directional_conflict <= -0.08,
@@ -3422,10 +3691,31 @@ class SignalDecisionEngine:
             )
             if conflict
         )
+        hostile_ladder_detail_component_count = sum(
+            1
+            for conflict in (
+                aligned_dom_add_intent <= -0.14,
+                aligned_dom_cancel_pressure <= -0.14,
+                aligned_dom_queue_erosion <= -0.12,
+                aligned_dom_trade_absorption <= -0.16,
+                aligned_dom_refill_after_sweep <= -0.14,
+                aligned_dom_trade_aggression <= -0.14,
+                aligned_dom_trade_backed_iceberg <= -0.16,
+                depth_fragmentation_untrusted,
+            )
+            if conflict
+        )
+        event_ladder_hostile_flow_component_count = hostile_core_component_count + min(
+            2, hostile_ladder_detail_component_count
+        )
         event_ladder_hostile_flow = bool(
             event_backed_true_depth_available
             and (continuation_family or continuation_entry)
-            and event_ladder_hostile_flow_component_count >= 2
+            and (
+                hostile_core_component_count >= 2
+                or (hostile_core_component_count >= 1 and hostile_ladder_detail_component_count >= 2)
+                or hostile_ladder_detail_component_count >= 3
+            )
         )
         macro_spillover_conflict_relation = bool(
             cross_asset_primary_relation in {
@@ -3474,6 +3764,20 @@ class SignalDecisionEngine:
             and not fast_entry_confirmation_ready
         )
         if event_ladder_cross_market_hard_block:
+            continuation_rescue_candidate = False
+            high_conviction_continuation_candidate = False
+            high_conviction_continuation_timing_intact = False
+            high_conviction_continuation_supported = False
+            context_continuation_execution_candidate = False
+            context_confirmation_override = False
+        event_ladder_stream_health_blocks_sovereignty = bool(
+            dom_ladder_ready
+            and not dom_stream_sovereignty_supported
+        )
+        if event_ladder_stream_health_blocks_sovereignty:
+            strong_true_depth_support = False
+            strong_flow_support = False
+        if dom_stream_hard_floor_breached:
             continuation_rescue_candidate = False
             high_conviction_continuation_candidate = False
             high_conviction_continuation_timing_intact = False
@@ -3589,7 +3893,7 @@ class SignalDecisionEngine:
         if (
             event_backed_true_depth_available
             and depth_quality >= preferred_true_depth_min_quality
-            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
             and depth_quote_alignment_score >= 0.80
             and true_depth_directional_support >= 0.06
             and true_depth_directional_conflict > -0.06
@@ -3773,6 +4077,30 @@ class SignalDecisionEngine:
                 if event_ladder_cross_market_hard_block:
                     risk_score += 0.06
                 reasons.append("event-ladder flow and cross-asset spillover are aligned against the continuation")
+        if dom_ladder_ready and dom_stream_health_known:
+            if dom_stream_hard_floor_breached:
+                risk_score += 0.18
+                reasons.append("event-ladder stream health is too degraded to trust for timing")
+                if (
+                    (continuation_family or continuation_entry)
+                    and (
+                        event_ladder_cross_market_conflict
+                        or event_ladder_hostile_flow
+                        or stop_hunt_risk >= 0.48
+                    )
+                ):
+                    hard_blocks.append(
+                        "event-ladder stream integrity has degraded while continuation pressure is already elevated"
+                    )
+            elif event_ladder_stream_health_blocks_sovereignty:
+                risk_score += 0.10
+                reasons.append("event-ladder stream health is degraded")
+            elif dom_trade_stream_missing:
+                risk_score += 0.04
+                reasons.append("event-ladder trade flow is incomplete")
+        if event_backed_true_depth_available and dom_fragmented_market and dom_fragmentation_score >= 0.42:
+            risk_score += 0.08 if depth_fragmentation_untrusted else 0.04
+            reasons.append("cross-venue depth is fragmented")
         if crypto_breadth_conflict:
             risk_score += 0.16 if is_crypto_alt else 0.10
             reasons.append("broad crypto breadth is leaning against the trade")
@@ -4229,11 +4557,25 @@ class SignalDecisionEngine:
             "depth_quality": round(depth_quality, 4),
             "depth_quality_tier": depth_quality_tier,
             "depth_provider_trust_score": round(depth_provider_trust_score, 4),
+            "depth_provider_trust_score_effective": round(depth_provider_trust_score_effective, 4),
+            "depth_provider_trust_decay_applied": round(
+                max(0.0, depth_provider_trust_score - depth_provider_trust_score_effective),
+                4,
+            ),
             "preferred_true_depth_min_trust_score": round(preferred_true_depth_min_trust_score, 4),
             "minimum_usable_true_depth_trust_score": round(minimum_usable_true_depth_trust_score, 4),
             "depth_quote_agreement_state": depth_quote_agreement_state,
             "depth_quote_alignment_score": round(depth_quote_alignment_score, 4),
             "external_depth_rejected": external_depth_rejected,
+            "dom_stream_health_known": dom_stream_health_known,
+            "dom_stream_health_score": round(dom_stream_health_score, 4),
+            "dom_stream_trust_decay": round(dom_stream_trust_decay, 4),
+            "dom_stream_degraded": dom_stream_degraded,
+            "dom_depth_stream_missing": dom_depth_stream_missing,
+            "dom_trade_stream_missing": dom_trade_stream_missing,
+            "dom_stream_sovereignty_supported": dom_stream_sovereignty_supported,
+            "dom_stream_hard_floor_breached": dom_stream_hard_floor_breached,
+            "event_ladder_stream_health_blocks_sovereignty": event_ladder_stream_health_blocks_sovereignty,
             "depth_update_mode": depth_update_mode,
             "dom_event_backed": dom_event_backed,
             "dom_ladder_ready": dom_ladder_ready,
@@ -4245,6 +4587,15 @@ class SignalDecisionEngine:
             "dom_absorption_proxy": round(dom_absorption_proxy, 4),
             "dom_iceberg_proxy": round(dom_iceberg_proxy, 4),
             "dom_queue_persistence": round(dom_queue_persistence, 4),
+            "dom_add_intent_bias": round(dom_add_intent_bias, 4),
+            "dom_cancel_pressure_bias": round(dom_cancel_pressure_bias, 4),
+            "dom_queue_erosion_bias": round(dom_queue_erosion_bias, 4),
+            "dom_trade_absorption_proxy": round(dom_trade_absorption_proxy, 4),
+            "dom_refill_after_sweep_bias": round(dom_refill_after_sweep_bias, 4),
+            "dom_trade_aggression_bias": round(dom_trade_aggression_bias, 4),
+            "dom_trade_backed_iceberg_proxy": round(dom_trade_backed_iceberg_proxy, 4),
+            "dom_fragmentation_score": round(dom_fragmentation_score, 4),
+            "dom_fragmented_market": dom_fragmented_market,
             "snapshot_stream_supportive": snapshot_stream_supportive,
             "true_depth_available": true_depth_available,
             "usable_true_depth_available": usable_true_depth_available,
@@ -4354,6 +4705,25 @@ class SignalDecisionEngine:
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
         signal.metadata["late_entry_risk_reasons"] = list(reasons)
         signal.metadata["execution_hard_blocks"] = list(hard_blocks)
+        signal.metadata["depth_provider_trust_score_effective"] = round(
+            depth_provider_trust_score_effective,
+            4,
+        )
+        signal.metadata["depth_provider_trust_decay_applied"] = round(
+            max(0.0, depth_provider_trust_score - depth_provider_trust_score_effective),
+            4,
+        )
+        signal.metadata["event_ladder_hostile_flow"] = event_ladder_hostile_flow
+        signal.metadata["event_ladder_hostile_flow_component_count"] = int(
+            event_ladder_hostile_flow_component_count
+        )
+        signal.metadata["event_ladder_cross_market_conflict"] = event_ladder_cross_market_conflict
+        signal.metadata["event_ladder_cross_market_hard_block"] = event_ladder_cross_market_hard_block
+        signal.metadata["cross_asset_directional_conflict"] = cross_asset_directional_conflict
+        signal.metadata["dom_stream_health_blocks_sovereignty"] = (
+            event_ladder_stream_health_blocks_sovereignty
+        )
+        signal.metadata["dom_stream_health_hard_floor_breached"] = dom_stream_hard_floor_breached
         signal.metadata["effective_execution_policy"] = dict(effective_execution_policy)
         signal.metadata["execution_relief_flags"] = {
             "strong_market_candidate": strong_market_candidate,
@@ -4388,9 +4758,28 @@ class SignalDecisionEngine:
             "depth_sovereignty_source": depth_sovereignty_source,
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
+            "dom_stream_health_known": dom_stream_health_known,
+            "dom_stream_health_score": round(dom_stream_health_score, 4),
+            "dom_stream_trust_decay": round(dom_stream_trust_decay, 4),
+            "dom_stream_degraded": dom_stream_degraded,
+            "dom_depth_stream_missing": dom_depth_stream_missing,
+            "dom_trade_stream_missing": dom_trade_stream_missing,
+            "dom_stream_sovereignty_supported": dom_stream_sovereignty_supported,
+            "dom_stream_hard_floor_breached": dom_stream_hard_floor_breached,
+            "event_ladder_stream_health_blocks_sovereignty": event_ladder_stream_health_blocks_sovereignty,
             "snapshot_dom_requires_confirmation": snapshot_dom_requires_confirmation,
             "snapshot_stream_supportive": snapshot_stream_supportive,
             "snapshot_depth_relief": round(snapshot_depth_relief, 4),
+            "dom_add_intent_bias": round(dom_add_intent_bias, 4),
+            "dom_cancel_pressure_bias": round(dom_cancel_pressure_bias, 4),
+            "dom_queue_erosion_bias": round(dom_queue_erosion_bias, 4),
+            "dom_trade_absorption_proxy": round(dom_trade_absorption_proxy, 4),
+            "dom_refill_after_sweep_bias": round(dom_refill_after_sweep_bias, 4),
+            "dom_trade_aggression_bias": round(dom_trade_aggression_bias, 4),
+            "dom_trade_backed_iceberg_proxy": round(dom_trade_backed_iceberg_proxy, 4),
+            "dom_fragmentation_score": round(dom_fragmentation_score, 4),
+            "dom_fragmented_market": dom_fragmented_market,
+            "depth_fragmentation_untrusted": depth_fragmentation_untrusted,
             "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
             "depth_flow_sovereignty_rescue_candidate": depth_flow_sovereignty_rescue_candidate,
             "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
@@ -4450,6 +4839,21 @@ class SignalDecisionEngine:
             "trade_delta_ratio": round(trade_delta_ratio, 4),
             "trade_cvd_slope": round(trade_cvd_slope, 4),
             "trade_cluster_penalty": round(cluster_penalty, 4),
+            "depth_provider_trust_score": round(depth_provider_trust_score, 4),
+            "depth_provider_trust_score_effective": round(depth_provider_trust_score_effective, 4),
+            "depth_provider_trust_decay_applied": round(
+                max(0.0, depth_provider_trust_score - depth_provider_trust_score_effective),
+                4,
+            ),
+            "dom_stream_health_known": dom_stream_health_known,
+            "dom_stream_health_score": round(dom_stream_health_score, 4),
+            "dom_stream_trust_decay": round(dom_stream_trust_decay, 4),
+            "dom_stream_degraded": dom_stream_degraded,
+            "dom_depth_stream_missing": dom_depth_stream_missing,
+            "dom_trade_stream_missing": dom_trade_stream_missing,
+            "dom_stream_sovereignty_supported": dom_stream_sovereignty_supported,
+            "dom_stream_hard_floor_breached": dom_stream_hard_floor_breached,
+            "event_ladder_stream_health_blocks_sovereignty": event_ladder_stream_health_blocks_sovereignty,
             "pattern_family": pattern_family,
             "failed_opposite_move_confirmed": failed_opposite_move_confirmed,
             "entry_confirmation_bars_required": int(entry_confirmation_bars_required),
@@ -4514,6 +4918,15 @@ class SignalDecisionEngine:
             "dom_absorption_proxy": round(dom_absorption_proxy, 4),
             "dom_iceberg_proxy": round(dom_iceberg_proxy, 4),
             "dom_queue_persistence": round(dom_queue_persistence, 4),
+            "dom_add_intent_bias": round(dom_add_intent_bias, 4),
+            "dom_cancel_pressure_bias": round(dom_cancel_pressure_bias, 4),
+            "dom_queue_erosion_bias": round(dom_queue_erosion_bias, 4),
+            "dom_trade_absorption_proxy": round(dom_trade_absorption_proxy, 4),
+            "dom_refill_after_sweep_bias": round(dom_refill_after_sweep_bias, 4),
+            "dom_trade_aggression_bias": round(dom_trade_aggression_bias, 4),
+            "dom_trade_backed_iceberg_proxy": round(dom_trade_backed_iceberg_proxy, 4),
+            "dom_fragmentation_score": round(dom_fragmentation_score, 4),
+            "dom_fragmented_market": dom_fragmented_market,
             "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
             "depth_flow_sovereignty_rescue_candidate": depth_flow_sovereignty_rescue_candidate,
             "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
@@ -5282,6 +5695,13 @@ class SignalDecisionEngine:
         if os.getenv("DEBUG_FORCE_SURVIVE", "0") == "1" and not signal.alive:
             signal.alive = True
             signal.kill_reason = "Forced survive via DEBUG_FORCE_SURVIVE"
+
+        try:
+            from services.dom_replay_service import get_service as get_dom_replay_service
+
+            get_dom_replay_service().capture_signal_decision(signal, context)
+        except Exception as exc:
+            logger.debug(f"[DecisionEngine] DOM replay capture failed: {exc}")
 
         if report:
             if signal.alive:

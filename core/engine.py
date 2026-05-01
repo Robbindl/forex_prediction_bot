@@ -1711,6 +1711,13 @@ class TradingCore:
             logger.debug(f"[TradingCore] Ignoring duplicate close callback for {trade_id}")
             return
 
+        try:
+            from services.dom_replay_service import get_service as get_dom_replay_service
+
+            get_dom_replay_service().attach_trade_outcome(closed)
+        except Exception as exc:
+            logger.debug(f"[TradingCore] DOM replay close capture failed: {exc}")
+
         self._record_trade_close_side_effects(closed, pnl)
         logger.log_trade(
             "CLOSE",

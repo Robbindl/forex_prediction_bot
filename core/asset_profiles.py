@@ -283,6 +283,10 @@ _DEFAULT_EXECUTION_POLICY: Dict[str, float | int] = {
     "depth_sovereignty_min_true_depth_support": 0.12,
     "depth_sovereignty_min_component": 0.18,
     "htf_depth_override_penalty": 0.015,
+    "dom_stream_health_min_score_for_sovereignty": 0.58,
+    "dom_stream_health_hard_floor": 0.34,
+    "dom_stream_trust_penalty_scale": 0.60,
+    "dom_stream_degraded_penalty": 0.12,
 }
 
 _CATEGORY_EXECUTION_POLICIES: Dict[str, Dict[str, float | int]] = {
@@ -304,6 +308,9 @@ _CATEGORY_EXECUTION_POLICIES: Dict[str, Dict[str, float | int]] = {
         "misaligned_true_depth_penalty": 0.05,
         "synthetic_depth_penalty": 0.02,
         "asset_edge_bonus_scale": 0.09,
+        "dom_stream_health_min_score_for_sovereignty": 0.56,
+        "dom_stream_health_hard_floor": 0.32,
+        "dom_stream_trust_penalty_scale": 0.58,
     },
     "indices": {
         "risk_kill_threshold": 0.59,
@@ -322,6 +329,9 @@ _CATEGORY_EXECUTION_POLICIES: Dict[str, Dict[str, float | int]] = {
         "low_trust_true_depth_penalty": 0.03,
         "misaligned_true_depth_penalty": 0.05,
         "synthetic_depth_penalty": 0.03,
+        "dom_stream_health_min_score_for_sovereignty": 0.57,
+        "dom_stream_health_hard_floor": 0.33,
+        "dom_stream_trust_penalty_scale": 0.60,
     },
     "commodities": {
         "risk_kill_threshold": 0.55,
@@ -344,6 +354,10 @@ _CATEGORY_EXECUTION_POLICIES: Dict[str, Dict[str, float | int]] = {
         "synthetic_depth_penalty": 0.06,
         "asset_edge_bonus_scale": 0.07,
         "book_edge_bonus_scale": 0.05,
+        "dom_stream_health_min_score_for_sovereignty": 0.62,
+        "dom_stream_health_hard_floor": 0.38,
+        "dom_stream_trust_penalty_scale": 0.68,
+        "dom_stream_degraded_penalty": 0.16,
     },
     "crypto": {
         "risk_kill_threshold": 0.56,
@@ -363,6 +377,10 @@ _CATEGORY_EXECUTION_POLICIES: Dict[str, Dict[str, float | int]] = {
         "synthetic_depth_penalty": 0.07,
         "asset_edge_bonus_scale": 0.10,
         "book_edge_bonus_scale": 0.07,
+        "dom_stream_health_min_score_for_sovereignty": 0.60,
+        "dom_stream_health_hard_floor": 0.36,
+        "dom_stream_trust_penalty_scale": 0.65,
+        "dom_stream_degraded_penalty": 0.14,
     },
     "unknown": {},
 }

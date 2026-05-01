@@ -31,6 +31,12 @@ def classify_dom_evidence(payload: Optional[Mapping[str, Any]]) -> Dict[str, Any
     synthetic_depth_available = bool(data.get("synthetic_depth_available"))
     flags = _flag_tokens(data.get("flags", data.get("dom_flags", "")))
     update_mode = str(data.get("depth_update_mode") or "").strip().lower()
+    fragmentation_score = float(data.get("dom_fragmentation_score", 0.0) or 0.0)
+    fragmented_market = bool(data.get("dom_fragmented_market"))
+    stream_health_known = bool(data.get("dom_stream_health_known"))
+    stream_health_score = float(data.get("dom_stream_health_score", 1.0) or 1.0)
+    stream_degraded = bool(data.get("dom_stream_degraded"))
+    depth_stream_missing = bool(data.get("dom_depth_stream_missing"))
 
     snapshot_count = max(
         _safe_int(data.get("dom_snapshot_count"), 0),
@@ -98,7 +104,12 @@ def classify_dom_evidence(payload: Optional[Mapping[str, Any]]) -> Dict[str, Any
         authority_tier = "synthetic_flow"
     elif depth_available and dom_ladder_ready:
         source_fidelity = "event_ladder"
-        authority_tier = "event_ladder"
+        if stream_health_known and (stream_degraded or depth_stream_missing or stream_health_score < 0.58):
+            authority_tier = "degraded_event_ladder"
+        elif fragmented_market or fragmentation_score >= 0.42:
+            authority_tier = "fragmented_event_ladder"
+        else:
+            authority_tier = "event_ladder"
     elif depth_available and dom_event_backed:
         source_fidelity = "event_partial"
         authority_tier = "snapshot_depth"

@@ -99,6 +99,67 @@ class WebSocketManager:
         asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     @staticmethod
+    def _stream_health_service():
+        try:
+            from services.dom_stream_health_service import get_service as get_dom_stream_health_service
+
+            return get_dom_stream_health_service()
+        except Exception:
+            return None
+
+    def _mark_stream_connected(self, provider: str, asset: str = "", *, ts: Optional[datetime] = None) -> None:
+        service = self._stream_health_service()
+        if service is None:
+            return
+        try:
+            service.mark_connected(provider, asset, ts=(ts.timestamp() if isinstance(ts, datetime) else None))
+        except Exception:
+            pass
+
+    def _mark_stream_disconnected(
+        self,
+        provider: str,
+        asset: str = "",
+        *,
+        reason: str = "",
+        reconnect: bool = False,
+    ) -> None:
+        service = self._stream_health_service()
+        if service is None:
+            return
+        try:
+            service.mark_disconnected(provider, asset, reason=reason, reconnect=reconnect)
+        except Exception:
+            pass
+
+    def _note_stream_depth(self, provider: str, asset: str, *, ts: Optional[datetime] = None) -> None:
+        service = self._stream_health_service()
+        if service is None:
+            return
+        try:
+            service.note_depth(provider, asset, ts=(ts.timestamp() if isinstance(ts, datetime) else None))
+        except Exception:
+            pass
+
+    def _note_stream_trade(self, provider: str, asset: str, *, ts: Optional[datetime] = None) -> None:
+        service = self._stream_health_service()
+        if service is None:
+            return
+        try:
+            service.note_trade(provider, asset, ts=(ts.timestamp() if isinstance(ts, datetime) else None))
+        except Exception:
+            pass
+
+    def _note_stream_sequence_gap(self, provider: str, asset: str = "", *, reason: str = "") -> None:
+        service = self._stream_health_service()
+        if service is None:
+            return
+        try:
+            service.note_sequence_gap(provider, asset, reason=reason)
+        except Exception:
+            pass
+
+    @staticmethod
     def _filter_okx_stream_assets(assets: Dict[str, str]) -> Dict[str, str]:
         selected: Dict[str, str] = {}
         for asset, category in (assets or {}).items():
@@ -201,6 +262,7 @@ class WebSocketManager:
                 if asyncio.get_event_loop().time() - t0 > 30:
                     backoff = 5
                 set_connected("deriv", False)
+                self._mark_stream_disconnected("deriv", reason=str(e), reconnect=True)
                 if not self._deriv_degraded:
                     logger.warning(f"[WSManager] Deriv stream lost: {e} - retry in {backoff}s")
                     self._deriv_degraded = True
@@ -226,6 +288,7 @@ class WebSocketManager:
                 if asyncio.get_event_loop().time() - t0 > 30:
                     backoff = 5
                 set_connected("bybit", False, len(self._bybit_asset_to_symbol))
+                self._mark_stream_disconnected("bybit", reason=str(exc), reconnect=True)
                 if not self._bybit_degraded:
                     logger.warning(f"[WSManager] Bybit stream lost: {exc} - retry in {backoff}s")
                     self._bybit_degraded = True
@@ -251,6 +314,7 @@ class WebSocketManager:
                 if asyncio.get_event_loop().time() - t0 > 30:
                     backoff = 5
                 set_connected("okx", False, len(self._okx_asset_to_symbol))
+                self._mark_stream_disconnected("okx", reason=str(exc), reconnect=True)
                 if not self._okx_degraded:
                     logger.warning(f"[WSManager] OKX stream lost: {exc} - retry in {backoff}s")
                     self._okx_degraded = True
@@ -267,6 +331,7 @@ class WebSocketManager:
             await self._subscribe_pending_assets()
             set_connected("deriv", True, len(self._asset_to_symbol))
             self._deriv_degraded = False
+            self._mark_stream_connected("deriv")
             logger.info("[WSManager] Deriv stream connected")
 
             heartbeat = asyncio.create_task(self._heartbeat(ws))
@@ -280,6 +345,7 @@ class WebSocketManager:
                     self._asset_to_symbol.clear()
                     self._symbol_to_asset.clear()
                 set_connected("deriv", False, 0)
+                self._mark_stream_disconnected("deriv", reason="socket_closed")
 
     async def _connect_bybit(self):
         from websocket_dashboard import set_connected
@@ -289,6 +355,7 @@ class WebSocketManager:
             await self._subscribe_pending_bybit_assets()
             set_connected("bybit", True, len(self._bybit_asset_to_symbol))
             self._bybit_degraded = False
+            self._mark_stream_connected("bybit")
             logger.info("[WSManager] Bybit stream connected")
 
             heartbeat = asyncio.create_task(self._bybit_heartbeat(ws))
@@ -303,6 +370,7 @@ class WebSocketManager:
                     self._bybit_symbol_to_asset.clear()
                     self._bybit_books.clear()
                 set_connected("bybit", False, 0)
+                self._mark_stream_disconnected("bybit", reason="socket_closed")
 
     async def _connect_okx(self):
         from websocket_dashboard import set_connected
@@ -312,6 +380,7 @@ class WebSocketManager:
             await self._subscribe_pending_okx_assets()
             set_connected("okx", True, len(self._okx_asset_to_symbol))
             self._okx_degraded = False
+            self._mark_stream_connected("okx")
             logger.info("[WSManager] OKX stream connected")
 
             heartbeat = asyncio.create_task(self._okx_heartbeat(ws))
@@ -326,6 +395,7 @@ class WebSocketManager:
                     self._okx_symbol_to_asset.clear()
                     self._okx_books.clear()
                 set_connected("okx", False, 0)
+                self._mark_stream_disconnected("okx", reason="socket_closed")
 
     async def _heartbeat(self, ws):
         while self.running:
@@ -501,6 +571,7 @@ class WebSocketManager:
                 if asyncio.get_event_loop().time() - t0 > 30:
                     backoff = 5
                 set_connected("binance", False, len(self._binance_asset_to_symbol))
+                self._mark_stream_disconnected("binance", asset, reason=str(exc), reconnect=True)
                 if not self._binance_degraded_assets.get(asset):
                     logger.warning(f"[WSManager] Binance stream lost for {asset}: {exc} - retry in {backoff}s")
                     self._binance_degraded_assets[asset] = True
@@ -545,6 +616,7 @@ class WebSocketManager:
             pass
         self._binance_degraded_assets[asset] = False
         set_connected("binance", True, len(self._binance_asset_to_symbol))
+        self._note_stream_depth("binance", asset, ts=ts)
         for callback in list(self._callbacks):
             try:
                 callback("BinanceStream", asset, price, None, None, ts)
@@ -613,6 +685,7 @@ class WebSocketManager:
                     )
                 except Exception:
                     pass
+                self._note_stream_trade("bybit", asset, ts=ts)
 
             self._bybit_degraded = False
             set_connected("bybit", True, len(self._bybit_asset_to_symbol))
@@ -694,6 +767,7 @@ class WebSocketManager:
 
         self._bybit_degraded = False
         set_connected("bybit", True, len(self._bybit_asset_to_symbol))
+        self._note_stream_depth("bybit", asset, ts=ts)
 
     async def _handle_okx_message(self, message: str):
         from websocket_dashboard import set_connected
@@ -762,6 +836,7 @@ class WebSocketManager:
                     )
                 except Exception:
                     pass
+                self._note_stream_trade("okx", asset, ts=ts)
 
             self._okx_degraded = False
             set_connected("okx", True, len(self._okx_asset_to_symbol))
@@ -804,6 +879,7 @@ class WebSocketManager:
                     f"[WSManager] OKX book sequence gap for {symbol}: "
                     f"expected prevSeqId={expected_prev}, got {prev_seq_id}; reconnecting"
                 )
+                self._note_stream_sequence_gap("okx", asset, reason="sequence_gap")
                 self._okx_books.pop(symbol, None)
                 try:
                     if self._okx_ws is not None:
@@ -865,6 +941,7 @@ class WebSocketManager:
 
         self._okx_degraded = False
         set_connected("okx", True, len(self._okx_asset_to_symbol))
+        self._note_stream_depth("okx", asset, ts=ts)
 
     @staticmethod
     def _safe_int(value: Any) -> Optional[int]:
@@ -1042,6 +1119,7 @@ class WebSocketManager:
 
         bid, ask = self._tick_bid_ask(tick)
         ts = self._tick_timestamp(tick)
+        self._note_stream_depth("deriv", asset, ts=ts)
         self._emit_deriv_tick(asset, price, bid, ask, ts)
 
     async def _handle_message(self, message: str):
@@ -1076,6 +1154,9 @@ class WebSocketManager:
         self._okx_stream_started = False
         self._bybit_books.clear()
         self._okx_books.clear()
+        self._mark_stream_disconnected("deriv", reason="manager_stopped")
+        self._mark_stream_disconnected("bybit", reason="manager_stopped")
+        self._mark_stream_disconnected("okx", reason="manager_stopped")
         for task in list(self._binance_tasks.values()):
             try:
                 task.cancel()
