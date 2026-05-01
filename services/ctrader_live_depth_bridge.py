@@ -412,6 +412,7 @@ class CTraderLiveDepthBridge:
                 ask_size=event["ask_size"],
                 levels=event["levels"],
                 timestamp=event["timestamp"],
+                flags="depth_snapshot,stream_snapshot",
             )
         except Exception:
             pass

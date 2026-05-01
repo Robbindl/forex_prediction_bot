@@ -23,8 +23,10 @@ from utils.logger import logger
 
 _DERIV_PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 _BYBIT_DEPTH_TOPIC = "orderbook.1000"
+_BYBIT_TRADE_TOPIC = "publicTrade"
 _BYBIT_MAX_LEVELS = 1000
 _OKX_DEPTH_CHANNEL = "books"
+_OKX_TRADE_CHANNEL = "trades"
 _OKX_MAX_LEVELS = 400
 
 
@@ -436,6 +438,7 @@ class WebSocketManager:
                 continue
             pending.append((asset, symbol))
             args.append(f"{_BYBIT_DEPTH_TOPIC}.{symbol}")
+            args.append(f"{_BYBIT_TRADE_TOPIC}.{symbol}")
 
         if args:
             await self._bybit_ws.send(json.dumps({"op": "subscribe", "args": args}))
@@ -467,6 +470,7 @@ class WebSocketManager:
                 continue
             pending.append((asset, symbol))
             args.append({"channel": _OKX_DEPTH_CHANNEL, "instId": symbol})
+            args.append({"channel": _OKX_TRADE_CHANNEL, "instId": symbol})
 
         if args:
             await self._okx_ws.send(json.dumps({"op": "subscribe", "args": args}))
@@ -563,6 +567,57 @@ class WebSocketManager:
             return
 
         topic = str(data.get("topic", "") or "").strip()
+        if topic.startswith(f"{_BYBIT_TRADE_TOPIC}."):
+            trades = list(data.get("data") or [])
+            if not trades:
+                return
+            try:
+                from services.live_microstructure_service import get_service as get_live_microstructure_service
+            except Exception:
+                return
+
+            for trade in trades:
+                if not isinstance(trade, dict):
+                    continue
+                symbol = str(trade.get("s", "") or "").strip()
+                asset = self._bybit_symbol_to_asset.get(symbol)
+                if not asset:
+                    continue
+                trade_price = self._safe_float(trade.get("p"))
+                if trade_price is None or trade_price <= 0.0:
+                    continue
+                trade_size = self._safe_float(trade.get("v"))
+                trade_side = str(trade.get("S", "") or "").strip().lower()
+                book_state = self._bybit_books.get(symbol) or {}
+                levels = self._bybit_levels_from_state(book_state) if book_state else []
+                top_bid = levels[0].get("bid") if levels else None
+                top_ask = levels[0].get("ask") if levels else None
+                ts = datetime.now()
+                try:
+                    raw_ts = trade.get("T") or data.get("ts")
+                    if raw_ts not in (None, ""):
+                        ts = datetime.fromtimestamp(float(raw_ts) / 1000.0)
+                except Exception:
+                    pass
+                try:
+                    get_live_microstructure_service().record_trade(
+                        "bybit",
+                        asset,
+                        price=float(trade_price),
+                        size=float(trade_size) if trade_size not in (None, "") else None,
+                        side=trade_side,
+                        bid=float(top_bid) if top_bid else None,
+                        ask=float(top_ask) if top_ask else None,
+                        timestamp=ts,
+                        flags="trade_print,trade_stream,bybit_ws",
+                    )
+                except Exception:
+                    pass
+
+            self._bybit_degraded = False
+            set_connected("bybit", True, len(self._bybit_asset_to_symbol))
+            return
+
         if not topic.startswith(f"{_BYBIT_DEPTH_TOPIC}."):
             return
 
@@ -603,7 +658,7 @@ class WebSocketManager:
         )
         ts = datetime.now()
         try:
-            raw_ts = data.get("cts") or data.get("ts")
+            raw_ts = payload.get("cts") or data.get("ts")
             if raw_ts not in (None, ""):
                 ts = datetime.fromtimestamp(float(raw_ts) / 1000.0)
         except Exception:
@@ -612,16 +667,28 @@ class WebSocketManager:
         try:
             from services.live_microstructure_service import get_service as get_live_microstructure_service
 
-            get_live_microstructure_service().record_quote(
-                "bybit",
-                asset,
-                bid=float(top_bid) if top_bid else None,
-                ask=float(top_ask) if top_ask else None,
-                price=price,
-                levels=levels,
-                timestamp=ts,
-                flags=f"{_BYBIT_DEPTH_TOPIC}:{msg_type or 'update'}",
-            )
+            if msg_type == "snapshot":
+                get_live_microstructure_service().record_quote(
+                    "bybit",
+                    asset,
+                    bid=float(top_bid) if top_bid else None,
+                    ask=float(top_ask) if top_ask else None,
+                    price=price,
+                    levels=levels,
+                    timestamp=ts,
+                    flags="depth_snapshot,stream_snapshot,bybit_ws",
+                )
+            else:
+                get_live_microstructure_service().record_depth_delta(
+                    "bybit",
+                    asset,
+                    bid=float(top_bid) if top_bid else None,
+                    ask=float(top_ask) if top_ask else None,
+                    price=price,
+                    levels=levels,
+                    timestamp=ts,
+                    flags="depth_delta,ladder_delta,bybit_ws",
+                )
         except Exception:
             pass
 
@@ -649,6 +716,57 @@ class WebSocketManager:
         arg = data.get("arg") or {}
         action = str(data.get("action", "") or "").strip().lower()
         channel = str(arg.get("channel", "") or "").strip().lower()
+        if channel == _OKX_TRADE_CHANNEL:
+            symbol = str(arg.get("instId", "") or "").strip()
+            asset = self._okx_symbol_to_asset.get(symbol)
+            if not asset:
+                return
+            rows = list(data.get("data") or [])
+            if not rows:
+                return
+            try:
+                from services.live_microstructure_service import get_service as get_live_microstructure_service
+            except Exception:
+                return
+
+            book_state = self._okx_books.get(symbol) or {}
+            levels = self._okx_levels_from_state(book_state) if book_state else []
+            top_bid = levels[0].get("bid") if levels else None
+            top_ask = levels[0].get("ask") if levels else None
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                trade_price = self._safe_float(row.get("px"))
+                if trade_price is None or trade_price <= 0.0:
+                    continue
+                trade_size = self._safe_float(row.get("sz"))
+                trade_side = str(row.get("side", "") or "").strip().lower()
+                ts = datetime.now()
+                try:
+                    raw_ts = row.get("ts")
+                    if raw_ts not in (None, ""):
+                        ts = datetime.fromtimestamp(float(raw_ts) / 1000.0)
+                except Exception:
+                    pass
+                try:
+                    get_live_microstructure_service().record_trade(
+                        "okx",
+                        asset,
+                        price=float(trade_price),
+                        size=float(trade_size) if trade_size not in (None, "") else None,
+                        side=trade_side,
+                        bid=float(top_bid) if top_bid else None,
+                        ask=float(top_ask) if top_ask else None,
+                        timestamp=ts,
+                        flags="trade_print,trade_stream,okx_ws",
+                    )
+                except Exception:
+                    pass
+
+            self._okx_degraded = False
+            set_connected("okx", True, len(self._okx_asset_to_symbol))
+            return
+
         if channel != _OKX_DEPTH_CHANNEL:
             return
 
@@ -720,16 +838,28 @@ class WebSocketManager:
         try:
             from services.live_microstructure_service import get_service as get_live_microstructure_service
 
-            get_live_microstructure_service().record_quote(
-                "okx",
-                asset,
-                bid=float(top_bid) if top_bid else None,
-                ask=float(top_ask) if top_ask else None,
-                price=price,
-                levels=levels,
-                timestamp=ts,
-                flags=f"{_OKX_DEPTH_CHANNEL}:{action or 'update'}",
-            )
+            if action == "snapshot":
+                get_live_microstructure_service().record_quote(
+                    "okx",
+                    asset,
+                    bid=float(top_bid) if top_bid else None,
+                    ask=float(top_ask) if top_ask else None,
+                    price=price,
+                    levels=levels,
+                    timestamp=ts,
+                    flags="depth_snapshot,stream_snapshot,okx_ws",
+                )
+            else:
+                get_live_microstructure_service().record_depth_delta(
+                    "okx",
+                    asset,
+                    bid=float(top_bid) if top_bid else None,
+                    ask=float(top_ask) if top_ask else None,
+                    price=price,
+                    levels=levels,
+                    timestamp=ts,
+                    flags="depth_delta,ladder_delta,okx_ws",
+                )
         except Exception:
             pass
 

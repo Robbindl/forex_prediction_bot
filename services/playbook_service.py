@@ -77,6 +77,11 @@ def _context_directional_confluence(
             "cross_confidence": 0.0,
             "depth_available": False,
             "synthetic_depth": False,
+            "dom_event_backed": False,
+            "dom_ladder_ready": False,
+            "dom_stream_snapshot_ready": False,
+            "dom_source_fidelity": "none",
+            "depth_update_mode": "none",
             "whale_dominant": "",
             "whale_ratio": 0.0,
         }
@@ -127,7 +132,22 @@ def _context_directional_confluence(
 
     depth_available = bool(micro.get("depth_available"))
     synthetic_depth = bool(micro.get("synthetic_depth_available"))
-    depth_bias = 0.08 if depth_available else 0.03 if synthetic_depth else 0.0
+    dom_event_backed = bool(micro.get("dom_event_backed"))
+    dom_ladder_ready = bool(micro.get("dom_ladder_ready"))
+    dom_stream_snapshot_ready = bool(micro.get("dom_stream_snapshot_ready"))
+    dom_source_fidelity = str(micro.get("dom_source_fidelity") or "").strip().lower() or "none"
+    depth_update_mode = str(micro.get("depth_update_mode") or "").strip().lower() or "none"
+    depth_bias = (
+        0.10
+        if dom_ladder_ready
+        else 0.09
+        if dom_stream_snapshot_ready
+        else 0.08
+        if depth_available
+        else 0.03
+        if synthetic_depth
+        else 0.0
+    )
 
     score = _clip(
         micro_support * 0.46
@@ -157,6 +177,11 @@ def _context_directional_confluence(
         "cross_confidence": round(cross_confidence, 4),
         "depth_available": depth_available,
         "synthetic_depth": synthetic_depth,
+        "dom_event_backed": dom_event_backed,
+        "dom_ladder_ready": dom_ladder_ready,
+        "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
+        "dom_source_fidelity": dom_source_fidelity,
+        "depth_update_mode": depth_update_mode,
         "whale_dominant": whale_dominant,
         "whale_ratio": round(whale_ratio, 4),
     }
@@ -386,6 +411,11 @@ def _dominant_context_snapshot(context: Optional[Dict[str, Any]]) -> Dict[str, A
         "conflict_components": int(dominant.get("conflict_components", 0) or 0),
         "depth_available": bool(dominant.get("depth_available")),
         "synthetic_depth": bool(dominant.get("synthetic_depth")),
+        "dom_event_backed": bool(dominant.get("dom_event_backed")),
+        "dom_ladder_ready": bool(dominant.get("dom_ladder_ready")),
+        "dom_stream_snapshot_ready": bool(dominant.get("dom_stream_snapshot_ready")),
+        "dom_source_fidelity": str(dominant.get("dom_source_fidelity") or "none"),
+        "depth_update_mode": str(dominant.get("depth_update_mode") or "none"),
         "whale_dominant": str(dominant.get("whale_dominant") or ""),
         "whale_ratio": round(_safe_float(dominant.get("whale_ratio"), 0.0), 4),
     }
@@ -2279,6 +2309,8 @@ class PlaybookService:
         near_fast_confirmation = fast_confirmation_count >= max(0, fast_confirmation_required - 1)
         context_has_true_depth = bool(context_confluence.get("depth_available"))
         context_has_synthetic_depth = bool(context_confluence.get("synthetic_depth"))
+        context_has_event_backed_depth = bool(context_confluence.get("dom_ladder_ready"))
+        context_has_stream_snapshot_depth = bool(context_confluence.get("dom_stream_snapshot_ready"))
         directional_impulse = max(0.0, directional_breakout, directional_pullback)
         strict_family_directional_match = bool(
             (direction == "BUY" and pattern_family.startswith("trending_up_"))
@@ -2293,7 +2325,7 @@ class PlaybookService:
             and directional_impulse >= 0.04
         ):
             if (
-                context_has_true_depth
+                context_has_event_backed_depth
                 and confluence_score >= 0.18
                 and micro_context_support >= 0.20
                 and (
@@ -2303,6 +2335,17 @@ class PlaybookService:
                 )
             ):
                 live_flow_generic_override_source = "true_depth"
+            elif (
+                context_has_true_depth
+                and confluence_score >= (0.19 if context_has_stream_snapshot_depth else 0.20)
+                and micro_context_support >= (0.21 if context_has_stream_snapshot_depth else 0.22)
+                and (
+                    cross_context_support >= 0.12
+                    or whale_context_support >= 0.18
+                    or directional_impulse >= (0.08 if context_has_stream_snapshot_depth else 0.09)
+                )
+            ):
+                live_flow_generic_override_source = "snapshot_depth"
             elif (
                 confluence_score >= 0.24
                 and micro_context_support >= (0.22 if context_has_synthetic_depth else 0.24)
@@ -2325,7 +2368,16 @@ class PlaybookService:
             if live_flow_generic_override
             else max(0.52, float(plan.min_setup_quality) - 0.06)
         )
-        generic_target_floor = 0.30 if context_has_true_depth and live_flow_generic_override else 0.32 if live_flow_generic_override else 0.40
+        generic_depth_override = live_flow_generic_override_source in {"true_depth", "snapshot_depth"}
+        generic_target_floor = (
+            0.30
+            if live_flow_generic_override_source == "true_depth"
+            else 0.31
+            if live_flow_generic_override_source == "snapshot_depth"
+            else 0.32
+            if live_flow_generic_override
+            else 0.40
+        )
         generic_extension_ceiling = 1.60 if live_flow_generic_override else 1.45
         context_alignment_floor = (
             max(0.54, float(plan.min_alignment_score) - 0.08)
@@ -2352,7 +2404,7 @@ class PlaybookService:
                     0.22
                     + effective_alignment_score * 0.18
                     + max(0.0, confluence_score) * 0.18
-                    + (0.06 if context_has_true_depth else 0.0),
+                    + (0.06 if context_has_event_backed_depth else 0.03 if context_has_true_depth else 0.0),
                 )
         structural_generic_rank_ready = bool(
             pattern_family.endswith("generic")
@@ -2533,8 +2585,14 @@ class PlaybookService:
             candle_floor = max(0.18, candle_floor - 0.08)
             session_floor = max(0.20, session_floor - 0.08)
         if live_flow_generic_override:
-            candle_floor = max(0.18, candle_floor - (0.08 if context_has_true_depth else 0.06))
-            session_floor = max(0.20, session_floor - (0.10 if context_has_true_depth else 0.08))
+            candle_floor = max(
+                0.18,
+                candle_floor - (0.08 if context_has_event_backed_depth else 0.07 if generic_depth_override else 0.06),
+            )
+            session_floor = max(
+                0.20,
+                session_floor - (0.10 if context_has_event_backed_depth else 0.09 if generic_depth_override else 0.08),
+            )
         if pattern_family_ready:
             candle_floor = max(0.18, candle_floor - 0.08)
             session_floor = max(0.20, session_floor - 0.08)
@@ -2732,13 +2790,13 @@ class PlaybookService:
             if premium_generic_trend_ready:
                 structural_ready_bonus += 0.02
             if live_flow_generic_override:
-                structural_ready_bonus += 0.04 + (0.02 if context_has_true_depth else 0.0)
+                structural_ready_bonus += 0.04 + (0.02 if context_has_event_backed_depth else 0.01 if generic_depth_override else 0.0)
             if inactivity_seed_relief:
                 structural_ready_bonus += 0.03 + inactivity_relief_strength * 0.03
         elif entry_style == "elite_context_continuation":
             structural_ready_bonus += 0.06 if strong_context_continuation_ready else 0.04
         elif entry_style == "elite_flow_continuation":
-            structural_ready_bonus += 0.06 + (0.02 if context_has_true_depth else 0.0)
+            structural_ready_bonus += 0.06 + (0.02 if context_has_event_backed_depth else 0.01 if generic_depth_override else 0.0)
         elif entry_style == "elite_context_pressure":
             structural_ready_bonus += 0.08
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
@@ -2809,13 +2867,13 @@ class PlaybookService:
         elif entry_style == "elite_trend_continuation":
             score_floor = 0.40
             if live_flow_generic_override:
-                score_floor = 0.34 if context_has_true_depth else 0.36
+                score_floor = 0.34 if context_has_event_backed_depth else 0.35 if generic_depth_override else 0.36
             if inactivity_seed_relief:
                 score_floor = max(0.28, score_floor - (0.04 + inactivity_relief_strength * 0.08))
         elif entry_style == "elite_context_continuation":
             score_floor = 0.42 if strong_context_continuation_ready else 0.46
         elif entry_style == "elite_flow_continuation":
-            score_floor = 0.34 if context_has_true_depth else 0.36
+            score_floor = 0.34 if context_has_event_backed_depth else 0.35 if generic_depth_override else 0.36
         elif entry_style == "elite_context_pressure":
             score_floor = 0.40 if confluence_score >= 0.32 else 0.44
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
@@ -2851,6 +2909,7 @@ class PlaybookService:
                 if live_flow_generic_override
                 else ""
             ),
+            "dom_stream_snapshot_ready": bool(context_confluence.get("dom_stream_snapshot_ready")),
             "session": session,
             "preferred_interval": preferred_interval,
             "management": self._management_template(profile, playbook, asset=asset, category=category),

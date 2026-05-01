@@ -7,6 +7,8 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
+from services.dom_evidence import attach_dom_evidence
+
 
 def _clip(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, float(value or 0.0)))
@@ -35,6 +37,14 @@ def _safe_ts(value: Any) -> float:
     except Exception:
         pass
     return time.time()
+
+
+def _flag_tokens(value: Any) -> set[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return set()
+    normalized = raw.replace(";", ",").replace("|", ",")
+    return {token.strip() for token in normalized.split(",") if token.strip()}
 
 
 def _normalize_provider(provider: str) -> str:
@@ -149,6 +159,9 @@ class LiveMicrostructureService:
         levels: Optional[List[Dict[str, Any]]] = None,
         timestamp: Any = None,
         flags: str = "",
+        trade_size: Any = None,
+        trade_side: str = "",
+        event_type: str = "",
     ) -> None:
         provider_key = _normalize_provider(provider)
         asset_key = str(asset or "").strip()
@@ -183,6 +196,17 @@ class LiveMicrostructureService:
                 }
             )
 
+        normalized_event_type = str(event_type or "").strip().lower()
+        normalized_flags = str(flags or "").strip()
+        if not normalized_event_type and (
+            normalized_levels
+            or bid_size not in (None, "")
+            or ask_size not in (None, "")
+        ):
+            normalized_event_type = "depth_snapshot"
+            if not normalized_flags:
+                normalized_flags = "depth_snapshot"
+
         event = {
             "timestamp": _safe_ts(timestamp),
             "price": float(price_value),
@@ -191,11 +215,64 @@ class LiveMicrostructureService:
             "bid_size": _safe_float(bid_size, 0.0) if bid_size not in (None, "") else None,
             "ask_size": _safe_float(ask_size, 0.0) if ask_size not in (None, "") else None,
             "levels": normalized_levels,
-            "flags": str(flags or "").strip(),
+            "flags": normalized_flags,
+            "trade_size": _safe_float(trade_size, 0.0) if trade_size not in (None, "") else None,
+            "trade_side": str(trade_side or "").strip().lower(),
+            "event_type": normalized_event_type,
         }
         with self._lock:
             bucket = self._quotes.setdefault((provider_key, asset_key), deque(maxlen=self._maxlen))
             bucket.append(event)
+
+    def record_depth_delta(
+        self,
+        provider: str,
+        asset: str,
+        *,
+        bid: Any = None,
+        ask: Any = None,
+        price: Any = None,
+        levels: Optional[List[Dict[str, Any]]] = None,
+        timestamp: Any = None,
+        flags: str = "depth_delta",
+    ) -> None:
+        self.record_quote(
+            provider,
+            asset,
+            bid=bid,
+            ask=ask,
+            price=price,
+            levels=levels,
+            timestamp=timestamp,
+            flags=flags,
+            event_type="depth_delta",
+        )
+
+    def record_trade(
+        self,
+        provider: str,
+        asset: str,
+        *,
+        price: Any,
+        size: Any = None,
+        side: str = "",
+        bid: Any = None,
+        ask: Any = None,
+        timestamp: Any = None,
+        flags: str = "trade_print",
+    ) -> None:
+        self.record_quote(
+            provider,
+            asset,
+            bid=bid,
+            ask=ask,
+            price=price,
+            timestamp=timestamp,
+            flags=flags,
+            trade_size=size,
+            trade_side=side,
+            event_type="trade_print",
+        )
 
     @staticmethod
     def _series_metrics(events: List[Dict[str, Any]], current_price: float, spread: Any) -> Dict[str, Any]:
@@ -398,6 +475,285 @@ class LiveMicrostructureService:
             "pressure_direction": pressure_direction,
         }
 
+    @staticmethod
+    def _depth_state(event: Dict[str, Any]) -> Dict[str, float]:
+        levels = list(event.get("levels") or [])
+        best_bid = event.get("bid")
+        best_ask = event.get("ask")
+        best_bid_size = event.get("bid_size")
+        best_ask_size = event.get("ask_size")
+        bid_depth = 0.0
+        ask_depth = 0.0
+
+        for idx, level in enumerate(levels):
+            if not isinstance(level, dict):
+                continue
+            bid_level = level.get("bid")
+            ask_level = level.get("ask")
+            bid_size_level = _safe_float(level.get("bid_size"), 0.0) if level.get("bid_size") not in (None, "") else 0.0
+            ask_size_level = _safe_float(level.get("ask_size"), 0.0) if level.get("ask_size") not in (None, "") else 0.0
+            bid_depth += max(0.0, bid_size_level)
+            ask_depth += max(0.0, ask_size_level)
+            if idx == 0:
+                if best_bid in (None, "") and bid_level not in (None, ""):
+                    best_bid = _safe_float(bid_level, 0.0)
+                if best_ask in (None, "") and ask_level not in (None, ""):
+                    best_ask = _safe_float(ask_level, 0.0)
+                if best_bid_size in (None, "") and bid_size_level > 0.0:
+                    best_bid_size = bid_size_level
+                if best_ask_size in (None, "") and ask_size_level > 0.0:
+                    best_ask_size = ask_size_level
+
+        best_bid_value = _safe_float(best_bid, 0.0)
+        best_ask_value = _safe_float(best_ask, 0.0)
+        best_bid_size_value = _safe_float(best_bid_size, 0.0)
+        best_ask_size_value = _safe_float(best_ask_size, 0.0)
+        if bid_depth <= 0.0:
+            bid_depth = max(0.0, best_bid_size_value)
+        if ask_depth <= 0.0:
+            ask_depth = max(0.0, best_ask_size_value)
+
+        mid_price = 0.0
+        if best_bid_value > 0.0 and best_ask_value > 0.0:
+            mid_price = (best_bid_value + best_ask_value) / 2.0
+        elif _safe_float(event.get("price"), 0.0) > 0.0:
+            mid_price = _safe_float(event.get("price"), 0.0)
+        total_depth = bid_depth + ask_depth
+        imbalance = ((bid_depth - ask_depth) / total_depth) if total_depth > 0.0 else 0.0
+        return {
+            "mid_price": float(mid_price),
+            "best_bid": float(best_bid_value),
+            "best_ask": float(best_ask_value),
+            "best_bid_size": float(best_bid_size_value),
+            "best_ask_size": float(best_ask_size_value),
+            "bid_depth": float(bid_depth),
+            "ask_depth": float(ask_depth),
+            "total_depth": float(total_depth),
+            "imbalance": float(imbalance),
+            "timestamp": _safe_ts(event.get("timestamp")),
+        }
+
+    @staticmethod
+    def _ladder_proxy_metrics(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+        depth_events = []
+        for evt in events:
+            flags = _flag_tokens(evt.get("flags"))
+            event_type = str(evt.get("event_type") or "").strip().lower()
+            has_depth_payload = bool(
+                evt.get("levels")
+                or evt.get("bid_size") not in (None, "")
+                or evt.get("ask_size") not in (None, "")
+                or "depth_snapshot" in flags
+                or event_type == "depth_snapshot"
+            )
+            if has_depth_payload:
+                depth_events.append(evt)
+
+        if len(depth_events) < 2:
+            return {
+                "dom_depth_window": int(len(depth_events)),
+                "dom_liquidity_shift_proxy": 0.0,
+                "dom_sweep_pressure_proxy": 0.0,
+                "dom_refill_resilience_proxy": 0.0,
+                "dom_absorption_proxy": 0.0,
+                "dom_iceberg_proxy": 0.0,
+                "dom_queue_persistence": 0.0,
+                "dom_supportive_reload_count": 0,
+            }
+
+        states = [LiveMicrostructureService._depth_state(evt) for evt in depth_events]
+        pair_count = 0
+        stable_top_pairs = 0.0
+        liquidity_shift_sum = 0.0
+        sweep_pressure_sum = 0.0
+        refill_sum = 0.0
+        absorption_sum = 0.0
+        absorption_hits = 0
+
+        for prev, curr in zip(states, states[1:]):
+            pair_count += 1
+            prev_total = max(prev["total_depth"], 1e-9)
+            curr_total = max(curr["total_depth"], 1e-9)
+            depth_norm = max(prev_total, curr_total, 1.0)
+            ref_price = max(prev["mid_price"], curr["mid_price"], 1e-9)
+            price_delta = curr["mid_price"] - prev["mid_price"]
+            price_delta_bps = (price_delta / ref_price) * 10000.0
+            price_sign = 1.0 if price_delta_bps > 0.02 else -1.0 if price_delta_bps < -0.02 else 0.0
+
+            same_bid = (
+                prev["best_bid"] > 0.0
+                and curr["best_bid"] > 0.0
+                and abs(prev["best_bid"] - curr["best_bid"]) <= max(ref_price * 1e-6, 1e-8)
+            )
+            same_ask = (
+                prev["best_ask"] > 0.0
+                and curr["best_ask"] > 0.0
+                and abs(prev["best_ask"] - curr["best_ask"]) <= max(ref_price * 1e-6, 1e-8)
+            )
+            if same_bid and same_ask:
+                stable_top_pairs += 1.0
+            elif same_bid or same_ask:
+                stable_top_pairs += 0.5
+
+            net_shift = (
+                (curr["bid_depth"] - prev["bid_depth"])
+                - (curr["ask_depth"] - prev["ask_depth"])
+            ) / depth_norm
+            imbalance_shift = curr["imbalance"] - prev["imbalance"]
+            liquidity_shift_sum += _clip11(net_shift * 0.7 + imbalance_shift * 0.3)
+
+            if price_sign > 0:
+                opposing_depth_depletion = max(0.0, prev["ask_depth"] - curr["ask_depth"]) / max(prev["ask_depth"], 1e-9)
+                supportive_refill = max(0.0, curr["bid_depth"] - prev["bid_depth"]) / max(prev["bid_depth"], 1e-9)
+                opposing_refill = max(0.0, curr["ask_depth"] - prev["ask_depth"]) / max(prev["ask_depth"], 1e-9)
+                sweep_pressure_sum += opposing_depth_depletion - opposing_refill * 0.45
+                refill_sum += supportive_refill - opposing_refill * 0.35
+                if abs(price_delta_bps) <= 0.18 and curr["imbalance"] >= 0.08 and supportive_refill >= 0.06:
+                    absorption_hits += 1
+                    absorption_sum += min(1.0, supportive_refill + curr["imbalance"] * 0.55)
+            elif price_sign < 0:
+                opposing_depth_depletion = max(0.0, prev["bid_depth"] - curr["bid_depth"]) / max(prev["bid_depth"], 1e-9)
+                supportive_refill = max(0.0, curr["ask_depth"] - prev["ask_depth"]) / max(prev["ask_depth"], 1e-9)
+                opposing_refill = max(0.0, curr["bid_depth"] - prev["bid_depth"]) / max(prev["bid_depth"], 1e-9)
+                sweep_pressure_sum -= opposing_depth_depletion - opposing_refill * 0.45
+                refill_sum -= supportive_refill - opposing_refill * 0.35
+                if abs(price_delta_bps) <= 0.18 and curr["imbalance"] <= -0.08 and supportive_refill >= 0.06:
+                    absorption_hits += 1
+                    absorption_sum -= min(1.0, supportive_refill + abs(curr["imbalance"]) * 0.55)
+
+        reload_count = 0
+        iceberg_sum = 0.0
+        triplet_count = 0
+        for first, second, third in zip(states, states[1:], states[2:]):
+            triplet_count += 1
+            ref_price = max(first["mid_price"], second["mid_price"], third["mid_price"], 1e-9)
+            stable_mid = max(
+                abs(second["mid_price"] - first["mid_price"]),
+                abs(third["mid_price"] - second["mid_price"]),
+            ) <= ref_price * 0.00004
+
+            same_bid_price = (
+                first["best_bid"] > 0.0
+                and abs(first["best_bid"] - second["best_bid"]) <= max(ref_price * 1e-6, 1e-8)
+                and abs(second["best_bid"] - third["best_bid"]) <= max(ref_price * 1e-6, 1e-8)
+            )
+            same_ask_price = (
+                first["best_ask"] > 0.0
+                and abs(first["best_ask"] - second["best_ask"]) <= max(ref_price * 1e-6, 1e-8)
+                and abs(second["best_ask"] - third["best_ask"]) <= max(ref_price * 1e-6, 1e-8)
+            )
+
+            bid_reload = (
+                stable_mid
+                and same_bid_price
+                and second["best_bid_size"] > 0.0
+                and third["best_bid_size"] > second["best_bid_size"] * 1.18
+                and second["best_bid_size"] < first["best_bid_size"] * 0.92
+            )
+            ask_reload = (
+                stable_mid
+                and same_ask_price
+                and second["best_ask_size"] > 0.0
+                and third["best_ask_size"] > second["best_ask_size"] * 1.18
+                and second["best_ask_size"] < first["best_ask_size"] * 0.92
+            )
+            if bid_reload:
+                reload_count += 1
+                iceberg_sum += min(
+                    1.0,
+                    (third["best_bid_size"] - second["best_bid_size"]) / max(second["best_bid_size"], 1e-9),
+                )
+            if ask_reload:
+                reload_count += 1
+                iceberg_sum -= min(
+                    1.0,
+                    (third["best_ask_size"] - second["best_ask_size"]) / max(second["best_ask_size"], 1e-9),
+                )
+
+        depth_window = len(depth_events)
+        queue_persistence = stable_top_pairs / max(1, pair_count)
+        liquidity_shift_proxy = _clip11(liquidity_shift_sum / max(1, pair_count))
+        sweep_pressure_proxy = _clip11(sweep_pressure_sum / max(1, pair_count))
+        refill_resilience_proxy = _clip11(refill_sum / max(1, pair_count))
+        absorption_proxy = _clip11(absorption_sum / max(1, absorption_hits or pair_count))
+        iceberg_proxy = _clip11(iceberg_sum / max(1, triplet_count))
+        return {
+            "dom_depth_window": int(depth_window),
+            "dom_liquidity_shift_proxy": round(liquidity_shift_proxy, 4),
+            "dom_sweep_pressure_proxy": round(sweep_pressure_proxy, 4),
+            "dom_refill_resilience_proxy": round(refill_resilience_proxy, 4),
+            "dom_absorption_proxy": round(absorption_proxy, 4),
+            "dom_iceberg_proxy": round(iceberg_proxy, 4),
+            "dom_queue_persistence": round(_clip(queue_persistence, 0.0, 1.0), 4),
+            "dom_supportive_reload_count": int(reload_count),
+        }
+
+    @staticmethod
+    def _event_metrics(events: List[Dict[str, Any]], depth_available: bool, synthetic_depth_available: bool) -> Dict[str, Any]:
+        snapshot_count = 0
+        delta_count = 0
+        trade_count = 0
+        latest_flags = ""
+        latest_ts = 0.0
+        earliest_snapshot_ts = 0.0
+        for evt in events:
+            event_type = str(evt.get("event_type") or "").strip().lower()
+            flags = _flag_tokens(evt.get("flags"))
+            latest_ts = max(latest_ts, _safe_ts(evt.get("timestamp")))
+            latest_flags = ",".join(sorted(flags)) or latest_flags
+            has_depth_payload = bool(
+                evt.get("levels")
+                or evt.get("bid_size") not in (None, "")
+                or evt.get("ask_size") not in (None, "")
+            )
+            if "depth_snapshot" in flags or "stream_snapshot" in flags or event_type == "depth_snapshot" or has_depth_payload:
+                snapshot_count += 1
+                ts = _safe_ts(evt.get("timestamp"))
+                if earliest_snapshot_ts <= 0.0:
+                    earliest_snapshot_ts = ts
+                else:
+                    earliest_snapshot_ts = min(earliest_snapshot_ts, ts)
+            if any(token in flags for token in ("depth_delta", "book_delta", "ladder_delta")) or event_type == "depth_delta":
+                delta_count += 1
+            if any(token in flags for token in ("trade_print", "trade_stream", "tape_print")) or event_type == "trade_print":
+                trade_count += 1
+
+        event_age_seconds = round(max(0.0, time.time() - latest_ts), 3) if latest_ts > 0.0 else 0.0
+        snapshot_span_seconds = round(max(0.0, latest_ts - earliest_snapshot_ts), 3) if earliest_snapshot_ts > 0.0 else 0.0
+        stream_snapshot_ready = bool(
+            depth_available
+            and snapshot_count >= 3
+            and delta_count == 0
+            and event_age_seconds <= 25.0
+            and snapshot_span_seconds <= 180.0
+        )
+
+        if depth_available and (delta_count > 0 or trade_count > 0):
+            depth_update_mode = "event_stream"
+        elif depth_available and stream_snapshot_ready:
+            depth_update_mode = "stream_snapshot"
+        elif depth_available and snapshot_count > 0:
+            depth_update_mode = "snapshot_poll"
+        elif depth_available:
+            depth_update_mode = "top_of_book"
+        elif synthetic_depth_available:
+            depth_update_mode = "synthetic"
+        elif events:
+            depth_update_mode = "top_quote"
+        else:
+            depth_update_mode = "none"
+
+        return {
+            "dom_snapshot_count": int(snapshot_count),
+            "dom_delta_count": int(delta_count),
+            "dom_trade_count": int(trade_count),
+            "depth_update_mode": depth_update_mode,
+            "dom_stream_snapshot_ready": stream_snapshot_ready,
+            "dom_depth_event_age_seconds": event_age_seconds,
+            "dom_snapshot_span_seconds": snapshot_span_seconds,
+            "flags": latest_flags,
+        }
+
     def get_snapshot(
         self,
         provider: str,
@@ -415,15 +771,38 @@ class LiveMicrostructureService:
             return {}
 
         latest = events[-1] if events else {}
+        latest_depth = latest
+        for evt in reversed(events):
+            flags = _flag_tokens(evt.get("flags"))
+            event_type = str(evt.get("event_type") or "").strip().lower()
+            has_depth_payload = bool(
+                evt.get("levels")
+                or evt.get("bid_size") not in (None, "")
+                or evt.get("ask_size") not in (None, "")
+                or "depth_snapshot" in flags
+                or "stream_snapshot" in flags
+                or "depth_delta" in flags
+                or "book_delta" in flags
+                or "ladder_delta" in flags
+                or event_type in {"depth_snapshot", "depth_delta"}
+            )
+            if has_depth_payload:
+                latest_depth = evt
+                break
+
         current_price = _safe_float(price, latest.get("price", 0.0))
         if current_price <= 0.0:
             return {}
 
         current_bid = latest.get("bid")
+        if current_bid in (None, ""):
+            current_bid = latest_depth.get("bid")
         current_ask = latest.get("ask")
+        if current_ask in (None, ""):
+            current_ask = latest_depth.get("ask")
         spread_bps = round((_safe_float(spread, 0.0) / current_price) * 10000.0, 3) if current_price > 0 else 0.0
         series = self._series_metrics(events, current_price, spread)
-        depth = self._depth_metrics(latest, series["bid_series"], series["ask_series"])
+        depth = self._depth_metrics(latest_depth, series["bid_series"], series["ask_series"])
         risk = self._risk_metrics(
             series["tick_imbalance"],
             series["velocity_bps"],
@@ -431,10 +810,16 @@ class LiveMicrostructureService:
             series["spread_stress"],
             depth["book_imbalance"],
             depth["total_depth"],
-            str(latest.get("flags", "")),
+            str(latest_depth.get("flags", "") or latest.get("flags", "")),
         )
+        event_metrics = self._event_metrics(
+            events,
+            bool(depth["total_depth"] > 0),
+            bool(depth["synthetic_depth_available"]),
+        )
+        ladder_proxy = self._ladder_proxy_metrics(events)
 
-        return {
+        payload = {
             "provider": provider_key,
             "spread_bps": round(spread_bps, 3),
             "tick_imbalance": round(_clip11(series["tick_imbalance"]), 4),
@@ -456,7 +841,17 @@ class LiveMicrostructureService:
             "quote_updates": int(len(events)),
             "score": round(risk["score"], 4),
             "microstructure_source": "live_store_depth" if depth["total_depth"] > 0 else ("live_store_synthetic_depth" if depth["synthetic_depth_available"] else "live_store"),
+            "flags": str(latest_depth.get("flags", "") or latest.get("flags", "")),
+            "depth_update_mode": event_metrics["depth_update_mode"],
+            "dom_snapshot_count": event_metrics["dom_snapshot_count"],
+            "dom_delta_count": event_metrics["dom_delta_count"],
+            "dom_trade_count": event_metrics["dom_trade_count"],
+            "dom_stream_snapshot_ready": bool(event_metrics["dom_stream_snapshot_ready"]),
+            "dom_depth_event_age_seconds": float(event_metrics["dom_depth_event_age_seconds"]),
+            "dom_snapshot_span_seconds": float(event_metrics["dom_snapshot_span_seconds"]),
         }
+        payload.update(ladder_proxy)
+        return attach_dom_evidence(payload)
 
     def clear(self) -> None:
         with self._lock:

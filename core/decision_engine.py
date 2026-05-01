@@ -993,11 +993,22 @@ class SignalDecisionEngine:
             trade_delta_ratio = float(micro.get("trade_delta_ratio", 0.0) or 0.0)
             trade_cvd_slope = float(micro.get("trade_cvd_slope", 0.0) or 0.0)
             velocity_bps = float(micro.get("velocity_bps", 0.0) or 0.0)
+            dom_liquidity_shift_proxy = float(micro.get("dom_liquidity_shift_proxy", 0.0) or 0.0)
+            dom_sweep_pressure_proxy = float(micro.get("dom_sweep_pressure_proxy", 0.0) or 0.0)
+            dom_refill_resilience_proxy = float(micro.get("dom_refill_resilience_proxy", 0.0) or 0.0)
+            dom_absorption_proxy = float(micro.get("dom_absorption_proxy", 0.0) or 0.0)
+            dom_iceberg_proxy = float(micro.get("dom_iceberg_proxy", 0.0) or 0.0)
+            dom_queue_persistence = float(micro.get("dom_queue_persistence", 0.0) or 0.0)
             aligned_micro = micro_score if signal.direction == "BUY" else -micro_score
             aligned_book = book_imbalance if signal.direction == "BUY" else -book_imbalance
             aligned_tick = tick_imbalance if signal.direction == "BUY" else -tick_imbalance
             aligned_trade_flow = trade_flow_score if signal.direction == "BUY" else -trade_flow_score
             aligned_velocity = velocity_bps if signal.direction == "BUY" else -velocity_bps
+            aligned_dom_liquidity_shift = dom_liquidity_shift_proxy if signal.direction == "BUY" else -dom_liquidity_shift_proxy
+            aligned_dom_sweep_pressure = dom_sweep_pressure_proxy if signal.direction == "BUY" else -dom_sweep_pressure_proxy
+            aligned_dom_refill_resilience = dom_refill_resilience_proxy if signal.direction == "BUY" else -dom_refill_resilience_proxy
+            aligned_dom_absorption = dom_absorption_proxy if signal.direction == "BUY" else -dom_absorption_proxy
+            aligned_dom_iceberg = dom_iceberg_proxy if signal.direction == "BUY" else -dom_iceberg_proxy
             signal.metadata["market_microstructure"] = dict(micro)
             signal.metadata["microstructure_score"] = round(micro_score, 3)
             signal.metadata["stop_hunt_risk"] = round(stop_hunt_risk, 3)
@@ -1030,6 +1041,23 @@ class SignalDecisionEngine:
             signal.metadata["external_depth_rejected"] = bool(micro.get("external_depth_rejected"))
             signal.metadata["external_depth_rejection_reason"] = str(micro.get("external_depth_rejection_reason") or "")
             signal.metadata["microstructure_source"] = str(micro.get("microstructure_source") or "")
+            signal.metadata["depth_update_mode"] = str(micro.get("depth_update_mode") or "")
+            signal.metadata["dom_event_backed"] = bool(micro.get("dom_event_backed"))
+            signal.metadata["dom_ladder_ready"] = bool(micro.get("dom_ladder_ready"))
+            signal.metadata["dom_stream_snapshot_ready"] = bool(micro.get("dom_stream_snapshot_ready"))
+            signal.metadata["dom_snapshot_count"] = int(micro.get("dom_snapshot_count", 0) or 0)
+            signal.metadata["dom_delta_count"] = int(micro.get("dom_delta_count", 0) or 0)
+            signal.metadata["dom_trade_count"] = int(micro.get("dom_trade_count", 0) or 0)
+            signal.metadata["dom_source_fidelity"] = str(micro.get("dom_source_fidelity") or "")
+            signal.metadata["dom_authority_tier"] = str(micro.get("dom_authority_tier") or "")
+            signal.metadata["dom_liquidity_shift_proxy"] = round(dom_liquidity_shift_proxy, 4)
+            signal.metadata["dom_sweep_pressure_proxy"] = round(dom_sweep_pressure_proxy, 4)
+            signal.metadata["dom_refill_resilience_proxy"] = round(dom_refill_resilience_proxy, 4)
+            signal.metadata["dom_absorption_proxy"] = round(dom_absorption_proxy, 4)
+            signal.metadata["dom_iceberg_proxy"] = round(dom_iceberg_proxy, 4)
+            signal.metadata["dom_queue_persistence"] = round(dom_queue_persistence, 4)
+            signal.metadata["dom_depth_window"] = int(micro.get("dom_depth_window", 0) or 0)
+            signal.metadata["dom_supportive_reload_count"] = int(micro.get("dom_supportive_reload_count", 0) or 0)
             data["microstructure_score"] = round(micro_score, 3)
             data["stop_hunt_risk"] = round(stop_hunt_risk, 3)
             data["exhaustion_risk"] = round(exhaustion_risk, 3)
@@ -1052,6 +1080,17 @@ class SignalDecisionEngine:
                 else None
             )
             data["external_depth_rejected"] = bool(micro.get("external_depth_rejected"))
+            data["depth_update_mode"] = str(micro.get("depth_update_mode") or "")
+            data["dom_event_backed"] = bool(micro.get("dom_event_backed"))
+            data["dom_ladder_ready"] = bool(micro.get("dom_ladder_ready"))
+            data["dom_stream_snapshot_ready"] = bool(micro.get("dom_stream_snapshot_ready"))
+            data["dom_source_fidelity"] = str(micro.get("dom_source_fidelity") or "")
+            data["dom_liquidity_shift_proxy"] = round(dom_liquidity_shift_proxy, 4)
+            data["dom_sweep_pressure_proxy"] = round(dom_sweep_pressure_proxy, 4)
+            data["dom_refill_resilience_proxy"] = round(dom_refill_resilience_proxy, 4)
+            data["dom_absorption_proxy"] = round(dom_absorption_proxy, 4)
+            data["dom_iceberg_proxy"] = round(dom_iceberg_proxy, 4)
+            data["dom_queue_persistence"] = round(dom_queue_persistence, 4)
             if stop_hunt_risk >= 0.45:
                 notes.append("stop_hunt_penalty")
             if exhaustion_risk >= 0.42:
@@ -1076,6 +1115,23 @@ class SignalDecisionEngine:
                 notes.append("micro_momentum_support")
             elif aligned_tick <= -0.22 and aligned_velocity < 0:
                 notes.append("micro_momentum_conflict")
+            if bool(micro.get("dom_stream_snapshot_ready")):
+                if max(
+                    aligned_dom_liquidity_shift,
+                    aligned_dom_sweep_pressure,
+                    aligned_dom_refill_resilience,
+                    aligned_dom_absorption,
+                    aligned_dom_iceberg,
+                ) >= 0.16:
+                    notes.append("snapshot_stream_support")
+                elif min(
+                    aligned_dom_liquidity_shift,
+                    aligned_dom_sweep_pressure,
+                    aligned_dom_refill_resilience,
+                    aligned_dom_absorption,
+                    aligned_dom_iceberg,
+                ) <= -0.16:
+                    notes.append("snapshot_stream_conflict")
         except Exception:
             pass
 
@@ -1584,6 +1640,10 @@ class SignalDecisionEngine:
             }.get(depth_quality_tier, 0)
 
         microstructure_source = str(signal.metadata.get("microstructure_source", "") or "").strip().lower()
+        depth_update_mode = str(signal.metadata.get("depth_update_mode", "") or "").strip().lower()
+        dom_event_backed = bool(signal.metadata.get("dom_event_backed"))
+        dom_ladder_ready = bool(signal.metadata.get("dom_ladder_ready"))
+        dom_source_fidelity = str(signal.metadata.get("dom_source_fidelity", "") or "").strip().lower()
         depth_provider = str(signal.metadata.get("depth_provider", "") or "").strip().lower()
         depth_provider_class = str(signal.metadata.get("depth_provider_class", "") or "").strip().lower()
         depth_environment = str(signal.metadata.get("depth_environment", "") or "").strip().lower()
@@ -1631,8 +1691,10 @@ class SignalDecisionEngine:
             and depth_quote_alignment_score >= 0.80
             and true_depth_quote_aligned
         )
+        snapshot_true_depth_informative = bool(true_depth_informative and not dom_ladder_ready)
         strong_true_depth_support = bool(
             true_depth_informative
+            and dom_ladder_ready
             and directional_flow_support >= depth_sovereignty_min_directional_flow
             and aligned_book_pressure >= depth_sovereignty_min_true_depth_support
             and directional_flow_conflict > -0.10
@@ -1655,6 +1717,11 @@ class SignalDecisionEngine:
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
             "true_depth_informative": true_depth_informative,
+            "snapshot_true_depth_informative": snapshot_true_depth_informative,
+            "dom_event_backed": dom_event_backed,
+            "dom_ladder_ready": dom_ladder_ready,
+            "dom_source_fidelity": dom_source_fidelity or ("event_ladder" if dom_ladder_ready else "snapshot_depth" if true_depth_available else "none"),
+            "depth_update_mode": depth_update_mode or ("event_stream" if dom_event_backed else ""),
             "override_supported": bool(override_source),
             "override_source": override_source,
         }
@@ -1705,12 +1772,19 @@ class SignalDecisionEngine:
         playbook_micro_score = float(signal.metadata.get("playbook_micro_score", 0.0) or 0.0)
         support_components = int(signal.metadata.get("playbook_support_components", 0) or 0)
         conflict_components = int(signal.metadata.get("playbook_conflict_components", 0) or 0)
+        depth_like_generic_override = generic_flow_override_source in {"true_depth", "snapshot_depth"}
         open_flow_override_supported = bool(
             continuation_like
             and generic_flow_override
             and support_components >= (1 if generic_flow_override_source == "true_depth" else 2)
             and conflict_components == 0
-            and seed_score >= (0.68 if generic_flow_override_source == "true_depth" else 0.72)
+            and seed_score >= (
+                0.68
+                if generic_flow_override_source == "true_depth"
+                else 0.70
+                if generic_flow_override_source == "snapshot_depth"
+                else 0.72
+            )
             and alignment_score >= 0.58
             and setup_quality >= 0.56
             and max(
@@ -1718,7 +1792,13 @@ class SignalDecisionEngine:
                 playbook_cross_alignment,
                 playbook_micro_score,
             )
-            >= (0.18 if generic_flow_override_source == "true_depth" else 0.22)
+            >= (
+                0.18
+                if generic_flow_override_source == "true_depth"
+                else 0.20
+                if generic_flow_override_source == "snapshot_depth"
+                else 0.22
+            )
         )
 
         guard = {
@@ -1764,11 +1844,11 @@ class SignalDecisionEngine:
                     data["open_spike_guard"] = dict(guard)
                     return ""
 
-                penalty = 0.02
+                penalty = 0.01 if generic_flow_override_source == "snapshot_depth" else 0.02
                 signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
                 signal.metadata["open_spike_penalty"] = penalty
-                notes.append("open_spike_flow_override")
-                guard["action"] = "reduce_flow_override"
+                notes.append("open_spike_snapshot_override" if depth_like_generic_override else "open_spike_flow_override")
+                guard["action"] = "reduce_snapshot_override" if depth_like_generic_override else "reduce_flow_override"
                 guard["confidence_penalty"] = penalty
                 signal.metadata["open_spike_guard"] = dict(guard)
                 data["open_spike_guard"] = dict(guard)
@@ -2758,6 +2838,8 @@ class SignalDecisionEngine:
         trade_delta_ratio = float(signal.metadata.get("trade_delta_ratio", 0.0) or 0.0)
         trade_cvd_slope = float(signal.metadata.get("trade_cvd_slope", 0.0) or 0.0)
         aligned_trade_flow = trade_flow_score * direction_sign
+        aligned_trade_delta_ratio = trade_delta_ratio * direction_sign
+        aligned_trade_cvd_slope = trade_cvd_slope * direction_sign
         aligned_book_pressure = float(signal.metadata.get("book_imbalance", 0.0) or 0.0) * direction_sign
         aligned_tick_pressure = float(signal.metadata.get("tick_imbalance", 0.0) or 0.0) * direction_sign
         recent_pattern_sample_count = int(recent_review.get("sample_count", 0) or 0)
@@ -2910,6 +2992,22 @@ class SignalDecisionEngine:
             and cross_asset_confidence >= (0.30 if is_crypto_major else 0.36)
             and cross_asset_alignment >= (0.24 if is_crypto_major else 0.32)
             and cross_asset_supportive_direction == signal.direction
+        )
+        cross_asset_directional_conflict = bool(
+            cross_asset_confidence >= 0.24
+            and cross_asset_alignment <= -0.20
+            and (
+                not cross_asset_supportive_direction
+                or cross_asset_supportive_direction != signal.direction
+            )
+        )
+        strong_cross_asset_directional_conflict = bool(
+            cross_asset_confidence >= 0.36
+            and cross_asset_alignment <= -0.32
+            and (
+                not cross_asset_supportive_direction
+                or cross_asset_supportive_direction != signal.direction
+            )
         )
         funding_supports_trade = bool(funding_direction and funding_direction == signal.direction)
         funding_conflicts_trade = bool(funding_direction and funding_direction != signal.direction)
@@ -3207,6 +3305,17 @@ class SignalDecisionEngine:
         true_depth_sources = {"order_flow_true_depth", "dukascopy_live_depth", "ctrader_live_depth"}
         true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
         preferred_true_depth = microstructure_source in true_depth_sources
+        depth_update_mode = str(signal.metadata.get("depth_update_mode", "") or "").strip().lower()
+        dom_event_backed = bool(signal.metadata.get("dom_event_backed"))
+        dom_ladder_ready = bool(signal.metadata.get("dom_ladder_ready"))
+        dom_stream_snapshot_ready = bool(signal.metadata.get("dom_stream_snapshot_ready"))
+        dom_source_fidelity = str(signal.metadata.get("dom_source_fidelity", "") or "").strip().lower()
+        dom_liquidity_shift_proxy = float(signal.metadata.get("dom_liquidity_shift_proxy", 0.0) or 0.0)
+        dom_sweep_pressure_proxy = float(signal.metadata.get("dom_sweep_pressure_proxy", 0.0) or 0.0)
+        dom_refill_resilience_proxy = float(signal.metadata.get("dom_refill_resilience_proxy", 0.0) or 0.0)
+        dom_absorption_proxy = float(signal.metadata.get("dom_absorption_proxy", 0.0) or 0.0)
+        dom_iceberg_proxy = float(signal.metadata.get("dom_iceberg_proxy", 0.0) or 0.0)
+        dom_queue_persistence = float(signal.metadata.get("dom_queue_persistence", 0.0) or 0.0)
         true_depth_quote_aligned = bool(
             not external_depth_rejected
             and depth_quote_agreement_state not in {"divergent", "severe_divergence"}
@@ -3239,6 +3348,14 @@ class SignalDecisionEngine:
             true_depth_available
             and true_depth_informative
         )
+        event_backed_true_depth_available = bool(
+            usable_true_depth_available
+            and dom_ladder_ready
+        )
+        snapshot_true_depth_available = bool(
+            usable_true_depth_available
+            and not dom_ladder_ready
+        )
         thin_true_depth_untrusted = bool(
             true_depth_available and preferred_true_depth and not meets_true_depth_quality_floor
         )
@@ -3261,7 +3378,7 @@ class SignalDecisionEngine:
             and not true_depth_informative
         )
         strong_true_depth_support = bool(
-            usable_true_depth_available
+            event_backed_true_depth_available
             and preferred_true_depth
             and depth_quality >= preferred_true_depth_min_quality
             and depth_provider_trust_score >= preferred_true_depth_min_trust_score
@@ -3281,10 +3398,97 @@ class SignalDecisionEngine:
             )
             >= depth_sovereignty_min_component
         )
+        aligned_snapshot_stream_proxy = max(
+            dom_liquidity_shift_proxy,
+            dom_sweep_pressure_proxy,
+            dom_refill_resilience_proxy,
+            dom_absorption_proxy,
+            dom_iceberg_proxy,
+        )
+        snapshot_stream_supportive = bool(
+            snapshot_true_depth_available
+            and dom_stream_snapshot_ready
+            and aligned_snapshot_stream_proxy >= 0.12
+            and dom_queue_persistence >= 0.35
+        )
+        event_ladder_hostile_flow_component_count = sum(
+            1
+            for conflict in (
+                true_depth_directional_conflict <= -0.08,
+                microstructure_alignment <= -0.16,
+                aligned_trade_flow <= -0.16,
+                aligned_trade_delta_ratio <= -0.14,
+                aligned_trade_cvd_slope <= -0.10,
+            )
+            if conflict
+        )
+        event_ladder_hostile_flow = bool(
+            event_backed_true_depth_available
+            and (continuation_family or continuation_entry)
+            and event_ladder_hostile_flow_component_count >= 2
+        )
+        macro_spillover_conflict_relation = bool(
+            cross_asset_primary_relation in {
+                "risk_on_yen",
+                "gold_risk_off",
+                "risk_off_equities",
+                "risk_off_tech",
+                "growth_cycle_confirmation",
+                "global_equity_confirmation",
+                "broad_equity_confirmation",
+                "yen_exporter_link",
+                "oil_cad_link",
+                "cad_confirmation",
+                "commodity_complex",
+                "energy_complex",
+                "usd_weakness_gold",
+                "risk_on_usd_softness",
+            }
+            or cross_asset_primary_peer
+            in {"US500", "US100", "US30", "XAU/USD", "WTI", "USD/JPY", "EUR/JPY", "GBP/JPY", "JPN225"}
+        )
+        event_ladder_cross_market_conflict = bool(
+            (continuation_family or continuation_entry)
+            and event_ladder_hostile_flow
+            and cross_asset_directional_conflict
+        )
+        strong_event_ladder_cross_market_conflict = bool(
+            event_ladder_cross_market_conflict
+            and (
+                strong_cross_asset_directional_conflict
+                or macro_spillover_conflict_relation
+                or continuation_reclaim_pressure
+                or mature_continuation_profile
+            )
+        )
+        event_ladder_cross_market_hard_block = bool(
+            strong_event_ladder_cross_market_conflict
+            and (
+                continuation_reclaim_pressure
+                or mature_continuation_profile
+                or directional_extension >= 0.76
+                or impulse_age_bars >= 4
+            )
+            and not breakout_retest_ready
+            and not first_pullback_ready
+            and not fast_entry_confirmation_ready
+        )
+        if event_ladder_cross_market_hard_block:
+            continuation_rescue_candidate = False
+            high_conviction_continuation_candidate = False
+            high_conviction_continuation_timing_intact = False
+            high_conviction_continuation_supported = False
+            context_continuation_execution_candidate = False
+            context_confirmation_override = False
         depth_sovereignty_supported = bool(strong_true_depth_support or strong_flow_support)
         depth_sovereignty_source = "true_depth" if strong_true_depth_support else "flow" if strong_flow_support else ""
+        snapshot_dom_requires_confirmation = bool(
+            snapshot_true_depth_available
+            and not strong_true_depth_support
+        )
         depth_flow_sovereignty_candidate = bool(
             depth_sovereignty_supported
+            and not event_ladder_cross_market_conflict
             and not has_directional_flow_conflict
             and alignment_score >= 0.58
             and setup_quality >= 0.54
@@ -3295,11 +3499,13 @@ class SignalDecisionEngine:
             and impulse_age_bars <= 6
             and directional_extension <= 0.88
             and not failed_opposite_move_confirmed
+            and not snapshot_dom_requires_confirmation
         )
         depth_flow_sovereignty_rescue_candidate = bool(
             depth_sovereignty_supported
             and strong_market_candidate
             and (continuation_family or continuation_entry)
+            and not event_ladder_cross_market_conflict
             and not has_directional_flow_conflict
             and alignment_score >= 0.64
             and setup_quality >= 0.60
@@ -3311,6 +3517,11 @@ class SignalDecisionEngine:
             and directional_extension <= 0.92
             and not failed_opposite_move_confirmed
             and (
+                not snapshot_dom_requires_confirmation
+                or external_confirmation_score >= 0.18
+                or fast_entry_confirmation_ready
+            )
+            and (
                 strong_true_depth_support
                 or directional_flow_support >= max(0.30, depth_sovereignty_min_directional_flow + 0.08)
                 or external_confirmation_score >= 0.18
@@ -3321,7 +3532,10 @@ class SignalDecisionEngine:
             (depth_flow_sovereignty_candidate or depth_flow_sovereignty_rescue_candidate)
             and (
                 strong_true_depth_support
-                or directional_flow_support >= max(0.28, depth_sovereignty_min_directional_flow + 0.04)
+                or (
+                    not snapshot_dom_requires_confirmation
+                    and directional_flow_support >= max(0.28, depth_sovereignty_min_directional_flow + 0.04)
+                )
                 or external_confirmation_score >= 0.16
                 or fast_entry_confirmation_ready
             )
@@ -3367,12 +3581,13 @@ class SignalDecisionEngine:
             book_performance_penalty = min(0.05, max(0.0, 0.50 - book_score) * book_edge_penalty_scale)
 
         true_depth_relief = 0.0
+        snapshot_depth_relief = 0.0
         synthetic_depth_penalty = 0.0
         thin_true_depth_penalty = 0.0
         low_trust_true_depth_penalty = 0.0
         misaligned_true_depth_penalty = 0.0
         if (
-            usable_true_depth_available
+            event_backed_true_depth_available
             and depth_quality >= preferred_true_depth_min_quality
             and depth_provider_trust_score >= preferred_true_depth_min_trust_score
             and depth_quote_alignment_score >= 0.80
@@ -3386,6 +3601,18 @@ class SignalDecisionEngine:
             )
             if preferred_true_depth:
                 true_depth_relief = min(0.08, true_depth_relief + 0.01)
+        elif (
+            snapshot_true_depth_available
+            and depth_quote_alignment_score >= 0.75
+            and true_depth_directional_support >= 0.06
+            and true_depth_directional_conflict > -0.08
+        ):
+            snapshot_depth_relief = min(
+                0.04 if snapshot_stream_supportive else 0.03,
+                float(execution_policy.get("snapshot_depth_bonus", 0.015) or 0.015)
+                + max(0.0, depth_quality - minimum_usable_true_depth_quality) * 0.02
+                + (0.005 if snapshot_stream_supportive else 0.0),
+            )
         elif synthetic_depth_only:
             synthetic_depth_penalty = min(
                 0.12,
@@ -3403,7 +3630,7 @@ class SignalDecisionEngine:
         elif thin_true_depth_untrusted:
             thin_true_depth_penalty = min(0.12, thin_true_depth_penalty_scale)
 
-        adaptive_policy_relief = asset_performance_relief + book_performance_relief + true_depth_relief
+        adaptive_policy_relief = asset_performance_relief + book_performance_relief + true_depth_relief + snapshot_depth_relief
         adaptive_policy_penalty = (
             asset_performance_penalty
             + book_performance_penalty
@@ -3535,6 +3762,17 @@ class SignalDecisionEngine:
             if continuation_reclaim_pressure:
                 risk_score += 0.18
                 reasons.append("continuation is colliding with opposite-side reclaim pressure")
+            if event_ladder_hostile_flow:
+                risk_score += 0.12
+                reasons.append("event-ladder flow is leaning against the continuation")
+            if cross_asset_directional_conflict:
+                risk_score += 0.06
+                reasons.append("cross-asset spillover is leaning against the continuation")
+            if event_ladder_cross_market_conflict:
+                risk_score += 0.08 + (0.06 if strong_event_ladder_cross_market_conflict else 0.0)
+                if event_ladder_cross_market_hard_block:
+                    risk_score += 0.06
+                reasons.append("event-ladder flow and cross-asset spillover are aligned against the continuation")
         if crypto_breadth_conflict:
             risk_score += 0.16 if is_crypto_alt else 0.10
             reasons.append("broad crypto breadth is leaning against the trade")
@@ -3844,6 +4082,8 @@ class SignalDecisionEngine:
             hard_blocks.append("broad crypto breadth and live flow are aligned against the trade")
         if continuation_reclaim_hard_block:
             hard_blocks.append("continuation entry is fighting an opposite-side reclaim")
+        if event_ladder_cross_market_hard_block:
+            hard_blocks.append("event-ladder DOM, hostile flow, and cross-asset conflict are aligned against the continuation")
         if stop_hunt_risk >= 0.48 and (
             synthetic_depth_only
             or misaligned_true_depth_available
@@ -3994,8 +4234,22 @@ class SignalDecisionEngine:
             "depth_quote_agreement_state": depth_quote_agreement_state,
             "depth_quote_alignment_score": round(depth_quote_alignment_score, 4),
             "external_depth_rejected": external_depth_rejected,
+            "depth_update_mode": depth_update_mode,
+            "dom_event_backed": dom_event_backed,
+            "dom_ladder_ready": dom_ladder_ready,
+            "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
+            "dom_source_fidelity": dom_source_fidelity,
+            "dom_liquidity_shift_proxy": round(dom_liquidity_shift_proxy, 4),
+            "dom_sweep_pressure_proxy": round(dom_sweep_pressure_proxy, 4),
+            "dom_refill_resilience_proxy": round(dom_refill_resilience_proxy, 4),
+            "dom_absorption_proxy": round(dom_absorption_proxy, 4),
+            "dom_iceberg_proxy": round(dom_iceberg_proxy, 4),
+            "dom_queue_persistence": round(dom_queue_persistence, 4),
+            "snapshot_stream_supportive": snapshot_stream_supportive,
             "true_depth_available": true_depth_available,
             "usable_true_depth_available": usable_true_depth_available,
+            "event_backed_true_depth_available": event_backed_true_depth_available,
+            "snapshot_true_depth_available": snapshot_true_depth_available,
             "preferred_true_depth": preferred_true_depth,
             "minimum_usable_true_depth_quality": round(minimum_usable_true_depth_quality, 4),
             "meets_true_depth_quality_floor": meets_true_depth_quality_floor,
@@ -4017,15 +4271,25 @@ class SignalDecisionEngine:
             "session_timing_strictness": dict(session_timing_strictness),
             "policy_relief": round(adaptive_policy_relief, 4),
             "policy_penalty": round(adaptive_policy_penalty, 4),
+            "true_depth_relief": round(true_depth_relief, 4),
+            "snapshot_depth_relief": round(snapshot_depth_relief, 4),
             "trigger_reversal_against_trade": trigger_reversal_against_trade,
             "opposing_liquidity_sweep": opposing_liquidity_sweep,
             "opposing_trigger_close": opposing_trigger_close,
             "continuation_reclaim_evidence": int(continuation_reclaim_evidence),
             "mature_continuation_profile": mature_continuation_profile,
             "continuation_reclaim_pressure": continuation_reclaim_pressure,
+            "cross_asset_directional_conflict": cross_asset_directional_conflict,
+            "strong_cross_asset_directional_conflict": strong_cross_asset_directional_conflict,
             "cross_asset_primary_peer": cross_asset_primary_peer,
             "cross_asset_primary_relation": cross_asset_primary_relation,
             "cross_asset_supportive_direction": cross_asset_supportive_direction,
+            "event_ladder_hostile_flow_component_count": int(event_ladder_hostile_flow_component_count),
+            "event_ladder_hostile_flow": event_ladder_hostile_flow,
+            "macro_spillover_conflict_relation": macro_spillover_conflict_relation,
+            "event_ladder_cross_market_conflict": event_ladder_cross_market_conflict,
+            "strong_event_ladder_cross_market_conflict": strong_event_ladder_cross_market_conflict,
+            "event_ladder_cross_market_hard_block": event_ladder_cross_market_hard_block,
             "crypto_breadth_conflict": crypto_breadth_conflict,
             "crypto_breadth_support": crypto_breadth_support,
             "crypto_derivative_conflict": crypto_derivative_conflict,
@@ -4072,6 +4336,15 @@ class SignalDecisionEngine:
             "depth_sovereignty_source": depth_sovereignty_source,
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
+            "snapshot_dom_requires_confirmation": snapshot_dom_requires_confirmation,
+            "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
+            "snapshot_stream_supportive": snapshot_stream_supportive,
+            "dom_liquidity_shift_proxy": round(dom_liquidity_shift_proxy, 4),
+            "dom_sweep_pressure_proxy": round(dom_sweep_pressure_proxy, 4),
+            "dom_refill_resilience_proxy": round(dom_refill_resilience_proxy, 4),
+            "dom_absorption_proxy": round(dom_absorption_proxy, 4),
+            "dom_iceberg_proxy": round(dom_iceberg_proxy, 4),
+            "dom_queue_persistence": round(dom_queue_persistence, 4),
             "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
             "depth_flow_sovereignty_rescue_candidate": depth_flow_sovereignty_rescue_candidate,
             "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
@@ -4115,11 +4388,22 @@ class SignalDecisionEngine:
             "depth_sovereignty_source": depth_sovereignty_source,
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
+            "snapshot_dom_requires_confirmation": snapshot_dom_requires_confirmation,
+            "snapshot_stream_supportive": snapshot_stream_supportive,
+            "snapshot_depth_relief": round(snapshot_depth_relief, 4),
             "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
             "depth_flow_sovereignty_rescue_candidate": depth_flow_sovereignty_rescue_candidate,
             "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
             "depth_flow_stop_hunt_override": depth_flow_stop_hunt_override,
             "continuation_reclaim_pressure": continuation_reclaim_pressure,
+            "cross_asset_directional_conflict": cross_asset_directional_conflict,
+            "strong_cross_asset_directional_conflict": strong_cross_asset_directional_conflict,
+            "event_ladder_hostile_flow_component_count": int(event_ladder_hostile_flow_component_count),
+            "event_ladder_hostile_flow": event_ladder_hostile_flow,
+            "macro_spillover_conflict_relation": macro_spillover_conflict_relation,
+            "event_ladder_cross_market_conflict": event_ladder_cross_market_conflict,
+            "strong_event_ladder_cross_market_conflict": strong_event_ladder_cross_market_conflict,
+            "event_ladder_cross_market_hard_block": event_ladder_cross_market_hard_block,
             "crypto_breadth_conflict": crypto_breadth_conflict,
             "crypto_breadth_support": crypto_breadth_support,
             "crypto_derivative_conflict": crypto_derivative_conflict,
@@ -4157,6 +4441,8 @@ class SignalDecisionEngine:
             "cross_asset_primary_peer": cross_asset_primary_peer,
             "cross_asset_primary_relation": cross_asset_primary_relation,
             "cross_asset_supportive_direction": cross_asset_supportive_direction,
+            "cross_asset_directional_conflict": cross_asset_directional_conflict,
+            "strong_cross_asset_directional_conflict": strong_cross_asset_directional_conflict,
             "canonical_asset": canonical_asset,
             "funding_bias": funding_bias,
             "oi_signal": oi_signal,
@@ -4192,6 +4478,12 @@ class SignalDecisionEngine:
             "opposing_trigger_close": opposing_trigger_close,
             "continuation_reclaim_evidence": int(continuation_reclaim_evidence),
             "continuation_reclaim_pressure": continuation_reclaim_pressure,
+            "event_ladder_hostile_flow_component_count": int(event_ladder_hostile_flow_component_count),
+            "event_ladder_hostile_flow": event_ladder_hostile_flow,
+            "macro_spillover_conflict_relation": macro_spillover_conflict_relation,
+            "event_ladder_cross_market_conflict": event_ladder_cross_market_conflict,
+            "strong_event_ladder_cross_market_conflict": strong_event_ladder_cross_market_conflict,
+            "event_ladder_cross_market_hard_block": event_ladder_cross_market_hard_block,
             "alignment_score": round(alignment_score, 4),
             "strong_market_candidate": strong_market_candidate,
             "strong_fx_crypto_candidate": strong_fx_crypto_candidate,
@@ -4213,6 +4505,15 @@ class SignalDecisionEngine:
             "depth_sovereignty_source": depth_sovereignty_source,
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
+            "snapshot_dom_requires_confirmation": snapshot_dom_requires_confirmation,
+            "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
+            "snapshot_stream_supportive": snapshot_stream_supportive,
+            "dom_liquidity_shift_proxy": round(dom_liquidity_shift_proxy, 4),
+            "dom_sweep_pressure_proxy": round(dom_sweep_pressure_proxy, 4),
+            "dom_refill_resilience_proxy": round(dom_refill_resilience_proxy, 4),
+            "dom_absorption_proxy": round(dom_absorption_proxy, 4),
+            "dom_iceberg_proxy": round(dom_iceberg_proxy, 4),
+            "dom_queue_persistence": round(dom_queue_persistence, 4),
             "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
             "depth_flow_sovereignty_rescue_candidate": depth_flow_sovereignty_rescue_candidate,
             "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,

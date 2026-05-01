@@ -115,6 +115,7 @@ else:
 # ── Gateway management ────────────────────────────────────────────────────────
 
 _gateway_proc: subprocess.Popen | None = None
+_commodity_exchange_depth_manager = None
 _shutdown_started = threading.Event()
 _shutdown_lock = threading.Lock()
 _GATEWAY_DIR  = Path(__file__).parent / "gateway"
@@ -273,6 +274,19 @@ def stop_ctrader_live_depth() -> None:
         logger.debug(f"[bot] cTrader live-depth shutdown skipped: {e}")
 
 
+def stop_commodity_exchange_depth_streams() -> None:
+    global _commodity_exchange_depth_manager
+
+    manager = _commodity_exchange_depth_manager
+    _commodity_exchange_depth_manager = None
+    if manager is None:
+        return
+    try:
+        manager.stop()
+    except Exception as e:
+        logger.debug(f"[bot] Commodity exchange-depth shutdown skipped: {e}")
+
+
 def _perform_shutdown(engine, *, reason: str = "signal", exit_code: int = 0) -> None:
     with _shutdown_lock:
         logger.info(f"[bot] Shutdown sequence started — reason={reason}")
@@ -288,6 +302,10 @@ def _perform_shutdown(engine, *, reason: str = "signal", exit_code: int = 0) -> 
             stop_dukascopy_live_depth()
         except Exception as e:
             logger.debug(f"[bot] Dukascopy live-depth stop during shutdown failed: {e}")
+        try:
+            stop_commodity_exchange_depth_streams()
+        except Exception as e:
+            logger.debug(f"[bot] Commodity exchange-depth stop during shutdown failed: {e}")
         try:
             _stop_deepseek_background_bot()
         except Exception as e:
@@ -308,6 +326,7 @@ atexit.register(stop_gateway)
 atexit.register(stop_telegram)
 atexit.register(stop_ctrader_live_depth)
 atexit.register(stop_dukascopy_live_depth)
+atexit.register(stop_commodity_exchange_depth_streams)
 atexit.register(lambda: _stop_deepseek_background_bot())
 
 
@@ -550,6 +569,27 @@ def _start_api_expiry_checker(engine) -> None:
 
 
 def _start_pre_bot_services(engine, args) -> None:
+    def _start_commodity_exchange_depth_streams():
+        global _commodity_exchange_depth_manager
+
+        from core.assets import registry
+        from websocket_manager import WebSocketManager
+
+        commodity_assets = {
+            canonical: category
+            for canonical, category in registry.all_assets()
+            if str(category or "").strip().lower() == "commodities"
+        }
+        if not commodity_assets:
+            return False
+
+        manager = WebSocketManager()
+        manager.start()
+        manager.subscribe_deriv(commodity_assets, lambda *_args: None)
+        _commodity_exchange_depth_manager = manager
+        engine._commodity_exchange_depth_manager = manager
+        return True
+
     def _start_ctrader_live_depth():
         from services.ctrader_live_depth_bridge import ctrader_live_depth_bridge
 
@@ -644,6 +684,13 @@ def _start_pre_bot_services(engine, args) -> None:
         import data.cache as _cache_mod
         _cache_mod.cache = upgraded_cache
 
+    _run_optional_step(
+        _start_commodity_exchange_depth_streams,
+        "[bot] Commodity exchange-depth streams started",
+        "[bot] Commodity exchange-depth streams failed: {error}",
+        skipped_message="[bot] Commodity exchange-depth streams skipped — no commodity assets registered",
+        skipped_level="info",
+    )
     _run_optional_step(
         _start_ctrader_live_depth,
         "[bot] cTrader live-depth sidecar started",

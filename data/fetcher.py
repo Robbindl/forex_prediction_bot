@@ -827,6 +827,25 @@ class DataFetcher:
             "orderbook_top_bids",
             "orderbook_top_asks",
             "microstructure_source",
+            "depth_update_mode",
+            "dom_event_backed",
+            "dom_ladder_ready",
+            "dom_stream_snapshot_ready",
+            "dom_snapshot_count",
+            "dom_delta_count",
+            "dom_trade_count",
+            "dom_source_fidelity",
+            "dom_authority_tier",
+            "dom_depth_event_age_seconds",
+            "dom_snapshot_span_seconds",
+            "dom_depth_window",
+            "dom_liquidity_shift_proxy",
+            "dom_sweep_pressure_proxy",
+            "dom_refill_resilience_proxy",
+            "dom_absorption_proxy",
+            "dom_iceberg_proxy",
+            "dom_queue_persistence",
+            "dom_supportive_reload_count",
         ):
             if key in extra:
                 payload[key] = extra[key]
@@ -1103,6 +1122,24 @@ class DataFetcher:
             max(-1.0, min(1.0, existing_score * 0.35 + imbalance * 0.45 + trade_flow_score * 0.20)),
             4,
         )
+        try:
+            from services.dom_evidence import attach_dom_evidence
+
+            default_mode = str(payload.get("depth_update_mode") or "").strip().lower()
+            if not default_mode:
+                if bool(payload.get("dom_stream_snapshot_ready")) and depth_levels > 0:
+                    default_mode = "stream_snapshot"
+                elif depth_levels > 0:
+                    default_mode = "snapshot_poll"
+                elif synthetic_only:
+                    default_mode = "synthetic"
+            payload = attach_dom_evidence(
+                payload,
+                depth_update_mode=default_mode or None,
+                dom_snapshot_count=max(int(payload.get("dom_snapshot_count", 0) or 0), 1 if depth_levels > 0 else 0),
+            )
+        except Exception:
+            pass
         return payload
 
     def get_ohlcv(
