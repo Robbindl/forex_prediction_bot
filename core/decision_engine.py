@@ -2822,6 +2822,33 @@ class SignalDecisionEngine:
                 or first_pullback_ready
             )
         )
+        context_continuation_execution_candidate = bool(
+            strong_market_candidate
+            and (continuation_family or continuation_entry)
+            and alignment_score >= 0.60
+            and setup_quality >= 0.56
+            and target_efficiency_score >= 0.10
+            and impulse_age_bars <= 7
+            and not failed_opposite_move_confirmed
+            and not has_directional_flow_conflict
+            and has_directional_flow_support
+            and (
+                external_confirmation_score >= 0.16
+                or cross_asset_confidence >= 0.20
+                or abs(microstructure_alignment) >= 0.22
+                or abs(aligned_trade_flow) >= 0.18
+                or shock_liquidity_score >= 0.56
+            )
+        )
+        context_confirmation_override = bool(
+            context_continuation_execution_candidate
+            and (
+                fast_entry_confirmation_ready
+                or directional_flow_support >= 0.24
+                or external_confirmation_score >= 0.18
+                or shock_liquidity_score >= 0.60
+            )
+        )
         impulse_fast_path_candidate = bool(
             impulse_playbook
             and impulse_break_style
@@ -3301,6 +3328,10 @@ class SignalDecisionEngine:
                     risk_score -= 0.02
                 if target_efficiency_score >= 0.14 and directional_extension <= 0.84:
                     risk_score -= 0.02
+        if context_continuation_execution_candidate:
+            risk_score -= 0.04
+            if context_confirmation_override:
+                risk_score -= 0.03
         if impulse_fast_path_candidate:
             risk_score -= 0.04
             if impulse_fast_path_supported:
@@ -3493,6 +3524,7 @@ class SignalDecisionEngine:
             and not entry_confirmation_ready
             and not (impulse_fast_path_supported and fast_entry_confirmation_ready)
             and not (shock_fast_path_supported and (fast_entry_confirmation_ready or shock_confirmation_override))
+            and not context_confirmation_override
         ):
             hard_blocks.append("entry confirmation delay is still pending")
         if (
@@ -3500,6 +3532,7 @@ class SignalDecisionEngine:
             and not entry_confirmation_ready
             and not (impulse_fast_path_supported and fast_entry_confirmation_ready)
             and not (shock_fast_path_supported and (fast_entry_confirmation_ready or shock_confirmation_override))
+            and not context_confirmation_override
             and not breakout_retest_ready
             and not first_pullback_ready
             and not has_directional_flow_support
@@ -3522,6 +3555,8 @@ class SignalDecisionEngine:
             pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.05)
         if shock_fast_path_supported:
             pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
+        if context_continuation_execution_candidate:
+            pattern_rank_hard_floor = max(0.02, pattern_rank_hard_floor - 0.04)
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
         pattern_rank_hard_floor = min(
@@ -3530,16 +3565,24 @@ class SignalDecisionEngine:
         )
         low_pattern_rank_is_actionable = bool(
             blocked_recent_pattern
-            or recent_pattern_sample_count >= 8
+            or (
+                recent_pattern_sample_count >= 8
+                and not shock_fast_path_candidate
+                and not context_continuation_execution_candidate
+            )
             or (
                 recent_pattern_sample_count >= 5
                 and not has_directional_flow_support
                 and not entry_confirmation_ready
+                and not shock_fast_path_candidate
+                and not context_continuation_execution_candidate
             )
             or not (
                 continuation_rescue_candidate
                 or high_conviction_continuation_candidate
                 or impulse_fast_path_candidate
+                or shock_fast_path_candidate
+                or context_continuation_execution_candidate
             )
         )
         if (
@@ -3655,6 +3698,8 @@ class SignalDecisionEngine:
             "shock_fast_path_timing_intact": shock_fast_path_timing_intact,
             "shock_fast_path_supported": shock_fast_path_supported,
             "shock_confirmation_override": shock_confirmation_override,
+            "context_continuation_execution_candidate": context_continuation_execution_candidate,
+            "context_confirmation_override": context_confirmation_override,
         }
 
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
@@ -3686,6 +3731,8 @@ class SignalDecisionEngine:
             "shock_fast_path_timing_intact": shock_fast_path_timing_intact,
             "shock_fast_path_supported": shock_fast_path_supported,
             "shock_confirmation_override": shock_confirmation_override,
+            "context_continuation_execution_candidate": context_continuation_execution_candidate,
+            "context_confirmation_override": context_confirmation_override,
             "has_directional_flow_support": has_directional_flow_support,
             "has_directional_flow_conflict": has_directional_flow_conflict,
             "continuation_reclaim_pressure": continuation_reclaim_pressure,

@@ -3605,6 +3605,14 @@ class TradingCore:
                 # Forex pullbacks can stay structurally valid a little farther away
                 # from the anchor than the tighter cross-asset default.
                 anchor_tolerance_atr = 0.38 if asset_category == "forex" else 0.30
+                if (
+                    bool(structure.get("first_pullback_ready"))
+                    and bool(
+                        structure.get("fast_entry_confirmation_ready")
+                        or structure.get("entry_confirmation_ready")
+                    )
+                ):
+                    anchor_tolerance_atr += 0.08 if asset_category == "forex" else 0.06
             else:
                 anchor_tolerance_atr = 0.26
             inactivity_anchor_tolerance = anchor_tolerance_atr

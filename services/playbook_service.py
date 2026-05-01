@@ -2459,11 +2459,29 @@ class PlaybookService:
         cluster_penalty_limit = 0.26 + (0.03 + inactivity_relief_strength * 0.04 if inactivity_seed_relief else 0.0)
         if impulse_age_bars >= impulse_age_limit or cluster_penalty >= cluster_penalty_limit:
             return None
+        context_fast_track_ready = bool(
+            context_continuation_ready
+            and (
+                strong_context_continuation_ready
+                or max(
+                    abs(micro_context_support),
+                    abs(cross_context_support),
+                    abs(whale_context_support),
+                )
+                >= 0.30
+            )
+            and target_efficiency_score >= max(0.08, target_efficiency_floor - 0.08)
+            and extension_score <= max(
+                extension_ceiling,
+                2.20 if strong_context_continuation_ready else 1.85,
+            )
+        )
         if (
             fast_confirmation_required > 1
             and not fast_confirmation_ready
             and not near_fast_confirmation
             and not directional_liquidity_sweep_ready
+            and not context_fast_track_ready
         ):
             return None
         if direction == "BUY" and upside_exhaustion_score >= 0.58:
@@ -2611,12 +2629,15 @@ class PlaybookService:
                 structural_ready_bonus += 0.02
             if inactivity_seed_relief:
                 structural_ready_bonus += 0.03 + inactivity_relief_strength * 0.03
+        elif entry_style == "elite_context_continuation":
+            structural_ready_bonus += 0.06 if strong_context_continuation_ready else 0.04
         elif entry_style == "elite_context_pressure":
             structural_ready_bonus += 0.08
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
             structural_ready_bonus += 0.10
         if near_confirmation:
             structural_ready_bonus += 0.05
+        context_continuation_bonus = entry_style == "elite_context_continuation"
         score = _clip(
             abs(directional_breakout) * 0.22
             + abs(directional_pullback) * 0.18
@@ -2626,9 +2647,18 @@ class PlaybookService:
             + _clip(effective_session_quality_score) * 0.08
             + _clip(target_efficiency_score) * 0.08
             + _clip(elite_pattern_rank) * 0.10
-            + (max(0.0, confluence_score) * 0.18 if context_driven_direction else 0.0)
-            + (max(0.0, abs(micro_context_support)) * 0.10 if context_driven_direction else 0.0)
-            + (max(0.0, abs(cross_context_support)) * 0.06 if context_driven_direction else 0.0)
+            + (
+                max(0.0, confluence_score)
+                * (0.18 if context_driven_direction else 0.14 if context_continuation_bonus else 0.0)
+            )
+            + (
+                max(0.0, abs(micro_context_support))
+                * (0.10 if context_driven_direction else 0.08 if context_continuation_bonus else 0.0)
+            )
+            + (
+                max(0.0, abs(cross_context_support))
+                * (0.06 if context_driven_direction else 0.05 if context_continuation_bonus else 0.0)
+            )
             + (0.06 if failed_opposite_move_confirmed else 0.0)
             + (0.05 if breakout_retest_ready else 0.0)
             + (0.04 if first_pullback_ready else 0.0)
