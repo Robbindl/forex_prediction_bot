@@ -7462,9 +7462,9 @@ def _setup_dashboard_live_streams(cb) -> tuple[Any, Dict[str, Dict[str, str]], A
             if asset not in ig_stream_assets
         }
         ig_fallback_assets, ig_poll_assets = split_pending_ig_fallback_assets(pending_ig_assets)
-        if ig_fallback_assets:
-            ws.subscribe_deriv(ig_fallback_assets, cb, include_ig_assets=True)
-            logger.info(f"[dashboard] Deriv fallback for IG primary assets: {sorted(ig_fallback_assets.keys())}")
+        if pending_ig_assets:
+            ws.subscribe_deriv(pending_ig_assets, cb, include_ig_assets=True)
+            logger.info(f"[dashboard] Supplemental depth/fallback assets for IG primary markets: {sorted(pending_ig_assets.keys())}")
 
         if ig_stream_assets:
             logger.info(f"[dashboard] Live IG stream assets: {sorted(ig_stream_assets.keys())}")
@@ -7548,10 +7548,10 @@ def _dashboard_apply_subscription_update(
         stream_state["ig_fallback_assets"], stream_state["ig_poll_assets"] = split_pending_ig_fallback_assets(
             pending_ig_assets
         )
-        if stream_state["ig_fallback_assets"]:
-            ws_global.subscribe_deriv(stream_state["ig_fallback_assets"], cb, include_ig_assets=True)
+        if pending_ig_assets:
+            ws_global.subscribe_deriv(pending_ig_assets, cb, include_ig_assets=True)
             logger.debug(
-                f"[dashboard] Deriv fallback subscribed for IG primary assets: {sorted(stream_state['ig_fallback_assets'].keys())}"
+                f"[dashboard] Supplemental depth/fallback subscribed for IG primary assets: {sorted(pending_ig_assets.keys())}"
             )
         try:
             if stream_state["ig_poll_assets"]:

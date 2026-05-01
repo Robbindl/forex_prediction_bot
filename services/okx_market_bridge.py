@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import pandas as pd
 import requests
 
 from config.config import OKX_PUBLIC_DATA_ENABLED, OKX_SYMBOL_MAP
@@ -15,7 +16,29 @@ logger = get_logger()
 _BASE_URL = "https://www.okx.com"
 _TICKER_ENDPOINT = "/api/v5/market/ticker"
 _BOOKS_ENDPOINT = "/api/v5/market/books"
+_CANDLES_ENDPOINT = "/api/v5/market/history-candles"
 _BOOK_DEPTH = "400"
+_MAX_KLINE_LIMIT = 300
+
+_INTERVAL_MAP = {
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1H",
+    "4h": "4H",
+    "1d": "1D",
+}
+
+_INTERVAL_SECONDS = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
 
 _DEFAULT_SYMBOLS = {
     "XAU/USD": "XAU-USDT-SWAP",
@@ -242,6 +265,124 @@ class OkxMarketBridge:
             "stop_hunt_risk": 0.0,
             "score": 0.0,
         }
+
+    def get_ohlcv(
+        self,
+        asset: str,
+        interval: str,
+        periods: int,
+        category: str = "",
+        end_time: Any = None,
+        closed_only: bool = False,
+    ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
+        symbol = self._resolve_symbol(asset, category=category)
+        interval_key = str(interval or "").lower()
+        okx_interval = _INTERVAL_MAP.get(interval_key)
+        interval_seconds = _INTERVAL_SECONDS.get(interval_key)
+        if not symbol or not okx_interval or not interval_seconds:
+            return None, {}
+
+        cutoff = pd.to_datetime(end_time, utc=True, errors="coerce") if end_time not in (None, "") else None
+        if cutoff is not None and pd.isna(cutoff):
+            cutoff = None
+
+        target_rows = int(max(2, periods or 0))
+        buffered_rows = int(max(2, target_rows + 4))
+        rows: List[List[Any]] = []
+        seen: set[str] = set()
+        next_after_ms: Optional[int] = None
+        if cutoff is not None:
+            cutoff_ts = pd.Timestamp(cutoff)
+            cutoff_ts = cutoff_ts.tz_convert("UTC") if cutoff_ts.tzinfo else cutoff_ts.tz_localize("UTC")
+            next_after_ms = int(cutoff_ts.timestamp() * 1000) + 1
+
+        max_pages = max(1, int((buffered_rows + _MAX_KLINE_LIMIT - 1) / _MAX_KLINE_LIMIT) + 1)
+        try:
+            for _ in range(max_pages):
+                limit = int(min(_MAX_KLINE_LIMIT, max(2, buffered_rows - len(rows))))
+                params: Dict[str, Any] = {
+                    "instId": symbol,
+                    "bar": okx_interval,
+                    "limit": limit,
+                }
+                if next_after_ms is not None:
+                    params["after"] = str(next_after_ms)
+
+                payload = self._request_json(_CANDLES_ENDPOINT, params)
+                page = payload.get("data") or []
+                if not isinstance(page, list) or not page:
+                    break
+
+                added = 0
+                for entry in page:
+                    if not isinstance(entry, list) or len(entry) < 8:
+                        continue
+                    stamp = str(entry[0] or "")
+                    if not stamp or stamp in seen:
+                        continue
+                    seen.add(stamp)
+                    rows.append(entry)
+                    added += 1
+
+                try:
+                    oldest_ts = int(str(page[-1][0] or "0"))
+                except Exception:
+                    oldest_ts = 0
+
+                if oldest_ts <= 0 or added <= 0 or len(page) < limit or len(rows) >= buffered_rows:
+                    break
+                next_after_ms = oldest_ts
+
+            if not rows:
+                return None, {}
+
+            frame = pd.DataFrame(
+                rows,
+                columns=[
+                    "open_time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume_contracts",
+                    "volume_base",
+                    "turnover_quote",
+                    "confirm",
+                ],
+            )
+            frame["open_time"] = pd.to_numeric(frame["open_time"], errors="coerce")
+            frame["timestamp"] = pd.to_datetime(frame["open_time"], unit="ms", utc=True, errors="coerce")
+            frame = frame.drop(columns=["open_time", "turnover_quote"]).dropna(subset=["timestamp"])
+            frame = frame.set_index("timestamp").sort_index()
+            for column in ("open", "high", "low", "close", "volume_contracts", "volume_base"):
+                frame[column] = pd.to_numeric(frame[column], errors="coerce")
+            frame["confirm"] = frame["confirm"].astype(str)
+            frame["volume"] = frame["volume_base"].where(frame["volume_base"].notna(), frame["volume_contracts"])
+            frame = frame.dropna(subset=["open", "high", "low", "close"])
+            if frame.empty:
+                return None, {}
+
+            effective_cutoff = cutoff
+            if closed_only and effective_cutoff is None:
+                effective_cutoff = pd.Timestamp(datetime.now(timezone.utc))
+            if effective_cutoff is not None:
+                cutoff_ts = pd.Timestamp(effective_cutoff)
+                cutoff_ts = cutoff_ts.tz_convert("UTC") if cutoff_ts.tzinfo else cutoff_ts.tz_localize("UTC")
+                if closed_only:
+                    close_times = frame.index + pd.to_timedelta(interval_seconds, unit="s")
+                    frame = frame[(close_times <= cutoff_ts) & (frame["confirm"] == "1")]
+                else:
+                    frame = frame[frame.index <= cutoff_ts]
+            elif closed_only:
+                frame = frame[frame["confirm"] == "1"]
+            frame = frame.tail(target_rows)
+            if frame.empty:
+                return None, {}
+
+            return frame[["open", "high", "low", "close", "volume"]], self._metadata(symbol, realtime=False)
+        except Exception as exc:
+            logger.debug(f"[OKXBridge] ohlcv {asset}: {exc}")
+            return None, {}
 
     def _resolve_symbol(self, asset: str, category: str = "") -> Optional[str]:
         if not self._enabled:

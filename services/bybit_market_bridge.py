@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import pandas as pd
 import requests
 
 from config.config import BYBIT_PUBLIC_DATA_ENABLED, BYBIT_SYMBOL_MAP
@@ -15,8 +16,30 @@ logger = get_logger()
 _BASE_URL = "https://api.bybit.com"
 _TICKER_ENDPOINT = "/v5/market/tickers"
 _BOOKS_ENDPOINT = "/v5/market/orderbook"
+_KLINE_ENDPOINT = "/v5/market/kline"
 _BOOK_DEPTH = "500"
 _CATEGORY = "linear"
+_MAX_KLINE_LIMIT = 1000
+
+_INTERVAL_MAP = {
+    "1m": "1",
+    "5m": "5",
+    "15m": "15",
+    "30m": "30",
+    "1h": "60",
+    "4h": "240",
+    "1d": "D",
+}
+
+_INTERVAL_SECONDS = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
 
 _DEFAULT_SYMBOLS = {
     "XAU/USD": "XAUUSDT",
@@ -61,9 +84,9 @@ class BybitMarketBridge:
     """
     Public Bybit market-data bridge for supported commodity contracts.
 
-    At the moment this is intentionally narrow: Bybit's public market API
-    cleanly exposes XAUUSDT/XAGUSDT, while other TradFi products such as
-    indices/oil appear to live behind a different product surface.
+    We use this bridge for richer commodity depth and now for commodity
+    candle history too, while legacy broker/provider rules still decide
+    whether trading is permitted.
     """
 
     def __init__(self) -> None:
@@ -246,6 +269,119 @@ class BybitMarketBridge:
             "stop_hunt_risk": 0.0,
             "score": 0.0,
         }
+
+    def get_ohlcv(
+        self,
+        asset: str,
+        interval: str,
+        periods: int,
+        category: str = "",
+        end_time: Any = None,
+        closed_only: bool = False,
+    ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
+        symbol = self._resolve_symbol(asset, category=category)
+        interval_key = str(interval or "").lower()
+        bybit_interval = _INTERVAL_MAP.get(interval_key)
+        interval_seconds = _INTERVAL_SECONDS.get(interval_key)
+        if not symbol or not bybit_interval or not interval_seconds:
+            return None, {}
+
+        cutoff = pd.to_datetime(end_time, utc=True, errors="coerce") if end_time not in (None, "") else None
+        if cutoff is not None and pd.isna(cutoff):
+            cutoff = None
+
+        target_rows = int(max(2, periods or 0))
+        buffered_rows = int(max(2, target_rows + 4))
+        rows: List[List[Any]] = []
+        seen: set[str] = set()
+        next_end_ms: Optional[int] = None
+        if cutoff is not None:
+            cutoff_ts = pd.Timestamp(cutoff)
+            cutoff_ts = cutoff_ts.tz_convert("UTC") if cutoff_ts.tzinfo else cutoff_ts.tz_localize("UTC")
+            next_end_ms = int(cutoff_ts.timestamp() * 1000)
+
+        max_pages = max(1, int((buffered_rows + _MAX_KLINE_LIMIT - 1) / _MAX_KLINE_LIMIT) + 1)
+        try:
+            for _ in range(max_pages):
+                limit = int(min(_MAX_KLINE_LIMIT, max(2, buffered_rows - len(rows))))
+                params: Dict[str, Any] = {
+                    "category": _CATEGORY,
+                    "symbol": symbol,
+                    "interval": bybit_interval,
+                    "limit": limit,
+                }
+                if next_end_ms is not None:
+                    params["end"] = next_end_ms
+
+                payload = self._request_json(_KLINE_ENDPOINT, params)
+                page = ((payload.get("result") or {}).get("list")) or []
+                if not isinstance(page, list) or not page:
+                    break
+
+                added = 0
+                for entry in page:
+                    if not isinstance(entry, list) or len(entry) < 6:
+                        continue
+                    stamp = str(entry[0] or "")
+                    if not stamp or stamp in seen:
+                        continue
+                    seen.add(stamp)
+                    rows.append(entry)
+                    added += 1
+
+                try:
+                    oldest_ts = int(str(page[-1][0] or "0"))
+                except Exception:
+                    oldest_ts = 0
+
+                if oldest_ts <= 0 or added <= 0 or len(page) < limit or len(rows) >= buffered_rows:
+                    break
+                next_end_ms = oldest_ts - 1
+
+            if not rows:
+                return None, {}
+
+            frame = pd.DataFrame(
+                rows,
+                columns=[
+                    "open_time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "turnover",
+                ],
+            )
+            frame["open_time"] = pd.to_numeric(frame["open_time"], errors="coerce")
+            frame["timestamp"] = pd.to_datetime(frame["open_time"], unit="ms", utc=True, errors="coerce")
+            frame = frame.drop(columns=["open_time", "turnover"]).dropna(subset=["timestamp"])
+            frame = frame.set_index("timestamp").sort_index()
+            for column in ("open", "high", "low", "close", "volume"):
+                frame[column] = pd.to_numeric(frame[column], errors="coerce")
+            frame = frame.dropna(subset=["open", "high", "low", "close"])
+            if frame.empty:
+                return None, {}
+
+            effective_cutoff = cutoff
+            if closed_only and effective_cutoff is None:
+                effective_cutoff = pd.Timestamp(datetime.now(timezone.utc))
+            if effective_cutoff is not None:
+                cutoff_ts = pd.Timestamp(effective_cutoff)
+                cutoff_ts = cutoff_ts.tz_convert("UTC") if cutoff_ts.tzinfo else cutoff_ts.tz_localize("UTC")
+                if closed_only:
+                    close_times = frame.index + pd.to_timedelta(interval_seconds, unit="s")
+                    frame = frame[close_times <= cutoff_ts]
+                else:
+                    frame = frame[frame.index <= cutoff_ts]
+            frame = frame.tail(target_rows)
+            if frame.empty:
+                return None, {}
+
+            return frame[["open", "high", "low", "close", "volume"]], self._metadata(symbol, realtime=False)
+        except Exception as exc:
+            logger.debug(f"[BybitBridge] ohlcv {asset}: {exc}")
+            return None, {}
 
     def _resolve_symbol(self, asset: str, category: str = "") -> Optional[str]:
         if not self._enabled:

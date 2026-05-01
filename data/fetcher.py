@@ -417,6 +417,8 @@ class DataFetcher:
             "fmp": (self._fmp_bridge, "FMP", "secondary_api", False, False, False),
             "deriv": (self._deriv_bridge, "Deriv", "primary_api", False, False, True),
             "binance": (self._binance_bridge, "Binance", "secondary_api", False, False, True),
+            "bybit": (self._bybit_bridge, "Bybit", "secondary_api", False, False, False),
+            "okx": (self._okx_bridge, "OKX", "secondary_api", False, False, False),
         }
 
     def _preferred_ohlcv_bridge_order(
@@ -427,11 +429,35 @@ class DataFetcher:
     ) -> Tuple[Tuple[Any, str, str, bool, bool, bool], ...]:
         ig_primary = self._ig_primary_asset(asset, category)
         catalog = self._ohlcv_bridge_catalog(ig_primary=ig_primary)
-        default_tokens = (
-            ("ig", "dukascopy", "fmp", "deriv", "binance")
-            if ig_primary
-            else ("dukascopy", "fmp", "deriv", "binance")
-        )
+        resolved_category = str(category or "").strip().lower()
+        commodity_exchange_tokens: list[str] = []
+        if resolved_category == "commodities":
+            if self._bybit_bridge is not None:
+                try:
+                    if self._bybit_bridge.supports(asset, category=category):
+                        commodity_exchange_tokens.append("bybit")
+                except Exception:
+                    pass
+            if self._okx_bridge is not None:
+                try:
+                    if self._okx_bridge.supports(asset, category=category):
+                        commodity_exchange_tokens.append("okx")
+                except Exception:
+                    pass
+
+        if commodity_exchange_tokens:
+            default_tokens = (
+                *commodity_exchange_tokens,
+                *(("ig",) if ig_primary else ()),
+                "dukascopy",
+                "fmp",
+                "deriv",
+                "binance",
+            )
+        elif ig_primary:
+            default_tokens = ("ig", "dukascopy", "fmp", "deriv", "binance")
+        else:
+            default_tokens = ("dukascopy", "fmp", "deriv", "binance")
         ordered_tokens: list[str] = []
         seen: set[str] = set()
 
@@ -453,6 +479,21 @@ class DataFetcher:
             return False
         required = max(1, int(math.ceil(float(periods) * float(LOCAL_CANDLE_STORE_REQUIRED_COVERAGE))))
         return len(df) >= required
+
+    def _has_exchange_commodity_ohlcv_support(self, asset: str, category: str) -> bool:
+        if str(category or "").strip().lower() != "commodities":
+            return False
+        try:
+            if self._bybit_bridge is not None and self._bybit_bridge.supports(asset, category=category):
+                return True
+        except Exception:
+            pass
+        try:
+            if self._okx_bridge is not None and self._okx_bridge.supports(asset, category=category):
+                return True
+        except Exception:
+            pass
+        return False
 
     def get_provider_quote(
         self,
@@ -701,7 +742,12 @@ class DataFetcher:
         return informative, round(signal_strength, 6), round(total_visible_volume, 6)
 
     @staticmethod
-    def _overlay_external_true_depth(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    def _overlay_external_true_depth(
+        base: Dict[str, Any],
+        overlay: Dict[str, Any],
+        *,
+        preserve_base_depth: bool = False,
+    ) -> Dict[str, Any]:
         payload = dict(base or {})
         extra = dict(overlay or {})
         if not extra or not bool(extra.get("depth_available")):
@@ -734,12 +780,18 @@ class DataFetcher:
             target["depth_quote_tolerance_bps"] = alignment.get("tolerance_bps")
             target["depth_quote_alignment_score"] = alignment.get("score")
             target["external_depth_rejected"] = bool(not alignment.get("usable", True))
+            target["external_depth_overlay_applied"] = False
+            target["external_depth_preserved_base_book"] = bool(preserve_base_depth)
             if target["external_depth_rejected"]:
                 target["external_depth_rejection_reason"] = "cross_provider_quote_divergence"
             else:
                 target.pop("external_depth_rejection_reason", None)
             if extra.get("dukascopy_symbol"):
                 target["dukascopy_symbol"] = extra["dukascopy_symbol"]
+            target["external_depth_candidate_levels"] = extra.get("depth_levels")
+            target["external_depth_candidate_quality"] = extra.get("depth_quality")
+            target["external_depth_candidate_score"] = extra.get("score")
+            target["external_depth_candidate_pressure_direction"] = extra.get("pressure_direction")
             return target
 
         if not payload:
@@ -747,6 +799,8 @@ class DataFetcher:
 
         payload = _attach_overlay_meta(payload)
         if not alignment.get("usable", True):
+            return payload
+        if preserve_base_depth:
             return payload
 
         for key in (
@@ -776,6 +830,7 @@ class DataFetcher:
         ):
             if key in extra:
                 payload[key] = extra[key]
+        payload["external_depth_overlay_applied"] = True
         return payload
 
     @staticmethod
@@ -886,14 +941,23 @@ class DataFetcher:
         ctrader_overlay = self._ctrader_live_microstructure(asset, category)
         dukascopy_overlay = self._dukascopy_live_microstructure(asset, category)
         selected_external_depth = self._select_external_true_depth(dukascopy_overlay, ctrader_overlay)
+        preserve_exchange_depth = str(category or "").strip().lower() == "commodities"
 
         micro = self._microstructure_from_bridge(self._bybit_bridge, "Bybit", asset, category, orderflow_snapshot)
         if micro:
-            return self._overlay_external_true_depth(micro, selected_external_depth)
+            return self._overlay_external_true_depth(
+                micro,
+                selected_external_depth,
+                preserve_base_depth=preserve_exchange_depth,
+            )
 
         micro = self._microstructure_from_bridge(self._okx_bridge, "OKX", asset, category, orderflow_snapshot)
         if micro:
-            return self._overlay_external_true_depth(micro, selected_external_depth)
+            return self._overlay_external_true_depth(
+                micro,
+                selected_external_depth,
+                preserve_base_depth=preserve_exchange_depth,
+            )
 
         if self._ig_primary_asset(asset, category):
             micro = self._microstructure_from_bridge(self._ig_bridge, "IG", asset, category, orderflow_snapshot)
@@ -1070,6 +1134,10 @@ class DataFetcher:
         if cached is not None:
             return cached
 
+        local_short_circuit_allowed = bool(prefer_local) and not bool(provider_preference)
+        if self._has_exchange_commodity_ohlcv_support(asset, category):
+            local_short_circuit_allowed = False
+
         local_hit, local_partial_df, local_partial_meta = self._fetch_local_ohlcv(
             asset,
             category,
@@ -1079,7 +1147,7 @@ class DataFetcher:
             closed_only,
             meta_key,
             cache_key,
-            allow_short_circuit=prefer_local,
+            allow_short_circuit=local_short_circuit_allowed,
         )
         if local_hit is not None:
             return local_hit
