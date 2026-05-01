@@ -76,11 +76,41 @@ def is_binance_primary_crypto_asset(asset: str, category: str = "") -> bool:
         return False
 
 
+def is_bybit_supported_commodity_asset(asset: str, category: str = "") -> bool:
+    canonical = registry.canonical(str(asset or "").strip())
+    resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
+    if resolved_category != "commodities":
+        return False
+    try:
+        from services.bybit_market_bridge import bybit_market_bridge
+
+        return bool(bybit_market_bridge.supports(canonical, category=resolved_category))
+    except Exception:
+        return False
+
+
+def is_okx_supported_commodity_asset(asset: str, category: str = "") -> bool:
+    canonical = registry.canonical(str(asset or "").strip())
+    resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
+    if resolved_category != "commodities":
+        return False
+    try:
+        from services.okx_market_bridge import okx_market_bridge
+
+        return bool(okx_market_bridge.supports(canonical, category=resolved_category))
+    except Exception:
+        return False
+
+
 def preferred_quote_provider_order(asset: str, category: str = "") -> tuple[str, ...]:
     canonical = registry.canonical(str(asset or "").strip())
     resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
 
     if is_ig_primary_asset(canonical, resolved_category):
+        if is_bybit_supported_commodity_asset(canonical, resolved_category):
+            return ("ig", "deriv", "bybit", "okx")
+        if is_okx_supported_commodity_asset(canonical, resolved_category):
+            return ("ig", "deriv", "okx")
         return ("ig", "deriv")
     if is_binance_primary_crypto_asset(canonical, resolved_category):
         return ("binance",)
@@ -88,6 +118,10 @@ def preferred_quote_provider_order(asset: str, category: str = "") -> tuple[str,
         return ("deriv", "binance")
     if resolved_category == "crypto":
         return ("deriv", "binance")
+    if is_bybit_supported_commodity_asset(canonical, resolved_category):
+        return ("deriv", "bybit", "okx")
+    if is_okx_supported_commodity_asset(canonical, resolved_category):
+        return ("deriv", "okx")
     return ("deriv",)
 
 

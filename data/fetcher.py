@@ -86,6 +86,8 @@ class DataFetcher:
         self._ig_bridge = None
         self._deriv_bridge = None
         self._binance_bridge = None
+        self._bybit_bridge = None
+        self._okx_bridge = None
         self._init_clients()
 
     @staticmethod
@@ -111,6 +113,10 @@ class DataFetcher:
             self._attach_deriv_symbol(payload, asset, category)
         if "binance" in source:
             self._attach_binance_symbol(payload, asset, category)
+        if "bybit" in source:
+            self._attach_bybit_symbol(payload, asset, category)
+        if "okx" in source:
+            self._attach_okx_symbol(payload, asset, category)
         if "dukascopy" in source:
             self._attach_dukascopy_symbol(payload, asset, category)
         if "fmp" in source:
@@ -143,6 +149,22 @@ class DataFetcher:
         if resolved:
             payload["exchange_symbol"] = str(resolved.get("symbol", ""))
             payload["exchange"] = str(resolved.get("exchange", "binance"))
+
+    def _attach_bybit_symbol(self, payload: Dict[str, Any], asset: str, category: str) -> None:
+        if "exchange_symbol" in payload or self._bybit_bridge is None:
+            return
+        resolved = self._resolve_provider_symbol(self._bybit_bridge, asset, category)
+        if resolved:
+            payload["exchange_symbol"] = str(resolved.get("symbol", ""))
+            payload["exchange"] = str(resolved.get("exchange", "bybit"))
+
+    def _attach_okx_symbol(self, payload: Dict[str, Any], asset: str, category: str) -> None:
+        if "exchange_symbol" in payload or self._okx_bridge is None:
+            return
+        resolved = self._resolve_provider_symbol(self._okx_bridge, asset, category)
+        if resolved:
+            payload["exchange_symbol"] = str(resolved.get("symbol", ""))
+            payload["exchange"] = str(resolved.get("exchange", "okx"))
 
     def _attach_dukascopy_symbol(self, payload: Dict[str, Any], asset: str, category: str) -> None:
         if "dukascopy_symbol" in payload or self._dukascopy_bridge is None:
@@ -282,6 +304,32 @@ class DataFetcher:
         except Exception as exc:
             logger.debug(f"[DataFetcher] Binance bridge unavailable: {exc}")
 
+    def _init_bybit_bridge(self) -> None:
+        try:
+            from services.bybit_market_bridge import bybit_market_bridge as _bybit_bridge
+
+            self._activate_bridge(
+                "_bybit_bridge",
+                _bybit_bridge,
+                "bybit",
+                "[DataFetcher] Bybit bridge configured for deep commodity exchange depth on supported metals and WTI",
+            )
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] Bybit bridge unavailable: {exc}")
+
+    def _init_okx_bridge(self) -> None:
+        try:
+            from services.okx_market_bridge import okx_market_bridge as _okx_bridge
+
+            self._activate_bridge(
+                "_okx_bridge",
+                _okx_bridge,
+                "okx",
+                "[DataFetcher] OKX bridge configured for commodity exchange depth and quote fallback",
+            )
+        except Exception as exc:
+            logger.debug(f"[DataFetcher] OKX bridge unavailable: {exc}")
+
     def _init_clients(self) -> None:
         self._init_local_candle_store()
         self._init_dukascopy_bridge()
@@ -291,6 +339,8 @@ class DataFetcher:
         self._init_ig_bridge()
         self._init_deriv_bridge()
         self._init_binance_bridge()
+        self._init_bybit_bridge()
+        self._init_okx_bridge()
 
     def get_last_ohlcv_metadata(self, asset: str, interval: str) -> Dict[str, Any]:
         return dict(self._ohlcv_meta.get(f"ohlcv:{asset}:{interval}", {}))
@@ -320,6 +370,10 @@ class DataFetcher:
             return "deriv"
         if token.startswith("binance"):
             return "binance"
+        if token.startswith("bybit"):
+            return "bybit"
+        if token.startswith("okx"):
+            return "okx"
         if token.startswith("ctrader"):
             return "ctrader"
         if token.startswith("duka"):
@@ -419,6 +473,14 @@ class DataFetcher:
             if not self._binance_bridge.supports(asset, category=category):
                 return None, None, {}
             return self._binance_bridge.get_quote(asset, category=category)
+        if target == "bybit" and self._bybit_bridge is not None:
+            if not self._bybit_bridge.supports(asset, category=category):
+                return None, None, {}
+            return self._bybit_bridge.get_quote(asset, category=category)
+        if target == "okx" and self._okx_bridge is not None:
+            if not self._okx_bridge.supports(asset, category=category):
+                return None, None, {}
+            return self._okx_bridge.get_quote(asset, category=category)
         return None, None, {}
 
     def get_provider_market_status(self, asset: str, category: str, provider: str) -> Optional[Dict[str, Any]]:
@@ -431,6 +493,14 @@ class DataFetcher:
             if not self._deriv_bridge.is_available(asset, category=category):
                 return None
             return self._deriv_bridge.get_market_status(asset, category=category)
+        if target == "bybit" and self._bybit_bridge is not None:
+            if not self._bybit_bridge.supports(asset, category=category):
+                return None
+            return self._bybit_bridge.get_market_status(asset, category=category)
+        if target == "okx" and self._okx_bridge is not None:
+            if not self._okx_bridge.supports(asset, category=category):
+                return None
+            return self._okx_bridge.get_market_status(asset, category=category)
         return None
 
     def _crypto_orderflow_snapshot(self, asset: str, category: str) -> Dict[str, Any]:
@@ -817,6 +887,14 @@ class DataFetcher:
         dukascopy_overlay = self._dukascopy_live_microstructure(asset, category)
         selected_external_depth = self._select_external_true_depth(dukascopy_overlay, ctrader_overlay)
 
+        micro = self._microstructure_from_bridge(self._bybit_bridge, "Bybit", asset, category, orderflow_snapshot)
+        if micro:
+            return self._overlay_external_true_depth(micro, selected_external_depth)
+
+        micro = self._microstructure_from_bridge(self._okx_bridge, "OKX", asset, category, orderflow_snapshot)
+        if micro:
+            return self._overlay_external_true_depth(micro, selected_external_depth)
+
         if self._ig_primary_asset(asset, category):
             micro = self._microstructure_from_bridge(self._ig_bridge, "IG", asset, category, orderflow_snapshot)
             if micro:
@@ -1086,6 +1164,20 @@ class DataFetcher:
                 "Binance",
                 "secondary_api",
                 "Binance",
+                True,
+            ),
+            "bybit": (
+                self._bybit_bridge,
+                "Bybit",
+                "exchange_depth",
+                "Bybit",
+                True,
+            ),
+            "okx": (
+                self._okx_bridge,
+                "OKX",
+                "exchange_depth",
+                "OKX",
                 True,
             ),
         }

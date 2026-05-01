@@ -193,7 +193,7 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
         <div class="dp-grid">
           <div>
             <div class="dp-stat-grid" id="signalContextSummary"><div class="dp-stat skeleton" style="height:74px"></div><div class="dp-stat skeleton" style="height:74px"></div><div class="dp-stat skeleton" style="height:74px"></div><div class="dp-stat skeleton" style="height:74px"></div></div>
-            <div class="dp-sub" id="signalContextDetail">Loading broker and depth diagnostics…</div>
+            <div class="dp-sub" id="signalContextDetail">Loading feed, depth, and shock diagnostics…</div>
             <div class="dp-tags" id="signalContextTags"></div>
           </div>
           <div id="signalContextNotes"><div class="event-risk-card skeleton" style="height:78px"></div></div>
@@ -662,7 +662,7 @@ function renderMarketStatePanels(runtimeStatus=null, selectedSignal=null){
   crossStatusEl.style.background = related.length ? 'rgba(0,208,132,.12)' : 'rgba(41,121,255,.15)';
   crossStatusEl.style.color = related.length ? 'var(--gr)' : 'var(--bl)';
   crossPanelEl.innerHTML = related.length ? related.map(item => '<div class="dp-stat"><div class="dp-val" style="color:'+(Number(item.change_pct || 0) >= 0 ? 'var(--gr)' : 'var(--rd)')+'">'+item.asset.replace('-USD','').replace('/USD','').replace('=F','')+'</div><div class="dp-lbl">'+(item.change_pct == null ? 'live' : (Number(item.change_pct || 0) >= 0 ? '+' : '') + Number(item.change_pct || 0).toFixed(2)+'%')+'</div></div>').join('') : '<div class="dp-stat"><div class="dp-val">—</div><div class="dp-lbl">No peers</div></div>';
-  crossNotesEl.innerHTML = '<div class="event-risk-card"><div class="event-risk-title">Cross-market read</div><div class="event-risk-text">' + (signal ? 'Cross-market context can support the tape, but only retest / pullback readiness plus confirmation qualifies an entry.' : 'Cross-market peers will appear after the heatmap loads.') + '</div></div>';
+crossNotesEl.innerHTML = '<div class="event-risk-card"><div class="event-risk-title">Cross-market read</div><div class="event-risk-text">' + (signal ? 'Cross-market context can support the tape, but execution still needs either a clean structure lane or a supported fresh impulse.' : 'Cross-market peers will appear after the heatmap loads.') + '</div></div>';
 }
 function getAssetDescriptor(assetPayload, symbol){
   const items = Array.isArray(assetPayload?.assets) ? assetPayload.assets : [];

@@ -66,6 +66,9 @@ python3 -m venv venv_tf
   - `IG_ROUTE_TO_DERIV_BY_DEFAULT=false` to preserve existing IG primary asset routing; set to `true` if you want IG primary assets to fall through to Deriv by default
   - `IG_MAX_ROUTED_ASSETS=6` to cap IG-routed assets by default and route excess assets to Deriv proactively; set to `0` to disable the cap
   - `IG_STREAMING_HOLDOFF_SEC=300` to keep IG streaming disabled for 5 minutes after an allowance limit error, avoiding repeated quota retries
+  - `BINANCE_TRADFI_CONTEXT_ENABLED=true` if you want the small Binance TradFi proxy basket (`QQQ`, `SPY`, `NVDA`, `TSLA`, `EWJ`, `EWY`, `XCU`, `NATGAS`) to assist cross-asset context only
+  - `BYBIT_PUBLIC_DATA_ENABLED=true` and `BYBIT_SYMBOL_MAP={"XAU/USD":"XAUUSDT","XAG/USD":"XAGUSDT","WTI":"CLUSDT"}` if you want the deeper Bybit public commodity book for gold, silver, and WTI
+  - `OKX_PUBLIC_DATA_ENABLED=true` and `OKX_SYMBOL_MAP={"XAU/USD":"XAU-USDT-SWAP","XAG/USD":"XAG-USDT-SWAP","WTI":"CL-USDT-SWAP"}` as the commodity exchange-depth fallback when Bybit is not the best surface
   - rotate any secrets that have ever been committed, logged, or shared locally before deployment
 
 ## 5. Install the systemd service
@@ -157,7 +160,7 @@ Allow outbound access to:
 - PostgreSQL if remote
 - Telegram
 - Deriv
-- Binance / Bybit
+- Binance / Bybit / OKX
 - Reddit
 - BNB / Solana / XRPL RPCs
 
@@ -201,5 +204,7 @@ Core logs:
 - The economic calendar will use Deriv if supported, otherwise the ForexFactory fallback.
 - The bot auto-research scheduler is enabled through `config/bot_runtime.json`; on a 2 GB VM keep `AUTO_RESEARCH_MAX_PARALLEL_ASSETS=1` unless you have measured spare CPU/RAM headroom.
 - The trading engine now reads `MAX_SCAN_WORKERS` from env, so tune concurrency in `.env` instead of editing code before moving between machines.
+- Commodity exchange depth is now layered: Bybit first for `XAU/USD`, `XAG/USD`, and `WTI`, with OKX retained as fallback where Bybit's public API is not the cleanest fit.
+- A small Binance TradFi proxy basket can now feed cross-asset context (`QQQ`, `SPY`, `NVDA`, `TSLA`, `EWJ`, `EWY`, `XCU`, `NATGAS`) without making those symbols part of the primary tradeable universe.
 - Replace `server_name _;` in `deploy/oraclecloud/nginx-forex-bot.conf` with your real domain before turning on TLS.
 - The bundled preflight warns on placeholder `DASHBOARD_API_KEY`, localhost CORS, and template `DATABASE_URL` values before you go live.

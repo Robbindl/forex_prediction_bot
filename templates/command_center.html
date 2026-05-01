@@ -1300,7 +1300,7 @@ async function loadMain(){
       {value: lead ? `${lead.asset || '—'} ${String(lead.direction || lead.signal || '').toUpperCase()}` : 'No queue',valueClass: lead ? (String(lead.direction || lead.signal || '').toUpperCase() === 'SELL' ? 'rd' : 'gn') : 'mu',label: 'Next Candidate',sub: lead ? `Opp ${Number(lead.opportunity_score || 0).toFixed(3)} · ${buildEliteReason(lead)}` : 'No setup is currently strong enough to lead the desk'},
       {value: providerRouting.summary_label || 'Unavailable',valueClass: providerRouting.summary_label ? 'cy' : 'mu',label: 'Feed Spine',sub: providerRouting.fallback_label ? `Fallback ${providerRouting.fallback_label}` : 'No published fallback split'},
       {value: posLen ? `${posLen} open` : 'Flat',valueClass: posLen ? 'pu' : 'mu',label: 'Book State',sub: live.book_bias ? `${live.book_bias} · ${live.open_state||'Flat'}` : (leadCategory ? `${leadCategory[0]} leads with ${leadCategory[1]} positions` : 'No open exposure in the book')},
-      {value: `${supportiveCount}/${fragileCount}`,valueClass: fragileCount ? 'am' : supportiveCount ? 'gn' : 'mu',label: 'Broker Pressure',sub: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : 'No live pressure diagnostics yet'},
+      {value: `${supportiveCount}/${fragileCount}`,valueClass: fragileCount ? 'am' : supportiveCount ? 'gn' : 'mu',label: 'Feed Pressure',sub: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : 'No live pressure diagnostics yet'},
     ].map(item => `<div class="pulse-card"><div class="pulse-val ${item.valueClass}">${item.value}</div><div class="pulse-lbl">${item.label}</div><div class="pulse-sub">${item.sub}</div></div>`).join('');
     renderEliteSummary(d);
   }catch(e){console.error('[CC] metrics:',e);}
@@ -1445,7 +1445,7 @@ async function loadMain(){
       {label:`Whales ${d.alert_count_24h||0}`, cls:(d.alert_count_24h||0)?'warn':'ok'},
       {label:d.engine_ready?'Ready':'Warming', cls:d.engine_ready?'ok':'warn'},
       {label:`Elite ${readyCount}/${waitingCount}/${blockedCount}`, cls:blockedCount?'warn':readyCount?'ok':'info'},
-      {label:`Feeds ${providerRouting.summary_label||'—'}`, cls:(providerRouting.primary_counts||{}).IG?'ok':''},
+      {label:`Feeds ${providerRouting.summary_label||'—'}`, cls:Object.keys(providerRouting.primary_counts||{}).length?'ok':''},
       {label:`Memory ${Number(signalQuality.avg_memory_score||0).toFixed(0)}`, cls:Number(signalQuality.avg_memory_score||0)>=60?'ok':'warn'},
       {label:`Exec ${Number(signalQuality.avg_execution_quality||0).toFixed(0)}`, cls:Number(signalQuality.avg_execution_quality||0)>=60?'ok':'warn'},
       {label:`Opp ${Number(signalQuality.avg_opportunity_score||0).toFixed(3)}`, cls:Number(signalQuality.avg_opportunity_score||0)>=0.7?'ok':''},

@@ -6,21 +6,35 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 import requests
 
-from config.config import BINANCE_PUBLIC_DATA_ENABLED
+from config.config import BINANCE_PUBLIC_DATA_ENABLED, BINANCE_TRADFI_CONTEXT_ENABLED
 from utils.logger import get_logger
 
 logger = get_logger()
 
-_BASE_URL = "https://api.binance.com"
-_KLINES_ENDPOINT = "/api/v3/klines"
-_BOOK_TICKER_ENDPOINT = "/api/v3/ticker/bookTicker"
+_SPOT_BASE_URL = "https://api.binance.com"
+_FUTURES_BASE_URL = "https://fapi.binance.com"
+_SPOT_KLINES_ENDPOINT = "/api/v3/klines"
+_SPOT_BOOK_TICKER_ENDPOINT = "/api/v3/ticker/bookTicker"
+_FUTURES_KLINES_ENDPOINT = "/fapi/v1/klines"
+_FUTURES_BOOK_TICKER_ENDPOINT = "/fapi/v1/ticker/bookTicker"
 
-_SUPPORTED_SYMBOLS = {
+_SUPPORTED_SPOT_SYMBOLS = {
     "BTC-USD": "BTCUSDT",
     "ETH-USD": "ETHUSDT",
     "BNB-USD": "BNBUSDT",
     "SOL-USD": "SOLUSDT",
     "XRP-USD": "XRPUSDT",
+}
+
+_TRADFI_CONTEXT_SYMBOLS: Dict[str, Dict[str, str]] = {
+    "QQQ": {"symbol": "QQQUSDT", "category": "equities"},
+    "SPY": {"symbol": "SPYUSDT", "category": "equities"},
+    "NVDA": {"symbol": "NVDAUSDT", "category": "equities"},
+    "TSLA": {"symbol": "TSLAUSDT", "category": "equities"},
+    "EWJ": {"symbol": "EWJUSDT", "category": "equities"},
+    "EWY": {"symbol": "EWYUSDT", "category": "equities"},
+    "XCU": {"symbol": "COPPERUSDT", "category": "commodities"},
+    "NATGAS": {"symbol": "NATGASUSDT", "category": "commodities"},
 }
 
 _INTERVAL_MAP = {
@@ -40,14 +54,18 @@ def _utc_now_iso() -> str:
 
 class BinanceMarketBridge:
     """
-    Public spot-market bridge used only for crypto assets Deriv does not cover.
+    Public Binance bridge for:
+      - spot crypto assets Deriv does not cover
+      - a small TradFi-style futures proxy basket used only for context
 
-    Supported assets are intentionally narrow so Deriv remains the primary
-    market-data provider everywhere it can supply data.
+    The proxy basket is intentionally small and does not replace the bot's
+    primary tradable universe. It exists to sharpen cross-asset context
+    without letting exchange proxies dominate decisions.
     """
 
     def __init__(self) -> None:
         self._enabled = bool(BINANCE_PUBLIC_DATA_ENABLED)
+        self._tradfi_context_enabled = bool(BINANCE_TRADFI_CONTEXT_ENABLED)
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "Robbie-TradingBot/1.0"})
 
@@ -55,32 +73,33 @@ class BinanceMarketBridge:
         return ["binance_public"] if self._enabled else []
 
     def resolve_symbol_info(self, asset: str, category: str = "") -> Optional[Dict[str, Any]]:
-        symbol = self._resolve_symbol(asset, category=category)
-        if not symbol:
+        profile = self._resolve_profile(asset, category=category)
+        if not profile:
             return None
         return {
-            "symbol": symbol,
+            "symbol": profile["symbol"],
             "display_name": asset,
-            "market": "crypto",
+            "market": profile["market"],
             "exchange": "binance",
+            "surface": profile["surface"],
         }
 
     def supports(self, asset: str, category: str = "") -> bool:
-        return self._resolve_symbol(asset, category=category) is not None
+        return self._resolve_profile(asset, category=category) is not None
 
     def get_quote(
         self,
         asset: str,
         category: str = "",
     ) -> Tuple[Optional[float], Optional[float], Dict[str, Any]]:
-        symbol = self._resolve_symbol(asset, category=category)
-        if not symbol:
+        profile = self._resolve_profile(asset, category=category)
+        if not profile:
             return None, None, {}
 
         try:
             response = self._session.get(
-                f"{_BASE_URL}{_BOOK_TICKER_ENDPOINT}",
-                params={"symbol": symbol},
+                f"{profile['base_url']}{profile['book_ticker_endpoint']}",
+                params={"symbol": profile["symbol"]},
                 timeout=8,
             )
             response.raise_for_status()
@@ -110,7 +129,7 @@ class BinanceMarketBridge:
                 )
             except Exception:
                 pass
-            return float(price), float(spread), self._metadata(symbol, realtime=True)
+            return float(price), float(spread), self._metadata(profile, realtime=True)
         except Exception as exc:
             logger.debug(f"[BinanceBridge] quote {asset}: {exc}")
             return None, None, {}
@@ -124,16 +143,16 @@ class BinanceMarketBridge:
         end_time: Any = None,
         closed_only: bool = False,
     ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
-        symbol = self._resolve_symbol(asset, category=category)
+        profile = self._resolve_profile(asset, category=category)
         binance_interval = _INTERVAL_MAP.get((interval or "").lower())
-        if not symbol or not binance_interval:
+        if not profile or not binance_interval:
             return None, {}
 
         try:
             cutoff = pd.to_datetime(end_time, utc=True, errors="coerce") if end_time not in (None, "") else None
             request_limit = int(max(2, periods + (2 if cutoff is not None or closed_only else 0)))
             params = {
-                "symbol": symbol,
+                "symbol": profile["symbol"],
                 "interval": binance_interval,
                 "limit": request_limit,
             }
@@ -145,7 +164,7 @@ class BinanceMarketBridge:
                     cutoff_ts = cutoff_ts.tz_convert("UTC")
                 params["endTime"] = int(cutoff_ts.timestamp() * 1000) - (1 if closed_only else 0)
             response = self._session.get(
-                f"{_BASE_URL}{_KLINES_ENDPOINT}",
+                f"{profile['base_url']}{profile['klines_endpoint']}",
                 params=params,
                 timeout=10,
             )
@@ -191,7 +210,7 @@ class BinanceMarketBridge:
             if frame.empty:
                 return None, {}
 
-            return frame, self._metadata(symbol, realtime=False)
+            return frame, self._metadata(profile, realtime=False)
         except Exception as exc:
             logger.debug(f"[BinanceBridge] ohlcv {asset}: {exc}")
             return None, {}
@@ -231,15 +250,44 @@ class BinanceMarketBridge:
             "score": 0.0,
         }
 
-    def _resolve_symbol(self, asset: str, category: str = "") -> Optional[str]:
+    def _resolve_profile(self, asset: str, category: str = "") -> Optional[Dict[str, str]]:
         if not self._enabled:
             return None
-        if category and str(category).lower() != "crypto":
+        key = str(asset or "").strip().upper()
+        normalized_category = str(category or "").strip().lower()
+
+        symbol = _SUPPORTED_SPOT_SYMBOLS.get(key)
+        if symbol and normalized_category in {"", "crypto"}:
+            return {
+                "symbol": symbol,
+                "market": "crypto",
+                "surface": "spot",
+                "base_url": _SPOT_BASE_URL,
+                "book_ticker_endpoint": _SPOT_BOOK_TICKER_ENDPOINT,
+                "klines_endpoint": _SPOT_KLINES_ENDPOINT,
+            }
+
+        if not self._tradfi_context_enabled:
             return None
-        return _SUPPORTED_SYMBOLS.get(str(asset or "").strip().upper())
+        context = _TRADFI_CONTEXT_SYMBOLS.get(key)
+        if not context:
+            return None
+
+        allowed_categories = {"", "context", context["category"]}
+        if normalized_category and normalized_category not in allowed_categories:
+            return None
+
+        return {
+            "symbol": context["symbol"],
+            "market": "context",
+            "surface": "futures_tradfi",
+            "base_url": _FUTURES_BASE_URL,
+            "book_ticker_endpoint": _FUTURES_BOOK_TICKER_ENDPOINT,
+            "klines_endpoint": _FUTURES_KLINES_ENDPOINT,
+        }
 
     @staticmethod
-    def _metadata(symbol: str, realtime: bool) -> Dict[str, Any]:
+    def _metadata(profile: Dict[str, str], realtime: bool) -> Dict[str, Any]:
         return {
             "source": "Binance",
             "source_class": "secondary_api",
@@ -247,7 +295,9 @@ class BinanceMarketBridge:
             "realtime": bool(realtime),
             "from_cache": False,
             "exchange": "binance",
-            "exchange_symbol": symbol,
+            "exchange_symbol": str(profile.get("symbol") or ""),
+            "exchange_surface": str(profile.get("surface") or ""),
+            "market": str(profile.get("market") or ""),
             "as_of_utc": _utc_now_iso(),
         }
 

@@ -569,7 +569,7 @@ const NODE_PAGE_MAP = {
 const NODES = [
   {id:'bot',label:'bot.py',group:'entry',x:0,y:4,z:0,sub:'main orchestrator',desc:'Starts the runtime, restores state, launches data feeds, sidecars, Telegram bots, and the trading loop.',facts:{Role:'entrypoint',Mode:'runtime bootstrap'},capabilities:['Spawns core services','Initializes health + monitoring','Starts dashboard and bots']},
   {id:'telegram',label:'Telegram',group:'entry',x:2.8,y:4,z:0,sub:'commands + alerts',desc:'User-facing command layer for notifications, commands, and fast operator intervention.',facts:{Role:'operator control',Channel:'Bot 1 / command bot'},capabilities:['Receives commands','Sends alerts','Surfaces system state']},
-  {id:'deepseek',label:'DeepSeek Bot',group:'entry',x:-2.8,y:4,z:0,sub:'AI chat interface',desc:'Companion bot for narrative and assistant-style interaction around the trading stack.',facts:{Role:'assistant',Mode:'standalone bot'},capabilities:['Conversational support','AI summaries','Operator copilot']},
+  {id:'deepseek',label:'Robbie Chat Bot',group:'entry',x:-2.8,y:4,z:0,sub:'companion chat interface',desc:'Companion bot for longer-form chat, reflection, and assistant-style interaction around the trading stack.',facts:{Role:'assistant',Mode:'companion bot'},capabilities:['Conversational support','AI summaries','Operator copilot']},
   {id:'intbot',label:'Intelligence Bot',group:'entry',x:0,y:4,z:2.2,sub:'market intelligence',desc:'Send-only intelligence channel for market alerts, whale notes, and system-level signal context.',facts:{Role:'alert channel',Mode:'send only'},capabilities:['Intel alerts','Whale broadcasts','Monitoring digests']},
   {id:'dash',label:'Web Dashboard',group:'dashboard',x:4.5,y:2.2,z:-1,sub:'Flask / localhost:5000',desc:'Primary operator UI with command center, risk, intelligence, monitoring, and live signal context.',facts:{Route:'/command-center',Stack:'Flask + cached templates'},capabilities:['Multi-page dashboard','Live pages','Protected API access']},
   {id:'ws',label:'WebSocket',group:'dashboard',x:4.5,y:0.8,z:-1,sub:'live feed fanout',desc:'Streams live book and command-center updates into the browser for fast dashboards.',facts:{Role:'browser feed',Mode:'stream + poll fallback'},capabilities:['SSE/WS updates','Price snapshots','Feed liveness']},
@@ -587,19 +587,21 @@ const NODES = [
   {id:'whale',label:'Whale Intel',group:'intel',x:2,y:-0.2,z:-3,sub:'on-chain + social',desc:'Pulls whale and flow-aware intelligence into the operator view and signal context.',facts:{Role:'whale intelligence',Scope:'multi-chain'},capabilities:['Wallet tracking','Whale alerts','Context enrichment']},
   {id:'narrative',label:'Narrative AI',group:'intel',x:0,y:-0.2,z:-3,sub:'context synthesis',desc:'Builds story-level context around the market and the bot state for humans.',facts:{Role:'explainability',Output:'AI summaries'},capabilities:['Narrative summaries','Context clustering','Operator briefings']},
   {id:'adaptive',label:'Adaptive Policy',group:'services',x:-2.5,y:-1.5,z:0,sub:'threshold tuning',desc:'Adjusts confidence, spread, risk, and cooldown thresholds based on asset/category conditions.',facts:{Role:'policy tuning',Effect:'dynamic thresholds'},capabilities:['Adaptive min RR','Spread tolerance','Risk modulation']},
-  {id:'sentiment',label:'Sentiment',group:'services',x:0,y:-1.5,z:-1.5,sub:'news + social',desc:'Aggregates sentiment and event context into a structured feed the decision engine can use.',facts:{Role:'context service',Scope:'news + social'},capabilities:['Sentiment aggregation','Event awareness','Asset-level signals']},
+  {id:'sentiment',label:'Sentiment',group:'services',x:0,y:-1.5,z:-1.5,sub:'fresh news + shock context',desc:'Aggregates fresh headline, macro-event, and shock context into a structured feed the decision engine can use without leaning on stale noise.',facts:{Role:'context service',Scope:'fresh news + macro shocks'},capabilities:['Sentiment aggregation','Shock scoring','Asset-level signals']},
   {id:'intel_svc',label:'Market Intel',group:'services',x:2.5,y:-1.5,z:0,sub:'signals + alerts',desc:'Combines market context and services into actionable intelligence surfaces.',facts:{Role:'intel service',Output:'alerts + summaries'},capabilities:['Overview payloads','Alert synthesis','Dashboard support']},
-  {id:'calendar',label:'Econ Calendar',group:'services',x:-4,y:-1.5,z:-2,sub:'event guard',desc:'Suppresses or contextualizes trades around scheduled macro risk.',facts:{Role:'macro event filter',Cadence:'polled'},capabilities:['Event windows','Macro blocking','Schedule awareness']},
+  {id:'calendar',label:'Econ Calendar',group:'services',x:-4,y:-1.5,z:-2,sub:'scheduled macro guard',desc:'Suppresses or contextualizes trades around scheduled macro risk so the shock path can distinguish planned data from normal tape noise.',facts:{Role:'macro event filter',Cadence:'polled'},capabilities:['Event windows','Macro blocking','Schedule awareness']},
   {id:'playbook',label:'Playbook',group:'services',x:4,y:-1.5,z:-2,sub:'setup memory',desc:'Keeps setup families organized and determines which playbooks are even allowed in the first place.',facts:{Role:'playbook router',Effect:'seed selection'},capabilities:['Playbook selection','Session allowlists','Setup family constraints']},
-  {id:'fetcher',label:'Data Fetcher',group:'data',x:0,y:-3,z:0,sub:'market data orchestrator',desc:'Routes candles, prices, depth, and broker context from all configured providers.',facts:{Role:'data router',Scope:'multi-source market data'},capabilities:['Provider routing','Quote normalization','Depth source selection']},
+  {id:'fetcher',label:'Data Fetcher',group:'data',x:0,y:-3,z:0,sub:'market data orchestrator',desc:'Routes candles, prices, depth, commodity exchange books, and cross-market context from all configured providers.',facts:{Role:'data router',Scope:'multi-source market data'},capabilities:['Provider routing','Quote normalization','Depth source selection']},
   {id:'candles',label:'Candle Store',group:'data',x:-2,y:-3,z:0,sub:'restart-safe OHLCV',desc:'Local continuity store so the runtime stays coherent across restarts and feed gaps.',facts:{Role:'local continuity',Store:'OHLCV cache'},capabilities:['Restart safety','Merged tails','Backfill continuity']},
   {id:'redis',label:'Redis Cache',group:'data',x:2,y:-3,z:0,sub:'pub/sub + TTL',desc:'Cross-process pub/sub and cache layer for signals, alerts, and monitoring.',facts:{Role:'runtime bus',Mode:'shared cache'},capabilities:['Pub/sub','Shared cache','Live fanout']},
   {id:'ingestion',label:'Data Ingestion',group:'data',x:0,y:-3,z:2,sub:'streams + OI',desc:'Exchange and broker-side ingestion layer for OI, liquidation, and market streams.',facts:{Role:'stream intake',Scope:'derivatives + crypto'},capabilities:['Stream consumers','OI feeds','Liquidation watch']},
   {id:'ctrader',label:'cTrader',group:'brokers',x:-3,y:-4.5,z:0,sub:'depth bridge',desc:'External order-book feed used as one of the true-depth sources for non-crypto assets.',facts:{Role:'depth provider',Mode:'demo/live bridge'},capabilities:['External depth','Broker comparison','Order-book snapshots']},
-  {id:'deriv',label:'Deriv',group:'brokers',x:-1,y:-4.5,z:0,sub:'live fallback',desc:'Primary market-data source for routed assets and fallback routing in the dashboard.',facts:{Role:'primary price feed',Scope:'multi-asset'},capabilities:['Live quotes','Dashboard prices','Fallback routing']},
+  {id:'deriv',label:'Deriv',group:'brokers',x:-1,y:-4.5,z:0,sub:'broad quote stream',desc:'Broad multi-asset quote source for routed forex and index coverage in the live desk.',facts:{Role:'primary quote feed',Scope:'broad routed assets'},capabilities:['Live quotes','Dashboard prices','Fallback routing']},
   {id:'dukascopy',label:'Dukascopy',group:'brokers',x:1,y:-4.5,z:0,sub:'history + depth',desc:'Historical backfill and true-depth bridge for non-crypto assets.',facts:{Role:'history + depth',Mode:'sidecar bridge'},capabilities:['Backfill candles','True depth','Non-crypto support']},
-  {id:'ig',label:'IG Markets',group:'brokers',x:3,y:-4.5,z:0,sub:'routed assets',desc:'Routed market-data source for certain assets and live dashboard streaming.',facts:{Role:'routed feed',Scope:'selected assets'},capabilities:['Streaming quotes','Routed instruments','Broker sentiment']},
-  {id:'binance',label:'Binance',group:'brokers',x:0,y:-4.5,z:2,sub:'crypto data',desc:'Exchange-side crypto feed used for unsupported assets and flow-heavy context.',facts:{Role:'crypto feed',Scope:'exchange market data'},capabilities:['Crypto history','Public stream data','Fallback assets']},
+  {id:'ig',label:'IG Markets',group:'brokers',x:3,y:-4.5,z:0,sub:'quote anchor + broker context',desc:'Routed quote anchor for selected assets plus broker-account and routed-watchlist context.',facts:{Role:'routed quote anchor',Scope:'selected assets'},capabilities:['Streaming quotes','Routed instruments','Broker sentiment']},
+  {id:'bybit',label:'Bybit',group:'brokers',x:-2.2,y:-4.5,z:2.3,sub:'commodity depth primary',desc:'Primary deep commodity book for gold, silver, and WTI so the runtime can read real exchange pressure earlier.',facts:{Role:'commodity depth primary',Scope:'XAU / XAG / WTI'},capabilities:['1000-level commodity book','Impulse confirmation','Depth pressure read']},
+  {id:'okx',label:'OKX',group:'brokers',x:2.2,y:-4.5,z:2.3,sub:'commodity depth fallback',desc:'Fallback and confirmation commodity exchange book when Bybit is unavailable or not the best surface.',facts:{Role:'commodity depth fallback',Scope:'commodities'},capabilities:['Commodity order book','Depth confirmation','Fallback routing']},
+  {id:'binance',label:'Binance',group:'brokers',x:0,y:-4.5,z:2,sub:'crypto + context proxies',desc:'Exchange-side crypto feed plus a small TradFi proxy basket used for cross-market context.',facts:{Role:'crypto + proxy feed',Scope:'exchange market data'},capabilities:['Crypto history','Public stream data','Proxy context']},
   {id:'config',label:'Config',group:'config',x:-1.5,y:-6,z:0,sub:'env vars',desc:'Environment and runtime configuration for providers, session controls, and runtime mode.',facts:{Role:'configuration',Artifact:'.env + config'},capabilities:['Provider toggles','Threshold config','Runtime mode']},
   {id:'db',label:'Database',group:'config',x:0,y:-6,z:-1.5,sub:'PostgreSQL + local stores',desc:'Persistence for trades, tracking, and supporting runtime records.',facts:{Role:'persistence',Mode:'DB + local stores'},capabilities:['Trade history','Prediction tracking','State restore']},
   {id:'monitor',label:'Monitoring',group:'config',x:1.5,y:-6,z:0,sub:'system health service',desc:'Tracks process liveness, service state, and performance health for the operator surface.',facts:{Role:'health surface',Output:'system health snapshot'},capabilities:['Health aggregation','Service checks','Runtime status']}
@@ -612,8 +614,8 @@ const EDGES = [
   ['signal','decision'],['risk','sizer'],['risk','portrisk'],['sizer','exec'],
   ['orderflow','stophunt'],['orderflow','walls'],['exec','ws'],['ml','narrative'],['ml','whale'],
   ['sentiment','intel_svc'],['calendar','decision'],['playbook','decision'],['engine','intel_svc'],
-  ['fetcher','candles'],['fetcher','redis'],['fetcher','ctrader'],['fetcher','deriv'],['fetcher','dukascopy'],['fetcher','ig'],['fetcher','binance'],
-  ['ingestion','fetcher'],['ctrader','config'],['deriv','config'],['dukascopy','config'],['config','db'],['config','monitor'],
+  ['fetcher','candles'],['fetcher','redis'],['fetcher','ctrader'],['fetcher','deriv'],['fetcher','dukascopy'],['fetcher','ig'],['fetcher','bybit'],['fetcher','okx'],['fetcher','binance'],
+  ['ingestion','fetcher'],['ctrader','config'],['deriv','config'],['dukascopy','config'],['bybit','config'],['okx','config'],['config','db'],['config','monitor'],
   ['redis','engine'],['candles','engine']
 ];
 
@@ -662,7 +664,7 @@ const STATIC_ROUTE_PATHS = {
 const NODE_SOURCE_MAP = {
   bot:'bot.py',
   telegram:'telegram_commander.py',
-  deepseek:'intelligence_bot.py',
+  deepseek:'deepseek_bot.py',
   intbot:'intelligence_bot.py',
   dash:'dashboard/web_app_live.py',
   ws:'websocket_dashboard.py',
@@ -692,6 +694,8 @@ const NODE_SOURCE_MAP = {
   deriv:'services/deriv_bridge.py',
   dukascopy:'services/dukascopy_live_depth_bridge.py',
   ig:'services/ig_market_bridge.py',
+  bybit:'services/bybit_market_bridge.py',
+  okx:'services/okx_market_bridge.py',
   binance:'services/binance_market_bridge.py',
   config:'config/config.py',
   db:'services/database_service.py',
@@ -857,7 +861,9 @@ function brokerNodeForAsset(asset){
   const key = normalizeAsset(asset);
   if(!key) return 'fetcher';
   if(isCryptoAsset(key)) return 'binance';
-  if(['XAU/USD','XAG/USD','WTI','AUS200','GER40','JPN225'].includes(key)) return 'ig';
+  if(['XAU/USD','XAG/USD','WTI'].includes(key)) return 'bybit';
+  if(['BRENT'].includes(key)) return 'okx';
+  if(['AUS200','GER40','JPN225'].includes(key)) return 'ig';
   if(['EUR/USD','GBP/USD','USD/JPY','USD/CHF','USD/CAD','AUD/USD','NZD/USD','EUR/JPY','EUR/GBP','GBP/JPY','US30','US100','US500','UK100'].includes(key)) return 'deriv';
   return 'dukascopy';
 }
@@ -956,6 +962,8 @@ function inferErrorNodes(text){
   if(hay.includes('dukascopy')) push('dukascopy');
   if(hay.includes('deriv')) push('deriv');
   if(hay.includes('ig')) push('ig');
+  if(hay.includes('bybit')) push('bybit');
+  if(hay.includes('okx')) push('okx');
   if(hay.includes('binance')) push('binance');
   if(hay.includes('redis')) push('redis');
   if(hay.includes('database') || hay.includes('postgres')) push('db');

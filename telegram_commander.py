@@ -1159,7 +1159,7 @@ class TelegramCommander:
             "• `remind me in 2 hours to check gold`\n"
             "• `give me a gold update every day at 08:00`\n"
             "• `what issues are you experiencing?`\n\n"
-            "Send a message to start. Use the standalone DeepSeek bot for direct chat, or use `/resetchat`, `/cancel`, or the buttons below."
+            "Send a message to start. This chat works here now. Use `/resetchat` to start fresh, `/cancel` to close chat mode, or the buttons below for shortcuts. The companion chat bot is optional if you want a separate long-form thread."
         )
 
     async def _chat_entry(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1206,7 +1206,7 @@ class TelegramCommander:
 
     async def _chat_cancel(self, update, ctx):
         await update.message.reply_text(
-            "Chat mode closed. Use the standalone DeepSeek bot when you want to continue.",
+            "Chat mode closed here. Reopen with `/chat` any time, or use the companion chat bot if you want a separate thread.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
         )
@@ -1217,7 +1217,7 @@ class TelegramCommander:
         await query.answer()
         await self._edit_query_text_or_reply(
             query,
-            "Chat mode closed. Use the standalone DeepSeek bot when you want to continue.",
+            "Chat mode closed here. Reopen with `/chat` any time, or use the companion chat bot if you want a separate thread.",
             reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
         )
         return ConversationHandler.END
@@ -1228,7 +1228,7 @@ class TelegramCommander:
 
             get_chat_service().reset(str(update.effective_chat.id))
             await update.message.reply_text(
-                "Robbie chat memory cleared for this chat. Start again in the standalone DeepSeek bot.",
+                "Robbie chat memory cleared for this chat. Send a new message here to start fresh.",
                 parse_mode=ParseMode.MARKDOWN,
             )
         except Exception as e:
@@ -1252,7 +1252,7 @@ class TelegramCommander:
             return answer
         except asyncio.TimeoutError:
             logger.warning(f"[Telegram] DeepSeek chat timed out after {_CHAT_HANDLER_TIMEOUT_SECONDS:.0f}s")
-            return "⏱️ Robbie took too long to answer. Try again with a shorter question or use the standalone DeepSeek bot if the thread feels stuck."
+            return "⏱️ Robbie took too long to answer. Try again with a shorter question. If you want a separate long back-and-forth, the companion chat bot is there too."
         except Exception as e:
             logger.error(f"[Telegram] DeepSeek chat error: {e}", exc_info=True)
             return f"❌ Robbie hit a chat error: {e}"
@@ -1603,7 +1603,7 @@ class TelegramCommander:
     async def _btn_chat_cancel(self, query) -> None:
         await self._edit_query_text_or_reply(
             query,
-            "Chat mode closed. Use the standalone DeepSeek bot when you want to continue.",
+            "Chat mode closed here. Reopen with `/chat` any time, or use the companion chat bot if you want a separate thread.",
             reply_markup=_kb([("🗑 Reset chat", "chat_reset"), ("🏠 Menu", "menu")]),
         )
 
@@ -1737,7 +1737,7 @@ class TelegramCommander:
         return (
             f"\n"
             f"🧪 *Signal Diagnostics*\n"
-            f"Broker:    {int(signal_diagnostics.get('broker_supportive_count', 0) or 0)} supportive"
+            f"Feed:      {int(signal_diagnostics.get('broker_supportive_count', 0) or 0)} supportive"
             f" / {int(signal_diagnostics.get('broker_fragile_count', 0) or 0)} fragile\n"
             f"Depth:     {int(signal_diagnostics.get('true_depth_count', 0) or 0)} true"
             f" / {int(signal_diagnostics.get('synthetic_depth_count', 0) or 0)} synthetic\n"
@@ -1749,7 +1749,13 @@ class TelegramCommander:
     @staticmethod
     def _format_provider_routing_status() -> str:
         try:
-            from config.config import IG_ROUTED_CATEGORIES
+            import json
+            from config.config import (
+                BINANCE_TRADFI_CONTEXT_ENABLED,
+                BYBIT_SYMBOL_MAP,
+                IG_ROUTED_CATEGORIES,
+                OKX_SYMBOL_MAP,
+            )
         except Exception:
             return ""
 
@@ -1760,15 +1766,39 @@ class TelegramCommander:
 
         ig_count = sum(1 for _, category in total_assets if str(category or "").strip().lower() in routed_categories)
         deriv_count = max(0, len(total_assets) - ig_count)
-        if ig_count <= 0:
+        bybit_assets: List[str] = []
+        okx_assets: List[str] = []
+
+        try:
+            parsed = json.loads(BYBIT_SYMBOL_MAP) if BYBIT_SYMBOL_MAP else {}
+            if isinstance(parsed, dict):
+                bybit_assets = sorted(str(key) for key in parsed.keys())
+        except Exception:
+            bybit_assets = []
+
+        try:
+            parsed = json.loads(OKX_SYMBOL_MAP) if OKX_SYMBOL_MAP else {}
+            if isinstance(parsed, dict):
+                okx_assets = sorted(str(key) for key in parsed.keys())
+        except Exception:
+            okx_assets = []
+
+        if ig_count <= 0 and deriv_count <= 0 and not bybit_assets and not okx_assets and not BINANCE_TRADFI_CONTEXT_ENABLED:
             return ""
 
-        return (
-            f"\n"
-            f"🛰 *Provider Routing*\n"
-            f"Deriv:    {deriv_count} assets\n"
-            f"IG:       {ig_count} assets\n"
-        )
+        lines = [
+            "",
+            "🛰 *Feed Spine*",
+            f"Quotes:    Deriv {deriv_count} · IG {ig_count}",
+        ]
+        if bybit_assets:
+            lines.append(f"Bybit:     depth on {', '.join(bybit_assets)}")
+        if okx_assets:
+            lines.append(f"OKX:       fallback on {', '.join(okx_assets)}")
+        if BINANCE_TRADFI_CONTEXT_ENABLED:
+            lines.append("Binance:   crypto + proxy context")
+
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _humanise_diagnostic_label(value: Any, drop_prefix: str = "") -> str:
@@ -2448,9 +2478,10 @@ class TelegramCommander:
             f"Balance: {balance}\n"
             f"Open positions: {open_positions}\n\n"
             f"*Quick guide*\n"
-            f"• `Signals` scans the live decision engine for current setups.\n"
+            f"• `Signals` scans live setups using price, depth, fresh macro/news, and cross-market context.\n"
             f"• `Asset Q&A` explains one asset in plain English.\n"
             f"• `Positions` manages active trades.\n"
+            f"• `Robbie Chat` handles reviews, schedules, and runtime questions right here in Telegram.\n"
             f"• {history_line}\n\n"
             f"_{now_in_display_timezone().strftime('%H:%M:%S')} {display_timezone_label()}_"
         )

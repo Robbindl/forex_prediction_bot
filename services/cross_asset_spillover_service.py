@@ -13,6 +13,18 @@ _NORMALIZATION_FLOORS = {
     "crypto": 0.0100,
     "commodities": 0.0040,
     "indices": 0.0035,
+    "equities": 0.0040,
+    "context": 0.0040,
+}
+
+_BINANCE_EQUITY_PROXY = {
+    "category": "equities",
+    "provider_preference": ("binance",),
+}
+
+_BINANCE_COMMODITY_PROXY = {
+    "category": "commodities",
+    "provider_preference": ("binance",),
 }
 
 _RELATIONSHIPS: Dict[str, List[Dict[str, Any]]] = {
@@ -33,12 +45,14 @@ _RELATIONSHIPS: Dict[str, List[Dict[str, Any]]] = {
         {"peer": "US500", "mode": "same", "weight": 0.30, "label": "risk_on_confirmation"},
         {"peer": "WTI", "mode": "same", "weight": 0.20, "label": "commodity_complex"},
         {"peer": "XAU/USD", "mode": "same", "weight": 0.15, "label": "commodity_beta"},
+        {"peer": "XCU", "mode": "same", "weight": 0.18, "label": "copper_growth_proxy", **_BINANCE_COMMODITY_PROXY},
     ],
     "NZD/USD": [
         {"peer": "AUD/USD", "mode": "same", "weight": 0.40, "label": "antipodean_confirmation"},
         {"peer": "US500", "mode": "same", "weight": 0.25, "label": "risk_on_confirmation"},
         {"peer": "WTI", "mode": "same", "weight": 0.20, "label": "commodity_complex"},
         {"peer": "XAU/USD", "mode": "same", "weight": 0.15, "label": "commodity_beta"},
+        {"peer": "XCU", "mode": "same", "weight": 0.15, "label": "copper_growth_proxy", **_BINANCE_COMMODITY_PROXY},
     ],
     "EUR/GBP": [
         {"peer": "EUR/USD", "mode": "same", "weight": 0.45, "label": "euro_strength"},
@@ -56,6 +70,8 @@ _RELATIONSHIPS: Dict[str, List[Dict[str, Any]]] = {
     "WTI": [
         {"peer": "USD/CAD", "mode": "inverse", "weight": 0.70, "label": "cad_confirmation"},
         {"peer": "US500", "mode": "same", "weight": 0.30, "label": "growth_cycle_confirmation"},
+        {"peer": "XCU", "mode": "same", "weight": 0.20, "label": "industrial_demand_proxy", **_BINANCE_COMMODITY_PROXY},
+        {"peer": "NATGAS", "mode": "same", "weight": 0.15, "label": "energy_complex_proxy", **_BINANCE_COMMODITY_PROXY},
     ],
     "XAU/USD": [
         {"peer": "XAG/USD", "mode": "same", "weight": 0.40, "label": "silver_confirmation"},
@@ -71,11 +87,15 @@ _RELATIONSHIPS: Dict[str, List[Dict[str, Any]]] = {
         {"peer": "US100", "mode": "same", "weight": 0.40, "label": "tech_breadth"},
         {"peer": "US30", "mode": "same", "weight": 0.30, "label": "dow_breadth"},
         {"peer": "XAU/USD", "mode": "inverse", "weight": 0.30, "label": "gold_risk_off"},
+        {"peer": "SPY", "mode": "same", "weight": 0.35, "label": "spy_etf_proxy", **_BINANCE_EQUITY_PROXY},
+        {"peer": "QQQ", "mode": "same", "weight": 0.18, "label": "qqq_breadth_proxy", **_BINANCE_EQUITY_PROXY},
     ],
     "US100": [
         {"peer": "US500", "mode": "same", "weight": 0.45, "label": "broad_equity_confirmation"},
         {"peer": "US30", "mode": "same", "weight": 0.20, "label": "dow_confirmation"},
         {"peer": "XAU/USD", "mode": "inverse", "weight": 0.35, "label": "gold_risk_off"},
+        {"peer": "QQQ", "mode": "same", "weight": 0.40, "label": "qqq_etf_proxy", **_BINANCE_EQUITY_PROXY},
+        {"peer": "NVDA", "mode": "same", "weight": 0.20, "label": "ai_leader_proxy", **_BINANCE_EQUITY_PROXY},
     ],
     "US30": [
         {"peer": "US500", "mode": "same", "weight": 0.50, "label": "broad_equity_confirmation"},
@@ -105,6 +125,7 @@ _RELATIONSHIPS: Dict[str, List[Dict[str, Any]]] = {
         {"peer": "US100", "mode": "same", "weight": 0.25, "label": "tech_beta_confirmation"},
         {"peer": "USD/JPY", "mode": "same", "weight": 0.25, "label": "yen_exporter_link"},
         {"peer": "AUS200", "mode": "same", "weight": 0.15, "label": "asia_equity_confirmation"},
+        {"peer": "EWJ", "mode": "same", "weight": 0.30, "label": "japan_etf_proxy", **_BINANCE_EQUITY_PROXY},
     ],
     "USD/JPY": [
         {"peer": "US500", "mode": "same", "weight": 0.60, "label": "risk_on_yen"},
@@ -122,11 +143,14 @@ _RELATIONSHIPS: Dict[str, List[Dict[str, Any]]] = {
         {"peer": "ETH-USD", "mode": "same", "weight": 0.45, "label": "crypto_breadth"},
         {"peer": "US100", "mode": "same", "weight": 0.25, "label": "risk_on_beta"},
         {"peer": "XAU/USD", "mode": "inverse", "weight": 0.30, "label": "gold_risk_off"},
+        {"peer": "QQQ", "mode": "same", "weight": 0.20, "label": "nasdaq_proxy", **_BINANCE_EQUITY_PROXY},
+        {"peer": "NVDA", "mode": "same", "weight": 0.15, "label": "ai_beta_proxy", **_BINANCE_EQUITY_PROXY},
     ],
     "ETH-USD": [
         {"peer": "BTC-USD", "mode": "same", "weight": 0.60, "label": "btc_lead"},
         {"peer": "BNB-USD", "mode": "same", "weight": 0.20, "label": "alt_breadth"},
         {"peer": "SOL-USD", "mode": "same", "weight": 0.20, "label": "alt_breadth"},
+        {"peer": "QQQ", "mode": "same", "weight": 0.15, "label": "nasdaq_proxy", **_BINANCE_EQUITY_PROXY},
     ],
     "BNB-USD": [
         {"peer": "BTC-USD", "mode": "same", "weight": 0.55, "label": "btc_lead"},
@@ -160,9 +184,13 @@ class CrossAssetSpilloverService:
         fetcher: Any,
         asset: str,
         timeframe: str,
+        *,
+        category_override: Optional[str] = None,
+        provider_preference: Optional[tuple[str, ...]] = None,
     ) -> Optional[Dict[str, Any]]:
-        category = registry.category(asset)
-        cache_key = f"cross-asset:{asset}:{category}:{timeframe}"
+        category = str(category_override or registry.category(asset) or "unknown").strip().lower()
+        preference_key = ",".join(str(item or "").strip().lower() for item in tuple(provider_preference or ()) if str(item or "").strip()) or "default"
+        cache_key = f"cross-asset:{asset}:{category}:{timeframe}:{preference_key}"
         cached = _MOMENTUM_CACHE.get(cache_key)
         if cached is not None:
             return dict(cached)
@@ -172,7 +200,13 @@ class CrossAssetSpilloverService:
 
         periods = max(18, min(48, int(get_timeframe_periods(timeframe) or 24)))
         try:
-            df = fetcher.get_ohlcv(asset, category, interval=timeframe, periods=periods)
+            df = fetcher.get_ohlcv(
+                asset,
+                category,
+                interval=timeframe,
+                periods=periods,
+                provider_preference=provider_preference,
+            )
         except Exception:
             return None
         if df is None or getattr(df, "empty", True) or len(df) < 6:
@@ -244,7 +278,15 @@ class CrossAssetSpilloverService:
             peer_asset = str(relation.get("peer") or "").strip()
             if not peer_asset:
                 continue
-            peer = self._peer_momentum(fetcher, peer_asset, timeframe)
+            relation_category = str(relation.get("category") or registry.category(peer_asset) or "unknown").strip().lower()
+            relation_provider_preference = tuple(relation.get("provider_preference") or ())
+            peer = self._peer_momentum(
+                fetcher,
+                peer_asset,
+                timeframe,
+                category_override=relation_category,
+                provider_preference=relation_provider_preference,
+            )
             if not peer:
                 continue
 
@@ -264,7 +306,7 @@ class CrossAssetSpilloverService:
             peers.append(
                 {
                     "peer_asset": peer_asset,
-                    "peer_category": peer.get("category", registry.category(peer_asset)),
+                    "peer_category": peer.get("category", relation_category),
                     "peer_score": round(float(peer["score"]), 4),
                     "peer_direction": str(peer.get("direction") or "NEUTRAL"),
                     "peer_move_pct": round(float(peer.get("move_pct", 0.0) or 0.0), 6),

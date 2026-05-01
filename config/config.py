@@ -69,6 +69,19 @@ IG_ROUTE_TO_DERIV_BY_DEFAULT = os.getenv("IG_ROUTE_TO_DERIV_BY_DEFAULT", "false"
 IG_MAX_ROUTED_ASSETS = _parse_int(os.getenv("IG_MAX_ROUTED_ASSETS", "6"), 6)
 IG_STREAMING_HOLDOFF_SEC = _parse_int(os.getenv("IG_STREAMING_HOLDOFF_SEC", "300"), 300)
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
+BINANCE_TRADFI_CONTEXT_ENABLED = os.getenv("BINANCE_TRADFI_CONTEXT_ENABLED", "true").lower() == "true"
+BYBIT_PUBLIC_DATA_ENABLED = os.getenv("BYBIT_PUBLIC_DATA_ENABLED", "true").lower() == "true"
+BYBIT_SYMBOL_MAP       = os.getenv("BYBIT_SYMBOL_MAP", "").strip()
+BYBIT_PUBLIC_LINEAR_WS_URL = (
+    os.getenv("BYBIT_PUBLIC_LINEAR_WS_URL", "wss://stream.bybit.com/v5/public/linear").strip()
+    or "wss://stream.bybit.com/v5/public/linear"
+)
+OKX_PUBLIC_DATA_ENABLED = os.getenv("OKX_PUBLIC_DATA_ENABLED", "true").lower() == "true"
+OKX_SYMBOL_MAP         = os.getenv("OKX_SYMBOL_MAP", "").strip()
+OKX_PUBLIC_WS_URL      = (
+    os.getenv("OKX_PUBLIC_WS_URL", "wss://ws.okx.com:8443/ws/v5/public").strip()
+    or "wss://ws.okx.com:8443/ws/v5/public"
+)
 DUKASCOPY_HISTORY_ENABLED = os.getenv("DUKASCOPY_HISTORY_ENABLED", "true").lower() == "true"
 DUKASCOPY_SYMBOL_MAP  = os.getenv("DUKASCOPY_SYMBOL_MAP", "").strip()
 DUKASCOPY_LIVE_DEPTH_ENABLED = os.getenv("DUKASCOPY_LIVE_DEPTH_ENABLED", "false").lower() == "true"

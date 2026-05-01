@@ -7,52 +7,75 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import websockets
 
-from config.config import DERIV_APP_ID
+from config.config import BYBIT_PUBLIC_LINEAR_WS_URL, DERIV_APP_ID, OKX_PUBLIC_WS_URL
 from services.binance_market_bridge import binance_market_bridge
+from services.bybit_market_bridge import bybit_market_bridge
 from services.deriv_bridge import deriv_bridge
+from services.okx_market_bridge import okx_market_bridge
 from services.market_data_router import (
     filter_deriv_stream_assets,
     filter_ig_primary_assets,
     is_binance_primary_crypto_asset,
+    is_bybit_supported_commodity_asset,
+    is_okx_supported_commodity_asset,
 )
 from utils.logger import logger
 
 _DERIV_PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
+_BYBIT_DEPTH_TOPIC = "orderbook.1000"
+_BYBIT_MAX_LEVELS = 1000
+_OKX_DEPTH_CHANNEL = "books"
+_OKX_MAX_LEVELS = 400
 
 
 class WebSocketManager:
     """
-    Routed market stream manager with Deriv/Binance live streams.
+    Routed market stream manager with Deriv/Binance/Bybit/OKX live streams.
 
     Deriv remains the live-stream source for non-IG-routed assets where it has
     coverage. Binance is used for selected spot crypto assets such as BNB, SOL,
-    and XRP, even if Deriv later advertises a symbol for them. IG-routed assets
-    are filtered out defensively so this manager cannot silently pull routed
-    commodities back onto Deriv.
+    and XRP, even if Deriv later advertises a symbol for them. Bybit is used as
+    the primary deep commodity book for supported metals and WTI, while OKX
+    remains the fallback commodity exchange-depth source for assets Bybit does
+    not expose cleanly through the public API.
     """
 
     def __init__(self):
         app_id = str(DERIV_APP_ID or "").strip()
         self.deriv_url = _DERIV_PUBLIC_WS_URL
+        self.bybit_url = str(BYBIT_PUBLIC_LINEAR_WS_URL or "").strip()
+        self.okx_url = str(OKX_PUBLIC_WS_URL or "").strip()
         self._deriv_headers = {"Deriv-App-ID": app_id} if app_id else {}
         self.running = False
         self.loop = None
         self.thread = None
         self.loop_ready = False
         self._stream_started = False
+        self._bybit_stream_started = False
+        self._okx_stream_started = False
         self._callbacks: List[Callable] = []
         self._asset_categories: Dict[str, str] = {}
         self._asset_to_symbol: Dict[str, str] = {}
         self._symbol_to_asset: Dict[str, str] = {}
         self._binance_asset_to_symbol: Dict[str, str] = {}
+        self._bybit_asset_to_symbol: Dict[str, str] = {}
+        self._bybit_symbol_to_asset: Dict[str, str] = {}
+        self._okx_asset_to_symbol: Dict[str, str] = {}
+        self._okx_symbol_to_asset: Dict[str, str] = {}
+        self._bybit_books: Dict[str, Dict[str, Any]] = {}
+        self._okx_books: Dict[str, Dict[str, Any]] = {}
         self._binance_tasks: Dict[str, asyncio.Task] = {}
         self._ws = None
+        self._bybit_ws = None
+        self._okx_ws = None
         self._deriv_degraded = False
         self._binance_degraded_assets: Dict[str, bool] = {}
+        self._bybit_degraded = False
+        self._okx_degraded = False
         self._lock = threading.RLock()
         if not app_id:
             logger.warning("[WSManager] DERIV_APP_ID is not configured; Deriv streaming will not start")
-        logger.info("[WSManager] Initialized (Deriv primary, Binance secondary)")
+        logger.info("[WSManager] Initialized (Deriv primary, Binance secondary, Bybit metals/WTI depth, OKX commodity fallback)")
 
     def start(self):
         self.running = True
@@ -73,6 +96,41 @@ class WebSocketManager:
             time.sleep(0.1)
         asyncio.run_coroutine_threadsafe(coro, self.loop)
 
+    @staticmethod
+    def _filter_okx_stream_assets(assets: Dict[str, str]) -> Dict[str, str]:
+        selected: Dict[str, str] = {}
+        for asset, category in (assets or {}).items():
+            asset_text = str(asset or "")
+            category_text = str(category or "")
+            if not asset_text:
+                continue
+            if (
+                is_okx_supported_commodity_asset(asset_text, category_text)
+                and not is_bybit_supported_commodity_asset(asset_text, category_text)
+            ):
+                selected[asset_text] = category_text
+        return selected
+
+    @classmethod
+    def _has_okx_assets(cls, assets: Dict[str, str]) -> bool:
+        return bool(cls._filter_okx_stream_assets(assets))
+
+    @staticmethod
+    def _filter_bybit_stream_assets(assets: Dict[str, str]) -> Dict[str, str]:
+        selected: Dict[str, str] = {}
+        for asset, category in (assets or {}).items():
+            asset_text = str(asset or "")
+            category_text = str(category or "")
+            if not asset_text:
+                continue
+            if is_bybit_supported_commodity_asset(asset_text, category_text):
+                selected[asset_text] = category_text
+        return selected
+
+    @classmethod
+    def _has_bybit_assets(cls, assets: Dict[str, str]) -> bool:
+        return bool(cls._filter_bybit_stream_assets(assets))
+
     def subscribe_deriv(self, assets: Dict[str, str], callback: Callable, include_ig_assets: bool = False):
         """
         Subscribe to canonical assets via Deriv.
@@ -88,6 +146,8 @@ class WebSocketManager:
         else:
             tracked_assets = filter_deriv_stream_assets(assets or {})
             skipped_ig_assets = sorted(filter_ig_primary_assets(assets or {}).keys())
+            tracked_assets.update(self._filter_bybit_stream_assets(assets or {}))
+            tracked_assets.update(self._filter_okx_stream_assets(assets or {}))
 
         with self._lock:
             if callback not in self._callbacks:
@@ -102,14 +162,26 @@ class WebSocketManager:
             )
 
         if not tracked_assets and not self._asset_categories:
-            logger.info("[WSManager] No Deriv/Binance stream assets to track after routing filters")
+            logger.info("[WSManager] No Deriv/Binance/Bybit/OKX stream assets to track after routing filters")
             return
 
         if not self._stream_started:
             self._stream_started = True
             self._schedule(self._connect_deriv_with_reconnect())
+            if self.bybit_url and self._has_bybit_assets(tracked_assets):
+                self._bybit_stream_started = True
+                self._schedule(self._connect_bybit_with_reconnect())
+            if self.okx_url and self._has_okx_assets(tracked_assets):
+                self._okx_stream_started = True
+                self._schedule(self._connect_okx_with_reconnect())
         else:
             self._schedule(self._subscribe_pending_assets())
+            if self.bybit_url and self._has_bybit_assets(tracked_assets) and not self._bybit_stream_started:
+                self._bybit_stream_started = True
+                self._schedule(self._connect_bybit_with_reconnect())
+            if self.okx_url and self._has_okx_assets(tracked_assets) and not self._okx_stream_started:
+                self._okx_stream_started = True
+                self._schedule(self._connect_okx_with_reconnect())
 
         logger.info(f"[WSManager] Tracking {sorted(self._asset_categories.keys())}")
 
@@ -135,6 +207,56 @@ class WebSocketManager:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
 
+    async def _connect_bybit_with_reconnect(self):
+        from websocket_dashboard import set_connected
+
+        if not self.bybit_url:
+            return
+
+        backoff = 5
+        max_backoff = 60
+        while self.running:
+            t0 = asyncio.get_event_loop().time()
+            try:
+                await self._connect_bybit()
+                backoff = 5
+            except Exception as exc:
+                if asyncio.get_event_loop().time() - t0 > 30:
+                    backoff = 5
+                set_connected("bybit", False, len(self._bybit_asset_to_symbol))
+                if not self._bybit_degraded:
+                    logger.warning(f"[WSManager] Bybit stream lost: {exc} - retry in {backoff}s")
+                    self._bybit_degraded = True
+                else:
+                    logger.debug(f"[WSManager] Bybit stream still unavailable: {exc} - retry in {backoff}s")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+
+    async def _connect_okx_with_reconnect(self):
+        from websocket_dashboard import set_connected
+
+        if not self.okx_url:
+            return
+
+        backoff = 5
+        max_backoff = 60
+        while self.running:
+            t0 = asyncio.get_event_loop().time()
+            try:
+                await self._connect_okx()
+                backoff = 5
+            except Exception as exc:
+                if asyncio.get_event_loop().time() - t0 > 30:
+                    backoff = 5
+                set_connected("okx", False, len(self._okx_asset_to_symbol))
+                if not self._okx_degraded:
+                    logger.warning(f"[WSManager] OKX stream lost: {exc} - retry in {backoff}s")
+                    self._okx_degraded = True
+                else:
+                    logger.debug(f"[WSManager] OKX stream still unavailable: {exc} - retry in {backoff}s")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+
     async def _connect_deriv(self):
         from websocket_dashboard import set_connected
 
@@ -157,6 +279,52 @@ class WebSocketManager:
                     self._symbol_to_asset.clear()
                 set_connected("deriv", False, 0)
 
+    async def _connect_bybit(self):
+        from websocket_dashboard import set_connected
+
+        async with self._connect_socket(self.bybit_url) as ws:
+            self._bybit_ws = ws
+            await self._subscribe_pending_bybit_assets()
+            set_connected("bybit", True, len(self._bybit_asset_to_symbol))
+            self._bybit_degraded = False
+            logger.info("[WSManager] Bybit stream connected")
+
+            heartbeat = asyncio.create_task(self._bybit_heartbeat(ws))
+            try:
+                async for message in ws:
+                    await self._handle_bybit_message(message)
+            finally:
+                heartbeat.cancel()
+                self._bybit_ws = None
+                with self._lock:
+                    self._bybit_asset_to_symbol.clear()
+                    self._bybit_symbol_to_asset.clear()
+                    self._bybit_books.clear()
+                set_connected("bybit", False, 0)
+
+    async def _connect_okx(self):
+        from websocket_dashboard import set_connected
+
+        async with self._connect_socket(self.okx_url) as ws:
+            self._okx_ws = ws
+            await self._subscribe_pending_okx_assets()
+            set_connected("okx", True, len(self._okx_asset_to_symbol))
+            self._okx_degraded = False
+            logger.info("[WSManager] OKX stream connected")
+
+            heartbeat = asyncio.create_task(self._okx_heartbeat(ws))
+            try:
+                async for message in ws:
+                    await self._handle_okx_message(message)
+            finally:
+                heartbeat.cancel()
+                self._okx_ws = None
+                with self._lock:
+                    self._okx_asset_to_symbol.clear()
+                    self._okx_symbol_to_asset.clear()
+                    self._okx_books.clear()
+                set_connected("okx", False, 0)
+
     async def _heartbeat(self, ws):
         while self.running:
             await asyncio.sleep(25)
@@ -165,9 +333,27 @@ class WebSocketManager:
             except Exception:
                 break
 
+    async def _bybit_heartbeat(self, ws):
+        while self.running:
+            await asyncio.sleep(20)
+            try:
+                await ws.send(json.dumps({"op": "ping"}))
+            except Exception:
+                break
+
+    async def _okx_heartbeat(self, ws):
+        while self.running:
+            await asyncio.sleep(25)
+            try:
+                await ws.send("ping")
+            except Exception:
+                break
+
     async def _subscribe_pending_assets(self):
         await self._subscribe_pending_deriv_assets()
         await self._subscribe_pending_binance_assets()
+        await self._subscribe_pending_bybit_assets()
+        await self._subscribe_pending_okx_assets()
 
     async def _subscribe_pending_deriv_assets(self):
         if self._ws is None:
@@ -182,6 +368,10 @@ class WebSocketManager:
             if asset in self._asset_to_symbol:
                 continue
             if is_binance_primary_crypto_asset(asset, category):
+                continue
+            if is_bybit_supported_commodity_asset(asset, category):
+                continue
+            if is_okx_supported_commodity_asset(asset, category):
                 continue
             resolved = deriv_bridge.resolve_symbol_info(asset, category=category)
             if not resolved:
@@ -223,6 +413,68 @@ class WebSocketManager:
             self._binance_degraded_assets.setdefault(asset, False)
 
         set_connected("binance", bool(self._binance_asset_to_symbol), len(self._binance_asset_to_symbol))
+
+    async def _subscribe_pending_bybit_assets(self):
+        if self._bybit_ws is None:
+            return
+
+        from websocket_dashboard import set_connected
+
+        args: list[str] = []
+        pending: list[tuple[str, str]] = []
+        with self._lock:
+            items = list(self._asset_categories.items())
+
+        for asset, category in items:
+            if asset in self._bybit_asset_to_symbol:
+                continue
+            resolved = bybit_market_bridge.resolve_symbol_info(asset, category=category)
+            if not resolved:
+                continue
+            symbol = str(resolved.get("symbol", "")).strip()
+            if not symbol:
+                continue
+            pending.append((asset, symbol))
+            args.append(f"{_BYBIT_DEPTH_TOPIC}.{symbol}")
+
+        if args:
+            await self._bybit_ws.send(json.dumps({"op": "subscribe", "args": args}))
+            for asset, symbol in pending:
+                self._bybit_asset_to_symbol[asset] = symbol
+                self._bybit_symbol_to_asset[symbol] = asset
+
+        set_connected("bybit", bool(self._bybit_asset_to_symbol), len(self._bybit_asset_to_symbol))
+
+    async def _subscribe_pending_okx_assets(self):
+        if self._okx_ws is None:
+            return
+
+        from websocket_dashboard import set_connected
+
+        args: list[dict[str, str]] = []
+        pending: list[tuple[str, str]] = []
+        with self._lock:
+            items = list(self._asset_categories.items())
+
+        for asset, category in items:
+            if asset in self._okx_asset_to_symbol:
+                continue
+            resolved = okx_market_bridge.resolve_symbol_info(asset, category=category)
+            if not resolved:
+                continue
+            symbol = str(resolved.get("symbol", "")).strip()
+            if not symbol:
+                continue
+            pending.append((asset, symbol))
+            args.append({"channel": _OKX_DEPTH_CHANNEL, "instId": symbol})
+
+        if args:
+            await self._okx_ws.send(json.dumps({"op": "subscribe", "args": args}))
+            for asset, symbol in pending:
+                self._okx_asset_to_symbol[asset] = symbol
+                self._okx_symbol_to_asset[symbol] = asset
+
+        set_connected("okx", bool(self._okx_asset_to_symbol), len(self._okx_asset_to_symbol))
 
     async def _connect_binance_with_reconnect(self, asset: str, symbol: str):
         from websocket_dashboard import set_connected
@@ -294,6 +546,293 @@ class WebSocketManager:
                 callback("BinanceStream", asset, price, None, None, ts)
             except Exception as exc:
                 logger.error(f"[WSManager] callback error for {asset}: {exc}")
+
+    async def _handle_bybit_message(self, message: str):
+        from websocket_dashboard import set_connected
+
+        data = self._parse_message_payload(message)
+        if data is None:
+            return
+
+        if data.get("op") == "ping":
+            return
+        if data.get("op") == "pong" or data.get("ret_msg") == "pong":
+            return
+        if data.get("success") is True and data.get("op") == "subscribe":
+            set_connected("bybit", True, len(self._bybit_asset_to_symbol))
+            return
+
+        topic = str(data.get("topic", "") or "").strip()
+        if not topic.startswith(f"{_BYBIT_DEPTH_TOPIC}."):
+            return
+
+        payload = data.get("data") or {}
+        symbol = str(payload.get("s", "") or "").strip()
+        asset = self._bybit_symbol_to_asset.get(symbol)
+        if not asset:
+            return
+
+        msg_type = str(data.get("type", "") or "").strip().lower()
+        bids = list(payload.get("b") or [])
+        asks = list(payload.get("a") or [])
+
+        if msg_type == "snapshot" or symbol not in self._bybit_books:
+            book_state = {"bids": {}, "asks": {}, "u": self._safe_int(payload.get("u"))}
+            self._bybit_apply_book_side(book_state["bids"], bids)
+            self._bybit_apply_book_side(book_state["asks"], asks)
+            self._bybit_books[symbol] = book_state
+        else:
+            book_state = self._bybit_books[symbol]
+            self._bybit_apply_book_side(book_state["bids"], bids)
+            self._bybit_apply_book_side(book_state["asks"], asks)
+            book_state["u"] = self._safe_int(payload.get("u")) or book_state.get("u")
+
+        levels = self._bybit_levels_from_state(self._bybit_books[symbol])
+        if not levels:
+            return
+
+        top_bid = levels[0].get("bid")
+        top_ask = levels[0].get("ask")
+        if not top_bid and not top_ask:
+            return
+
+        price = (
+            (float(top_bid) + float(top_ask)) / 2.0
+            if top_bid and top_ask
+            else (float(top_ask) if top_ask else float(top_bid))
+        )
+        ts = datetime.now()
+        try:
+            raw_ts = data.get("cts") or data.get("ts")
+            if raw_ts not in (None, ""):
+                ts = datetime.fromtimestamp(float(raw_ts) / 1000.0)
+        except Exception:
+            pass
+
+        try:
+            from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+            get_live_microstructure_service().record_quote(
+                "bybit",
+                asset,
+                bid=float(top_bid) if top_bid else None,
+                ask=float(top_ask) if top_ask else None,
+                price=price,
+                levels=levels,
+                timestamp=ts,
+                flags=f"{_BYBIT_DEPTH_TOPIC}:{msg_type or 'update'}",
+            )
+        except Exception:
+            pass
+
+        self._bybit_degraded = False
+        set_connected("bybit", True, len(self._bybit_asset_to_symbol))
+
+    async def _handle_okx_message(self, message: str):
+        from websocket_dashboard import set_connected
+
+        if str(message).strip().lower() == "pong":
+            return
+
+        data = self._parse_message_payload(message)
+        if data is None:
+            return
+
+        event = str(data.get("event", "") or "").lower()
+        if event == "subscribe":
+            set_connected("okx", True, len(self._okx_asset_to_symbol))
+            return
+        if event == "error":
+            logger.debug(f"[WSManager] OKX stream error: {data}")
+            return
+
+        arg = data.get("arg") or {}
+        action = str(data.get("action", "") or "").strip().lower()
+        channel = str(arg.get("channel", "") or "").strip().lower()
+        if channel != _OKX_DEPTH_CHANNEL:
+            return
+
+        symbol = str(arg.get("instId", "") or "").strip()
+        asset = self._okx_symbol_to_asset.get(symbol)
+        if not asset:
+            return
+
+        rows = list(data.get("data") or [])
+        if not rows:
+            return
+        row = rows[0] or {}
+        bids = list(row.get("bids") or [])
+        asks = list(row.get("asks") or [])
+        if not bids and not asks:
+            return
+
+        okx_state = self._okx_books.get(symbol)
+        seq_id = self._safe_int(row.get("seqId"))
+        prev_seq_id = self._safe_int(row.get("prevSeqId"))
+
+        if action == "snapshot" or okx_state is None:
+            okx_state = {"bids": {}, "asks": {}, "seq_id": seq_id}
+            self._okx_apply_book_side(okx_state["bids"], bids)
+            self._okx_apply_book_side(okx_state["asks"], asks)
+            self._okx_books[symbol] = okx_state
+        else:
+            expected_prev = okx_state.get("seq_id")
+            if (
+                prev_seq_id is not None
+                and expected_prev is not None
+                and prev_seq_id != expected_prev
+            ):
+                logger.warning(
+                    f"[WSManager] OKX book sequence gap for {symbol}: "
+                    f"expected prevSeqId={expected_prev}, got {prev_seq_id}; reconnecting"
+                )
+                self._okx_books.pop(symbol, None)
+                try:
+                    if self._okx_ws is not None:
+                        await self._okx_ws.close()
+                except Exception:
+                    pass
+                return
+            self._okx_apply_book_side(okx_state["bids"], bids)
+            self._okx_apply_book_side(okx_state["asks"], asks)
+            okx_state["seq_id"] = seq_id if seq_id is not None else expected_prev
+
+        levels = self._okx_levels_from_state(okx_state)
+
+        top_bid = levels[0].get("bid") if levels else None
+        top_ask = levels[0].get("ask") if levels else None
+        if not top_bid and not top_ask:
+            return
+
+        price = (
+            (float(top_bid) + float(top_ask)) / 2.0
+            if top_bid and top_ask
+            else (float(top_ask) if top_ask else float(top_bid))
+        )
+        ts = datetime.now()
+        try:
+            raw_ts = row.get("ts")
+            if raw_ts not in (None, ""):
+                ts = datetime.fromtimestamp(float(raw_ts) / 1000.0)
+        except Exception:
+            pass
+
+        try:
+            from services.live_microstructure_service import get_service as get_live_microstructure_service
+
+            get_live_microstructure_service().record_quote(
+                "okx",
+                asset,
+                bid=float(top_bid) if top_bid else None,
+                ask=float(top_ask) if top_ask else None,
+                price=price,
+                levels=levels,
+                timestamp=ts,
+                flags=f"{_OKX_DEPTH_CHANNEL}:{action or 'update'}",
+            )
+        except Exception:
+            pass
+
+        self._okx_degraded = False
+        set_connected("okx", True, len(self._okx_asset_to_symbol))
+
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            if value in (None, ""):
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    @classmethod
+    def _bybit_apply_book_side(cls, side_book: Dict[float, float], rows: List[Any]) -> None:
+        for entry in rows or []:
+            if not entry:
+                continue
+            price = cls._safe_float((entry or [None])[0])
+            size = cls._safe_float((entry or [None, None])[1])
+            if price is None or size is None:
+                continue
+            if size <= 0:
+                side_book.pop(price, None)
+            else:
+                side_book[price] = size
+
+    @classmethod
+    def _bybit_levels_from_state(cls, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        bid_items = sorted(
+            (state.get("bids") or {}).items(),
+            key=lambda item: item[0],
+            reverse=True,
+        )[:_BYBIT_MAX_LEVELS]
+        ask_items = sorted(
+            (state.get("asks") or {}).items(),
+            key=lambda item: item[0],
+        )[:_BYBIT_MAX_LEVELS]
+
+        levels: List[Dict[str, Any]] = []
+        for idx in range(max(len(bid_items), len(ask_items))):
+            bid_entry = bid_items[idx] if idx < len(bid_items) else None
+            ask_entry = ask_items[idx] if idx < len(ask_items) else None
+            levels.append(
+                {
+                    "bid": bid_entry[0] if bid_entry else None,
+                    "bid_size": bid_entry[1] if bid_entry else None,
+                    "ask": ask_entry[0] if ask_entry else None,
+                    "ask_size": ask_entry[1] if ask_entry else None,
+                }
+            )
+        return levels
+
+    @classmethod
+    def _okx_apply_book_side(cls, side_book: Dict[float, float], rows: List[Any]) -> None:
+        for entry in rows or []:
+            if not entry:
+                continue
+            price = cls._safe_float((entry or [None])[0])
+            size = cls._safe_float((entry or [None, None])[1])
+            if price is None or size is None:
+                continue
+            if size <= 0:
+                side_book.pop(price, None)
+            else:
+                side_book[price] = size
+
+    @classmethod
+    def _okx_levels_from_state(cls, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        bid_items = sorted(
+            (state.get("bids") or {}).items(),
+            key=lambda item: item[0],
+            reverse=True,
+        )[:_OKX_MAX_LEVELS]
+        ask_items = sorted(
+            (state.get("asks") or {}).items(),
+            key=lambda item: item[0],
+        )[:_OKX_MAX_LEVELS]
+
+        levels: List[Dict[str, Any]] = []
+        for idx in range(max(len(bid_items), len(ask_items))):
+            bid_entry = bid_items[idx] if idx < len(bid_items) else None
+            ask_entry = ask_items[idx] if idx < len(ask_items) else None
+            levels.append(
+                {
+                    "bid": bid_entry[0] if bid_entry else None,
+                    "bid_size": bid_entry[1] if bid_entry else None,
+                    "ask": ask_entry[0] if ask_entry else None,
+                    "ask_size": ask_entry[1] if ask_entry else None,
+                }
+            )
+        return levels
 
     @staticmethod
     def _parse_message_payload(message: str) -> Optional[Dict[str, Any]]:
@@ -403,6 +942,10 @@ class WebSocketManager:
 
     def stop(self):
         self.running = False
+        self._bybit_stream_started = False
+        self._okx_stream_started = False
+        self._bybit_books.clear()
+        self._okx_books.clear()
         for task in list(self._binance_tasks.values()):
             try:
                 task.cancel()
@@ -416,4 +959,6 @@ class WebSocketManager:
         return {
             "deriv": sorted(self._asset_to_symbol.keys()),
             "binance": sorted(self._binance_asset_to_symbol.keys()),
+            "bybit": sorted(self._bybit_asset_to_symbol.keys()),
+            "okx": sorted(self._okx_asset_to_symbol.keys()),
         }

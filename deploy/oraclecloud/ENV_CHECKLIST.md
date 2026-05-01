@@ -55,10 +55,13 @@ DEVELOPMENT_MODE=false
 TRUST_PROXY_COUNT=1
 SESSION_TOKEN_TTL=3600
 BINANCE_PUBLIC_DATA_ENABLED=true
+BINANCE_TRADFI_CONTEXT_ENABLED=true
+BYBIT_PUBLIC_DATA_ENABLED=true
+OKX_PUBLIC_DATA_ENABLED=true
 ECON_CALENDAR_FOREX_FACTORY_ENABLED=true
 ECON_CALENDAR_ALLOW_TRADING_ECONOMICS_GUEST=false
 ECON_CALENDAR_HTTP_TIMEOUT=15
-AUTO_RESEARCH_MAX_PARALLEL_ASSETS=2
+AUTO_RESEARCH_MAX_PARALLEL_ASSETS=1
 ML_SERVICE_PORT=9100
 LOG_LEVEL=INFO
 TELEGRAM_SESSION=whale_session
@@ -82,11 +85,16 @@ IG_ROUTED_CATEGORIES=commodities
 IG_ROUTED_ASSETS=GER40,AUS200,JPN225
 IG_ROUTE_TO_DERIV_BY_DEFAULT=false
 IG_MAX_ROUTED_ASSETS=6
+BYBIT_SYMBOL_MAP={"XAU/USD":"XAUUSDT","XAG/USD":"XAGUSDT","WTI":"CLUSDT"}
+OKX_SYMBOL_MAP={"XAU/USD":"XAU-USDT-SWAP","XAG/USD":"XAG-USDT-SWAP","WTI":"CL-USDT-SWAP"}
 ```
 
 Notes:
 - keep the three new regional indices on IG unless you explicitly want Deriv OTC pricing
 - keep the new forex pairs on Deriv through `DERIV_SYMBOL_MAP`
+- keep `BINANCE_TRADFI_CONTEXT_ENABLED=true` if you want the small Binance TradFi proxy basket (`QQQ`, `SPY`, `NVDA`, `TSLA`, `EWJ`, `EWY`, `XCU`, `NATGAS`) to assist cross-asset context without becoming tradeable assets
+- keep Bybit as the primary deep public book for `XAU/USD`, `XAG/USD`, and `WTI`
+- keep OKX enabled as the commodity fallback book for anything Bybit does not expose cleanly
 - do not add `indices` to `IG_ROUTED_CATEGORIES` unless you intentionally want the full index category on IG
 - use `IG_ROUTE_TO_DERIV_BY_DEFAULT=true` when you need IG primary assets to route through Deriv by default instead of exhausting IG allowance
 - use `IG_MAX_ROUTED_ASSETS=<n>` to cap how many IG-routed assets are kept on IG; excess assets will fall through to Deriv proactively. The default is `6`, and setting `0` disables the cap.

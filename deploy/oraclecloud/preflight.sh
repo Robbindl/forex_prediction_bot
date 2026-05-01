@@ -211,6 +211,7 @@ targets=(
   "api.derivws.com:443"
   "stream.binance.com:9443"
   "stream.bybit.com:443"
+  "ws.okx.com:8443"
   "www.reddit.com:443"
   "bsc-dataseed1.binance.org:443"
   "api.mainnet-beta.solana.com:443"

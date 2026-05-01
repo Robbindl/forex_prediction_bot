@@ -159,6 +159,7 @@ function Show-OutboundChecks {
         @{ Host = "api.derivws.com"; Port = 443 },
         @{ Host = "stream.binance.com"; Port = 9443 },
         @{ Host = "stream.bybit.com"; Port = 443 },
+        @{ Host = "ws.okx.com"; Port = 8443 },
         @{ Host = "www.reddit.com"; Port = 443 },
         @{ Host = "bsc-dataseed1.binance.org"; Port = 443 },
         @{ Host = "api.mainnet-beta.solana.com"; Port = 443 },
