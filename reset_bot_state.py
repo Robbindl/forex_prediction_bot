@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
@@ -21,6 +22,9 @@ ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "data" / "system_state.json"
 ROBBIE_CHAT_SESSIONS_FILE = ROOT / "data" / "robbie_chat_sessions.json"
 ROBBIE_CHAT_SESSIONS_TMP_FILE = ROBBIE_CHAT_SESSIONS_FILE.with_suffix(".tmp")
+DEEPSEEK_CHAT_SESSIONS_FILE = ROOT / "data" / "deepseek_chat_sessions.json"
+DEEPSEEK_CHAT_SESSIONS_TMP_FILE = DEEPSEEK_CHAT_SESSIONS_FILE.with_suffix(".tmp")
+LIVE_DASHBOARD_STATE_PATH = ROOT / Path(os.getenv("LIVE_DASHBOARD_STORE_PATH") or "data/live_dashboard_state.sqlite3")
 LOG_DIR = ROOT / "logs"
 TRADE_LOG_DIR = ROOT / "trade_logs"
 PORTFOLIO_REPORTS_DIR = ROOT / "portfolio_reports"
@@ -111,6 +115,10 @@ def _write_clean_state(balance: float) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+def _sqlite_sidecars(path: Path) -> tuple[Path, Path, Path]:
+    return path, Path(f"{path}-shm"), Path(f"{path}-wal")
+
+
 def _clear_files() -> dict[str, int]:
     directory_summary = _delete_file_group(_iter_files((LOG_DIR, TRADE_LOG_DIR, PORTFOLIO_REPORTS_DIR)))
     text_summary = _clear_file_group((TELEGRAM_LOG_FILE, STARTUP_TEST_LOG))
@@ -120,10 +128,13 @@ def _clear_files() -> dict[str, int]:
             PAPER_TRADES_FILE,
             ROBBIE_CHAT_SESSIONS_FILE,
             ROBBIE_CHAT_SESSIONS_TMP_FILE,
+            DEEPSEEK_CHAT_SESSIONS_FILE,
+            DEEPSEEK_CHAT_SESSIONS_TMP_FILE,
         )
     )
+    dashboard_summary = _delete_file_group(_sqlite_sidecars(LIVE_DASHBOARD_STATE_PATH))
     temp_summary = _delete_file_group(STATE_FILE.parent.glob("state_*.tmp"))
-    return _merge_file_summaries(directory_summary, text_summary, tracked_summary, temp_summary)
+    return _merge_file_summaries(directory_summary, text_summary, tracked_summary, dashboard_summary, temp_summary)
 
 
 def _reset_database() -> dict[str, int]:
