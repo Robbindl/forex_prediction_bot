@@ -436,6 +436,8 @@ def _get_market_intelligence():
 _cache_store: Dict[str, Tuple[Any, float]] = {}
 _cache_lock  = threading.Lock()
 _cache_prefix = "dashboard:cache:"
+_dashboard_refresh_lock = threading.Lock()
+_dashboard_refresh_state: Dict[str, bool] = {}
 
 def _redis_cache_get(key: str) -> Optional[Any]:
     try:
@@ -519,6 +521,77 @@ def _render_cached_template(template_name: str, ttl: int = 30) -> str:
     html = render_template(template_name)
     _cache_set(cache_key, html, ttl=ttl)
     return html
+
+
+def _trigger_dashboard_payload_refresh(
+    refresh_key: str,
+    *,
+    builder,
+    cache_key: str,
+    ttl: int,
+    last_good_key: str = "",
+    last_good_ttl: int = 300,
+) -> bool:
+    with _dashboard_refresh_lock:
+        if _dashboard_refresh_state.get(refresh_key):
+            return False
+        _dashboard_refresh_state[refresh_key] = True
+
+    def _worker() -> None:
+        try:
+            payload = builder()
+            _cache_set(cache_key, payload, ttl=ttl)
+            if last_good_key:
+                _cache_set(last_good_key, payload, ttl=last_good_ttl)
+        except Exception as exc:
+            logger.warning(f"[dashboard] async refresh failed for {refresh_key}: {exc}")
+        finally:
+            with _dashboard_refresh_lock:
+                _dashboard_refresh_state.pop(refresh_key, None)
+
+    thread = threading.Thread(
+        target=_worker,
+        name=f"DashboardRefresh:{refresh_key}",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+def _get_cached_dashboard_payload(
+    cache_key: str,
+    *,
+    builder,
+    ttl: int,
+    force_refresh: bool = False,
+    last_good_key: str = "",
+    last_good_ttl: int = 300,
+    prefer_stale: bool = True,
+    refresh_key: str = "",
+):
+    if not force_refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _response_to_dict(cached)
+
+        if prefer_stale and last_good_key:
+            fallback = _cache_get(last_good_key)
+            if fallback is not None:
+                _trigger_dashboard_payload_refresh(
+                    refresh_key or cache_key,
+                    builder=builder,
+                    cache_key=cache_key,
+                    ttl=ttl,
+                    last_good_key=last_good_key,
+                    last_good_ttl=last_good_ttl,
+                )
+                return _response_to_dict(fallback)
+
+    payload = builder()
+    _cache_set(cache_key, payload, ttl=ttl)
+    if last_good_key:
+        _cache_set(last_good_key, payload, ttl=last_good_ttl)
+    return payload
 
 
 _PLAYBOOK_RUNTIME_BLUEPRINTS = [
@@ -2957,16 +3030,17 @@ def _command_center_journals() -> List[Dict[str, Any]]:
 def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
     cache_key = "command_center_payload"
     last_good_key = "command_center_payload:last_good"
-    if not force_refresh:
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return _response_to_dict(cached)
-
     try:
-        payload = _build_command_center_payload()
-        _cache_set(cache_key, payload, ttl=3)
-        _cache_set(last_good_key, payload, ttl=300)
-        return payload
+        return _get_cached_dashboard_payload(
+            cache_key,
+            builder=_build_command_center_payload,
+            ttl=15,
+            force_refresh=force_refresh,
+            last_good_key=last_good_key,
+            last_good_ttl=300,
+            prefer_stale=True,
+            refresh_key="command_center_payload",
+        )
     except Exception as exc:
         logger.warning(f"[dashboard] command-center payload build failed: {exc}")
         fallback = _cache_get(last_good_key)
@@ -5911,92 +5985,113 @@ def api_market_events():
 # API — RISK DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _build_risk_portfolio_payload() -> Dict[str, Any]:
+    core = _core()
+    if not core:
+        return {"success": False, "error": "Engine not ready"}
+
+    positions = core.get_positions()
+    balance = core.get_balance()
+    perf = core.get_performance()
+
+    risk_stats: Dict[str, Any] = {}
+    try:
+        if hasattr(core, "portfolio_risk") and core.portfolio_risk:
+            risk_stats = core.portfolio_risk.get_portfolio_stats(positions, balance)
+    except Exception:
+        pass
+
+    by_cat, cluster_groups = _summarize_risk_portfolio_positions(positions)
+
+    closed = core.get_closed_trades(limit=100)
+    wins = [t for t in closed if float(t.get("pnl") or 0) > 0]
+    losses = [t for t in closed if float(t.get("pnl") or 0) <= 0 and float(t.get("pnl") or 0) != 0]
+    avg_win = sum(float(t.get("pnl") or 0) for t in wins) / len(wins) if wins else 0.0
+    avg_los = sum(float(t.get("pnl") or 0) for t in losses) / len(losses) if losses else 0.0
+    pf = abs(avg_win / avg_los) if avg_los else 0.0
+
+    execution_summary: Dict[str, Any] = {}
+    execution_by_category: Dict[str, Any] = {}
+    weak_queue: List[Dict[str, Any]] = []
+    try:
+        from services.execution_feedback_service import get_service as get_execution_feedback_service
+
+        feedback_service = get_execution_feedback_service()
+        execution_summary = feedback_service.summarize_history(days_back=120, limit=500)
+        for cat in ("forex", "crypto", "commodities", "indices"):
+            execution_by_category[cat] = feedback_service.summarize_history(
+                category=cat,
+                days_back=120,
+                limit=250,
+            )
+    except Exception:
+        execution_summary = {}
+        execution_by_category = {}
+    try:
+        weak_queue = _get_command_center_weak_positions(core, limit=5)
+    except Exception:
+        weak_queue = []
+    weak_queue = [_enrich_signal_like_row(item) for item in list(weak_queue or []) if isinstance(item, dict)]
+
+    stop_concentration = _summarize_stop_concentration(positions, limit=5)
+    scenario_risk = _summarize_scenario_risk(positions)
+
+    return {
+        "success": True,
+        "balance": balance,
+        "open_positions": len(positions),
+        "total_exposure": risk_stats.get("total_exposure", 0),
+        "exposure_pct": risk_stats.get("exposure_pct", 0),
+        "drawdown_pct": risk_stats.get("drawdown_pct", 0),
+        "peak_balance": risk_stats.get("peak_balance", balance),
+        "by_category": by_cat,
+        "cluster_groups": cluster_groups,
+        "win_rate": _wr(perf.get("win_rate", 0)),
+        "profit_factor": round(pf, 2),
+        "avg_win": round(avg_win, 2),
+        "avg_loss": round(avg_los, 2),
+        "total_trades": perf.get("total_trades", 0),
+        "total_pnl": perf.get("total_pnl", 0),
+        "quality_snapshot": _risk_portfolio_quality_snapshot(by_cat),
+        "execution_feedback": execution_summary,
+        "execution_by_category": execution_by_category,
+        "stop_concentration": stop_concentration,
+        "scenario_risk": scenario_risk,
+        "weak_queue": weak_queue,
+        "signal_diagnostics": _summarize_signal_diagnostics(
+            [_extract_signal_intelligence_fields(dict(p.get("metadata") or {})) for p in positions]
+        ),
+    }
+
+
+def _get_cached_risk_portfolio_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
+    cache_key = "risk_portfolio"
+    last_good_key = "risk_portfolio:last_good"
+    try:
+        return _get_cached_dashboard_payload(
+            cache_key,
+            builder=_build_risk_portfolio_payload,
+            ttl=15,
+            force_refresh=force_refresh,
+            last_good_key=last_good_key,
+            last_good_ttl=300,
+            prefer_stale=True,
+            refresh_key="risk_portfolio",
+        )
+    except Exception as exc:
+        logger.warning(f"[dashboard] risk-portfolio payload build failed: {exc}")
+        fallback = _cache_get(last_good_key)
+        if fallback is not None:
+            return _response_to_dict(fallback)
+        raise
+
+
 @app.route("/api/risk/portfolio")
 @_check_api_auth
 @_check_rate_limit
 def api_risk_portfolio():
-    cached = _cache_get("risk_portfolio")
-    if cached is not None:
-        return jsonify(cached)
     try:
-        core = _core()
-        if not core:
-            return jsonify({"success": False, "error": "Engine not ready"})
-
-        positions = core.get_positions()
-        balance   = core.get_balance()
-        perf      = core.get_performance()
-
-        risk_stats: Dict = {}
-        try:
-            if hasattr(core, "portfolio_risk") and core.portfolio_risk:
-                risk_stats = core.portfolio_risk.get_portfolio_stats(positions, balance)
-        except Exception:
-            pass
-
-        by_cat, cluster_groups = _summarize_risk_portfolio_positions(positions)
-
-        closed  = core.get_closed_trades(limit=100)
-        wins    = [t for t in closed if float(t.get("pnl") or 0) > 0]
-        losses  = [t for t in closed if float(t.get("pnl") or 0) <= 0 and float(t.get("pnl") or 0) != 0]
-        avg_win = sum(float(t.get("pnl") or 0) for t in wins)   / len(wins)   if wins   else 0.0
-        avg_los = sum(float(t.get("pnl") or 0) for t in losses) / len(losses) if losses else 0.0
-        pf      = abs(avg_win / avg_los) if avg_los else 0.0
-
-        execution_summary: Dict[str, Any] = {}
-        execution_by_category: Dict[str, Any] = {}
-        weak_queue: List[Dict[str, Any]] = []
-        try:
-            from services.execution_feedback_service import get_service as get_execution_feedback_service
-
-            feedback_service = get_execution_feedback_service()
-            execution_summary = feedback_service.summarize_history(days_back=120, limit=500)
-            for cat in ("forex", "crypto", "commodities", "indices"):
-                execution_by_category[cat] = feedback_service.summarize_history(
-                    category=cat,
-                    days_back=120,
-                    limit=250,
-                )
-        except Exception:
-            execution_summary = {}
-            execution_by_category = {}
-        try:
-            weak_queue = _get_command_center_weak_positions(core, limit=5)
-        except Exception:
-            weak_queue = []
-        weak_queue = [_enrich_signal_like_row(item) for item in list(weak_queue or []) if isinstance(item, dict)]
-
-        stop_concentration = _summarize_stop_concentration(positions, limit=5)
-        scenario_risk = _summarize_scenario_risk(positions)
-
-        payload = {
-            "success":        True,
-            "balance":        balance,
-            "open_positions": len(positions),
-            "total_exposure": risk_stats.get("total_exposure", 0),
-            "exposure_pct":   risk_stats.get("exposure_pct", 0),
-            "drawdown_pct":   risk_stats.get("drawdown_pct", 0),
-            "peak_balance":   risk_stats.get("peak_balance", balance),
-            "by_category":    by_cat,
-            "cluster_groups": cluster_groups,
-            "win_rate":       _wr(perf.get("win_rate", 0)),
-            "profit_factor":  round(pf, 2),
-            "avg_win":        round(avg_win, 2),
-            "avg_loss":       round(avg_los, 2),
-            "total_trades":   perf.get("total_trades", 0),
-            "total_pnl":      perf.get("total_pnl", 0),
-            "quality_snapshot": _risk_portfolio_quality_snapshot(by_cat),
-            "execution_feedback": execution_summary,
-            "execution_by_category": execution_by_category,
-            "stop_concentration": stop_concentration,
-            "scenario_risk": scenario_risk,
-            "weak_queue": weak_queue,
-            "signal_diagnostics": _summarize_signal_diagnostics(
-                [_extract_signal_intelligence_fields(dict(p.get("metadata") or {})) for p in positions]
-            ),
-        }
-        _cache_set("risk_portfolio", payload, ttl=10)
-        return jsonify(payload)
+        return jsonify(_get_cached_risk_portfolio_payload(force_refresh=_request_wants_cache_bypass()))
     except APIError as e:
         return handle_api_error(e, "/api/risk/portfolio", e.status_code)
     except Exception as e:
