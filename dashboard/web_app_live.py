@@ -7324,15 +7324,10 @@ def _run_hypercorn_server(host: str, port: int, http2: bool = False, ssl_cert: s
         from hypercorn import app_wrappers as _hypercorn_app_wrappers
 
         if not getattr(_hypercorn_app_wrappers.WSGIWrapper.run_app, "_robbie_empty_response_fix", False):
-            async def _safe_run_app(self, environ: dict, send) -> None:
+            def _safe_run_app(self, environ: dict, send) -> None:
                 headers: list[tuple[bytes, bytes]] = []
                 response_started = False
                 status_code: int | None = None
-
-                async def _send_frame(message: dict) -> None:
-                    result = send(message)
-                    if inspect.isawaitable(result):
-                        await result
 
                 def start_response(
                     status: str,
@@ -7358,17 +7353,17 @@ def _run_hypercorn_server(host: str, port: int, http2: bool = False, ssl_cert: s
                             raise RuntimeError("WSGI app did not call start_response")
 
                         if first_chunk:
-                            await _send_frame({"type": "http.response.start", "status": status_code, "headers": headers})
+                            send({"type": "http.response.start", "status": status_code, "headers": headers})
                             first_chunk = False
 
-                        await _send_frame({"type": "http.response.body", "body": output, "more_body": True})
+                        send({"type": "http.response.body", "body": output, "more_body": True})
 
                     # Hypercorn's handle_http() sends the terminating
                     # `http.response.body` frame itself. We only patch the
                     # empty-body case where upstream Hypercorn versions can
                     # miss the initial response start entirely.
                     if response_started and first_chunk:
-                        await _send_frame({"type": "http.response.start", "status": status_code, "headers": headers})
+                        send({"type": "http.response.start", "status": status_code, "headers": headers})
                 finally:
                     if hasattr(response_body, "close"):
                         response_body.close()
