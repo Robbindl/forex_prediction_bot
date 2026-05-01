@@ -154,6 +154,10 @@ _COMMAND_CENTER_CACHE_TTL = 15
 _COMMAND_CENTER_LAST_GOOD_TTL = 6 * 60 * 60
 _COMMAND_CENTER_DEGRADED_CACHE_TTL = 5
 _COMMAND_CENTER_BUILD_TIMEOUT_SECONDS = 7.5
+_PAGE_OVERVIEW_CACHE_TTL = 8
+_PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
+_PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
+_PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS = 4.0
 
 
 def _normalize_host_name(value: str) -> str:
@@ -1278,6 +1282,25 @@ def _prewarm_command_center_payload() -> None:
             logger.info("[dashboard] command-center prewarm scheduled")
     except Exception as exc:
         logger.debug(f"[dashboard] command-center prewarm failed: {exc}")
+
+
+def _prewarm_page_overviews() -> None:
+    def _worker() -> None:
+        time.sleep(2)
+        try:
+            pages = sorted(_PAGE_OVERVIEW_VALID_PAGES)
+        except Exception:
+            pages = []
+
+        for page in pages:
+            try:
+                _get_cached_page_overview_payload(page, 30, force_refresh=True)
+                logger.debug(f"[dashboard] page overview prewarmed: {page}")
+            except Exception as exc:
+                logger.debug(f"[dashboard] page overview prewarm failed for {page}: {exc}")
+            time.sleep(0.2)
+
+    threading.Thread(target=_worker, name="PageOverviewPrewarm", daemon=True).start()
 
 # ── Win rate normaliser (DB returns decimal 0.XX, we display as %) ────────────
 def _wr(raw) -> float:
@@ -3038,6 +3061,9 @@ def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, 
 
 
 def _command_center_journals() -> List[Dict[str, Any]]:
+    cached = _cache_get("cc_journals")
+    if cached is not None:
+        return list(cached or [])
     journals: List[Dict[str, Any]] = []
     try:
         journal_payload = _response_to_dict(_call_view(api_phase7_signal_journal))
@@ -3045,18 +3071,19 @@ def _command_center_journals() -> List[Dict[str, Any]]:
             journals = list(journal_payload.get("journals") or [])
     except Exception:
         journals = []
+    _cache_set("cc_journals", journals, ttl=30 if journals else 8)
     return journals
 
 
 def _build_command_center_payload_with_budget() -> Dict[str, Any]:
-    timeout_sentinel = object()
+    timeout_sentinel = {"__dashboard_timeout__": True}
     payload = _run_with_timeout(
         _build_command_center_payload,
         timeout=_COMMAND_CENTER_BUILD_TIMEOUT_SECONDS,
         default=timeout_sentinel,
         label="command-center payload build",
     )
-    if payload is timeout_sentinel:
+    if isinstance(payload, dict) and payload.get("__dashboard_timeout__"):
         raise TimeoutError("command-center payload build timed out")
     return dict(payload or {})
 
@@ -3124,6 +3151,49 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
 
 
 def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
+    cache_key = "command_center_payload"
+    last_good_key = "command_center_payload:last_good"
+    if not force_refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _response_to_dict(cached)
+
+        fallback = _cache_get(last_good_key)
+        if fallback is not None:
+            _trigger_dashboard_payload_refresh(
+                "command_center_payload",
+                builder=_build_command_center_payload_with_budget,
+                cache_key=cache_key,
+                ttl=_COMMAND_CENTER_CACHE_TTL,
+                last_good_key=last_good_key,
+                last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
+            )
+            payload = _response_to_dict(fallback)
+            payload["degraded"] = True
+            payload["degraded_reason"] = "stale_fallback"
+            return payload
+
+    fallback = _cache_get(last_good_key)
+    _trigger_dashboard_payload_refresh(
+        "command_center_payload",
+        builder=_build_command_center_payload_with_budget,
+        cache_key=cache_key,
+        ttl=_COMMAND_CENTER_CACHE_TTL,
+        last_good_key=last_good_key,
+        last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
+    )
+    if fallback is not None:
+        payload = _response_to_dict(fallback)
+        payload["degraded"] = True
+        payload["degraded_reason"] = "stale_refresh"
+        return payload
+
+    payload = _build_command_center_unavailable_payload(reason="refreshing")
+    _cache_set(cache_key, payload, ttl=_COMMAND_CENTER_DEGRADED_CACHE_TTL)
+    return payload
+
+
+def _get_cached_command_center_payload_blocking(*, force_refresh: bool = False) -> Dict[str, Any]:
     cache_key = "command_center_payload"
     last_good_key = "command_center_payload:last_good"
     try:
@@ -3702,14 +3772,28 @@ def _build_command_center_payload() -> Dict[str, Any]:
     perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core)
     journals = _command_center_journals()
 
-    # Slow external calls cached 5 minutes
+    # Slow external calls are refreshed off the request path. The command
+    # center must render from cached/stale data instead of letting whale or
+    # sentiment collectors own the whole page load.
     _cc_slow = _cache_get("cc_slow")
     if _cc_slow is None:
-        _cc_slow = _fetch_command_center_slow_data()
+        _trigger_dashboard_payload_refresh(
+            "cc_slow",
+            builder=_fetch_command_center_slow_data,
+            cache_key="cc_slow",
+            ttl=600,
+        )
+        _cc_slow = {
+            "sentiment_score": 0.0,
+            "whale_alerts_24h": 0,
+            "alert_count_24h": 0,
+            "recent": [],
+        }
     whale_recent = list((_cc_slow or {}).get("recent") or [])
     whale_count = int((_cc_slow or {}).get("alert_count_24h", 0) or 0)
     sent_score = float((_cc_slow or {}).get("sentiment_score", 0.0) or 0.0)
-    _cache_set("cc_slow", _cc_slow, ttl=600 if whale_recent or whale_count or sent_score else 45)
+    if whale_recent or whale_count or sent_score:
+        _cache_set("cc_slow", _cc_slow, ttl=600)
 
     live_snapshots = _fetch_command_center_live_snapshots(positions, max_age_seconds=None)
     enriched_positions = _build_command_center_enriched_positions(positions, live_snapshots)
@@ -7376,57 +7460,180 @@ def api_system_monitor_overview():
     return jsonify(payload)
 
 
-@app.route("/api/page-overview")
-@_check_api_auth
-@_check_rate_limit
-def api_page_overview():
-    page = request.args.get("page", "").strip().lower()
-    days = min(int(request.args.get("days", 30)), 90)
-    force_refresh = _request_wants_cache_bypass()
-    if not page:
-        return handle_api_error(BadRequest("page query required"), "/api/page-overview", 400)
+_PAGE_OVERVIEW_VALID_PAGES = {
+    "architecture_lab",
+    "command_center",
+    "intelligence_alerts",
+    "market_intelligence",
+    "order_flow",
+    "playbook_intel",
+    "risk_dashboard",
+    "sentiment_intelligence",
+    "system_monitor",
+    "whale_intelligence",
+}
 
-    cache_key = f"page_overview:{page}:{days}"
-    if not force_refresh:
-        cached = _cache_get(cache_key)
-        if cached:
-            return jsonify(_response_to_dict(cached))
 
-    def _command_center_snapshot() -> Dict[str, Any]:
-        try:
-            return _response_to_dict(_get_cached_command_center_payload(force_refresh=False))
-        except Exception:
-            # Keep lightweight overview pages functional even when the richer
-            # command-center payload is unavailable in a partial test or render.
-            return {}
+def _normalize_page_overview_name(page: str) -> str:
+    normalized = str(page or "").strip().lower().replace("-", "_")
+    if normalized == "ai_predictions":
+        return "playbook_intel"
+    return normalized
+
+
+def _page_overview_status_shell() -> Dict[str, Any]:
+    cached = _cache_get("status")
+    if cached:
+        return _response_to_dict(cached)
+    core = _core()
+    return {
+        "success": True,
+        "engine_running": bool(getattr(core, "is_running", False)) if core else False,
+        "engine_ready": bool(getattr(core, "is_ready", False)) if core else False,
+        "provider_routing": {},
+        "signal_diagnostics": {},
+    }
+
+
+def _page_overview_command_center_shell(reason: str = "page_overview_cache_miss") -> Dict[str, Any]:
+    cached = _cache_get("command_center_payload") or _cache_get("command_center_payload:last_good")
+    if cached:
+        return _response_to_dict(cached)
+    return _build_command_center_unavailable_payload(reason=reason)
+
+
+def _page_overview_base(page: str, days: int, *, reason: str) -> Dict[str, Any]:
+    return {
+        "success": True,
+        "page": page,
+        "days": days,
+        "degraded": True,
+        "degraded_reason": reason,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+def _build_page_overview_unavailable_payload(page: str, days: int, reason: str = "overview_unavailable") -> Dict[str, Any]:
+    status = _page_overview_status_shell()
+    command_center = _page_overview_command_center_shell(reason)
+    payload = _page_overview_base(page, days, reason=reason)
 
     if page == "risk_dashboard":
-        status = _response_to_dict(_call_view(api_status))
-        risk = _response_to_dict(_call_view(api_risk_portfolio))
-        payload = {"success": True, "page": page, "status": status, "risk": risk, "command_center": _command_center_snapshot()}
-        ttl = 5
-    elif page in {"ai_predictions", "playbook_intel"}:
-        page = "playbook_intel"
+        payload.update({"status": status, "risk": {"success": True}, "command_center": command_center})
+    elif page == "playbook_intel":
+        payload.update(
+            {
+                "status": status,
+                "signals": [],
+                "accuracy": {"by_horizon": {}, "by_asset": {}, "recent": [], "days_back": days},
+                "live_quality": {},
+                "live_leaders": {},
+                "playbook_performance": {"summary": {}, "playbooks": [], "assets": []},
+                "asset_playbook_matrix": [],
+                "near_misses": [],
+            }
+        )
+    elif page == "intelligence_alerts":
+        payload.update({"status": status, "alerts": [], "journals": [], "command_center": command_center})
+    elif page == "system_monitor":
+        payload.update({"health": {}, "metrics": {}, "errors": {}, "snapshot": {}, "command_center": command_center})
+    elif page == "whale_intelligence":
+        payload.update(
+            {
+                "status": status,
+                "command_center": command_center,
+                "alerts": [],
+                "total_volume_usd": 0,
+                "top_assets": [],
+                "recent": [],
+                "alert_count_24h": 0,
+                "whale_alerts_24h": 0,
+            }
+        )
+    elif page == "sentiment_intelligence":
+        payload.update(
+            {
+                "status": status,
+                "sentiment": {"success": True, "components": {}, "score": 0.0},
+                "by_asset": {"success": True, "assets": []},
+                "events": {"success": True, "events": []},
+                "heatmap": {"success": True, "items": []},
+                "command_center": command_center,
+            }
+        )
+    elif page == "order_flow":
+        payload.update(
+            {
+                "status": status,
+                "imbalance": {"success": True, "imbalances": {}, "timestamp": datetime.utcnow().isoformat()},
+                "walls": {"success": True, "walls": [], "count": 0},
+                "hunts": {"success": True, "hunts": []},
+                "depth": {"success": True, "rows": [], "count": 0},
+                "command_center": command_center,
+            }
+        )
+    elif page == "command_center":
+        payload.update(
+            {
+                "command_center": command_center,
+                "whale": {
+                    "success": bool(command_center.get("success", False)),
+                    "recent": list(command_center.get("recent", []) or []),
+                    "alert_count_24h": int(command_center.get("alert_count_24h", 0) or 0),
+                    "whale_alerts_24h": int(command_center.get("whale_alerts_24h", 0) or 0),
+                },
+            }
+        )
+    elif page == "market_intelligence":
+        payload.update(
+            {
+                "status": status,
+                "assets": {"success": True, "assets": [_chart_asset_descriptor(a, c) for a, c in ALL_ASSETS]},
+                "events": {"success": True, "events": []},
+                "command_center": command_center,
+            }
+        )
+    elif page == "architecture_lab":
+        payload.update({"status": status, "health": {}, "system_monitor": {}, "command_center": command_center})
+    return payload
+
+
+def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = False) -> Dict[str, Any]:
+    page = _normalize_page_overview_name(page)
+
+    def _command_center_snapshot() -> Dict[str, Any]:
+        return _page_overview_command_center_shell("page_overview_cache_miss")
+
+    if page == "risk_dashboard":
+        payload = {
+            "success": True,
+            "page": page,
+            "status": _response_to_dict(_call_view(api_status)),
+            "risk": _response_to_dict(_call_view(api_risk_portfolio)),
+            "command_center": _command_center_snapshot(),
+        }
+    elif page == "playbook_intel":
         payload = _response_to_dict(_call_view(api_ai_predictions_overview))
+        payload["page"] = page
         payload["status"] = _response_to_dict(_call_view(api_status))
-        ttl = 10
     elif page == "intelligence_alerts":
         payload = _response_to_dict(_call_view(api_intelligence_alerts_overview))
+        payload["page"] = page
         payload["status"] = _response_to_dict(_call_view(api_status))
         payload["command_center"] = _command_center_snapshot()
-        ttl = 10
     elif page == "system_monitor":
         payload = _response_to_dict(_call_view(api_system_monitor_overview))
+        payload["page"] = page
         payload["command_center"] = _command_center_snapshot()
-        ttl = 5
     elif page == "whale_intelligence":
         payload = _response_to_dict(_call_view(api_whale_summary))
+        payload["page"] = page
         payload["status"] = _response_to_dict(_call_view(api_status))
         payload["command_center"] = _command_center_snapshot()
-        ttl = 10
     elif page == "sentiment_intelligence":
         payload = {
             "success": True,
+            "page": page,
             "status": _response_to_dict(_call_view(api_status)),
             "sentiment": _response_to_dict(_call_view(api_sentiment_dashboard)),
             "by_asset": _response_to_dict(_call_view(api_sentiment_by_asset)),
@@ -7434,10 +7641,10 @@ def api_page_overview():
             "heatmap": _response_to_dict(_call_view(api_market_heatmap)),
             "command_center": _command_center_snapshot(),
         }
-        ttl = 5
     elif page == "order_flow":
         payload = {
             "success": True,
+            "page": page,
             "status": _response_to_dict(_call_view(api_status)),
             "imbalance": _response_to_dict(_call_view(api_phase3_imbalance)),
             "walls": _response_to_dict(_call_view(api_phase3_walls)),
@@ -7445,16 +7652,11 @@ def api_page_overview():
             "depth": _response_to_dict(_call_view(api_phase3_live_depth)),
             "command_center": _command_center_snapshot(),
         }
-        ttl = 5
     elif page == "command_center":
-        try:
-            command_center = _response_to_dict(
-                _get_cached_command_center_payload(force_refresh=force_refresh)
-            )
-        except Exception:
-            command_center = _response_to_dict(_call_view(api_command_center))
+        command_center = _command_center_snapshot()
         payload = {
             "success": True,
+            "page": page,
             "command_center": command_center,
             "whale": {
                 "success": bool(command_center.get("success", False)),
@@ -7463,31 +7665,140 @@ def api_page_overview():
                 "whale_alerts_24h": int(command_center.get("whale_alerts_24h", 0) or 0),
             },
         }
-        ttl = 5
     elif page == "market_intelligence":
         payload = {
             "success": True,
+            "page": page,
             "status": _response_to_dict(_call_view(api_status)),
             "assets": _response_to_dict(_call_view(api_chart_assets)),
             "events": _response_to_dict(_call_view(api_market_events)),
             "command_center": _command_center_snapshot(),
         }
-        ttl = 5
     elif page == "architecture_lab":
         payload = {
             "success": True,
+            "page": page,
             "status": _response_to_dict(_call_view(api_status)),
             "health": _response_to_dict(_call_view(api_system_health)),
             "system_monitor": _response_to_dict(_call_view(api_system_monitor_overview)),
             "command_center": _command_center_snapshot(),
         }
-        ttl = 5
     else:
-        return handle_api_error(BadRequest(f"Unknown overview page '{page}'"), "/api/page-overview", 400)
+        raise BadRequest(f"Unknown overview page '{page}'")
 
     payload = _response_to_dict(payload)
+    payload.setdefault("success", True)
+    payload.setdefault("page", page)
+    payload.setdefault("days", days)
+    payload.setdefault("timestamp", datetime.utcnow().isoformat())
+    return payload
+
+
+def _build_page_overview_payload_in_context(page: str, days: int) -> Dict[str, Any]:
+    with app.test_request_context(f"/api/page-overview?page={page}&days={days}"):
+        return _build_page_overview_payload(page, days, force_refresh=False)
+
+
+def _build_page_overview_payload_with_budget(page: str, days: int) -> Dict[str, Any]:
+    timeout_marker = {"__dashboard_timeout__": True}
+    payload = _run_with_timeout(
+        _build_page_overview_payload_in_context,
+        page,
+        days,
+        timeout=_PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS,
+        default=timeout_marker,
+        label=f"page overview {page}",
+    )
+    if isinstance(payload, dict) and payload.get("__dashboard_timeout__"):
+        raise TimeoutError(f"page overview {page} timed out")
+    return _response_to_dict(payload)
+
+
+def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bool = False) -> Dict[str, Any]:
+    page = _normalize_page_overview_name(page)
+    cache_key = f"page_overview:{page}:{days}"
+    last_good_key = f"{cache_key}:last_good"
+
+    def _builder() -> Dict[str, Any]:
+        return _build_page_overview_payload_with_budget(page, days)
+
     if not force_refresh:
-        _cache_set(cache_key, payload, ttl=ttl)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _response_to_dict(cached)
+
+        fallback = _cache_get(last_good_key)
+        if fallback is not None:
+            _trigger_dashboard_payload_refresh(
+                cache_key,
+                builder=_builder,
+                cache_key=cache_key,
+                ttl=_PAGE_OVERVIEW_CACHE_TTL,
+                last_good_key=last_good_key,
+                last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
+            )
+            payload = _response_to_dict(fallback)
+            payload["success"] = True
+            payload["degraded"] = True
+            payload["degraded_reason"] = "stale_fallback"
+            return payload
+
+    try:
+        payload = _builder()
+        _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_CACHE_TTL)
+        _cache_set(last_good_key, payload, ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL)
+        return payload
+    except Exception as exc:
+        logger.warning(f"[dashboard] page overview build failed for {page}: {exc}")
+        fallback = _cache_get(last_good_key)
+        if fallback is not None:
+            payload = _response_to_dict(fallback)
+            payload["success"] = True
+            payload["degraded"] = True
+            payload["degraded_reason"] = "stale_fallback"
+            _trigger_dashboard_payload_refresh(
+                cache_key,
+                builder=_builder,
+                cache_key=cache_key,
+                ttl=_PAGE_OVERVIEW_CACHE_TTL,
+                last_good_key=last_good_key,
+                last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
+            )
+            return payload
+
+        payload = _build_page_overview_unavailable_payload(page, days, reason=str(exc) or "build_failed")
+        _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_DEGRADED_CACHE_TTL)
+        _trigger_dashboard_payload_refresh(
+            cache_key,
+            builder=_builder,
+            cache_key=cache_key,
+            ttl=_PAGE_OVERVIEW_CACHE_TTL,
+            last_good_key=last_good_key,
+            last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
+        )
+        return payload
+
+
+@app.route("/api/page-overview")
+@_check_api_auth
+@_check_rate_limit
+def api_page_overview():
+    raw_page = request.args.get("page", "")
+    page = _normalize_page_overview_name(raw_page)
+    if not page:
+        return handle_api_error(BadRequest("page query required"), "/api/page-overview", 400)
+    if page not in _PAGE_OVERVIEW_VALID_PAGES:
+        return handle_api_error(BadRequest(f"Unknown overview page '{page}'"), "/api/page-overview", 400)
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 90))
+    except ValueError:
+        return handle_api_error(BadRequest("days must be an integer"), "/api/page-overview", 400)
+
+    payload = _get_cached_page_overview_payload(
+        page,
+        days,
+        force_refresh=_request_wants_cache_bypass(),
+    )
     return jsonify(payload)
 
 
@@ -7833,6 +8144,7 @@ def start_dashboard(core, host: str = "127.0.0.1", port: int = 5000, http2: bool
     threading.Thread(target=_bg_refresh,       name="DashBgRefresh",     daemon=True).start()
     threading.Thread(target=_prewarm_sentiment, name="SentimentPrewarm",  daemon=True).start()
     _prewarm_command_center_payload()
+    _prewarm_page_overviews()
 
     # Start pub/sub listeners
     _start_p3_listener()
