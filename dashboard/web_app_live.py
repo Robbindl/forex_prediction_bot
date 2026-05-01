@@ -6062,6 +6062,13 @@ def api_sentiment_dashboard():
     if cached is not None:
         return jsonify(cached)
     try:
+        if not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED):
+            result = _default_sentiment_dashboard_result()
+            result["degraded"] = True
+            result["degraded_reason"] = "sentiment_sources_disabled"
+            _cache_set("sentiment_dashboard", result, ttl=300)
+            return jsonify(result)
+
         sa = _get_sent()
         if sa is None:
             return jsonify({"success": False, "error": "Sentiment service unavailable"}), 503
@@ -6123,6 +6130,16 @@ def api_sentiment_by_asset():
     if cached is not None:
         return jsonify(cached)
     try:
+        if not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED):
+            payload = {
+                "success": True,
+                "assets": [],
+                "degraded": True,
+                "degraded_reason": "sentiment_sources_disabled",
+            }
+            _cache_set("sentiment_by_asset", payload, ttl=300)
+            return jsonify(payload)
+
         mi = _get_market_intelligence()
         if not mi:
             return jsonify({"success": False, "error": "Market intelligence unavailable"})
@@ -6144,6 +6161,10 @@ def api_sentiment_by_asset():
 @_check_api_auth
 @_check_rate_limit
 def api_market_events():
+    cache_key = "market_events:v1"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     try:
         mi = _get_market_intelligence()
         payload: Dict[str, Any] = {
@@ -6162,6 +6183,7 @@ def api_market_events():
                 payload["risk_outlook"] = raw.get("risk_outlook", {}) or {}
             elif isinstance(raw, list):
                 payload["events"] = raw[:20]
+        _cache_set(cache_key, payload, ttl=60)
         return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/market/events", e.status_code)
@@ -7598,6 +7620,26 @@ def _build_page_overview_unavailable_payload(page: str, days: int, reason: str =
     return payload
 
 
+def _page_overview_cached_component(
+    cache_key: str,
+    fallback: Dict[str, Any],
+    *,
+    builder=None,
+    ttl: int = 60,
+) -> Dict[str, Any]:
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return _response_to_dict(cached)
+    if builder is not None:
+        _trigger_dashboard_payload_refresh(
+            cache_key,
+            builder=builder,
+            cache_key=cache_key,
+            ttl=ttl,
+        )
+    return copy.deepcopy(fallback)
+
+
 def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = False) -> Dict[str, Any]:
     page = _normalize_page_overview_name(page)
 
@@ -7631,14 +7673,40 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload["status"] = _response_to_dict(_call_view(api_status))
         payload["command_center"] = _command_center_snapshot()
     elif page == "sentiment_intelligence":
+        sentiment_sources_disabled = not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED)
+        sentiment_fallback_reason = "sentiment_sources_disabled" if sentiment_sources_disabled else "sentiment_cache_warming"
         payload = {
             "success": True,
             "page": page,
-            "status": _response_to_dict(_call_view(api_status)),
-            "sentiment": _response_to_dict(_call_view(api_sentiment_dashboard)),
-            "by_asset": _response_to_dict(_call_view(api_sentiment_by_asset)),
-            "events": _response_to_dict(_call_view(api_market_events)),
-            "heatmap": _response_to_dict(_call_view(api_market_heatmap)),
+            "status": _page_overview_status_shell(),
+            "sentiment": _page_overview_cached_component(
+                "sentiment_dashboard",
+                {
+                    **_default_sentiment_dashboard_result(),
+                    "degraded": True,
+                    "degraded_reason": sentiment_fallback_reason,
+                },
+                builder=None,
+                ttl=600,
+            ),
+            "by_asset": _page_overview_cached_component(
+                "sentiment_by_asset",
+                {"success": True, "assets": [], "degraded": True, "degraded_reason": sentiment_fallback_reason},
+                builder=None,
+                ttl=600,
+            ),
+            "events": _page_overview_cached_component(
+                "market_events:v1",
+                {"success": True, "events": [], "earnings": [], "halving": {}, "risk_outlook": {}},
+                builder=None,
+                ttl=60,
+            ),
+            "heatmap": _page_overview_cached_component(
+                "heatmap:v3",
+                {"success": True, "items": [], "expected_assets": len(ALL_ASSETS), "partial": True},
+                builder=None,
+                ttl=15,
+            ),
             "command_center": _command_center_snapshot(),
         }
     elif page == "order_flow":

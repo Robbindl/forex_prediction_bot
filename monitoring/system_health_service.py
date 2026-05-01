@@ -352,6 +352,20 @@ class SystemHealthService:
                 logger.error(f"[Monitor] Alert loop error: {e}")
             time.sleep(ALERT_CHECK_INTERVAL)
 
+    def _suppress_stale_alert(self, source: str) -> bool:
+        try:
+            if source == "ctrader_live_depth":
+                from services.ctrader_live_depth_bridge import ctrader_live_depth_bridge
+
+                return bool(ctrader_live_depth_bridge.status().get("market_quiet"))
+            if source == "dukascopy_live_depth":
+                from services.dukascopy_live_depth_bridge import dukascopy_live_depth_bridge
+
+                return bool(dukascopy_live_depth_bridge.status().get("market_quiet"))
+        except Exception:
+            return False
+        return False
+
     def _check_alerts(self) -> None:
         now = time.time()
 
@@ -410,6 +424,8 @@ class SystemHealthService:
         # Stale sources
         for source, health in self.get_source_health().items():
             if not health["fresh"] and health["age_secs"] is not None:
+                if self._suppress_stale_alert(source):
+                    continue
                 self._send_alert(
                     f"stale_{source}",
                     f"Data source '{source}' is stale (age={health['age_secs']:.0f}s, max={health['threshold']}s)",

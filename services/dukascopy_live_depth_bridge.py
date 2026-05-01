@@ -25,6 +25,7 @@ from config.config import (
     DUKASCOPY_LIVE_DEPTH_USERNAME,
 )
 from core.assets import registry
+from services.market_hours_guard import session_market_status
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -102,6 +103,26 @@ def _normalize_asset_list(raw: str) -> tuple[str, ...]:
         if canonical in _SUPPORTED_LIVE_SYMBOLS and canonical not in assets:
             assets.append(canonical)
     return tuple(assets)
+
+
+def _market_session_state(assets: List[str]) -> Dict[str, Any]:
+    open_assets: List[str] = []
+    closed_assets: List[Dict[str, str]] = []
+    for asset in assets:
+        spec = _SUPPORTED_LIVE_SYMBOLS.get(asset, {})
+        try:
+            is_open, reason = session_market_status(asset, str(spec.get("category") or ""))
+        except Exception as exc:
+            is_open, reason = True, f"market status unavailable: {exc}"
+        if is_open:
+            open_assets.append(asset)
+        else:
+            closed_assets.append({"asset": asset, "reason": str(reason or "closed")})
+    return {
+        "open_assets": open_assets,
+        "closed_assets": closed_assets,
+        "market_quiet": bool(assets) and not open_assets,
+    }
 
 
 def _normalize_levels(levels: Any, *, max_levels: int = 0) -> List[Dict[str, float]]:
@@ -603,12 +624,19 @@ class DukascopyLiveDepthBridge:
         profiles = self.list_profiles()
         expected_assets = sorted(self._assets)
         missing_assets = sorted(set(expected_assets) - set(assets))
-        stale = bool(expected_assets) and (snapshot_age is None or snapshot_age > _DEFAULT_STALE_SECONDS)
-        healthy = bool(self._enabled and running and not stale)
+        market_state = _market_session_state(expected_assets)
+        market_quiet = bool(market_state.get("market_quiet"))
+        quiet_stale = bool(expected_assets) and market_quiet and (
+            snapshot_age is None or snapshot_age > _DEFAULT_STALE_SECONDS
+        )
+        stale = bool(expected_assets) and not market_quiet and (
+            snapshot_age is None or snapshot_age > _DEFAULT_STALE_SECONDS
+        )
+        healthy = bool(self._enabled and (running or market_quiet) and not stale)
         if not self._enabled:
             state = "disabled"
         elif healthy:
-            state = "streaming"
+            state = "market_closed" if market_quiet else "streaming"
         elif stale:
             state = "stale"
         elif running:
@@ -628,6 +656,10 @@ class DukascopyLiveDepthBridge:
             "profiles": profiles,
             "expected_assets": expected_assets,
             "missing_assets": missing_assets,
+            "market_quiet": market_quiet,
+            "market_open_assets": list(market_state.get("open_assets") or []),
+            "market_closed_assets": list(market_state.get("closed_assets") or []),
+            "quiet_stale": quiet_stale,
             "stale": stale,
             "healthy": healthy,
             "state": state,
@@ -656,7 +688,13 @@ class DukascopyLiveDepthBridge:
             status.get("last_snapshot_age_seconds") is None
             or float(status.get("last_snapshot_age_seconds") or 0.0) > max_snapshot_age
         )
-        needs_restart = bool(not status.get("running") or stale)
+        market_quiet = bool(status.get("market_quiet"))
+        needs_restart = bool(
+            (not status.get("running") and not market_quiet)
+            or (stale and not market_quiet)
+        )
+        if market_quiet and not restart_reason:
+            restart_reason = "market_closed"
         if needs_restart and (now - self._last_restart_attempt) >= _RESTART_COOLDOWN_SECONDS:
             restart_attempted = True
             restart_reason = "stale_depth" if stale else "process_not_running"
