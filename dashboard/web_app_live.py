@@ -154,11 +154,11 @@ _COMMAND_CENTER_CACHE_TTL = 15
 _COMMAND_CENTER_LAST_GOOD_TTL = 6 * 60 * 60
 _COMMAND_CENTER_DEGRADED_CACHE_TTL = 5
 _COMMAND_CENTER_BUILD_TIMEOUT_SECONDS = 7.5
-_PAGE_OVERVIEW_CACHE_TTL = 8
+_PAGE_OVERVIEW_CACHE_TTL = 15
 _PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
 _PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
 _PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS = 4.0
-_PAGE_OVERVIEW_CACHE_VERSION = "v2"
+_PAGE_OVERVIEW_CACHE_VERSION = "v4"
 _SENTIMENT_BY_ASSET_CACHE_KEY = "sentiment_by_asset:v2"
 
 
@@ -447,8 +447,13 @@ def _get_market_intelligence():
 _cache_store: Dict[str, Tuple[Any, float]] = {}
 _cache_lock  = threading.Lock()
 _cache_prefix = "dashboard:cache:"
+_LOCAL_ONLY_CACHE_PREFIXES = ("page_overview:", "page_component:", "html_template:")
 _dashboard_refresh_lock = threading.Lock()
 _dashboard_refresh_state: Dict[str, bool] = {}
+
+
+def _cache_is_local_only(key: str) -> bool:
+    return any(str(key or "").startswith(prefix) for prefix in _LOCAL_ONLY_CACHE_PREFIXES)
 
 def _redis_cache_get(key: str) -> Optional[Any]:
     try:
@@ -483,6 +488,9 @@ def _cache_get(key: str) -> Optional[Any]:
         if entry:
             _cache_store.pop(key, None)
 
+    if _cache_is_local_only(key):
+        return None
+
     redis_val = _redis_cache_get(key)
     if redis_val is not None:
         return redis_val
@@ -492,6 +500,8 @@ def _cache_get(key: str) -> Optional[Any]:
 def _cache_set(key: str, value: Any, ttl: int = 30) -> None:
     with _cache_lock:
         _cache_store[key] = (value, time.time() + ttl)
+    if _cache_is_local_only(key):
+        return
     _redis_cache_set(key, value, ttl)
 
 
@@ -551,8 +561,9 @@ def _trigger_dashboard_payload_refresh(
     def _worker() -> None:
         try:
             payload = builder()
-            _cache_set(cache_key, payload, ttl=ttl)
-            if last_good_key:
+            degraded = _is_degraded_dashboard_payload(payload)
+            _cache_set(cache_key, payload, ttl=min(ttl, _PAGE_OVERVIEW_DEGRADED_CACHE_TTL) if degraded else ttl)
+            if last_good_key and not degraded:
                 _cache_set(last_good_key, payload, ttl=last_good_ttl)
         except Exception as exc:
             logger.warning(f"[dashboard] async refresh failed for {refresh_key}: {exc}")
@@ -567,6 +578,17 @@ def _trigger_dashboard_payload_refresh(
     )
     thread.start()
     return True
+
+
+def _is_degraded_dashboard_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("success") is False or payload.get("degraded") or payload.get("partial"):
+        return True
+    for value in payload.values():
+        if isinstance(value, dict) and (value.get("degraded") or value.get("success") is False):
+            return True
+    return False
 
 
 def _get_cached_dashboard_payload(
@@ -1255,15 +1277,22 @@ def _prewarm_sentiment() -> None:
             return
         logger.info("[dashboard] Pre-warming sentiment cache...")
         _get_sent()
-        with app.test_request_context():
+        with app.test_request_context("/api/sentiment/dashboard"):
             try:
-                api_sentiment_dashboard()
-                logger.info("[dashboard] sentiment/dashboard warmed")
+                payload = _response_to_dict(_call_view(api_sentiment_dashboard))
+                if payload.get("success"):
+                    logger.info("[dashboard] sentiment/dashboard warmed")
+                else:
+                    logger.debug(f"[dashboard] sentiment/dashboard prewarm returned: {payload.get('error') or payload}")
             except Exception as e:
                 logger.debug(f"[dashboard] sentiment/dashboard prewarm: {e}")
+        with app.test_request_context("/api/sentiment/by-asset"):
             try:
-                api_sentiment_by_asset()
-                logger.info("[dashboard] sentiment/by-asset warmed")
+                payload = _response_to_dict(_call_view(api_sentiment_by_asset))
+                if payload.get("success"):
+                    logger.info("[dashboard] sentiment/by-asset warmed")
+                else:
+                    logger.debug(f"[dashboard] sentiment/by-asset prewarm returned: {payload.get('error') or payload}")
             except Exception as e:
                 logger.debug(f"[dashboard] sentiment/by-asset prewarm: {e}")
     except Exception as e:
@@ -7910,7 +7939,6 @@ def _build_page_overview_unavailable_payload(page: str, days: int, reason: str =
     if page == "risk_dashboard":
         payload.update({"status": status, "risk": {"success": True}, "command_center": command_center})
     elif page == "playbook_intel":
-        context_rows = list((command_center.get("decision_context") or {}).get("rows") or [])
         payload.update(
             {
                 "status": status,
@@ -7921,7 +7949,7 @@ def _build_page_overview_unavailable_payload(page: str, days: int, reason: str =
                 "live_leaders": {},
                 "playbook_performance": {"summary": {}, "playbooks": [], "assets": []},
                 "asset_playbook_matrix": [],
-                "near_misses": list(command_center.get("near_misses") or []) or context_rows,
+                "near_misses": list(command_center.get("near_misses") or []),
             }
         )
     elif page == "intelligence_alerts":
@@ -7995,18 +8023,72 @@ def _page_overview_cached_component(
     *,
     builder=None,
     ttl: int = 60,
+    last_good_ttl: int = _PAGE_OVERVIEW_LAST_GOOD_TTL,
 ) -> Dict[str, Any]:
     cached = _cache_get(cache_key)
     if cached is not None:
         return _response_to_dict(cached)
+    last_good_key = f"{cache_key}:last_good"
+    last_good = _cache_get(last_good_key)
+    if last_good is not None:
+        if builder is not None:
+            _trigger_dashboard_payload_refresh(
+                cache_key,
+                builder=builder,
+                cache_key=cache_key,
+                ttl=ttl,
+                last_good_key=last_good_key,
+                last_good_ttl=last_good_ttl,
+            )
+        payload = _response_to_dict(last_good)
+        payload.setdefault("success", True)
+        payload["degraded"] = True
+        payload.setdefault("degraded_reason", "component_stale")
+        return payload
     if builder is not None:
         _trigger_dashboard_payload_refresh(
             cache_key,
             builder=builder,
             cache_key=cache_key,
             ttl=ttl,
+            last_good_key=last_good_key,
+            last_good_ttl=last_good_ttl,
         )
-    return copy.deepcopy(fallback)
+    payload = copy.deepcopy(fallback)
+    if isinstance(payload, dict):
+        payload.setdefault("success", True)
+        payload["degraded"] = True
+        payload.setdefault("degraded_reason", "component_warming")
+    return payload
+
+
+def _page_overview_view_builder(path: str, view_fn):
+    def _builder() -> Dict[str, Any]:
+        with app.test_request_context(path):
+            payload = _response_to_dict(_call_view(view_fn))
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{path} did not return a JSON object")
+        if payload.get("success") is False:
+            raise RuntimeError(str(payload.get("error") or f"{path} returned success=false"))
+        return payload
+
+    return _builder
+
+
+def _page_overview_view_component(
+    cache_key: str,
+    path: str,
+    view_fn,
+    fallback: Dict[str, Any],
+    *,
+    ttl: int = 60,
+) -> Dict[str, Any]:
+    return _page_overview_cached_component(
+        cache_key,
+        fallback,
+        builder=_page_overview_view_builder(path, view_fn),
+        ttl=ttl,
+    )
 
 
 def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = False) -> Dict[str, Any]:
@@ -8015,34 +8097,69 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
     def _command_center_snapshot() -> Dict[str, Any]:
         return _page_overview_command_center_shell("page_overview_cache_miss")
 
+    fallback_payload = _build_page_overview_unavailable_payload(page, days, reason="component_warming")
+
     if page == "risk_dashboard":
         payload = {
             "success": True,
             "page": page,
-            "status": _response_to_dict(_call_view(api_status)),
-            "risk": _response_to_dict(_call_view(api_risk_portfolio)),
+            "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
+            "risk": _page_overview_view_component("page_component:v4:risk_portfolio", "/api/risk/portfolio", api_risk_portfolio, fallback_payload.get("risk", {"success": True}), ttl=15),
             "command_center": _command_center_snapshot(),
         }
     elif page == "playbook_intel":
-        payload = _response_to_dict(_call_view(api_ai_predictions_overview))
+        payload = _page_overview_view_component(
+            f"page_component:v4:playbook_intel:{days}",
+            f"/api/playbook-intel/overview?days={days}",
+            api_ai_predictions_overview,
+            {
+                "success": True,
+                "signals": [],
+                "accuracy": {"by_horizon": {}, "by_asset": {}, "recent": [], "days_back": days},
+                "live_quality": {},
+                "live_leaders": {},
+                "playbook_performance": {"summary": {}, "playbooks": [], "assets": []},
+                "asset_playbook_matrix": [],
+                "near_misses": [],
+            },
+            ttl=30,
+        )
         payload["page"] = page
-        payload["status"] = _response_to_dict(_call_view(api_status))
+        payload["status"] = _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
         payload["command_center"] = _command_center_snapshot()
         if not payload.get("near_misses"):
-            payload["near_misses"] = list(payload["command_center"].get("near_misses") or []) or list((payload["command_center"].get("decision_context") or {}).get("rows") or [])
+            payload["near_misses"] = list(payload["command_center"].get("near_misses") or [])
     elif page == "intelligence_alerts":
-        payload = _response_to_dict(_call_view(api_intelligence_alerts_overview))
+        payload = _page_overview_view_component(
+            "page_component:v4:intelligence_alerts",
+            "/api/intelligence-alerts/overview",
+            api_intelligence_alerts_overview,
+            {"success": True, "alerts": [], "journals": []},
+            ttl=15,
+        )
         payload["page"] = page
-        payload["status"] = _response_to_dict(_call_view(api_status))
+        payload["status"] = _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
         payload["command_center"] = _command_center_snapshot()
     elif page == "system_monitor":
-        payload = _response_to_dict(_call_view(api_system_monitor_overview))
+        payload = _page_overview_view_component(
+            "page_component:v4:system_monitor",
+            "/api/system-monitor/overview",
+            api_system_monitor_overview,
+            {"success": True, "health": {}, "metrics": {}, "errors": {}, "snapshot": {}},
+            ttl=10,
+        )
         payload["page"] = page
         payload["command_center"] = _command_center_snapshot()
     elif page == "whale_intelligence":
-        payload = _response_to_dict(_call_view(api_whale_summary))
+        payload = _page_overview_view_component(
+            "page_component:v4:whale_summary",
+            "/api/whale/summary",
+            api_whale_summary,
+            fallback_payload,
+            ttl=15,
+        )
         payload["page"] = page
-        payload["status"] = _response_to_dict(_call_view(api_status))
+        payload["status"] = _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
         payload["command_center"] = _command_center_snapshot()
     elif page == "sentiment_intelligence":
         sentiment_sources_disabled = not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED)
@@ -8050,7 +8167,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload = {
             "success": True,
             "page": page,
-            "status": _page_overview_status_shell(),
+            "status": _response_to_dict(_call_view(api_status)),
             "sentiment": _page_overview_cached_component(
                 "sentiment_dashboard",
                 {
@@ -8058,25 +8175,25 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
                     "degraded": True,
                     "degraded_reason": sentiment_fallback_reason,
                 },
-                builder=None,
+                builder=_page_overview_view_builder("/api/sentiment/dashboard", api_sentiment_dashboard),
                 ttl=600,
             ),
             "by_asset": _page_overview_cached_component(
                 _SENTIMENT_BY_ASSET_CACHE_KEY,
                 _neutral_sentiment_by_asset_payload(sentiment_fallback_reason),
-                builder=None,
+                builder=_page_overview_view_builder("/api/sentiment/by-asset", api_sentiment_by_asset),
                 ttl=600,
             ),
             "events": _page_overview_cached_component(
                 "market_events:v1",
                 {"success": True, "events": [], "earnings": [], "halving": {}, "risk_outlook": {}},
-                builder=None,
+                builder=_page_overview_view_builder("/api/market/events", api_market_events),
                 ttl=60,
             ),
             "heatmap": _page_overview_cached_component(
                 "heatmap:v3",
                 {"success": True, "items": [], "expected_assets": len(ALL_ASSETS), "partial": True},
-                builder=None,
+                builder=_page_overview_view_builder("/api/market/heatmap", api_market_heatmap),
                 ttl=15,
             ),
             "command_center": _command_center_snapshot(),
@@ -8085,11 +8202,11 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload = {
             "success": True,
             "page": page,
-            "status": _response_to_dict(_call_view(api_status)),
-            "imbalance": _response_to_dict(_call_view(api_phase3_imbalance)),
-            "walls": _response_to_dict(_call_view(api_phase3_walls)),
-            "hunts": _response_to_dict(_call_view(api_phase3_stop_hunts)),
-            "depth": _response_to_dict(_call_view(api_phase3_live_depth)),
+            "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
+            "imbalance": _page_overview_view_component("page_component:v4:phase3_imbalance", "/api/phase3/imbalance", api_phase3_imbalance, fallback_payload.get("imbalance", {"success": True, "imbalances": {}}), ttl=15),
+            "walls": _page_overview_view_component("page_component:v4:phase3_walls", "/api/phase3/walls", api_phase3_walls, fallback_payload.get("walls", {"success": True, "walls": [], "count": 0}), ttl=5),
+            "hunts": _page_overview_view_component("page_component:v4:phase3_stop_hunts", "/api/phase3/stop-hunts", api_phase3_stop_hunts, fallback_payload.get("hunts", {"success": True, "hunts": []}), ttl=5),
+            "depth": _page_overview_view_component("page_component:v4:phase3_live_depth", "/api/phase3/live-depth", api_phase3_live_depth, fallback_payload.get("depth", {"success": True, "rows": [], "count": 0}), ttl=5),
             "command_center": _command_center_snapshot(),
         }
     elif page == "command_center":
@@ -8109,18 +8226,18 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload = {
             "success": True,
             "page": page,
-            "status": _response_to_dict(_call_view(api_status)),
-            "assets": _response_to_dict(_call_view(api_chart_assets)),
-            "events": _response_to_dict(_call_view(api_market_events)),
+            "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
+            "assets": _page_overview_view_component("page_component:v4:chart_assets", "/api/chart/assets", api_chart_assets, fallback_payload.get("assets", {"success": True, "assets": [_chart_asset_descriptor(a, c) for a, c in ALL_ASSETS]}), ttl=300),
+            "events": _page_overview_view_component("page_component:v4:market_events", "/api/market/events", api_market_events, fallback_payload.get("events", {"success": True, "events": []}), ttl=60),
             "command_center": _command_center_snapshot(),
         }
     elif page == "architecture_lab":
         payload = {
             "success": True,
             "page": page,
-            "status": _response_to_dict(_call_view(api_status)),
-            "health": _response_to_dict(_call_view(api_system_health)),
-            "system_monitor": _response_to_dict(_call_view(api_system_monitor_overview)),
+            "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
+            "health": _page_overview_view_component("page_component:v4:system_health", "/api/system/health", api_system_health, fallback_payload.get("health", {}), ttl=10),
+            "system_monitor": _page_overview_view_component("page_component:v4:system_monitor", "/api/system-monitor/overview", api_system_monitor_overview, fallback_payload.get("system_monitor", {}), ttl=10),
             "command_center": _command_center_snapshot(),
         }
     else:
@@ -8131,6 +8248,9 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
     payload.setdefault("page", page)
     payload.setdefault("days", days)
     payload.setdefault("timestamp", datetime.utcnow().isoformat())
+    if _is_degraded_dashboard_payload(payload):
+        payload["degraded"] = True
+        payload.setdefault("degraded_reason", "component_warming")
     return payload
 
 
@@ -8167,7 +8287,7 @@ def _normalize_page_overview_payload_contract(payload: Dict[str, Any], page: str
     if page == "playbook_intel" and isinstance(payload.get("command_center"), dict):
         if not list(payload.get("near_misses") or []):
             command_center = payload["command_center"]
-            payload["near_misses"] = list(command_center.get("near_misses") or []) or list((command_center.get("decision_context") or {}).get("rows") or [])
+            payload["near_misses"] = list(command_center.get("near_misses") or [])
     payload.setdefault("success", True)
     payload.setdefault("page", page)
     payload.setdefault("days", days)
@@ -8203,10 +8323,26 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
             payload["degraded_reason"] = "stale_fallback"
             return payload
 
+        _trigger_dashboard_payload_refresh(
+            cache_key,
+            builder=_builder,
+            cache_key=cache_key,
+            ttl=_PAGE_OVERVIEW_CACHE_TTL,
+            last_good_key=last_good_key,
+            last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
+        )
+        payload = _build_page_overview_unavailable_payload(page, days, reason="page_overview_warming")
+        payload["degraded"] = True
+        payload["degraded_reason"] = "page_overview_warming"
+        _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_DEGRADED_CACHE_TTL)
+        return _normalize_page_overview_payload_contract(payload, page, days)
+
     try:
         payload = _normalize_page_overview_payload_contract(_builder(), page, days)
-        _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_CACHE_TTL)
-        _cache_set(last_good_key, payload, ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL)
+        ttl = _PAGE_OVERVIEW_DEGRADED_CACHE_TTL if _is_degraded_dashboard_payload(payload) else _PAGE_OVERVIEW_CACHE_TTL
+        _cache_set(cache_key, payload, ttl=ttl)
+        if not _is_degraded_dashboard_payload(payload):
+            _cache_set(last_good_key, payload, ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL)
         return payload
     except Exception as exc:
         logger.warning(f"[dashboard] page overview build failed for {page}: {exc}")

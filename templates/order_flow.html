@@ -263,7 +263,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="panel panel-primary" style="animation-delay:.3s">
           <div class="panel-header">
             <span>🧭</span>
-          <span class="panel-title">Flow Decision Context</span>
+          <span class="panel-title">Live Flow Context</span>
             <span class="panel-badge" id="watchBadge">Loading…</span>
           </div>
           <div class="panel-body" style="flex:1;overflow-y:auto;min-height:120px" id="watchList">
@@ -384,7 +384,7 @@ async function fetchOrderFlowOverview(){
     try{
       const d = await window.dashboardFetchJson('/api/page-overview?page=order_flow', {timeoutMs: 12000, init:{cache:'no-store'}});
       if(d.success){
-        _orderFlowCache = {fetched: Date.now(), data: d};
+        if(!d.degraded) _orderFlowCache = {fetched: Date.now(), data: d};
         return d;
       }
       return {success:false};
@@ -609,6 +609,26 @@ function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,ke
 function signalBool(signal,key){return signalValue(signal,key) === true;}
 function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
 function signalList(signal,key){const value=signalValue(signal,key);if(Array.isArray(value))return value.map(v=>String(v||'').trim()).filter(Boolean);if(typeof value === 'string'){const raw=value.trim();return raw?[raw]:[];}return [];}
+function isPublishedExecutionSignal(signal){
+  if(!signal || typeof signal !== 'object') return false;
+  const kind = String(signalValue(signal, 'decision_kind') || signalValue(signal, 'kind') || '').toLowerCase();
+  const state = String(signalValue(signal, 'decision_state') || signalValue(signal, 'state') || '').toLowerCase();
+  if(kind === 'session_watch' || state === 'watching') return false;
+  if(['candidate','blocked','accepted','killed','signal'].includes(kind)) return true;
+  if(signalText(signal, 'direction') || signalText(signal, 'signal') || signalText(signal, 'side') || signalText(signal, 'action')) return true;
+  return Boolean(
+    signalText(signal, 'exact_kill_reason') ||
+    signalText(signal, 'execution_kill_reason') ||
+    signalText(signal, 'blocked_reason') ||
+    signalText(signal, 'kill_reason') ||
+    signalList(signal, 'execution_hard_blocks').length ||
+    signalList(signal, 'late_entry_risk_reasons').length ||
+    signalList(signal, 'rejected_reasons').length ||
+    signalValue(signal, 'entry_confirmation_ready') === true ||
+    signalNum(signal, 'entry_confirmation_bars_required', 0) > 0 ||
+    signalNum(signal, 'entry_confirmation_count', 0) > 0
+  );
+}
 function normalizeFlowAsset(asset){
   return String(asset || '')
     .toUpperCase()
@@ -623,7 +643,7 @@ function confirmationState(signal){
   const required = signalNum(signal, 'entry_confirmation_bars_required', 0);
   if(ready) return {state:'ready', label:'Ready', detail: count && required ? count + '/' + required + ' bars' : 'confirmed'};
   if(required && count < required) return {state:'waiting', label:'Waiting', detail: count + '/' + required + ' bars'};
-  return {state:'neutral', label:'Unknown', detail:'confirmation not published'};
+  return {state:'neutral', label:'Not published', detail:'confirmation not published'};
 }
 function entryReadiness(signal){
   const confirm = confirmationState(signal);
@@ -636,7 +656,7 @@ function entryReadiness(signal){
   return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
 }
 function exactKillReason(signal){
-  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalValue(signal, 'decision_reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();
 }
 function reviewNotesLine(signal){
   return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
@@ -708,7 +728,6 @@ function collectDecisionSignals(commandCenter){
     commandCenter?.latest_signals,
     commandCenter?.top_opportunities,
     commandCenter?.near_misses,
-    commandCenter?.decision_context?.rows,
     ladder.hot,
     ladder.almost_ready,
     ladder.blocked,
@@ -719,6 +738,7 @@ function collectDecisionSignals(commandCenter){
     (Array.isArray(source) ? source : []).forEach((item) => {
       const key = normalizeFlowAsset(item?.asset || item?.symbol);
       if(!key || seen.has(key)) return;
+      if(!isPublishedExecutionSignal(item)) return;
       seen.add(key);
       rows.push(item);
     });
@@ -736,6 +756,21 @@ function signalFlowSupport(signal){
     policy: regimeBits(signal),
     notes: reviewNotesLine(signal),
   };
+}
+function flowContextLine(row, signal, support){
+  const flowBits = [
+    `Imbalance ${(row.imbalance >= 0 ? '+' : '') + row.imbalance.toFixed(3)}`,
+  ];
+  if(row.bidWalls || row.askWalls) flowBits.push(`${row.bidWalls} bid / ${row.askWalls} ask walls`);
+  if(row.buyHunts || row.sellHunts) flowBits.push(`${row.buyHunts} buy / ${row.sellHunts} sell hunts`);
+  if(!signal || !support) return `Live flow only · ${flowBits.join(' · ')}`;
+  const signalBits = [];
+  if(support.confirmation.state !== 'neutral') signalBits.push(support.confirmation.label + (support.confirmation.detail ? ` ${support.confirmation.detail}` : ''));
+  if(support.policy.length) signalBits.push(support.policy[0]);
+  if(support.notes) signalBits.push(support.notes);
+  const kill = exactKillReason(signal);
+  if(kill) signalBits.push(kill);
+  return (signalBits.length ? signalBits.join(' · ') : 'Linked execution signal') + ` · ${flowBits.join(' · ')}`;
 }
 
 async function loadFlowBridge() {
@@ -1109,19 +1144,19 @@ async function loadWatchlist() {
       return row;
     }).sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
 
-    document.getElementById('watchBadge').textContent = ranked.length ? ranked.length + ' ranked' : (decisionSignals.length ? decisionSignals.length + ' context' : 'No context');
+    document.getElementById('watchBadge').textContent = ranked.length ? ranked.length + ' flow rows' : (decisionSignals.length ? decisionSignals.length + ' signals' : 'No live flow');
 
     if(!ranked.length){
       document.getElementById('watchList').innerHTML = decisionSignals.length
         ? '<div class="empty">Decision context is live, but no flow imbalance/wall/hunt row is active yet.</div>'
-        : '<div class="empty">No flow decision context available</div>';
+        : '<div class="empty">No live flow context is active yet.</div>';
       return;
     }
 
     document.getElementById('watchList').innerHTML = ranked.slice(0, 8).map((row) => {
       const color = row.score >= 0 ? 'var(--gr)' : 'var(--rd)';
       const signal = signalIndex.get(normalizeFlowAsset(row.asset));
-      const support = signal ? signalFlowSupport(signal) : null;
+      const support = signal && isPublishedExecutionSignal(signal) ? signalFlowSupport(signal) : null;
       const tags = [
         `<span class="watch-tag ${row.biasClass}">${row.bias}</span>`,
         `<span class="watch-tag">Imbalance ${(row.imbalance >= 0 ? '+' : '') + row.imbalance.toFixed(3)}</span>`,
@@ -1144,7 +1179,7 @@ async function loadWatchlist() {
           <div class="watch-asset">${formatFlowAsset(row.asset)}</div>
           <div class="watch-score" style="color:${color}">${row.score >= 0 ? '+' : ''}${row.score.toFixed(3)}</div>
         </div>
-        <div class="watch-meta">${signal ? `${support.confirmation.label} · ${support.policy[0] || 'No policy note'} · ${reviewNotesLine(signal) || 'No review notes'}` : 'Composite flow blends live imbalance, liquidity walls, and recent hunt signals.'}</div>
+        <div class="watch-meta">${flowContextLine(row, signal, support)}</div>
         <div class="watch-tags">${tags.join('')}</div>
       </div>`;
     }).join('');

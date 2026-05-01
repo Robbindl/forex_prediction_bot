@@ -292,7 +292,7 @@ function confirmationState(signal){
   const required = numValue(meta.entry_confirmation_bars_required, signal.entry_confirmation_bars_required, 0);
   if(ready) return {state:'ready',label:'Ready',detail:count && required ? count+'/'+required+' bars' : 'confirmed'};
   if(required && count < required) return {state:'waiting',label:'Waiting',detail:count+'/'+required+' bars'};
-  return {state:'neutral',label:'Unknown',detail:'confirmation n/a'};
+  return {state:'neutral',label:'Not published',detail:'confirmation n/a'};
 }
 function entryReadiness(signal){
   const meta = signalMeta(signal);
@@ -349,6 +349,23 @@ function signalValue(signal,key){ const meta = signalMeta(signal); return meta[k
 function signalNum(signal,key,fallback=0){ const num = Number(signalValue(signal,key)); return Number.isFinite(num) ? num : fallback; }
 function signalBool(signal,key){ return signalValue(signal,key) === true; }
 function signalText(signal,key){ const value = signalValue(signal,key); return value == null ? '' : String(value).trim(); }
+function isPublishedExecutionSignal(signal){
+  if(!signal || typeof signal !== 'object') return false;
+  const kind = String(signalValue(signal, 'decision_kind') || signalValue(signal, 'kind') || '').toLowerCase();
+  const state = String(signalValue(signal, 'decision_state') || signalValue(signal, 'state') || '').toLowerCase();
+  if(kind === 'session_watch' || state === 'watching') return false;
+  if(['candidate','blocked','accepted','killed','signal'].includes(kind)) return true;
+  if(signalText(signal, 'direction') || signalText(signal, 'signal') || signalText(signal, 'side') || signalText(signal, 'action')) return true;
+  return Boolean(
+    signalText(signal, 'exact_kill_reason') ||
+    signalText(signal, 'execution_kill_reason') ||
+    signalText(signal, 'blocked_reason') ||
+    signalText(signal, 'kill_reason') ||
+    signalValue(signal, 'entry_confirmation_ready') === true ||
+    signalNum(signal, 'entry_confirmation_bars_required', 0) > 0 ||
+    signalNum(signal, 'entry_confirmation_count', 0) > 0
+  );
+}
 function normalizeSignalAsset(asset){
   return String(asset || '')
     .toUpperCase()
@@ -363,7 +380,7 @@ function confirmationState(signal){
   const required = signalNum(signal, 'entry_confirmation_bars_required', 0);
   if(ready) return {state:'ready', label:'Ready', detail: count && required ? count + '/' + required + ' bars' : 'confirmed'};
   if(required && count < required) return {state:'waiting', label:'Waiting', detail: count + '/' + required + ' bars'};
-  return {state:'neutral', label:'Unknown', detail:'confirmation not published'};
+  return {state:'neutral', label:'Not published', detail:'confirmation not published'};
 }
 function entryReadiness(signal){
   const confirm = confirmationState(signal);
@@ -376,7 +393,7 @@ function entryReadiness(signal){
   return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
 }
 function exactKillReason(signal){
-  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalValue(signal, 'decision_reason') || '').trim();
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || '').trim();
 }
 function reviewNotesLine(signal){
   return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
@@ -398,20 +415,20 @@ function fetchPrimarySignal(page){
     page && page.command_center && page.command_center.latest_signals,
     page && page.command_center && page.command_center.top_opportunities,
     page && page.command_center && page.command_center.near_misses,
-    page && page.command_center && page.command_center.decision_context && page.command_center.decision_context.rows,
     page && page.command_center && page.command_center.watchlist_ladder && page.command_center.watchlist_ladder.hot,
     page && page.command_center && page.command_center.watchlist_ladder && page.command_center.watchlist_ladder.almost_ready,
     page && page.command_center && page.command_center.positions,
   ];
   for(const source of sources){
     if(Array.isArray(source) && source.length){
-      const exact = source.find(s => normalizeSignalAsset(s.asset || s.symbol) === current);
+      const exact = source.find(s => isPublishedExecutionSignal(s) && normalizeSignalAsset(s.asset || s.symbol) === current);
       if(exact) return exact;
     }
   }
   for(const source of sources){
     if(Array.isArray(source) && source.length){
-      return source[0];
+      const first = source.find(isPublishedExecutionSignal);
+      if(first) return first;
     }
   }
   return null;
@@ -423,7 +440,7 @@ async function fetchMarketIntelligenceOverview(){
   _marketIntelligencePending = (async function(){
     try{
       const d = await window.dashboardFetchJson('/api/page-overview?page=market_intelligence', {timeoutMs:10000, init:{cache:'no-store'}});
-      if(d.success){ _marketIntelligenceCache = {fetched:Date.now(),data:d}; return d; }
+      if(d.success){ if(!d.degraded)_marketIntelligenceCache = {fetched:Date.now(),data:d}; return d; }
       return {success:false};
     } finally {
       _marketIntelligencePending = null;
@@ -629,7 +646,7 @@ function renderMarketStatePanels(runtimeStatus=null, selectedSignal=null){
   const rangeMid = high != null && low != null ? (high + low) / 2 : null;
   const session = selected ? humanizeChartToken((runtimeStatus?.provider_routing?.summary_label || selected.primary_provider || 'unknown')) : 'Unavailable';
   const readiness = signal ? entryReadiness(signal) : {state:'neutral',label:'Context only',detail:'signal pending'};
-  const confirm = signal ? confirmationState(signal) : {state:'neutral',label:'Unknown',detail:'confirmation pending'};
+  const confirm = signal ? confirmationState(signal) : {state:'neutral',label:'Not published',detail:'no execution signal published'};
   const sweep = boolValue(meta.liquidity_sweep_reclaim, signal?.liquidity_sweep_reclaim);
   const failedOpp = boolValue(meta.failed_opposite_move_confirmed, signal?.failed_opposite_move_confirmed);
   statusEl.textContent = selected ? 'Live' : 'Waiting';
@@ -725,7 +742,7 @@ async function loadDataPlane(){
   status.style.background = assets.length ? 'rgba(0,208,132,.12)' : 'rgba(255,69,96,.12)';
   status.style.color = assets.length ? 'var(--gr)' : 'var(--rd)';
   const readiness = signal ? entryReadiness(signal) : {state:'neutral',label:'Context only',detail:'signal pending'};
-  const confirm = signal ? confirmationState(signal) : {state:'neutral',label:'Unknown',detail:'confirmation pending'};
+  const confirm = signal ? confirmationState(signal) : {state:'neutral',label:'Not published',detail:'no execution signal published'};
   const entryCount = signal ? signalNum(signal, 'entry_confirmation_count', 0) : 0;
   const entryRequired = signal ? signalNum(signal, 'entry_confirmation_bars_required', 0) : 0;
   const policyBits = signal ? regimeBits(signal) : [];

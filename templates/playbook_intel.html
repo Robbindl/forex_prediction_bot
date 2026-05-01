@@ -207,6 +207,21 @@ function elitePatternRank(signal){ const meta = signalMeta(signal); const raw = 
 function numValue(){ for(let i=0;i<arguments.length;i++){ const n = Number(arguments[i]); if(Number.isFinite(n)) return n; } return null; }
 function boolValue(){ for(let i=0;i<arguments.length;i++){ const v = arguments[i]; if(v === true || v === false) return v; } return null; }
 function statusChip(state,label){ return '<span class="status-chip status-' + state + '">' + label + '</span>'; }
+function isPublishedExecutionSignal(signal){
+  if(!signal || typeof signal !== 'object') return false;
+  const meta = signalMeta(signal);
+  const kind = String(meta.decision_kind || signal.decision_kind || signal.kind || '').toLowerCase();
+  const state = String(meta.decision_state || signal.decision_state || signal.state || '').toLowerCase();
+  if(kind === 'session_watch' || state === 'watching') return false;
+  if(['candidate','blocked','accepted','killed','signal'].includes(kind)) return true;
+  if(presentLabel(signal.direction || signal.signal || signal.side || signal.action, '')) return true;
+  return Boolean(
+    presentLabel(meta.execution_kill_reason || meta.kill_reason || signal.execution_kill_reason || signal.kill_reason || signal.reason || signal.killed_by, '') ||
+    boolValue(meta.entry_confirmation_ready, signal.entry_confirmation_ready) === true ||
+    numValue(meta.entry_confirmation_bars_required, signal.entry_confirmation_bars_required, 0) > 0 ||
+    numValue(meta.entry_confirmation_count, signal.entry_confirmation_count, 0) > 0
+  );
+}
 function confirmationState(signal){
   const meta = signalMeta(signal);
   const ready = boolValue(meta.entry_confirmation_ready, signal.entry_confirmation_ready);
@@ -214,7 +229,7 @@ function confirmationState(signal){
   const required = numValue(meta.entry_confirmation_bars_required, signal.entry_confirmation_bars_required, 0);
   if(ready) return {state:'ready', label:'Ready', detail: count && required ? count + '/' + required + ' bars' : 'confirmed'};
   if(required && count < required) return {state:'waiting', label:'Waiting', detail: count + '/' + required + ' bars'};
-  return {state:'neutral', label:'Unknown', detail:'confirmation not published'};
+  return {state:'neutral', label:'Not published', detail:'confirmation not published'};
 }
 function entryReadiness(signal){
   const meta = signalMeta(signal);
@@ -229,7 +244,7 @@ function entryReadiness(signal){
 }
 function exactKillReason(signal){
   const meta = signalMeta(signal);
-  return presentLabel(meta.execution_kill_reason || meta.kill_reason || meta.decision_reason || signal.execution_kill_reason || signal.kill_reason || signal.decision_reason || signal.reason || signal.killed_by, '');
+  return presentLabel(meta.execution_kill_reason || meta.kill_reason || signal.execution_kill_reason || signal.kill_reason || signal.reason || signal.killed_by, '');
 }
 function marketReviewNotes(signal){
   const meta = signalMeta(signal);
@@ -252,6 +267,13 @@ function regimeBits(signal){
 }
 function reviewNotesLine(signal){
   return [marketReviewNotes(signal), executionReviewNotes(signal)].filter(Boolean).join(' · ');
+}
+function reviewOrReasonLine(item){
+  return [
+    humanToken(item.killed_by || item.decision_state, 'review'),
+    presentLabel(item.reason || item.decision_reason, ''),
+    reviewNotesLine(item),
+  ].filter(Boolean).join(' · ');
 }
 function formatScore(value, digits){
   const n = Number(value);
@@ -373,7 +395,7 @@ function renderOperatorQueue(overview){
     const scoreB = (br.state === 'ready' ? 3 : br.state === 'waiting' ? 2 : br.state === 'blocked' ? 1 : 0) + (Number(b.opportunity_score || 0) || 0);
     return scoreB - scoreA;
   });
-  document.getElementById('operatorQueuePanel').innerHTML = '<div class="leader-box"><div class="leader-title">Filtered Setup Queue</div>' + (nearMisses.length ? nearMisses.slice(0,4).map(item => '<div class="leader-row"><div class="leader-asset">'+(item.asset || '—')+'</div><div class="leader-meta">'+humanToken(item.killed_by || item.decision_state, 'review')+' · '+presentLabel(item.reason || item.decision_reason, 'reason pending')+' · '+(reviewNotesLine(item) || 'No review notes')+'</div><div class="leader-score" style="color:var(--am)">'+Number(item.setup_quality || 0).toFixed(2)+'</div></div>').join('') : '<div class="empty">No filtered setup rows are close enough to queue right now</div>') + '</div><div class="leader-box"><div class="leader-title">Desk Focus & Drag</div>' + (ranked.length ? ranked.slice(0,5).map(item => { const state = entryReadiness(item); return '<div class="leader-row"><div class="leader-asset">'+(item.asset || '—')+'</div><div class="leader-meta">'+playbookName(item)+' · '+patternFamily(item)+' · '+state.detail+' · '+regimeBits(item).join(' · ')+'</div><div class="leader-score" style="color:'+(state.state === 'ready' ? 'var(--gr)' : state.state === 'waiting' ? 'var(--am)' : state.state === 'blocked' ? 'var(--rd)' : 'var(--tx2)')+'">'+state.label+'</div></div>'; }).join('') : '<div class="empty">No live decision queue</div>') + '</div>';
+  document.getElementById('operatorQueuePanel').innerHTML = '<div class="leader-box"><div class="leader-title">Filtered Setup Queue</div>' + (nearMisses.length ? nearMisses.slice(0,4).map(item => '<div class="leader-row"><div class="leader-asset">'+(item.asset || '—')+'</div><div class="leader-meta">'+reviewOrReasonLine(item)+'</div><div class="leader-score" style="color:var(--am)">'+Number(item.setup_quality || 0).toFixed(2)+'</div></div>').join('') : '<div class="empty">No filtered setup rows are close enough to queue right now</div>') + '</div><div class="leader-box"><div class="leader-title">Desk Focus & Drag</div>' + (ranked.length ? ranked.slice(0,5).map(item => { const state = entryReadiness(item); return '<div class="leader-row"><div class="leader-asset">'+(item.asset || '—')+'</div><div class="leader-meta">'+[playbookName(item), patternFamily(item), state.detail, regimeBits(item).join(' · ')].filter(Boolean).join(' · ')+'</div><div class="leader-score" style="color:'+(state.state === 'ready' ? 'var(--gr)' : state.state === 'waiting' ? 'var(--am)' : state.state === 'blocked' ? 'var(--rd)' : 'var(--tx2)')+'">'+state.label+'</div></div>'; }).join('') : '<div class="empty">No live decision queue</div>') + '</div>';
 }
 function renderAssetPlaybookMatrix(overview){
   const rows = Array.isArray(overview.asset_playbook_matrix) ? overview.asset_playbook_matrix : [];
@@ -483,7 +505,7 @@ async function loadOverview(){
     const decisionRows = []
       .concat(overview.near_misses || [])
       .concat(commandCenter.near_misses || [])
-      .concat(commandCenter.decision_context?.rows || []);
+      .filter(isPublishedExecutionSignal);
     if((!overview.signals || !overview.signals.length) && decisionRows.length){
       overview.signals = decisionRows;
       overview.live_quality = Object.assign({signal_count:decisionRows.length}, overview.live_quality || {});

@@ -292,7 +292,7 @@ async function fetchWhaleOverview(){
   }
   const d = await window.dashboardFetchJson('/api/page-overview?page=whale_intelligence', {timeoutMs: 12000});
   if(d.success){
-    _whaleOverviewCache = {fetched: now, data: d};
+    if(!d.degraded) _whaleOverviewCache = {fetched: now, data: d};
     return d;
   }
   return {success:false};
@@ -323,13 +323,29 @@ function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] 
 function signalBool(signal,key){return signalValue(signal,key) === true;}
 function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
 function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
+function isPublishedExecutionSignal(signal){
+  if(!signal || typeof signal !== 'object') return false;
+  const kind = String(signalValue(signal, 'decision_kind') || signalValue(signal, 'kind') || '').toLowerCase();
+  const state = String(signalValue(signal, 'decision_state') || signalValue(signal, 'state') || '').toLowerCase();
+  if(kind === 'session_watch' || state === 'watching') return false;
+  if(['candidate','blocked','accepted','killed','signal'].includes(kind)) return true;
+  if(signalText(signal, 'direction') || signalText(signal, 'signal') || signalText(signal, 'side') || signalText(signal, 'action')) return true;
+  return Boolean(
+    signalText(signal, 'exact_kill_reason') ||
+    signalText(signal, 'execution_kill_reason') ||
+    signalText(signal, 'kill_reason') ||
+    signalValue(signal, 'entry_confirmation_ready') === true ||
+    signalNum(signal, 'entry_confirmation_bars_required', 0) > 0 ||
+    signalNum(signal, 'entry_confirmation_count', 0) > 0
+  );
+}
 function confirmationState(signal){
   const ready = signalBool(signal, 'entry_confirmation_ready');
   const count = signalNum(signal, 'entry_confirmation_count', 0);
   const required = signalNum(signal, 'entry_confirmation_bars_required', 0);
   if(ready) return {state:'ready', label:'Ready', detail: count && required ? count + '/' + required + ' bars' : 'confirmed'};
   if(required && count < required) return {state:'waiting', label:'Waiting', detail: count + '/' + required + ' bars'};
-  return {state:'neutral', label:'Unknown', detail:'confirmation not published'};
+  return {state:'neutral', label:'Not published', detail:'confirmation not published'};
 }
 function entryReadiness(signal){
   const confirm = confirmationState(signal);
@@ -366,9 +382,10 @@ async function load(){
     const routing = status.provider_routing || {};
     const diagnostics = status.signal_diagnostics || {};
     const commandCenter = page.command_center || {};
-    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
-    const leadSignal = (Array.isArray(commandCenter.top_opportunities) && commandCenter.top_opportunities.length ? commandCenter.top_opportunities[0] : null) || liveSignals[0] || null;
-    const leadConfirm = leadSignal ? confirmationState(leadSignal) : {state:'neutral', label:'Unknown', detail:'confirmation pending'};
+    const liveSignals = (Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : []).filter(isPublishedExecutionSignal);
+    const leadOpportunity = Array.isArray(commandCenter.top_opportunities) ? commandCenter.top_opportunities.find(isPublishedExecutionSignal) : null;
+    const leadSignal = leadOpportunity || liveSignals[0] || null;
+    const leadConfirm = leadSignal ? confirmationState(leadSignal) : {state:'neutral', label:'Not published', detail:'no execution signal published'};
     const leadReadiness = leadSignal ? entryReadiness(leadSignal) : {state:'neutral', label:'Context only', detail:'signal pending'};
 
     if(!page.success){
@@ -545,7 +562,7 @@ async function load(){
       {
         title: 'Lead signal',
         value: leadSignal ? `${leadReadiness.label} · ${leadConfirm.label}` : '—',
-        note: leadSignal ? `${leadConfirm.detail} · ${reviewNotesLine(leadSignal) || 'No review notes'}${exactKillReason(leadSignal) ? ` · ${exactKillReason(leadSignal)}` : ''}` : 'No live setup is attached to the whale read',
+        note: leadSignal ? [leadConfirm.detail, reviewNotesLine(leadSignal), exactKillReason(leadSignal)].filter(Boolean).join(' · ') : 'No live setup is attached to the whale read',
         color: leadSignal ? (leadReadiness.state === 'ready' ? 'var(--gr)' : leadReadiness.state === 'waiting' ? 'var(--am)' : 'var(--rd)') : 'var(--tx2)',
       },
     ].map(item => `
@@ -625,7 +642,7 @@ async function load(){
       {
         title: 'Entry quality',
         value: leadSignal ? leadReadiness.label : '—',
-        note: leadSignal ? `Confirm ${leadConfirm.detail} · ${regimeBits(leadSignal).join(' · ') || 'No policy note'}` : 'No lead setup is attached to the whale stream',
+        note: leadSignal ? ['Confirm ' + leadConfirm.detail, regimeBits(leadSignal).join(' · ')].filter(Boolean).join(' · ') : 'No lead setup is attached to the whale stream',
         color: leadSignal ? (leadReadiness.state === 'ready' ? 'var(--gr)' : leadReadiness.state === 'waiting' ? 'var(--am)' : 'var(--rd)') : 'var(--tx2)',
       },
     ].map(item => `

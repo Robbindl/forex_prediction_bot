@@ -1,275 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sentiment Intelligence — Robbie</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#070b12;--s1:#0d1117;--s2:#131920;--s3:#1a2030;--bd:#1e2635;--tx:#c9d1e0;--tx2:#7a8899;--tx3:#4a5568;--gr:#00d084;--rd:#ff4560;--am:#ffa500;--bl:#2979ff;--pu:#b388ff;--cy:#00e5ff;--font:'Inter',system-ui,sans-serif}
-html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--font);overflow:hidden}
-.layout{display:flex;height:100vh}
-.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0}
-.sb-logo{padding:20px 16px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
-.sb-logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--bl),var(--pu));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#fff}
-.sb-logo-text{font-size:15px;font-weight:700}.sb-logo-text span{color:var(--cy);font-size:11px;display:block;font-weight:400;text-transform:uppercase;letter-spacing:.5px}
-.sb-section{padding:10px 8px 4px;font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px}
-.sb-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;margin:1px 6px;font-size:13px;color:var(--tx2);text-decoration:none;transition:.12s}
-.sb-link:hover{background:var(--s3);color:var(--tx)}.sb-link.active{background:rgba(41,121,255,.12);color:var(--bl);border-left:2px solid var(--bl)}
-.sb-icon{font-size:16px;width:20px;text-align:center}
-.sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid var(--bd)}
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
-.topbar{height:52px;background:var(--s1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;flex-shrink:0}
-.page-title{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
-.page-title .dot{width:8px;height:8px;border-radius:50%;background:var(--am)}
-.content{flex:1;overflow-y:auto;padding:16px 16px 24px;display:flex;flex-direction:column;gap:14px;min-height:0}
-.metric-grid{display:grid;grid-template-columns:repeat(3,minmax(320px,1fr));gap:14px}
-.sentiment-insight-grid,.sentiment-feed-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:14px}
-.panel{background:var(--s1);border:1px solid var(--bd);border-radius:14px;overflow:hidden;min-height:0;display:flex;flex-direction:column;flex-shrink:0;align-self:start}
-.panel-full{grid-column:1 / -1}.panel-wide{grid-column:span 2}
-.panel-header{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-shrink:0}
-.panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2)}
-.panel-body{padding:14px 16px;flex:1;min-height:0}
-.metric-panel{min-height:236px}
-.regime-panel{min-height:252px}
-.leader-panel{min-height:252px}
-.translation-panel{min-height:0}
-.heatmap-panel{min-height:420px}
-.news-panel{min-height:380px}
-.events-panel{min-height:340px}
 
-/* Big score */
-.score-center{padding:22px 20px 20px;text-align:center;min-height:172px;display:flex;flex-direction:column;justify-content:center;flex:1}
-.score-num{font-size:56px;font-weight:700;line-height:1;margin-bottom:6px}
-.score-lbl{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--tx2)}
-.score-note{font-size:12px;line-height:1.45;color:var(--tx3);margin-top:8px;max-width:560px;align-self:center}
-.score-bar{height:8px;background:rgba(255,255,255,.07);border-radius:4px;overflow:hidden;margin:14px 0 6px}
-.score-bar-fill{height:100%;border-radius:4px;transition:width .6s}
-.score-range{display:flex;justify-content:space-between;font-size:10px;color:var(--tx3)}
-
-/* Fear/Greed meter */
-.fg-wrap{padding:22px 16px 20px;display:flex;flex-direction:column;align-items:center;gap:6px;min-height:172px;justify-content:center;flex:1}
-.fg-num{font-size:42px;font-weight:700}
-.fg-lbl{font-size:12px;color:var(--tx2);text-transform:uppercase;letter-spacing:.5px}
-.fg-note{font-size:11px;line-height:1.4;color:var(--tx3);text-align:center;max-width:320px}
-.fg-bar{width:100%;height:10px;border-radius:5px;overflow:hidden;background:linear-gradient(to right,var(--rd),var(--am),var(--gr));position:relative;margin:8px 0}
-.fg-pointer{position:absolute;top:-3px;width:2px;height:16px;background:#fff;transform:translateX(-50%);border-radius:1px;transition:left .5s}
-
-/* Asset heatmap */
-.heatmap-body{padding:14px 16px 16px;min-height:auto;max-height:none;overflow:visible}
-.asset-sent-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;padding:0;min-height:0;align-content:start;grid-auto-rows:minmax(84px,auto)}
-.as-cell{border-radius:7px;padding:10px 6px;text-align:center}
-.as-asset{font-size:11px;font-weight:600;margin-bottom:3px}
-.as-score{font-size:13px;font-weight:700}
-.as-label{font-size:10px;opacity:.7;margin-top:1px}
-
-/* News articles */
-.news-item{padding:10px 0;border-bottom:1px solid rgba(30,38,53,.6)}
-.news-item:last-child{border:none}
-.news-title{font-size:13px;line-height:1.4;margin-bottom:4px}
-.news-meta{display:flex;gap:8px;font-size:11px;color:var(--tx3);align-items:center}
-.news-score{padding:1px 7px;border-radius:3px;font-size:10px;font-weight:600}
-.ns-pos{background:rgba(0,208,132,.15);color:var(--gr)}.ns-neg{background:rgba(255,69,96,.15);color:var(--rd)}.ns-neu{background:rgba(255,255,255,.07);color:var(--tx3)}
-
-/* Dist bars */
-.dist-row{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:12px}
-.dist-label{width:60px;color:var(--tx2)}.dist-bar{flex:1;height:6px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden}
-.dist-fill{height:100%;border-radius:3px}
-.dist-pct{width:36px;text-align:right;font-weight:600}
-.panel-note{font-size:11px;line-height:1.45;color:var(--tx3);margin-bottom:10px}
-.regime-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-.regime-card{background:var(--s2);border-radius:8px;padding:12px}
-.regime-val{font-size:20px;font-weight:700;margin-bottom:4px}
-.regime-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
-.regime-sub{font-size:11px;color:var(--tx2);margin-top:6px}
-.leader-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(30,38,53,.6)}
-.leader-row:last-child{border:none}
-.leader-asset{flex:1;font-size:12px;font-weight:600}
-.leader-meta{flex:1;font-size:11px;line-height:1.4;color:var(--tx3)}
-.leader-score{font-size:12px;font-weight:700}
-.leader-tag{font-size:10px;padding:2px 6px;border-radius:999px;text-transform:uppercase;letter-spacing:.4px}
-.event-risk{background:var(--s2);border-radius:8px;padding:10px 12px;margin-bottom:10px}
-.event-risk-title{font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
-.event-risk-body{font-size:12px;line-height:1.4}
-.translation-body{padding:16px}
-.translation-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-.translation-card{background:var(--s2);border:1px solid rgba(30,38,53,.8);border-radius:10px;padding:14px;min-height:114px;display:flex;flex-direction:column;justify-content:space-between;gap:10px}
-.translation-label{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.6px}
-.translation-value{font-size:24px;font-weight:700;line-height:1.15}
-.translation-value.compact{font-size:16px;line-height:1.35}
-.translation-note{font-size:12px;color:var(--tx2);line-height:1.45}
-.translation-sub{font-size:11px;color:var(--tx3)}
-
-.empty{text-align:center;padding:30px;color:var(--tx3);font-size:13px}
-.gn{color:var(--gr)}.rd{color:var(--rd)}.am{color:var(--am)}
-
-/* Scrollable panel bodies */
-#assetGrid{min-height:340px;max-height:none;overflow:visible}
-#newsPanel{min-height:280px;max-height:520px;overflow-y:auto}
-#eventsPanel{min-height:220px;max-height:420px;overflow-y:auto}
-#distPanel{min-height:172px;max-height:none;overflow-y:auto}
-
-@media(max-width:1400px){
-  .metric-grid{grid-template-columns:repeat(2,minmax(320px,1fr))}
-  .translation-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-}
-
-@media(max-width:1080px){
-  .metric-grid,.sentiment-insight-grid,.sentiment-feed-grid{grid-template-columns:minmax(0,1fr)}
-  .translation-grid{grid-template-columns:minmax(0,1fr)}
-  .asset-sent-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
-}
-
-/* Scrollbar styling */
-::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-track{background:rgba(255,255,255,.05);border-radius:4px}
-::-webkit-scrollbar-thumb{background:rgba(255,165,0,.3);border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:rgba(255,165,0,.6)}
-
-/* ── MOBILE HAMBURGER & SIDEBAR OVERLAY ─────────────────────────────── */
-.hamburger{display:none;flex-direction:column;justify-content:center;gap:5px;
-  width:36px;height:36px;cursor:pointer;padding:6px;border-radius:6px;
-  background:transparent;border:none;flex-shrink:0}
-.hamburger span{display:block;height:2px;background:var(--tx);border-radius:2px;transition:.25s}
-.hamburger.open span:nth-child(1){transform:translateY(7px) rotate(45deg)}
-.hamburger.open span:nth-child(2){opacity:0}
-.hamburger.open span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
-.sb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
-  z-index:49;backdrop-filter:blur(2px)}
-@media(max-width:768px){
-  .hamburger{display:flex}
-  .sidebar{position:fixed;left:-240px;top:0;height:100vh;z-index:50;
-    transition:left .25s cubic-bezier(.4,0,.2,1);width:240px;
-    box-shadow:4px 0 24px rgba(0,0,0,.5);overflow-y:auto}
-  .sidebar.open{left:0}
-  .sb-overlay.open{display:block}
-  .topbar{padding:0 12px}
-}
-
-/* ── MOBILE SCROLL FIX ───────────────────────────────────────────────── */
-@media(max-width:768px){
-  html,body{overflow:auto!important}
-  .layout{height:auto;min-height:100vh;flex-direction:column}
-  .main{overflow:visible!important;height:auto}
-  .content{overflow:visible!important;height:auto;display:flex;flex-direction:column}
-  .asset-sent-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-}
-</style>
-</head>
-<body>
-<div class="layout">
-    <nav class="sidebar">
-    <div class="sb-logo">
-      <div class="sb-logo-icon">R</div>
-      <div class="sb-logo-text">Robbie<span>Trading Platform</span></div>
-    </div>
-    <div class="sb-section">Dashboards</div>
-    <a href="/command-center" class="sb-link"><span class="sb-icon">⚡</span>Command Center</a>
-    <a href="/market-intelligence" class="sb-link"><span class="sb-icon">📊</span>Market Intel</a>
-    <a href="/playbook-intel" class="sb-link"><span class="sb-icon">🤖</span>Playbook Intel</a>
-    <a href="/architecture-lab" class="sb-link"><span class="sb-icon">🧭</span>Architecture</a>
-    <a href="/whale-intelligence" class="sb-link"><span class="sb-icon">🐋</span>Whale Intel</a>
-    <a href="/sentiment-intelligence" class="sb-link active"><span class="sb-icon">💬</span>Sentiment</a>
-    <a href="/risk-dashboard" class="sb-link"><span class="sb-icon">🛡️</span>Risk</a>
-    <a href="/order-flow" class="sb-link"><span class="sb-icon">📈</span>Order Flow</a>
-    <a href="/intelligence-alerts" class="sb-link"><span class="sb-icon">🚨</span>Intel Alerts</a>
-    <a href="/system-monitor" class="sb-link"><span class="sb-icon">🖥️</span>System</a>
-    <div class="sb-bottom"></div>
-  </nav>
-  <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
-  <div class="main">
-    <div class="topbar">
-      <button class="hamburger" id="menuBtn" aria-label="Menu" onclick="toggleSidebar()"><span></span><span></span><span></span></button><div class="page-title"><div class="dot"></div>Sentiment Intelligence</div></div>
-    <div class="content">
-      <div class="metric-grid">
-        <div class="panel metric-panel">
-          <div class="panel-header"><span class="panel-title">🌐 Macro Composite</span></div>
-          <div class="score-center">
-            <div class="score-num" id="compScore">—</div>
-            <div class="score-lbl" id="compLabel">Loading…</div>
-            <div class="score-note" id="compExplain">Waiting for sentiment inputs…</div>
-            <div class="score-bar"><div class="score-bar-fill" id="compBar" style="width:50%"></div></div>
-            <div class="score-range"><span>-1.0 Bearish</span><span>+1.0 Bullish</span></div>
-          </div>
-        </div>
-
-        <div class="panel metric-panel">
-          <div class="panel-header"><span class="panel-title">😱 Fear & Greed Input</span></div>
-          <div class="fg-wrap">
-            <div class="fg-num" id="fgNum">—</div>
-            <div class="fg-lbl" id="fgLbl">—</div>
-            <div class="fg-bar"><div class="fg-pointer" id="fgPtr" style="left:50%"></div></div>
-            <div class="fg-note" id="fgNote">This is one macro input, not the full sentiment verdict.</div>
-          </div>
-        </div>
-
-        <div class="panel metric-panel">
-          <div class="panel-header"><span class="panel-title">📊 News Tone Distribution</span></div>
-          <div class="panel-body" id="distPanel"><div class="empty">Loading…</div></div>
-        </div>
-      </div>
-
-      <div class="panel translation-panel">
-        <div class="panel-header"><span class="panel-title">🧩 Decision Translation</span></div>
-        <div class="panel-body translation-body" id="signalLinkPanel"><div class="empty">Loading…</div></div>
-      </div>
-
-      <div class="panel translation-panel">
-        <div class="panel-header"><span class="panel-title">🎛️ Operator Lens</span></div>
-        <div class="panel-body translation-body" id="operatorLensPanel"><div class="empty">Loading…</div></div>
-      </div>
-
-      <div class="panel translation-panel">
-        <div class="panel-header"><span class="panel-title">⚔️ Price vs Sentiment Conflict</span></div>
-        <div class="panel-body translation-body" id="conflictPanel"><div class="empty">Loading…</div></div>
-      </div>
-
-      <div class="panel translation-panel">
-        <div class="panel-header"><span class="panel-title">🧭 Narrative Drift</span></div>
-        <div class="panel-body translation-body" id="driftPanel"><div class="empty">Loading…</div></div>
-      </div>
-
-      <div class="panel translation-panel">
-        <div class="panel-header"><span class="panel-title">⏳ Event Risk Timeline</span></div>
-        <div class="panel-body translation-body" id="timelinePanel"><div class="empty">Loading…</div></div>
-      </div>
-
-      <div class="sentiment-insight-grid">
-        <div class="panel regime-panel">
-          <div class="panel-header"><span class="panel-title">📡 Market Regime Inputs</span></div>
-          <div class="panel-body">
-            <div class="regime-grid" id="regimePanel"><div class="empty" style="grid-column:span 2">Loading…</div></div>
-          </div>
-        </div>
-
-        <div class="panel leader-panel">
-          <div class="panel-header"><span class="panel-title">🏁 Sentiment Leaders</span></div>
-          <div class="panel-body" id="leaderPanel"><div class="empty">Loading…</div></div>
-        </div>
-      </div>
-
-      <div class="sentiment-feed-grid">
-        <div class="panel news-panel">
-          <div class="panel-header"><span class="panel-title">📰 News Sentiment Feed</span></div>
-          <div class="panel-body" id="newsPanel"><div class="empty">Loading…</div></div>
-        </div>
-
-        <div class="panel events-panel">
-          <div class="panel-header"><span class="panel-title">📅 Event Risk</span></div>
-          <div class="panel-body" id="eventsPanel"><div class="empty">Loading…</div></div>
-        </div>
-      </div>
-
-      <div class="panel heatmap-panel">
-        <div class="panel-header"><span class="panel-title">🔥 Per-Asset Sentiment Context</span></div>
-        <div class="panel-body heatmap-body">
-          <div class="asset-sent-grid" id="assetGrid"><div class="empty" style="grid-column:span 5">Loading…</div></div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-<script src="/static/dashboard_auth.js?v=20260402c"></script>
-<script>
 function sColor(s){return s>0.2?'var(--gr)':s<-0.2?'var(--rd)':'var(--am)'}
 function sClass(s){return s>0.1?'ns-pos':s<-0.1?'ns-neg':'ns-neu'}
 function sBucket(s){return s>0.1?'Bullish':s<-0.1?'Bearish':'Neutral'}
@@ -283,30 +12,13 @@ function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] 
 function signalBool(signal,key){return signalValue(signal,key) === true;}
 function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
 function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
-function isPublishedExecutionSignal(signal){
-  if(!signal || typeof signal !== 'object') return false;
-  const kind = String(signalValue(signal, 'decision_kind') || signalValue(signal, 'kind') || '').toLowerCase();
-  const state = String(signalValue(signal, 'decision_state') || signalValue(signal, 'state') || '').toLowerCase();
-  if(kind === 'session_watch' || state === 'watching') return false;
-  if(['candidate','blocked','accepted','killed','signal'].includes(kind)) return true;
-  if(signalText(signal, 'direction') || signalText(signal, 'signal') || signalText(signal, 'side') || signalText(signal, 'action')) return true;
-  return Boolean(
-    signalText(signal, 'exact_kill_reason') ||
-    signalText(signal, 'execution_kill_reason') ||
-    signalText(signal, 'blocked_reason') ||
-    signalText(signal, 'kill_reason') ||
-    signalValue(signal, 'entry_confirmation_ready') === true ||
-    signalNum(signal, 'entry_confirmation_bars_required', 0) > 0 ||
-    signalNum(signal, 'entry_confirmation_count', 0) > 0
-  );
-}
 function confirmationState(signal){
   const ready = signalBool(signal, 'entry_confirmation_ready');
   const count = signalNum(signal, 'entry_confirmation_count', 0);
   const required = signalNum(signal, 'entry_confirmation_bars_required', 0);
   if(ready) return {state:'ready', label:'Ready', detail: count && required ? count + '/' + required + ' bars' : 'confirmed'};
   if(required && count < required) return {state:'waiting', label:'Waiting', detail: count + '/' + required + ' bars'};
-  return {state:'neutral', label:'Not published', detail:'confirmation not published'};
+  return {state:'neutral', label:'Unknown', detail:'confirmation not published'};
 }
 function entryReadiness(signal){
   const confirm = confirmationState(signal);
@@ -319,7 +31,7 @@ function entryReadiness(signal){
   return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
 }
 function exactKillReason(signal){
-  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || '').trim();
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalValue(signal, 'decision_reason') || '').trim();
 }
 function reviewNotesLine(signal){
   return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
@@ -417,7 +129,7 @@ async function fetchSentimentOverview(){
         }
       }catch(_){}
     }
-    if(!d.degraded) _sentimentOverviewCache = {fetched: now, data: d};
+    _sentimentOverviewCache = {fetched: now, data: d};
     return d;
   }
   return {success:false};
@@ -437,14 +149,14 @@ async function load(){
     const routing = status.provider_routing || {};
     const diagnostics = status.signal_diagnostics || {};
     const commandCenter = page.command_center || {};
+    const decisionRows = Array.isArray(commandCenter.decision_context?.rows) ? commandCenter.decision_context.rows : [];
     const liveSignals = []
       .concat(Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [])
       .concat(Array.isArray(commandCenter.top_opportunities) ? commandCenter.top_opportunities : [])
       .concat(Array.isArray(commandCenter.near_misses) ? commandCenter.near_misses : [])
-      .filter(isPublishedExecutionSignal);
-    const leadOpportunity = Array.isArray(commandCenter.top_opportunities) ? commandCenter.top_opportunities.find(isPublishedExecutionSignal) : null;
-    const leadSignal = leadOpportunity || liveSignals[0] || null;
-    const leadConfirm = leadSignal ? confirmationState(leadSignal) : {state:'neutral', label:'Not published', detail:'no execution signal published'};
+      .concat(decisionRows);
+    const leadSignal = (Array.isArray(commandCenter.top_opportunities) && commandCenter.top_opportunities.length ? commandCenter.top_opportunities[0] : null) || liveSignals[0] || null;
+    const leadConfirm = leadSignal ? confirmationState(leadSignal) : {state:'neutral', label:'Unknown', detail:'confirmation pending'};
     const leadReadiness = leadSignal ? entryReadiness(leadSignal) : {state:'neutral', label:'Context only', detail:'signal pending'};
     const market = d.market_composite || {
       score: d.score || 0,
@@ -695,7 +407,7 @@ async function load(){
       {
         label: 'Execution readiness',
         score: leadSignal ? leadReadiness.label : '—',
-        note: leadSignal ? [leadConfirm.detail, reviewNotesLine(leadSignal)].filter(Boolean).join(' · ') : 'Sentiment support does not equal execution readiness.',
+        note: leadSignal ? `${leadConfirm.detail} · ${reviewNotesLine(leadSignal) || 'No review notes'}` : 'Sentiment support does not equal execution readiness.',
         color: leadSignal ? (leadReadiness.state === 'ready' ? 'var(--gr)' : leadReadiness.state === 'waiting' ? 'var(--am)' : 'var(--rd)') : 'var(--tx2)',
         sub: 'A supportive macro tone can still be blocked by entry-quality gates',
       },
@@ -753,17 +465,3 @@ async function load(){
   }
 }
 load();setInterval(load,60000);
-</script>
-
-<script>
-function toggleSidebar(){
-  var sb=document.querySelector('.sidebar'),ov=document.getElementById('sbOverlay'),btn=document.getElementById('menuBtn');
-  var open=sb.classList.toggle('open');
-  ov.classList.toggle('open',open);btn.classList.toggle('open',open);
-  document.body.style.overflow=open?'hidden':'';
-}
-document.querySelectorAll('.sb-link').forEach(function(a){
-  a.addEventListener('click',function(){if(document.querySelector('.sidebar').classList.contains('open'))toggleSidebar();});
-});
-</script>
-</body><script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js?v=6',{updateViaCache:'none'}).then(reg=>{console.log('SW registered',reg.scope);try{reg.update();}catch(_){}}).catch(err=>console.warn('SW registration failed',err)));}</script></html>

@@ -417,7 +417,7 @@ async function fetchRiskDashboardOverview() {
   _riskDashboardPending = (async function(){
     try{
       const d = await window.dashboardFetchJson('/api/page-overview?page=risk_dashboard', {timeoutMs: 12000, init:{cache:'no-store'}});
-      if (d.success) {_riskDashboardCache = {fetched: Date.now(), data: d};return d;}
+      if (d.success) {if(!d.degraded)_riskDashboardCache = {fetched: Date.now(), data: d};return d;}
       return {success:false};
     } finally {
       _riskDashboardPending = null;
@@ -547,17 +547,36 @@ function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,ke
 function signalBool(signal,key){return signalValue(signal,key) === true;}
 function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
 function signalList(signal,key){const value=signalValue(signal,key);if(Array.isArray(value))return value.map(v=>String(v||'').trim()).filter(Boolean);if(typeof value === 'string'){const raw=value.trim();return raw?[raw]:[];}return [];}
-function exactSignalReason(signal){return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalValue(signal, 'decision_reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();}
+function isPublishedExecutionSignal(signal){
+  if(!signal || typeof signal !== 'object') return false;
+  const kind = String(signalValue(signal, 'decision_kind') || signalValue(signal, 'kind') || '').toLowerCase();
+  const state = String(signalValue(signal, 'decision_state') || signalValue(signal, 'state') || '').toLowerCase();
+  if(kind === 'session_watch' || state === 'watching') return false;
+  if(['candidate','blocked','accepted','killed','signal'].includes(kind)) return true;
+  if(signalText(signal, 'direction') || signalText(signal, 'signal') || signalText(signal, 'side') || signalText(signal, 'action')) return true;
+  return Boolean(
+    signalText(signal, 'exact_kill_reason') ||
+    signalText(signal, 'execution_kill_reason') ||
+    signalText(signal, 'blocked_reason') ||
+    signalText(signal, 'kill_reason') ||
+    signalList(signal, 'execution_hard_blocks').length ||
+    signalList(signal, 'late_entry_risk_reasons').length ||
+    signalList(signal, 'rejected_reasons').length ||
+    signalValue(signal, 'entry_confirmation_ready') === true ||
+    signalNum(signal, 'entry_confirmation_bars_required', 0) > 0 ||
+    signalNum(signal, 'entry_confirmation_count', 0) > 0
+  );
+}
+function exactSignalReason(signal){return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();}
 function collectDecisionSignals(commandCenter){
   const ladder = commandCenter?.watchlist_ladder || {};
   return []
     .concat(commandCenter?.latest_signals || [])
     .concat(commandCenter?.top_opportunities || [])
     .concat(commandCenter?.near_misses || [])
-    .concat(commandCenter?.decision_context?.rows || [])
     .concat(ladder.hot || [])
     .concat(ladder.almost_ready || [])
-    .filter(item => item && item.asset);
+    .filter(item => item && item.asset && isPublishedExecutionSignal(item));
 }
 function overextendedSignal(signal){return signalNum(signal, 'extension_score', 0) >= 0.80 || /overextend|extension|late setup|too far/i.test(exactSignalReason(signal).toLowerCase());}
 function weakQualitySignal(signal){

@@ -29,10 +29,11 @@ def _build_pool():
         import redis
         from config.config import REDIS_URL
 
-        # Keep the default small-host friendly. This bot also opens dedicated
-        # pub/sub sockets, so a large shared pool can exhaust low-tier Redis
-        # plans even when command throughput is modest.
-        max_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", "3"))
+        # Dashboard refreshes, order-flow publishers, monitors, and pub/sub
+        # all share this process. A tiny pool makes concurrent UI refreshes
+        # fail with redis-py's "Too many connections" before Redis itself is
+        # actually overloaded, so keep a practical floor for production.
+        max_connections = max(16, int(os.environ.get("REDIS_MAX_CONNECTIONS", "16")))
         pool = redis.ConnectionPool.from_url(
             REDIS_URL,
             max_connections=max_connections,

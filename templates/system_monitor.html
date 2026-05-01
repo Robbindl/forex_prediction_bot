@@ -444,7 +444,7 @@ async function fetchSystemMonitorOverview(){
     try{
       const d = await window.dashboardFetchJson('/api/page-overview?page=system_monitor', {timeoutMs: 12000});
       if(d.success){
-        _systemMonitorCache = {fetched: Date.now(), data: d};
+        if(!d.degraded) _systemMonitorCache = {fetched: Date.now(), data: d};
         return d;
       }
       return {success:false};

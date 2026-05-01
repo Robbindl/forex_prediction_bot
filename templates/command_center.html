@@ -642,6 +642,27 @@ function hasEntryStateContext(item){
     || itemBool(item,'entry_confirmation_ready') === true
   );
 }
+function isPublishedExecutionItem(item){
+  if(!item || typeof item !== 'object') return false;
+  const kind=String(itemText(item,'decision_kind') || itemText(item,'kind') || '').toLowerCase();
+  const state=String(itemText(item,'decision_state') || itemText(item,'state') || '').toLowerCase();
+  if(kind === 'session_watch' || state === 'watching') return false;
+  if(['candidate','blocked','accepted','killed','signal'].includes(kind)) return true;
+  return Boolean(
+    itemText(item,'direction') ||
+    itemText(item,'signal') ||
+    itemText(item,'side') ||
+    itemText(item,'action') ||
+    itemText(item,'exact_kill_reason') ||
+    itemText(item,'execution_kill_reason') ||
+    itemText(item,'blocked_reason') ||
+    itemText(item,'kill_reason') ||
+    itemList(item,'execution_hard_blocks').length ||
+    itemList(item,'late_entry_risk_reasons').length ||
+    itemList(item,'rejected_reasons').length ||
+    hasEntryStateContext(item)
+  );
+}
 function exactKillReason(item){
   const hardBlocks=itemList(item,'execution_hard_blocks');
   const lateReasons=itemList(item,'late_entry_risk_reasons');
@@ -653,7 +674,6 @@ function exactKillReason(item){
     || itemText(item,'kill_reason')
     || itemText(item,'killed_by')
     || itemText(item,'reason')
-    || itemText(item,'decision_reason')
     || (hardBlocks[0] || '')
     || (lateReasons[0] || '')
     || (rejected[0] || '')
@@ -1027,7 +1047,7 @@ async function fetchCommandCenterOverview(){
   _commandCenterPending = (async () => {
     try{
       const page = await fetchProtectedJson('/api/command-center?live=1', {timeoutMs: 15000});
-      if(page && page.success){_commandCenterCache = {fetched: Date.now(), data: page};return page;}
+      if(page && page.success){if(!page.degraded)_commandCenterCache = {fetched: Date.now(), data: page};return page;}
       return {success:false};
     } finally {_commandCenterPending = null;}
   })();
@@ -1199,7 +1219,7 @@ async function startCommandCenterStream(){
   }
 }
 function collectElitePool(d){
-  return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.decision_context?.rows)||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]);
+  return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]).filter(isPublishedExecutionItem);
 }
 function renderEliteSummary(d){
   const pool=collectElitePool(d);
@@ -1245,7 +1265,7 @@ async function loadMain(){
   const signalQuality=d.signal_quality||{};
   const signalDiagnostics=d.signal_diagnostics||{};
   const decisionContext=d.decision_context||{};
-  const decisionRows=Array.isArray(decisionContext.rows)?decisionContext.rows:[];
+  const decisionRows=(Array.isArray(decisionContext.rows)?decisionContext.rows:[]).filter(isPublishedExecutionItem);
   const authoritativeLiveBook = getAuthoritativeLiveBookSnapshot();
   const live = authoritativeLiveBook?.live_summary || d.live_summary || {};
   const mergedPositions = authoritativeLiveBook
@@ -1343,7 +1363,7 @@ async function loadMain(){
         const pressure=buildQualityPressure(s);
         const dirClass=dir==='BUY'?'sig-buy':dir==='SELL'?'sig-sell':'';
         const contextReason=s.decision_reason||decisionContext.summary||'No execution decision has passed yet';
-        return`<div class="sig-row"><span class="sig-dir ${dirClass}">${dir}</span><div style="flex:1"><div class="sig-asset">${s.asset||'?'} ${statusPill(s,entryState.label)}</div><div class="sig-meta">${s.category||''} · ${detail}</div>${eliteChipRow(s)}${provenance?`<div class="sig-meta">${provenance}</div>`:''}<div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}${setupLine?`<div class="sig-meta">${setupLine}</div>`:''}${ladderLine?`<div class="sig-meta">${ladderLine}</div>`:''}<div class="sig-meta">${readinessBits(s).join(' · ') || contextReason}</div><div class="sig-meta">${qualityBits(s).join(' · ') || 'Decision metrics pending or not applicable'}</div>${pressure?`<div class="note-callout warn">${pressure}</div>`:''}${(s.exact_kill_reason||s.execution_kill_reason||s.decision_reason)?`<div class="note-callout ${entryState.label==='Blocked'?'bad':'warn'}">${exactKillReason(s)}</div>`:''}${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}${reviewNotesLine(s)?`<div class="note-callout ${entryState.label==='Ready'?'ok':entryState.label==='Blocked'?'bad':'warn'}">${reviewNotesLine(s)}</div>`:''}</div><div style="text-align:right"><div class="sig-conf ${entryState.className}" style="color:${barCol}">${sigs.length?`${cp}%`:titleToken(s.decision_state||'Context')}</div><div class="conf-bar-mini"><div class="cbm-fill" style="width:${sigs.length?cp:35}%;background:${barCol}"></div></div><div class="sig-meta" style="margin-top:6px">${sigs.length?`${confirmationProgress(s).toFixed(0)}% conf`:titleToken(s.decision_kind||'watch')}</div></div></div>`;
+        return`<div class="sig-row"><span class="sig-dir ${dirClass}">${dir}</span><div style="flex:1"><div class="sig-asset">${s.asset||'?'} ${statusPill(s,entryState.label)}</div><div class="sig-meta">${s.category||''} · ${detail}</div>${eliteChipRow(s)}${provenance?`<div class="sig-meta">${provenance}</div>`:''}<div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}${setupLine?`<div class="sig-meta">${setupLine}</div>`:''}${ladderLine?`<div class="sig-meta">${ladderLine}</div>`:''}<div class="sig-meta">${readinessBits(s).join(' · ') || contextReason}</div><div class="sig-meta">${qualityBits(s).join(' · ') || 'Decision metrics pending or not applicable'}</div>${pressure?`<div class="note-callout warn">${pressure}</div>`:''}${(s.exact_kill_reason||s.execution_kill_reason)?`<div class="note-callout ${entryState.label==='Blocked'?'bad':'warn'}">${exactKillReason(s)}</div>`:''}${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}${reviewNotesLine(s)?`<div class="note-callout ${entryState.label==='Ready'?'ok':entryState.label==='Blocked'?'bad':'warn'}">${reviewNotesLine(s)}</div>`:''}</div><div style="text-align:right"><div class="sig-conf ${entryState.className}" style="color:${barCol}">${sigs.length?`${cp}%`:titleToken(s.decision_state||'Context')}</div><div class="conf-bar-mini"><div class="cbm-fill" style="width:${sigs.length?cp:35}%;background:${barCol}"></div></div><div class="sig-meta" style="margin-top:6px">${sigs.length?`${confirmationProgress(s).toFixed(0)}% conf`:titleToken(s.decision_kind||'watch')}</div></div></div>`;
       }).join('');
     }
   }catch(e){console.error('[CC] signals:',e);}

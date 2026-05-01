@@ -398,7 +398,7 @@ async function fetchIntelligenceOverview(){
   }
   const d = await window.dashboardFetchJson('/api/page-overview?page=intelligence_alerts', {timeoutMs: 12000});
   if(!d.success) return {alerts:[], journals: []};
-  _intelOverviewCache = {fetched: now, data: d};
+  if(!d.degraded) _intelOverviewCache = {fetched: now, data: d};
   return d;
 }
 
@@ -615,7 +615,7 @@ async function loadJournal() {
         <div class="outcome-card">
           <div class="outcome-kicker">Review notes</div>
           <div class="outcome-value cy">${leadJournal ? (leadNotes ? 'Live' : '—') : allAlerts.length}</div>
-          <div class="outcome-note">${leadJournal ? (leadNotes || 'No review notes published') : `${priorityCounts.CRITICAL} critical · ${priorityCounts.HIGH} high`}</div>
+          <div class="outcome-note">${leadJournal ? (leadNotes || leadReason || leadGate || 'Journal did not publish review notes') : `${priorityCounts.CRITICAL} critical · ${priorityCounts.HIGH} high`}</div>
         </div>
       </div>` : '<div class="empty">No actionable alert stack right now.</div>';
 
@@ -630,7 +630,7 @@ async function loadJournal() {
         <div class="outcome-card">
           <div class="outcome-kicker">Desk read</div>
           <div class="outcome-value ${fragileCount || conflictCount || blockCount || confirmationBlockedCount || qualityBlockedCount || regimeBlockedCount || clusterBlockedCount ? 'am' : 'gn'}" style="font-size:18px">${fragileCount || conflictCount || blockCount || confirmationBlockedCount || qualityBlockedCount || regimeBlockedCount || clusterBlockedCount ? 'Review drag' : 'Clean channel'}</div>
-          <div class="outcome-note">${leadJournal ? (leadNotes || 'No review notes published') : (fragileCount || conflictCount || blockCount ? `${fragileCount} broker · ${conflictCount} cross · ${blockCount} pattern drag` : 'The review stack is not heavily resisting this alert flow.')}</div>
+          <div class="outcome-note">${leadJournal ? (leadNotes || leadReason || leadGate || 'Journal did not publish review notes') : (fragileCount || conflictCount || blockCount ? `${fragileCount} broker · ${conflictCount} cross · ${blockCount} pattern drag` : 'The review stack is not heavily resisting this alert flow.')}</div>
         </div>
       </div>` : '<div class="empty">No lead alert to translate yet.</div>';
 
