@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 import time
 from typing import Optional
@@ -27,13 +26,9 @@ def _build_pool():
         return
     try:
         import redis
-        from config.config import REDIS_URL
+        from config.config import REDIS_MAX_CONNECTIONS, REDIS_URL
 
-        # Dashboard refreshes, order-flow publishers, monitors, and pub/sub
-        # all share this process. A tiny pool makes concurrent UI refreshes
-        # fail with redis-py's "Too many connections" before Redis itself is
-        # actually overloaded, so keep a practical floor for production.
-        max_connections = max(16, int(os.environ.get("REDIS_MAX_CONNECTIONS", "16")))
+        max_connections = max(1, int(REDIS_MAX_CONNECTIONS))
         pool = redis.ConnectionPool.from_url(
             REDIS_URL,
             max_connections=max_connections,

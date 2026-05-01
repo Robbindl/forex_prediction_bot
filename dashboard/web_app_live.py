@@ -105,6 +105,9 @@ try:
         DEEPSEEK_API_KEY,
         DEEPSEEK_TELEGRAM_TOKEN,
         DASHBOARD_HEATMAP_WORKERS,
+        DASHBOARD_REDIS_CACHE_ENABLED,
+        DASHBOARD_REDIS_CACHE_MAX_VALUE_BYTES,
+        DASHBOARD_REDIS_CACHE_TTL_CAP_SECONDS,
         DASHBOARD_SENTIMENT_ASSET_WORKERS,
         DASHBOARD_SENTIMENT_FETCH_WORKERS,
         DASHBOARD_WEAK_POSITIONS_LIMIT,
@@ -137,6 +140,9 @@ except Exception:
     DASHBOARD_COMMAND_CENTER_WORKERS = 4
     DASHBOARD_CORRELATION_WORKERS = 8
     DASHBOARD_HEATMAP_WORKERS = 10
+    DASHBOARD_REDIS_CACHE_ENABLED = False
+    DASHBOARD_REDIS_CACHE_MAX_VALUE_BYTES = 65536
+    DASHBOARD_REDIS_CACHE_TTL_CAP_SECONDS = 300
     DASHBOARD_SENTIMENT_ASSET_WORKERS = 10
     DASHBOARD_SENTIMENT_FETCH_WORKERS = 6
     DEEPSEEK_API_KEY = ""
@@ -443,19 +449,34 @@ def _get_market_intelligence():
                 logger.warning(f"[dashboard] MarketIntelligenceService: {e}")
     return _market_intel_svc
 
-# ── Response cache (in-process TTL cache + Redis fallback) ─────────────────────────────────────
+# ── Response cache (in-process TTL cache; Redis opt-in with byte guardrails) ───────────────────
 _cache_store: Dict[str, Tuple[Any, float]] = {}
 _cache_lock  = threading.Lock()
 _cache_prefix = "dashboard:cache:"
 _LOCAL_ONLY_CACHE_PREFIXES = ("page_overview:", "page_component:", "html_template:")
 _dashboard_refresh_lock = threading.Lock()
 _dashboard_refresh_state: Dict[str, bool] = {}
+_redis_cache_skip_log: Dict[str, float] = {}
 
 
 def _cache_is_local_only(key: str) -> bool:
     return any(str(key or "").startswith(prefix) for prefix in _LOCAL_ONLY_CACHE_PREFIXES)
 
+
+def _log_redis_cache_skip(reason: str, key: str, detail: str = "") -> None:
+    marker = f"{reason}:{key}"
+    now = time.monotonic()
+    last = _redis_cache_skip_log.get(marker, 0.0)
+    if now - last < 60.0:
+        return
+    _redis_cache_skip_log[marker] = now
+    suffix = f" ({detail})" if detail else ""
+    logger.debug(f"[dashboard] Redis dashboard cache skipped for {key}: {reason}{suffix}")
+
 def _redis_cache_get(key: str) -> Optional[Any]:
+    if not DASHBOARD_REDIS_CACHE_ENABLED:
+        return None
+
     try:
         from services.redis_pool import get_client as _get_redis_client
         client = _get_redis_client()
@@ -470,12 +491,21 @@ def _redis_cache_get(key: str) -> Optional[Any]:
 
 
 def _redis_cache_set(key: str, value: Any, ttl: int = 30) -> None:
+    if not DASHBOARD_REDIS_CACHE_ENABLED:
+        return
     try:
         from services.redis_pool import get_client as _get_redis_client
         client = _get_redis_client()
         if client is None:
             return
-        client.set(_cache_prefix + key, json.dumps(value, default=str), ex=ttl)
+        raw = json.dumps(value, default=str, separators=(",", ":"))
+        raw_size = len(raw.encode("utf-8"))
+        max_bytes = max(1024, int(DASHBOARD_REDIS_CACHE_MAX_VALUE_BYTES))
+        if raw_size > max_bytes:
+            _log_redis_cache_skip("payload_too_large", key, f"{raw_size}>{max_bytes} bytes")
+            return
+        bounded_ttl = max(1, min(int(ttl or 30), int(DASHBOARD_REDIS_CACHE_TTL_CAP_SECONDS)))
+        client.set(_cache_prefix + key, raw, ex=bounded_ttl)
     except Exception:
         pass
 
@@ -514,6 +544,9 @@ def _invalidate_cache_prefixes(*prefixes: str) -> None:
         for key in list(_cache_store.keys()):
             if any(key.startswith(prefix) for prefix in active_prefixes):
                 _cache_store.pop(key, None)
+
+    if not DASHBOARD_REDIS_CACHE_ENABLED:
+        return
 
     try:
         from services.redis_pool import get_client as _get_redis_client

@@ -1,7 +1,12 @@
 from __future__ import annotations
 import json
 from typing import Any, Optional
-from config.config import REDIS_CACHE_PREFIX
+from config.config import (
+    REDIS_CACHE_MAX_VALUE_BYTES,
+    REDIS_CACHE_PREFIX,
+    REDIS_CACHE_TTL_CAP_SECONDS,
+    REDIS_OBJECT_CACHE_ENABLED,
+)
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -13,8 +18,9 @@ class RedisCache:
     def __init__(self, default_ttl: int = 30, prefix: str = REDIS_CACHE_PREFIX):
         from services.redis_pool import get_client as _get_redis_client
         self._r   = _get_redis_client()
-        self._ttl = default_ttl
+        self._ttl = max(1, min(int(default_ttl), int(REDIS_CACHE_TTL_CAP_SECONDS)))
         self._prefix = self._normalise_prefix(prefix)
+        self._max_value_bytes = max(1024, int(REDIS_CACHE_MAX_VALUE_BYTES))
         if self._r:
             self._r.ping()
             logger.info(f"[Cache] Redis pool connected (prefix={self._prefix})")
@@ -36,7 +42,16 @@ class RedisCache:
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         try:
-            self._r.set(self._full_key(key), json.dumps(value), ex=ttl or self._ttl)
+            raw = json.dumps(value, separators=(",", ":"))
+            raw_size = len(raw.encode("utf-8"))
+            if raw_size > self._max_value_bytes:
+                logger.debug(
+                    f"[Cache] Redis object cache skipped for {key}: "
+                    f"payload_too_large ({raw_size}>{self._max_value_bytes} bytes)"
+                )
+                return
+            bounded_ttl = max(1, min(int(ttl or self._ttl), int(REDIS_CACHE_TTL_CAP_SECONDS)))
+            self._r.set(self._full_key(key), raw, ex=bounded_ttl)
         except Exception:
             pass
 
@@ -72,9 +87,13 @@ class RedisCache:
 
 def get_cache(default_ttl: int = 30):
     """
-    Returns a RedisCache if Redis is reachable, otherwise falls back
-    to the existing in-process TTL cache. Caller code never changes.
+    Returns RedisCache only when explicitly enabled. The free Redis Cloud tier is
+    small, so object caching defaults to local memory while Redis remains
+    available for pub/sub and small live-state coordination.
     """
+    if not REDIS_OBJECT_CACHE_ENABLED:
+        from data.cache import Cache
+        return Cache(default_ttl=default_ttl)
     try:
         return RedisCache(default_ttl=default_ttl)
     except Exception as e:

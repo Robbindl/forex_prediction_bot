@@ -678,11 +678,14 @@ def _start_pre_bot_services(engine, args) -> None:
         engine.exchange_router = router
 
     def _upgrade_redis_cache():
-        from config.config import CACHE_TTL
+        from config.config import CACHE_TTL, REDIS_OBJECT_CACHE_ENABLED
+        if not REDIS_OBJECT_CACHE_ENABLED:
+            return False
         from services.redis_cache import get_cache
         upgraded_cache = get_cache(default_ttl=CACHE_TTL)
         import data.cache as _cache_mod
         _cache_mod.cache = upgraded_cache
+        return True
 
     _run_optional_step(
         _start_commodity_exchange_depth_streams,
@@ -739,9 +742,11 @@ def _start_pre_bot_services(engine, args) -> None:
 
     _run_optional_step(
         _upgrade_redis_cache,
-        "[bot] Redis shared cache active (market-data cache remains local)",
+        "[bot] Redis object cache active",
         "[bot] Redis cache not available ({error}) — using in-process cache",
         failure_level="debug",
+        skipped_message="[bot] Redis object cache disabled — using in-process cache",
+        skipped_level="info",
     )
 
     if not args.no_gateway:

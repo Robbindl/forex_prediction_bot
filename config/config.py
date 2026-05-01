@@ -325,6 +325,13 @@ DB_POOL_RECYCLE_SECONDS = int(os.getenv("DB_POOL_RECYCLE_SECONDS", "3600"))
 
 REDIS_URL      = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_CACHE_PREFIX = os.getenv("REDIS_CACHE_PREFIX", "trading_bot:cache:")
+REDIS_MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "8"))
+REDIS_OBJECT_CACHE_ENABLED = os.getenv("REDIS_OBJECT_CACHE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+REDIS_CACHE_MAX_VALUE_BYTES = int(os.getenv("REDIS_CACHE_MAX_VALUE_BYTES", "32768"))
+REDIS_CACHE_TTL_CAP_SECONDS = int(os.getenv("REDIS_CACHE_TTL_CAP_SECONDS", "300"))
+DASHBOARD_REDIS_CACHE_ENABLED = os.getenv("DASHBOARD_REDIS_CACHE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+DASHBOARD_REDIS_CACHE_MAX_VALUE_BYTES = int(os.getenv("DASHBOARD_REDIS_CACHE_MAX_VALUE_BYTES", "65536"))
+DASHBOARD_REDIS_CACHE_TTL_CAP_SECONDS = int(os.getenv("DASHBOARD_REDIS_CACHE_TTL_CAP_SECONDS", "300"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ML SERVICE
