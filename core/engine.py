@@ -2204,7 +2204,16 @@ class TradingCore:
                     sig.metadata["winner_addon"] = dict(addon_plan)
                     ctx["winner_addon"] = dict(addon_plan)
                 logger.info(
-                    f"[TradingCore] CANDIDATE: {canonical} {sig.direction} seed_score={sig.confidence:.3f}"
+                    f"[TradingCore] CANDIDATE: {canonical} {sig.direction} "
+                    f"seed_score={sig.confidence:.3f} "
+                    f"entry_style={str(sig.metadata.get('playbook_entry_style') or 'n/a').lower()} "
+                    f"generic_flow_override={str(sig.metadata.get('generic_flow_override_source') or 'off').lower()} "
+                    f"session={str(sig.metadata.get('session_label') or sig.metadata.get('playbook_session') or 'n/a').lower()} "
+                    f"ctx={self._fmt_metric(sig.metadata.get('playbook_context_confluence'))} "
+                    f"cross={self._fmt_metric(sig.metadata.get('playbook_cross_alignment'))} "
+                    f"micro={self._fmt_metric(sig.metadata.get('playbook_micro_score'))} "
+                    f"support={int(sig.metadata.get('playbook_support_components', 0) or 0)} "
+                    f"conflict={int(sig.metadata.get('playbook_conflict_components', 0) or 0)}"
                 )
                 return ("signal", (sig, ctx))
             logger.debug(f"[TradingCore] {canonical}: no seed signal generated")
@@ -3193,6 +3202,12 @@ class TradingCore:
         rejected_details = playbook_decision.get("rejected_details") or seed_decision.get("rejected_details") or []
         candidate_count = playbook_decision.get("candidate_count", seed_decision.get("candidate_count", 0))
         blocked_reason = str(playbook_decision.get("blocked_reason") or seed_decision.get("blocked_reason") or "").strip() or "n/a"
+        entry_style = str(playbook_decision.get("entry_style") or "n/a").strip().lower() or "n/a"
+        generic_flow_override = (
+            str(playbook_decision.get("generic_flow_override_source") or "").strip().lower()
+            if bool(playbook_decision.get("generic_flow_override"))
+            else "off"
+        )
         confirmation_count = int(structure.get("entry_confirmation_count", 0) or 0)
         confirmation_required = int(structure.get("entry_confirmation_bars_required", 0) or 0)
         logger.info(
@@ -3202,6 +3217,8 @@ class TradingCore:
             f"session={session_label} "
             f"tf={current_interval}->{playbook_interval} "
             f"bias={str(structure.get('structure_bias', seed_decision.get('structure_bias', 'neutral'))).lower()} "
+            f"entry_style={entry_style} "
+            f"generic_flow_override={generic_flow_override} "
             f"align={self._fmt_metric(structure.get('alignment_score', seed_decision.get('alignment_score')))} "
             f"setup={self._fmt_metric(structure.get('setup_quality', seed_decision.get('setup_quality')))} "
             f"candidates={candidate_count} "
@@ -3245,6 +3262,9 @@ class TradingCore:
 
     def _log_decision_rejection(self, signal: Signal, context: Dict[str, Any]) -> None:
         reason = signal.kill_reason or signal.metadata.get("agent_rejection_reason", "killed")
+        execution_relief = dict(signal.metadata.get("execution_relief_flags") or {})
+        open_spike_guard = dict(signal.metadata.get("open_spike_guard") or {})
+        higher_timeframe_guard = dict(signal.metadata.get("higher_timeframe_guard") or {})
         logger.info(
             f"[TradingCore] Decision {signal.asset} killed "
             f"step={signal.step_reached} dir={signal.direction} "
@@ -3254,6 +3274,11 @@ class TradingCore:
             f"oflow={self._fmt_metric(signal.metadata.get('orderflow_imbalance'))} "
             f"agent={self._fmt_metric(signal.metadata.get('agent_score'))} "
             f"final_conf={self._fmt_metric(signal.confidence)} "
+            f"entry_style={str(signal.metadata.get('playbook_entry_style') or 'n/a').lower()} "
+            f"generic_flow_override={str(signal.metadata.get('generic_flow_override_source') or 'off').lower()} "
+            f"depth_sovereignty_source={str(execution_relief.get('depth_sovereignty_source') or 'n/a').lower()} "
+            f"htf_action={str(higher_timeframe_guard.get('action') or 'n/a').lower()} "
+            f"open_spike_action={str(open_spike_guard.get('action') or 'n/a').lower()} "
             f"late_risk={self._fmt_metric(signal.metadata.get('late_entry_risk_score'))} "
             f"blocks={self._fmt_reason_list(signal.metadata.get('execution_hard_blocks'), limit=3)} "
             f"late_reasons={self._fmt_reason_list(signal.metadata.get('late_entry_risk_reasons'), limit=3)} "
@@ -3331,6 +3356,8 @@ class TradingCore:
             "blocked_reason": str(playbook_pick.get("blocked_reason") or ""),
             "rejected_reasons": list(playbook_pick.get("rejected_reasons") or []),
             "rejected_details": list(playbook_pick.get("rejected_details") or []),
+            "generic_flow_override": bool(decision_context.get("generic_flow_override")),
+            "generic_flow_override_source": str(decision_context.get("generic_flow_override_source") or ""),
             "inactivity_profile": dict(playbook_pick.get("inactivity_profile") or {}),
             "allowed_sessions": list(playbook_pick.get("allowed_sessions") or []),
             "asset_plan": dict(playbook_pick.get("asset_plan") or {}),
@@ -3908,6 +3935,8 @@ class TradingCore:
             "playbook_whale_context_support": round(float(playbook_primary.get("whale_context_support", 0.0) or 0.0), 4),
             "playbook_support_components": int(playbook_primary.get("support_components", 0) or 0),
             "playbook_conflict_components": int(playbook_primary.get("conflict_components", 0) or 0),
+            "generic_flow_override": bool(playbook_primary.get("generic_flow_override")),
+            "generic_flow_override_source": str(playbook_primary.get("generic_flow_override_source") or ""),
             "trade_management_plan": trade_management_plan,
             "market_data": context.get("market_data", {}),
             "atr": round(atr, 6) if atr > 0 else 0.0,
@@ -3959,6 +3988,8 @@ class TradingCore:
             "playbook_entry_style": playbook_entry_style,
             "playbook_session": str(playbook_pick.get("session") or playbook_primary.get("session") or ""),
             "session_label": str(playbook_pick.get("session_label") or playbook_pick.get("session") or playbook_primary.get("session") or ""),
+            "generic_flow_override": bool(playbook_primary.get("generic_flow_override")),
+            "generic_flow_override_source": str(playbook_primary.get("generic_flow_override_source") or ""),
             "shock_score": round(float((context.get("playbook_decision") or {}).get("shock_score", 0.0) or 0.0), 4),
             "shock_event_score": round(float((context.get("playbook_decision") or {}).get("shock_event_score", 0.0) or 0.0), 4),
             "headline_shock_score": round(float((context.get("playbook_decision") or {}).get("headline_shock_score", 0.0) or 0.0), 4),

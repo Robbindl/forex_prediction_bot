@@ -2845,6 +2845,12 @@ class PlaybookService:
             "support_components": support_components,
             "conflict_components": conflict_components,
             "entry_style": entry_style,
+            "generic_flow_override": bool(live_flow_generic_override),
+            "generic_flow_override_source": (
+                str(live_flow_generic_override_source or "")
+                if live_flow_generic_override
+                else ""
+            ),
             "session": session,
             "preferred_interval": preferred_interval,
             "management": self._management_template(profile, playbook, asset=asset, category=category),

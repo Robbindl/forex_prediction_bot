@@ -1695,6 +1695,31 @@ class SignalDecisionEngine:
         combined = f"{playbook_name} {entry_style}"
         continuation_like = any(token in combined for token in ("continuation", "breakout", "trend"))
         open_specialist = any(token in combined for token in ("opening", "open_drive", "opening_range", "orb"))
+        generic_flow_override = bool(signal.metadata.get("generic_flow_override"))
+        generic_flow_override_source = str(signal.metadata.get("generic_flow_override_source") or "").strip().lower()
+        seed_score = float(signal.metadata.get("seed_candidate_score", signal.confidence) or signal.confidence or 0.0)
+        alignment_score = float(signal.metadata.get("alignment_score", 0.0) or 0.0)
+        setup_quality = float(signal.metadata.get("setup_quality", 0.0) or 0.0)
+        playbook_context_confluence = float(signal.metadata.get("playbook_context_confluence", 0.0) or 0.0)
+        playbook_cross_alignment = float(signal.metadata.get("playbook_cross_alignment", 0.0) or 0.0)
+        playbook_micro_score = float(signal.metadata.get("playbook_micro_score", 0.0) or 0.0)
+        support_components = int(signal.metadata.get("playbook_support_components", 0) or 0)
+        conflict_components = int(signal.metadata.get("playbook_conflict_components", 0) or 0)
+        open_flow_override_supported = bool(
+            continuation_like
+            and generic_flow_override
+            and support_components >= (1 if generic_flow_override_source == "true_depth" else 2)
+            and conflict_components == 0
+            and seed_score >= (0.68 if generic_flow_override_source == "true_depth" else 0.72)
+            and alignment_score >= 0.58
+            and setup_quality >= 0.56
+            and max(
+                playbook_context_confluence,
+                playbook_cross_alignment,
+                playbook_micro_score,
+            )
+            >= (0.18 if generic_flow_override_source == "true_depth" else 0.22)
+        )
 
         guard = {
             "active": bool(spike.get("active")),
@@ -1708,6 +1733,11 @@ class SignalDecisionEngine:
             "entry_style": entry_style,
             "continuation_like": continuation_like,
             "open_specialist": open_specialist,
+            "generic_flow_override": generic_flow_override,
+            "generic_flow_override_source": generic_flow_override_source,
+            "open_flow_override_supported": open_flow_override_supported,
+            "support_components": support_components,
+            "conflict_components": conflict_components,
             "action": "none",
         }
         signal.metadata["open_spike_guard"] = dict(guard)
@@ -1722,6 +1752,24 @@ class SignalDecisionEngine:
             if open_specialist:
                 notes.append("open_spike_specialist")
                 guard["action"] = "allow_open_specialist"
+                signal.metadata["open_spike_guard"] = dict(guard)
+                data["open_spike_guard"] = dict(guard)
+                return ""
+
+            if continuation_like and open_flow_override_supported:
+                if generic_flow_override_source == "true_depth":
+                    notes.append("open_spike_depth_override")
+                    guard["action"] = "allow_depth_override"
+                    signal.metadata["open_spike_guard"] = dict(guard)
+                    data["open_spike_guard"] = dict(guard)
+                    return ""
+
+                penalty = 0.02
+                signal.confidence = round(max(0.0, float(signal.confidence) - penalty), 4)
+                signal.metadata["open_spike_penalty"] = penalty
+                notes.append("open_spike_flow_override")
+                guard["action"] = "reduce_flow_override"
+                guard["confidence_penalty"] = penalty
                 signal.metadata["open_spike_guard"] = dict(guard)
                 data["open_spike_guard"] = dict(guard)
                 return ""
@@ -3238,17 +3286,39 @@ class SignalDecisionEngine:
         depth_flow_sovereignty_candidate = bool(
             depth_sovereignty_supported
             and not has_directional_flow_conflict
-            and alignment_score >= 0.60
-            and setup_quality >= 0.56
-            and candle_quality_score >= 0.30
-            and session_quality_score >= 0.36
-            and target_efficiency_score >= 0.10
-            and extension_score <= 1.18
-            and impulse_age_bars <= 5
+            and alignment_score >= 0.58
+            and setup_quality >= 0.54
+            and candle_quality_score >= 0.26
+            and session_quality_score >= 0.32
+            and target_efficiency_score >= 0.08
+            and extension_score <= 1.28
+            and impulse_age_bars <= 6
+            and directional_extension <= 0.88
             and not failed_opposite_move_confirmed
         )
+        depth_flow_sovereignty_rescue_candidate = bool(
+            depth_sovereignty_supported
+            and strong_market_candidate
+            and (continuation_family or continuation_entry)
+            and not has_directional_flow_conflict
+            and alignment_score >= 0.64
+            and setup_quality >= 0.60
+            and candle_quality_score >= 0.24
+            and session_quality_score >= 0.30
+            and target_efficiency_score >= 0.08
+            and extension_score <= 1.42
+            and impulse_age_bars <= 7
+            and directional_extension <= 0.92
+            and not failed_opposite_move_confirmed
+            and (
+                strong_true_depth_support
+                or directional_flow_support >= max(0.30, depth_sovereignty_min_directional_flow + 0.08)
+                or external_confirmation_score >= 0.18
+                or fast_entry_confirmation_ready
+            )
+        )
         depth_flow_sovereignty_confirmation_override = bool(
-            depth_flow_sovereignty_candidate
+            (depth_flow_sovereignty_candidate or depth_flow_sovereignty_rescue_candidate)
             and (
                 strong_true_depth_support
                 or directional_flow_support >= max(0.28, depth_sovereignty_min_directional_flow + 0.04)
@@ -3263,6 +3333,7 @@ class SignalDecisionEngine:
             and not impulse_fast_path_supported
             and not shock_fast_path_supported
             and not depth_flow_sovereignty_candidate
+            and not depth_flow_sovereignty_rescue_candidate
         )
         elite_supported_candidate = bool(
             strong_market_candidate
@@ -3278,6 +3349,7 @@ class SignalDecisionEngine:
                 or shock_fast_path_supported
                 or (continuation_rescue_candidate and has_directional_flow_support)
                 or depth_flow_sovereignty_candidate
+                or depth_flow_sovereignty_rescue_candidate
             )
         )
         asset_performance_relief = 0.0
@@ -3381,6 +3453,19 @@ class SignalDecisionEngine:
             reasons.append("structure is already exhausted")
 
         stop_hunt_risk = float(signal.metadata.get("stop_hunt_risk", 0.0) or 0.0)
+        depth_flow_stop_hunt_override = bool(
+            depth_flow_sovereignty_rescue_candidate
+            and stop_hunt_risk < 0.62
+            and extension_score <= 1.28
+            and directional_extension <= 0.88
+            and target_efficiency_score >= 0.12
+            and (
+                strong_true_depth_support
+                or directional_flow_support >= max(0.34, depth_sovereignty_min_directional_flow + 0.12)
+                or external_confirmation_score >= 0.20
+                or fast_entry_confirmation_ready
+            )
+        )
         if stop_hunt_risk >= 0.48:
             risk_score += 0.20
             reasons.append("stop-hunt risk is elevated")
@@ -3549,6 +3634,8 @@ class SignalDecisionEngine:
             risk_score -= 0.04
             if context_confirmation_override:
                 risk_score -= 0.03
+                if entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+                    risk_score -= 0.08
         if impulse_fast_path_candidate:
             risk_score -= 0.04
             if impulse_fast_path_supported:
@@ -3560,9 +3647,25 @@ class SignalDecisionEngine:
                 if impulse_age_bars <= 3:
                     risk_score -= 0.02
         if depth_flow_sovereignty_candidate:
-            risk_score -= 0.04
+            risk_score -= 0.05
             if depth_sovereignty_source == "true_depth":
                 risk_score -= 0.03
+            if depth_flow_sovereignty_confirmation_override and entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+                risk_score -= 0.14
+            if depth_flow_stop_hunt_override and stop_hunt_risk >= 0.48:
+                risk_score -= 0.08
+            if impulse_age_bars >= 6 and not failed_opposite_move_confirmed:
+                risk_score -= 0.04
+        elif depth_flow_sovereignty_rescue_candidate:
+            risk_score -= 0.06
+            if depth_sovereignty_source == "true_depth":
+                risk_score -= 0.02
+            if depth_flow_sovereignty_confirmation_override and entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+                risk_score -= 0.16
+            if depth_flow_stop_hunt_override and stop_hunt_risk >= 0.48:
+                risk_score -= 0.10
+            if impulse_age_bars >= 6 and not failed_opposite_move_confirmed:
+                risk_score -= 0.05
         if inactivity_execution_relief:
             risk_score -= 0.04 + inactivity_relief_strength * 0.08
         if asset_performance_relief > 0.0:
@@ -3614,6 +3717,9 @@ class SignalDecisionEngine:
         if shock_fast_path_supported:
             weak_candle_extension_limit += 0.06
             weak_candle_floor = max(0.20, weak_candle_floor - 0.02)
+        if depth_flow_sovereignty_rescue_candidate:
+            weak_candle_extension_limit += 0.08 if depth_sovereignty_source == "true_depth" else 0.06
+            weak_candle_floor = max(0.20, weak_candle_floor - (0.03 if depth_sovereignty_source == "true_depth" else 0.02))
         if inactivity_execution_relief:
             weak_candle_extension_limit += 0.02 + inactivity_relief_strength * 0.03
             weak_candle_floor = max(0.22, weak_candle_floor - (0.01 + inactivity_relief_strength * 0.02))
@@ -3654,6 +3760,9 @@ class SignalDecisionEngine:
         if depth_flow_sovereignty_candidate:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - 0.02)
             opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - 0.0003)
+        elif depth_flow_sovereignty_rescue_candidate:
+            target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - 0.03)
+            opposing_distance_hard_floor = max(0.0022, opposing_distance_hard_floor - 0.0005)
         if inactivity_execution_relief:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - (0.015 + inactivity_relief_strength * 0.03))
             opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - (0.0003 + inactivity_relief_strength * 0.0004))
@@ -3693,7 +3802,10 @@ class SignalDecisionEngine:
             directional_extension_hard_limit += 0.06
         if depth_flow_sovereignty_candidate:
             impulse_age_hard_limit += 1
-            directional_extension_hard_limit += 0.04
+            directional_extension_hard_limit += 0.05
+        elif depth_flow_sovereignty_rescue_candidate:
+            impulse_age_hard_limit += 2
+            directional_extension_hard_limit += 0.08 if depth_sovereignty_source == "true_depth" else 0.06
         if inactivity_execution_relief:
             impulse_age_hard_limit += 1 + (1 if inactivity_relief_strength >= 0.75 else 0)
             directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
@@ -3717,6 +3829,10 @@ class SignalDecisionEngine:
             hard_blocks.append("breakout entry has not earned a clean retest or first pullback")
         if directional_extension >= 0.82 and (
             exhaustion_risk >= 0.45 or dominant_exhaustion >= 0.60 or bias_exhausted
+        ) and not (
+            depth_flow_sovereignty_rescue_candidate
+            and directional_extension <= 0.88
+            and extension_score <= 1.28
         ):
             hard_blocks.append("extended entry is combining with exhaustion risk")
         if failed_opposite_move_confirmed and (
@@ -3734,7 +3850,7 @@ class SignalDecisionEngine:
             or low_trust_true_depth_available
             or thin_true_depth_untrusted
             or uninformative_true_depth_available
-        ):
+        ) and not depth_flow_stop_hunt_override:
             hard_blocks.append("stop-hunt risk is elevated while usable execution depth is unavailable")
         if directional_extension >= 0.82 and supportive_structure_distance > 0 and supportive_structure_distance <= 0.0018:
             hard_blocks.append("late entry profile has poor structure distance")
@@ -3789,7 +3905,12 @@ class SignalDecisionEngine:
         if depth_flow_sovereignty_candidate:
             pattern_rank_hard_floor = max(
                 0.02,
-                pattern_rank_hard_floor - (0.05 if depth_sovereignty_source == "true_depth" else 0.03),
+                pattern_rank_hard_floor - (0.06 if depth_sovereignty_source == "true_depth" else 0.04),
+            )
+        elif depth_flow_sovereignty_rescue_candidate:
+            pattern_rank_hard_floor = max(
+                0.02,
+                pattern_rank_hard_floor - (0.08 if depth_sovereignty_source == "true_depth" else 0.05),
             )
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
@@ -3818,8 +3939,16 @@ class SignalDecisionEngine:
                 or shock_fast_path_candidate
                 or context_continuation_execution_candidate
                 or depth_flow_sovereignty_candidate
+                or depth_flow_sovereignty_rescue_candidate
             )
         )
+        if (
+            depth_flow_sovereignty_rescue_candidate
+            and depth_flow_sovereignty_confirmation_override
+            and recent_pattern_sample_count < 8
+            and not blocked_recent_pattern
+        ):
+            low_pattern_rank_is_actionable = False
         if (
             pattern_family != "unknown"
             and elite_pattern_rank <= pattern_rank_hard_floor
@@ -3844,6 +3973,8 @@ class SignalDecisionEngine:
             risk_kill_threshold += 0.03
         if depth_flow_sovereignty_candidate:
             risk_kill_threshold += 0.02
+        elif depth_flow_sovereignty_rescue_candidate:
+            risk_kill_threshold += 0.03
         if inactivity_execution_relief:
             risk_kill_threshold += 0.02
         risk_kill_threshold = max(0.50, min(0.70, risk_kill_threshold))
@@ -3942,7 +4073,9 @@ class SignalDecisionEngine:
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
             "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
+            "depth_flow_sovereignty_rescue_candidate": depth_flow_sovereignty_rescue_candidate,
             "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
+            "depth_flow_stop_hunt_override": depth_flow_stop_hunt_override,
         }
 
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
@@ -3983,7 +4116,9 @@ class SignalDecisionEngine:
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
             "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
+            "depth_flow_sovereignty_rescue_candidate": depth_flow_sovereignty_rescue_candidate,
             "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
+            "depth_flow_stop_hunt_override": depth_flow_stop_hunt_override,
             "continuation_reclaim_pressure": continuation_reclaim_pressure,
             "crypto_breadth_conflict": crypto_breadth_conflict,
             "crypto_breadth_support": crypto_breadth_support,
@@ -4079,7 +4214,9 @@ class SignalDecisionEngine:
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
             "depth_flow_sovereignty_candidate": depth_flow_sovereignty_candidate,
+            "depth_flow_sovereignty_rescue_candidate": depth_flow_sovereignty_rescue_candidate,
             "depth_flow_sovereignty_confirmation_override": depth_flow_sovereignty_confirmation_override,
+            "depth_flow_stop_hunt_override": depth_flow_stop_hunt_override,
             "asset_performance_profile": dict(asset_performance),
             "book_performance_profile": dict(book_performance),
             "session_timing_strictness": dict(session_timing_strictness),

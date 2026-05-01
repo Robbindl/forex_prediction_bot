@@ -150,6 +150,11 @@ except Exception:
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=TRUST_PROXY_COUNT, x_proto=TRUST_PROXY_COUNT, x_host=TRUST_PROXY_COUNT)
 CORS(app, resources={r"/api/*": {"origins": DASHBOARD_CORS_ORIGINS}})
 
+_COMMAND_CENTER_CACHE_TTL = 15
+_COMMAND_CENTER_LAST_GOOD_TTL = 6 * 60 * 60
+_COMMAND_CENTER_DEGRADED_CACHE_TTL = 5
+_COMMAND_CENTER_BUILD_TIMEOUT_SECONDS = 7.5
+
 
 def _normalize_host_name(value: str) -> str:
     host = (value or "").strip().lower()
@@ -1257,6 +1262,22 @@ def _prewarm_sentiment() -> None:
                 logger.debug(f"[dashboard] sentiment/by-asset prewarm: {e}")
     except Exception as e:
         logger.debug(f"[dashboard] sentiment prewarm failed: {e}")
+
+
+def _prewarm_command_center_payload() -> None:
+    try:
+        scheduled = _trigger_dashboard_payload_refresh(
+            "command_center_payload",
+            builder=_build_command_center_payload_with_budget,
+            cache_key="command_center_payload",
+            ttl=_COMMAND_CENTER_CACHE_TTL,
+            last_good_key="command_center_payload:last_good",
+            last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
+        )
+        if scheduled:
+            logger.info("[dashboard] command-center prewarm scheduled")
+    except Exception as exc:
+        logger.debug(f"[dashboard] command-center prewarm failed: {exc}")
 
 # ── Win rate normaliser (DB returns decimal 0.XX, we display as %) ────────────
 def _wr(raw) -> float:
@@ -3027,17 +3048,92 @@ def _command_center_journals() -> List[Dict[str, Any]]:
     return journals
 
 
+def _build_command_center_payload_with_budget() -> Dict[str, Any]:
+    timeout_sentinel = object()
+    payload = _run_with_timeout(
+        _build_command_center_payload,
+        timeout=_COMMAND_CENTER_BUILD_TIMEOUT_SECONDS,
+        default=timeout_sentinel,
+        label="command-center payload build",
+    )
+    if payload is timeout_sentinel:
+        raise TimeoutError("command-center payload build timed out")
+    return dict(payload or {})
+
+
+def _build_command_center_unavailable_payload(*, reason: str = "unavailable") -> Dict[str, Any]:
+    cached_slow = dict(_cache_get("cc_slow") or {})
+    sent_score = float(cached_slow.get("sentiment_score", 0.0) or 0.0)
+    whale_alerts = int(cached_slow.get("whale_alerts_24h", cached_slow.get("alert_count_24h", 0)) or 0)
+    recent = list(cached_slow.get("recent") or [])
+    core = _core()
+    return {
+        "success": True,
+        "degraded": True,
+        "degraded_reason": reason,
+        "balance": float(getattr(_args, "balance", 0.0) or 0.0),
+        "total_pnl": 0.0,
+        "daily_pnl": 0.0,
+        "daily_trades": 0,
+        "win_rate": 0.0,
+        "open_positions": 0,
+        "total_trades": 0,
+        "engine_running": bool(getattr(core, "is_running", False)) if core else False,
+        "engine_ready": bool(getattr(core, "is_ready", False)) if core else False,
+        "sentiment_score": sent_score,
+        "whale_alerts_24h": whale_alerts,
+        "alert_count_24h": whale_alerts,
+        "recent": recent,
+        "latest_signals": [],
+        "signal_quality": {"count": 0, "avg_confidence": 0.0, "avg_pnl": 0.0, "wins": 0},
+        "top_opportunities": [],
+        "weak_positions": [],
+        "near_misses": [],
+        "crypto_rejection_audit": [],
+        "why_not_traded": [],
+        "session_radar": [],
+        "watchlist_ladder": [],
+        "trade_tape": [],
+        "trade_lifecycle": [],
+        "positions": [],
+        "live_summary": {
+            "balance": float(getattr(_args, "balance", 0.0) or 0.0),
+            "equity": float(getattr(_args, "balance", 0.0) or 0.0),
+            "daily_pnl": 0.0,
+            "open_pnl": 0.0,
+            "open_positions": 0,
+            "buy_count": 0,
+            "sell_count": 0,
+            "book_bias": "flat",
+            "open_state": "flat",
+        },
+        "pnl_curve": [],
+        "pnl_curve_stats": {
+            "interval_minutes": 30,
+            "timezone": "Africa/Nairobi",
+            "current_pnl": 0.0,
+            "peak": 0.0,
+            "drawdown": 0.0,
+            "start_time": datetime.now().isoformat(),
+            "end_time": datetime.now().isoformat(),
+        },
+        "provider_routing": {},
+        "signal_diagnostics": {},
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
     cache_key = "command_center_payload"
     last_good_key = "command_center_payload:last_good"
     try:
         return _get_cached_dashboard_payload(
             cache_key,
-            builder=_build_command_center_payload,
-            ttl=15,
+            builder=_build_command_center_payload_with_budget,
+            ttl=_COMMAND_CENTER_CACHE_TTL,
             force_refresh=force_refresh,
             last_good_key=last_good_key,
-            last_good_ttl=300,
+            last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
             prefer_stale=True,
             refresh_key="command_center_payload",
         )
@@ -3045,8 +3141,13 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
         logger.warning(f"[dashboard] command-center payload build failed: {exc}")
         fallback = _cache_get(last_good_key)
         if fallback is not None:
-            return _response_to_dict(fallback)
-        raise
+            payload = _response_to_dict(fallback)
+            payload["degraded"] = True
+            payload["degraded_reason"] = "stale_fallback"
+            return payload
+        payload = _build_command_center_unavailable_payload(reason=str(exc) or "build_failed")
+        _cache_set(cache_key, payload, ttl=_COMMAND_CENTER_DEGRADED_CACHE_TTL)
+        return payload
 
 
 def _fetch_command_center_slow_data() -> Dict[str, Any]:
@@ -3147,6 +3248,8 @@ def _dashboard_live_quote_fallback(asset: str, category: str) -> tuple[Optional[
 def _build_command_center_enriched_positions(
     positions: Any,
     live_snapshots: Optional[Dict[str, Dict[str, Any]]] = None,
+    *,
+    allow_provider_fallback: bool = False,
 ) -> List[Dict[str, Any]]:
     enriched_positions: List[Dict[str, Any]] = []
     for position in list(positions or []):
@@ -3155,7 +3258,7 @@ def _build_command_center_enriched_positions(
             position,
             live_snapshot=(live_snapshots or {}).get(asset),
             live_snapshot_max_age_seconds=3.0,
-            provider_fallback=_dashboard_live_quote_fallback,
+            provider_fallback=_dashboard_live_quote_fallback if allow_provider_fallback else None,
         )
         current_price = float(quote.get("current_price", 0.0) or 0.0)
         entry_price = float(quote.get("entry_price", 0.0) or 0.0)
@@ -7729,6 +7832,7 @@ def start_dashboard(core, host: str = "127.0.0.1", port: int = 5000, http2: bool
     # Start background threads
     threading.Thread(target=_bg_refresh,       name="DashBgRefresh",     daemon=True).start()
     threading.Thread(target=_prewarm_sentiment, name="SentimentPrewarm",  daemon=True).start()
+    _prewarm_command_center_payload()
 
     # Start pub/sub listeners
     _start_p3_listener()
