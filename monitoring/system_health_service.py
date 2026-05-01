@@ -165,6 +165,17 @@ class SystemHealthService:
         for source, threshold in FRESHNESS_THRESHOLDS.items():
             with self._source_lock:
                 last = self._source_last_seen.get(source)
+            if self._suppress_stale_alert(source):
+                age = None if last is None else round(now - last, 1)
+                result[source] = {
+                    "status": "market_quiet",
+                    "age_secs": age,
+                    "threshold": threshold,
+                    "fresh": True,
+                    "suppressed": True,
+                    "market_quiet": True,
+                }
+                continue
             if last is None:
                 result[source] = {
                     "status":    "never_seen",

@@ -219,7 +219,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel">
         <div class="panel-header">
-          <span class="panel-title">🛰️ Signal Pressure</span>
+          <span class="panel-title">🛰️ Decision Gate Pressure</span>
           <span class="panel-badge" id="pressureBadge">Loading…</span>
         </div>
         <div class="panel-body">
@@ -332,7 +332,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       </div>
 
       <div class="panel">
-        <div class="panel-header"><span class="panel-title">📈 Trade Statistics</span></div>
+        <div class="panel-header"><span class="panel-title">📈 Performance Statistics</span></div>
         <div class="panel-body" id="statsPanel" style="max-height:260px;overflow-y:auto"><div class="empty">Loading…</div></div>
       </div>
 
@@ -547,7 +547,18 @@ function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,ke
 function signalBool(signal,key){return signalValue(signal,key) === true;}
 function signalText(signal,key){const value=signalValue(signal,key);return value == null ? '' : String(value).trim();}
 function signalList(signal,key){const value=signalValue(signal,key);if(Array.isArray(value))return value.map(v=>String(v||'').trim()).filter(Boolean);if(typeof value === 'string'){const raw=value.trim();return raw?[raw]:[];}return [];}
-function exactSignalReason(signal){return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();}
+function exactSignalReason(signal){return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalValue(signal, 'decision_reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();}
+function collectDecisionSignals(commandCenter){
+  const ladder = commandCenter?.watchlist_ladder || {};
+  return []
+    .concat(commandCenter?.latest_signals || [])
+    .concat(commandCenter?.top_opportunities || [])
+    .concat(commandCenter?.near_misses || [])
+    .concat(commandCenter?.decision_context?.rows || [])
+    .concat(ladder.hot || [])
+    .concat(ladder.almost_ready || [])
+    .filter(item => item && item.asset);
+}
 function overextendedSignal(signal){return signalNum(signal, 'extension_score', 0) >= 0.80 || /overextend|extension|late setup|too far/i.test(exactSignalReason(signal).toLowerCase());}
 function weakQualitySignal(signal){
   const candle=signalNum(signal, 'candle_quality_score', 0);
@@ -641,12 +652,12 @@ async function load(){
   const commandCenter = overview.command_center || {};
   const authoritativeLiveBook = getAuthoritativeRiskLiveBookSnapshot();
   const live = authoritativeLiveBook?.live_summary || commandCenter.live_summary || {};
-  const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+  const decisionSignals = collectDecisionSignals(commandCenter);
   const providerRouting = status.provider_routing || {};
   const signalDiagnostics = d.signal_diagnostics || {};
   const qualitySnapshot=d.quality_snapshot||{};
-  const elitePressure=Object.keys(d.elite_entry_pressure||{}).length ? (d.elite_entry_pressure||{}) : deriveElitePressure(liveSignals);
-  const blockedStats=Object.keys(d.blocked_candidate_stats||d.blocked_candidates||{}).length ? (d.blocked_candidate_stats||d.blocked_candidates||{}) : deriveBlockedStats(commandCenter, liveSignals);
+  const elitePressure=Object.keys(d.elite_entry_pressure||{}).length ? (d.elite_entry_pressure||{}) : deriveElitePressure(decisionSignals);
+  const blockedStats=Object.keys(d.blocked_candidate_stats||d.blocked_candidates||{}).length ? (d.blocked_candidate_stats||d.blocked_candidates||{}) : deriveBlockedStats(commandCenter, decisionSignals);
   const tradeLifecycle = commandCenter.trade_lifecycle || {};
   const whyNotTraded = commandCenter.why_not_traded || {};
   const signedMetricText = (value, digits = 2) => {
@@ -742,8 +753,8 @@ async function load(){
   const blockedCandidateCount=Number(elitePressure.blocked_candidate_count||0);
   const retestCount=Number(elitePressure.retest_entry_count||0);
   const firstPullbackCount=Number(elitePressure.first_pullback_entry_count||0);
-  const funnelSeeded=Number(tradeLifecycle.seeded||liveSignals.length||0);
-  const funnelStructure=Number(tradeLifecycle.structure_valid||liveSignals.filter(function(item){
+  const funnelSeeded=Number(tradeLifecycle.seeded||decisionSignals.length||0);
+  const funnelStructure=Number(tradeLifecycle.structure_valid||decisionSignals.filter(function(item){
     return item.breakout_retest_ready===true || item.first_pullback_ready===true || item.entry_confirmation_ready===true;
   }).length||0);
   const funnelConfirm=Number(tradeLifecycle.confirmation_ready||confirmationReadyCount||0);

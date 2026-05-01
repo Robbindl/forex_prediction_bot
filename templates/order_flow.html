@@ -263,7 +263,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="panel panel-primary" style="animation-delay:.3s">
           <div class="panel-header">
             <span>🧭</span>
-            <span class="panel-title">Flow Watchlist</span>
+          <span class="panel-title">Flow Decision Context</span>
             <span class="panel-badge" id="watchBadge">Loading…</span>
           </div>
           <div class="panel-body" style="flex:1;overflow-y:auto;min-height:120px" id="watchList">
@@ -311,7 +311,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="panel flow-bridge-panel" style="animation-delay:.45s">
           <div class="panel-header">
             <span>🧩</span>
-            <span class="panel-title">Flow-to-Signal Bridge</span>
+          <span class="panel-title">Flow-to-Decision Bridge</span>
             <span class="panel-badge" id="flowBridgeBadge">Loading…</span>
           </div>
           <div class="panel-body flow-bridge-body" id="flowBridgeList">
@@ -636,7 +636,7 @@ function entryReadiness(signal){
   return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
 }
 function exactKillReason(signal){
-  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalValue(signal, 'decision_reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();
 }
 function reviewNotesLine(signal){
   return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
@@ -702,6 +702,29 @@ function buildSignalIndex(signals){
   });
   return index;
 }
+function collectDecisionSignals(commandCenter){
+  const ladder = commandCenter?.watchlist_ladder || {};
+  const sources = [
+    commandCenter?.latest_signals,
+    commandCenter?.top_opportunities,
+    commandCenter?.near_misses,
+    commandCenter?.decision_context?.rows,
+    ladder.hot,
+    ladder.almost_ready,
+    ladder.blocked,
+  ];
+  const seen = new Set();
+  const rows = [];
+  sources.forEach((source) => {
+    (Array.isArray(source) ? source : []).forEach((item) => {
+      const key = normalizeFlowAsset(item?.asset || item?.symbol);
+      if(!key || seen.has(key)) return;
+      seen.add(key);
+      rows.push(item);
+    });
+  });
+  return rows;
+}
 function signalFlowSupport(signal){
   return {
     retest: signalBool(signal, 'breakout_retest_ready'),
@@ -725,8 +748,8 @@ async function loadFlowBridge() {
     const walls = page.walls?.walls || [];
     const hunts = page.hunts?.hunts || [];
     const commandCenter = page.command_center || {};
-    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
-    const signalIndex = buildSignalIndex(liveSignals);
+    const decisionSignals = collectDecisionSignals(commandCenter);
+    const signalIndex = buildSignalIndex(decisionSignals);
     const flowRanked = buildFlowState(imbalance, walls, hunts);
     const flowMap = new Map(flowRanked.map(row => [normalizeFlowAsset(row.asset), row]));
     const bullishCount = Number(imbalance.bullish_count || 0);
@@ -737,7 +760,7 @@ async function loadFlowBridge() {
     const syntheticDepthCount = Number(diagnostics.synthetic_depth_count || 0);
     const conflictCount = Number(diagnostics.cross_conflict_count || 0);
     const blockCount = Number(diagnostics.recent_pattern_block_count || 0);
-    const supportStats = liveSignals.reduce((acc, signal) => {
+    const supportStats = decisionSignals.reduce((acc, signal) => {
       const flow = flowMap.get(normalizeFlowAsset(signal.asset || signal.symbol));
       if(!flow) return acc;
       const support = signalFlowSupport(signal);
@@ -755,11 +778,11 @@ async function loadFlowBridge() {
       if(/regime|policy/.test(String(signalValue(signal, 'regime_policy_summary') || signalValue(signal, 'regime_policy') || signalValue(signal, 'regime_label') || '').toLowerCase()) || /regime|policy/.test(exactKillReason(signal).toLowerCase())) acc.policyBlocked += 1;
       return acc;
     }, {retest:0,pullback:0,sweep:0,failedOpposite:0,confirmationReady:0,flowAligned:0,flowAlignedReady:0,flowAlignedBlocked:0,overextended:0,qualityBlocked:0,policyBlocked:0});
-    const bridgeState = fragileCount || conflictCount || blockCount ? 'Guarded' : diagnostics.count || liveSignals.length ? 'Aligned' : 'Idle';
+    const bridgeState = fragileCount || conflictCount || blockCount ? 'Guarded' : diagnostics.count || decisionSignals.length ? 'Aligned' : 'Idle';
     document.getElementById('flowBridgeBadge').textContent = bridgeState;
     const list = document.getElementById('flowBridgeList');
-    if(!diagnostics.count && !walls.length && !hunts.length && !Object.keys(imbalance.imbalances || {}).length && !liveSignals.length){
-      list.innerHTML = '<div class="empty">Flow bridge is waiting for live order-flow and active signal diagnostics.</div>';
+    if(!diagnostics.count && !walls.length && !hunts.length && !Object.keys(imbalance.imbalances || {}).length && !decisionSignals.length){
+      list.innerHTML = '<div class="empty">Flow bridge is waiting for live order-flow and decision-context diagnostics.</div>';
       return;
     }
     list.innerHTML = '<div class="flow-bridge-grid">' + [
@@ -772,8 +795,8 @@ async function loadFlowBridge() {
       },
       {
         title: 'Signal diagnostics',
-        value: diagnostics.summary_label || (liveSignals.length ? 'Command center live' : 'No active diagnostics'),
-        meta: `${supportiveCount} supportive · ${fragileCount} fragile · ${liveSignals.length} live signals`,
+        value: diagnostics.summary_label || (decisionSignals.length ? 'Decision context live' : 'No active diagnostics'),
+        meta: `${supportiveCount} supportive · ${fragileCount} fragile · ${decisionSignals.length} decision rows`,
         color: fragileCount ? 'var(--am)' : supportiveCount ? 'var(--gr)' : 'var(--tx2)',
         sub: 'Whether current flow aligns with live broker-quality checks and command-center signals',
       },
@@ -818,7 +841,7 @@ async function loadFlowBridge() {
     const wallAskLead = walls.length - wallBidLead;
     const huntBuyLead = hunts.filter((hunt) => String(hunt.implication || '').toUpperCase() === 'BUY').length;
     const huntSellLead = hunts.length - huntBuyLead;
-    const frictionState = fragileCount || conflictCount || blockCount ? 'Guarded' : hunts.length || walls.length || liveSignals.length ? 'Live' : 'Idle';
+    const frictionState = fragileCount || conflictCount || blockCount ? 'Guarded' : hunts.length || walls.length || decisionSignals.length ? 'Live' : 'Idle';
     document.getElementById('frictionBridgeBadge').textContent = frictionState;
     document.getElementById('executionFrictionPanel').innerHTML = '<div class="flow-bridge-grid">' + [
       {
@@ -1019,11 +1042,11 @@ async function loadWatchlist() {
   try {
     const page = await fetchOrderFlowOverview();
     const commandCenter = page.command_center || {};
-    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+    const decisionSignals = collectDecisionSignals(commandCenter);
     const imbalances = page.imbalance?.imbalances || {};
     const walls = page.walls?.walls || [];
     const hunts = page.hunts?.hunts || [];
-    const signalIndex = buildSignalIndex(liveSignals);
+    const signalIndex = buildSignalIndex(decisionSignals);
     const state = {};
 
     function ensure(asset){
@@ -1086,10 +1109,12 @@ async function loadWatchlist() {
       return row;
     }).sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
 
-    document.getElementById('watchBadge').textContent = ranked.length ? ranked.length + ' ranked' : 'No signals';
+    document.getElementById('watchBadge').textContent = ranked.length ? ranked.length + ' ranked' : (decisionSignals.length ? decisionSignals.length + ' context' : 'No context');
 
     if(!ranked.length){
-      document.getElementById('watchList').innerHTML = '<div class="empty">No flow signals available</div>';
+      document.getElementById('watchList').innerHTML = decisionSignals.length
+        ? '<div class="empty">Decision context is live, but no flow imbalance/wall/hunt row is active yet.</div>'
+        : '<div class="empty">No flow decision context available</div>';
       return;
     }
 

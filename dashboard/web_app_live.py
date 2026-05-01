@@ -158,6 +158,8 @@ _PAGE_OVERVIEW_CACHE_TTL = 8
 _PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
 _PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
 _PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS = 4.0
+_PAGE_OVERVIEW_CACHE_VERSION = "v2"
+_SENTIMENT_BY_ASSET_CACHE_KEY = "sentiment_by_asset:v2"
 
 
 def _normalize_host_name(value: str) -> str:
@@ -2279,6 +2281,321 @@ def _build_watchlist_ladder(
     }
 
 
+def _empty_why_not_traded_payload() -> Dict[str, Any]:
+    return {
+        "top_blockers": [],
+        "top_assets": [],
+        "lead_blocker": "",
+        "lead_count": 0,
+        "confirmation_pending_count": 0,
+        "blocked_by_confirmation_count": 0,
+        "overextended_count": 0,
+        "cluster_blocked_count": 0,
+        "regime_blocked_count": 0,
+    }
+
+
+def _empty_crypto_rejection_audit_payload() -> Dict[str, Any]:
+    return {
+        "count": 0,
+        "asset_count": 0,
+        "lead_blocker": "",
+        "top_blockers": [],
+        "assets": [],
+        "rows": [],
+    }
+
+
+def _empty_session_radar_payload() -> Dict[str, Any]:
+    return {
+        "current_by_category": {},
+        "open_count": 0,
+        "blocked_count": 0,
+        "rows": [],
+        "all_rows": [],
+    }
+
+
+def _empty_watchlist_ladder_payload() -> Dict[str, Any]:
+    return {
+        "hot": [],
+        "almost_ready": [],
+        "blocked": [],
+        "inactive": [],
+    }
+
+
+def _empty_trade_lifecycle_payload() -> Dict[str, Any]:
+    return {
+        "seeded": 0,
+        "approved": 0,
+        "opened": 0,
+        "partial": 0,
+        "runner_closed": 0,
+        "closed": 0,
+    }
+
+
+def _safe_session_radar(limit: int = 12) -> Dict[str, Any]:
+    try:
+        radar = _build_session_radar(limit=limit)
+        if isinstance(radar, dict):
+            radar.setdefault("rows", [])
+            radar.setdefault("all_rows", list(radar.get("rows") or []))
+            radar.setdefault("open_count", sum(1 for row in list(radar.get("all_rows") or []) if row.get("session_open")))
+            radar.setdefault("blocked_count", sum(1 for row in list(radar.get("all_rows") or []) if not row.get("session_open")))
+            return radar
+    except Exception as exc:
+        logger.debug(f"[dashboard] session radar fallback failed: {exc}")
+    return _empty_session_radar_payload()
+
+
+def _decision_context_reason(item: Dict[str, Any], fallback: str = "") -> str:
+    if not isinstance(item, dict):
+        return fallback
+    for key in (
+        "exact_kill_reason",
+        "execution_kill_reason",
+        "blocked_reason",
+        "kill_reason",
+        "reason",
+        "killed_by",
+        "top_negative_factor",
+    ):
+        raw = str(item.get(key) or "").strip()
+        if raw:
+            return raw
+    hard_blocks = _clean_text_list(item.get("execution_hard_blocks"), limit=1)
+    if hard_blocks:
+        return hard_blocks[0]
+    rejected = _clean_text_list(item.get("rejected_reasons"), limit=1)
+    if rejected:
+        return rejected[0]
+    return fallback
+
+
+def _build_decision_context_payload(
+    *,
+    top_opportunities: Any,
+    near_misses: Any,
+    session_radar: Dict[str, Any],
+    positions: Any,
+    why_not_traded: Dict[str, Any],
+    signal_diagnostics: Dict[str, Any],
+    degraded_reason: str = "",
+) -> Dict[str, Any]:
+    top_rows = [row for row in list(top_opportunities or []) if isinstance(row, dict)]
+    near_rows = [row for row in list(near_misses or []) if isinstance(row, dict)]
+    position_rows = [row for row in list(positions or []) if isinstance(row, dict)]
+    all_session_rows = [row for row in list((session_radar or {}).get("all_rows") or (session_radar or {}).get("rows") or []) if isinstance(row, dict)]
+    open_session_rows = [row for row in all_session_rows if row.get("session_open")]
+    blocked_session_rows = [row for row in all_session_rows if not row.get("session_open")]
+
+    lead_blocker = str((why_not_traded or {}).get("lead_blocker") or "").strip()
+    lead_count = int((why_not_traded or {}).get("lead_count") or 0)
+    diagnostics_count = int((signal_diagnostics or {}).get("count") or 0)
+
+    if position_rows:
+        state = "active_book"
+        label = "Active book"
+        summary = f"{len(position_rows)} open position(s) are being monitored."
+    elif top_rows:
+        state = "candidate_queue"
+        label = "Candidate queue"
+        summary = f"{len(top_rows)} setup(s) are staged before final execution gates."
+    elif near_rows or lead_count:
+        state = "execution_blocked"
+        label = "Execution gate blocked"
+        blocker_text = lead_blocker or _decision_context_reason(near_rows[0], "latest gate")
+        summary = f"No entry passed because the execution gate is blocking: {blocker_text}."
+    elif open_session_rows:
+        state = "scanning"
+        label = "Scanning, no entry"
+        summary = "Markets are open, but no playbook seed has cleared the execution gate yet."
+    elif blocked_session_rows:
+        state = "session_blocked"
+        label = "Session blocked"
+        summary = "Most assets are outside their trading session or market window."
+    elif degraded_reason:
+        state = "data_warming"
+        label = "Context warming"
+        summary = f"Dashboard is serving a safe shell while {degraded_reason}."
+    else:
+        state = "idle"
+        label = "No entry context"
+        summary = "No decision rows have been published yet."
+
+    rows: List[Dict[str, Any]] = []
+    for item in top_rows[:4]:
+        rows.append(
+            _enrich_signal_like_row(
+                {
+                    **item,
+                    "decision_kind": "candidate",
+                    "decision_state": "Candidate",
+                    "decision_reason": _decision_context_reason(item, "waiting for final execution checks"),
+                }
+            )
+        )
+    for item in near_rows[:8]:
+        rows.append(
+            _enrich_signal_like_row(
+                {
+                    **item,
+                    "decision_kind": "blocked",
+                    "decision_state": "Blocked",
+                    "decision_reason": _decision_context_reason(item, "execution gate blocked"),
+                }
+            )
+        )
+    if len(rows) < 8:
+        for item in list((why_not_traded or {}).get("top_assets") or [])[: max(0, 8 - len(rows))]:
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                _enrich_signal_like_row(
+                    {
+                        **item,
+                        "decision_kind": "blocked_asset",
+                        "decision_state": "Blocked",
+                        "decision_reason": _decision_context_reason(item, str(item.get("top_blocker") or "execution gate blocked")),
+                    }
+                )
+            )
+    if len(rows) < 8:
+        session_source = open_session_rows + blocked_session_rows
+        for item in session_source[: max(0, 8 - len(rows))]:
+            if not isinstance(item, dict):
+                continue
+            session_open = bool(item.get("session_open"))
+            rows.append(
+                _enrich_signal_like_row(
+                    {
+                        **item,
+                        "decision_kind": "session_watch",
+                        "decision_state": "Watching" if session_open else "Session closed",
+                        "decision_reason": "market open; waiting for playbook seed" if session_open else "outside allowed trading session",
+                    }
+                )
+            )
+
+    return {
+        "state": state,
+        "label": label,
+        "summary": summary,
+        "lead_blocker": lead_blocker,
+        "lead_count": lead_count,
+        "candidate_count": len(top_rows),
+        "near_miss_count": len(near_rows),
+        "open_position_count": len(position_rows),
+        "session_open_count": int((session_radar or {}).get("open_count") or len(open_session_rows)),
+        "session_blocked_count": int((session_radar or {}).get("blocked_count") or len(blocked_session_rows)),
+        "diagnostics_count": diagnostics_count,
+        "degraded_reason": degraded_reason,
+        "rows": rows,
+    }
+
+
+def _normalize_command_center_payload_contract(payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(payload or {})
+
+    why_not = payload.get("why_not_traded")
+    if not isinstance(why_not, dict):
+        why_not = _empty_why_not_traded_payload()
+    else:
+        normalized_why = _empty_why_not_traded_payload()
+        normalized_why.update(why_not)
+        why_not = normalized_why
+
+    audit = payload.get("crypto_rejection_audit")
+    if not isinstance(audit, dict):
+        audit = _empty_crypto_rejection_audit_payload()
+    else:
+        normalized_audit = _empty_crypto_rejection_audit_payload()
+        normalized_audit.update(audit)
+        audit = normalized_audit
+
+    session_radar = payload.get("session_radar")
+    if not isinstance(session_radar, dict) or not (session_radar.get("rows") or session_radar.get("all_rows")):
+        session_radar = _safe_session_radar(limit=12)
+    else:
+        normalized_radar = _empty_session_radar_payload()
+        normalized_radar.update(session_radar)
+        normalized_radar["rows"] = list(normalized_radar.get("rows") or [])
+        normalized_radar["all_rows"] = list(normalized_radar.get("all_rows") or normalized_radar.get("rows") or [])
+        session_radar = normalized_radar
+
+    ladder = payload.get("watchlist_ladder")
+    if not isinstance(ladder, dict):
+        ladder = _empty_watchlist_ladder_payload()
+    else:
+        normalized_ladder = _empty_watchlist_ladder_payload()
+        normalized_ladder.update(ladder)
+        ladder = normalized_ladder
+
+    lifecycle = payload.get("trade_lifecycle")
+    if not isinstance(lifecycle, dict):
+        lifecycle = _empty_trade_lifecycle_payload()
+    else:
+        normalized_lifecycle = _empty_trade_lifecycle_payload()
+        normalized_lifecycle.update(lifecycle)
+        lifecycle = normalized_lifecycle
+
+    signal_diagnostics = payload.get("signal_diagnostics")
+    if not isinstance(signal_diagnostics, dict):
+        signal_diagnostics = {}
+
+    top_opportunities = [row for row in list(payload.get("top_opportunities") or []) if isinstance(row, dict)]
+    near_misses = [row for row in list(payload.get("near_misses") or []) if isinstance(row, dict)]
+    positions = [row for row in list(payload.get("positions") or []) if isinstance(row, dict)]
+
+    if not any(ladder.get(key) for key in ("hot", "almost_ready", "blocked", "inactive")):
+        ladder = _build_watchlist_ladder(top_opportunities, near_misses, session_radar, positions)
+
+    decision_context = payload.get("decision_context")
+    if not isinstance(decision_context, dict) or not decision_context.get("rows"):
+        decision_context = _build_decision_context_payload(
+            top_opportunities=top_opportunities,
+            near_misses=near_misses,
+            session_radar=session_radar,
+            positions=positions,
+            why_not_traded=why_not,
+            signal_diagnostics=signal_diagnostics,
+            degraded_reason=str(payload.get("degraded_reason") or ""),
+        )
+
+    if not why_not.get("top_blockers"):
+        if decision_context.get("lead_blocker"):
+            why_not["top_blockers"] = [{"label": decision_context["lead_blocker"], "count": int(decision_context.get("lead_count") or 1)}]
+            why_not["lead_blocker"] = decision_context["lead_blocker"]
+            why_not["lead_count"] = int(decision_context.get("lead_count") or 1)
+        elif decision_context.get("state") == "session_blocked":
+            count = int(decision_context.get("session_blocked_count") or 0)
+            why_not["top_blockers"] = [{"label": "session_or_market_closed", "count": count}]
+            why_not["lead_blocker"] = "session_or_market_closed"
+            why_not["lead_count"] = count
+        elif decision_context.get("state") == "scanning":
+            count = int(decision_context.get("session_open_count") or 0)
+            why_not["top_blockers"] = [{"label": "waiting_for_playbook_seed", "count": count}]
+            why_not["lead_blocker"] = "waiting_for_playbook_seed"
+            why_not["lead_count"] = count
+
+    if not why_not.get("top_assets"):
+        why_not["top_assets"] = [row for row in list(decision_context.get("rows") or []) if isinstance(row, dict)][:6]
+
+    payload["why_not_traded"] = why_not
+    payload["crypto_rejection_audit"] = audit
+    payload["session_radar"] = session_radar
+    payload["watchlist_ladder"] = ladder
+    payload["trade_lifecycle"] = lifecycle
+    payload["signal_diagnostics"] = signal_diagnostics
+    payload["top_opportunities"] = top_opportunities
+    payload["near_misses"] = near_misses
+    payload["positions"] = positions
+    payload["decision_context"] = decision_context
+    return payload
+
+
 def _build_trade_tape(positions: Any, closed_trades: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     for pos in list(positions or []):
@@ -3094,7 +3411,7 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
     whale_alerts = int(cached_slow.get("whale_alerts_24h", cached_slow.get("alert_count_24h", 0)) or 0)
     recent = list(cached_slow.get("recent") or [])
     core = _core()
-    return {
+    payload = {
         "success": True,
         "degraded": True,
         "degraded_reason": reason,
@@ -3116,12 +3433,12 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
         "top_opportunities": [],
         "weak_positions": [],
         "near_misses": [],
-        "crypto_rejection_audit": [],
-        "why_not_traded": [],
-        "session_radar": [],
-        "watchlist_ladder": [],
+        "crypto_rejection_audit": {},
+        "why_not_traded": {},
+        "session_radar": {},
+        "watchlist_ladder": {},
         "trade_tape": [],
-        "trade_lifecycle": [],
+        "trade_lifecycle": {},
         "positions": [],
         "live_summary": {
             "balance": float(getattr(_args, "balance", 0.0) or 0.0),
@@ -3148,6 +3465,7 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
         "signal_diagnostics": {},
         "timestamp": datetime.now().isoformat(),
     }
+    return _normalize_command_center_payload_contract(payload)
 
 
 def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
@@ -3156,7 +3474,7 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
     if not force_refresh:
         cached = _cache_get(cache_key)
         if cached is not None:
-            return _response_to_dict(cached)
+            return _normalize_command_center_payload_contract(_response_to_dict(cached))
 
         fallback = _cache_get(last_good_key)
         if fallback is not None:
@@ -3168,7 +3486,7 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
                 last_good_key=last_good_key,
                 last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
             )
-            payload = _response_to_dict(fallback)
+            payload = _normalize_command_center_payload_contract(_response_to_dict(fallback))
             payload["degraded"] = True
             payload["degraded_reason"] = "stale_fallback"
             return payload
@@ -3183,7 +3501,7 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
         last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
     )
     if fallback is not None:
-        payload = _response_to_dict(fallback)
+        payload = _normalize_command_center_payload_contract(_response_to_dict(fallback))
         payload["degraded"] = True
         payload["degraded_reason"] = "stale_refresh"
         return payload
@@ -3197,7 +3515,7 @@ def _get_cached_command_center_payload_blocking(*, force_refresh: bool = False) 
     cache_key = "command_center_payload"
     last_good_key = "command_center_payload:last_good"
     try:
-        return _get_cached_dashboard_payload(
+        return _normalize_command_center_payload_contract(_get_cached_dashboard_payload(
             cache_key,
             builder=_build_command_center_payload_with_budget,
             ttl=_COMMAND_CENTER_CACHE_TTL,
@@ -3206,12 +3524,12 @@ def _get_cached_command_center_payload_blocking(*, force_refresh: bool = False) 
             last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
             prefer_stale=True,
             refresh_key="command_center_payload",
-        )
+        ))
     except Exception as exc:
         logger.warning(f"[dashboard] command-center payload build failed: {exc}")
         fallback = _cache_get(last_good_key)
         if fallback is not None:
-            payload = _response_to_dict(fallback)
+            payload = _normalize_command_center_payload_contract(_response_to_dict(fallback))
             payload["degraded"] = True
             payload["degraded_reason"] = "stale_fallback"
             return payload
@@ -3847,7 +4165,7 @@ def _build_command_center_payload() -> Dict[str, Any]:
     trade_tape = _build_trade_tape(enriched_positions, closed_trades, limit=12)
     trade_lifecycle = _build_trade_lifecycle(enriched_positions, closed_trades, journals)
 
-    return {
+    payload = {
         "success":           True,
         "balance":           float(perf.get("balance", _args.balance) or _args.balance),
         "total_pnl":         float(perf.get("total_pnl", 0) or 0),
@@ -3881,6 +4199,7 @@ def _build_command_center_payload() -> Dict[str, Any]:
         "signal_diagnostics": signal_diagnostics,
         "timestamp":         datetime.now().isoformat(),
     }
+    return _normalize_command_center_payload_contract(payload)
 
 
 def _command_center_payload_signature(payload: Dict[str, Any]) -> str:
@@ -6008,6 +6327,17 @@ def _sentiment_by_asset_neutral_row(asset: str) -> Dict[str, Any]:
     }
 
 
+def _neutral_sentiment_by_asset_payload(reason: str) -> Dict[str, Any]:
+    assets = [_sentiment_by_asset_neutral_row(asset) for asset, _ in ALL_ASSETS]
+    assets.sort(key=lambda row: (str(row.get("category") or ""), str(row.get("asset") or "")))
+    return {
+        "success": True,
+        "assets": assets,
+        "degraded": True,
+        "degraded_reason": reason,
+    }
+
+
 def _collect_sentiment_by_asset_rows(mi: Any, watch: List[str], *, timeout: float = 12.0) -> List[Dict[str, Any]]:
     from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 
@@ -6126,23 +6456,20 @@ def api_sentiment_dashboard():
 @_check_api_auth
 @_check_rate_limit
 def api_sentiment_by_asset():
-    cached = _cache_get("sentiment_by_asset")
+    cached = _cache_get(_SENTIMENT_BY_ASSET_CACHE_KEY)
     if cached is not None:
         return jsonify(cached)
     try:
         if not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED):
-            payload = {
-                "success": True,
-                "assets": [],
-                "degraded": True,
-                "degraded_reason": "sentiment_sources_disabled",
-            }
-            _cache_set("sentiment_by_asset", payload, ttl=300)
+            payload = _neutral_sentiment_by_asset_payload("sentiment_sources_disabled")
+            _cache_set(_SENTIMENT_BY_ASSET_CACHE_KEY, payload, ttl=300)
             return jsonify(payload)
 
         mi = _get_market_intelligence()
         if not mi:
-            return jsonify({"success": False, "error": "Market intelligence unavailable"})
+            payload = _neutral_sentiment_by_asset_payload("market_intelligence_unavailable")
+            _cache_set(_SENTIMENT_BY_ASSET_CACHE_KEY, payload, ttl=60)
+            return jsonify(payload)
 
         watch = [a for a, _ in ALL_ASSETS]
         results = _collect_sentiment_by_asset_rows(mi, watch, timeout=12)
@@ -6150,7 +6477,7 @@ def api_sentiment_by_asset():
         results.sort(key=lambda x: x["score"], reverse=True)
         payload = {"success": True, "assets": results}
         # Cache 10 minutes — Reddit data doesn't change that fast
-        _cache_set("sentiment_by_asset", payload, ttl=600)
+        _cache_set(_SENTIMENT_BY_ASSET_CACHE_KEY, payload, ttl=600)
         return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/sentiment/by-asset", e.status_code)
@@ -7176,6 +7503,10 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
             "ok": healthy,
             "state": state,
             "meta": " | ".join(part for part in meta_parts if part),
+            "market_quiet": bool(status.get("market_quiet")),
+            "quiet_stale": bool(status.get("quiet_stale")),
+            "market_open_assets": list(status.get("market_open_assets") or []),
+            "market_closed_assets": list(status.get("market_closed_assets") or []),
         }
     except Exception:
         services["ctrader_live_depth"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
@@ -7195,6 +7526,10 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
             "ok": healthy,
             "state": state,
             "meta": " | ".join(part for part in meta_parts if part),
+            "market_quiet": bool(status.get("market_quiet")),
+            "quiet_stale": bool(status.get("quiet_stale")),
+            "market_open_assets": list(status.get("market_open_assets") or []),
+            "market_closed_assets": list(status.get("market_closed_assets") or []),
         }
     except Exception:
         services["dukascopy_live_depth"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
@@ -7369,6 +7704,33 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
     }
 
 
+def _source_health_with_market_quiet(
+    source_health: Any,
+    stale_sources: Any,
+    runtime_services: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[str]]:
+    health_map = {str(k): dict(v or {}) for k, v in dict(source_health or {}).items()}
+    stale = [str(item) for item in list(stale_sources or []) if str(item)]
+    for source in ("ctrader_live_depth", "dukascopy_live_depth"):
+        service = dict((runtime_services or {}).get(source) or {})
+        if not bool(service.get("market_quiet")):
+            continue
+        row = dict(health_map.get(source) or {})
+        row.update(
+            {
+                "status": "market_quiet",
+                "fresh": True,
+                "suppressed": True,
+                "market_quiet": True,
+                "quiet_stale": bool(service.get("quiet_stale")),
+                "threshold": row.get("threshold", 30),
+            }
+        )
+        health_map[source] = row
+        stale = [item for item in stale if item != source]
+    return health_map, stale
+
+
 @app.route("/api/system/health")
 def api_system_health():
     cached = _cache_get("system_health")
@@ -7378,15 +7740,20 @@ def api_system_health():
         core   = _core()
         health = core.health_report() if core else {}
         snapshot = _collect_system_health_snapshot(core, health)
+        source_health, stale_sources = _source_health_with_market_quiet(
+            health.get("source_health") or {},
+            health.get("stale_sources") or [],
+            snapshot.get("runtime_services") or {},
+        )
 
         payload = {
             "success":          True,
             **snapshot,
             "open_positions":   health.get("open_positions", 0),
             "active_cooldowns": health.get("active_cooldowns", 0),
-            "source_health":    dict(health.get("source_health") or {}),
-            "stale_sources":    list(health.get("stale_sources") or []),
-            "stale_source_count": int(health.get("stale_source_count", 0) or 0),
+            "source_health":    source_health,
+            "stale_sources":    stale_sources,
+            "stale_source_count": len(stale_sources),
             "never_seen_sources": list(health.get("never_seen_sources") or []),
             "never_seen_source_count": int(health.get("never_seen_source_count", 0) or 0),
             "ig_broker":       dict(health.get("ig_broker") or {}),
@@ -7520,7 +7887,7 @@ def _page_overview_status_shell() -> Dict[str, Any]:
 def _page_overview_command_center_shell(reason: str = "page_overview_cache_miss") -> Dict[str, Any]:
     cached = _cache_get("command_center_payload") or _cache_get("command_center_payload:last_good")
     if cached:
-        return _response_to_dict(cached)
+        return _normalize_command_center_payload_contract(_response_to_dict(cached))
     return _build_command_center_unavailable_payload(reason=reason)
 
 
@@ -7543,16 +7910,18 @@ def _build_page_overview_unavailable_payload(page: str, days: int, reason: str =
     if page == "risk_dashboard":
         payload.update({"status": status, "risk": {"success": True}, "command_center": command_center})
     elif page == "playbook_intel":
+        context_rows = list((command_center.get("decision_context") or {}).get("rows") or [])
         payload.update(
             {
                 "status": status,
+                "command_center": command_center,
                 "signals": [],
                 "accuracy": {"by_horizon": {}, "by_asset": {}, "recent": [], "days_back": days},
                 "live_quality": {},
                 "live_leaders": {},
                 "playbook_performance": {"summary": {}, "playbooks": [], "assets": []},
                 "asset_playbook_matrix": [],
-                "near_misses": [],
+                "near_misses": list(command_center.get("near_misses") or []) or context_rows,
             }
         )
     elif page == "intelligence_alerts":
@@ -7577,7 +7946,7 @@ def _build_page_overview_unavailable_payload(page: str, days: int, reason: str =
             {
                 "status": status,
                 "sentiment": {"success": True, "components": {}, "score": 0.0},
-                "by_asset": {"success": True, "assets": []},
+                "by_asset": _neutral_sentiment_by_asset_payload(reason),
                 "events": {"success": True, "events": []},
                 "heatmap": {"success": True, "items": []},
                 "command_center": command_center,
@@ -7658,6 +8027,9 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload = _response_to_dict(_call_view(api_ai_predictions_overview))
         payload["page"] = page
         payload["status"] = _response_to_dict(_call_view(api_status))
+        payload["command_center"] = _command_center_snapshot()
+        if not payload.get("near_misses"):
+            payload["near_misses"] = list(payload["command_center"].get("near_misses") or []) or list((payload["command_center"].get("decision_context") or {}).get("rows") or [])
     elif page == "intelligence_alerts":
         payload = _response_to_dict(_call_view(api_intelligence_alerts_overview))
         payload["page"] = page
@@ -7690,8 +8062,8 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
                 ttl=600,
             ),
             "by_asset": _page_overview_cached_component(
-                "sentiment_by_asset",
-                {"success": True, "assets": [], "degraded": True, "degraded_reason": sentiment_fallback_reason},
+                _SENTIMENT_BY_ASSET_CACHE_KEY,
+                _neutral_sentiment_by_asset_payload(sentiment_fallback_reason),
                 builder=None,
                 ttl=600,
             ),
@@ -7782,9 +8154,29 @@ def _build_page_overview_payload_with_budget(page: str, days: int) -> Dict[str, 
     return _response_to_dict(payload)
 
 
+def _normalize_page_overview_payload_contract(payload: Dict[str, Any], page: str, days: int) -> Dict[str, Any]:
+    payload = _response_to_dict(payload)
+    page = _normalize_page_overview_name(page or payload.get("page") or "")
+    if isinstance(payload.get("command_center"), dict):
+        payload["command_center"] = _normalize_command_center_payload_contract(payload["command_center"])
+    if page == "sentiment_intelligence":
+        by_asset = payload.get("by_asset")
+        if not isinstance(by_asset, dict) or not list(by_asset.get("assets") or []):
+            reason = str(payload.get("degraded_reason") or "sentiment_context_warming")
+            payload["by_asset"] = _neutral_sentiment_by_asset_payload(reason)
+    if page == "playbook_intel" and isinstance(payload.get("command_center"), dict):
+        if not list(payload.get("near_misses") or []):
+            command_center = payload["command_center"]
+            payload["near_misses"] = list(command_center.get("near_misses") or []) or list((command_center.get("decision_context") or {}).get("rows") or [])
+    payload.setdefault("success", True)
+    payload.setdefault("page", page)
+    payload.setdefault("days", days)
+    return payload
+
+
 def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bool = False) -> Dict[str, Any]:
     page = _normalize_page_overview_name(page)
-    cache_key = f"page_overview:{page}:{days}"
+    cache_key = f"page_overview:{_PAGE_OVERVIEW_CACHE_VERSION}:{page}:{days}"
     last_good_key = f"{cache_key}:last_good"
 
     def _builder() -> Dict[str, Any]:
@@ -7793,7 +8185,7 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
     if not force_refresh:
         cached = _cache_get(cache_key)
         if cached is not None:
-            return _response_to_dict(cached)
+            return _normalize_page_overview_payload_contract(cached, page, days)
 
         fallback = _cache_get(last_good_key)
         if fallback is not None:
@@ -7805,14 +8197,14 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
                 last_good_key=last_good_key,
                 last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
             )
-            payload = _response_to_dict(fallback)
+            payload = _normalize_page_overview_payload_contract(fallback, page, days)
             payload["success"] = True
             payload["degraded"] = True
             payload["degraded_reason"] = "stale_fallback"
             return payload
 
     try:
-        payload = _builder()
+        payload = _normalize_page_overview_payload_contract(_builder(), page, days)
         _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_CACHE_TTL)
         _cache_set(last_good_key, payload, ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL)
         return payload
@@ -7820,7 +8212,7 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
         logger.warning(f"[dashboard] page overview build failed for {page}: {exc}")
         fallback = _cache_get(last_good_key)
         if fallback is not None:
-            payload = _response_to_dict(fallback)
+            payload = _normalize_page_overview_payload_contract(fallback, page, days)
             payload["success"] = True
             payload["degraded"] = True
             payload["degraded_reason"] = "stale_fallback"

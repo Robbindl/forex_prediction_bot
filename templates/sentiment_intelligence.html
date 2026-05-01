@@ -209,7 +209,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       </div>
 
       <div class="panel translation-panel">
-        <div class="panel-header"><span class="panel-title">🧩 Signal Translation</span></div>
+        <div class="panel-header"><span class="panel-title">🧩 Decision Translation</span></div>
         <div class="panel-body translation-body" id="signalLinkPanel"><div class="empty">Loading…</div></div>
       </div>
 
@@ -242,7 +242,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         </div>
 
         <div class="panel leader-panel">
-          <div class="panel-header"><span class="panel-title">🏁 Snapshot Leaders</span></div>
+          <div class="panel-header"><span class="panel-title">🏁 Sentiment Leaders</span></div>
           <div class="panel-body" id="leaderPanel"><div class="empty">Loading…</div></div>
         </div>
       </div>
@@ -260,7 +260,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       </div>
 
       <div class="panel heatmap-panel">
-        <div class="panel-header"><span class="panel-title">🔥 Per-Asset Snapshot Sentiment</span></div>
+        <div class="panel-header"><span class="panel-title">🔥 Per-Asset Sentiment Context</span></div>
         <div class="panel-body heatmap-body">
           <div class="asset-sent-grid" id="assetGrid"><div class="empty" style="grid-column:span 5">Loading…</div></div>
         </div>
@@ -302,7 +302,7 @@ function entryReadiness(signal){
   return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
 }
 function exactKillReason(signal){
-  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || '').trim();
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalValue(signal, 'decision_reason') || '').trim();
 }
 function reviewNotesLine(signal){
   return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
@@ -368,6 +368,14 @@ async function fetchSentimentOverview(){
     }
   }
   if(d.success){
+    if(!Array.isArray(d.by_asset?.assets) || !d.by_asset.assets.length){
+      try{
+        const byAsset = await window.dashboardFetchJson('/api/sentiment/by-asset', {timeoutMs: 6000});
+        if(byAsset.success && Array.isArray(byAsset.assets) && byAsset.assets.length){
+          d.by_asset = byAsset;
+        }
+      }catch(_){}
+    }
     _sentimentOverviewCache = {fetched: now, data: d};
     return d;
   }
@@ -388,7 +396,12 @@ async function load(){
     const routing = status.provider_routing || {};
     const diagnostics = status.signal_diagnostics || {};
     const commandCenter = page.command_center || {};
-    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+    const decisionRows = Array.isArray(commandCenter.decision_context?.rows) ? commandCenter.decision_context.rows : [];
+    const liveSignals = []
+      .concat(Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [])
+      .concat(Array.isArray(commandCenter.top_opportunities) ? commandCenter.top_opportunities : [])
+      .concat(Array.isArray(commandCenter.near_misses) ? commandCenter.near_misses : [])
+      .concat(decisionRows);
     const leadSignal = (Array.isArray(commandCenter.top_opportunities) && commandCenter.top_opportunities.length ? commandCenter.top_opportunities[0] : null) || liveSignals[0] || null;
     const leadConfirm = leadSignal ? confirmationState(leadSignal) : {state:'neutral', label:'Unknown', detail:'confirmation pending'};
     const leadReadiness = leadSignal ? entryReadiness(leadSignal) : {state:'neutral', label:'Context only', detail:'signal pending'};
@@ -656,9 +669,12 @@ async function load(){
 
     // Per-asset heatmap
     const grid=document.getElementById('assetGrid');
-    if(!da.assets?.length){grid.innerHTML='<div class="empty" style="grid-column:span 5">Unavailable</div>';return;}
-    const max=Math.max(...da.assets.map(a=>Math.abs(a.score)),0.1);
-    grid.innerHTML=`<div class="panel-note" style="grid-column:span 5">Per-asset snapshots use market-intelligence signals for each asset, so this grid can stay neutral while the macro composite is driven by broad fear/greed or VIX.</div>`+da.assets.map(a=>{
+    const assetRows = Array.isArray(da.assets) ? da.assets.filter(a => a && a.asset) : [];
+    if(!assetRows.length){
+      grid.innerHTML='<div class="empty" style="grid-column:span 5">No per-asset sentiment rows are published yet.</div>';
+    } else {
+    const max=Math.max(...assetRows.map(a=>Math.abs(a.score)),0.1);
+    grid.innerHTML=`<div class="panel-note" style="grid-column:span 5">Per-asset snapshots use market-intelligence signals for each asset, so this grid can stay neutral while the macro composite is driven by broad fear/greed or VIX.</div>`+assetRows.map(a=>{
       const col=sColor(a.score);
       const int=Math.min(0.9,Math.abs(a.score)/max);
       const bg=a.score>0?`rgba(0,208,132,${0.07+int*0.45})`:`rgba(255,69,96,${0.07+int*0.45})`;
@@ -668,6 +684,7 @@ async function load(){
         <div class="as-label" style="color:${col}">${a.label}</div>
       </div>`;
     }).join('');
+    }
 
     // Events + risk
     const evs = ev.events || [];

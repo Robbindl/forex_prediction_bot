@@ -189,7 +189,7 @@ select{background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding
       </div>
 
       <div class="panel">
-        <div class="panel-header"><span class="panel-title">🧠 Signal Context</span><span id="signalContextStatus" class="status-tag" style="margin-left:auto">Loading…</span></div>
+        <div class="panel-header"><span class="panel-title">🧠 Decision Context</span><span id="signalContextStatus" class="status-tag" style="margin-left:auto">Loading…</span></div>
         <div class="dp-grid">
           <div>
             <div class="dp-stat-grid" id="signalContextSummary"><div class="dp-stat skeleton" style="height:74px"></div><div class="dp-stat skeleton" style="height:74px"></div><div class="dp-stat skeleton" style="height:74px"></div><div class="dp-stat skeleton" style="height:74px"></div></div>
@@ -376,7 +376,7 @@ function entryReadiness(signal){
   return {state:'neutral', label:'Structure only', detail:'entry path not ready'};
 }
 function exactKillReason(signal){
-  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || '').trim();
+  return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalValue(signal, 'decision_reason') || '').trim();
 }
 function reviewNotesLine(signal){
   return [signalValue(signal, 'market_review_notes'), signalValue(signal, 'execution_review_notes')].filter(Boolean).join(' · ');
@@ -398,6 +398,9 @@ function fetchPrimarySignal(page){
     page && page.command_center && page.command_center.latest_signals,
     page && page.command_center && page.command_center.top_opportunities,
     page && page.command_center && page.command_center.near_misses,
+    page && page.command_center && page.command_center.decision_context && page.command_center.decision_context.rows,
+    page && page.command_center && page.command_center.watchlist_ladder && page.command_center.watchlist_ladder.hot,
+    page && page.command_center && page.command_center.watchlist_ladder && page.command_center.watchlist_ladder.almost_ready,
     page && page.command_center && page.command_center.positions,
   ];
   for(const source of sources){

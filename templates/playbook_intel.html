@@ -125,7 +125,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     </div>
     <div class="content">
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🧭 Playbook Snapshot</span></div>
+        <div class="panel-header"><span class="panel-title">🧭 Playbook Decision Context</span></div>
         <div class="summary-grid" id="summaryGrid"><div class="summary-card"><div class="summary-val mu">—</div><div class="summary-lbl">Loading</div></div></div>
       </div>
       <div class="panel panel-full">
@@ -161,7 +161,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <div class="leader-grid" id="confidencePanel"><div class="leader-box"><div class="empty">Loading…</div></div><div class="leader-box"><div class="empty">Loading…</div></div></div>
       </div>
       <div class="panel panel-full">
-        <div class="panel-header"><span class="panel-title">🎯 Active Playbook Decisions</span><span id="predCount" style="font-size:11px;color:var(--tx3);margin-left:auto">0 signals</span></div>
+        <div class="panel-header"><span class="panel-title">🎯 Playbook Decision Queue</span><span id="predCount" style="font-size:11px;color:var(--tx3);margin-left:auto">0 rows</span></div>
         <div class="pred-grid prediction-panel-body" id="predGrid"><div class="empty">Loading…</div></div>
       </div>
       <div class="panel panel-full" style="margin-bottom:12px">
@@ -229,7 +229,7 @@ function entryReadiness(signal){
 }
 function exactKillReason(signal){
   const meta = signalMeta(signal);
-  return presentLabel(meta.execution_kill_reason || meta.kill_reason || signal.execution_kill_reason || signal.kill_reason, '');
+  return presentLabel(meta.execution_kill_reason || meta.kill_reason || meta.decision_reason || signal.execution_kill_reason || signal.kill_reason || signal.decision_reason || signal.reason || signal.killed_by, '');
 }
 function marketReviewNotes(signal){
   const meta = signalMeta(signal);
@@ -373,7 +373,7 @@ function renderOperatorQueue(overview){
     const scoreB = (br.state === 'ready' ? 3 : br.state === 'waiting' ? 2 : br.state === 'blocked' ? 1 : 0) + (Number(b.opportunity_score || 0) || 0);
     return scoreB - scoreA;
   });
-  document.getElementById('operatorQueuePanel').innerHTML = '<div class="leader-box"><div class="leader-title">Near-Miss Queue</div>' + (nearMisses.length ? nearMisses.slice(0,4).map(item => '<div class="leader-row"><div class="leader-asset">'+(item.asset || '—')+'</div><div class="leader-meta">'+humanToken(item.killed_by, 'review')+' · '+presentLabel(item.reason, 'reason pending')+' · '+(reviewNotesLine(item) || 'No review notes')+'</div><div class="leader-score" style="color:var(--am)">'+Number(item.setup_quality || 0).toFixed(2)+'</div></div>').join('') : '<div class="empty">No rejected setups are close enough to queue right now</div>') + '</div><div class="leader-box"><div class="leader-title">Desk Focus & Drag</div>' + (ranked.length ? ranked.slice(0,5).map(item => { const state = entryReadiness(item); return '<div class="leader-row"><div class="leader-asset">'+(item.asset || '—')+'</div><div class="leader-meta">'+playbookName(item)+' · '+patternFamily(item)+' · '+state.detail+' · '+regimeBits(item).join(' · ')+'</div><div class="leader-score" style="color:'+(state.state === 'ready' ? 'var(--gr)' : state.state === 'waiting' ? 'var(--am)' : state.state === 'blocked' ? 'var(--rd)' : 'var(--tx2)')+'">'+state.label+'</div></div>'; }).join('') : '<div class="empty">No live operator queue</div>') + '</div>';
+  document.getElementById('operatorQueuePanel').innerHTML = '<div class="leader-box"><div class="leader-title">Filtered Setup Queue</div>' + (nearMisses.length ? nearMisses.slice(0,4).map(item => '<div class="leader-row"><div class="leader-asset">'+(item.asset || '—')+'</div><div class="leader-meta">'+humanToken(item.killed_by || item.decision_state, 'review')+' · '+presentLabel(item.reason || item.decision_reason, 'reason pending')+' · '+(reviewNotesLine(item) || 'No review notes')+'</div><div class="leader-score" style="color:var(--am)">'+Number(item.setup_quality || 0).toFixed(2)+'</div></div>').join('') : '<div class="empty">No filtered setup rows are close enough to queue right now</div>') + '</div><div class="leader-box"><div class="leader-title">Desk Focus & Drag</div>' + (ranked.length ? ranked.slice(0,5).map(item => { const state = entryReadiness(item); return '<div class="leader-row"><div class="leader-asset">'+(item.asset || '—')+'</div><div class="leader-meta">'+playbookName(item)+' · '+patternFamily(item)+' · '+state.detail+' · '+regimeBits(item).join(' · ')+'</div><div class="leader-score" style="color:'+(state.state === 'ready' ? 'var(--gr)' : state.state === 'waiting' ? 'var(--am)' : state.state === 'blocked' ? 'var(--rd)' : 'var(--tx2)')+'">'+state.label+'</div></div>'; }).join('') : '<div class="empty">No live decision queue</div>') + '</div>';
 }
 function renderAssetPlaybookMatrix(overview){
   const rows = Array.isArray(overview.asset_playbook_matrix) ? overview.asset_playbook_matrix : [];
@@ -479,6 +479,16 @@ async function loadOverview(){
   try{
     const overview = await fetchAiPredictionsOverview(30);
     if(!overview.success){ renderAiUnavailable('Playbook intel unavailable'); return; }
+    const commandCenter = overview.command_center || {};
+    const decisionRows = []
+      .concat(overview.near_misses || [])
+      .concat(commandCenter.near_misses || [])
+      .concat(commandCenter.decision_context?.rows || []);
+    if((!overview.signals || !overview.signals.length) && decisionRows.length){
+      overview.signals = decisionRows;
+      overview.live_quality = Object.assign({signal_count:decisionRows.length}, overview.live_quality || {});
+      overview.live_quality.signal_count = decisionRows.length;
+    }
     renderPredictionSummary(overview);
     renderDiagnosticsSummary(overview);
     renderPlaybookMix(overview);

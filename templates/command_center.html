@@ -265,9 +265,9 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
         <span class="mc-icon">🎯</span>
       </div>
       <div class="metric-card mc-purple" style="animation-delay:.2s">
-        <div class="mc-label">Open Positions</div>
+        <div class="mc-label">Open Exposure</div>
         <div class="mc-value pu" id="mPos">—</div>
-        <div class="mc-sub" id="mPosSub">Active trades</div>
+        <div class="mc-sub" id="mPosSub">Active book</div>
         <span class="mc-icon">📊</span>
       </div>
 
@@ -288,7 +288,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel panel-full" style="animation-delay:.225s">
         <div class="panel-header">
-          <span class="panel-title">🧠 Elite Entry Summary</span>
+          <span class="panel-title">🧠 Execution Gate Summary</span>
           <span class="panel-badge" id="eliteSummaryBadge">Loading…</span>
         </div>
         <div class="panel-body">
@@ -302,7 +302,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel panel-full" style="animation-delay:.23s">
         <div class="panel-header">
-          <span class="panel-title">🚫 Why Not Traded</span>
+          <span class="panel-title">🚫 Why No Entry</span>
           <span class="panel-badge" id="whyNotBadge">Loading…</span>
         </div>
         <div class="panel-body">
@@ -326,7 +326,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel panel-wide" style="animation-delay:.24s">
         <div class="panel-header">
-          <span class="panel-title">🪜 Watchlist Ladder</span>
+          <span class="panel-title">🪜 Decision Watchlist</span>
           <span class="panel-badge" id="watchlistBadge">Loading…</span>
         </div>
         <div class="panel-body" id="watchlistPanel">
@@ -337,7 +337,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
       <div class="panel panel-wide" style="animation-delay:.25s">
         <div class="panel-header" style="justify-content:space-between">
           <div style="display:flex;align-items:center;gap:8px">
-            <span class="panel-title">⚡ Active Signals</span>
+            <span class="panel-title">⚡ Decision Queue</span>
             <span class="panel-badge" id="sigCount">0</span>
           </div>
           <div class="action-toolbar">
@@ -374,7 +374,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel panel-wide" style="animation-delay:.37s">
         <div class="panel-header">
-          <span class="panel-title">🧪 Near-Miss Board</span>
+          <span class="panel-title">🧪 Filtered Setups</span>
           <span class="panel-badge" id="nearMissBadge">Loading…</span>
         </div>
         <div class="panel-body" id="nearMissPanel">
@@ -384,7 +384,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel panel-wide" style="animation-delay:.375s">
         <div class="panel-header">
-          <span class="panel-title">₿ Crypto Rejection Audit</span>
+          <span class="panel-title">₿ Crypto Gate Audit</span>
           <span class="panel-badge" id="cryptoRejectBadge">Loading…</span>
         </div>
         <div class="panel-body" id="cryptoRejectPanel">
@@ -394,7 +394,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel panel-wide" style="animation-delay:.38s">
         <div class="panel-header">
-          <span class="panel-title">🔁 Trade Lifecycle</span>
+          <span class="panel-title">🔁 Decision Lifecycle</span>
           <span class="panel-badge" id="lifecycleBadge">Loading…</span>
         </div>
         <div class="panel-body">
@@ -453,7 +453,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 
       <div class="panel panel-full" style="margin-top:16px">
         <div class="panel-header">
-          <span class="panel-title">🎞️ Trade Tape</span>
+          <span class="panel-title">🎞️ Execution Tape</span>
           <span class="panel-badge" id="tradeTapeBadge">Loading…</span>
         </div>
         <div class="panel-body" id="tradeTapePanel">
@@ -653,6 +653,7 @@ function exactKillReason(item){
     || itemText(item,'kill_reason')
     || itemText(item,'killed_by')
     || itemText(item,'reason')
+    || itemText(item,'decision_reason')
     || (hardBlocks[0] || '')
     || (lateReasons[0] || '')
     || (rejected[0] || '')
@@ -1198,7 +1199,7 @@ async function startCommandCenterStream(){
   }
 }
 function collectElitePool(d){
-  return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]);
+  return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.decision_context?.rows)||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]);
 }
 function renderEliteSummary(d){
   const pool=collectElitePool(d);
@@ -1230,7 +1231,7 @@ function renderEliteSummary(d){
     {title:'Quality drag',value:lowQuality.length?`${lowQuality.length} weak`:'Stable',valueClass:lowQuality.length?'am':'gn',note:'Weak candle, session, or target efficiency is degrading entry quality.'},
     {title:'Cluster drag',value:clusterHeavy.length?`${clusterHeavy.length} blocked`:'Light',valueClass:clusterHeavy.length?'rd':'gn',note:'Cluster penalty is suppressing overlapping ideas when too many similar setups stack up.'},
     {title:'Regime policy',value:regimeBlocked.length?`${regimeBlocked.length} blocked`:regimeAware.length?`${regimeAware.length} tagged`:'Visible',valueClass:regimeBlocked.length?'rd':regimeAware.length?'cy':'mu',note:regimeAware.length?'Regime policy summaries now travel with the live decision stack.':'No regime policy note is visible in the current pool.'},
-  ],'Elite entry summary unavailable');
+  ],'Execution gate summary unavailable');
 }
 async function loadMain(){
   let d;
@@ -1243,6 +1244,8 @@ async function loadMain(){
   const providerRouting=d.provider_routing||{};
   const signalQuality=d.signal_quality||{};
   const signalDiagnostics=d.signal_diagnostics||{};
+  const decisionContext=d.decision_context||{};
+  const decisionRows=Array.isArray(decisionContext.rows)?decisionContext.rows:[];
   const authoritativeLiveBook = getAuthoritativeLiveBookSnapshot();
   const live = authoritativeLiveBook?.live_summary || d.live_summary || {};
   const mergedPositions = authoritativeLiveBook
@@ -1286,7 +1289,7 @@ async function loadMain(){
     document.getElementById('engineBadge').textContent=running?'Live':'Offline';
     document.getElementById('engineBadge').className='tb-badge '+(running?'badge-live':'badge-off');
     const topOpportunities = d.top_opportunities || [];
-    const lead = topOpportunities[0] || null;
+    const lead = topOpportunities[0] || decisionRows.find(item=>item.decision_kind==='blocked'||item.decision_kind==='candidate') || null;
     const positions = mergedPositions;
     const categoryCounts = positions.reduce((acc, item) => {const key = String(item.category || 'unknown');acc[key] = (acc[key] || 0) + 1;return acc;}, {});
     const leadCategory = Object.entries(categoryCounts).sort((a,b) => b[1] - a[1])[0];
@@ -1294,10 +1297,10 @@ async function loadMain(){
     const fragileCount = Number(signalDiagnostics.broker_fragile_count || 0);
     const trueDepthCount = Number(signalDiagnostics.true_depth_count || 0);
     const syntheticDepthCount = Number(signalDiagnostics.synthetic_depth_count || 0);
-    const focusState = lead ? 'Armed' : posLen ? 'Managing' : 'Quiet';
+    const focusState = lead ? (decisionContext.label || 'Armed') : posLen ? 'Managing' : (decisionContext.label || 'Quiet');
     document.getElementById('focusBadge').textContent = focusState;
     document.getElementById('focusPanel').innerHTML = [
-      {value: lead ? `${lead.asset || '—'} ${String(lead.direction || lead.signal || '').toUpperCase()}` : 'No queue',valueClass: lead ? (String(lead.direction || lead.signal || '').toUpperCase() === 'SELL' ? 'rd' : 'gn') : 'mu',label: 'Next Candidate',sub: lead ? `Opp ${Number(lead.opportunity_score || 0).toFixed(3)} · ${buildEliteReason(lead)}` : 'No setup is currently strong enough to lead the desk'},
+      {value: lead ? `${lead.asset || '—'} ${String(lead.direction || lead.signal || lead.decision_state || '').toUpperCase()}` : 'No queue',valueClass: lead ? (String(lead.direction || lead.signal || '').toUpperCase() === 'SELL' ? 'rd' : String(lead.direction || lead.signal || '').toUpperCase() === 'BUY' ? 'gn' : 'am') : 'mu',label: 'Next Decision',sub: lead ? `${lead.decision_reason || decisionContext.summary || buildEliteReason(lead)}${lead.opportunity_score?` · Opp ${Number(lead.opportunity_score || 0).toFixed(3)}`:''}` : (decisionContext.summary || 'No setup is currently strong enough to lead the desk')},
       {value: providerRouting.summary_label || 'Unavailable',valueClass: providerRouting.summary_label ? 'cy' : 'mu',label: 'Feed Spine',sub: providerRouting.fallback_label ? `Fallback ${providerRouting.fallback_label}` : 'No published fallback split'},
       {value: posLen ? `${posLen} open` : 'Flat',valueClass: posLen ? 'pu' : 'mu',label: 'Book State',sub: live.book_bias ? `${live.book_bias} · ${live.open_state||'Flat'}` : (leadCategory ? `${leadCategory[0]} leads with ${leadCategory[1]} positions` : 'No open exposure in the book')},
       {value: `${supportiveCount}/${fragileCount}`,valueClass: fragileCount ? 'am' : supportiveCount ? 'gn' : 'mu',label: 'Feed Pressure',sub: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : 'No live pressure diagnostics yet'},
@@ -1307,14 +1310,17 @@ async function loadMain(){
 
   try{
     const sigs=(d.latest_signals||[]).filter(s=>(s.signal||s.direction||'HOLD')!=='HOLD');
+    const queueRows=sigs.length?sigs:decisionRows.filter(item=>item.asset).slice(0,8);
     renderTopOpportunities(d.top_opportunities||[]);
-    document.getElementById('sigCount').textContent=sigs.length;
+    document.getElementById('sigCount').textContent=sigs.length?String(sigs.length):`${queueRows.length} context`;
     const sEl=document.getElementById('signalsPanel');
-    if(!sigs.length){sEl.innerHTML='<div class="empty">No active signals</div>';}
+    if(!queueRows.length){sEl.innerHTML='<div class="empty">No decision context published yet</div>';}
     else{
-      sEl.innerHTML=sigs.slice(0,6).map(s=>{
-        const dir=(s.signal||s.direction||'HOLD').toUpperCase();
-        const c=Number(s.confidence||0);
+      sEl.innerHTML=queueRows.slice(0,6).map(s=>{
+        const rawDir=String(s.signal||s.direction||s.decision_state||'WATCH').toUpperCase();
+        const dir=rawDir==='HOLD'?'WATCH':rawDir;
+        const cRaw=Number(s.confidence||0);
+        const c=Number.isFinite(cRaw)?(cRaw>1?cRaw/100:cRaw):0;
         const cp=(c*100).toFixed(0);
         const barCol=c>=0.75?'var(--gr)':c>=0.62?'var(--am)':'var(--rd)';
         const mem=Number(s.memory_score||0);
@@ -1335,7 +1341,9 @@ async function loadMain(){
         const ladder=targetLadder(s);
         const ladderLine=ladder.length?ladder.map(level=>`${level.label} ${priceFormatterForItem(s)(level.price)}${level.rr>0?` · ${level.rr.toFixed(1)}R`:''}`).join(' · '):'';
         const pressure=buildQualityPressure(s);
-        return`<div class="sig-row"><span class="sig-dir ${dir==='BUY'?'sig-buy':'sig-sell'}">${dir}</span><div style="flex:1"><div class="sig-asset">${s.asset||'?'} ${statusPill(s,entryState.label)}</div><div class="sig-meta">${s.category||''} · ${detail}</div>${eliteChipRow(s)}${provenance?`<div class="sig-meta">${provenance}</div>`:''}<div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}${setupLine?`<div class="sig-meta">${setupLine}</div>`:''}${ladderLine?`<div class="sig-meta">${ladderLine}</div>`:''}<div class="sig-meta">${readinessBits(s).join(' · ')}</div><div class="sig-meta">${qualityBits(s).join(' · ') || 'Elite entry metrics pending'}</div>${pressure?`<div class="note-callout warn">${pressure}</div>`:''}${(s.exact_kill_reason||s.execution_kill_reason)?`<div class="note-callout bad">${exactKillReason(s)}</div>`:''}${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}${reviewNotesLine(s)?`<div class="note-callout ${entryState.label==='Ready'?'ok':entryState.label==='Blocked'?'bad':'warn'}">${reviewNotesLine(s)}</div>`:''}</div><div style="text-align:right"><div class="sig-conf ${entryState.className}" style="color:${barCol}">${cp}%</div><div class="conf-bar-mini"><div class="cbm-fill" style="width:${cp}%;background:${barCol}"></div></div><div class="sig-meta" style="margin-top:6px">${confirmationProgress(s).toFixed(0)}% conf</div></div></div>`;
+        const dirClass=dir==='BUY'?'sig-buy':dir==='SELL'?'sig-sell':'';
+        const contextReason=s.decision_reason||decisionContext.summary||'No execution decision has passed yet';
+        return`<div class="sig-row"><span class="sig-dir ${dirClass}">${dir}</span><div style="flex:1"><div class="sig-asset">${s.asset||'?'} ${statusPill(s,entryState.label)}</div><div class="sig-meta">${s.category||''} · ${detail}</div>${eliteChipRow(s)}${provenance?`<div class="sig-meta">${provenance}</div>`:''}<div class="sig-meta">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''} · Micro ${microQ.toFixed(2)} · ${depthLabel(s)}</div>${crossLine?`<div class="sig-meta">${crossLine}</div>`:''}${setupLine?`<div class="sig-meta">${setupLine}</div>`:''}${ladderLine?`<div class="sig-meta">${ladderLine}</div>`:''}<div class="sig-meta">${readinessBits(s).join(' · ') || contextReason}</div><div class="sig-meta">${qualityBits(s).join(' · ') || 'Decision metrics pending or not applicable'}</div>${pressure?`<div class="note-callout warn">${pressure}</div>`:''}${(s.exact_kill_reason||s.execution_kill_reason||s.decision_reason)?`<div class="note-callout ${entryState.label==='Blocked'?'bad':'warn'}">${exactKillReason(s)}</div>`:''}${patternLine?`<div class="sig-meta">${patternLine}</div>`:''}${reviewNotesLine(s)?`<div class="note-callout ${entryState.label==='Ready'?'ok':entryState.label==='Blocked'?'bad':'warn'}">${reviewNotesLine(s)}</div>`:''}</div><div style="text-align:right"><div class="sig-conf ${entryState.className}" style="color:${barCol}">${sigs.length?`${cp}%`:titleToken(s.decision_state||'Context')}</div><div class="conf-bar-mini"><div class="cbm-fill" style="width:${sigs.length?cp:35}%;background:${barCol}"></div></div><div class="sig-meta" style="margin-top:6px">${sigs.length?`${confirmationProgress(s).toFixed(0)}% conf`:titleToken(s.decision_kind||'watch')}</div></div></div>`;
       }).join('');
     }
   }catch(e){console.error('[CC] signals:',e);}
@@ -1346,12 +1354,12 @@ async function loadMain(){
     const policyBlockers=(why.top_blockers||[]).filter(item=>/regime|policy|cluster/i.test(String(item.label||''))).reduce((sum,item)=>sum+Number(item.count||0),0);
     document.getElementById('whyNotBadge').textContent=why.lead_count?`${leadBlocker} · ${why.lead_count}`:'Clear';
     renderCommandBoardCards('whyNotPanel',[
-      {title:'Lead blocker',value:leadBlocker,valueClass:why.lead_count?'am':'gn',note:why.lead_count?`${why.lead_count} recent rejects were dominated by this blocker.`:'No repeated blocker is dominating the journal right now.'},
+      {title:'Lead blocker',value:leadBlocker,valueClass:why.lead_count?'am':'gn',note:why.lead_count?`${why.lead_count} recent blocks or waiting states point here.`:'No repeated blocker is dominating the journal right now.'},
       {title:'Confirmation drag',value:String((why.confirmation_pending_count||why.blocked_by_confirmation_count||0)),valueClass:Number(why.confirmation_pending_count||why.blocked_by_confirmation_count||0)?'am':'gn',note:'Candidates staged by structure but still waiting on confirmation bars or reclaim proof.'},
       {title:'Extension / cluster',value:`${Number(why.overextended_count||0)} / ${Number(why.cluster_blocked_count||0)}`,valueClass:(Number(why.overextended_count||0)||Number(why.cluster_blocked_count||0))?'rd':'gn',note:'Overextended setups and cluster-suppressed ideas removed before execution.'},
       {title:'Policy lock',value:String(policyBlockers||0),valueClass:policyBlockers?'rd':'gn',note:policyBlockers?'Regime and cluster policy are visible in the recent reject mix.':'No regime-policy lock is dominating recent rejects.'},
       ...((why.top_assets||[]).slice(0,3).map(item=>({title:item.asset||'—',value:exactKillReason(item),valueClass:'cy',note:[`${item.count||0} rejects`, confirmationLine(item), qualityBits(item).slice(0,3).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · ')}))),
-    ].slice(0,6),'No recurring blockers in the recent journal');
+    ].slice(0,6),'No recurring blockers or waiting states in the recent journal');
 
     const radar=d.session_radar||{};
     document.getElementById('sessionRadarBadge').textContent=radar.open_count!=null?`${radar.open_count} open / ${radar.blocked_count||0} blocked`:'Unavailable';
@@ -1377,8 +1385,9 @@ async function loadMain(){
     document.getElementById('watchlistPanel').innerHTML='<div class="board-grid">'+sections.map(section=>`<div class="board-card"><div class="board-title">${section.label}</div>${section.items && section.items.length ? section.items.slice(0,3).map(item=>`<div class="desk-meta" style="margin-top:6px"><span class="${section.cls}" style="font-weight:700">${section.text(item)}</span><br>${section.note(item)}</div>`).join('') : '<div class="board-note">No assets in this ladder state.</div>'}</div>`).join('')+'</div>';
 
     const nearMisses=d.near_misses||[];
-    document.getElementById('nearMissBadge').textContent=nearMisses.length?`${nearMisses.length} tracked`:'Clear';
-    renderDeskRows('nearMissPanel',nearMisses.slice(0,6).map(item=>({head:`${item.asset||'—'} ${String(item.direction||'').toUpperCase() || ''}`.trim(),meta:[`${knownKillReason(item) || buildEliteReason(item)} · Opp ${(Number(item.opportunity_score||0)).toFixed(3)} · Setup ${(Number(item.setup_quality||0)).toFixed(3)}`, readinessBits(item).join(' · '), qualityBits(item).slice(0,4).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · '),side:item.session_label?titleToken(item.session_label):eliteEntryState(item).label.toUpperCase(),sideClass:eliteEntryState(item).className})),'No near-miss setups right now');
+    const filteredRows=nearMisses.length?nearMisses:decisionRows.filter(item=>item.asset).slice(0,6);
+    document.getElementById('nearMissBadge').textContent=nearMisses.length?`${nearMisses.length} tracked`:filteredRows.length?`${filteredRows.length} context`:'Clear';
+    renderDeskRows('nearMissPanel',filteredRows.slice(0,6).map(item=>({head:`${item.asset||'—'} ${String(item.direction||item.decision_state||'').toUpperCase() || ''}`.trim(),meta:[`${knownKillReason(item) || item.decision_reason || buildEliteReason(item)}${item.opportunity_score?` · Opp ${(Number(item.opportunity_score||0)).toFixed(3)}`:''}${item.setup_quality?` · Setup ${(Number(item.setup_quality||0)).toFixed(3)}`:''}`, readinessBits(item).join(' · '), qualityBits(item).slice(0,4).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · '),side:item.session_label?titleToken(item.session_label):titleToken(item.decision_state||eliteEntryState(item).label),sideClass:eliteEntryState(item).className})),'No filtered setup context right now');
 
     const cryptoAudit=d.crypto_rejection_audit||{};
     const cryptoRows=cryptoAudit.rows||[];
