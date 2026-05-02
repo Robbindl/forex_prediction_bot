@@ -2662,6 +2662,69 @@ def _normalize_command_center_payload_contract(payload: Dict[str, Any]) -> Dict[
     return payload
 
 
+def _compact_command_center_for_page_overview(payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = _normalize_command_center_payload_contract(payload)
+
+    def _rows(name: str, limit: int) -> List[Dict[str, Any]]:
+        return [
+            dict(row)
+            for row in list(normalized.get(name) or [])
+            if isinstance(row, dict)
+        ][:limit]
+
+    ladder = dict(normalized.get("watchlist_ladder") or {})
+    compact_ladder = {}
+    for bucket, limit in (("hot", 6), ("almost_ready", 6), ("blocked", 6), ("inactive", 4)):
+        compact_ladder[bucket] = [
+            dict(row)
+            for row in list(ladder.get(bucket) or [])
+            if isinstance(row, dict)
+        ][:limit]
+
+    why_not = dict(normalized.get("why_not_traded") or {})
+    compact_why_not = {
+        "lead_blocker": why_not.get("lead_blocker"),
+        "lead_count": int(why_not.get("lead_count") or 0),
+        "top_blockers": [
+            dict(row)
+            for row in list(why_not.get("top_blockers") or [])
+            if isinstance(row, dict)
+        ][:5],
+        "top_assets": [
+            dict(row)
+            for row in list(why_not.get("top_assets") or [])
+            if isinstance(row, dict)
+        ][:6],
+    }
+
+    return {
+        "success": bool(normalized.get("success", True)),
+        "degraded": bool(normalized.get("degraded", False)),
+        "degraded_reason": str(normalized.get("degraded_reason") or ""),
+        "balance": normalized.get("balance"),
+        "total_pnl": normalized.get("total_pnl"),
+        "daily_pnl": normalized.get("daily_pnl"),
+        "open_positions": normalized.get("open_positions"),
+        "total_trades": normalized.get("total_trades"),
+        "engine_running": bool(normalized.get("engine_running", False)),
+        "engine_ready": bool(normalized.get("engine_ready", False)),
+        "sentiment_score": normalized.get("sentiment_score"),
+        "whale_alerts_24h": int(normalized.get("whale_alerts_24h", 0) or 0),
+        "alert_count_24h": int(normalized.get("alert_count_24h", 0) or 0),
+        "latest_signals": _rows("latest_signals", 8),
+        "top_opportunities": _rows("top_opportunities", 8),
+        "near_misses": _rows("near_misses", 8),
+        "positions": _rows("positions", 12),
+        "watchlist_ladder": compact_ladder,
+        "trade_lifecycle": dict(normalized.get("trade_lifecycle") or {}),
+        "why_not_traded": compact_why_not,
+        "live_summary": dict(normalized.get("live_summary") or {}),
+        "provider_routing": dict(normalized.get("provider_routing") or {}),
+        "signal_diagnostics": dict(normalized.get("signal_diagnostics") or {}),
+        "timestamp": normalized.get("timestamp") or datetime.now().isoformat(),
+    }
+
+
 def _build_trade_tape(positions: Any, closed_trades: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     for pos in list(positions or []):
@@ -7976,8 +8039,8 @@ def _page_overview_status_shell() -> Dict[str, Any]:
 def _page_overview_command_center_shell(reason: str = "page_overview_cache_miss") -> Dict[str, Any]:
     cached = _cache_get("command_center_payload") or _cache_get("command_center_payload:last_good")
     if cached:
-        return _normalize_command_center_payload_contract(_response_to_dict(cached))
-    return _build_command_center_unavailable_payload(reason=reason)
+        return _compact_command_center_for_page_overview(_response_to_dict(cached))
+    return _compact_command_center_for_page_overview(_build_command_center_unavailable_payload(reason=reason))
 
 
 def _page_overview_base(page: str, days: int, *, reason: str) -> Dict[str, Any]:
