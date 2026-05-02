@@ -119,8 +119,18 @@ def _context_directional_confluence(
     micro_score = _safe_float(micro.get("score"), 0.0)
     book_imbalance = _safe_float(micro.get("book_imbalance", micro_score), 0.0)
     tick_imbalance = _safe_float(micro.get("tick_imbalance"), 0.0)
+    orderflow_score = _safe_float(micro.get("orderflow_score"), 0.0)
+    orderflow_book_imbalance = _safe_float(micro.get("orderflow_book_imbalance"), 0.0)
     trade_flow_support = _clip(
         _safe_float(micro.get("trade_flow_score", micro_score), 0.0) * direction_sign,
+        -1.0,
+        1.0,
+    )
+    orderflow_support = _clip(
+        max(
+            orderflow_score * direction_sign,
+            orderflow_book_imbalance * direction_sign * 0.85,
+        ),
         -1.0,
         1.0,
     )
@@ -133,6 +143,7 @@ def _context_directional_confluence(
         max(
             micro_score * direction_sign,
             trade_flow_support,
+            orderflow_support,
             book_imbalance * direction_sign * 0.90,
             tick_imbalance * direction_sign * 0.75,
             velocity_support * 0.85,
