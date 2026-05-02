@@ -999,7 +999,7 @@ let _liveBookPending = null;
 let _liveBookSource = null;
 let _liveBookReconnect = null;
 let _commandCenterLastClosedTradeCount = null;
-const COMMAND_CENTER_LAST_GOOD_KEY = 'robbindl:command-center:last-good:v2';
+const COMMAND_CENTER_LAST_GOOD_KEY = 'robbindl:command-center:last-good:v3';
 const COMMAND_CENTER_LAST_GOOD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 function normalizeCommandCenterPayload(payload){
@@ -1347,7 +1347,7 @@ async function loadMain(){
     const closedTradeCount=Number(live.closed_trades??d.total_trades??0);
     if(_commandCenterLastClosedTradeCount===null){_commandCenterLastClosedTradeCount=closedTradeCount;}
     else if(closedTradeCount!==_commandCenterLastClosedTradeCount){_commandCenterLastClosedTradeCount=closedTradeCount;if(!document.hidden)loadHistory();}
-    const realizedBalance=Number(d.balance||0);
+    const realizedBalance=Number(live.realized_balance??d.balance??0);
     const liveBalance=Number(live.balance??d.balance??0);
     const balanceDelta=Number(live.balance_delta??(liveBalance-Number(live.initial_balance??d.initial_balance??realizedBalance)));
     const balanceEl=document.getElementById('mBal');
@@ -1359,7 +1359,7 @@ async function loadMain(){
     const dp=Number(live.daily_pnl??d.daily_pnl??0);
     const dpEl=document.getElementById('mDPnl');
     dpEl.textContent=fmtNum(dp);dpEl.className='mc-value '+(dp>=0?'gn':'rd');
-    document.getElementById('mDTrades').textContent=`Realized ${fmtMoney(d.daily_pnl||0)} · Floating ${fmtMoney(live.open_pnl||0)}`;
+    document.getElementById('mDTrades').textContent=`Realized ${fmtMoney(live.realized_daily_pnl??d.daily_pnl??0)} · Floating ${fmtMoney(live.open_pnl||0)}`;
     const liveWr=Number(live.win_rate??d.win_rate??0);
     const wrEl=document.getElementById('mWr');
     wrEl.textContent=liveWr.toFixed(1)+'%';

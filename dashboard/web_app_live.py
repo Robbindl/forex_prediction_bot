@@ -162,14 +162,14 @@ _COMMAND_CENTER_CACHE_TTL = 15
 _COMMAND_CENTER_LAST_GOOD_TTL = 6 * 60 * 60
 _COMMAND_CENTER_DEGRADED_CACHE_TTL = 5
 _COMMAND_CENTER_BUILD_TIMEOUT_SECONDS = 7.5
-_COMMAND_CENTER_PAYLOAD_CACHE_KEY = "command_center_payload:v2"
-_COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY = "command_center_payload:v2:last_good"
-_COMMAND_CENTER_PAYLOAD_REFRESH_KEY = "command_center_payload:v2"
+_COMMAND_CENTER_PAYLOAD_CACHE_KEY = "command_center_payload:v3"
+_COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY = "command_center_payload:v3:last_good"
+_COMMAND_CENTER_PAYLOAD_REFRESH_KEY = "command_center_payload:v3"
 _PAGE_OVERVIEW_CACHE_TTL = 15
 _PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
 _PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
 _PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS = 4.0
-_PAGE_OVERVIEW_CACHE_VERSION = "v4"
+_PAGE_OVERVIEW_CACHE_VERSION = "v5"
 _CLOSED_TRADES_CACHE_TTL = 10
 _TRADE_HISTORY_CACHE_TTL = 15
 _PERFORMANCE_GUARD_CACHE_TTL = 30
@@ -2981,6 +2981,57 @@ def _load_authoritative_closed_trades(limit: int = 50) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _rollup_closed_trades_for_dashboard(closed_trades: Any, *, limit: int = 1000) -> List[Dict[str, Any]]:
+    rows = [dict(row) for row in list(closed_trades or []) if isinstance(row, dict)]
+    if not rows:
+        return []
+    try:
+        from core.state import rollup_closed_trade_history
+
+        return list(rollup_closed_trade_history(rows, limit=max(1, int(limit or 1000))) or [])
+    except Exception as exc:
+        logger.debug(f"[dashboard] closed-trade rollup fallback failed: {exc}")
+        return [row for row in rows if not _is_partial_close_trade_row(row)][: max(1, int(limit or 1000))]
+
+
+def _closed_trade_exit_datetime(trade: Dict[str, Any]) -> Optional[datetime]:
+    return _coerce_utc_datetime(
+        trade.get("exit_time")
+        or trade.get("close_time")
+        or trade.get("closed_at")
+        or trade.get("entry_time")
+        or trade.get("open_time")
+    )
+
+
+def _summarize_closed_trade_history(closed_trades: Any) -> Dict[str, Any]:
+    rolled = _rollup_closed_trades_for_dashboard(closed_trades, limit=1000)
+    total = len(rolled)
+    total_pnl = round(sum(float(row.get("pnl", 0.0) or 0.0) for row in rolled), 4)
+    wins = sum(1 for row in rolled if float(row.get("pnl", 0.0) or 0.0) > 0.0)
+    losses = sum(1 for row in rolled if float(row.get("pnl", 0.0) or 0.0) < 0.0)
+
+    local_tz = _dashboard_local_timezone()
+    today = _dashboard_now_local().date()
+    daily_rows: List[Dict[str, Any]] = []
+    for row in rolled:
+        exit_dt = _closed_trade_exit_datetime(row)
+        if exit_dt and exit_dt.astimezone(local_tz).date() == today:
+            daily_rows.append(row)
+
+    daily_pnl = round(sum(float(row.get("pnl", 0.0) or 0.0) for row in daily_rows), 4)
+    return {
+        "rolled_trades": rolled,
+        "total_trades": total,
+        "winning_trades": wins,
+        "losing_trades": losses,
+        "win_rate": round(wins / total, 4) if total else 0.0,
+        "total_pnl": total_pnl,
+        "daily_pnl": daily_pnl,
+        "daily_trades": len(daily_rows),
+    }
+
+
 def _build_trade_lifecycle(positions: Any, closed_trades: Any, journals: Any) -> Dict[str, Any]:
     seed_count = 0
     approved_count = 0
@@ -3756,15 +3807,15 @@ def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any
         db = get_db()
         positions = list(db.load_open_positions() or [])
         closed_trades = _load_authoritative_closed_trades(limit=1000)
+        closed_summary = _summarize_closed_trade_history(closed_trades)
         summary = dict(db.get_performance_summary(days=30) or {})
         daily_rows = list(db.get_daily_stats(days=1) or [])
         latest_daily = dict(daily_rows[0] or {}) if daily_rows else {}
         initial_balance = float(getattr(_args, "balance", 10000.0) or 10000.0)
-        total_trades = int(summary.get("total_trades", len(closed_trades)) or 0)
-        trade_history_pnl = sum(float(row.get("pnl", 0.0) or 0.0) for row in closed_trades)
-        total_pnl = float(summary.get("total_pnl", trade_history_pnl) or 0.0)
-        if abs(total_pnl) < 0.0001 and abs(trade_history_pnl) >= 0.0001:
-            total_pnl = trade_history_pnl
+        trade_total = int(closed_summary.get("total_trades", 0) or 0)
+        total_trades = trade_total or int(summary.get("total_trades", 0) or 0)
+        trade_history_pnl = float(closed_summary.get("total_pnl", 0.0) or 0.0)
+        total_pnl = trade_history_pnl if trade_total else float(summary.get("total_pnl", 0.0) or 0.0)
         stored_balance = db.get_current_balance()
         expected_trade_balance = initial_balance + total_pnl
         if stored_balance is None:
@@ -3773,10 +3824,12 @@ def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any
             balance = float(stored_balance or 0.0)
             if abs(total_pnl) >= 0.01 and abs(balance - initial_balance) < 0.01:
                 balance = expected_trade_balance
-        win_rate = float(summary.get("win_rate", 0.0) or 0.0)
+        win_rate = float(closed_summary.get("win_rate", 0.0) or 0.0) if trade_total else float(summary.get("win_rate", 0.0) or 0.0)
+        winning_trades = int(closed_summary.get("winning_trades", 0) or 0) if trade_total else int(summary.get("winning_trades", 0) or 0)
+        losing_trades = int(closed_summary.get("losing_trades", 0) or 0) if trade_total else int(summary.get("losing_trades", 0) or 0)
         daily = {
-            "daily_pnl": float(latest_daily.get("pnl", 0.0) or 0.0),
-            "daily_trades": int(latest_daily.get("trade_count", 0) or 0),
+            "daily_pnl": float(closed_summary.get("daily_pnl", 0.0) or 0.0) if trade_total else float(latest_daily.get("pnl", 0.0) or 0.0),
+            "daily_trades": int(closed_summary.get("daily_trades", 0) or 0) if trade_total else int(latest_daily.get("trade_count", 0) or 0),
         }
         perf = {
             "balance": float(balance or 0.0),
@@ -3785,6 +3838,8 @@ def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any
             "open_positions": len(positions),
             "total_trades": total_trades,
             "win_rate": win_rate,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
         }
     except Exception as exc:
         logger.debug(f"[dashboard] DB runtime snapshot fallback failed: {exc}")
@@ -3829,6 +3884,26 @@ def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, 
         health.setdefault("is_running", bool(getattr(core, "is_running", False)))
         health.setdefault("engine_ready", bool(getattr(core, "is_ready", False)))
         closed_trades = _load_authoritative_closed_trades(limit=240)
+        closed_summary = _summarize_closed_trade_history(closed_trades)
+        if int(closed_summary.get("total_trades", 0) or 0) > 0:
+            initial_balance = float(perf.get("initial_balance", getattr(_args, "balance", 10000.0)) or getattr(_args, "balance", 10000.0))
+            total_pnl = float(closed_summary.get("total_pnl", 0.0) or 0.0)
+            current_balance = float(perf.get("balance", initial_balance) or initial_balance)
+            if abs(current_balance - initial_balance) < 0.01 or int(perf.get("total_trades", 0) or 0) <= 0:
+                current_balance = initial_balance + total_pnl
+            perf.update({
+                "balance": current_balance,
+                "initial_balance": initial_balance,
+                "total_pnl": total_pnl,
+                "total_trades": int(closed_summary.get("total_trades", 0) or 0),
+                "win_rate": float(closed_summary.get("win_rate", 0.0) or 0.0),
+                "winning_trades": int(closed_summary.get("winning_trades", 0) or 0),
+                "losing_trades": int(closed_summary.get("losing_trades", 0) or 0),
+            })
+            daily.update({
+                "daily_pnl": float(closed_summary.get("daily_pnl", 0.0) or 0.0),
+                "daily_trades": int(closed_summary.get("daily_trades", 0) or 0),
+            })
     else:
         perf, daily, positions, health, closed_trades = _load_dashboard_db_runtime_snapshot()
     return perf, daily, positions, health, closed_trades
