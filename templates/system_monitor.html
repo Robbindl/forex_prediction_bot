@@ -535,9 +535,14 @@ async function load(){
     document.getElementById('cooldowns').textContent=d.active_cooldowns||0;
 
     // Trading stats
-    document.getElementById('sBalance').textContent='$'+(d.balance||0).toFixed(2);
+    const live=overview.live_summary||overview.status?.live_summary||commandCenter.live_summary||d.live_summary||{};
+    const balance=Number(live.balance??d.balance??0);
+    const balanceDelta=Number(live.balance_delta??d.balance_delta??live.total_pnl??d.total_pnl??0);
+    const balanceEl=document.getElementById('sBalance');
+    balanceEl.textContent='$'+(Number.isFinite(balance)?balance.toFixed(2):'0.00');
+    balanceEl.className='sm-val '+(balanceDelta<0?'rd':balanceDelta>0?'gn':'mu');
     document.getElementById('sStrategy').textContent=d.strategy_mode||'—';
-    document.getElementById('sPositions').textContent=d.open_positions||0;
+    document.getElementById('sPositions').textContent=Number(live.open_positions??d.open_positions??0);
     document.getElementById('sCooldowns').textContent=d.active_cooldowns||0;
 
     // Issues

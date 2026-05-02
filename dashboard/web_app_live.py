@@ -169,7 +169,7 @@ _PAGE_OVERVIEW_CACHE_TTL = 15
 _PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
 _PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
 _PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS = 4.0
-_PAGE_OVERVIEW_CACHE_VERSION = "v5"
+_PAGE_OVERVIEW_CACHE_VERSION = "v6"
 _CLOSED_TRADES_CACHE_TTL = 10
 _TRADE_HISTORY_CACHE_TTL = 15
 _PERFORMANCE_GUARD_CACHE_TTL = 30
@@ -2588,6 +2588,7 @@ def _decision_context_reason(item: Dict[str, Any], fallback: str = "") -> str:
 
 def _build_decision_context_payload(
     *,
+    latest_signals: Any = None,
     top_opportunities: Any,
     near_misses: Any,
     session_radar: Dict[str, Any],
@@ -2596,6 +2597,7 @@ def _build_decision_context_payload(
     signal_diagnostics: Dict[str, Any],
     degraded_reason: str = "",
 ) -> Dict[str, Any]:
+    signal_rows = [row for row in list(latest_signals or []) if isinstance(row, dict)]
     top_rows = [row for row in list(top_opportunities or []) if isinstance(row, dict)]
     near_rows = [row for row in list(near_misses or []) if isinstance(row, dict)]
     position_rows = [row for row in list(positions or []) if isinstance(row, dict)]
@@ -2607,7 +2609,11 @@ def _build_decision_context_payload(
     lead_count = int((why_not_traded or {}).get("lead_count") or 0)
     diagnostics_count = int((signal_diagnostics or {}).get("count") or 0)
 
-    if position_rows:
+    if signal_rows:
+        state = "active_decisions"
+        label = "Decision queue"
+        summary = f"{len(signal_rows)} active decision(s) are being tracked by the execution gate."
+    elif position_rows:
         state = "active_book"
         label = "Active book"
         summary = f"{len(position_rows)} open position(s) are being monitored."
@@ -2638,7 +2644,20 @@ def _build_decision_context_payload(
         summary = "No decision rows have been published yet."
 
     rows: List[Dict[str, Any]] = []
+    for item in signal_rows[:8]:
+        rows.append(
+            _enrich_signal_like_row(
+                {
+                    **item,
+                    "decision_kind": str(item.get("decision_kind") or "signal"),
+                    "decision_state": str(item.get("decision_state") or "Active"),
+                    "decision_reason": _decision_context_reason(item, "live execution gate decision"),
+                }
+            )
+        )
     for item in top_rows[:4]:
+        if len(rows) >= 8:
+            break
         rows.append(
             _enrich_signal_like_row(
                 {
@@ -2650,6 +2669,8 @@ def _build_decision_context_payload(
             )
         )
     for item in near_rows[:8]:
+        if len(rows) >= 8:
+            break
         rows.append(
             _enrich_signal_like_row(
                 {
@@ -2697,6 +2718,7 @@ def _build_decision_context_payload(
         "summary": summary,
         "lead_blocker": lead_blocker,
         "lead_count": lead_count,
+        "signal_count": len(signal_rows),
         "candidate_count": len(top_rows),
         "near_miss_count": len(near_rows),
         "open_position_count": len(position_rows),
@@ -2767,6 +2789,7 @@ def _normalize_command_center_payload_contract(payload: Dict[str, Any]) -> Dict[
     decision_context = payload.get("decision_context")
     if not isinstance(decision_context, dict) or not decision_context.get("rows"):
         decision_context = _build_decision_context_payload(
+            latest_signals=payload.get("latest_signals"),
             top_opportunities=top_opportunities,
             near_misses=near_misses,
             session_radar=session_radar,
@@ -3037,25 +3060,120 @@ def _summarize_closed_trade_history(closed_trades: Any) -> Dict[str, Any]:
     }
 
 
-def _build_trade_lifecycle(positions: Any, closed_trades: Any, journals: Any) -> Dict[str, Any]:
-    seed_count = 0
-    approved_count = 0
+def _build_trade_lifecycle(
+    positions: Any,
+    closed_trades: Any,
+    journals: Any,
+    active_items: Any = None,
+) -> Dict[str, Any]:
+    def _field(row: Dict[str, Any], key: str, default: Any = None) -> Any:
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        value = row.get(key, meta.get(key, default))
+        return default if value in (None, "") else value
+
+    def _truthy(row: Dict[str, Any], key: str) -> bool:
+        value = _field(row, key, False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    def _number(row: Dict[str, Any], key: str, default: float = 0.0) -> float:
+        try:
+            return float(_field(row, key, default) or default)
+        except Exception:
+            return default
+
+    def _kill_reason(row: Dict[str, Any]) -> str:
+        for key in ("exact_kill_reason", "execution_kill_reason", "blocked_reason", "kill_reason", "reason"):
+            value = str(_field(row, key, "") or "").strip()
+            if value:
+                return value
+        return ""
+
+    journal_seed_count = 0
+    journal_approved_count = 0
     for row in list(journals or []):
         if not isinstance(row, dict):
             continue
-        seed_count += 1
+        journal_seed_count += 1
         if str(row.get("decision") or "").upper() == "SURVIVED":
-            approved_count += 1
+            journal_approved_count += 1
+
+    active_rows: List[Dict[str, Any]] = []
+    seen: set = set()
+    for row in list(active_items or []):
+        if not isinstance(row, dict):
+            continue
+        enriched = _enrich_signal_like_row(row)
+        kind = str(enriched.get("decision_kind") or enriched.get("kind") or "").lower()
+        state = str(enriched.get("decision_state") or enriched.get("state") or "").lower()
+        if kind == "session_watch" or state in {"watching", "session closed"}:
+            continue
+        identity = (
+            str(enriched.get("asset") or ""),
+            str(enriched.get("direction") or enriched.get("signal") or ""),
+            str(enriched.get("decision_kind") or ""),
+            str(enriched.get("exact_kill_reason") or enriched.get("execution_kill_reason") or enriched.get("blocked_reason") or ""),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        active_rows.append(enriched)
+
+    active_count = len(active_rows)
+    structure_valid = sum(
+        1
+        for row in active_rows
+        if _truthy(row, "breakout_retest_ready")
+        or _truthy(row, "first_pullback_ready")
+        or _truthy(row, "failed_opposite_move_confirmed")
+        or _truthy(row, "entry_confirmation_ready")
+    )
+    confirmation_ready = sum(1 for row in active_rows if _truthy(row, "entry_confirmation_ready"))
+    confirmation_pending = sum(
+        1
+        for row in active_rows
+        if not _truthy(row, "entry_confirmation_ready") and _number(row, "entry_confirmation_bars_required", 0.0) > 0
+    )
+    blocked_count = sum(
+        1
+        for row in active_rows
+        if _kill_reason(row)
+        or str(_field(row, "decision_kind", "") or "").lower() in {"blocked", "killed", "blocked_asset"}
+        or _number(row, "extension_score", 0.0) >= 0.80
+        or _number(row, "cluster_penalty", 0.0) >= 0.70
+    )
+    active_approved = sum(
+        1
+        for row in active_rows
+        if not _kill_reason(row)
+        and _truthy(row, "entry_confirmation_ready")
+        and (
+            _truthy(row, "breakout_retest_ready")
+            or _truthy(row, "first_pullback_ready")
+            or _number(row, "entry_confirmation_bars_required", 0.0) <= 0
+        )
+    )
 
     raw_closed = [row for row in list(closed_trades or []) if isinstance(row, dict)]
     partial_count = sum(1 for row in raw_closed if _is_partial_close_trade_row(row))
     closed_count = sum(1 for row in raw_closed if not _is_partial_close_trade_row(row))
     runner_count = sum(1 for row in raw_closed if bool(row.get("has_partial_closes")))
+    opened_count = len(list(positions or []))
+    seeded_count = max(journal_seed_count, active_count)
+    approved_count = max(journal_approved_count, active_approved)
 
     return {
-        "seeded": seed_count,
+        "seeded": seeded_count,
+        "active": active_count,
+        "structure_valid": structure_valid,
+        "confirmation_ready": confirmation_ready,
+        "confirmation_pending": confirmation_pending,
+        "blocked": blocked_count,
+        "waiting": max(0, seeded_count - approved_count - blocked_count),
         "approved": approved_count,
-        "opened": len(list(positions or [])),
+        "opened": opened_count,
+        "executed": opened_count,
         "partial": partial_count,
         "runner_closed": runner_count,
         "closed": closed_count,
@@ -3674,12 +3792,13 @@ def api_logout():
 @_check_rate_limit
 def api_status():
     """Get current bot and trading status."""
-    cached = _cache_get("status:v3")
+    cached = _cache_get("status:v4")
     if cached is not None:
         return jsonify(cached)
     try:
         core = _core()
         diagnostic_summary = _summarize_signal_diagnostics([])
+        positions: List[Dict[str, Any]] = []
         if core:
             positions = list(core.get_positions() or [])
             diagnostic_rows = []
@@ -3692,13 +3811,12 @@ def api_status():
                 "bot_ready": core.is_ready,
                 "engine_running": core.is_running,
                 "architecture": "TradingCore",
-                "balance": core.get_balance(),
                 "assets_cached": len(_sig_store),
                 "provider_routing": _provider_routing_summary(),
                 "signal_diagnostics": diagnostic_summary,
             }
         else:
-            perf, _daily, positions, _health, _closed_trades = _load_dashboard_db_runtime_snapshot()
+            _perf, _daily, positions, _health, _closed_trades = _load_dashboard_db_runtime_snapshot()
             external_bot_processes = _external_trading_bot_process_count()
             external_bot_running = external_bot_processes > 0
             payload = {
@@ -3706,8 +3824,6 @@ def api_status():
                 "bot_ready": external_bot_running,
                 "engine_running": external_bot_running,
                 "architecture": "TradingCore",
-                "balance": float(perf.get("balance", _args.balance) or _args.balance),
-                "open_positions": int(perf.get("open_positions", len(positions)) or 0),
                 "dashboard_standalone": True,
                 "process_model": "split" if external_bot_running else "standalone",
                 "external_bot_processes": external_bot_processes,
@@ -3715,7 +3831,8 @@ def api_status():
                 "provider_routing": _provider_routing_summary(),
                 "signal_diagnostics": diagnostic_summary,
             }
-        _cache_set("status:v3", payload, ttl=5)
+        payload = _attach_authoritative_account_fields(payload, _authoritative_account_summary(core, positions))
+        _cache_set("status:v4", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return handle_api_error(e, "/api/status", 500)
@@ -3729,42 +3846,56 @@ def api_system_status():
         core = _core()
         if core:
             try:
-                perf  = core.get_performance()
-                daily = core.get_daily_stats()
+                positions = list(core.get_positions() or [])
+                account = _authoritative_account_summary(core, positions)
                 return jsonify({
                     "success": True,
-                    "balance": round(core.get_balance(), 2),
-                    "pnl": round(daily.get("daily_pnl", 0), 2),
-                    "total_pnl": round(perf.get("total_pnl", 0), 2),
-                    "open_positions": perf.get("open_positions", 0),
-                    "closed_positions": perf.get("total_trades", 0),
-                    "daily_trades": daily.get("daily_trades", 0),
-                    "win_rate": _wr(perf.get("win_rate", 0)),
+                    "balance": round(float(account.get("balance", 0.0) or 0.0), 2),
+                    "realized_balance": round(float(account.get("realized_balance", 0.0) or 0.0), 2),
+                    "initial_balance": round(float(account.get("initial_balance", _args.balance) or _args.balance), 2),
+                    "balance_delta": round(float(account.get("balance_delta", 0.0) or 0.0), 2),
+                    "pnl": round(float(account.get("daily_pnl", 0.0) or 0.0), 2),
+                    "total_pnl": round(float(account.get("total_pnl", 0.0) or 0.0), 2),
+                    "open_pnl": round(float(account.get("open_pnl", 0.0) or 0.0), 2),
+                    "open_positions": int(account.get("open_positions", 0) or 0),
+                    "closed_positions": int(account.get("closed_trades", 0) or 0),
+                    "daily_trades": int(account.get("daily_trades", 0) or 0),
+                    "win_rate": _wr(account.get("win_rate", 0)),
+                    "live_summary": account,
                     "engine_ready": core.is_ready,
+                    "engine_running": core.is_running,
                     "timestamp": datetime.now().isoformat(),
                 })
             except Exception as e:
                 logger.error(f"[api_system_status] Failed to get core stats: {e}")
                 # Fallback response on error
+                account = _authoritative_account_summary(core)
                 return jsonify({
-                    "success": True, "balance": core.get_balance(), "pnl": 0,
-                    "total_pnl": 0, "open_positions": 0, "closed_positions": 0,
-                    "daily_trades": 0, "win_rate": 0, "engine_ready": core.is_ready,
+                    "success": True, "balance": account.get("balance", _args.balance), "pnl": account.get("daily_pnl", 0),
+                    "total_pnl": account.get("total_pnl", 0), "open_positions": account.get("open_positions", 0), "closed_positions": account.get("closed_trades", 0),
+                    "daily_trades": account.get("daily_trades", 0), "win_rate": _wr(account.get("win_rate", 0)), "engine_ready": core.is_ready,
+                    "engine_running": core.is_running, "live_summary": account,
                     "timestamp": datetime.now().isoformat(),
                 })
         
         # Standalone dashboard process: read the live book from PostgreSQL
         # instead of showing cosmetic defaults.
         perf, daily, positions, health, _closed_trades = _load_dashboard_db_runtime_snapshot()
+        account = _authoritative_account_summary(None, positions)
         payload = {
             "success": True,
-            "balance": round(float(perf.get("balance", _args.balance) or _args.balance), 2),
-            "pnl": round(float(daily.get("daily_pnl", 0.0) or 0.0), 2),
-            "total_pnl": round(float(perf.get("total_pnl", 0.0) or 0.0), 2),
-            "open_positions": int(perf.get("open_positions", len(positions)) or 0),
-            "closed_positions": int(perf.get("total_trades", 0) or 0),
+            "balance": round(float(account.get("balance", _args.balance) or _args.balance), 2),
+            "realized_balance": round(float(account.get("realized_balance", _args.balance) or _args.balance), 2),
+            "initial_balance": round(float(account.get("initial_balance", _args.balance) or _args.balance), 2),
+            "balance_delta": round(float(account.get("balance_delta", 0.0) or 0.0), 2),
+            "pnl": round(float(account.get("daily_pnl", 0.0) or 0.0), 2),
+            "total_pnl": round(float(account.get("total_pnl", 0.0) or 0.0), 2),
+            "open_pnl": round(float(account.get("open_pnl", 0.0) or 0.0), 2),
+            "open_positions": int(account.get("open_positions", len(positions)) or 0),
+            "closed_positions": int(account.get("closed_trades", 0) or 0),
             "daily_trades": int(daily.get("daily_trades", 0) or 0),
-            "win_rate": _wr(perf.get("win_rate", 0)),
+            "win_rate": _wr(account.get("win_rate", 0)),
+            "live_summary": account,
             "engine_ready": bool(health.get("engine_ready") or health.get("is_running")),
             "engine_running": bool(health.get("is_running") or health.get("engine_ready")),
             "dashboard_standalone": True,
@@ -3772,7 +3903,7 @@ def api_system_status():
             "external_bot_processes": int(health.get("external_bot_processes", 0) or 0),
             "timestamp": datetime.now().isoformat(),
         }
-        _cache_set("system_status:v3", payload, ttl=5)
+        _cache_set("system_status:v4", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return handle_api_error(e, "/api/system-status", 500)
@@ -4251,6 +4382,15 @@ def _build_command_center_signals(enriched_positions: Any) -> List[Dict[str, Any
     return signals
 
 
+def _command_center_live_decisions(core: Any) -> List[Dict[str, Any]]:
+    try:
+        rows = _collect_live_signals_from_core(core, "all") if core else _collect_live_signals_from_store("all")
+    except Exception as exc:
+        logger.debug(f"[dashboard] command-center live signal store unavailable: {exc}")
+        rows = []
+    return [_enrich_signal_like_row(row) for row in list(rows or []) if isinstance(row, dict)]
+
+
 def _command_center_signal_quality(signals: Any) -> Dict[str, Any]:
     signal_list = list(signals or [])
     return {
@@ -4340,6 +4480,7 @@ def _build_command_center_live_summary(perf: Dict[str, Any], daily: Dict[str, An
         "realized_total_pnl": round(total_pnl, 2),
         "daily_pnl": live_daily_pnl,
         "realized_daily_pnl": round(realized_daily_pnl, 2),
+        "daily_trades": int(daily.get("daily_trades", 0) or 0),
         "open_pnl": open_pnl,
         "win_rate": live_win_rate,
         "realized_win_rate": round(closed_win_rate, 1),
@@ -4355,6 +4496,56 @@ def _build_command_center_live_summary(perf: Dict[str, Any], daily: Dict[str, An
         "book_bias": book_bias,
         "open_state": open_state,
     }
+
+
+def _authoritative_account_summary(core: Any = None, positions: Any = None) -> Dict[str, Any]:
+    perf, daily, snapshot_positions, _health, closed_trades = _command_center_core_snapshot(core)
+    selected_positions = [dict(pos) for pos in list(positions if positions is not None else snapshot_positions or []) if isinstance(pos, dict)]
+    if selected_positions:
+        try:
+            snapshots = _fetch_command_center_live_snapshots(selected_positions, max_age_seconds=None)
+            selected_positions = _build_command_center_enriched_positions(selected_positions, snapshots)
+        except Exception:
+            pass
+    summary = _build_command_center_live_summary(perf, daily, selected_positions)
+
+    initial_balance = float(summary.get("initial_balance", getattr(_args, "balance", 10000.0)) or getattr(_args, "balance", 10000.0))
+    live_balance = float(summary.get("balance", initial_balance) or initial_balance)
+    summary["balance_delta"] = round(live_balance - initial_balance, 2)
+    summary["closed_trades"] = int(summary.get("closed_trades", len(closed_trades or [])) or 0)
+    summary["total_trades"] = int(summary.get("total_trades", summary["closed_trades"]) or 0)
+    summary["daily_trades"] = int(summary.get("daily_trades", 0) or 0)
+    summary["account_state"] = "loss" if summary["balance_delta"] < -0.005 else "gain" if summary["balance_delta"] > 0.005 else "flat"
+    return summary
+
+
+def _attach_authoritative_account_fields(payload: Dict[str, Any], account: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = dict(payload or {})
+    account = dict(account or _authoritative_account_summary(_core()))
+    payload["live_summary"] = account
+
+    field_map = {
+        "balance": "balance",
+        "realized_balance": "realized_balance",
+        "initial_balance": "initial_balance",
+        "balance_delta": "balance_delta",
+        "total_pnl": "total_pnl",
+        "realized_total_pnl": "realized_total_pnl",
+        "daily_pnl": "daily_pnl",
+        "realized_daily_pnl": "realized_daily_pnl",
+        "open_pnl": "open_pnl",
+        "win_rate": "win_rate",
+        "open_positions": "open_positions",
+        "total_trades": "total_trades",
+        "closed_trades": "closed_trades",
+    }
+    for target, source in field_map.items():
+        if source in account:
+            payload[target] = account.get(source)
+    payload["closed_positions"] = account.get("closed_trades", payload.get("closed_positions", 0))
+    payload["daily_trades"] = account.get("daily_trades", payload.get("daily_trades", 0))
+    payload["account_state"] = account.get("account_state", "flat")
+    return payload
 
 
 def _build_live_book_payload() -> Dict[str, Any]:
@@ -4639,7 +4830,8 @@ def _build_command_center_payload() -> Dict[str, Any]:
     live_snapshots = _fetch_command_center_live_snapshots(positions, max_age_seconds=None)
     enriched_positions = _build_command_center_enriched_positions(positions, live_snapshots)
     live_summary = _build_command_center_live_summary(perf, daily, enriched_positions)
-    signals = _build_command_center_signals(enriched_positions)
+    live_decisions = _command_center_live_decisions(core)
+    signals = live_decisions or _build_command_center_signals(enriched_positions)
     signal_quality = _command_center_signal_quality(signals)
     signal_diagnostics = _summarize_signal_diagnostics(enriched_positions)
     pnl_curve = _build_command_center_pnl_curve(
@@ -4686,7 +4878,12 @@ def _build_command_center_payload() -> Dict[str, Any]:
     why_not_traded = _summarize_why_not_traded(journals, near_misses, limit=6)
     watchlist_ladder = _build_watchlist_ladder(top_opportunities, near_misses, session_radar, enriched_positions)
     trade_tape = _build_trade_tape(enriched_positions, closed_trades, limit=12)
-    trade_lifecycle = _build_trade_lifecycle(enriched_positions, closed_trades, journals)
+    trade_lifecycle = _build_trade_lifecycle(
+        enriched_positions,
+        closed_trades,
+        journals,
+        active_items=[*signals, *top_opportunities, *near_misses],
+    )
 
     payload = {
         "success":           True,
@@ -4722,6 +4919,7 @@ def _build_command_center_payload() -> Dict[str, Any]:
         "signal_diagnostics": signal_diagnostics,
         "timestamp":         datetime.now().isoformat(),
     }
+    payload = _attach_authoritative_account_fields(payload, live_summary)
     return _normalize_command_center_payload_contract(payload)
 
 
@@ -7183,9 +7381,17 @@ def _build_risk_portfolio_payload() -> Dict[str, Any]:
 
     if core:
         positions = core.get_positions()
-        balance = core.get_balance()
         perf = core.get_performance()
-        closed = core.get_closed_trades(limit=100)
+        account = _authoritative_account_summary(core, positions)
+        balance = float(account.get("balance", _args.balance) or _args.balance)
+        perf = {
+            **dict(perf or {}),
+            "balance": balance,
+            "total_pnl": account.get("total_pnl", 0.0),
+            "total_trades": account.get("closed_trades", account.get("total_trades", 0)),
+            "win_rate": account.get("win_rate", 0.0),
+        }
+        closed = _load_authoritative_closed_trades(limit=100)
         try:
             if hasattr(core, "portfolio_risk") and core.portfolio_risk:
                 risk_stats = core.portfolio_risk.get_portfolio_stats(positions, balance)
@@ -7197,7 +7403,15 @@ def _build_risk_portfolio_payload() -> Dict[str, Any]:
             weak_queue = []
     else:
         perf, _daily, positions, _health, closed = _load_dashboard_db_runtime_snapshot()
-        balance = _risk_float(perf.get("balance"), _risk_float(getattr(_args, "balance", 0.0)))
+        account = _authoritative_account_summary(None, positions)
+        balance = _risk_float(account.get("balance"), _risk_float(getattr(_args, "balance", 0.0)))
+        perf = {
+            **dict(perf or {}),
+            "balance": balance,
+            "total_pnl": account.get("total_pnl", perf.get("total_pnl", 0.0)),
+            "total_trades": account.get("closed_trades", account.get("total_trades", perf.get("total_trades", 0))),
+            "win_rate": account.get("win_rate", perf.get("win_rate", 0.0)),
+        }
         risk_stats = _basic_risk_portfolio_stats(positions, balance, perf)
 
     by_cat, cluster_groups = _summarize_risk_portfolio_positions(positions)
@@ -7230,7 +7444,7 @@ def _build_risk_portfolio_payload() -> Dict[str, Any]:
     stop_concentration = _summarize_stop_concentration(positions, limit=5)
     scenario_risk = _summarize_scenario_risk(positions)
 
-    return {
+    payload = {
         "success": True,
         "dashboard_standalone": dashboard_standalone,
         "balance": balance,
@@ -7257,11 +7471,12 @@ def _build_risk_portfolio_payload() -> Dict[str, Any]:
             [_extract_signal_intelligence_fields(dict(p.get("metadata") or {})) for p in positions]
         ),
     }
+    return _attach_authoritative_account_fields(payload, account)
 
 
 def _get_cached_risk_portfolio_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
-    cache_key = "risk_portfolio:v2"
-    last_good_key = "risk_portfolio:v2:last_good"
+    cache_key = "risk_portfolio:v3"
+    last_good_key = "risk_portfolio:v3:last_good"
     try:
         return _get_cached_dashboard_payload(
             cache_key,
@@ -8571,7 +8786,7 @@ def _source_health_with_split_ownership(
 
 @app.route("/api/system/health")
 def api_system_health():
-    cached = _cache_get("system_health:v4")
+    cached = _cache_get("system_health:v5")
     if cached is not None:
         return jsonify(cached)
     try:
@@ -8623,7 +8838,8 @@ def api_system_health():
             "balance":          health.get("balance", _args.balance),
             "timestamp":        datetime.now().isoformat(),
         }
-        _cache_set("system_health:v4", payload, ttl=5)
+        payload = _attach_authoritative_account_fields(payload, _authoritative_account_summary(core))
+        _cache_set("system_health:v5", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -8678,7 +8894,7 @@ def api_monitoring_errors():
 
 @app.route("/api/system-monitor/overview")
 def api_system_monitor_overview():
-    cache_key = "system_monitor_overview:v4"
+    cache_key = "system_monitor_overview:v5"
     cached = _cache_get(cache_key)
     if cached:
         return jsonify(cached)
@@ -8704,6 +8920,7 @@ def api_system_monitor_overview():
         },
         "timestamp": datetime.utcnow().isoformat(),
     }
+    payload = _attach_authoritative_account_fields(payload)
     _cache_set(cache_key, payload, ttl=5)
     return jsonify(payload)
 
@@ -8730,13 +8947,13 @@ def _normalize_page_overview_name(page: str) -> str:
 
 
 def _page_overview_status_shell() -> Dict[str, Any]:
-    cached = _cache_get("status:v3") or _cache_get("status")
+    cached = _cache_get("status:v4") or _cache_get("status")
     if cached:
-        return _response_to_dict(cached)
+        return _attach_authoritative_account_fields(_response_to_dict(cached))
     core = _core()
     external_bot_processes = 0 if core else _external_trading_bot_process_count()
     external_bot_running = external_bot_processes > 0
-    return {
+    return _attach_authoritative_account_fields({
         "success": True,
         "engine_running": bool(getattr(core, "is_running", False)) if core else external_bot_running,
         "engine_ready": bool(getattr(core, "is_ready", False)) if core else external_bot_running,
@@ -8745,7 +8962,7 @@ def _page_overview_status_shell() -> Dict[str, Any]:
         "external_bot_processes": external_bot_processes,
         "provider_routing": {},
         "signal_diagnostics": {},
-    }
+    }, _authoritative_account_summary(core))
 
 
 def _page_overview_command_center_shell(reason: str = "page_overview_cache_miss") -> Dict[str, Any]:
@@ -8957,7 +9174,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload = {
             "success": True,
             "page": page,
-            "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
+            "status": _page_overview_view_component("page_component:v6:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
             "risk": _page_overview_view_component("page_component:v4:risk_portfolio", "/api/risk/portfolio", api_risk_portfolio, fallback_payload.get("risk", {"success": True}), ttl=15),
             "command_center": _command_center_snapshot(),
         }
@@ -8979,7 +9196,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
             ttl=30,
         )
         payload["page"] = page
-        payload["status"] = _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
+        payload["status"] = _page_overview_view_component("page_component:v6:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
         payload["command_center"] = _command_center_snapshot()
         if not payload.get("near_misses"):
             payload["near_misses"] = list(payload["command_center"].get("near_misses") or [])
@@ -8992,7 +9209,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
             ttl=15,
         )
         payload["page"] = page
-        payload["status"] = _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
+        payload["status"] = _page_overview_view_component("page_component:v6:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
         payload["command_center"] = _command_center_snapshot()
     elif page == "system_monitor":
         payload = _page_overview_view_component(
@@ -9003,6 +9220,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
             ttl=10,
         )
         payload["page"] = page
+        payload["status"] = _page_overview_view_component("page_component:v6:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
         payload["command_center"] = _command_center_snapshot()
     elif page == "whale_intelligence":
         payload = _page_overview_view_component(
@@ -9013,7 +9231,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
             ttl=15,
         )
         payload["page"] = page
-        payload["status"] = _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
+        payload["status"] = _page_overview_view_component("page_component:v6:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
         payload["command_center"] = _command_center_snapshot()
     elif page == "sentiment_intelligence":
         sentiment_news_disabled = not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED)
@@ -9056,7 +9274,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload = {
             "success": True,
             "page": page,
-            "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
+            "status": _page_overview_view_component("page_component:v6:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
             "imbalance": _page_overview_view_component("page_component:v4:phase3_imbalance", "/api/phase3/imbalance", api_phase3_imbalance, fallback_payload.get("imbalance", {"success": True, "imbalances": {}}), ttl=15),
             "walls": _page_overview_view_component("page_component:v4:phase3_walls", "/api/phase3/walls", api_phase3_walls, fallback_payload.get("walls", {"success": True, "walls": [], "count": 0}), ttl=5),
             "hunts": _page_overview_view_component("page_component:v4:phase3_stop_hunts", "/api/phase3/stop-hunts", api_phase3_stop_hunts, fallback_payload.get("hunts", {"success": True, "hunts": []}), ttl=5),
@@ -9080,7 +9298,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload = {
             "success": True,
             "page": page,
-            "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
+            "status": _page_overview_view_component("page_component:v6:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
             "assets": _page_overview_view_component("page_component:v4:chart_assets", "/api/chart/assets", api_chart_assets, fallback_payload.get("assets", {"success": True, "assets": [_chart_asset_descriptor(a, c) for a, c in ALL_ASSETS]}), ttl=300),
             "events": _page_overview_view_component("page_component:v4:market_events", "/api/market/events", api_market_events, fallback_payload.get("events", {"success": True, "events": []}), ttl=60),
             "command_center": _command_center_snapshot(),
@@ -9089,7 +9307,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload = {
             "success": True,
             "page": page,
-            "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
+            "status": _page_overview_view_component("page_component:v6:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
             "health": _page_overview_view_component("page_component:v5:system_health", "/api/system/health", api_system_health, fallback_payload.get("health", {}), ttl=10),
             "system_monitor": _page_overview_view_component("page_component:v5:system_monitor", "/api/system-monitor/overview", api_system_monitor_overview, fallback_payload.get("system_monitor", {}), ttl=10),
             "command_center": _command_center_snapshot(),
@@ -9133,11 +9351,18 @@ def _normalize_page_overview_payload_contract(payload: Dict[str, Any], page: str
     if str(payload.get("degraded_reason") or "") in _STALE_ONLY_DEGRADED_REASONS:
         payload = _mark_stale_dashboard_payload(payload, str(payload.get("degraded_reason") or "stale_fallback"))
     page = _normalize_page_overview_name(page or payload.get("page") or "")
+    account_summary = _authoritative_account_summary(_core())
+    payload = _attach_authoritative_account_fields(payload, account_summary)
+    if isinstance(payload.get("status"), dict):
+        payload["status"] = _attach_authoritative_account_fields(payload["status"], account_summary)
     if isinstance(payload.get("command_center"), dict):
         command_center = payload["command_center"]
         if str(command_center.get("degraded_reason") or "") in _STALE_ONLY_DEGRADED_REASONS:
             command_center = _mark_stale_dashboard_payload(command_center, str(command_center.get("degraded_reason") or "command_center_stale"))
-        payload["command_center"] = _normalize_command_center_payload_contract(command_center)
+        payload["command_center"] = _attach_authoritative_account_fields(
+            _normalize_command_center_payload_contract(command_center),
+            account_summary,
+        )
     if page == "sentiment_intelligence":
         by_asset = payload.get("by_asset")
         if not isinstance(by_asset, dict) or not list(by_asset.get("assets") or []):

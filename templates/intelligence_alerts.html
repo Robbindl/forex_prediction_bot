@@ -353,9 +353,14 @@ async function checkStatus() {
   try {
     const page = await fetchIntelligenceOverview();
     const d = page.status || {};
+    const live = page.live_summary || page.command_center?.live_summary || d.live_summary || {};
+    const balance = Number(live.balance ?? d.balance);
+    const delta = Number(live.balance_delta ?? d.balance_delta ?? live.total_pnl ?? d.total_pnl ?? 0);
+    const topBalance = document.getElementById('topBalance');
     document.getElementById('engineDot').className = 'pulse' + (d.engine_running ? '' : ' off');
     document.getElementById('engineStatus').textContent = d.engine_running ? 'Live' : 'Offline';
-    document.getElementById('topBalance').textContent = d.balance ? '$' + Number(d.balance).toLocaleString('en',{minimumFractionDigits:2}) : '—';
+    topBalance.textContent = Number.isFinite(balance) ? '$' + balance.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
+    topBalance.style.color = delta < 0 ? 'var(--rd)' : delta > 0 ? 'var(--gr)' : 'var(--tx2)';
   } catch(e) {}
 }
 checkStatus(); setInterval(checkStatus, 15000);

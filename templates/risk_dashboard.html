@@ -492,7 +492,7 @@ function applyRiskLiveBook(snapshot){
   const liveOpenPositions = Number(live.open_positions || 0);
   if(document.getElementById('topBalance')){
     document.getElementById('topBalance').textContent = '$'+fmt(liveBalance);
-    document.getElementById('topBalance').style.color = liveTotalPnl >= 0 ? 'var(--gr)' : 'var(--rd)';
+    document.getElementById('topBalance').style.color = liveTotalPnl < 0 ? 'var(--rd)' : liveTotalPnl > 0 ? 'var(--gr)' : 'var(--tx2)';
   }
   if(document.getElementById('mcBalance')) document.getElementById('mcBalance').textContent = '$'+fmt(liveBalance);
   if(document.getElementById('mcBalanceSub')) document.getElementById('mcBalanceSub').textContent = `Realized $${fmt(realizedBalance)} · Floating ${(openPnl>=0?'+':'')}$${fmt(openPnl)}`;
@@ -682,7 +682,7 @@ async function load(){
   const d = overview.risk || {};
   const commandCenter = overview.command_center || {};
   const authoritativeLiveBook = getAuthoritativeRiskLiveBookSnapshot();
-  const live = authoritativeLiveBook?.live_summary || commandCenter.live_summary || {};
+  const live = authoritativeLiveBook?.live_summary || overview.live_summary || commandCenter.live_summary || status.live_summary || {};
   const decisionSignals = collectDecisionSignals(commandCenter);
   const providerRouting = status.provider_routing || {};
   const signalDiagnostics = d.signal_diagnostics || {};
@@ -701,7 +701,7 @@ async function load(){
   if(status.engine_running){dot.classList.remove('off');st.textContent='Engine Ready';}
   else{dot.classList.add('off');st.textContent='Engine Off';}
   document.getElementById('providerStatus').textContent = providerRouting.summary_label || 'Unavailable';
-  const realizedBalance = Number(d.balance||0);
+  const realizedBalance = Number(live.realized_balance ?? d.balance ?? status.realized_balance ?? status.balance ?? 0);
   const liveBalance = Number(live.balance ?? realizedBalance);
   const openPnl = Number(live.open_pnl || 0);
   const liveClosedTrades = Number(live.closed_trades ?? d.total_trades ?? 0);
@@ -711,7 +711,7 @@ async function load(){
   const liveTotalPnl = Number(live.total_pnl ?? live.balance_delta ?? ((Number(d.total_pnl||0)) + openPnl));
   const liveExposurePct = liveBalance > 0 ? (Number(d.total_exposure||0) / liveBalance) : 0;
   document.getElementById('topBalance').textContent = '$'+fmt(liveBalance);
-  document.getElementById('topBalance').style.color = liveTotalPnl >= 0 ? 'var(--gr)' : 'var(--rd)';
+  document.getElementById('topBalance').style.color = liveTotalPnl < 0 ? 'var(--rd)' : liveTotalPnl > 0 ? 'var(--gr)' : 'var(--tx2)';
   document.getElementById('mcBalance').textContent  = '$'+fmt(liveBalance);
   document.getElementById('mcBalanceSub').textContent = `Realized $${fmt(realizedBalance)} · Floating ${(openPnl>=0?'+':'')}$${fmt(openPnl)}`;
   document.getElementById('mcExposure').textContent = '$'+fmt(d.total_exposure);

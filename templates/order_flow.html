@@ -415,17 +415,17 @@ async function checkStatus() {
   try {
     const page = await fetchOrderFlowOverview();
     const d = page.status || {};
-    const live = page.command_center?.live_summary || {};
+    const live = page.live_summary || page.command_center?.live_summary || d.live_summary || {};
     const ok = d.engine_running;
     const providerRouting = d.provider_routing || {};
     document.getElementById('engineDot').className = 'pulse' + (ok ? '' : ' off');
     document.getElementById('engineStatus').textContent = ok ? 'Live' : 'Offline';
     document.getElementById('providerStatus').textContent = providerRouting.summary_label || 'Unavailable';
     const liveBalance = Number(live.balance ?? d.balance);
-    const livePnl = Number(live.balance_delta ?? live.daily_pnl ?? 0);
+    const livePnl = Number(live.balance_delta ?? live.total_pnl ?? d.balance_delta ?? d.total_pnl ?? 0);
     const topBalance = document.getElementById('topBalance');
     topBalance.textContent = Number.isFinite(liveBalance) ? '$' + liveBalance.toLocaleString('en', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
-    topBalance.style.color = livePnl < 0 ? 'var(--rd)' : 'var(--gr)';
+    topBalance.style.color = livePnl < 0 ? 'var(--rd)' : livePnl > 0 ? 'var(--gr)' : 'var(--tx2)';
   } catch(e) {}
 }
 

@@ -1110,9 +1110,9 @@ function applyTradeHistorySummaryToHeader(){
   const closedTrades=Number(live.closed_trades??_tradeHistorySummary.closed_trades??0);
   const openPositions=Number(live.open_positions||0);
   const balanceEl=document.getElementById('mBal');
-  if(balanceEl){balanceEl.textContent=fmtMoney(liveBalance);balanceEl.className='mc-value '+(balanceDelta>=0?'gn':'rd');}
+  if(balanceEl){balanceEl.textContent=fmtMoney(liveBalance);balanceEl.className='mc-value '+(balanceDelta<0?'rd':balanceDelta>0?'gn':'mu');}
   const top=document.getElementById('topBalance');
-  if(top){top.textContent=fmtMoney(liveBalance);top.style.color=balanceDelta>=0?'var(--gr)':'var(--rd)';}
+  if(top){top.textContent=fmtMoney(liveBalance);top.style.color=balanceDelta<0?'var(--rd)':balanceDelta>0?'var(--gr)':'var(--tx2)';}
   const balSub=document.getElementById('mBalSub');
   if(balSub)balSub.textContent=`Realized ${fmtMoney(realizedBalance)} · Open ${fmtMoney(openPnl)}`;
   const dpEl=document.getElementById('mDPnl');
@@ -1248,11 +1248,11 @@ function applyLiveBookSnapshot(snapshot){
   const balanceEl=document.getElementById('mBal');
   if(balanceEl){
     balanceEl.textContent=fmtMoney(liveBalance);
-    balanceEl.className='mc-value '+(balanceDelta>=0?'gn':'rd');
+    balanceEl.className='mc-value '+(balanceDelta<0?'rd':balanceDelta>0?'gn':'mu');
   }
   if(document.getElementById('topBalance')){
     document.getElementById('topBalance').textContent=fmtMoney(liveBalance);
-    document.getElementById('topBalance').style.color=balanceDelta>=0?'var(--gr)':'var(--rd)';
+    document.getElementById('topBalance').style.color=balanceDelta<0?'var(--rd)':balanceDelta>0?'var(--gr)':'var(--tx2)';
   }
   if(document.getElementById('mBalSub')) document.getElementById('mBalSub').textContent=`Realized ${fmtMoney(realizedBalance)} · Open ${fmtMoney(openPnl)}`;
   if(document.getElementById('mDPnl')){
@@ -1366,6 +1366,19 @@ function collectElitePool(d){
 }
 function renderEliteSummary(d){
   const pool=collectElitePool(d);
+  if(!pool.length){
+    document.getElementById('eliteSummaryBadge').textContent='No live gate data';
+    renderCommandBoardCards('eliteSummaryPanel',[
+      {title:'Entry state',value:'No queue',valueClass:'mu',note:'No live execution candidates are currently publishing gate state.'},
+      {title:'Confirmation queue',value:'No samples',valueClass:'mu',note:'Confirmation drag cannot be measured until a setup enters the queue.'},
+      {title:'Path mix',value:'No samples',valueClass:'mu',note:'Retest and first-pullback state will appear when a live setup is staged.'},
+      {title:'Extension pressure',value:'No samples',valueClass:'mu',note:'No active setup is publishing extension pressure.'},
+      {title:'Quality drag',value:'No samples',valueClass:'mu',note:'No candle, session, or target-efficiency quality stack is currently available.'},
+      {title:'Cluster drag',value:'No samples',valueClass:'mu',note:'No overlapping live setup cluster is currently being scored.'},
+      {title:'Regime policy',value:'No samples',valueClass:'mu',note:'No active setup is publishing regime-policy state.'},
+    ],'Execution gate summary unavailable');
+    return;
+  }
   const ready=pool.filter(item=>eliteEntryState(item).label==='Ready');
   const waiting=pool.filter(item=>eliteEntryState(item).label==='Waiting');
   const blocked=pool.filter(item=>eliteEntryState(item).label==='Blocked');
@@ -1391,9 +1404,9 @@ function renderEliteSummary(d){
     {title:'Confirmation queue',value:confPending.length?`${confPending.length} waiting`:'Clear',valueClass:confPending.length?'am':'gn',note:confPending.length?'Signals are staged but still need confirmation bars or reclaim proof.':'No visible confirmation backlog right now.'},
     {title:'Path mix',value:`R ${retestReady.length} · P ${pullbackReady.length}`,valueClass:(retestReady.length||pullbackReady.length)?'cy':'mu',note:'Breakout retest and first-pullback readiness currently visible across the desk.'},
     {title:'Extension pressure',value:overextended.length?`${overextended.length} hot`:'Contained',valueClass:overextended.length?'rd':'gn',note:overextended.length?'Overextension is actively vetoing or degrading entries.':'Extension pressure is contained.'},
-    {title:'Quality drag',value:lowQuality.length?`${lowQuality.length} weak`:'Stable',valueClass:lowQuality.length?'am':'gn',note:'Weak candle, session, or target efficiency is degrading entry quality.'},
+    {title:'Quality drag',value:lowQuality.length?`${lowQuality.length} weak`:'No drag',valueClass:lowQuality.length?'am':'mu',note:lowQuality.length?'Weak candle, session, or target efficiency is degrading entry quality.':'No visible quality drag in the currently published queue.'},
     {title:'Cluster drag',value:clusterHeavy.length?`${clusterHeavy.length} blocked`:'Light',valueClass:clusterHeavy.length?'rd':'gn',note:'Cluster penalty is suppressing overlapping ideas when too many similar setups stack up.'},
-    {title:'Regime policy',value:regimeBlocked.length?`${regimeBlocked.length} blocked`:regimeAware.length?`${regimeAware.length} tagged`:'Visible',valueClass:regimeBlocked.length?'rd':regimeAware.length?'cy':'mu',note:regimeAware.length?'Regime policy summaries now travel with the live decision stack.':'No regime policy note is visible in the current pool.'},
+    {title:'Regime policy',value:regimeBlocked.length?`${regimeBlocked.length} blocked`:regimeAware.length?`${regimeAware.length} tagged`:'No tags',valueClass:regimeBlocked.length?'rd':regimeAware.length?'cy':'mu',note:regimeAware.length?'Regime policy summaries now travel with the live decision stack.':'No active setup is publishing a regime-policy note.'},
   ],'Execution gate summary unavailable');
 }
 async function loadMain(){
@@ -1425,9 +1438,9 @@ async function loadMain(){
     const balanceDelta=Number(live.balance_delta??(liveBalance-Number(live.initial_balance??d.initial_balance??realizedBalance)));
     const balanceEl=document.getElementById('mBal');
     balanceEl.textContent=fmtMoney(liveBalance);
-    balanceEl.className='mc-value '+(balanceDelta>=0?'gn':'rd');
+    balanceEl.className='mc-value '+(balanceDelta<0?'rd':balanceDelta>0?'gn':'mu');
     document.getElementById('topBalance').textContent=fmtMoney(liveBalance);
-    document.getElementById('topBalance').style.color=balanceDelta>=0?'var(--gr)':'var(--rd)';
+    document.getElementById('topBalance').style.color=balanceDelta<0?'var(--rd)':balanceDelta>0?'var(--gr)':'var(--tx2)';
     document.getElementById('mBalSub').textContent=`Realized ${fmtMoney(realizedBalance)} · Open ${fmtMoney(live.open_pnl||0)}`;
     const dp=Number(live.daily_pnl??d.daily_pnl??0);
     const dpEl=document.getElementById('mDPnl');
@@ -1580,18 +1593,18 @@ async function loadMain(){
     }),'No recent crypto rejects are on the journal right now');
 
     const lifecycle=d.trade_lifecycle||{};
-    const lifecyclePool=collectElitePool(d);
-    const funnelSeeded=Number(lifecycle.seeded||0);
+    const lifecyclePool=[...collectElitePool(d), ...decisionRows].filter(isPublishedExecutionItem);
+    const funnelSeeded=Number(lifecycle.seeded||lifecyclePool.length||0);
     const funnelStructure=Number(lifecycle.structure_valid||lifecyclePool.filter(item=>itemBool(item,'breakout_retest_ready')===true || itemBool(item,'first_pullback_ready')===true || itemBool(item,'entry_confirmation_ready')===true).length||0);
     const funnelConfirm=Number(lifecycle.confirmation_ready||lifecyclePool.filter(item=>itemBool(item,'entry_confirmation_ready')===true).length||0);
-    const funnelApproved=Number(lifecycle.approved||0);
+    const funnelApproved=Number(lifecycle.approved||lifecyclePool.filter(item=>eliteEntryState(item).label==='Ready').length||0);
     const funnelExecuted=Number(lifecycle.executed||lifecycle.opened||Number((d.positions||[]).length||0));
     document.getElementById('lifecycleBadge').textContent=`${funnelSeeded} seed → ${funnelExecuted} exec`;
     renderCommandBoardCards('lifecyclePanel',[
-      {title:'Seeded',value:String(funnelSeeded),valueClass:'cy',note:'Raw journal signals that reached the seed stage.'},
+      {title:'Seeded',value:String(funnelSeeded),valueClass:'cy',note:'Live decisions and journal signals currently visible to the execution stack.'},
       {title:'Structure Valid',value:String(funnelStructure),valueClass:funnelStructure?'bl':'mu',note:'Retest or pullback structure still intact before the confirmation gate.'},
       {title:'Confirmation Ready',value:String(funnelConfirm),valueClass:funnelConfirm?'am':'mu',note:'Signals that satisfied elite confirmation bars / reclaim checks.'},
-      {title:'Approved',value:String(funnelApproved),valueClass:'gn',note:'Signals that survived the review stack.'},
+      {title:'Approved',value:String(funnelApproved),valueClass:funnelApproved?'gn':'mu',note:'Signals that survived the review stack.'},
       {title:'Executed',value:String(funnelExecuted),valueClass:funnelExecuted?'pu':'mu',note:'Signals that made it from review into a live position.'},
       {title:'Closed',value:String(lifecycle.closed||0),valueClass:(lifecycle.closed||0)?'rd':'mu',note:'Fully closed parent trades in the recent window.'},
     ],'No lifecycle data');
@@ -1603,26 +1616,27 @@ async function loadMain(){
 
   try{
     const ss=Number(d.sentiment_score||0);
-    const ssLabel=ss>0.2?'Bullish':ss<-0.2?'Bearish':'Neutral';
+    const pool=collectElitePool(d);
+    const hasPulseData=Math.abs(ss)>0.001 || Number(d.alert_count_24h||0)>0 || pool.length>0 || Number(signalDiagnostics.count||0)>0 || Number(signalQuality.count||0)>0;
+    const ssLabel=!hasPulseData?'No live pulse':ss>0.2?'Bullish':ss<-0.2?'Bearish':'Neutral';
     const ssColor=ss>0.2?'var(--gr)':ss<-0.2?'var(--rd)':'var(--am)';
     document.getElementById('sentScore').textContent=(ss>=0?'+':'')+ss.toFixed(3);
     document.getElementById('sentScore').style.color=ssColor;
     document.getElementById('sentLabel').textContent=ssLabel;
     document.getElementById('sentBar').style.width=((ss+1)/2*100)+'%';
     document.getElementById('sentBar').style.background=ssColor;
-    const pool=collectElitePool(d);
     const readyCount=pool.filter(item=>eliteEntryState(item).label==='Ready').length;
     const waitingCount=pool.filter(item=>eliteEntryState(item).label==='Waiting').length;
     const blockedCount=pool.filter(item=>eliteEntryState(item).label==='Blocked').length;
     const chips = [
-      {label:`Whales ${d.alert_count_24h||0}`, cls:(d.alert_count_24h||0)?'warn':'ok'},
-      {label:d.engine_ready?'Ready':'Warming', cls:d.engine_ready?'ok':'warn'},
-      {label:`Elite ${readyCount}/${waitingCount}/${blockedCount}`, cls:blockedCount?'warn':readyCount?'ok':'info'},
+      {label:`Whales ${d.alert_count_24h||0}`, cls:(d.alert_count_24h||0)?'warn':'info'},
+      {label:d.engine_ready?'Engine ready':'Engine warming', cls:d.engine_ready?'ok':'warn'},
+      {label:pool.length?`Elite ${readyCount}/${waitingCount}/${blockedCount}`:'No decision queue', cls:pool.length?(blockedCount?'warn':readyCount?'ok':'info'):'info'},
       {label:`Feeds ${providerRouting.summary_label||'—'}`, cls:Object.keys(providerRouting.primary_counts||{}).length?'ok':''},
-      {label:`Memory ${Number(signalQuality.avg_memory_score||0).toFixed(0)}`, cls:Number(signalQuality.avg_memory_score||0)>=60?'ok':'warn'},
-      {label:`Exec ${Number(signalQuality.avg_execution_quality||0).toFixed(0)}`, cls:Number(signalQuality.avg_execution_quality||0)>=60?'ok':'warn'},
-      {label:`Opp ${Number(signalQuality.avg_opportunity_score||0).toFixed(3)}`, cls:Number(signalQuality.avg_opportunity_score||0)>=0.7?'ok':''},
-      {label:`Diag ${signalDiagnostics.summary_label||'—'}`, cls:Number(signalDiagnostics.broker_fragile_count||0)?'warn':'ok'},
+      {label:Number(signalQuality.count||0)?`Memory ${Number(signalQuality.avg_memory_score||0).toFixed(0)}`:'Memory no samples', cls:Number(signalQuality.count||0)?(Number(signalQuality.avg_memory_score||0)>=60?'ok':'warn'):'info'},
+      {label:Number(signalQuality.count||0)?`Exec ${Number(signalQuality.avg_execution_quality||0).toFixed(0)}`:'Exec no samples', cls:Number(signalQuality.count||0)?(Number(signalQuality.avg_execution_quality||0)>=60?'ok':'warn'):'info'},
+      {label:Number(signalQuality.count||0)?`Opp ${Number(signalQuality.avg_opportunity_score||0).toFixed(3)}`:'Opp no samples', cls:Number(signalQuality.count||0)&&Number(signalQuality.avg_opportunity_score||0)>=0.7?'ok':'info'},
+      {label:Number(signalDiagnostics.count||0)?`Diag ${signalDiagnostics.summary_label||'—'}`:'Diag none', cls:Number(signalDiagnostics.count||0)?(Number(signalDiagnostics.broker_fragile_count||0)?'warn':'ok'):'info'},
       {label:signalQuality.top_signal_asset?`Top ${signalQuality.top_signal_asset}`:`Positions ${d.open_positions||0}`, cls:(d.open_positions||0)?'ok':''},
     ];
     document.getElementById('pulseChips').innerHTML = chips.map(c=>`<span class="mini-chip ${c.cls||''}">${c.label}</span>`).join('');
