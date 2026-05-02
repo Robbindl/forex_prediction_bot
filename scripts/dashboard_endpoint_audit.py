@@ -184,6 +184,7 @@ def main() -> int:
     token = _login(base_url, timeout)
 
     pages = [
+        "/",
         "/command-center",
         "/sentiment-intelligence",
         "/order-flow",
