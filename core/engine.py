@@ -3978,6 +3978,157 @@ class TradingCore:
             and float(structure.get("setup_quality", 0.0) or 0.0) >= 0.66
             and float((context.get("playbook_decision") or {}).get("confidence", 0.0) or 0.0) >= 0.66
         )
+        playbook_decision = dict(context.get("playbook_decision") or {})
+        signal_metadata = dict(context.get("signal_metadata") or {})
+        microstructure: Dict[str, Any] = {}
+        signal_micro = signal_metadata.get("market_microstructure")
+        if isinstance(signal_micro, dict):
+            microstructure.update(signal_micro)
+        context_micro = context.get("market_microstructure")
+        if isinstance(context_micro, dict):
+            microstructure.update(context_micro)
+
+        def _entry_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value if value not in (None, "") else default)
+            except Exception:
+                return float(default)
+
+        def _entry_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(value if value not in (None, "") else default)
+            except Exception:
+                return int(default)
+
+        direction_sign = 1.0 if str(direction or "").upper() == "BUY" else -1.0 if str(direction or "").upper() == "SELL" else 0.0
+        provider = str(
+            microstructure.get("depth_provider")
+            or microstructure.get("provider")
+            or microstructure.get("source")
+            or microstructure.get("exchange")
+            or ""
+        ).strip().lower()
+        provider_class = str(
+            microstructure.get("depth_provider_class") or microstructure.get("source_class") or ""
+        ).strip().lower()
+        source = str(microstructure.get("microstructure_source") or "").strip().lower()
+        environment = str(microstructure.get("depth_environment") or microstructure.get("environment") or "").strip().lower()
+        update_mode = str(microstructure.get("depth_update_mode") or "").strip().lower()
+        depth_available = bool(microstructure.get("depth_available"))
+        synthetic_depth = bool(
+            microstructure.get("synthetic_depth")
+            or microstructure.get("synthetic_depth_available")
+        )
+        exchange_depth = bool(
+            provider_class == "exchange_depth"
+            or any(token in provider for token in ("binance", "bybit", "okx"))
+            or source in {"binance_rest_depth", "binance_live_depth"}
+            or (source == "live_store_depth" and provider in {"binance", "bybit", "okx"})
+        )
+        sidecar_depth = bool(
+            any(token in provider for token in ("dukascopy", "ctrader"))
+            or source in {"dukascopy_live_depth", "ctrader_live_depth"}
+            or provider_class == "sidecar"
+        )
+        redis_depth = bool(provider_class == "redis_subscriber" or source == "order_flow_true_depth")
+        depth_levels = _entry_int(
+            microstructure.get("depth_levels")
+            or max(
+                _entry_int(microstructure.get("bid_level_count", microstructure.get("visible_bid_levels", 0))),
+                _entry_int(microstructure.get("ask_level_count", microstructure.get("visible_ask_levels", 0))),
+            )
+        )
+        depth_quality = max(0.0, min(1.0, _entry_float(microstructure.get("depth_quality"), 0.0)))
+        if depth_quality <= 0.0 and depth_levels > 0:
+            depth_quality = (
+                1.0
+                if depth_levels >= 50
+                else 0.82
+                if depth_levels >= 8
+                else 0.66
+                if depth_levels >= 6
+                else 0.48
+                if depth_levels >= 4
+                else 0.30
+            )
+        provider_trust = max(0.0, min(1.0, _entry_float(microstructure.get("depth_provider_trust_score"), 0.0)))
+        if provider_trust <= 0.0:
+            if exchange_depth:
+                provider_trust = 0.86
+            elif "dukascopy" in provider:
+                provider_trust = 0.92
+            elif "ctrader" in provider:
+                provider_trust = 0.58 if environment and environment != "live" else 0.78
+            elif redis_depth:
+                provider_trust = 0.90
+        quote_alignment = max(0.0, min(1.0, _entry_float(microstructure.get("depth_quote_alignment_score"), 0.0)))
+        external_depth_rejected = bool(microstructure.get("external_depth_rejected"))
+        quote_state = str(microstructure.get("depth_quote_agreement_state") or "").strip().lower()
+        if quote_alignment <= 0.0 and depth_available and not external_depth_rejected:
+            quote_alignment = 0.86 if exchange_depth else 0.80 if sidecar_depth or redis_depth else 0.74
+        dom_ladder_ready = bool(microstructure.get("dom_ladder_ready"))
+        dom_stream_snapshot_ready = bool(microstructure.get("dom_stream_snapshot_ready"))
+        dom_stream_degraded = bool(microstructure.get("dom_stream_degraded"))
+        dom_stream_health_score = max(0.0, min(1.0, _entry_float(microstructure.get("dom_stream_health_score"), 1.0)))
+        min_depth_levels = 50 if exchange_depth else 8 if redis_depth else 2 if sidecar_depth else 4
+        min_depth_quality = 0.74 if exchange_depth and (dom_stream_degraded or dom_ladder_ready) else 0.45 if exchange_depth or redis_depth else 0.25 if sidecar_depth else 0.35
+        min_provider_trust = 0.82 if exchange_depth and (dom_stream_degraded or dom_ladder_ready) else 0.72 if exchange_depth or redis_depth else 0.60 if sidecar_depth else 0.64
+        real_dom_entry_ready = bool(
+            depth_available
+            and not synthetic_depth
+            and not external_depth_rejected
+            and quote_state not in {"divergent", "severe_divergence"}
+            and (exchange_depth or sidecar_depth or redis_depth)
+            and depth_levels >= min_depth_levels
+            and depth_quality >= min_depth_quality
+            and provider_trust >= min_provider_trust
+            and quote_alignment >= 0.80
+            and update_mode not in {"none", "synthetic", "top_quote", "top_of_book"}
+            and (
+                not dom_ladder_ready
+                or dom_stream_snapshot_ready
+                or update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
+                or dom_stream_health_score >= 0.45
+            )
+        )
+        aligned_micro_flow = 0.0
+        if direction_sign:
+            aligned_micro_flow = max(
+                _entry_float(microstructure.get("score"), 0.0) * direction_sign,
+                _entry_float(microstructure.get("trade_flow_score", microstructure.get("score")), 0.0) * direction_sign,
+                _entry_float(microstructure.get("orderflow_score"), 0.0) * direction_sign,
+                _entry_float(microstructure.get("book_imbalance"), 0.0) * direction_sign * 0.90,
+                _entry_float(microstructure.get("orderflow_book_imbalance"), 0.0) * direction_sign * 0.85,
+                (_entry_float(microstructure.get("velocity_bps"), 0.0) * direction_sign / 0.45) * 0.85,
+            )
+        breakout_ignition_entry = bool(
+            real_dom_entry_ready
+            and (
+                "breakout" in entry_style_label
+                or playbook_label in {
+                    "aggressive_expansion",
+                    "breakout_continuation",
+                    "crypto_orderflow_continuation",
+                    "intermarket_continuation",
+                    "news_impulse",
+                    "opening_drive",
+                }
+            )
+            and float(structure.get("alignment_score", 0.0) or 0.0) >= 0.58
+            and float(structure.get("setup_quality", 0.0) or 0.0) >= 0.54
+            and float(structure.get("target_efficiency_score", 0.0) or 0.0) >= 0.08
+            and float(structure.get("extension_score", 0.0) or 0.0) <= 1.62
+            and int(structure.get("impulse_age_bars", 0) or 0) <= 8
+            and float(structure.get("cluster_penalty", 0.0) or 0.0) <= 0.20
+            and int(playbook_decision.get("support_components", 0) or 0) >= 1
+            and int(playbook_decision.get("conflict_components", 0) or 0) == 0
+            and (
+                float(playbook_decision.get("confidence", 0.0) or 0.0) >= 0.66
+                or float(playbook_decision.get("context_confluence", 0.0) or 0.0) >= 0.18
+                or float(playbook_decision.get("micro_score", 0.0) or 0.0) >= 0.24
+                or aligned_micro_flow >= 0.24
+            )
+        )
 
         if "retest" in entry_style_label or playbook_label == "breakout_retest":
             anchor_role = "retest_level"
@@ -4004,6 +4155,8 @@ class TradingCore:
             stale_limit_atr = 0.42
         elif playbook_label in {"breakout_continuation", "intermarket_continuation"}:
             stale_limit_atr = 0.50
+        if breakout_ignition_entry:
+            stale_limit_atr = max(stale_limit_atr, 0.84 if exchange_depth or redis_depth else 0.76)
 
         if anchor_role:
             if anchor_price <= 0.0:
@@ -4042,6 +4195,8 @@ class TradingCore:
             return None
         if signal_drift_atr > stale_limit_atr and inactivity_entry_relief and strong_seed_context:
             confidence_penalty += min(0.08, (signal_drift_atr - stale_limit_atr) * (0.20 + inactivity_relief_strength * 0.10))
+        elif breakout_ignition_entry and signal_drift_atr > 0.50:
+            confidence_penalty += min(0.06, (signal_drift_atr - 0.50) * 0.12)
         confidence_penalty += min(0.08, max(0.0, signal_drift_atr - 0.16) * 0.14)
 
         return {
@@ -4056,6 +4211,9 @@ class TradingCore:
             "stale_limit_atr": round(stale_limit_atr, 4),
             "inactivity_entry_relief": inactivity_entry_relief and strong_seed_context,
             "inactivity_relief_strength": round(inactivity_relief_strength, 4),
+            "breakout_ignition_entry": breakout_ignition_entry,
+            "real_dom_entry_ready": real_dom_entry_ready,
+            "real_dom_entry_kind": "exchange" if exchange_depth else "sidecar" if sidecar_depth else "redis" if redis_depth else "none",
             "confidence_penalty": round(confidence_penalty, 4),
             "entry_source": "live_price" if current_price > 0 else "signal_close",
         }

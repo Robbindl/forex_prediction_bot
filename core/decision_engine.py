@@ -1891,6 +1891,7 @@ class SignalDecisionEngine:
         depth_update_mode = str(signal.metadata.get("depth_update_mode", "") or "").strip().lower()
         dom_event_backed = bool(signal.metadata.get("dom_event_backed"))
         dom_ladder_ready = bool(signal.metadata.get("dom_ladder_ready"))
+        dom_stream_snapshot_ready = bool(signal.metadata.get("dom_stream_snapshot_ready"))
         dom_source_fidelity = str(signal.metadata.get("dom_source_fidelity", "") or "").strip().lower()
         depth_provider = str(
             signal.metadata.get("depth_provider")
@@ -1982,10 +1983,33 @@ class SignalDecisionEngine:
             and effective_depth_provider_trust_score >= preferred_true_depth_min_trust_score
             and depth_quote_alignment_score >= 0.80
         )
+        trusted_real_dom_fallback_available = bool(
+            true_depth_available
+            and preferred_true_depth
+            and _trusted_snapshot_true_depth_source(
+                microstructure_source=microstructure_source,
+                depth_provider=depth_provider,
+                depth_provider_class=depth_provider_class,
+                depth_levels=depth_levels,
+                snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
+            )
+            and depth_update_mode not in {"none", "synthetic", "top_quote", "top_of_book"}
+            and depth_quality >= preferred_true_depth_min_quality
+            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and depth_quote_alignment_score >= 0.80
+            and true_depth_quote_aligned
+            and (
+                not dom_ladder_ready
+                or bool(dom_stream_trust_metrics["sovereignty_supported"])
+                or dom_stream_snapshot_ready
+                or depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
+            )
+        )
         strong_true_depth_support = bool(
-            true_depth_informative
-            and (dom_ladder_ready or trusted_snapshot_true_depth_available)
-            and directional_flow_support >= depth_sovereignty_min_directional_flow
+            (true_depth_informative and (dom_ladder_ready or trusted_snapshot_true_depth_available))
+            or trusted_real_dom_fallback_available
+        ) and bool(
+            directional_flow_support >= depth_sovereignty_min_directional_flow
             and aligned_book_pressure >= depth_sovereignty_min_true_depth_support
             and directional_flow_conflict > -0.10
         )
@@ -2009,6 +2033,7 @@ class SignalDecisionEngine:
             "true_depth_informative": true_depth_informative,
             "snapshot_true_depth_informative": snapshot_true_depth_informative,
             "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "trusted_real_dom_fallback_available": trusted_real_dom_fallback_available,
             "depth_provider_trust_score_effective": round(effective_depth_provider_trust_score, 4),
             "depth_provider_trust_decay_applied": round(
                 max(0.0, depth_provider_trust_score - effective_depth_provider_trust_score),
@@ -2023,6 +2048,7 @@ class SignalDecisionEngine:
             ),
             "dom_event_backed": dom_event_backed,
             "dom_ladder_ready": dom_ladder_ready,
+            "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
             "dom_source_fidelity": dom_source_fidelity or ("event_ladder" if dom_ladder_ready else "snapshot_depth" if true_depth_available else "none"),
             "depth_update_mode": depth_update_mode or ("event_stream" if dom_event_backed else ""),
             "override_supported": bool(override_source),
@@ -3778,6 +3804,29 @@ class SignalDecisionEngine:
             and depth_quote_alignment_score >= 0.80
             and not depth_fragmentation_untrusted
         )
+        trusted_real_dom_fallback_available = bool(
+            true_depth_available
+            and preferred_true_depth
+            and _trusted_snapshot_true_depth_source(
+                microstructure_source=microstructure_source,
+                depth_provider=depth_provider,
+                depth_provider_class=depth_provider_class,
+                depth_levels=depth_levels,
+                snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
+            )
+            and depth_update_mode not in {"none", "synthetic", "top_quote", "top_of_book"}
+            and depth_quality >= preferred_true_depth_min_quality
+            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and depth_quote_alignment_score >= 0.80
+            and true_depth_quote_aligned
+            and not depth_fragmentation_untrusted
+            and (
+                not dom_ladder_ready
+                or dom_stream_sovereignty_supported
+                or dom_stream_snapshot_ready
+                or depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
+            )
+        )
         thin_true_depth_untrusted = bool(
             true_depth_available and preferred_true_depth and not meets_true_depth_quality_floor
         )
@@ -3800,10 +3849,20 @@ class SignalDecisionEngine:
             and not true_depth_informative
         )
         strong_true_depth_support = bool(
-            (event_backed_true_depth_available or trusted_snapshot_true_depth_available)
+            (
+                event_backed_true_depth_available
+                or trusted_snapshot_true_depth_available
+                or trusted_real_dom_fallback_available
+            )
             and preferred_true_depth
             and depth_quality >= preferred_true_depth_min_quality
-            and depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
+            and (
+                depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
+                or (
+                    trusted_real_dom_fallback_available
+                    and depth_provider_trust_score >= preferred_true_depth_min_trust_score
+                )
+            )
             and depth_quote_alignment_score >= 0.80
             and directional_flow_support >= depth_sovereignty_min_directional_flow
             and aligned_book_pressure >= depth_sovereignty_min_true_depth_support
@@ -3935,10 +3994,19 @@ class SignalDecisionEngine:
             dom_ladder_ready
             and not dom_stream_sovereignty_supported
         )
-        if event_ladder_stream_health_blocks_sovereignty:
+        trusted_real_dom_fallback_support = bool(
+            event_ladder_stream_health_blocks_sovereignty
+            and trusted_real_dom_fallback_available
+            and directional_flow_support >= depth_sovereignty_min_directional_flow
+            and aligned_book_pressure >= depth_sovereignty_min_true_depth_support
+            and directional_flow_conflict > -0.10
+            and true_depth_directional_conflict > -0.08
+            and not has_directional_flow_conflict
+        )
+        if event_ladder_stream_health_blocks_sovereignty and not trusted_real_dom_fallback_support:
             strong_true_depth_support = False
             strong_flow_support = False
-        if dom_stream_hard_floor_breached:
+        if dom_stream_hard_floor_breached and not trusted_real_dom_fallback_support:
             continuation_rescue_candidate = False
             high_conviction_continuation_candidate = False
             high_conviction_continuation_timing_intact = False
@@ -3948,7 +4016,9 @@ class SignalDecisionEngine:
         depth_sovereignty_supported = bool(strong_true_depth_support or strong_flow_support)
         depth_sovereignty_source = "true_depth" if strong_true_depth_support else "flow" if strong_flow_support else ""
         if strong_true_depth_support:
-            if trusted_snapshot_true_depth_available and not event_backed_true_depth_available:
+            if trusted_real_dom_fallback_support:
+                depth_sovereignty_reason = "supported:trusted_real_dom_fallback"
+            elif trusted_snapshot_true_depth_available and not event_backed_true_depth_available:
                 depth_sovereignty_reason = "supported:trusted_snapshot_true_depth"
             else:
                 depth_sovereignty_reason = "supported:true_depth"
@@ -4068,6 +4138,45 @@ class SignalDecisionEngine:
                 or fast_entry_confirmation_ready
             )
         )
+        breakout_ignition_candidate = bool(
+            depth_sovereignty_supported
+            and impulse_break_style
+            and (continuation_family or continuation_entry)
+            and not event_ladder_cross_market_conflict
+            and not has_directional_flow_conflict
+            and not failed_opposite_move_confirmed
+            and alignment_score >= 0.58
+            and setup_quality >= 0.54
+            and candle_quality_score >= 0.24
+            and session_quality_score >= 0.30
+            and target_efficiency_score >= 0.06
+            and extension_score <= 1.62
+            and directional_extension <= 1.10
+            and impulse_age_bars <= 8
+            and float(signal.metadata.get("stop_hunt_risk", 0.0) or 0.0) < 0.62
+            and (
+                strong_true_depth_support
+                or trusted_real_dom_fallback_support
+                or directional_flow_support >= max(0.32, depth_sovereignty_min_directional_flow + 0.08)
+                or external_confirmation_score >= 0.18
+                or fast_entry_confirmation_ready
+            )
+            and (
+                target_efficiency_score >= 0.09
+                or opposing_distance > base_opposing_distance_hard_floor
+                or shock_liquidity_score >= 0.56
+            )
+        )
+        breakout_ignition_confirmation_override = bool(
+            breakout_ignition_candidate
+            and (
+                strong_true_depth_support
+                or trusted_real_dom_fallback_support
+                or directional_flow_support >= max(0.32, depth_sovereignty_min_directional_flow + 0.08)
+                or external_confirmation_score >= 0.20
+                or fast_entry_confirmation_ready
+            )
+        )
         continuation_reclaim_hard_block = bool(
             continuation_reclaim_pressure
             and not has_directional_flow_support
@@ -4076,6 +4185,7 @@ class SignalDecisionEngine:
             and not shock_fast_path_supported
             and not depth_flow_sovereignty_candidate
             and not depth_flow_sovereignty_rescue_candidate
+            and not breakout_ignition_candidate
         )
         elite_supported_candidate = bool(
             strong_market_candidate
@@ -4092,6 +4202,7 @@ class SignalDecisionEngine:
                 or (continuation_rescue_candidate and has_directional_flow_support)
                 or depth_flow_sovereignty_candidate
                 or depth_flow_sovereignty_rescue_candidate
+                or breakout_ignition_candidate
             )
         )
         asset_performance_relief = 0.0
@@ -4140,6 +4251,13 @@ class SignalDecisionEngine:
                 float(execution_policy.get("snapshot_depth_bonus", 0.015) or 0.015)
                 + max(0.0, depth_quality - minimum_usable_true_depth_quality) * 0.02
                 + (0.005 if snapshot_stream_supportive else 0.0),
+            )
+        elif trusted_real_dom_fallback_support:
+            snapshot_depth_relief = min(
+                0.04,
+                float(execution_policy.get("snapshot_depth_bonus", 0.015) or 0.015)
+                + max(0.0, depth_quality - preferred_true_depth_min_quality) * 0.025
+                + 0.005,
             )
         elif synthetic_depth_only:
             synthetic_depth_penalty = min(
@@ -4303,10 +4421,15 @@ class SignalDecisionEngine:
                 reasons.append("event-ladder flow and cross-asset spillover are aligned against the continuation")
         if dom_ladder_ready and dom_stream_health_known:
             if dom_stream_hard_floor_breached:
-                risk_score += 0.18
-                reasons.append("event-ladder stream health is too degraded to trust for timing")
+                if trusted_real_dom_fallback_support:
+                    risk_score += 0.06
+                    reasons.append("event-ladder stream is degraded but trusted real DOM remains usable")
+                else:
+                    risk_score += 0.18
+                    reasons.append("event-ladder stream health is too degraded to trust for timing")
                 if (
-                    (continuation_family or continuation_entry)
+                    not trusted_real_dom_fallback_support
+                    and (continuation_family or continuation_entry)
                     and (
                         event_ladder_cross_market_conflict
                         or event_ladder_hostile_flow
@@ -4456,6 +4579,14 @@ class SignalDecisionEngine:
                 risk_score -= 0.10
             if impulse_age_bars >= 6 and not failed_opposite_move_confirmed:
                 risk_score -= 0.05
+        if breakout_ignition_candidate:
+            risk_score -= 0.05
+            if strong_true_depth_support or trusted_real_dom_fallback_support:
+                risk_score -= 0.03
+            if breakout_ignition_confirmation_override and entry_confirmation_bars_required > 1 and not entry_confirmation_ready:
+                risk_score -= 0.12
+            if impulse_age_bars >= 6 and directional_extension <= 1.02:
+                risk_score -= 0.04
         if inactivity_execution_relief:
             risk_score -= 0.04 + inactivity_relief_strength * 0.08
         if asset_performance_relief > 0.0:
@@ -4510,6 +4641,9 @@ class SignalDecisionEngine:
         if depth_flow_sovereignty_rescue_candidate:
             weak_candle_extension_limit += 0.08 if depth_sovereignty_source == "true_depth" else 0.06
             weak_candle_floor = max(0.20, weak_candle_floor - (0.03 if depth_sovereignty_source == "true_depth" else 0.02))
+        if breakout_ignition_candidate:
+            weak_candle_extension_limit += 0.08 if depth_sovereignty_source == "true_depth" else 0.05
+            weak_candle_floor = max(0.20, weak_candle_floor - (0.03 if depth_sovereignty_source == "true_depth" else 0.02))
         if inactivity_execution_relief:
             weak_candle_extension_limit += 0.02 + inactivity_relief_strength * 0.03
             weak_candle_floor = max(0.22, weak_candle_floor - (0.01 + inactivity_relief_strength * 0.02))
@@ -4552,6 +4686,9 @@ class SignalDecisionEngine:
             opposing_distance_hard_floor = max(0.0024, opposing_distance_hard_floor - 0.0003)
         elif depth_flow_sovereignty_rescue_candidate:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - 0.03)
+            opposing_distance_hard_floor = max(0.0022, opposing_distance_hard_floor - 0.0005)
+        if breakout_ignition_candidate:
+            target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - 0.035)
             opposing_distance_hard_floor = max(0.0022, opposing_distance_hard_floor - 0.0005)
         if inactivity_execution_relief:
             target_efficiency_hard_floor = max(0.08, target_efficiency_hard_floor - (0.015 + inactivity_relief_strength * 0.03))
@@ -4596,6 +4733,9 @@ class SignalDecisionEngine:
         elif depth_flow_sovereignty_rescue_candidate:
             impulse_age_hard_limit += 2
             directional_extension_hard_limit += 0.08 if depth_sovereignty_source == "true_depth" else 0.06
+        if breakout_ignition_candidate:
+            impulse_age_hard_limit += 2
+            directional_extension_hard_limit += 0.12 if depth_sovereignty_source == "true_depth" else 0.08
         if inactivity_execution_relief:
             impulse_age_hard_limit += 1 + (1 if inactivity_relief_strength >= 0.75 else 0)
             directional_extension_hard_limit += 0.03 + inactivity_relief_strength * 0.05
@@ -4661,6 +4801,7 @@ class SignalDecisionEngine:
             and not (shock_fast_path_supported and (fast_entry_confirmation_ready or shock_confirmation_override))
             and not context_confirmation_override
             and not depth_flow_sovereignty_confirmation_override
+            and not breakout_ignition_confirmation_override
         ):
             hard_blocks.append("entry confirmation delay is still pending")
         if (
@@ -4670,6 +4811,7 @@ class SignalDecisionEngine:
             and not (shock_fast_path_supported and (fast_entry_confirmation_ready or shock_confirmation_override))
             and not context_confirmation_override
             and not depth_flow_sovereignty_confirmation_override
+            and not breakout_ignition_confirmation_override
             and not breakout_retest_ready
             and not first_pullback_ready
             and not has_directional_flow_support
@@ -4704,6 +4846,11 @@ class SignalDecisionEngine:
                 0.02,
                 pattern_rank_hard_floor - (0.08 if depth_sovereignty_source == "true_depth" else 0.05),
             )
+        if breakout_ignition_candidate:
+            pattern_rank_hard_floor = max(
+                0.02,
+                pattern_rank_hard_floor - (0.07 if depth_sovereignty_source == "true_depth" else 0.05),
+            )
         if inactivity_execution_relief:
             pattern_rank_hard_floor = max(0.04, pattern_rank_hard_floor - (0.015 + inactivity_relief_strength * 0.035))
         pattern_rank_hard_floor = min(
@@ -4732,11 +4879,19 @@ class SignalDecisionEngine:
                 or context_continuation_execution_candidate
                 or depth_flow_sovereignty_candidate
                 or depth_flow_sovereignty_rescue_candidate
+                or breakout_ignition_candidate
             )
         )
         if (
             depth_flow_sovereignty_rescue_candidate
             and depth_flow_sovereignty_confirmation_override
+            and recent_pattern_sample_count < 8
+            and not blocked_recent_pattern
+        ):
+            low_pattern_rank_is_actionable = False
+        if (
+            breakout_ignition_candidate
+            and breakout_ignition_confirmation_override
             and recent_pattern_sample_count < 8
             and not blocked_recent_pattern
         ):
@@ -4842,6 +4997,8 @@ class SignalDecisionEngine:
             risk_kill_threshold += 0.02
         elif depth_flow_sovereignty_rescue_candidate:
             risk_kill_threshold += 0.03
+        if breakout_ignition_candidate:
+            risk_kill_threshold += 0.03 if depth_sovereignty_source == "true_depth" else 0.02
         if inactivity_execution_relief:
             risk_kill_threshold += 0.02
         risk_kill_threshold = max(0.50, min(0.70, risk_kill_threshold))
@@ -4901,6 +5058,8 @@ class SignalDecisionEngine:
             "event_backed_true_depth_available": event_backed_true_depth_available,
             "snapshot_true_depth_available": snapshot_true_depth_available,
             "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "trusted_real_dom_fallback_available": trusted_real_dom_fallback_available,
+            "trusted_real_dom_fallback_support": trusted_real_dom_fallback_support,
             "snapshot_true_depth_min_levels": int(snapshot_true_depth_min_levels),
             "guarded_force_entry_mode": guarded_force_entry_mode,
             "guarded_force_entry_enabled": guarded_force_entry_enabled,
@@ -4997,6 +5156,8 @@ class SignalDecisionEngine:
             "shock_fast_path_timing_intact": shock_fast_path_timing_intact,
             "shock_fast_path_supported": shock_fast_path_supported,
             "shock_confirmation_override": shock_confirmation_override,
+            "breakout_ignition_candidate": breakout_ignition_candidate,
+            "breakout_ignition_confirmation_override": breakout_ignition_confirmation_override,
             "context_continuation_execution_candidate": context_continuation_execution_candidate,
             "context_confirmation_override": context_confirmation_override,
             "depth_sovereignty_supported": depth_sovereignty_supported,
@@ -5072,6 +5233,8 @@ class SignalDecisionEngine:
             "shock_fast_path_timing_intact": shock_fast_path_timing_intact,
             "shock_fast_path_supported": shock_fast_path_supported,
             "shock_confirmation_override": shock_confirmation_override,
+            "breakout_ignition_candidate": breakout_ignition_candidate,
+            "breakout_ignition_confirmation_override": breakout_ignition_confirmation_override,
             "context_continuation_execution_candidate": context_continuation_execution_candidate,
             "context_confirmation_override": context_confirmation_override,
             "has_directional_flow_support": has_directional_flow_support,
@@ -5082,6 +5245,8 @@ class SignalDecisionEngine:
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
             "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "trusted_real_dom_fallback_available": trusted_real_dom_fallback_available,
+            "trusted_real_dom_fallback_support": trusted_real_dom_fallback_support,
             "guarded_force_entry_mode": guarded_force_entry_mode,
             "guarded_force_entry_enabled": guarded_force_entry_enabled,
             "guarded_force_depth_ok": guarded_force_depth_ok,
