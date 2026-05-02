@@ -764,6 +764,13 @@ def _effective_confirmation_gate(
     return raw_ready, raw_count, raw_required, False
 
 
+def _near_confirmation(count: int, required: int) -> bool:
+    required = max(0, int(required or 0))
+    if required <= 0:
+        return False
+    return max(0, int(count or 0)) >= max(0, required - 1)
+
+
 def _qualify_crypto_orderflow_candidate(
     *,
     candidate: Dict[str, Any],
@@ -877,7 +884,7 @@ def _qualify_impulse_candidate(
     ):
         strong_impulse_break = True
     family = str(pattern_family or "").lower()
-    near_confirmation = entry_confirmation_count >= max(0, int(entry_confirmation_bars_required or 0) - 1)
+    near_confirmation = _near_confirmation(entry_confirmation_count, entry_confirmation_bars_required)
     early_relief_candidate_floor = max(0.50, float(profile.breakout_min_score) - 0.08)
     if entry_style_label == "elite_sweep_continuation":
         early_relief_candidate_floor = max(0.30, float(profile.breakout_min_score) - 0.28)
@@ -2338,7 +2345,7 @@ class PlaybookService:
                     1.0,
                     0.26 + effective_alignment_score * 0.18 + _clip(target_efficiency_score) * 0.18,
                 )
-        near_confirmation = entry_confirmation_count >= max(0, entry_confirmation_bars_required - 1)
+        near_confirmation = _near_confirmation(entry_confirmation_count, entry_confirmation_bars_required)
         fast_confirmation_ready, fast_confirmation_count, fast_confirmation_required, _ = _effective_confirmation_gate(
             playbook="breakout_continuation",
             entry_confirmation_ready=entry_confirmation_ready,
@@ -2348,7 +2355,7 @@ class PlaybookService:
             fast_entry_confirmation_count=fast_entry_confirmation_count,
             fast_entry_confirmation_bars_required=fast_entry_confirmation_bars_required,
         )
-        near_fast_confirmation = fast_confirmation_count >= max(0, fast_confirmation_required - 1)
+        near_fast_confirmation = _near_confirmation(fast_confirmation_count, fast_confirmation_required)
         context_has_true_depth = bool(context_confluence.get("depth_available"))
         context_has_synthetic_depth = bool(context_confluence.get("synthetic_depth"))
         context_depth_authority_tier = str(context_confluence.get("dom_authority_tier") or "").strip().lower()
@@ -2727,6 +2734,37 @@ class PlaybookService:
                 2.20 if strong_context_continuation_ready else 1.85,
             )
         )
+        context_pressure_confirmation_ready = bool(
+            entry_confirmation_ready
+            or fast_entry_confirmation_ready
+            or near_confirmation
+            or near_fast_confirmation
+            or (
+                entry_confirmation_bars_required <= 1
+                and fast_confirmation_required <= 1
+                and target_efficiency_score >= 0.18
+                and max(
+                    abs(micro_context_support),
+                    abs(cross_context_support),
+                    abs(whale_context_support),
+                )
+                >= 0.36
+            )
+        )
+        context_pressure_execution_ready = bool(
+            context_driven_direction
+            and alignment_score >= max(0.60, float(plan.min_alignment_score))
+            and setup_quality >= max(0.56, float(plan.min_setup_quality))
+            and candle_quality_score >= 0.30
+            and session_quality_score >= 0.36
+            and target_efficiency_score >= 0.10
+            and extension_score <= 1.24
+            and impulse_age_bars <= 5
+            and cluster_penalty <= 0.20
+            and context_pressure_confirmation_ready
+        )
+        if context_driven_direction and not context_pressure_execution_ready:
+            return None
         if (
             fast_confirmation_required > 1
             and not fast_confirmation_ready
@@ -2844,6 +2882,7 @@ class PlaybookService:
         elif (
             "breakout_continuation" in plan.allowed_playbooks
             and context_driven_direction
+            and context_pressure_execution_ready
         ):
             playbook = "breakout_continuation"
             entry_style = "elite_context_pressure"

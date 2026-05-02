@@ -165,6 +165,7 @@ _COMMAND_CENTER_BUILD_TIMEOUT_SECONDS = 7.5
 _COMMAND_CENTER_PAYLOAD_CACHE_KEY = "command_center_payload:v3"
 _COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY = "command_center_payload:v3:last_good"
 _COMMAND_CENTER_PAYLOAD_REFRESH_KEY = "command_center_payload:v3"
+_COMMAND_CENTER_RUNTIME_CONTEXT_LOG_KEY = "COMMAND_CENTER_CONTEXT_LOG"
 _PAGE_OVERVIEW_CACHE_TTL = 15
 _PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
 _PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
@@ -1155,12 +1156,38 @@ _p7_alerts: list = []
 _p7_lock    = threading.Lock()
 _p7_started = False
 _dashboard_pubsub_started = False
+_command_center_cache_invalidated_at = 0.0
 _dashboard_pubsub_channels = (
     "signals",
+    "SIGNAL_JOURNAL_UPDATE",
+    "COMMAND_CENTER_CONTEXT_UPDATE",
     "LIQUIDITY_WALL_DETECTED",
     "STOP_HUNT_DETECTED",
     "INTELLIGENCE_ALERT",
 )
+
+
+def _invalidate_command_center_related_caches(*, min_interval_seconds: float = 3.0) -> None:
+    global _command_center_cache_invalidated_at
+    now = time.monotonic()
+    if now - _command_center_cache_invalidated_at < min_interval_seconds:
+        return
+    _command_center_cache_invalidated_at = now
+    _invalidate_cache_prefixes(
+        _COMMAND_CENTER_PAYLOAD_CACHE_KEY,
+        "cc_journals",
+        "cc_runtime_context",
+        "p7_journal",
+        "page_overview:command_center:",
+        "page_overview:order_flow:",
+        "page_overview:playbook_intel:",
+        "page_overview:risk_dashboard:",
+        "page_overview:system_monitor:",
+        "page_overview:market_intelligence:",
+        "page_overview:whale_intelligence:",
+        "page_overview:intelligence_alerts:",
+        "page_overview:architecture_lab:",
+    )
 
 
 def _handle_dashboard_pubsub_message(channel: str, payload: Dict[str, Any]) -> None:
@@ -1169,6 +1196,10 @@ def _handle_dashboard_pubsub_message(channel: str, payload: Dict[str, Any]) -> N
         if asset:
             _store(asset, payload)
             _last_ref[asset] = time.time()
+        _invalidate_command_center_related_caches()
+        return
+    if channel in {"SIGNAL_JOURNAL_UPDATE", "COMMAND_CENTER_CONTEXT_UPDATE"}:
+        _invalidate_command_center_related_caches()
         return
     if channel == "LIQUIDITY_WALL_DETECTED":
         with _p3_wall_lock:
@@ -1984,26 +2015,27 @@ def _summarize_signal_diagnostics(rows: Any) -> Dict[str, Any]:
     for row in items:
         if not isinstance(row, dict):
             continue
+        enriched = _enrich_signal_like_row(row)
         total += 1
-        broker_context = str(row.get("broker_context") or "").lower()
+        broker_context = str(enriched.get("broker_context") or "").lower()
         if broker_context == "supportive":
             broker_supportive += 1
         elif broker_context == "fragile":
             broker_fragile += 1
 
-        depth_mode = str(row.get("depth_mode") or "").lower()
+        depth_mode = str(enriched.get("depth_mode") or "").lower()
         if depth_mode == "true_depth":
             true_depth += 1
         elif depth_mode == "synthetic_depth":
             synthetic_depth += 1
 
-        cross_context = str(row.get("cross_asset_context_state") or row.get("cross_asset_context") or "").lower()
+        cross_context = str(enriched.get("cross_asset_context_state") or enriched.get("cross_asset_context") or "").lower()
         if cross_context == "supportive":
             cross_support += 1
         elif cross_context == "conflicted":
             cross_conflict += 1
 
-        if bool(row.get("recent_pattern_block_new_entries")):
+        if bool(enriched.get("recent_pattern_block_new_entries")):
             recent_pattern_blocks += 1
 
     summary_parts = [
@@ -2589,6 +2621,7 @@ def _decision_context_reason(item: Dict[str, Any], fallback: str = "") -> str:
 def _build_decision_context_payload(
     *,
     latest_signals: Any = None,
+    runtime_rows: Any = None,
     top_opportunities: Any,
     near_misses: Any,
     session_radar: Dict[str, Any],
@@ -2598,6 +2631,9 @@ def _build_decision_context_payload(
     degraded_reason: str = "",
 ) -> Dict[str, Any]:
     signal_rows = [row for row in list(latest_signals or []) if isinstance(row, dict)]
+    runtime_rows = [row for row in list(runtime_rows or []) if isinstance(row, dict)]
+    runtime_blocked_rows = [row for row in runtime_rows if _command_center_row_is_blocked(row)]
+    runtime_watch_rows = [row for row in runtime_rows if not _command_center_row_is_blocked(row)]
     top_rows = [row for row in list(top_opportunities or []) if isinstance(row, dict)]
     near_rows = [row for row in list(near_misses or []) if isinstance(row, dict)]
     position_rows = [row for row in list(positions or []) if isinstance(row, dict)]
@@ -2621,11 +2657,16 @@ def _build_decision_context_payload(
         state = "candidate_queue"
         label = "Candidate queue"
         summary = f"{len(top_rows)} setup(s) are staged before final execution gates."
-    elif near_rows or lead_count:
+    elif runtime_blocked_rows or near_rows or lead_count:
         state = "execution_blocked"
         label = "Execution gate blocked"
-        blocker_text = lead_blocker or _decision_context_reason(near_rows[0], "latest gate")
+        lead_row = runtime_blocked_rows[0] if runtime_blocked_rows else near_rows[0] if near_rows else {}
+        blocker_text = lead_blocker or _decision_context_reason(lead_row, "latest gate")
         summary = f"No entry passed because the execution gate is blocking: {blocker_text}."
+    elif runtime_watch_rows:
+        state = "scanning"
+        label = "Scanning, no entry"
+        summary = f"{len(runtime_watch_rows)} asset(s) are being watched before a playbook seed clears the execution gate."
     elif open_session_rows:
         state = "scanning"
         label = "Scanning, no entry"
@@ -2644,56 +2685,75 @@ def _build_decision_context_payload(
         summary = "No decision rows have been published yet."
 
     rows: List[Dict[str, Any]] = []
+    seen_rows: set = set()
+
+    def _append_context_row(
+        item: Dict[str, Any],
+        *,
+        decision_kind: str,
+        decision_state: str,
+        fallback_reason: str,
+    ) -> None:
+        if len(rows) >= 8 or not isinstance(item, dict):
+            return
+        enriched = _enrich_signal_like_row(
+            {
+                **item,
+                "decision_kind": str(item.get("decision_kind") or decision_kind),
+                "decision_state": str(item.get("decision_state") or decision_state),
+                "decision_reason": _decision_context_reason(item, fallback_reason),
+            }
+        )
+        key = _command_center_context_row_key(enriched)
+        if key in seen_rows:
+            return
+        seen_rows.add(key)
+        rows.append(enriched)
+
     for item in signal_rows[:8]:
-        rows.append(
-            _enrich_signal_like_row(
-                {
-                    **item,
-                    "decision_kind": str(item.get("decision_kind") or "signal"),
-                    "decision_state": str(item.get("decision_state") or "Active"),
-                    "decision_reason": _decision_context_reason(item, "live execution gate decision"),
-                }
-            )
+        _append_context_row(
+            item,
+            decision_kind="signal",
+            decision_state="Active",
+            fallback_reason="live execution gate decision",
+        )
+    for item in runtime_blocked_rows[:8]:
+        _append_context_row(
+            item,
+            decision_kind="preseed_blocked",
+            decision_state="Blocked",
+            fallback_reason="pre-seed execution gate blocked",
         )
     for item in top_rows[:4]:
-        if len(rows) >= 8:
-            break
-        rows.append(
-            _enrich_signal_like_row(
-                {
-                    **item,
-                    "decision_kind": "candidate",
-                    "decision_state": "Candidate",
-                    "decision_reason": _decision_context_reason(item, "waiting for final execution checks"),
-                }
-            )
+        _append_context_row(
+            item,
+            decision_kind="candidate",
+            decision_state="Candidate",
+            fallback_reason="waiting for final execution checks",
         )
     for item in near_rows[:8]:
-        if len(rows) >= 8:
-            break
-        rows.append(
-            _enrich_signal_like_row(
-                {
-                    **item,
-                    "decision_kind": "blocked",
-                    "decision_state": "Blocked",
-                    "decision_reason": _decision_context_reason(item, "execution gate blocked"),
-                }
-            )
+        _append_context_row(
+            item,
+            decision_kind="blocked",
+            decision_state="Blocked",
+            fallback_reason="execution gate blocked",
+        )
+    for item in runtime_watch_rows[:8]:
+        _append_context_row(
+            item,
+            decision_kind="watching_seed",
+            decision_state="Watching",
+            fallback_reason="waiting for playbook seed",
         )
     if len(rows) < 8:
         for item in list((why_not_traded or {}).get("top_assets") or [])[: max(0, 8 - len(rows))]:
             if not isinstance(item, dict):
                 continue
-            rows.append(
-                _enrich_signal_like_row(
-                    {
-                        **item,
-                        "decision_kind": "blocked_asset",
-                        "decision_state": "Blocked",
-                        "decision_reason": _decision_context_reason(item, str(item.get("top_blocker") or "execution gate blocked")),
-                    }
-                )
+            _append_context_row(
+                item,
+                decision_kind="blocked_asset",
+                decision_state="Blocked",
+                fallback_reason=str(item.get("top_blocker") or "execution gate blocked"),
             )
     if len(rows) < 8:
         session_source = open_session_rows + blocked_session_rows
@@ -2701,15 +2761,11 @@ def _build_decision_context_payload(
             if not isinstance(item, dict):
                 continue
             session_open = bool(item.get("session_open"))
-            rows.append(
-                _enrich_signal_like_row(
-                    {
-                        **item,
-                        "decision_kind": "session_watch",
-                        "decision_state": "Watching" if session_open else "Session closed",
-                        "decision_reason": "market open; waiting for playbook seed" if session_open else "outside allowed trading session",
-                    }
-                )
+            _append_context_row(
+                item,
+                decision_kind="session_watch",
+                decision_state="Watching" if session_open else "Session closed",
+                fallback_reason="market open; waiting for playbook seed" if session_open else "outside allowed trading session",
             )
 
     return {
@@ -3089,6 +3145,29 @@ def _summarize_closed_trade_history(closed_trades: Any) -> Dict[str, Any]:
     }
 
 
+def _build_authoritative_trade_history_summary(closed_trades: Any) -> Dict[str, Any]:
+    summary = _summarize_closed_trade_history(closed_trades)
+    initial_balance = float(getattr(_args, "balance", 10000.0) or 10000.0)
+    total_pnl = float(summary.get("total_pnl", 0.0) or 0.0)
+    return {
+        "initial_balance": initial_balance,
+        "balance": round(initial_balance + total_pnl, 2),
+        "realized_balance": round(initial_balance + total_pnl, 2),
+        "balance_delta": round(total_pnl, 2),
+        "account_state": "loss" if total_pnl < -0.005 else "gain" if total_pnl > 0.005 else "flat",
+        "total_pnl": round(total_pnl, 2),
+        "realized_total_pnl": round(total_pnl, 2),
+        "daily_pnl": round(float(summary.get("daily_pnl", 0.0) or 0.0), 2),
+        "realized_daily_pnl": round(float(summary.get("daily_pnl", 0.0) or 0.0), 2),
+        "daily_trades": int(summary.get("daily_trades", 0) or 0),
+        "total_trades": int(summary.get("total_trades", 0) or 0),
+        "closed_trades": int(summary.get("total_trades", 0) or 0),
+        "winning_trades": int(summary.get("winning_trades", 0) or 0),
+        "losing_trades": int(summary.get("losing_trades", 0) or 0),
+        "win_rate": round(float(summary.get("win_rate", 0.0) or 0.0) * 100.0, 1),
+    }
+
+
 def _build_trade_lifecycle(
     positions: Any,
     closed_trades: Any,
@@ -3136,7 +3215,7 @@ def _build_trade_lifecycle(
         enriched = _enrich_signal_like_row(row)
         kind = str(enriched.get("decision_kind") or enriched.get("kind") or "").lower()
         state = str(enriched.get("decision_state") or enriched.get("state") or "").lower()
-        if kind == "session_watch" or state in {"watching", "session closed"}:
+        if kind in {"session_watch", "watching_seed", "preseed_blocked"} or state in {"watching", "session closed"}:
             continue
         identity = (
             str(enriched.get("asset") or ""),
@@ -4539,6 +4618,104 @@ def _build_command_center_signals(enriched_positions: Any) -> List[Dict[str, Any
     return signals
 
 
+def _command_center_context_row_key(row: Dict[str, Any]) -> Tuple[str, str, str, str, str, str, str]:
+    return (
+        str(row.get("asset") or ""),
+        str(row.get("direction") or row.get("signal") or ""),
+        str(row.get("decision_kind") or row.get("kind") or ""),
+        str(row.get("decision_state") or row.get("state") or ""),
+        str(
+            row.get("exact_kill_reason")
+            or row.get("execution_kill_reason")
+            or row.get("blocked_reason")
+            or row.get("decision_reason")
+            or row.get("reason")
+            or ""
+        ),
+        str(row.get("session_label") or row.get("current_session") or ""),
+        str(row.get("timeframe") or row.get("playbook_timeframe") or ""),
+    )
+
+
+def _merge_command_center_rows(*sources: Any) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    seen: set = set()
+    for source in sources:
+        for row in list(source or []):
+            if not isinstance(row, dict):
+                continue
+            enriched = _enrich_signal_like_row(row)
+            key = _command_center_context_row_key(enriched)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(enriched)
+    return rows
+
+
+def _command_center_row_is_blocked(row: Any) -> bool:
+    if not isinstance(row, dict):
+        return False
+    state = str(row.get("decision_state") or row.get("state") or "").strip().lower()
+    kind = str(row.get("decision_kind") or row.get("kind") or "").strip().lower()
+    if state == "watching" or kind == "watching_seed":
+        return False
+    if "blocked" in {state, kind} or kind in {"killed", "blocked_asset"}:
+        return True
+    reason = str(
+        row.get("exact_kill_reason")
+        or row.get("execution_kill_reason")
+        or row.get("blocked_reason")
+        or row.get("decision_reason")
+        or row.get("reason")
+        or ""
+    ).strip().lower()
+    if reason in {"", "n/a", "no_playbook_seed", "waiting_for_playbook_seed"}:
+        return False
+    return bool(reason)
+
+
+def _command_center_runtime_context_rows(*, limit: int = 24) -> List[Dict[str, Any]]:
+    target = max(1, int(limit or 24))
+    cache_key = f"cc_runtime_context:{target}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return [dict(row) for row in list(cached or []) if isinstance(row, dict)]
+
+    rows: List[Dict[str, Any]] = []
+    try:
+        from services.redis_pool import get_client as _get_redis_client
+
+        redis_client = _get_redis_client()
+        if redis_client is None:
+            raise RuntimeError("Redis unavailable")
+        raw = redis_client.lrange(_COMMAND_CENTER_RUNTIME_CONTEXT_LOG_KEY, 0, max(target * 4, 40))
+        seen: set = set()
+        for item in raw:
+            if not item:
+                continue
+            try:
+                payload = json.loads(item)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            enriched = _enrich_signal_like_row(payload)
+            key = _command_center_context_row_key(enriched)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(enriched)
+            if len(rows) >= target:
+                break
+    except Exception as exc:
+        logger.debug(f"[dashboard] command-center runtime context unavailable: {exc}")
+        rows = []
+
+    _cache_set(cache_key, rows, ttl=4 if rows else 2)
+    return rows
+
+
 def _command_center_live_decisions(core: Any) -> List[Dict[str, Any]]:
     try:
         rows = _collect_live_signals_from_core(core, "all") if core else _collect_live_signals_from_store("all")
@@ -4551,6 +4728,7 @@ def _command_center_live_decisions(core: Any) -> List[Dict[str, Any]]:
 def _command_center_signal_quality(signals: Any) -> Dict[str, Any]:
     signal_list = list(signals or [])
     return {
+        "count": len(signal_list),
         "avg_memory_score": round(
             sum(float(signal.get("memory_score", 0.0) or 0.0) for signal in signal_list) / len(signal_list),
             1,
@@ -4960,6 +5138,7 @@ def _build_command_center_payload() -> Dict[str, Any]:
     core = _core()
     perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core)
     journals = _command_center_journals()
+    runtime_context_rows = _command_center_runtime_context_rows(limit=24)
 
     # Slow external calls are refreshed off the request path. The command
     # center must render from cached/stale data instead of letting whale or
@@ -4998,8 +5177,9 @@ def _build_command_center_payload() -> Dict[str, Any]:
     live_summary = _build_command_center_live_summary(perf, daily, enriched_positions)
     live_decisions = _command_center_live_decisions(core)
     signals = live_decisions or _build_command_center_signals(enriched_positions)
-    signal_quality = _command_center_signal_quality(signals)
-    signal_diagnostics = _summarize_signal_diagnostics(enriched_positions)
+    signal_context_rows = _merge_command_center_rows(signals, runtime_context_rows)
+    signal_quality = _command_center_signal_quality(signal_context_rows)
+    signal_diagnostics = _summarize_signal_diagnostics(signal_context_rows or enriched_positions)
     pnl_curve = _build_command_center_pnl_curve(
         enriched_positions,
         closed_trades,
@@ -5038,10 +5218,13 @@ def _build_command_center_payload() -> Dict[str, Any]:
 
     _cache_set("cc_top_opportunities", top_opportunities, ttl=20 if top_opportunities else 8)
     _cache_set("cc_weak_positions", weak_positions, ttl=20 if weak_positions else 8)
-    near_misses = _summarize_near_misses(journals, limit=8)
+    runtime_blocked_rows = [row for row in runtime_context_rows if _command_center_row_is_blocked(row)]
+    near_miss_source = _merge_command_center_rows(journals, runtime_blocked_rows)
+    near_misses = _summarize_near_misses(near_miss_source, limit=8)
     crypto_rejection_audit = _summarize_crypto_rejection_audit(journals, limit=8)
     session_radar = _build_session_radar(limit=12)
-    why_not_traded = _summarize_why_not_traded(journals, near_misses, limit=6)
+    why_not_source = _merge_command_center_rows(journals, runtime_context_rows)
+    why_not_traded = _summarize_why_not_traded(why_not_source, near_misses, limit=6)
     watchlist_ladder = _build_watchlist_ladder(top_opportunities, near_misses, session_radar, enriched_positions)
     trade_tape = _build_trade_tape(enriched_positions, closed_trades, limit=12)
     trade_lifecycle = _build_trade_lifecycle(
@@ -5049,6 +5232,16 @@ def _build_command_center_payload() -> Dict[str, Any]:
         closed_trades,
         journals,
         active_items=[*signals, *top_opportunities, *near_misses],
+    )
+    decision_context = _build_decision_context_payload(
+        latest_signals=signals,
+        runtime_rows=runtime_context_rows,
+        top_opportunities=top_opportunities,
+        near_misses=near_misses,
+        session_radar=session_radar,
+        positions=enriched_positions,
+        why_not_traded=why_not_traded,
+        signal_diagnostics=signal_diagnostics,
     )
 
     payload = {
@@ -5079,6 +5272,7 @@ def _build_command_center_payload() -> Dict[str, Any]:
         "watchlist_ladder":  watchlist_ladder,
         "trade_tape":        trade_tape,
         "trade_lifecycle":   trade_lifecycle,
+        "decision_context":  decision_context,
         "positions":         enriched_positions,
         "live_summary":      live_summary,
         "pnl_curve":         pnl_curve.get("points", []),
@@ -8241,30 +8435,11 @@ def api_trade_history():
             raw_limit = max(limit * 3, limit + 10)
             from core.state import rollup_closed_trade_history
             trades = rollup_closed_trade_history(_load_authoritative_closed_trades(limit=raw_limit), limit=limit)
-            summary = _summarize_closed_trade_history(trades)
-            initial_balance = float(getattr(_args, "balance", 10000.0) or 10000.0)
-            total_pnl = float(summary.get("total_pnl", 0.0) or 0.0)
             payload = {
                 "success": True,
                 "trades": [_enrich_trade_history_row(t) for t in trades],
                 "count": len(trades),
-                "summary": {
-                    "initial_balance": initial_balance,
-                    "balance": round(initial_balance + total_pnl, 2),
-                    "realized_balance": round(initial_balance + total_pnl, 2),
-                    "balance_delta": round(total_pnl, 2),
-                    "account_state": "loss" if total_pnl < -0.005 else "gain" if total_pnl > 0.005 else "flat",
-                    "total_pnl": round(total_pnl, 2),
-                    "realized_total_pnl": round(total_pnl, 2),
-                    "daily_pnl": round(float(summary.get("daily_pnl", 0.0) or 0.0), 2),
-                    "realized_daily_pnl": round(float(summary.get("daily_pnl", 0.0) or 0.0), 2),
-                    "daily_trades": int(summary.get("daily_trades", 0) or 0),
-                    "total_trades": int(summary.get("total_trades", len(trades)) or 0),
-                    "closed_trades": int(summary.get("total_trades", len(trades)) or 0),
-                    "winning_trades": int(summary.get("winning_trades", 0) or 0),
-                    "losing_trades": int(summary.get("losing_trades", 0) or 0),
-                    "win_rate": round(float(summary.get("win_rate", 0.0) or 0.0) * 100.0, 1),
-                },
+                "summary": _build_authoritative_trade_history_summary(trades),
             }
             _cache_set(cache_key, payload, ttl=_TRADE_HISTORY_CACHE_TTL)
         response = jsonify(payload)
@@ -9164,6 +9339,7 @@ def _build_page_overview_unavailable_payload(page: str, days: int, reason: str =
     status = _page_overview_status_shell()
     command_center = _page_overview_command_center_shell(reason)
     payload = _page_overview_base(page, days, reason=reason)
+    payload["trade_history_summary"] = _page_overview_trade_history_summary(limit=50)
 
     if page == "risk_dashboard":
         payload.update({"status": status, "risk": {"success": True}, "command_center": command_center})
@@ -9330,6 +9506,19 @@ def _page_overview_view_component(
     )
 
 
+def _page_overview_trade_history_summary(*, limit: int = 50) -> Dict[str, Any]:
+    target = max(1, int(limit or 50))
+    cache_key = f"page_component:v4:trade_history_summary:{target}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return dict(cached) if isinstance(cached, dict) else {}
+    raw_limit = max(target * 3, target + 10)
+    trades = _rollup_closed_trades_for_dashboard(_load_authoritative_closed_trades(limit=raw_limit), limit=target)
+    summary = _build_authoritative_trade_history_summary(trades)
+    _cache_set(cache_key, summary, ttl=min(_TRADE_HISTORY_CACHE_TTL, 60))
+    return dict(summary)
+
+
 def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = False) -> Dict[str, Any]:
     page = _normalize_page_overview_name(page)
 
@@ -9483,6 +9672,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
     payload.setdefault("success", True)
     payload.setdefault("page", page)
     payload.setdefault("days", days)
+    payload.setdefault("trade_history_summary", _page_overview_trade_history_summary(limit=50))
     payload.setdefault("timestamp", datetime.utcnow().isoformat())
     if _is_degraded_dashboard_payload(payload):
         payload["degraded"] = True

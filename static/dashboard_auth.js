@@ -461,11 +461,9 @@
       tradeHistorySummary.closed_trades = tradeHistorySummary.closed_trades ?? tradeHistory.trades.length;
       tradeHistorySummary.total_trades = tradeHistorySummary.total_trades ?? tradeHistory.trades.length;
     }
-    const candidates = [
-      tradeHistorySummary,
+    const liveCandidates = [
       root.live_summary,
       commandCenter.live_summary,
-      commandCenter.trade_history_summary,
       dashboardObject(root.status).live_summary,
       dashboardObject(root.risk).live_summary,
       root,
@@ -475,41 +473,119 @@
     ].map(dashboardObject).filter(item =>
       Number.isFinite(Number(item.balance)) ||
       Number.isFinite(Number(item.realized_balance)) ||
+      Number.isFinite(Number(item.open_pnl)) ||
       Number.isFinite(Number(item.total_pnl)) ||
-      Number.isFinite(Number(item.closed_trades))
+      Number.isFinite(Number(item.closed_trades)) ||
+      Number.isFinite(Number(item.open_positions))
     );
     const scoreSummary = item => {
       const balance = Number(item.balance ?? item.realized_balance);
       const initial = Number(item.initial_balance);
       const totalPnl = Number(item.total_pnl ?? item.realized_total_pnl ?? item.balance_delta);
       const closed = Number(item.closed_trades ?? item.total_trades);
+      const openPnl = Number(item.open_pnl);
+      const openPositions = Number(item.open_positions);
       let score = 0;
       if (Number.isFinite(balance)) score += 1;
       if (Number.isFinite(initial)) score += 1;
       if (Number.isFinite(totalPnl) && Math.abs(totalPnl) >= 0.01) score += 8;
       if (Number.isFinite(closed) && closed > 0) score += 6;
+      if (Number.isFinite(openPnl) && Math.abs(openPnl) >= 0.01) score += 6;
+      if (Number.isFinite(openPositions) && openPositions > 0) score += 4;
       if (Number.isFinite(balance) && Number.isFinite(initial) && Math.abs(balance - initial) >= 0.01) score += 10;
       if (Number.isFinite(item.balance_delta) && Math.abs(Number(item.balance_delta)) >= 0.01) score += 5;
       return score;
     };
-    const summary = candidates.sort((a, b) => scoreSummary(b) - scoreSummary(a))[0] || {};
-    const totalPnl = Number(summary.total_pnl ?? summary.realized_total_pnl ?? summary.balance_delta ?? root.total_pnl ?? commandCenter.total_pnl ?? 0);
-    const rawBalance = Number(summary.balance ?? summary.realized_balance ?? root.balance ?? commandCenter.balance);
-    const rawInitial = Number(summary.initial_balance ?? root.initial_balance ?? commandCenter.initial_balance);
+    const liveSummary = liveCandidates.sort((a, b) => scoreSummary(b) - scoreSummary(a))[0] || {};
+    const tradeClosed = Number(tradeHistorySummary.closed_trades ?? tradeHistorySummary.total_trades ?? 0);
+    const tradeRealizedPnl = Number(tradeHistorySummary.total_pnl ?? tradeHistorySummary.realized_total_pnl ?? tradeHistorySummary.balance_delta);
+    const tradeBalance = Number(tradeHistorySummary.realized_balance ?? tradeHistorySummary.balance);
+    const tradeInitial = Number(tradeHistorySummary.initial_balance);
+    const tradeHasAuthority =
+      tradeClosed > 0 && (
+        Number.isFinite(tradeBalance) ||
+        Number.isFinite(tradeRealizedPnl) ||
+        Number.isFinite(tradeInitial)
+      );
+    const realizedSummary = tradeHasAuthority ? tradeHistorySummary : liveSummary;
+    const realizedPnl = Number(
+      realizedSummary.total_pnl ??
+      realizedSummary.realized_total_pnl ??
+      realizedSummary.balance_delta ??
+      root.total_pnl ??
+      commandCenter.total_pnl
+    );
+    const rawRealizedBalance = Number(
+      realizedSummary.realized_balance ??
+      realizedSummary.balance ??
+      root.realized_balance ??
+      commandCenter.realized_balance ??
+      root.balance ??
+      commandCenter.balance
+    );
+    const rawInitial = Number(
+      realizedSummary.initial_balance ??
+      liveSummary.initial_balance ??
+      root.initial_balance ??
+      commandCenter.initial_balance
+    );
     const initial = Number.isFinite(rawInitial)
       ? rawInitial
-      : (Number.isFinite(rawBalance) && Number.isFinite(totalPnl) ? rawBalance - totalPnl : NaN);
-    const realized = Number(summary.realized_balance ?? rawBalance ?? root.realized_balance ?? commandCenter.realized_balance);
-    const openPnl = Number(summary.open_pnl ?? root.open_pnl ?? commandCenter.open_pnl ?? 0);
-    const balance = Number(summary.balance ?? (Number.isFinite(realized) ? realized + openPnl : NaN));
-    const balanceDelta = Number(summary.balance_delta ?? (Number.isFinite(balance) && Number.isFinite(initial) ? balance - initial : totalPnl));
-    return Object.assign({}, summary, {
-      initial_balance: Number.isFinite(initial) ? initial : summary.initial_balance,
-      realized_balance: Number.isFinite(realized) ? realized : summary.realized_balance,
-      balance: Number.isFinite(balance) ? balance : summary.balance,
+      : (Number.isFinite(rawRealizedBalance) && Number.isFinite(realizedPnl) ? rawRealizedBalance - realizedPnl : NaN);
+    const realized = Number.isFinite(rawRealizedBalance)
+      ? rawRealizedBalance
+      : (Number.isFinite(initial) && Number.isFinite(realizedPnl) ? initial + realizedPnl : NaN);
+    const openPnl = Number(
+      liveSummary.open_pnl ??
+      root.open_pnl ??
+      commandCenter.open_pnl ??
+      realizedSummary.open_pnl ??
+      0
+    );
+    const balance = Number.isFinite(realized) ? realized + openPnl : Number(
+      liveSummary.balance ??
+      realizedSummary.balance ??
+      root.balance ??
+      commandCenter.balance
+    );
+    const totalPnl = Number.isFinite(realizedPnl) ? realizedPnl + openPnl : Number(
+      liveSummary.total_pnl ??
+      liveSummary.balance_delta ??
+      realizedSummary.total_pnl ??
+      realizedSummary.realized_total_pnl ??
+      0
+    );
+    const balanceDelta = Number.isFinite(balance) && Number.isFinite(initial)
+      ? balance - initial
+      : Number(
+          liveSummary.balance_delta ??
+          realizedSummary.balance_delta ??
+          totalPnl
+        );
+    const closedTrades = Math.max(
+      Number(realizedSummary.closed_trades ?? realizedSummary.total_trades ?? 0),
+      Number(liveSummary.closed_trades ?? liveSummary.total_trades ?? 0),
+      0
+    );
+    const totalTrades = Math.max(
+      Number(realizedSummary.total_trades ?? realizedSummary.closed_trades ?? 0),
+      Number(liveSummary.total_trades ?? liveSummary.closed_trades ?? 0),
+      closedTrades
+    );
+    return Object.assign({}, liveSummary, realizedSummary, {
+      initial_balance: Number.isFinite(initial) ? initial : realizedSummary.initial_balance,
+      realized_balance: Number.isFinite(realized) ? realized : realizedSummary.realized_balance,
+      balance: Number.isFinite(balance) ? balance : realizedSummary.balance,
       balance_delta: Number.isFinite(balanceDelta) ? Math.round(balanceDelta * 100) / 100 : 0,
-      total_pnl: Number.isFinite(totalPnl) ? totalPnl : 0,
+      total_pnl: Number.isFinite(totalPnl) ? Math.round(totalPnl * 100) / 100 : 0,
+      realized_total_pnl: Number.isFinite(realizedPnl) ? Math.round(realizedPnl * 100) / 100 : 0,
       open_pnl: Number.isFinite(openPnl) ? openPnl : 0,
+      closed_trades: Number.isFinite(closedTrades) ? closedTrades : 0,
+      total_trades: Number.isFinite(totalTrades) ? totalTrades : 0,
+      open_positions: Number(liveSummary.open_positions ?? realizedSummary.open_positions ?? 0) || 0,
+      buy_count: Number(liveSummary.buy_count ?? realizedSummary.buy_count ?? 0) || 0,
+      sell_count: Number(liveSummary.sell_count ?? realizedSummary.sell_count ?? 0) || 0,
+      account_state: balanceDelta < -0.005 ? 'loss' : balanceDelta > 0.005 ? 'gain' : 'flat',
     });
   }
 

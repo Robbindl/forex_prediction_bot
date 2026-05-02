@@ -937,6 +937,14 @@ function renderDeskRows(targetId, items, emptyText){
   }
   el.innerHTML=`<div class="desk-list">${items.map(item=>`<div class="desk-row"><div class="desk-main"><div class="desk-head">${item.head||'—'}</div><div class="desk-meta">${item.meta||''}</div></div><div class="desk-side ${item.sideClass||''}">${item.side||''}</div></div>`).join('')}</div>`;
 }
+function metricCountOrFallback(obj,key,fallback){
+  if(obj && Object.prototype.hasOwnProperty.call(obj,key)){
+    const value=Number(obj[key]);
+    return Number.isFinite(value)?value:0;
+  }
+  const alt=Number(fallback);
+  return Number.isFinite(alt)?alt:0;
+}
 function renderTradeTape(events){
   const panel=document.getElementById('tradeTapePanel');
   const badge=document.getElementById('tradeTapeBadge');
@@ -1730,11 +1738,27 @@ async function loadMain(){
     const lifecycle=d.trade_lifecycle||{};
     const contextOnlyRows=collectDeskContextRows(d).filter(item=>item&&item.asset&&!isPublishedExecutionItem(item));
     const lifecyclePool=[...collectElitePool(d), ...decisionRows].filter(isPublishedExecutionItem);
-    const funnelSeeded=Number(lifecycle.seeded||lifecyclePool.length||0);
-    const funnelStructure=Number(lifecycle.structure_valid||lifecyclePool.filter(item=>itemBool(item,'breakout_retest_ready')===true || itemBool(item,'first_pullback_ready')===true || itemBool(item,'entry_confirmation_ready')===true).length||0);
-    const funnelConfirm=Number(lifecycle.confirmation_ready||lifecyclePool.filter(item=>itemBool(item,'entry_confirmation_ready')===true).length||0);
-    const funnelApproved=Number(lifecycle.approved||lifecyclePool.filter(item=>eliteEntryState(item).label==='Ready').length||0);
-    const funnelExecuted=Number(lifecycle.executed||lifecycle.opened||Number((d.positions||[]).length||0));
+    const funnelSeeded=metricCountOrFallback(lifecycle,'seeded',lifecyclePool.length);
+    const funnelStructure=metricCountOrFallback(
+      lifecycle,
+      'structure_valid',
+      lifecyclePool.filter(item=>itemBool(item,'breakout_retest_ready')===true || itemBool(item,'first_pullback_ready')===true || itemBool(item,'entry_confirmation_ready')===true).length
+    );
+    const funnelConfirm=metricCountOrFallback(
+      lifecycle,
+      'confirmation_ready',
+      lifecyclePool.filter(item=>itemBool(item,'entry_confirmation_ready')===true).length
+    );
+    const funnelApproved=metricCountOrFallback(
+      lifecycle,
+      'approved',
+      lifecyclePool.filter(item=>eliteEntryState(item).label==='Ready').length
+    );
+    const funnelExecuted=metricCountOrFallback(
+      lifecycle,
+      'executed',
+      metricCountOrFallback(lifecycle,'opened',Number((d.positions||[]).length||0))
+    );
     if(!funnelSeeded && contextOnlyRows.length){
       document.getElementById('lifecycleBadge').textContent=`${contextOnlyRows.length} watch → ${funnelExecuted} exec`;
       renderCommandBoardCards('lifecyclePanel',[

@@ -3,6 +3,7 @@ core/engine.py — TradingCore: single central engine.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import Counter
@@ -36,6 +37,10 @@ TRADE_CLOSE_COOLDOWN_MINUTES = CONFIG_TRADE_CLOSE_COOLDOWN_MINUTES
 TRADE_MIN_CONFIDENCE = MIN_FINAL_CONFIDENCE  # follow config value from .env
 
 logger = get_logger()
+
+COMMAND_CENTER_CONTEXT_LOG_KEY = "COMMAND_CENTER_CONTEXT_LOG"
+COMMAND_CENTER_CONTEXT_UPDATE_CHANNEL = "COMMAND_CENTER_CONTEXT_UPDATE"
+COMMAND_CENTER_CONTEXT_LOG_LIMIT = 199
 
 
 def _get_news_event(category: str) -> dict:
@@ -3189,6 +3194,374 @@ class TradingCore:
             confidence=confidence,
         )
 
+    @staticmethod
+    def _command_center_context_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value if value not in (None, "") else default)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _command_center_context_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value if value not in (None, "") else default)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _command_center_context_direction(*values: Any) -> str:
+        for value in values:
+            token = str(value or "").strip().lower()
+            if token in {"buy", "sell"}:
+                return token.upper()
+        return ""
+
+    def _build_command_center_context_row(
+        self,
+        asset: str,
+        context: Dict[str, Any],
+        reason: str,
+    ) -> Dict[str, Any]:
+        seed_decision = dict(context.get("seed_decision") or {})
+        playbook_decision = dict(context.get("playbook_decision") or {})
+        signal_metadata = dict(context.get("signal_metadata") or {})
+        structure = dict(context.get("market_structure") or {})
+        adaptive_policy_raw = context.get("adaptive_policy")
+        if isinstance(adaptive_policy_raw, dict):
+            adaptive_policy = dict(
+                adaptive_policy_raw.get("raw")
+                if isinstance(adaptive_policy_raw.get("raw"), dict)
+                else adaptive_policy_raw
+            )
+        else:
+            adaptive_policy = {}
+        broker_quality = dict(
+            context.get("broker_quality")
+            if isinstance(context.get("broker_quality"), dict)
+            else signal_metadata.get("broker_quality")
+            if isinstance(signal_metadata.get("broker_quality"), dict)
+            else {}
+        )
+        market_microstructure = dict(
+            context.get("market_microstructure")
+            if isinstance(context.get("market_microstructure"), dict)
+            else signal_metadata.get("market_microstructure")
+            if isinstance(signal_metadata.get("market_microstructure"), dict)
+            else {}
+        )
+        cross_asset_context = dict(
+            context.get("cross_asset_context")
+            if isinstance(context.get("cross_asset_context"), dict)
+            else signal_metadata.get("cross_asset_context")
+            if isinstance(signal_metadata.get("cross_asset_context"), dict)
+            else {}
+        )
+
+        current_interval = str(context.get("timeframe") or "").strip().lower() or "n/a"
+        playbook_interval = (
+            str(
+                playbook_decision.get("preferred_interval")
+                or seed_decision.get("playbook_timeframe")
+                or signal_metadata.get("playbook_timeframe")
+                or ""
+            ).strip().lower()
+            or current_interval
+        )
+        session_label = (
+            str(
+                playbook_decision.get("session_label")
+                or playbook_decision.get("session")
+                or seed_decision.get("session")
+                or signal_metadata.get("session_label")
+                or signal_metadata.get("session")
+                or ""
+            ).strip().lower()
+            or "n/a"
+        )
+        structure_bias = str(
+            structure.get("structure_bias")
+            or seed_decision.get("structure_bias")
+            or signal_metadata.get("structure_bias")
+            or "neutral"
+        ).strip().lower()
+        direction = self._command_center_context_direction(
+            playbook_decision.get("direction"),
+            seed_decision.get("direction"),
+            signal_metadata.get("playbook_direction"),
+            signal_metadata.get("direction"),
+            structure_bias,
+        )
+        alignment_score = round(
+            self._command_center_context_float(
+                structure.get("alignment_score", seed_decision.get("alignment_score")),
+                0.0,
+            ),
+            4,
+        )
+        setup_quality = round(
+            self._command_center_context_float(
+                structure.get("setup_quality", seed_decision.get("setup_quality")),
+                0.0,
+            ),
+            4,
+        )
+        context_confluence = round(
+            self._command_center_context_float(
+                playbook_decision.get("context_confluence", signal_metadata.get("playbook_context_confluence")),
+                0.0,
+            ),
+            4,
+        )
+        cross_alignment = round(
+            self._command_center_context_float(
+                playbook_decision.get("cross_alignment", signal_metadata.get("playbook_cross_alignment")),
+                0.0,
+            ),
+            4,
+        )
+        micro_score = round(
+            self._command_center_context_float(
+                playbook_decision.get("micro_score", signal_metadata.get("playbook_micro_score")),
+                0.0,
+            ),
+            4,
+        )
+        whale_context_support = round(
+            self._command_center_context_float(
+                playbook_decision.get("whale_context_support", signal_metadata.get("playbook_whale_context_support")),
+                0.0,
+            ),
+            4,
+        )
+        support_components = self._command_center_context_int(
+            playbook_decision.get("support_components", signal_metadata.get("playbook_support_components", 0)),
+            0,
+        )
+        conflict_components = self._command_center_context_int(
+            playbook_decision.get("conflict_components", signal_metadata.get("playbook_conflict_components", 0)),
+            0,
+        )
+        candidate_count = self._command_center_context_int(
+            playbook_decision.get("candidate_count", seed_decision.get("candidate_count", 0)),
+            0,
+        )
+        blocked_reason = str(
+            playbook_decision.get("blocked_reason")
+            or seed_decision.get("blocked_reason")
+            or signal_metadata.get("blocked_reason")
+            or ""
+        ).strip()
+        if blocked_reason.lower() == "n/a":
+            blocked_reason = ""
+        rejected_reasons = list(
+            playbook_decision.get("rejected_reasons")
+            or seed_decision.get("rejected_reasons")
+            or signal_metadata.get("rejected_reasons")
+            or []
+        )
+        rejected_details = list(
+            playbook_decision.get("rejected_details")
+            or seed_decision.get("rejected_details")
+            or signal_metadata.get("rejected_details")
+            or []
+        )
+        decision_reason = str(reason or blocked_reason or "no_playbook_seed").strip() or "no_playbook_seed"
+        if decision_reason == "no_playbook_seed" and not blocked_reason and candidate_count <= 0:
+            decision_reason = "waiting_for_playbook_seed"
+            decision_state = "Watching"
+            decision_kind = "watching_seed"
+        else:
+            decision_state = "Blocked"
+            decision_kind = "preseed_blocked"
+        derived_opportunity = max(
+            0.0,
+            min(
+                1.0,
+                (
+                    setup_quality * 0.34
+                    + alignment_score * 0.24
+                    + context_confluence * 0.16
+                    + max(0.0, cross_alignment) * 0.08
+                    + micro_score * 0.10
+                    + whale_context_support * 0.04
+                    + min(3, support_components) * 0.02
+                    - min(3, conflict_components) * 0.03
+                ),
+            ),
+        )
+        confidence = self._command_center_context_float(
+            playbook_decision.get(
+                "confidence",
+                signal_metadata.get(
+                    "confidence",
+                    signal_metadata.get(
+                        "playbook_confidence",
+                        playbook_decision.get("score", derived_opportunity),
+                    ),
+                ),
+            ),
+            0.0,
+        )
+        opportunity_score = self._command_center_context_float(
+            signal_metadata.get(
+                "opportunity_score",
+                playbook_decision.get("score", derived_opportunity),
+            ),
+            0.0,
+        )
+        now_ts = int(time.time() * 1000)
+
+        metadata = {
+            **signal_metadata,
+            "playbook_name": str(
+                signal_metadata.get("playbook_name")
+                or playbook_decision.get("playbook")
+                or seed_decision.get("playbook")
+                or ""
+            ),
+            "playbook_entry_style": str(
+                signal_metadata.get("playbook_entry_style")
+                or playbook_decision.get("entry_style")
+                or playbook_decision.get("playbook_entry_style")
+                or "n/a"
+            ).strip().lower()
+            or "n/a",
+            "entry_style": str(
+                signal_metadata.get("entry_style")
+                or playbook_decision.get("entry_style")
+                or playbook_decision.get("playbook_entry_style")
+                or "n/a"
+            ).strip().lower()
+            or "n/a",
+            "playbook_timeframe": playbook_interval,
+            "session_label": session_label,
+            "session": session_label,
+            "pattern_family": str(structure.get("pattern_family") or signal_metadata.get("pattern_family") or ""),
+            "structure_bias": structure_bias,
+            "alignment_score": alignment_score,
+            "setup_quality": setup_quality,
+            "entry_confirmation_ready": bool(structure.get("entry_confirmation_ready")),
+            "entry_confirmation_count": self._command_center_context_int(structure.get("entry_confirmation_count", 0), 0),
+            "entry_confirmation_bars_required": self._command_center_context_int(
+                structure.get("entry_confirmation_bars_required", 0),
+                0,
+            ),
+            "breakout_retest_ready": bool(structure.get("breakout_retest_ready")),
+            "first_pullback_ready": bool(structure.get("first_pullback_ready")),
+            "failed_opposite_move_confirmed": bool(structure.get("failed_opposite_move_confirmed")),
+            "liquidity_sweep_reclaim": bool(structure.get("liquidity_sweep_reclaim")),
+            "elite_pattern_rank": round(self._command_center_context_float(structure.get("elite_pattern_rank"), 0.0), 4),
+            "cluster_penalty": round(self._command_center_context_float(structure.get("cluster_penalty"), 0.0), 4),
+            "impulse_age_bars": self._command_center_context_int(structure.get("impulse_age_bars", 0), 0),
+            "extension_score": round(self._command_center_context_float(structure.get("extension_score"), 0.0), 4),
+            "candle_quality_score": round(
+                self._command_center_context_float(
+                    structure.get("candle_quality_score", structure.get("trigger_candle_quality", 0.0)),
+                    0.0,
+                ),
+                4,
+            ),
+            "session_quality_score": round(self._command_center_context_float(structure.get("session_quality_score"), 0.0), 4),
+            "target_efficiency_score": round(self._command_center_context_float(structure.get("target_efficiency_score"), 0.0), 4),
+            "blocked_reason": blocked_reason,
+            "rejected_reasons": rejected_reasons,
+            "rejected_details": rejected_details,
+            "execution_kill_reason": decision_reason if decision_state == "Blocked" else "",
+            "exact_kill_reason": decision_reason if decision_state == "Blocked" else "",
+            "opportunity_score": round(opportunity_score, 4),
+            "memory_score": round(self._command_center_context_float(signal_metadata.get("memory_score"), 0.0), 1),
+            "memory_sample_count": self._command_center_context_int(signal_metadata.get("memory_sample_count", 0), 0),
+            "execution_quality_score": round(
+                self._command_center_context_float(signal_metadata.get("execution_quality_score"), 0.0),
+                1,
+            ),
+            "execution_feedback_sample_count": self._command_center_context_int(
+                signal_metadata.get("execution_feedback_sample_count", 0),
+                0,
+            ),
+            "broker_quality": broker_quality,
+            "market_microstructure": market_microstructure,
+            "cross_asset_context": cross_asset_context,
+            "adaptive_policy": adaptive_policy,
+            "context_confluence": context_confluence,
+            "cross_alignment": cross_alignment,
+            "micro_score": micro_score,
+            "whale_context_support": whale_context_support,
+            "support_components": support_components,
+            "conflict_components": conflict_components,
+            "sentiment_score": round(
+                self._command_center_context_float(
+                    context.get("sentiment_score", signal_metadata.get("sentiment_score", 0.0)),
+                    0.0,
+                ),
+                4,
+            ),
+            "market_structure": structure,
+        }
+
+        row = {
+            "type": "command_center_context",
+            "asset": asset,
+            "category": str(context.get("category") or signal_metadata.get("category") or ""),
+            "direction": direction,
+            "signal": direction,
+            "confidence": round(confidence, 4),
+            "decision_kind": decision_kind,
+            "decision_state": decision_state,
+            "decision_reason": decision_reason,
+            "reason": decision_reason,
+            "blocked_reason": blocked_reason,
+            "current_session": session_label,
+            "timeframe": current_interval,
+            "playbook_timeframe": playbook_interval,
+            "candidate_count": candidate_count,
+            "decision": decision_state.upper(),
+            "metadata": metadata,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "ts": now_ts,
+        }
+        row.update(
+            {
+                "opportunity_score": metadata["opportunity_score"],
+                "memory_score": metadata["memory_score"],
+                "execution_quality_score": metadata["execution_quality_score"],
+                "alignment_score": metadata["alignment_score"],
+                "setup_quality": metadata["setup_quality"],
+                "entry_confirmation_ready": metadata["entry_confirmation_ready"],
+                "entry_confirmation_count": metadata["entry_confirmation_count"],
+                "entry_confirmation_bars_required": metadata["entry_confirmation_bars_required"],
+                "breakout_retest_ready": metadata["breakout_retest_ready"],
+                "first_pullback_ready": metadata["first_pullback_ready"],
+                "failed_opposite_move_confirmed": metadata["failed_opposite_move_confirmed"],
+                "elite_pattern_rank": metadata["elite_pattern_rank"],
+                "cluster_penalty": metadata["cluster_penalty"],
+                "extension_score": metadata["extension_score"],
+                "candle_quality_score": metadata["candle_quality_score"],
+                "session_quality_score": metadata["session_quality_score"],
+                "target_efficiency_score": metadata["target_efficiency_score"],
+                "broker_quality": broker_quality,
+                "market_microstructure": market_microstructure,
+                "cross_asset_context": cross_asset_context,
+                "adaptive_policy": adaptive_policy,
+            }
+        )
+        return row
+
+    def _publish_command_center_context(self, asset: str, context: Dict[str, Any], reason: str) -> None:
+        try:
+            from services.redis_pool import get_client as _get_redis_client
+
+            redis_client = _get_redis_client()
+            if redis_client is None:
+                return
+            payload = self._build_command_center_context_row(asset, context, reason)
+            raw = json.dumps(payload, default=str)
+            redis_client.publish(COMMAND_CENTER_CONTEXT_UPDATE_CHANNEL, raw)
+            redis_client.lpush(COMMAND_CENTER_CONTEXT_LOG_KEY, raw)
+            redis_client.ltrim(COMMAND_CENTER_CONTEXT_LOG_KEY, 0, COMMAND_CENTER_CONTEXT_LOG_LIMIT)
+        except Exception as exc:
+            logger.debug(f"[TradingCore] command-center context publish failed: {exc}")
+
     def _log_seed_decision(self, asset: str, context: Dict[str, Any], reason: str) -> None:
         if context.get("_inspection_only"):
             return
@@ -3266,6 +3639,7 @@ class TradingCore:
             f"funding={context.get('funding_bias', 'NEUTRAL')} "
             f"oi={context.get('oi_signal', 'NEUTRAL')}"
         )
+        self._publish_command_center_context(asset, context, reason)
 
     def _log_decision_rejection(self, signal: Signal, context: Dict[str, Any]) -> None:
         reason = signal.kill_reason or signal.metadata.get("agent_rejection_reason", "killed")
