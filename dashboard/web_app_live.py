@@ -262,7 +262,8 @@ _SESSION_TOKENS: Dict[str, float] = {}  # {token: expiry_timestamp}
 _SESSION_TOKEN_LOCK = threading.Lock()
 _RATE_LIMIT_STORE: Dict[str, List[float]] = {}  # {ip: [req_times...]}
 _RATE_LIMIT_LOCK = threading.Lock()
-_RATE_LIMIT_REQUESTS_PER_MINUTE = 60  # Max 60 requests per minute per IP
+_RATE_LIMIT_REQUESTS_PER_MINUTE = 240  # Dashboard pages fan out across many panels.
+_LOCAL_DASHBOARD_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _SESSION_TOKEN_TTL = 3600  # 1 hour default
 
 def _init_api_key():
@@ -331,10 +332,14 @@ def _check_api_auth(fn):
     return wrapper
 
 def _check_rate_limit(fn):
-    """Decorator to enforce rate limiting (60 req/min per IP)."""
+    """Decorator to enforce rate limiting per IP."""
     @wraps(fn)
     def wrapper(*args, **kwargs):
         ip = request.remote_addr
+        host = (request.host or "").rsplit(":", 1)[0].strip("[]")
+        if ip in _LOCAL_DASHBOARD_HOSTS and host in _LOCAL_DASHBOARD_HOSTS:
+            return fn(*args, **kwargs)
+
         now = time.time()
         
         with _RATE_LIMIT_LOCK:
