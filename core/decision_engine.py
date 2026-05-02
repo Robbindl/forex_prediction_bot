@@ -82,6 +82,121 @@ def _trusted_snapshot_true_depth_source(
         return depth_levels >= 2
     return False
 
+
+_REAL_DOM_DEPTH_UPDATE_MODES = {
+    "event_stream",
+    "ladder_stream",
+    "delta_stream",
+    "depth_stream",
+    "snapshot_poll",
+    "stream_snapshot",
+    "snapshot_stream",
+}
+_UNTRUSTED_DOM_DEPTH_UPDATE_MODES = {"", "none", "synthetic", "top_quote", "top_of_book"}
+
+
+def _metadata_age_seconds(metadata: Dict[str, Any], *keys: str) -> Optional[float]:
+    for key in keys:
+        value = metadata.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            age = float(value)
+        except Exception:
+            continue
+        if age >= 0.0:
+            return age
+    return None
+
+
+def _real_dom_book_is_fresh(
+    *,
+    metadata: Dict[str, Any],
+    depth_update_mode: str,
+    depth_provider: str,
+    depth_provider_class: str,
+    microstructure_source: str,
+) -> bool:
+    update_mode = str(depth_update_mode or "").strip().lower()
+    if update_mode in _UNTRUSTED_DOM_DEPTH_UPDATE_MODES:
+        return False
+
+    provider = str(depth_provider or "").strip().lower()
+    provider_class = str(depth_provider_class or "").strip().lower()
+    source = str(microstructure_source or "").strip().lower()
+    is_sidecar = bool(
+        source in {"dukascopy_live_depth", "ctrader_live_depth"}
+        or provider_class == "sidecar"
+        or any(token in provider for token in _SIDECAR_TRUE_DEPTH_PROVIDERS)
+    )
+    max_age = 90.0 if is_sidecar else 30.0
+    age = _metadata_age_seconds(
+        metadata,
+        "dom_depth_event_age_seconds",
+        "depth_live_age_seconds",
+        "dom_depth_stream_age_seconds",
+        "dom_stream_last_message_age_seconds",
+    )
+    if age is not None:
+        return age <= max_age
+
+    if bool(metadata.get("dom_stream_snapshot_ready")):
+        return True
+    if update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}:
+        return True
+    if update_mode in _REAL_DOM_DEPTH_UPDATE_MODES:
+        return (
+            int(metadata.get("dom_snapshot_count", 0) or 0) > 0
+            or int(metadata.get("dom_delta_count", 0) or 0) > 0
+        )
+    return False
+
+
+def _trusted_real_dom_book_available(
+    *,
+    metadata: Dict[str, Any],
+    true_depth_available: bool,
+    preferred_true_depth: bool,
+    microstructure_source: str,
+    depth_provider: str,
+    depth_provider_class: str,
+    depth_update_mode: str,
+    depth_levels: int,
+    snapshot_true_depth_min_levels: int,
+    depth_quality: float,
+    min_quality: float,
+    raw_depth_trust_score: float,
+    min_trust_score: float,
+    depth_quote_alignment_score: float,
+    true_depth_quote_aligned: bool,
+    depth_fragmentation_untrusted: bool = False,
+) -> bool:
+    if not true_depth_available or not preferred_true_depth:
+        return False
+    if not _trusted_snapshot_true_depth_source(
+        microstructure_source=microstructure_source,
+        depth_provider=depth_provider,
+        depth_provider_class=depth_provider_class,
+        depth_levels=depth_levels,
+        snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
+    ):
+        return False
+    return bool(
+        str(depth_update_mode or "").strip().lower() not in _UNTRUSTED_DOM_DEPTH_UPDATE_MODES
+        and depth_quality >= min_quality
+        and raw_depth_trust_score >= min_trust_score
+        and depth_quote_alignment_score >= 0.80
+        and true_depth_quote_aligned
+        and not depth_fragmentation_untrusted
+        and _real_dom_book_is_fresh(
+            metadata=metadata,
+            depth_update_mode=depth_update_mode,
+            depth_provider=depth_provider,
+            depth_provider_class=depth_provider_class,
+            microstructure_source=microstructure_source,
+        )
+    )
+
 STEP_MARKET = 1
 STEP_INTELLIGENCE = 2
 STEP_EXECUTION = 3
@@ -1213,6 +1328,16 @@ class SignalDecisionEngine:
             signal.metadata["dom_event_backed"] = bool(micro.get("dom_event_backed"))
             signal.metadata["dom_ladder_ready"] = bool(micro.get("dom_ladder_ready"))
             signal.metadata["dom_stream_snapshot_ready"] = bool(micro.get("dom_stream_snapshot_ready"))
+            signal.metadata["dom_depth_event_age_seconds"] = (
+                round(float(micro.get("dom_depth_event_age_seconds")), 3)
+                if micro.get("dom_depth_event_age_seconds") not in (None, "")
+                else None
+            )
+            signal.metadata["dom_snapshot_span_seconds"] = (
+                round(float(micro.get("dom_snapshot_span_seconds")), 3)
+                if micro.get("dom_snapshot_span_seconds") not in (None, "")
+                else None
+            )
             signal.metadata["dom_snapshot_count"] = int(micro.get("dom_snapshot_count", 0) or 0)
             signal.metadata["dom_delta_count"] = int(micro.get("dom_delta_count", 0) or 0)
             signal.metadata["dom_trade_count"] = int(micro.get("dom_trade_count", 0) or 0)
@@ -1282,6 +1407,16 @@ class SignalDecisionEngine:
             data["dom_event_backed"] = bool(micro.get("dom_event_backed"))
             data["dom_ladder_ready"] = bool(micro.get("dom_ladder_ready"))
             data["dom_stream_snapshot_ready"] = bool(micro.get("dom_stream_snapshot_ready"))
+            data["dom_depth_event_age_seconds"] = (
+                round(float(micro.get("dom_depth_event_age_seconds")), 3)
+                if micro.get("dom_depth_event_age_seconds") not in (None, "")
+                else None
+            )
+            data["dom_snapshot_span_seconds"] = (
+                round(float(micro.get("dom_snapshot_span_seconds")), 3)
+                if micro.get("dom_snapshot_span_seconds") not in (None, "")
+                else None
+            )
             data["dom_source_fidelity"] = str(micro.get("dom_source_fidelity") or "")
             data["dom_liquidity_shift_proxy"] = round(dom_liquidity_shift_proxy, 4)
             data["dom_sweep_pressure_proxy"] = round(dom_sweep_pressure_proxy, 4)
@@ -1958,17 +2093,44 @@ class SignalDecisionEngine:
             not external_depth_rejected
             and depth_quote_agreement_state not in {"divergent", "severe_divergence"}
         )
+        trusted_real_dom_book_available = _trusted_real_dom_book_available(
+            metadata=signal.metadata,
+            true_depth_available=true_depth_available,
+            preferred_true_depth=preferred_true_depth,
+            microstructure_source=microstructure_source,
+            depth_provider=depth_provider,
+            depth_provider_class=depth_provider_class,
+            depth_update_mode=depth_update_mode,
+            depth_levels=depth_levels,
+            snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
+            depth_quality=depth_quality,
+            min_quality=preferred_true_depth_min_quality,
+            raw_depth_trust_score=depth_provider_trust_score,
+            min_trust_score=preferred_true_depth_min_trust_score,
+            depth_quote_alignment_score=depth_quote_alignment_score,
+            true_depth_quote_aligned=true_depth_quote_aligned,
+        )
         true_depth_informative = bool(
             true_depth_available
             and preferred_true_depth
             and depth_levels >= 2
             and depth_quality >= preferred_true_depth_min_quality
-            and effective_depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and (
+                effective_depth_provider_trust_score >= preferred_true_depth_min_trust_score
+                or trusted_real_dom_book_available
+            )
             and depth_quote_alignment_score >= 0.80
             and true_depth_quote_aligned
-            and (not dom_ladder_ready or dom_stream_trust_metrics["sovereignty_supported"])
+            and (
+                not dom_ladder_ready
+                or dom_stream_trust_metrics["sovereignty_supported"]
+                or trusted_real_dom_book_available
+            )
         )
-        snapshot_true_depth_informative = bool(true_depth_informative and not dom_ladder_ready)
+        snapshot_true_depth_informative = bool(
+            true_depth_informative
+            and (not dom_ladder_ready or trusted_real_dom_book_available)
+        )
         trusted_snapshot_true_depth_available = bool(
             snapshot_true_depth_informative
             and _trusted_snapshot_true_depth_source(
@@ -1980,29 +2142,20 @@ class SignalDecisionEngine:
             )
             and depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
             and depth_quality >= preferred_true_depth_min_quality
-            and effective_depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and (
+                effective_depth_provider_trust_score >= preferred_true_depth_min_trust_score
+                or trusted_real_dom_book_available
+            )
             and depth_quote_alignment_score >= 0.80
         )
         trusted_real_dom_fallback_available = bool(
-            true_depth_available
-            and preferred_true_depth
-            and _trusted_snapshot_true_depth_source(
-                microstructure_source=microstructure_source,
-                depth_provider=depth_provider,
-                depth_provider_class=depth_provider_class,
-                depth_levels=depth_levels,
-                snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
-            )
-            and depth_update_mode not in {"none", "synthetic", "top_quote", "top_of_book"}
-            and depth_quality >= preferred_true_depth_min_quality
-            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
-            and depth_quote_alignment_score >= 0.80
-            and true_depth_quote_aligned
+            trusted_real_dom_book_available
             and (
                 not dom_ladder_ready
                 or bool(dom_stream_trust_metrics["sovereignty_supported"])
                 or dom_stream_snapshot_ready
                 or depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
+                or bool(dom_stream_trust_metrics["health_known"])
             )
         )
         strong_true_depth_support = bool(
@@ -2033,6 +2186,7 @@ class SignalDecisionEngine:
             "true_depth_informative": true_depth_informative,
             "snapshot_true_depth_informative": snapshot_true_depth_informative,
             "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "trusted_real_dom_book_available": trusted_real_dom_book_available,
             "trusted_real_dom_fallback_available": trusted_real_dom_fallback_available,
             "depth_provider_trust_score_effective": round(effective_depth_provider_trust_score, 4),
             "depth_provider_trust_decay_applied": round(
@@ -3752,11 +3906,33 @@ class SignalDecisionEngine:
                 or float(signal.metadata.get("dom_primary_vs_consensus_gap", 0.0) or 0.0) >= 0.24
             )
         )
+        trusted_real_dom_book_available = _trusted_real_dom_book_available(
+            metadata=signal.metadata,
+            true_depth_available=true_depth_available,
+            preferred_true_depth=preferred_true_depth,
+            microstructure_source=microstructure_source,
+            depth_provider=depth_provider,
+            depth_provider_class=depth_provider_class,
+            depth_update_mode=depth_update_mode,
+            depth_levels=depth_levels,
+            snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
+            depth_quality=depth_quality,
+            min_quality=preferred_true_depth_min_quality,
+            raw_depth_trust_score=depth_provider_trust_score,
+            min_trust_score=preferred_true_depth_min_trust_score,
+            depth_quote_alignment_score=depth_quote_alignment_score,
+            true_depth_quote_aligned=true_depth_quote_aligned,
+            depth_fragmentation_untrusted=depth_fragmentation_untrusted,
+        )
         meets_true_depth_trust_floor = bool(
             true_depth_available
             and (
                 minimum_usable_true_depth_trust_score <= 0.0
                 or depth_provider_trust_score_effective >= minimum_usable_true_depth_trust_score
+                or (
+                    trusted_real_dom_book_available
+                    and depth_provider_trust_score >= minimum_usable_true_depth_trust_score
+                )
             )
         )
         meets_true_depth_quality_floor = bool(
@@ -3775,7 +3951,11 @@ class SignalDecisionEngine:
             and true_depth_quote_aligned
             and depth_levels >= 2
             and true_depth_signal_strength >= 0.06
-            and (not dom_ladder_ready or dom_stream_sovereignty_supported)
+            and (
+                not dom_ladder_ready
+                or dom_stream_sovereignty_supported
+                or trusted_real_dom_book_available
+            )
         )
         usable_true_depth_available = bool(
             true_depth_available
@@ -3784,10 +3964,17 @@ class SignalDecisionEngine:
         event_backed_true_depth_available = bool(
             usable_true_depth_available
             and dom_ladder_ready
+            and dom_stream_sovereignty_supported
         )
         snapshot_true_depth_available = bool(
             usable_true_depth_available
-            and not dom_ladder_ready
+            and (
+                not dom_ladder_ready
+                or (
+                    trusted_real_dom_book_available
+                    and not dom_stream_sovereignty_supported
+                )
+            )
         )
         trusted_snapshot_true_depth_available = bool(
             snapshot_true_depth_available
@@ -3800,31 +3987,21 @@ class SignalDecisionEngine:
             )
             and depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
             and depth_quality >= preferred_true_depth_min_quality
-            and depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
+            and (
+                depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
+                or trusted_real_dom_book_available
+            )
             and depth_quote_alignment_score >= 0.80
             and not depth_fragmentation_untrusted
         )
         trusted_real_dom_fallback_available = bool(
-            true_depth_available
-            and preferred_true_depth
-            and _trusted_snapshot_true_depth_source(
-                microstructure_source=microstructure_source,
-                depth_provider=depth_provider,
-                depth_provider_class=depth_provider_class,
-                depth_levels=depth_levels,
-                snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
-            )
-            and depth_update_mode not in {"none", "synthetic", "top_quote", "top_of_book"}
-            and depth_quality >= preferred_true_depth_min_quality
-            and depth_provider_trust_score >= preferred_true_depth_min_trust_score
-            and depth_quote_alignment_score >= 0.80
-            and true_depth_quote_aligned
-            and not depth_fragmentation_untrusted
+            trusted_real_dom_book_available
             and (
                 not dom_ladder_ready
                 or dom_stream_sovereignty_supported
                 or dom_stream_snapshot_ready
                 or depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
+                or dom_stream_health_known
             )
         )
         thin_true_depth_untrusted = bool(
@@ -5036,6 +5213,8 @@ class SignalDecisionEngine:
             "dom_event_backed": dom_event_backed,
             "dom_ladder_ready": dom_ladder_ready,
             "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
+            "dom_depth_event_age_seconds": signal.metadata.get("dom_depth_event_age_seconds"),
+            "dom_snapshot_span_seconds": signal.metadata.get("dom_snapshot_span_seconds"),
             "dom_source_fidelity": dom_source_fidelity,
             "dom_liquidity_shift_proxy": round(dom_liquidity_shift_proxy, 4),
             "dom_sweep_pressure_proxy": round(dom_sweep_pressure_proxy, 4),
@@ -5058,6 +5237,7 @@ class SignalDecisionEngine:
             "event_backed_true_depth_available": event_backed_true_depth_available,
             "snapshot_true_depth_available": snapshot_true_depth_available,
             "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "trusted_real_dom_book_available": trusted_real_dom_book_available,
             "trusted_real_dom_fallback_available": trusted_real_dom_fallback_available,
             "trusted_real_dom_fallback_support": trusted_real_dom_fallback_support,
             "snapshot_true_depth_min_levels": int(snapshot_true_depth_min_levels),
@@ -5245,6 +5425,7 @@ class SignalDecisionEngine:
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
             "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "trusted_real_dom_book_available": trusted_real_dom_book_available,
             "trusted_real_dom_fallback_available": trusted_real_dom_fallback_available,
             "trusted_real_dom_fallback_support": trusted_real_dom_fallback_support,
             "guarded_force_entry_mode": guarded_force_entry_mode,
