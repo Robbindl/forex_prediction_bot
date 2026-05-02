@@ -191,7 +191,10 @@ async function fetchAiPredictionsOverview(days){
   const now = Date.now();
   if(_aiPredictionsCache && _aiPredictionsCache.days === days && now - _aiPredictionsCache.fetched < 10000) return _aiPredictionsCache.data;
   let d = await window.dashboardFetchJson('/api/page-overview?page=playbook_intel&days=' + days, {timeoutMs:12000});
-  if(!d.success) d = await window.dashboardFetchJson('/api/playbook-intel/overview?days=' + days, {timeoutMs:12000});
+  if(!d.success || d.degraded || d.live_quality?.degraded || d.playbook_performance?.degraded){
+    const direct = await window.dashboardFetchJson('/api/playbook-intel/overview?days=' + days, {timeoutMs:12000});
+    if(direct.success) d = {...d, ...direct, page:'playbook_intel', partial:Boolean(d.degraded)};
+  }
   if(!d.success) throw new Error('Playbook overview unavailable');
   _aiPredictionsCache = {days, fetched: now, data: d};
   return d;

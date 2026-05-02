@@ -292,6 +292,15 @@ async function fetchWhaleOverview(){
   }
   const d = await window.dashboardFetchJson('/api/page-overview?page=whale_intelligence', {timeoutMs: 12000});
   if(d.success){
+    if(d.degraded || d.whale?.degraded || (!Array.isArray(d.recent) && !Array.isArray(d.whale?.recent))){
+      const [status, whale] = await Promise.all([
+        window.dashboardFetchJson('/api/status', {timeoutMs: 6000}).catch(() => null),
+        window.dashboardFetchJson('/api/whale/summary', {timeoutMs: 10000}).catch(() => null),
+      ]);
+      if(status?.success) d.status = status;
+      if(whale?.success) Object.assign(d, whale, {whale});
+      d.partial = Boolean(d.degraded);
+    }
     if(!d.degraded) _whaleOverviewCache = {fetched: now, data: d};
     return d;
   }

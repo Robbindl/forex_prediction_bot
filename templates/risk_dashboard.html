@@ -416,8 +416,20 @@ async function fetchRiskDashboardOverview() {
   if (_riskDashboardPending) return _riskDashboardPending;
   _riskDashboardPending = (async function(){
     try{
-      const d = await window.dashboardFetchJson('/api/page-overview?page=risk_dashboard', {timeoutMs: 12000, init:{cache:'no-store'}});
-      if (d.success) {if(!d.degraded)_riskDashboardCache = {fetched: Date.now(), data: d};return d;}
+      const d = await window.dashboardFetchJson('/api/page-overview?page=risk_dashboard', {timeoutMs: 12000});
+      if (d.success) {
+        if(d.degraded || d.risk?.degraded || !d.risk || Object.keys(d.risk || {}).length <= 1){
+          const [status, risk] = await Promise.all([
+            window.dashboardFetchJson('/api/status', {timeoutMs: 6000}).catch(() => null),
+            window.dashboardFetchJson('/api/risk/portfolio', {timeoutMs: 10000}).catch(() => null),
+          ]);
+          if(status?.success) d.status = status;
+          if(risk?.success) d.risk = risk;
+          d.partial = Boolean(d.degraded);
+        }
+        if(!d.degraded)_riskDashboardCache = {fetched: Date.now(), data: d};
+        return d;
+      }
       return {success:false};
     } finally {
       _riskDashboardPending = null;

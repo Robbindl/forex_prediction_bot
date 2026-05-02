@@ -444,6 +444,15 @@ async function fetchSystemMonitorOverview(){
     try{
       const d = await window.dashboardFetchJson('/api/page-overview?page=system_monitor', {timeoutMs: 12000});
       if(d.success){
+        if(d.degraded || d.system_monitor?.degraded || d.health?.degraded){
+          const [health, monitor] = await Promise.all([
+            window.dashboardFetchJson('/api/system/health', {timeoutMs: 10000}).catch(() => null),
+            window.dashboardFetchJson('/api/system-monitor/overview', {timeoutMs: 10000}).catch(() => null),
+          ]);
+          if(health?.success) d.health = health;
+          if(monitor?.success) Object.assign(d, monitor, {system_monitor: monitor});
+          d.partial = Boolean(d.degraded);
+        }
         if(!d.degraded) _systemMonitorCache = {fetched: Date.now(), data: d};
         return d;
       }

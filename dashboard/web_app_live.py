@@ -165,6 +165,9 @@ _PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
 _PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
 _PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS = 4.0
 _PAGE_OVERVIEW_CACHE_VERSION = "v4"
+_CLOSED_TRADES_CACHE_TTL = 10
+_TRADE_HISTORY_CACHE_TTL = 15
+_PERFORMANCE_GUARD_CACHE_TTL = 30
 _SENTIMENT_BY_ASSET_CACHE_KEY = "sentiment_by_asset:v2"
 
 
@@ -654,8 +657,9 @@ def _get_cached_dashboard_payload(
                 return _response_to_dict(fallback)
 
     payload = builder()
-    _cache_set(cache_key, payload, ttl=ttl)
-    if last_good_key:
+    degraded = _is_degraded_dashboard_payload(payload)
+    _cache_set(cache_key, payload, ttl=min(ttl, _PAGE_OVERVIEW_DEGRADED_CACHE_TTL) if degraded else ttl)
+    if last_good_key and not degraded:
         _cache_set(last_good_key, payload, ttl=last_good_ttl)
     return payload
 
@@ -2705,6 +2709,11 @@ def _build_trade_tape(positions: Any, closed_trades: Any, *, limit: int = 12) ->
 
 def _load_authoritative_closed_trades(limit: int = 50) -> List[Dict[str, Any]]:
     target = max(1, int(limit or 50))
+    cache_key = f"closed_trades:v2:{target}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return [dict(row) for row in list(cached or []) if isinstance(row, dict)]
+
     rows: List[Dict[str, Any]] = []
     try:
         from services.db_pool import get_db
@@ -2738,6 +2747,7 @@ def _load_authoritative_closed_trades(limit: int = 50) -> List[Dict[str, Any]]:
                 except Exception:
                     pass
         normalized.append(item)
+    _cache_set(cache_key, copy.deepcopy(normalized), ttl=_CLOSED_TRADES_CACHE_TTL)
     return normalized
 
 
@@ -6704,6 +6714,10 @@ def api_risk_portfolio():
 @_check_rate_limit
 def api_strategy_performance():
     try:
+        cache_key = "strategy_performance:v2"
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
         core = _core()
         if not core:
             return jsonify({"success": False, "error": "Engine not ready"})
@@ -6771,7 +6785,9 @@ def api_strategy_performance():
             "premature_stop_rate": round(summary_premature_stops / max(summary_timeline_count, 1), 4) if summary_timeline_count else 0.0,
             "trade_count": summary_timeline_count,
         }
-        return jsonify({"success": True, "strategies": enriched, "timeline": timeline, "summary": summary})
+        payload = {"success": True, "strategies": enriched, "timeline": timeline, "summary": summary}
+        _cache_set(cache_key, payload, ttl=15)
+        return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/strategy/performance", e.status_code)
     except Exception as e:
@@ -7226,18 +7242,21 @@ def _enrich_trade_history_row(trade: Dict[str, Any]) -> Dict[str, Any]:
 def api_trade_history():
     """Return last N closed trades with full details for the history panel."""
     try:
-        limit = int(request.args.get("limit", 50))
-        raw_limit = max(limit * 3, limit + 10)
-        from core.state import rollup_closed_trade_history
-        trades = rollup_closed_trade_history(_load_authoritative_closed_trades(limit=raw_limit), limit=limit)
-        response = jsonify({
-            "success": True,
-            "trades": [_enrich_trade_history_row(t) for t in trades],
-            "count": len(trades),
-        })
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
+        limit = max(1, min(500, int(request.args.get("limit", 50) or 50)))
+        cache_key = f"trade_history:v2:{limit}"
+        payload = _cache_get(cache_key)
+        if payload is None:
+            raw_limit = max(limit * 3, limit + 10)
+            from core.state import rollup_closed_trade_history
+            trades = rollup_closed_trade_history(_load_authoritative_closed_trades(limit=raw_limit), limit=limit)
+            payload = {
+                "success": True,
+                "trades": [_enrich_trade_history_row(t) for t in trades],
+                "count": len(trades),
+            }
+            _cache_set(cache_key, payload, ttl=_TRADE_HISTORY_CACHE_TTL)
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = f"private, max-age={_TRADE_HISTORY_CACHE_TTL}, stale-while-revalidate=30"
         return response
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -7252,6 +7271,7 @@ def api_clear_trade_history():
         from services.db_pool import get_db
         db = get_db()
         db.clear_trade_history(clear_daily_stats=True)
+        _invalidate_cache_prefixes("closed_trades:", "trade_history:", "strategy_performance:")
     except Exception as e:
         logger.error(f"[dashboard] Failed clearing DB trade history: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -7283,7 +7303,7 @@ def api_close_position():
         if not core:
             return jsonify({"success": False, "error": "Engine unavailable"}), 503
         result = core.close_position_manually(trade_id)
-        _invalidate_cache_prefixes("risk_portfolio", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
         return jsonify({"success": bool(result), "trade_id": trade_id,
                         "message": "Position closed"})
     except Exception as e:
@@ -7321,7 +7341,7 @@ def api_close_bulk():
                 closed.append(tid)
             except Exception:
                 skipped.append(tid)
-        _invalidate_cache_prefixes("risk_portfolio", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
         return jsonify({
             "success": True,
             "closed":  len(closed),
@@ -7350,7 +7370,7 @@ def api_reprice_weak_positions():
             limit=limit,
             score_threshold=score_threshold,
         )
-        _invalidate_cache_prefixes("risk_portfolio", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
         return jsonify({
             "success": True,
             "repriced": len(updates),
@@ -7379,7 +7399,7 @@ def api_reduce_weak_positions():
             limit=limit,
             score_threshold=score_threshold,
         )
-        _invalidate_cache_prefixes("risk_portfolio", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
         return jsonify({
             "success": True,
             "reduced": sum(1 for item in actions if item.get("success")),
@@ -7649,6 +7669,11 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
 
 
 def _collect_performance_guard_snapshot() -> Dict[str, Any]:
+    cache_key = "performance_guard_snapshot:v1"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return _response_to_dict(cached)
+
     try:
         from services.execution_feedback_service import get_service as get_execution_feedback_service
         from services.db_pool import get_db
@@ -7715,13 +7740,15 @@ def _collect_performance_guard_snapshot() -> Dict[str, Any]:
             for item in rows[:top]
         ]
 
-    return {
+    payload = {
         "portfolio_7d": portfolio_7d,
         "portfolio_14d": portfolio_14d,
         "worst_assets": _top_losers(assets),
         "worst_playbooks": _top_losers(playbooks),
         "worst_sessions": _top_losers(sessions),
     }
+    _cache_set(cache_key, payload, ttl=_PERFORMANCE_GUARD_CACHE_TTL)
+    return payload
 
 
 def _collect_system_feed_connections() -> Dict[str, Any]:

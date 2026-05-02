@@ -382,8 +382,23 @@ async function fetchOrderFlowOverview(){
   if(_orderFlowPending) return _orderFlowPending;
   _orderFlowPending = (async function(){
     try{
-      const d = await window.dashboardFetchJson('/api/page-overview?page=order_flow', {timeoutMs: 12000, init:{cache:'no-store'}});
+      const d = await window.dashboardFetchJson('/api/page-overview?page=order_flow', {timeoutMs: 12000});
       if(d.success){
+        if(d.degraded || d.imbalance?.degraded || d.walls?.degraded || d.hunts?.degraded || d.depth?.degraded){
+          const [status, imbalance, walls, hunts, depth] = await Promise.all([
+            window.dashboardFetchJson('/api/status', {timeoutMs: 6000}).catch(() => null),
+            window.dashboardFetchJson('/api/phase3/imbalance', {timeoutMs: 8000}).catch(() => null),
+            window.dashboardFetchJson('/api/phase3/walls', {timeoutMs: 8000}).catch(() => null),
+            window.dashboardFetchJson('/api/phase3/stop-hunts', {timeoutMs: 8000}).catch(() => null),
+            window.dashboardFetchJson('/api/phase3/live-depth', {timeoutMs: 8000}).catch(() => null),
+          ]);
+          if(status?.success) d.status = status;
+          if(imbalance?.success) d.imbalance = imbalance;
+          if(walls?.success) d.walls = walls;
+          if(hunts?.success) d.hunts = hunts;
+          if(depth?.success) d.depth = depth;
+          d.partial = Boolean(d.degraded);
+        }
         if(!d.degraded) _orderFlowCache = {fetched: Date.now(), data: d};
         return d;
       }

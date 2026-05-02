@@ -439,8 +439,22 @@ async function fetchMarketIntelligenceOverview(){
   if(_marketIntelligencePending) return _marketIntelligencePending;
   _marketIntelligencePending = (async function(){
     try{
-      const d = await window.dashboardFetchJson('/api/page-overview?page=market_intelligence', {timeoutMs:10000, init:{cache:'no-store'}});
-      if(d.success){ if(!d.degraded)_marketIntelligenceCache = {fetched:Date.now(),data:d}; return d; }
+      const d = await window.dashboardFetchJson('/api/page-overview?page=market_intelligence', {timeoutMs:10000});
+      if(d.success){
+        if(d.degraded || d.status?.degraded || d.assets?.degraded || d.events?.degraded || !Array.isArray(d.assets?.assets) || !d.assets.assets.length){
+          const [status, assets, events] = await Promise.all([
+            window.dashboardFetchJson('/api/status', {timeoutMs:6000}).catch(() => null),
+            window.dashboardFetchJson('/api/chart/assets', {timeoutMs:8000}).catch(() => null),
+            window.dashboardFetchJson('/api/market/events', {timeoutMs:8000}).catch(() => null),
+          ]);
+          if(status?.success) d.status = status;
+          if(assets?.success) d.assets = assets;
+          if(events?.success) d.events = events;
+          d.partial = Boolean(d.degraded);
+        }
+        if(!d.degraded)_marketIntelligenceCache = {fetched:Date.now(),data:d};
+        return d;
+      }
       return {success:false};
     } finally {
       _marketIntelligencePending = null;

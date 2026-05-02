@@ -1525,7 +1525,7 @@ window.addEventListener('beforeunload', stopLiveBookLoop);
 async function loadHistory(){
   try{
     const filter=document.getElementById('historyFilter')?.value||'all';
-    const d=await fetchProtectedJson(`/api/trade-history?limit=50&no_cache=1&_=${Date.now()}`, {timeoutMs: 12000});
+    const d=await fetchProtectedJson('/api/trade-history?limit=50', {timeoutMs: 12000});
     if(!d.success){document.getElementById('historyBody').innerHTML='<tr><td colspan="11" class="empty">Trade history unavailable</td></tr>';return;}
     let trades=d.trades||[];
     trades=trades.filter(t=>!t.is_partial_close);

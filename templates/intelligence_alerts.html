@@ -396,7 +396,11 @@ async function fetchIntelligenceOverview(){
   if(_intelOverviewCache && now - _intelOverviewCache.fetched < 10000){
     return _intelOverviewCache.data;
   }
-  const d = await window.dashboardFetchJson('/api/page-overview?page=intelligence_alerts', {timeoutMs: 12000});
+  let d = await window.dashboardFetchJson('/api/page-overview?page=intelligence_alerts', {timeoutMs: 12000});
+  if(!d.success || d.degraded || (!Array.isArray(d.alerts) && !Array.isArray(d.journals))){
+    const direct = await window.dashboardFetchJson('/api/intelligence-alerts/overview', {timeoutMs: 12000});
+    if(direct.success) d = {...d, ...direct, page:'intelligence_alerts', partial:Boolean(d.degraded)};
+  }
   if(!d.success) return {alerts:[], journals: []};
   if(!d.degraded) _intelOverviewCache = {fetched: now, data: d};
   return d;

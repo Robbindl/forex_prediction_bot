@@ -368,7 +368,8 @@ async function fetchSentimentOverview(){
     return _sentimentOverviewCache.data;
   }
   let d = await window.dashboardFetchJson('/api/page-overview?page=sentiment_intelligence', {timeoutMs: 12000});
-  if(!d.success){
+  const needsDirectFetch = !d.success || d.degraded || d.sentiment?.degraded || d.by_asset?.degraded || !Array.isArray(d.by_asset?.assets) || !d.by_asset.assets.length;
+  if(needsDirectFetch){
     const [sentiment, byAsset, events] = await Promise.all([
       window.dashboardFetchJson('/api/sentiment/dashboard', {timeoutMs: 12000}),
       window.dashboardFetchJson('/api/sentiment/by-asset', {timeoutMs: 13000}),
@@ -376,11 +377,12 @@ async function fetchSentimentOverview(){
     ]);
     if(sentiment.success || byAsset.success || events.success){
       d = {
+        ...(d && d.success ? d : {}),
         success: true,
         sentiment: sentiment.success ? sentiment : {success:false},
         by_asset: byAsset.success ? byAsset : {success:false, assets:[]},
         events: events.success ? events : {success:false, events:[], risk_outlook:{}},
-        partial: true,
+        partial: Boolean(d?.degraded || !sentiment.success || !byAsset.success || !events.success),
       };
     }
   }
