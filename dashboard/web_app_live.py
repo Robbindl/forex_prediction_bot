@@ -162,6 +162,9 @@ _COMMAND_CENTER_CACHE_TTL = 15
 _COMMAND_CENTER_LAST_GOOD_TTL = 6 * 60 * 60
 _COMMAND_CENTER_DEGRADED_CACHE_TTL = 5
 _COMMAND_CENTER_BUILD_TIMEOUT_SECONDS = 7.5
+_COMMAND_CENTER_PAYLOAD_CACHE_KEY = "command_center_payload:v2"
+_COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY = "command_center_payload:v2:last_good"
+_COMMAND_CENTER_PAYLOAD_REFRESH_KEY = "command_center_payload:v2"
 _PAGE_OVERVIEW_CACHE_TTL = 15
 _PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
 _PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
@@ -1363,11 +1366,11 @@ def _prewarm_sentiment() -> None:
 def _prewarm_command_center_payload() -> None:
     try:
         scheduled = _trigger_dashboard_payload_refresh(
-            "command_center_payload",
+            _COMMAND_CENTER_PAYLOAD_REFRESH_KEY,
             builder=_build_command_center_payload_with_budget,
-            cache_key="command_center_payload",
+            cache_key=_COMMAND_CENTER_PAYLOAD_CACHE_KEY,
             ttl=_COMMAND_CENTER_CACHE_TTL,
-            last_good_key="command_center_payload:last_good",
+            last_good_key=_COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY,
             last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
         )
         if scheduled:
@@ -3915,8 +3918,8 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
 
 
 def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
-    cache_key = "command_center_payload"
-    last_good_key = "command_center_payload:last_good"
+    cache_key = _COMMAND_CENTER_PAYLOAD_CACHE_KEY
+    last_good_key = _COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY
     if not force_refresh:
         cached = _cache_get(cache_key)
         if cached is not None:
@@ -3928,7 +3931,7 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
         fallback = _cache_get(last_good_key)
         if fallback is not None:
             _trigger_dashboard_payload_refresh(
-                "command_center_payload",
+                _COMMAND_CENTER_PAYLOAD_REFRESH_KEY,
                 builder=_build_command_center_payload_with_budget,
                 cache_key=cache_key,
                 ttl=_COMMAND_CENTER_CACHE_TTL,
@@ -3939,7 +3942,7 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
 
     fallback = _cache_get(last_good_key)
     _trigger_dashboard_payload_refresh(
-        "command_center_payload",
+        _COMMAND_CENTER_PAYLOAD_REFRESH_KEY,
         builder=_build_command_center_payload_with_budget,
         cache_key=cache_key,
         ttl=_COMMAND_CENTER_CACHE_TTL,
@@ -3955,8 +3958,8 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
 
 
 def _get_cached_command_center_payload_blocking(*, force_refresh: bool = False) -> Dict[str, Any]:
-    cache_key = "command_center_payload"
-    last_good_key = "command_center_payload:last_good"
+    cache_key = _COMMAND_CENTER_PAYLOAD_CACHE_KEY
+    last_good_key = _COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY
     try:
         return _normalize_command_center_payload_contract(_get_cached_dashboard_payload(
             cache_key,
@@ -3966,7 +3969,7 @@ def _get_cached_command_center_payload_blocking(*, force_refresh: bool = False) 
             last_good_key=last_good_key,
             last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
             prefer_stale=True,
-            refresh_key="command_center_payload",
+            refresh_key=_COMMAND_CENTER_PAYLOAD_REFRESH_KEY,
         ))
     except Exception as exc:
         logger.warning(f"[dashboard] command-center payload build failed: {exc}")
@@ -8650,10 +8653,10 @@ def _page_overview_status_shell() -> Dict[str, Any]:
 
 
 def _page_overview_command_center_shell(reason: str = "page_overview_cache_miss") -> Dict[str, Any]:
-    cached = _cache_get("command_center_payload")
+    cached = _cache_get(_COMMAND_CENTER_PAYLOAD_CACHE_KEY)
     used_last_good = False
     if cached is None:
-        cached = _cache_get("command_center_payload:last_good")
+        cached = _cache_get(_COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY)
         used_last_good = cached is not None
     if cached:
         payload = _mark_stale_dashboard_payload(cached, "command_center_stale") if used_last_good else _response_to_dict(cached)
