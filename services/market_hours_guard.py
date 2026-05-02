@@ -501,7 +501,8 @@ def build_market_status(
 
     resolved_category = _resolved_category(asset, category)
     now = _utc_now(now_utc)
-    provider_gate = _provider_close_buffer_gate(provider_status, now)
+    crypto_24x7 = resolved_category == "crypto" or is_crypto(asset)
+    provider_gate = None if crypto_24x7 else _provider_close_buffer_gate(provider_status, now)
     if provider_gate is not None:
         gate_open, gate_reason, buffer_active, buffer_reason = provider_gate
     else:

@@ -68,6 +68,14 @@ def is_binance_primary_crypto_asset(asset: str, category: str = "") -> bool:
     resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
     if resolved_category != "crypto" or canonical in _DERIV_PRIMARY_CRYPTO_ASSETS:
         return False
+    return is_binance_supported_crypto_asset(canonical, resolved_category)
+
+
+def is_binance_supported_crypto_asset(asset: str, category: str = "") -> bool:
+    canonical = registry.canonical(str(asset or "").strip())
+    resolved_category = str(category or get_profile(canonical).category or "").strip().lower()
+    if resolved_category != "crypto":
+        return False
     try:
         from services.binance_market_bridge import binance_market_bridge
 
@@ -112,6 +120,8 @@ def preferred_quote_provider_order(asset: str, category: str = "") -> tuple[str,
         if is_okx_supported_commodity_asset(canonical, resolved_category):
             return ("ig", "deriv", "okx")
         return ("ig", "deriv")
+    if is_binance_supported_crypto_asset(canonical, resolved_category):
+        return ("binance", "deriv")
     if is_binance_primary_crypto_asset(canonical, resolved_category):
         return ("binance",)
     if is_deriv_primary_crypto_asset(canonical, resolved_category):
@@ -206,6 +216,17 @@ def split_pending_ig_fallback_assets(asset_map: Dict[str, str]) -> tuple[Dict[st
 
 def get_market_status(asset: str, category: str = ""):
     resolved_category = str(category or get_profile(asset).category or "").strip().lower()
+
+    if is_binance_supported_crypto_asset(asset, resolved_category):
+        return build_market_status(
+            asset,
+            resolved_category,
+            provider_status={
+                "market_open": True,
+                "reason": "crypto exchange open 24x7",
+                "source": "binance",
+            },
+        )
 
     if is_ig_primary_asset(asset, resolved_category):
         try:
