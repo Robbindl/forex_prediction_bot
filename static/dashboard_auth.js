@@ -436,9 +436,36 @@
   function dashboardAccountSummary(payload) {
     const root = dashboardObject(payload);
     const commandCenter = dashboardNormalizeCommandCenter(root);
+    const tradeHistory = dashboardObject(root.trade_history);
+    const tradeHistorySummary = dashboardObject(root.trade_history_summary || tradeHistory.summary);
+    if (!Number.isFinite(Number(tradeHistorySummary.closed_trades)) && Number.isFinite(Number(tradeHistory.count))) {
+      tradeHistorySummary.closed_trades = Number(tradeHistory.count);
+    }
+    if (!Number.isFinite(Number(tradeHistorySummary.total_trades)) && Number.isFinite(Number(tradeHistory.count))) {
+      tradeHistorySummary.total_trades = Number(tradeHistory.count);
+    }
+    if (Array.isArray(tradeHistory.trades) && tradeHistory.trades.length && !Number.isFinite(Number(tradeHistorySummary.total_pnl))) {
+      const total = tradeHistory.trades.reduce((sum, row) => sum + Number((row && row.pnl) || 0), 0);
+      const initial = Number(tradeHistorySummary.initial_balance ?? root.initial_balance ?? commandCenter.initial_balance ?? 10000);
+      tradeHistorySummary.total_pnl = Math.round(total * 100) / 100;
+      tradeHistorySummary.realized_total_pnl = Math.round(total * 100) / 100;
+      if (!Number.isFinite(Number(tradeHistorySummary.balance))) {
+        tradeHistorySummary.balance = Math.round((initial + total) * 100) / 100;
+      }
+      if (!Number.isFinite(Number(tradeHistorySummary.realized_balance))) {
+        tradeHistorySummary.realized_balance = tradeHistorySummary.balance;
+      }
+      if (!Number.isFinite(Number(tradeHistorySummary.balance_delta))) {
+        tradeHistorySummary.balance_delta = Math.round(total * 100) / 100;
+      }
+      tradeHistorySummary.closed_trades = tradeHistorySummary.closed_trades ?? tradeHistory.trades.length;
+      tradeHistorySummary.total_trades = tradeHistorySummary.total_trades ?? tradeHistory.trades.length;
+    }
     const candidates = [
+      tradeHistorySummary,
       root.live_summary,
       commandCenter.live_summary,
+      commandCenter.trade_history_summary,
       dashboardObject(root.status).live_summary,
       dashboardObject(root.risk).live_summary,
       root,

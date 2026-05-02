@@ -367,7 +367,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   </div>
 </div>
 
-<script src="/static/dashboard_auth.js?v=20260502a"></script>
+<script src="/static/dashboard_auth.js?v=20260502c"></script>
 <script>
 // Clock
 setInterval(() => {
@@ -376,6 +376,26 @@ setInterval(() => {
 
 let _orderFlowCache = null;
 let _orderFlowPending = null;
+let _orderFlowTradeHistoryCache = null;
+let _orderFlowTradeHistoryPending = null;
+async function fetchOrderFlowTradeHistory(){
+  const now = Date.now();
+  if(_orderFlowTradeHistoryCache && now - _orderFlowTradeHistoryCache.fetched < 60000) return _orderFlowTradeHistoryCache.data;
+  if(_orderFlowTradeHistoryPending) return _orderFlowTradeHistoryPending;
+  _orderFlowTradeHistoryPending = (async function(){
+    try{
+      const d = await window.dashboardFetchJson('/api/trade-history?limit=50', {timeoutMs: 10000});
+      if(d.success){
+        _orderFlowTradeHistoryCache = {fetched: Date.now(), data: d};
+        return d;
+      }
+      return null;
+    }finally{
+      _orderFlowTradeHistoryPending = null;
+    }
+  })();
+  return _orderFlowTradeHistoryPending;
+}
 async function fetchOrderFlowOverview(){
   const now = Date.now();
   if(_orderFlowCache && now - _orderFlowCache.fetched < 10000) return _orderFlowCache.data;
@@ -398,6 +418,11 @@ async function fetchOrderFlowOverview(){
           if(hunts?.success) d.hunts = hunts;
           if(depth?.success) d.depth = depth;
           d.partial = Boolean(d.degraded);
+        }
+        const tradeHistory = await fetchOrderFlowTradeHistory().catch(() => null);
+        if(tradeHistory?.success){
+          d.trade_history = tradeHistory;
+          d.trade_history_summary = tradeHistory.summary || {};
         }
         if(!d.degraded) _orderFlowCache = {fetched: Date.now(), data: d};
         return d;

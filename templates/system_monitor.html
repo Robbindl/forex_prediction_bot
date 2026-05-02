@@ -331,7 +331,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .fresh-age{font-size:11px;color:var(--tx3)}
 .fresh-threshold{font-size:10px;color:var(--tx3);margin-top:4px}
 </style>
-<script src="/static/dashboard_auth.js?v=20260502a"></script>
+<script src="/static/dashboard_auth.js?v=20260502c"></script>
 <script>
 let startTime=Date.now();
 let cpuHist=[],ramHist=[],cpuSpark=null,ramSpark=null;
@@ -370,7 +370,7 @@ function numericValue(value){
   }
   return null;
 }
-function fmtSeconds(value, fallback='No samples yet'){
+function fmtSeconds(value, fallback='Age not published'){
   const num = numericValue(value);
   if(num === null) return fallback;
   return `${num.toFixed ? num.toFixed(1) : num}s old`;
@@ -460,6 +460,26 @@ function deriveDecisionFunnel(signals, tradeLifecycle, openPositions){
 
 let _systemMonitorCache = null;
 let _systemMonitorPending = null;
+let _systemTradeHistoryCache = null;
+let _systemTradeHistoryPending = null;
+async function fetchSystemTradeHistory(){
+  const now = Date.now();
+  if(_systemTradeHistoryCache && now - _systemTradeHistoryCache.fetched < 60000) return _systemTradeHistoryCache.data;
+  if(_systemTradeHistoryPending) return _systemTradeHistoryPending;
+  _systemTradeHistoryPending = (async function(){
+    try{
+      const d = await window.dashboardFetchJson('/api/trade-history?limit=50', {timeoutMs: 10000});
+      if(d.success){
+        _systemTradeHistoryCache = {fetched: Date.now(), data: d};
+        return d;
+      }
+      return null;
+    }finally{
+      _systemTradeHistoryPending = null;
+    }
+  })();
+  return _systemTradeHistoryPending;
+}
 async function fetchSystemMonitorOverview(){
   const now = Date.now();
   if(_systemMonitorCache && now - _systemMonitorCache.fetched < 10000){
@@ -478,6 +498,11 @@ async function fetchSystemMonitorOverview(){
           if(health?.success) d.health = health;
           if(monitor?.success) Object.assign(d, monitor, {system_monitor: monitor});
           d.partial = Boolean(d.degraded);
+        }
+        const tradeHistory = await fetchSystemTradeHistory().catch(() => null);
+        if(tradeHistory?.success){
+          d.trade_history = tradeHistory;
+          d.trade_history_summary = tradeHistory.summary || {};
         }
         if(!d.degraded) _systemMonitorCache = {fetched: Date.now(), data: d};
         return d;
@@ -703,10 +728,30 @@ async function load(){
       telegram_alerts: 'Telegram Alerts',
     };
     const freshnessKeys = Object.keys(freshnessNames);
-    const seenFreshness = freshnessKeys.filter(k => freshness[k] && freshness[k].status !== 'never_seen');
+    const hasFreshnessSample = (item) => {
+      if(!item) return false;
+      if(Number.isFinite(Number(item.age_secs))) return true;
+      if(Number.isFinite(Number(item.display_age))) return true;
+      const displayAge = String(item.display_age || '').trim();
+      return !!displayAge && !/no samples|age not published/i.test(displayAge);
+    };
+    const isFreshnessPublished = (key) => {
+      const item = freshness[key];
+      if(!item) return false;
+      if(key === 'telegram_alerts') return true;
+      if(item.fresh) return true;
+      const status = String(item.status || '').toLowerCase();
+      if(status === 'never_seen') return false;
+      if(/waiting|idle|not_seen/.test(status) && !hasFreshnessSample(item)) return false;
+      return hasFreshnessSample(item) || !/waiting|idle|never_seen/.test(status);
+    };
+    const visibleFreshnessKeys = freshnessKeys.filter(isFreshnessPublished);
+    const idleFreshnessKeys = freshnessKeys.filter(k => freshness[k] && !isFreshnessPublished(k));
+    const seenFreshness = visibleFreshnessKeys.filter(k => freshness[k]);
     const freshNow = seenFreshness.filter(k => freshness[k] && freshness[k].fresh);
+    const staleFreshnessKeys = visibleFreshnessKeys.filter(k => freshness[k] && !freshness[k].fresh);
     const integrityBadge = document.getElementById('integrityBadge');
-    const integrityState = issues.length || Number(d.recent_error_count || 0) || (seenFreshness.length && freshNow.length !== seenFreshness.length)
+    const integrityState = issues.length || Number(d.recent_error_count || 0) || staleFreshnessKeys.length
       ? 'Guarded'
       : d.processes?.['TradingCore']
         ? 'Stable'
@@ -751,7 +796,7 @@ async function load(){
 
     const metrics = overview.metrics || {};
     const errors = overview.errors || {};
-    const staleCount = Number(d.stale_source_count || 0);
+    const staleCount = staleFreshnessKeys.length;
     const recentErrors = Number(d.recent_error_count || 0);
     const decisionLatency = Number(metrics.decision?.p95_ms || metrics.decision?.avg_ms || 0);
     const telegramLatency = Number(metrics.telegram_send?.p95_ms || metrics.telegram_send?.avg_ms || 0);
@@ -840,16 +885,19 @@ async function load(){
     const staleMapEl = document.getElementById('staleMapPanel');
     const seenCount = seenFreshness.length;
     const freshCount = freshNow.length;
-    const staleKeys = freshnessKeys.filter(k => freshness[k] && freshness[k].status !== 'never_seen' && !freshness[k].fresh);
+    const staleKeys = staleFreshnessKeys;
     document.getElementById('freshBadge').textContent = seenCount ? `${freshCount}/${seenCount} fresh` : 'warming';
     if(!seenCount){
-      freshEl.innerHTML = '<div class="empty">Waiting for live telemetry from the data stack</div>';
+      freshEl.innerHTML = '<div class="empty">No active freshness telemetry has been published yet. Optional feeds will stay hidden until they produce samples.</div>';
     }else{
-      freshEl.innerHTML = `<div class="fresh-grid">${freshnessKeys.map((key)=>{
+      const idleNote = idleFreshnessKeys.length
+        ? `<div class="empty" style="padding:14px;text-align:left">Not publishing separate samples right now: ${idleFreshnessKeys.map(k => freshnessNames[k]).join(', ')}. These are not counted as stale until the bot actually sees them.</div>`
+        : '';
+      freshEl.innerHTML = `<div class="fresh-grid">${visibleFreshnessKeys.map((key)=>{
         const item = freshness[key] || {};
         const ok = !!item.fresh;
         const rawStatus = String(item.status || '').trim();
-        const status = rawStatus === 'never_seen' ? 'waiting' : ok ? (rawStatus && rawStatus !== 'fresh' ? rawStatus : 'fresh') : (rawStatus || 'stale');
+        const status = ok ? (rawStatus && rawStatus !== 'fresh' ? rawStatus : 'fresh') : (rawStatus || 'stale');
         const age = typeof item.display_age === 'string' ? item.display_age : fmtSeconds(item.display_age ?? item.age_secs);
         const threshold = typeof item.display_threshold === 'string' ? item.display_threshold : fmtThreshold(item.display_threshold ?? item.threshold);
         return `<div class="fresh-card">
@@ -861,7 +909,7 @@ async function load(){
           <div class="fresh-age">${age}</div>
           <div class="fresh-threshold">${threshold}</div>
         </div>`;
-      }).join('')}</div>`;
+      }).join('')}</div>${idleNote}`;
     }
     document.getElementById('staleMapBadge').textContent = staleKeys.length ? `${staleKeys.length} stale` : seenCount ? 'Clear' : 'Waiting';
     if(!seenCount){
@@ -976,7 +1024,28 @@ async function loadLatency(){
     const labels={'decision':'Decision Engine','prediction':'Playbook Scan','backtest':'Replay Audit',
                   'sentiment_fetch':'Sentiment','telegram_send':'Telegram'};
     const items=order.filter(k=>m[k]&&m[k].count>0);
-    if(!items.length){document.getElementById('latencyPanel').innerHTML='<div class="empty">No data yet — signals needed</div>';return;}
+    if(!items.length){
+      const commandCenter = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(d) : (d.command_center || {});
+      const rows = window.dashboardCollectDecisionRows ? window.dashboardCollectDecisionRows(commandCenter, {includeContext:true}) : [];
+      const lifecycle = commandCenter.trade_lifecycle || {};
+      const seedCount = Number(lifecycle.seeded || rows.length || 0);
+      const closedCount = Number(lifecycle.closed || commandCenter.closed_trades || d.closed_trades || 0);
+      document.getElementById('latBadge').textContent = seedCount ? 'idle metrics' : 'quiet';
+      document.getElementById('latencyPanel').innerHTML = `
+        <div class="train-grid">
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Decision Timing</div><div class="train-state ${seedCount ? 'am' : 'mu'}">${seedCount ? 'unmeasured' : 'quiet'}</div></div>
+            <div class="train-meta">${seedCount} live decision rows · ${closedCount} closed trades in the window</div>
+            <div class="train-issue">No latency samples have been emitted yet, so this panel is not treating missing metrics as a failure.</div>
+          </div>
+          <div class="train-card">
+            <div class="train-top"><div class="train-name">Next Sample</div><div class="train-state bl">on signal</div></div>
+            <div class="train-meta">Decision, prediction, sentiment, and Telegram timings appear after instrumented calls publish metrics.</div>
+            <div class="train-issue">The runtime can be healthy while this metric is quiet between actionable signals.</div>
+          </div>
+        </div>`;
+      return;
+    }
     const maxVal=Math.max(...items.map(k=>m[k].p95_ms||0),1);
     const barColor=ms=>ms<500?'var(--gr)':ms<2000?'var(--am)':'var(--rd)';
     document.getElementById('latBadge').textContent=items.length+' tracked';

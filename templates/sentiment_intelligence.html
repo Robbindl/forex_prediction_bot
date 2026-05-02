@@ -268,7 +268,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
     </div>
   </div>
 </div>
-<script src="/static/dashboard_auth.js?v=20260502a"></script>
+<script src="/static/dashboard_auth.js?v=20260502c"></script>
 <script>
 function sColor(s){return s>0.2?'var(--gr)':s<-0.2?'var(--rd)':'var(--am)'}
 function sClass(s){return s>0.1?'ns-pos':s<-0.1?'ns-neg':'ns-neu'}
@@ -630,7 +630,7 @@ async function load(){
 
     // News
     const nEl=document.getElementById('newsPanel');
-    if(!arts.length){nEl.innerHTML='<div class="empty">No articles</div>';}
+    if(!arts.length){nEl.innerHTML='<div class="empty">Headline/news sources are quiet or disabled; macro sentiment is being driven by market-derived inputs instead.</div>';}
     else{nEl.innerHTML=`<div class="panel-note">Individual headlines are scored separately from the macro composite and can stay bearish while the composite turns contrarian-bullish.</div>`+arts.slice(0,8).map(a=>`
       <div class="news-item">
         <div class="news-title">${a.title||a.headline||''}</div>
@@ -740,7 +740,7 @@ async function load(){
       <div class="event-risk-title">Risk Outlook</div>
       <div class="event-risk-body" style="color:${riskColor}">${risk.summary || (riskReduce ? 'Reduce trade frequency around high-impact windows.' : highImpactCount ? 'Expect elevated macro sensitivity in the next sessions.' : 'No special event-risk flags right now.')}</div>
     </div>`;
-    if(!evs.length){eEl.innerHTML = riskPanel + '<div class="empty">No events</div>';}
+    if(!evs.length){eEl.innerHTML = riskPanel + '<div class="empty">No dated macro events are queued from the calendar feed. Cross-market risk still comes from live price, flow, and decision diagnostics.</div>';}
     else{eEl.innerHTML = riskPanel + evs.slice(0,8).map(e=>`
       <div style="padding:7px 0;border-bottom:1px solid rgba(30,38,53,.5)">
         <div style="font-size:13px;margin-bottom:2px">${e.title||e.event||''}</div>
@@ -753,7 +753,17 @@ async function load(){
         <div class="translation-value ${String(e.title || e.event || '').length > 18 ? 'compact' : ''}" style="color:${String(e.impact || '').toUpperCase()==='HIGH'?'var(--rd)':'var(--am)'}">${e.title || e.event || 'Macro event'}</div>
         <div class="translation-note">${e.impact ? `${e.impact} impact` : 'Event queued'}${e.currency ? ` · ${e.currency}` : ''}</div>
       </div>
-    `).join('') : '<div class="empty">No dated event timeline is active right now.</div>';
+    `).join('') : `
+      <div class="translation-card">
+        <div class="translation-label">Calendar feed</div>
+        <div class="translation-value compact" style="color:var(--tx2)">Quiet / disabled</div>
+        <div class="translation-note">No scheduled event row is active, so this panel is not counted as a live blocker.</div>
+      </div>
+      <div class="translation-card">
+        <div class="translation-label">Risk source</div>
+        <div class="translation-value compact" style="color:${riskColor}">${riskText}</div>
+        <div class="translation-note">${risk.summary || 'Use cross-market pressure and flow diagnostics for current event-style risk.'}</div>
+      </div>`;
   }catch(e){
     renderSentimentUnavailable('Sentiment overview timed out');
   }
