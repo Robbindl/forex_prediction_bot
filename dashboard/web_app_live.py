@@ -365,6 +365,9 @@ _CORE: Any = None
 def inject_core(core) -> None:
     global _CORE
     _CORE = core
+    if core is None:
+        logger.info("[dashboard] Standalone dashboard mode — TradingCore not injected")
+        return
     try:
         if getattr(core, "state", None) is not None:
             setattr(_args, "state", core.state)
@@ -3571,7 +3574,7 @@ def api_logout():
 @_check_rate_limit
 def api_status():
     """Get current bot and trading status."""
-    cached = _cache_get("status")
+    cached = _cache_get("status:v2")
     if cached is not None:
         return jsonify(cached)
     try:
@@ -3595,17 +3598,20 @@ def api_status():
                 "signal_diagnostics": diagnostic_summary,
             }
         else:
+            perf, _daily, positions, _health, _closed_trades = _load_dashboard_db_runtime_snapshot()
             payload = {
                 "success": True,
                 "bot_ready": False,
                 "engine_running": False,
                 "architecture": "TradingCore",
-                "balance": _args.balance,
+                "balance": float(perf.get("balance", _args.balance) or _args.balance),
+                "open_positions": int(perf.get("open_positions", len(positions)) or 0),
+                "dashboard_standalone": True,
                 "assets_cached": len(_sig_store),
                 "provider_routing": _provider_routing_summary(),
                 "signal_diagnostics": diagnostic_summary,
             }
-        _cache_set("status", payload, ttl=5)
+        _cache_set("status:v2", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return handle_api_error(e, "/api/status", 500)
@@ -3643,13 +3649,23 @@ def api_system_status():
                     "timestamp": datetime.now().isoformat(),
                 })
         
-        # No core initialized - return defaults
-        payload = {"success": True, "balance": _args.balance, "pnl": 0,
-            "total_pnl": 0, "open_positions": 0, "closed_positions": 0,
-            "daily_trades": 0, "win_rate": 0, "engine_ready": False,
+        # Standalone dashboard process: read the live book from PostgreSQL
+        # instead of showing cosmetic defaults.
+        perf, daily, positions, _health, _closed_trades = _load_dashboard_db_runtime_snapshot()
+        payload = {
+            "success": True,
+            "balance": round(float(perf.get("balance", _args.balance) or _args.balance), 2),
+            "pnl": round(float(daily.get("daily_pnl", 0.0) or 0.0), 2),
+            "total_pnl": round(float(perf.get("total_pnl", 0.0) or 0.0), 2),
+            "open_positions": int(perf.get("open_positions", len(positions)) or 0),
+            "closed_positions": int(perf.get("total_trades", 0) or 0),
+            "daily_trades": int(daily.get("daily_trades", 0) or 0),
+            "win_rate": _wr(perf.get("win_rate", 0)),
+            "engine_ready": False,
+            "dashboard_standalone": True,
             "timestamp": datetime.now().isoformat(),
         }
-        _cache_set("status", payload, ttl=5)
+        _cache_set("system_status:v2", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return handle_api_error(e, "/api/system-status", 500)
@@ -3657,6 +3673,66 @@ def api_system_status():
 # ══════════════════════════════════════════════════════════════════════════════
 # API — COMMAND CENTER
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+    cache_key = "db_runtime_snapshot:v1"
+    cached = _cache_get(cache_key)
+    if isinstance(cached, dict):
+        return (
+            dict(cached.get("perf") or {}),
+            dict(cached.get("daily") or {}),
+            [dict(row) for row in list(cached.get("positions") or []) if isinstance(row, dict)],
+            dict(cached.get("health") or {}),
+            [dict(row) for row in list(cached.get("closed_trades") or []) if isinstance(row, dict)],
+        )
+
+    perf: Dict[str, Any] = {}
+    daily: Dict[str, Any] = {}
+    positions: List[Dict[str, Any]] = []
+    health: Dict[str, Any] = {"dashboard_standalone": True, "engine_ready": False, "is_running": False}
+    closed_trades: List[Dict[str, Any]] = []
+    try:
+        from services.db_pool import get_db
+
+        db = get_db()
+        positions = list(db.load_open_positions() or [])
+        closed_trades = _load_authoritative_closed_trades(limit=240)
+        summary = dict(db.get_performance_summary(days=30) or {})
+        daily_rows = list(db.get_daily_stats(days=1) or [])
+        latest_daily = dict(daily_rows[0] or {}) if daily_rows else {}
+        balance = db.get_current_balance()
+        if balance is None:
+            balance = _args.balance
+        total_trades = int(summary.get("total_trades", len(closed_trades)) or 0)
+        total_pnl = float(summary.get("total_pnl", sum(float(row.get("pnl", 0.0) or 0.0) for row in closed_trades)) or 0.0)
+        win_rate = float(summary.get("win_rate", 0.0) or 0.0)
+        daily = {
+            "daily_pnl": float(latest_daily.get("pnl", 0.0) or 0.0),
+            "daily_trades": int(latest_daily.get("trade_count", 0) or 0),
+        }
+        perf = {
+            "balance": float(balance or 0.0),
+            "total_pnl": total_pnl,
+            "open_positions": len(positions),
+            "total_trades": total_trades,
+            "win_rate": win_rate,
+        }
+    except Exception as exc:
+        logger.debug(f"[dashboard] DB runtime snapshot fallback failed: {exc}")
+
+    _cache_set(
+        cache_key,
+        {
+            "perf": perf,
+            "daily": daily,
+            "positions": positions,
+            "health": health,
+            "closed_trades": closed_trades,
+        },
+        ttl=3,
+    )
+    return perf, daily, positions, health, closed_trades
+
 
 def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
     perf: Dict[str, Any] = {}
@@ -3670,6 +3746,8 @@ def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, 
         positions = core.get_positions()
         health = core.health_report()
         closed_trades = _load_authoritative_closed_trades(limit=240)
+    else:
+        perf, daily, positions, health, closed_trades = _load_dashboard_db_runtime_snapshot()
     return perf, daily, positions, health, closed_trades
 
 
@@ -9169,5 +9247,19 @@ def start_dashboard(core, host: str = "127.0.0.1", port: int = 5000, http2: bool
 
 # Standalone mode (python -m dashboard.web_app_live)
 if __name__ == "__main__":
+    standalone_parser = argparse.ArgumentParser(description="Robbindl dashboard server")
+    standalone_parser.add_argument("--host", type=str, default=os.getenv("DASHBOARD_HOST", "127.0.0.1"))
+    standalone_parser.add_argument("--port", type=int, default=int(os.getenv("DASHBOARD_PORT", "5000")))
+    standalone_parser.add_argument("--http2", action="store_true", default=os.getenv("DASHBOARD_HTTP2", "").lower() in {"1", "true", "yes", "on"})
+    standalone_parser.add_argument("--ssl-cert", type=str, default=os.getenv("DASHBOARD_SSL_CERT") or None)
+    standalone_parser.add_argument("--ssl-key", type=str, default=os.getenv("DASHBOARD_SSL_KEY") or None)
+    standalone_args, _ = standalone_parser.parse_known_args()
     logger.info("[dashboard] Standalone mode — engine not connected")
-    app.run(debug=False, host="127.0.0.1", port=5000, threaded=True)
+    start_dashboard(
+        None,
+        host=standalone_args.host,
+        port=standalone_args.port,
+        http2=standalone_args.http2,
+        ssl_cert=standalone_args.ssl_cert,
+        ssl_key=standalone_args.ssl_key,
+    )

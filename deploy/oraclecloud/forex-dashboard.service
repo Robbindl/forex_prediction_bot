@@ -1,0 +1,26 @@
+[Unit]
+Description=Forex Prediction Dashboard
+After=network-online.target forex-bot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Oracle Cloud/Kamatera images commonly use the `ubuntu` account.
+# On other hosts, change User/Group to the same service account used by forex-bot.
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/forex_prediction_bot
+EnvironmentFile=-/opt/forex_prediction_bot/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/forex_prediction_bot/venv_tf/bin/python -m dashboard.web_app_live --host 127.0.0.1 --port 5000
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStartSec=90
+TimeoutStopSec=20
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

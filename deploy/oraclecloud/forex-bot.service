@@ -12,7 +12,7 @@ Group=ubuntu
 WorkingDirectory=/opt/forex_prediction_bot
 EnvironmentFile=-/opt/forex_prediction_bot/.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/forex_prediction_bot/venv_tf/bin/python bot.py --host 127.0.0.1 --port 5000
+ExecStart=/opt/forex_prediction_bot/venv_tf/bin/python bot.py --no-dashboard
 Restart=always
 RestartSec=5
 KillSignal=SIGINT
