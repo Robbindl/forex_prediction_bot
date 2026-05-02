@@ -3615,7 +3615,7 @@ def api_logout():
 @_check_rate_limit
 def api_status():
     """Get current bot and trading status."""
-    cached = _cache_get("status:v2")
+    cached = _cache_get("status:v3")
     if cached is not None:
         return jsonify(cached)
     try:
@@ -3640,19 +3640,23 @@ def api_status():
             }
         else:
             perf, _daily, positions, _health, _closed_trades = _load_dashboard_db_runtime_snapshot()
+            external_bot_processes = _external_trading_bot_process_count()
+            external_bot_running = external_bot_processes > 0
             payload = {
                 "success": True,
-                "bot_ready": False,
-                "engine_running": False,
+                "bot_ready": external_bot_running,
+                "engine_running": external_bot_running,
                 "architecture": "TradingCore",
                 "balance": float(perf.get("balance", _args.balance) or _args.balance),
                 "open_positions": int(perf.get("open_positions", len(positions)) or 0),
                 "dashboard_standalone": True,
+                "process_model": "split" if external_bot_running else "standalone",
+                "external_bot_processes": external_bot_processes,
                 "assets_cached": len(_sig_store),
                 "provider_routing": _provider_routing_summary(),
                 "signal_diagnostics": diagnostic_summary,
             }
-        _cache_set("status:v2", payload, ttl=5)
+        _cache_set("status:v3", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return handle_api_error(e, "/api/status", 500)
@@ -3692,7 +3696,7 @@ def api_system_status():
         
         # Standalone dashboard process: read the live book from PostgreSQL
         # instead of showing cosmetic defaults.
-        perf, daily, positions, _health, _closed_trades = _load_dashboard_db_runtime_snapshot()
+        perf, daily, positions, health, _closed_trades = _load_dashboard_db_runtime_snapshot()
         payload = {
             "success": True,
             "balance": round(float(perf.get("balance", _args.balance) or _args.balance), 2),
@@ -3702,11 +3706,14 @@ def api_system_status():
             "closed_positions": int(perf.get("total_trades", 0) or 0),
             "daily_trades": int(daily.get("daily_trades", 0) or 0),
             "win_rate": _wr(perf.get("win_rate", 0)),
-            "engine_ready": False,
+            "engine_ready": bool(health.get("engine_ready") or health.get("is_running")),
+            "engine_running": bool(health.get("is_running") or health.get("engine_ready")),
             "dashboard_standalone": True,
+            "process_model": "split" if health.get("is_running") else "standalone",
+            "external_bot_processes": int(health.get("external_bot_processes", 0) or 0),
             "timestamp": datetime.now().isoformat(),
         }
-        _cache_set("system_status:v2", payload, ttl=5)
+        _cache_set("system_status:v3", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return handle_api_error(e, "/api/system-status", 500)
@@ -3716,7 +3723,7 @@ def api_system_status():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
-    cache_key = "db_runtime_snapshot:v1"
+    cache_key = "db_runtime_snapshot:v2"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         return (
@@ -3730,22 +3737,39 @@ def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any
     perf: Dict[str, Any] = {}
     daily: Dict[str, Any] = {}
     positions: List[Dict[str, Any]] = []
-    health: Dict[str, Any] = {"dashboard_standalone": True, "engine_ready": False, "is_running": False}
+    external_bot_processes = _external_trading_bot_process_count()
+    external_bot_running = external_bot_processes > 0
+    health: Dict[str, Any] = {
+        "dashboard_standalone": True,
+        "engine_ready": external_bot_running,
+        "is_running": external_bot_running,
+        "external_bot_processes": external_bot_processes,
+        "strategy_mode": "split-dashboard" if external_bot_running else "standalone-dashboard",
+    }
     closed_trades: List[Dict[str, Any]] = []
     try:
         from services.db_pool import get_db
 
         db = get_db()
         positions = list(db.load_open_positions() or [])
-        closed_trades = _load_authoritative_closed_trades(limit=240)
+        closed_trades = _load_authoritative_closed_trades(limit=1000)
         summary = dict(db.get_performance_summary(days=30) or {})
         daily_rows = list(db.get_daily_stats(days=1) or [])
         latest_daily = dict(daily_rows[0] or {}) if daily_rows else {}
-        balance = db.get_current_balance()
-        if balance is None:
-            balance = _args.balance
+        initial_balance = float(getattr(_args, "balance", 10000.0) or 10000.0)
         total_trades = int(summary.get("total_trades", len(closed_trades)) or 0)
-        total_pnl = float(summary.get("total_pnl", sum(float(row.get("pnl", 0.0) or 0.0) for row in closed_trades)) or 0.0)
+        trade_history_pnl = sum(float(row.get("pnl", 0.0) or 0.0) for row in closed_trades)
+        total_pnl = float(summary.get("total_pnl", trade_history_pnl) or 0.0)
+        if abs(total_pnl) < 0.0001 and abs(trade_history_pnl) >= 0.0001:
+            total_pnl = trade_history_pnl
+        stored_balance = db.get_current_balance()
+        expected_trade_balance = initial_balance + total_pnl
+        if stored_balance is None:
+            balance = expected_trade_balance
+        else:
+            balance = float(stored_balance or 0.0)
+            if abs(total_pnl) >= 0.01 and abs(balance - initial_balance) < 0.01:
+                balance = expected_trade_balance
         win_rate = float(summary.get("win_rate", 0.0) or 0.0)
         daily = {
             "daily_pnl": float(latest_daily.get("pnl", 0.0) or 0.0),
@@ -3753,6 +3777,7 @@ def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any
         }
         perf = {
             "balance": float(balance or 0.0),
+            "initial_balance": initial_balance,
             "total_pnl": total_pnl,
             "open_positions": len(positions),
             "total_trades": total_trades,
@@ -3782,10 +3807,24 @@ def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, 
     health: Dict[str, Any] = {}
     closed_trades: List[Dict[str, Any]] = []
     if core:
-        perf = core.get_performance()
-        daily = core.get_daily_stats()
-        positions = core.get_positions()
-        health = core.health_report()
+        try:
+            perf = core.get_performance() if hasattr(core, "get_performance") else {}
+        except Exception:
+            perf = {}
+        try:
+            daily = core.get_daily_stats() if hasattr(core, "get_daily_stats") else {}
+        except Exception:
+            daily = {}
+        try:
+            positions = core.get_positions() if hasattr(core, "get_positions") else []
+        except Exception:
+            positions = []
+        try:
+            health = core.health_report() if hasattr(core, "health_report") else {}
+        except Exception:
+            health = {}
+        health.setdefault("is_running", bool(getattr(core, "is_running", False)))
+        health.setdefault("engine_ready", bool(getattr(core, "is_ready", False)))
         closed_trades = _load_authoritative_closed_trades(limit=240)
     else:
         perf, daily, positions, health, closed_trades = _load_dashboard_db_runtime_snapshot()
@@ -3826,19 +3865,21 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
     whale_alerts = int(cached_slow.get("whale_alerts_24h", cached_slow.get("alert_count_24h", 0)) or 0)
     recent = list(cached_slow.get("recent") or [])
     core = _core()
+    perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core)
+    live_summary = _build_command_center_live_summary(perf, daily, positions)
     payload = {
         "success": True,
         "degraded": True,
         "degraded_reason": reason,
-        "balance": float(getattr(_args, "balance", 0.0) or 0.0),
-        "total_pnl": 0.0,
-        "daily_pnl": 0.0,
-        "daily_trades": 0,
-        "win_rate": 0.0,
-        "open_positions": 0,
-        "total_trades": 0,
-        "engine_running": bool(getattr(core, "is_running", False)) if core else False,
-        "engine_ready": bool(getattr(core, "is_ready", False)) if core else False,
+        "balance": live_summary.get("balance", float(getattr(_args, "balance", 0.0) or 0.0)),
+        "total_pnl": live_summary.get("total_pnl", 0.0),
+        "daily_pnl": live_summary.get("daily_pnl", 0.0),
+        "daily_trades": int(daily.get("daily_trades", 0) or 0),
+        "win_rate": live_summary.get("win_rate", 0.0),
+        "open_positions": live_summary.get("open_positions", 0),
+        "total_trades": live_summary.get("total_trades", len(closed_trades or [])),
+        "engine_running": bool(health.get("is_running", getattr(core, "is_running", False) if core else False)),
+        "engine_ready": bool(health.get("engine_ready", getattr(core, "is_ready", False) if core else False)),
         "sentiment_score": sent_score,
         "whale_alerts_24h": whale_alerts,
         "alert_count_24h": whale_alerts,
@@ -3854,18 +3895,8 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
         "watchlist_ladder": {},
         "trade_tape": [],
         "trade_lifecycle": {},
-        "positions": [],
-        "live_summary": {
-            "balance": float(getattr(_args, "balance", 0.0) or 0.0),
-            "equity": float(getattr(_args, "balance", 0.0) or 0.0),
-            "daily_pnl": 0.0,
-            "open_pnl": 0.0,
-            "open_positions": 0,
-            "buy_count": 0,
-            "sell_count": 0,
-            "book_bias": "flat",
-            "open_state": "flat",
-        },
+        "positions": positions,
+        "live_summary": live_summary,
         "pnl_curve": [],
         "pnl_curve_stats": {
             "interval_minutes": 30,
@@ -8402,9 +8433,46 @@ def _source_health_with_market_quiet(
     return health_map, stale
 
 
+def _source_health_with_split_ownership(
+    source_health: Any,
+    stale_sources: Any,
+    *,
+    external_bot_running: bool,
+    telegram_ok: bool,
+) -> Tuple[Dict[str, Any], List[str]]:
+    health_map = {str(k): dict(v or {}) for k, v in dict(source_health or {}).items()}
+    stale = [str(item) for item in list(stale_sources or []) if str(item)]
+
+    def mark_bot_owned(source: str, label: str = "Owned by forex-bot") -> None:
+        row = dict(health_map.get(source) or {})
+        row.update(
+            {
+                "status": "bot-owned",
+                "fresh": True,
+                "suppressed": True,
+                "bot_owned": True,
+                "age_secs": row.get("age_secs"),
+                "display_age": label,
+                "display_threshold": "Split service",
+            }
+        )
+        health_map[source] = row
+
+    if external_bot_running:
+        for source in ("order_book", "liquidations", "funding_rate", "open_interest"):
+            row = dict(health_map.get(source) or {})
+            if not row or str(row.get("status") or "") not in {"fresh", "market_quiet"}:
+                mark_bot_owned(source)
+        if telegram_ok:
+            mark_bot_owned("telegram_alerts", "Command bot owned by forex-bot")
+
+    stale = [item for item in stale if not bool((health_map.get(item) or {}).get("bot_owned"))]
+    return health_map, stale
+
+
 @app.route("/api/system/health")
 def api_system_health():
-    cached = _cache_get("system_health:v3")
+    cached = _cache_get("system_health:v4")
     if cached is not None:
         return jsonify(cached)
     try:
@@ -8431,6 +8499,12 @@ def api_system_health():
             health.get("stale_sources") or [],
             snapshot.get("runtime_services") or {},
         )
+        source_health, stale_sources = _source_health_with_split_ownership(
+            source_health,
+            stale_sources,
+            external_bot_running=bool(snapshot.get("external_bot_processes")),
+            telegram_ok=bool((snapshot.get("processes") or {}).get("Telegram")),
+        )
 
         payload = {
             "success":          True,
@@ -8450,7 +8524,7 @@ def api_system_health():
             "balance":          health.get("balance", _args.balance),
             "timestamp":        datetime.now().isoformat(),
         }
-        _cache_set("system_health:v3", payload, ttl=5)
+        _cache_set("system_health:v4", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -8505,7 +8579,7 @@ def api_monitoring_errors():
 
 @app.route("/api/system-monitor/overview")
 def api_system_monitor_overview():
-    cache_key = "system_monitor_overview:v3"
+    cache_key = "system_monitor_overview:v4"
     cached = _cache_get(cache_key)
     if cached:
         return jsonify(cached)
@@ -8557,14 +8631,19 @@ def _normalize_page_overview_name(page: str) -> str:
 
 
 def _page_overview_status_shell() -> Dict[str, Any]:
-    cached = _cache_get("status")
+    cached = _cache_get("status:v3") or _cache_get("status")
     if cached:
         return _response_to_dict(cached)
     core = _core()
+    external_bot_processes = 0 if core else _external_trading_bot_process_count()
+    external_bot_running = external_bot_processes > 0
     return {
         "success": True,
-        "engine_running": bool(getattr(core, "is_running", False)) if core else False,
-        "engine_ready": bool(getattr(core, "is_ready", False)) if core else False,
+        "engine_running": bool(getattr(core, "is_running", False)) if core else external_bot_running,
+        "engine_ready": bool(getattr(core, "is_ready", False)) if core else external_bot_running,
+        "dashboard_standalone": core is None,
+        "process_model": "split" if external_bot_running else ("embedded" if core else "standalone"),
+        "external_bot_processes": external_bot_processes,
         "provider_routing": {},
         "signal_diagnostics": {},
     }

@@ -684,7 +684,7 @@ async function load(){
       freshness.telegram_alerts = {
         fresh: telegramOk,
         status: telegramOk ? telegramState : 'stopped',
-        display_age: telegramOk ? telegramState : 'No Telegram process seen',
+        display_age: telegramOk ? (splitMode ? 'Owned by forex-bot' : 'Runtime channel active') : 'No Telegram process seen',
         display_threshold: 'Command/alert channel',
       };
     }
@@ -834,7 +834,7 @@ async function load(){
     const seenCount = seenFreshness.length;
     const freshCount = freshNow.length;
     const staleKeys = freshnessKeys.filter(k => freshness[k] && freshness[k].status !== 'never_seen' && !freshness[k].fresh);
-    document.getElementById('freshBadge').textContent = seenCount ? `${freshCount}/${freshnessKeys.length} fresh` : 'warming';
+    document.getElementById('freshBadge').textContent = seenCount ? `${freshCount}/${seenCount} fresh` : 'warming';
     if(!seenCount){
       freshEl.innerHTML = '<div class="empty">Waiting for live telemetry from the data stack</div>';
     }else{
