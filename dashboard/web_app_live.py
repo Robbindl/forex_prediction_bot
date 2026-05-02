@@ -7847,16 +7847,32 @@ def api_trade_history():
     """Return last N closed trades with full details for the history panel."""
     try:
         limit = max(1, min(500, int(request.args.get("limit", 50) or 50)))
-        cache_key = f"trade_history:v2:{limit}"
+        cache_key = f"trade_history:v3:{limit}"
         payload = _cache_get(cache_key)
         if payload is None:
             raw_limit = max(limit * 3, limit + 10)
             from core.state import rollup_closed_trade_history
             trades = rollup_closed_trade_history(_load_authoritative_closed_trades(limit=raw_limit), limit=limit)
+            summary = _summarize_closed_trade_history(trades)
+            initial_balance = float(getattr(_args, "balance", 10000.0) or 10000.0)
+            total_pnl = float(summary.get("total_pnl", 0.0) or 0.0)
             payload = {
                 "success": True,
                 "trades": [_enrich_trade_history_row(t) for t in trades],
                 "count": len(trades),
+                "summary": {
+                    "initial_balance": initial_balance,
+                    "balance": round(initial_balance + total_pnl, 2),
+                    "realized_balance": round(initial_balance + total_pnl, 2),
+                    "total_pnl": round(total_pnl, 2),
+                    "daily_pnl": round(float(summary.get("daily_pnl", 0.0) or 0.0), 2),
+                    "daily_trades": int(summary.get("daily_trades", 0) or 0),
+                    "total_trades": int(summary.get("total_trades", len(trades)) or 0),
+                    "closed_trades": int(summary.get("total_trades", len(trades)) or 0),
+                    "winning_trades": int(summary.get("winning_trades", 0) or 0),
+                    "losing_trades": int(summary.get("losing_trades", 0) or 0),
+                    "win_rate": round(float(summary.get("win_rate", 0.0) or 0.0) * 100.0, 1),
+                },
             }
             _cache_set(cache_key, payload, ttl=_TRADE_HISTORY_CACHE_TTL)
         response = jsonify(payload)

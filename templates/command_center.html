@@ -999,6 +999,7 @@ let _liveBookPending = null;
 let _liveBookSource = null;
 let _liveBookReconnect = null;
 let _commandCenterLastClosedTradeCount = null;
+let _tradeHistorySummary = null;
 const COMMAND_CENTER_LAST_GOOD_KEY = 'robbindl:command-center:last-good:v3';
 const COMMAND_CENTER_LAST_GOOD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
@@ -1050,6 +1051,78 @@ function readRememberedCommandCenterPayload(){
     payload.browser_cache_age_ms = ageMs;
     return payload;
   }catch(_){return null;}
+}
+
+function buildTradeHistorySummary(rawSummary, rawTrades){
+  const trades=(Array.isArray(rawTrades)?rawTrades:[]).filter(t=>!t.is_partial_close);
+  const summary=rawSummary&&typeof rawSummary==='object'?rawSummary:{};
+  const totalTrades=Number(summary.total_trades??summary.closed_trades??trades.length);
+  const totalPnl=Number(summary.total_pnl??trades.reduce((sum,t)=>sum+Number(t.pnl||0),0));
+  const wins=Number(summary.winning_trades??trades.filter(t=>Number(t.pnl||0)>0).length);
+  const losses=Number(summary.losing_trades??trades.filter(t=>Number(t.pnl||0)<0).length);
+  const winRate=Number(summary.win_rate??(totalTrades?(wins/totalTrades*100):0));
+  const initialBalance=Number(summary.initial_balance??10000);
+  const balance=Number(summary.balance??summary.realized_balance??(initialBalance+totalPnl));
+  return {
+    initial_balance:initialBalance,
+    balance,
+    realized_balance:Number(summary.realized_balance??balance),
+    total_pnl:totalPnl,
+    realized_total_pnl:totalPnl,
+    daily_pnl:Number(summary.daily_pnl??0),
+    realized_daily_pnl:Number(summary.daily_pnl??0),
+    daily_trades:Number(summary.daily_trades??0),
+    closed_trades:totalTrades,
+    total_trades:totalTrades,
+    winning_trades:wins,
+    losing_trades:losses,
+    win_rate:winRate,
+  };
+}
+function shouldPreferTradeHistorySummary(live){
+  if(!_tradeHistorySummary || Number(_tradeHistorySummary.closed_trades||0)<=0)return false;
+  const liveClosed=Number(live?.closed_trades??live?.total_trades??0);
+  const livePnl=Math.abs(Number(live?.realized_total_pnl??live?.total_pnl??0));
+  const historyPnl=Math.abs(Number(_tradeHistorySummary.total_pnl||0));
+  return liveClosed < Number(_tradeHistorySummary.closed_trades||0) || (historyPnl>=0.01 && livePnl<0.01);
+}
+function reconcileLiveSummaryWithTradeHistory(live){
+  const base=live&&typeof live==='object'?live:{};
+  if(!shouldPreferTradeHistorySummary(base))return base;
+  return Object.assign({}, base, _tradeHistorySummary, {
+    open_pnl:Number(base.open_pnl||0),
+    open_positions:Number(base.open_positions||0),
+    buy_count:Number(base.buy_count||0),
+    sell_count:Number(base.sell_count||0),
+    balance:Number(_tradeHistorySummary.balance||0)+Number(base.open_pnl||0),
+    daily_pnl:Number(_tradeHistorySummary.daily_pnl||0)+Number(base.open_pnl||0),
+  });
+}
+function applyTradeHistorySummaryToHeader(){
+  if(!_tradeHistorySummary || Number(_tradeHistorySummary.closed_trades||0)<=0)return;
+  const live=reconcileLiveSummaryWithTradeHistory(getAuthoritativeLiveBookSnapshot()?.live_summary||{});
+  const realizedBalance=Number(live.realized_balance??_tradeHistorySummary.realized_balance??0);
+  const liveBalance=Number(live.balance??realizedBalance);
+  const balanceDelta=Number(live.balance_delta??(liveBalance-Number(live.initial_balance??_tradeHistorySummary.initial_balance??realizedBalance)));
+  const openPnl=Number(live.open_pnl||0);
+  const dailyPnl=Number(live.daily_pnl??_tradeHistorySummary.daily_pnl??0);
+  const winRate=Number(live.win_rate??_tradeHistorySummary.win_rate??0);
+  const closedTrades=Number(live.closed_trades??_tradeHistorySummary.closed_trades??0);
+  const openPositions=Number(live.open_positions||0);
+  const balanceEl=document.getElementById('mBal');
+  if(balanceEl){balanceEl.textContent=fmtMoney(liveBalance);balanceEl.className='mc-value '+(balanceDelta>=0?'gn':'rd');}
+  const top=document.getElementById('topBalance');
+  if(top){top.textContent=fmtMoney(liveBalance);top.style.color=balanceDelta>=0?'var(--gr)':'var(--rd)';}
+  const balSub=document.getElementById('mBalSub');
+  if(balSub)balSub.textContent=`Realized ${fmtMoney(realizedBalance)} · Open ${fmtMoney(openPnl)}`;
+  const dpEl=document.getElementById('mDPnl');
+  if(dpEl){dpEl.textContent=fmtNum(dailyPnl);dpEl.className='mc-value '+(dailyPnl>=0?'gn':'rd');}
+  const dtEl=document.getElementById('mDTrades');
+  if(dtEl)dtEl.textContent=`Realized ${fmtMoney(Number(live.realized_daily_pnl??_tradeHistorySummary.daily_pnl??0))} · Floating ${fmtMoney(openPnl)}`;
+  const wrEl=document.getElementById('mWr');
+  if(wrEl){wrEl.textContent=winRate.toFixed(1)+'%';wrEl.className='mc-value '+(winRate>=60?'gn':winRate<=40?'rd':'am');}
+  const wrSub=document.getElementById('mWrSub');
+  if(wrSub)wrSub.textContent=`${closedTrades} closed · ${openPositions} open`;
 }
 
 function setCommandCenterUnavailable(message){
@@ -1162,7 +1235,7 @@ function getAuthoritativeLiveBookSnapshot(){
 }
 function applyLiveBookSnapshot(snapshot){
   if(!snapshot || !snapshot.success)return;
-  const live = snapshot.live_summary || {};
+  const live = reconcileLiveSummaryWithTradeHistory(snapshot.live_summary || {});
   const realizedBalance = Number(live.realized_balance || 0);
   const liveBalance = Number(live.balance || realizedBalance);
   const balanceDelta = Number(live.balance_delta || 0);
@@ -1338,7 +1411,7 @@ async function loadMain(){
   const decisionContext=d.decision_context||{};
   const decisionRows=(Array.isArray(decisionContext.rows)?decisionContext.rows:[]).filter(isPublishedExecutionItem);
   const authoritativeLiveBook = getAuthoritativeLiveBookSnapshot();
-  const live = authoritativeLiveBook?.live_summary || d.live_summary || {};
+  const live = reconcileLiveSummaryWithTradeHistory(authoritativeLiveBook?.live_summary || d.live_summary || {});
   const mergedPositions = authoritativeLiveBook
     ? mergePositionCollections(d.positions || [], authoritativeLiveBook.positions || [])
     : (d.positions || []);
@@ -1598,8 +1671,10 @@ async function loadHistory(){
     const filter=document.getElementById('historyFilter')?.value||'all';
     const d=await fetchProtectedJson('/api/trade-history?limit=50', {timeoutMs: 12000});
     if(!d.success){document.getElementById('historyBody').innerHTML='<tr><td colspan="11" class="empty">Trade history unavailable</td></tr>';return;}
-    let trades=d.trades||[];
-    trades=trades.filter(t=>!t.is_partial_close);
+    const allTrades=(d.trades||[]).filter(t=>!t.is_partial_close);
+    _tradeHistorySummary=buildTradeHistorySummary(d.summary, allTrades);
+    applyTradeHistorySummaryToHeader();
+    let trades=allTrades.slice();
     if(filter==='forex')trades=trades.filter(t=>t.category==='forex');
     else if(filter==='crypto')trades=trades.filter(t=>t.category==='crypto');
     else if(filter==='commodities')trades=trades.filter(t=>t.category==='commodities');
