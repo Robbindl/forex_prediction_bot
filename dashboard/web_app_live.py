@@ -3395,6 +3395,47 @@ def _summarize_risk_portfolio_positions(positions: Any) -> tuple[Dict[str, Dict[
     return by_cat, cluster_groups
 
 
+def _risk_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _basic_risk_portfolio_stats(
+    positions: Any,
+    balance: float,
+    perf: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    total_exposure = 0.0
+    open_pnl = 0.0
+    for pos in list(positions or []):
+        if not isinstance(pos, dict):
+            continue
+        size = abs(_risk_float(pos.get("position_size", pos.get("size", pos.get("quantity", 0.0)))))
+        entry = abs(_risk_float(pos.get("entry_price", pos.get("price", 0.0))))
+        total_exposure += size * entry
+        open_pnl += _risk_float(pos.get("pnl", pos.get("floating_pnl", 0.0)))
+
+    safe_balance = max(_risk_float(balance), 0.0)
+    perf = dict(perf or {})
+    peak_balance = _risk_float(perf.get("peak_balance"), safe_balance)
+    if peak_balance <= 0:
+        peak_balance = safe_balance
+    drawdown_pct = _risk_float(perf.get("drawdown_pct"), 0.0)
+    if drawdown_pct <= 0 and peak_balance > 0:
+        drawdown_pct = max(0.0, (peak_balance - safe_balance) / peak_balance * 100.0)
+    return {
+        "total_exposure": round(total_exposure, 2),
+        "exposure_pct": round((total_exposure / safe_balance * 100.0), 2) if safe_balance else 0.0,
+        "drawdown_pct": round(drawdown_pct, 2),
+        "peak_balance": round(peak_balance, 2),
+        "open_pnl": round(open_pnl, 2),
+    }
+
+
 def _risk_portfolio_quality_snapshot(by_cat: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     if not by_cat:
         return {
@@ -6548,18 +6589,84 @@ def api_ai_predictions_overview():
 # API — WHALE INTELLIGENCE
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _db_whale_dashboard_summary(
+    *,
+    min_value_usd: float = 500_000,
+    hours: int = 24,
+    recent_limit: int = 10,
+    alert_limit: int = 20,
+) -> Dict[str, Any]:
+    try:
+        from services.db_pool import get_db
+
+        rows = list(get_db().get_recent_whale_alerts(hours=hours) or [])
+    except Exception as exc:
+        logger.debug(f"[dashboard] whale DB fallback failed: {exc}")
+        rows = []
+
+    alerts: List[Dict[str, Any]] = []
+    threshold = float(min_value_usd or 0.0)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = _risk_float(row.get("value_usd", row.get("size_usd", 0.0)))
+        if value < threshold:
+            continue
+        symbol = str(row.get("symbol") or row.get("asset") or "").strip()
+        alert_time = row.get("alert_time") or row.get("date") or row.get("timestamp") or ""
+        alerts.append(
+            {
+                **row,
+                "asset": symbol,
+                "symbol": symbol,
+                "value_usd": value,
+                "size_usd": value,
+                "direction": str(row.get("direction") or "").upper(),
+                "source": row.get("source") or "database",
+                "date": str(alert_time),
+                "alert_time": str(alert_time),
+                "timestamp": str(alert_time),
+            }
+        )
+
+    total_vol = sum(_risk_float(item.get("value_usd")) for item in alerts)
+    by_asset: Dict[str, float] = {}
+    for item in alerts:
+        asset = str(item.get("asset") or item.get("symbol") or "")
+        if asset:
+            by_asset[asset] = by_asset.get(asset, 0.0) + _risk_float(item.get("value_usd"))
+    top_assets = sorted(by_asset.items(), key=lambda entry: entry[1], reverse=True)[:8]
+    return {
+        "success": True,
+        "source": "postgres",
+        "alerts": alerts[:alert_limit],
+        "total_volume_usd": round(total_vol, 0),
+        "alert_count_24h": len(alerts),
+        "top_assets": [{"asset": asset, "volume": round(volume)} for asset, volume in top_assets],
+        "recent": alerts[:recent_limit],
+    }
+
+
 @app.route("/api/whale/summary")
 @_check_api_auth
 @_check_rate_limit
 def api_whale_summary():
-    cached = _cache_get("whale_summary")
+    cache_key = "whale_summary:v2"
+    cached = _cache_get(cache_key)
     if cached is not None:
         return jsonify(cached)
     try:
         mi = _get_market_intelligence()
         if not mi:
-            return jsonify({"success": True, "alerts": [], "total_volume_usd": 0,
-                            "top_assets": [], "recent": [], "alert_count_24h": 0})
+            payload = _db_whale_dashboard_summary(
+                min_value_usd=500_000,
+                hours=24,
+                recent_limit=10,
+                alert_limit=20,
+            )
+            ttl = 300 if payload.get("alerts") or payload.get("recent") else 45
+            _cache_set(cache_key, payload, ttl=ttl)
+            return jsonify(payload)
         payload = _run_with_timeout(
             mi.get_whale_dashboard_summary,
             min_value_usd=500_000,
@@ -6577,8 +6684,17 @@ def api_whale_summary():
             },
             label="whale summary",
         )
+        if not payload.get("alerts") and not payload.get("recent"):
+            db_payload = _db_whale_dashboard_summary(
+                min_value_usd=500_000,
+                hours=24,
+                recent_limit=10,
+                alert_limit=20,
+            )
+            if db_payload.get("alerts") or db_payload.get("recent"):
+                payload = db_payload
         ttl = 300 if payload.get("alerts") or payload.get("recent") else 45
-        _cache_set("whale_summary", payload, ttl=ttl)
+        _cache_set(cache_key, payload, ttl=ttl)
         return jsonify(payload)
     except APIError as e:
         return handle_api_error(e, "/api/whale/summary", e.status_code)
@@ -6947,23 +7063,31 @@ def api_market_events():
 
 def _build_risk_portfolio_payload() -> Dict[str, Any]:
     core = _core()
-    if not core:
-        return {"success": False, "error": "Engine not ready"}
-
-    positions = core.get_positions()
-    balance = core.get_balance()
-    perf = core.get_performance()
-
+    dashboard_standalone = core is None
     risk_stats: Dict[str, Any] = {}
-    try:
-        if hasattr(core, "portfolio_risk") and core.portfolio_risk:
-            risk_stats = core.portfolio_risk.get_portfolio_stats(positions, balance)
-    except Exception:
-        pass
+    weak_queue: List[Dict[str, Any]] = []
+
+    if core:
+        positions = core.get_positions()
+        balance = core.get_balance()
+        perf = core.get_performance()
+        closed = core.get_closed_trades(limit=100)
+        try:
+            if hasattr(core, "portfolio_risk") and core.portfolio_risk:
+                risk_stats = core.portfolio_risk.get_portfolio_stats(positions, balance)
+        except Exception:
+            risk_stats = {}
+        try:
+            weak_queue = _get_command_center_weak_positions(core, limit=5)
+        except Exception:
+            weak_queue = []
+    else:
+        perf, _daily, positions, _health, closed = _load_dashboard_db_runtime_snapshot()
+        balance = _risk_float(perf.get("balance"), _risk_float(getattr(_args, "balance", 0.0)))
+        risk_stats = _basic_risk_portfolio_stats(positions, balance, perf)
 
     by_cat, cluster_groups = _summarize_risk_portfolio_positions(positions)
 
-    closed = core.get_closed_trades(limit=100)
     wins = [t for t in closed if float(t.get("pnl") or 0) > 0]
     losses = [t for t in closed if float(t.get("pnl") or 0) <= 0 and float(t.get("pnl") or 0) != 0]
     avg_win = sum(float(t.get("pnl") or 0) for t in wins) / len(wins) if wins else 0.0
@@ -6987,10 +7111,6 @@ def _build_risk_portfolio_payload() -> Dict[str, Any]:
     except Exception:
         execution_summary = {}
         execution_by_category = {}
-    try:
-        weak_queue = _get_command_center_weak_positions(core, limit=5)
-    except Exception:
-        weak_queue = []
     weak_queue = [_enrich_signal_like_row(item) for item in list(weak_queue or []) if isinstance(item, dict)]
 
     stop_concentration = _summarize_stop_concentration(positions, limit=5)
@@ -6998,6 +7118,7 @@ def _build_risk_portfolio_payload() -> Dict[str, Any]:
 
     return {
         "success": True,
+        "dashboard_standalone": dashboard_standalone,
         "balance": balance,
         "open_positions": len(positions),
         "total_exposure": risk_stats.get("total_exposure", 0),
@@ -7025,8 +7146,8 @@ def _build_risk_portfolio_payload() -> Dict[str, Any]:
 
 
 def _get_cached_risk_portfolio_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
-    cache_key = "risk_portfolio"
-    last_good_key = "risk_portfolio:last_good"
+    cache_key = "risk_portfolio:v2"
+    last_good_key = "risk_portfolio:v2:last_good"
     try:
         return _get_cached_dashboard_payload(
             cache_key,
@@ -7066,15 +7187,29 @@ def api_risk_portfolio():
 @_check_rate_limit
 def api_strategy_performance():
     try:
-        cache_key = "strategy_performance:v2"
+        cache_key = "strategy_performance:v3"
         cached = _cache_get(cache_key)
         if cached is not None:
             return jsonify(cached)
         core = _core()
-        if not core:
-            return jsonify({"success": False, "error": "Engine not ready"})
-        stats  = core.get_strategy_stats()
-        trades = core.get_closed_trades(limit=200)
+        dashboard_standalone = core is None
+        if core:
+            stats  = core.get_strategy_stats()
+            trades = core.get_closed_trades(limit=200)
+        else:
+            trades = _load_authoritative_closed_trades(limit=200)
+            stats = {}
+            for trade in trades:
+                if not isinstance(trade, dict):
+                    continue
+                strat = str(trade.get("strategy_id") or trade.get("strategy") or trade.get("playbook") or "Unspecified")
+                pnl = _risk_float(trade.get("pnl"))
+                bucket = stats.setdefault(strat, {"wins": 0, "losses": 0, "pnl": 0.0})
+                if pnl > 0:
+                    bucket["wins"] += 1
+                elif pnl < 0:
+                    bucket["losses"] += 1
+                bucket["pnl"] = _risk_float(bucket.get("pnl")) + pnl
         enriched: Dict = {}
         summary_memory_scores: List[float] = []
         summary_exec_scores: List[float] = []
@@ -7088,7 +7223,8 @@ def api_strategy_performance():
             wr      = s.get("wins", 0) / total * 100 if total else 0
             strat_trades = []
             for t in trades:
-                if t.get("strategy_id") != strat:
+                trade_strategy = str(t.get("strategy_id") or t.get("strategy") or t.get("playbook") or "Unspecified")
+                if trade_strategy != strat:
                     continue
                 row = dict(t)
                 meta = dict(row.get("metadata") or {})
@@ -7124,6 +7260,7 @@ def api_strategy_performance():
                    "pnl": float(t.get("pnl") or 0), "strategy": t.get("strategy_id", ""),
                    "exit_time": str(t.get("exit_time", ""))[:16],
                    "conf": float(t.get("confidence") or 0)}
+            row["strategy"] = str(t.get("strategy_id") or t.get("strategy") or t.get("playbook") or "Unspecified")
             meta = dict(t.get("metadata") or {})
             row.update(_extract_execution_feedback_fields(meta))
             row.update(_extract_memory_fields(meta))
@@ -7137,7 +7274,13 @@ def api_strategy_performance():
             "premature_stop_rate": round(summary_premature_stops / max(summary_timeline_count, 1), 4) if summary_timeline_count else 0.0,
             "trade_count": summary_timeline_count,
         }
-        payload = {"success": True, "strategies": enriched, "timeline": timeline, "summary": summary}
+        payload = {
+            "success": True,
+            "dashboard_standalone": dashboard_standalone,
+            "strategies": enriched,
+            "timeline": timeline,
+            "summary": summary,
+        }
         _cache_set(cache_key, payload, ttl=15)
         return jsonify(payload)
     except APIError as e:
