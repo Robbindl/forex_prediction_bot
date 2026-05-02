@@ -991,36 +991,65 @@ class LiveMicrostructureService:
 
     @staticmethod
     def _event_metrics(events: List[Dict[str, Any]], depth_available: bool, synthetic_depth_available: bool) -> Dict[str, Any]:
+        now_ts = time.time()
+        latest_event_ts = 0.0
+        for evt in events:
+            latest_event_ts = max(latest_event_ts, _safe_ts(evt.get("timestamp")))
+
         snapshot_count = 0
         delta_count = 0
         trade_count = 0
         latest_flags = ""
-        latest_ts = 0.0
+        latest_flag_ts = 0.0
+        latest_depth_ts = 0.0
         earliest_snapshot_ts = 0.0
         for evt in events:
             event_type = str(evt.get("event_type") or "").strip().lower()
             flags = _flag_tokens(evt.get("flags"))
-            latest_ts = max(latest_ts, _safe_ts(evt.get("timestamp")))
-            latest_flags = ",".join(sorted(flags)) or latest_flags
+            ts = _safe_ts(evt.get("timestamp"))
+            if flags and ts >= latest_flag_ts:
+                latest_flag_ts = ts
+                latest_flags = ",".join(sorted(flags))
             has_depth_payload = bool(
                 evt.get("levels")
                 or evt.get("bid_size") not in (None, "")
                 or evt.get("ask_size") not in (None, "")
             )
-            if "depth_snapshot" in flags or "stream_snapshot" in flags or event_type == "depth_snapshot" or has_depth_payload:
+            snapshot_like = bool(
+                "depth_snapshot" in flags
+                or "stream_snapshot" in flags
+                or event_type == "depth_snapshot"
+                or has_depth_payload
+            )
+            delta_like = bool(
+                any(token in flags for token in ("depth_delta", "book_delta", "ladder_delta"))
+                or event_type == "depth_delta"
+            )
+            trade_like = bool(
+                any(token in flags for token in ("trade_print", "trade_stream", "tape_print"))
+                or event_type == "trade_print"
+            )
+            if snapshot_like:
+                latest_depth_ts = max(latest_depth_ts, ts)
+
+            age_from_latest = max(0.0, latest_event_ts - ts) if latest_event_ts > 0.0 and ts > 0.0 else 0.0
+            snapshot_fresh = bool(snapshot_like and age_from_latest <= 180.0)
+            delta_fresh = bool(delta_like and age_from_latest <= 35.0)
+            trade_fresh = bool(trade_like and age_from_latest <= 45.0)
+
+            if snapshot_fresh:
                 snapshot_count += 1
-                ts = _safe_ts(evt.get("timestamp"))
                 if earliest_snapshot_ts <= 0.0:
                     earliest_snapshot_ts = ts
                 else:
                     earliest_snapshot_ts = min(earliest_snapshot_ts, ts)
-            if any(token in flags for token in ("depth_delta", "book_delta", "ladder_delta")) or event_type == "depth_delta":
+            if delta_fresh:
                 delta_count += 1
-            if any(token in flags for token in ("trade_print", "trade_stream", "tape_print")) or event_type == "trade_print":
+            if trade_fresh:
                 trade_count += 1
 
-        event_age_seconds = round(max(0.0, time.time() - latest_ts), 3) if latest_ts > 0.0 else 0.0
-        snapshot_span_seconds = round(max(0.0, latest_ts - earliest_snapshot_ts), 3) if earliest_snapshot_ts > 0.0 else 0.0
+        event_age_seconds = round(max(0.0, now_ts - latest_depth_ts), 3) if latest_depth_ts > 0.0 else 0.0
+        snapshot_span_seconds = round(max(0.0, latest_depth_ts - earliest_snapshot_ts), 3) if earliest_snapshot_ts > 0.0 else 0.0
         stream_snapshot_ready = bool(
             depth_available
             and snapshot_count >= 3
