@@ -9199,6 +9199,35 @@ def _run_hypercorn_server(host: str, port: int, http2: bool = False, ssl_cert: s
         return False
 
 
+def _run_threaded_wsgi_server(host: str, port: int) -> bool:
+    try:
+        from waitress import serve
+
+        threads = max(4, int(os.getenv("DASHBOARD_WSGI_THREADS", "12")))
+        connection_limit = max(32, int(os.getenv("DASHBOARD_WSGI_CONNECTION_LIMIT", "128")))
+        channel_timeout = max(10, int(os.getenv("DASHBOARD_WSGI_CHANNEL_TIMEOUT", "30")))
+        logger.info(
+            "[dashboard] Starting Waitress threaded WSGI server "
+            f"threads={threads} connection_limit={connection_limit}"
+        )
+        serve(
+            app,
+            host=host,
+            port=port,
+            threads=threads,
+            connection_limit=connection_limit,
+            channel_timeout=channel_timeout,
+            ident="forex-dashboard",
+        )
+        return True
+    except ModuleNotFoundError:
+        logger.info("[dashboard] Waitress is not installed; using Flask threaded server")
+        return False
+    except Exception as e:
+        logger.warning(f"[dashboard] Waitress server unavailable or failed: {e}")
+        return False
+
+
 def _dashboard_live_quote_callback(source, symbol, price, volume, side, ts=None) -> None:
     _record_live_quote(source, symbol, price, volume, side, emit_transaction=False)
 
@@ -9430,7 +9459,29 @@ def _dashboard_refresh_ig_quotes_loop(stream_state: Dict[str, Dict[str, str]]) -
         time.sleep(5)
 
 
-def start_dashboard(core, host: str = "127.0.0.1", port: int = 5000, http2: bool = False, ssl_cert: str | None = None, ssl_key: str | None = None) -> None:
+def _normalise_dashboard_server(server: str | None) -> str:
+    value = str(server or os.getenv("DASHBOARD_SERVER") or "auto").strip().lower()
+    aliases = {
+        "": "auto",
+        "dev": "threaded",
+        "flask": "threaded",
+        "werkzeug": "threaded",
+        "threads": "threaded",
+        "production": "hypercorn",
+        "h11": "hypercorn",
+    }
+    return aliases.get(value, value)
+
+
+def start_dashboard(
+    core,
+    host: str = "127.0.0.1",
+    port: int = 5000,
+    http2: bool = False,
+    ssl_cert: str | None = None,
+    ssl_key: str | None = None,
+    server: str | None = None,
+) -> None:
     """Called by bot.py after engine.start(). Blocking — never returns."""
     inject_core(core)
     _init_api_key()  # FIX SEC-05: Initialize API key authentication
@@ -9470,7 +9521,14 @@ def start_dashboard(core, host: str = "127.0.0.1", port: int = 5000, http2: bool
 
     scheme = "https" if http2 and ssl_cert and ssl_key else "http"
     logger.info(f"[dashboard] {scheme}://{host}:{port}/command-center")
-    prefer_hypercorn = http2 or not _DEVELOPMENT_MODE
+    dashboard_server = _normalise_dashboard_server(server)
+    if dashboard_server not in {"auto", "hypercorn", "threaded"}:
+        logger.warning(f"[dashboard] Unknown DASHBOARD_SERVER={dashboard_server!r}; using auto")
+        dashboard_server = "auto"
+
+    prefer_hypercorn = dashboard_server == "hypercorn" or (
+        dashboard_server == "auto" and (http2 or not _DEVELOPMENT_MODE)
+    )
     if prefer_hypercorn and _run_hypercorn_server(host, port, http2=http2, ssl_cert=ssl_cert, ssl_key=ssl_key):
         return
     if prefer_hypercorn and ssl_cert and ssl_key:
@@ -9484,8 +9542,23 @@ def start_dashboard(core, host: str = "127.0.0.1", port: int = 5000, http2: bool
             use_reloader=False,
         )
         return
+    if not prefer_hypercorn and not (ssl_cert and ssl_key) and _run_threaded_wsgi_server(host, port):
+        return
+    if not prefer_hypercorn and ssl_cert and ssl_key:
+        logger.info("[dashboard] Starting Flask HTTPS threaded server")
+        app.run(
+            debug=False,
+            host=host,
+            port=port,
+            ssl_context=(ssl_cert, ssl_key),
+            threaded=True,
+            use_reloader=False,
+        )
+        return
     if prefer_hypercorn:
-        logger.info("[dashboard] Falling back to Flask development server")
+        logger.info("[dashboard] Falling back to threaded Flask server")
+    else:
+        logger.info("[dashboard] Starting threaded Flask server")
 
     app.run(debug=False, host=host, port=port, threaded=True, use_reloader=False)
 
@@ -9498,6 +9571,13 @@ if __name__ == "__main__":
     standalone_parser.add_argument("--http2", action="store_true", default=os.getenv("DASHBOARD_HTTP2", "").lower() in {"1", "true", "yes", "on"})
     standalone_parser.add_argument("--ssl-cert", type=str, default=os.getenv("DASHBOARD_SSL_CERT") or None)
     standalone_parser.add_argument("--ssl-key", type=str, default=os.getenv("DASHBOARD_SSL_KEY") or None)
+    standalone_parser.add_argument(
+        "--server",
+        type=str,
+        choices=["auto", "hypercorn", "threaded", "flask", "werkzeug"],
+        default=os.getenv("DASHBOARD_SERVER", "auto"),
+        help="Dashboard HTTP server mode. Use threaded for the split service behind nginx.",
+    )
     standalone_args, _ = standalone_parser.parse_known_args()
     logger.info("[dashboard] Standalone mode — engine not connected")
     start_dashboard(
@@ -9507,4 +9587,5 @@ if __name__ == "__main__":
         http2=standalone_args.http2,
         ssl_cert=standalone_args.ssl_cert,
         ssl_key=standalone_args.ssl_key,
+        server=standalone_args.server,
     )

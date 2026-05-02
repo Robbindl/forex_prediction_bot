@@ -1,0 +1,14 @@
+[Unit]
+Description=Forex Dashboard HTTP Watchdog
+After=forex-dashboard.service
+Wants=forex-dashboard.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/forex_prediction_bot
+EnvironmentFile=-/opt/forex_prediction_bot/.env
+ExecStart=/opt/forex_prediction_bot/venv_tf/bin/python scripts/dashboard_watchdog.py --base-url http://127.0.0.1:5000 --restart-service forex-dashboard --timeout 4 --retries 1
+PrivateTmp=true
+NoNewPrivileges=true

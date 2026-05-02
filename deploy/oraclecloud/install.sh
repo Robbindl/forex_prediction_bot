@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/forex_prediction_bot}"
 SERVICE_NAME="${SERVICE_NAME:-forex-bot}"
 DASHBOARD_SERVICE_NAME="${DASHBOARD_SERVICE_NAME:-forex-dashboard}"
+DASHBOARD_WATCHDOG_SERVICE_NAME="${DASHBOARD_WATCHDOG_SERVICE_NAME:-forex-dashboard-watchdog}"
 NGINX_SITE_NAME="${NGINX_SITE_NAME:-forex-bot}"
 
 if [[ ! -d "${APP_DIR}" ]]; then
@@ -28,11 +29,18 @@ sudo cp deploy/oraclecloud/forex-dashboard.service "/etc/systemd/system/${DASHBO
 sudo sed -i "s|/opt/forex_prediction_bot|${APP_DIR}|g" "/etc/systemd/system/${DASHBOARD_SERVICE_NAME}.service"
 sudo sed -i "s|User=ubuntu|User=${SUDO_USER:-$(whoami)}|g" "/etc/systemd/system/${DASHBOARD_SERVICE_NAME}.service"
 sudo sed -i "s|Group=ubuntu|Group=${SUDO_USER:-$(whoami)}|g" "/etc/systemd/system/${DASHBOARD_SERVICE_NAME}.service"
+sudo cp deploy/oraclecloud/forex-dashboard-watchdog.service "/etc/systemd/system/${DASHBOARD_WATCHDOG_SERVICE_NAME}.service"
+sudo sed -i "s|/opt/forex_prediction_bot|${APP_DIR}|g" "/etc/systemd/system/${DASHBOARD_WATCHDOG_SERVICE_NAME}.service"
+sudo sed -i "s|forex-dashboard|${DASHBOARD_SERVICE_NAME}|g" "/etc/systemd/system/${DASHBOARD_WATCHDOG_SERVICE_NAME}.service"
+sudo cp deploy/oraclecloud/forex-dashboard-watchdog.timer "/etc/systemd/system/${DASHBOARD_WATCHDOG_SERVICE_NAME}.timer"
+sudo sed -i "s|forex-dashboard-watchdog|${DASHBOARD_WATCHDOG_SERVICE_NAME}|g" "/etc/systemd/system/${DASHBOARD_WATCHDOG_SERVICE_NAME}.timer"
 sudo systemctl daemon-reload
 sudo systemctl enable "${SERVICE_NAME}"
 sudo systemctl enable "${DASHBOARD_SERVICE_NAME}"
+sudo systemctl enable "${DASHBOARD_WATCHDOG_SERVICE_NAME}.timer"
 sudo systemctl restart "${SERVICE_NAME}"
 sudo systemctl restart "${DASHBOARD_SERVICE_NAME}"
+sudo systemctl restart "${DASHBOARD_WATCHDOG_SERVICE_NAME}.timer"
 
 echo "Installing Nginx site..."
 sudo cp deploy/oraclecloud/nginx-forex-bot.conf "/etc/nginx/sites-available/${NGINX_SITE_NAME}"
@@ -52,3 +60,4 @@ echo
 echo "Install complete."
 echo "Review service status with: sudo systemctl status ${SERVICE_NAME}"
 echo "Review dashboard status with: sudo systemctl status ${DASHBOARD_SERVICE_NAME}"
+echo "Review dashboard watchdog with: sudo systemctl status ${DASHBOARD_WATCHDOG_SERVICE_NAME}.timer"

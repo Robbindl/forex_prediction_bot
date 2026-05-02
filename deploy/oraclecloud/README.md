@@ -1,6 +1,6 @@
 # Oracle Cloud Deployment
 
-This bot is intended to run as a single long-lived systemd service on an Oracle Cloud VM, with Nginx reverse-proxying the dashboard.
+This bot is intended to run as split long-lived systemd services on an Oracle Cloud/Kamatera VM: one service for the trading bot and one service for the dashboard, with Nginx reverse-proxying the dashboard.
 
 ## Recommended Small-VM Profile
 
@@ -71,17 +71,26 @@ python3 -m venv venv_tf
   - `OKX_PUBLIC_DATA_ENABLED=true` and `OKX_SYMBOL_MAP={"XAU/USD":"XAU-USDT-SWAP","XAG/USD":"XAG-USDT-SWAP","WTI":"CL-USDT-SWAP"}` as the commodity exchange-depth fallback when Bybit is not the best surface
   - rotate any secrets that have ever been committed, logged, or shared locally before deployment
 
-## 5. Install the systemd service
+## 5. Install the systemd services
 
 ```bash
 sudo cp deploy/oraclecloud/forex-bot.service /etc/systemd/system/forex-bot.service
+sudo cp deploy/oraclecloud/forex-dashboard.service /etc/systemd/system/forex-dashboard.service
+sudo cp deploy/oraclecloud/forex-dashboard-watchdog.service /etc/systemd/system/forex-dashboard-watchdog.service
+sudo cp deploy/oraclecloud/forex-dashboard-watchdog.timer /etc/systemd/system/forex-dashboard-watchdog.timer
 sudo systemctl daemon-reload
-sudo systemctl enable forex-bot
-sudo systemctl start forex-bot
+sudo systemctl enable forex-bot forex-dashboard forex-dashboard-watchdog.timer
+sudo systemctl restart forex-bot
+sudo systemctl restart forex-dashboard
+sudo systemctl restart forex-dashboard-watchdog.timer
 sudo systemctl status forex-bot
+sudo systemctl status forex-dashboard
+sudo systemctl status forex-dashboard-watchdog.timer
 ```
 
-If your deployment user is not `ubuntu`, update the `User`, `Group`, and `WorkingDirectory` fields in the unit first.
+`forex-bot` runs `bot.py --no-dashboard`. `forex-dashboard` runs the dashboard as a separate threaded service behind Nginx, so a dashboard stall does not pause the trading engine. The watchdog probes local dashboard pages and restarts only `forex-dashboard` if the HTTP path hangs.
+
+If your deployment user is not `ubuntu`, update the `User`, `Group`, and `WorkingDirectory` fields in the bot and dashboard units first. The watchdog unit intentionally runs as root so it can restart `forex-dashboard`.
 
 For a scripted install, you can also run:
 
@@ -200,7 +209,7 @@ Core logs:
 ## 10. Production notes
 
 - The dashboard now fails closed if `DEVELOPMENT_MODE=false` and `DASHBOARD_API_KEY` is missing.
-- In production mode, the dashboard prefers Hypercorn automatically instead of Flask's built-in development server.
+- In split-service production mode, the dashboard service uses explicit threaded serving behind Nginx. This keeps public page requests responsive even when a slow panel refresh or upstream feed call is misbehaving.
 - The economic calendar will use Deriv if supported, otherwise the ForexFactory fallback.
 - The bot auto-research scheduler is enabled through `config/bot_runtime.json`; on a 2 GB VM keep `AUTO_RESEARCH_MAX_PARALLEL_ASSETS=1` unless you have measured spare CPU/RAM headroom.
 - The trading engine now reads `MAX_SCAN_WORKERS` from env, so tune concurrency in `.env` instead of editing code before moving between machines.
