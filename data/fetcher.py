@@ -1026,11 +1026,20 @@ class DataFetcher:
         return self._merge_orderflow_snapshot(base, orderflow_snapshot)
 
     def get_market_microstructure(self, asset: str, category: str) -> Dict[str, Any]:
+        category_key = str(category or "").strip().lower()
         orderflow_snapshot = self._crypto_orderflow_snapshot(asset, category)
         ctrader_overlay = self._ctrader_live_microstructure(asset, category)
         dukascopy_overlay = self._dukascopy_live_microstructure(asset, category)
         selected_external_depth = self._select_external_true_depth(dukascopy_overlay, ctrader_overlay)
-        preserve_exchange_depth = str(category or "").strip().lower() == "commodities"
+        preserve_exchange_depth = category_key == "commodities"
+
+        preferred_crypto_exchange_micro: Dict[str, Any] = {}
+        if category_key == "crypto":
+            micro = self._microstructure_from_bridge(self._binance_bridge, "Binance", asset, category, orderflow_snapshot)
+            if micro:
+                if bool(micro.get("depth_available")) and not bool(micro.get("synthetic_depth_available")):
+                    return self._overlay_external_true_depth(micro, selected_external_depth)
+                preferred_crypto_exchange_micro = micro
 
         micro = self._microstructure_from_bridge(self._bybit_bridge, "Bybit", asset, category, orderflow_snapshot)
         if micro:
@@ -1057,9 +1066,13 @@ class DataFetcher:
         if micro:
             return self._overlay_external_true_depth(micro, selected_external_depth)
 
-        micro = self._microstructure_from_bridge(self._binance_bridge, "Binance", asset, category, orderflow_snapshot)
-        if micro:
-            return self._overlay_external_true_depth(micro, selected_external_depth)
+        if preferred_crypto_exchange_micro:
+            return self._overlay_external_true_depth(preferred_crypto_exchange_micro, selected_external_depth)
+
+        if category_key != "crypto":
+            micro = self._microstructure_from_bridge(self._binance_bridge, "Binance", asset, category, orderflow_snapshot)
+            if micro:
+                return self._overlay_external_true_depth(micro, selected_external_depth)
 
         price, spread = self.get_real_time_price(asset, category=category)
         if price is None:

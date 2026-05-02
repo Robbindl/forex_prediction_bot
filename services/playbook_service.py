@@ -1583,9 +1583,11 @@ def _depth_context_pressure_profile(
     update_mode = str(context_confluence.get("depth_update_mode") or "").strip().lower()
     synthetic_depth = bool(context_confluence.get("synthetic_depth"))
     depth_available = bool(context_confluence.get("depth_available"))
-    fragmented = bool(context_confluence.get("dom_fragmented_market")) or str(
-        context_confluence.get("dom_authority_tier") or ""
-    ).strip().lower() in {"fragmented_event_ladder", "degraded_event_ladder"}
+    authority_tier = str(context_confluence.get("dom_authority_tier") or "").strip().lower()
+    fragmented = bool(context_confluence.get("dom_fragmented_market")) or authority_tier in {
+        "fragmented_event_ladder",
+        "degraded_event_ladder",
+    }
     stream_degraded = bool(context_confluence.get("dom_stream_degraded")) and bool(
         context_confluence.get("dom_ladder_ready")
     )
@@ -1606,8 +1608,6 @@ def _depth_context_pressure_profile(
         return {"ready": False, "reason": "depth_unavailable", "kind": "none"}
     if bool(context_confluence.get("external_depth_rejected")) or quote_state in {"divergent", "severe_divergence"}:
         return {"ready": False, "reason": "depth_quote_divergent", "kind": "none"}
-    if fragmented or stream_degraded:
-        return {"ready": False, "reason": "depth_stream_degraded", "kind": "none"}
 
     kind = "exchange" if exchange_depth or redis_depth else "sidecar" if sidecar_depth else "depth"
     if exchange_depth or redis_depth:
@@ -1640,6 +1640,27 @@ def _depth_context_pressure_profile(
         extension_ceiling = 1.05
         flow_floor = 0.28
         confluence_floor = 0.16
+
+    if fragmented or stream_degraded:
+        kind = f"{kind}_degraded"
+        if exchange_depth:
+            min_levels = max(min_levels, 50)
+            min_quality = max(min_quality, 0.74)
+            min_trust = max(min_trust, 0.82)
+            alignment_floor = max(alignment_floor, 0.36)
+            setup_floor = max(setup_floor, 0.50)
+            flow_floor = max(flow_floor, 0.42)
+            confluence_floor = max(confluence_floor, 0.20)
+        elif sidecar_depth:
+            min_quality = max(min_quality, 0.36)
+            min_trust = max(min_trust, 0.68)
+            flow_floor = max(flow_floor, 0.34)
+            confluence_floor = max(confluence_floor, 0.18)
+        else:
+            min_quality = max(min_quality, 0.45)
+            min_trust = max(min_trust, 0.72)
+            flow_floor = max(flow_floor, 0.36)
+            confluence_floor = max(confluence_floor, 0.18)
 
     if depth_levels < min_levels:
         return {"ready": False, "reason": "depth_levels_too_low", "kind": kind}
