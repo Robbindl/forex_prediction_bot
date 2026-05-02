@@ -8169,6 +8169,15 @@ def _page_overview_cached_component(
         payload.setdefault("degraded_reason", "component_stale")
         return payload
     if builder is not None:
+        try:
+            payload = _response_to_dict(builder())
+            degraded = _is_degraded_dashboard_payload(payload)
+            _cache_set(cache_key, payload, ttl=min(ttl, _PAGE_OVERVIEW_DEGRADED_CACHE_TTL) if degraded else ttl)
+            if not degraded:
+                _cache_set(last_good_key, payload, ttl=last_good_ttl)
+            return payload
+        except Exception as exc:
+            logger.debug(f"[dashboard] page component {cache_key} first build failed: {exc}")
         _trigger_dashboard_payload_refresh(
             cache_key,
             builder=builder,
@@ -8446,19 +8455,28 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
             payload["degraded_reason"] = "stale_fallback"
             return payload
 
-        _trigger_dashboard_payload_refresh(
-            cache_key,
-            builder=_builder,
-            cache_key=cache_key,
-            ttl=_PAGE_OVERVIEW_CACHE_TTL,
-            last_good_key=last_good_key,
-            last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
-        )
-        payload = _build_page_overview_unavailable_payload(page, days, reason="page_overview_warming")
-        payload["degraded"] = True
-        payload["degraded_reason"] = "page_overview_warming"
-        _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_DEGRADED_CACHE_TTL)
-        return _normalize_page_overview_payload_contract(payload, page, days)
+        try:
+            payload = _normalize_page_overview_payload_contract(_builder(), page, days)
+            ttl = _PAGE_OVERVIEW_DEGRADED_CACHE_TTL if _is_degraded_dashboard_payload(payload) else _PAGE_OVERVIEW_CACHE_TTL
+            _cache_set(cache_key, payload, ttl=ttl)
+            if not _is_degraded_dashboard_payload(payload):
+                _cache_set(last_good_key, payload, ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL)
+            return payload
+        except Exception as exc:
+            logger.debug(f"[dashboard] page overview first build failed for {page}: {exc}")
+            _trigger_dashboard_payload_refresh(
+                cache_key,
+                builder=_builder,
+                cache_key=cache_key,
+                ttl=_PAGE_OVERVIEW_CACHE_TTL,
+                last_good_key=last_good_key,
+                last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
+            )
+            payload = _build_page_overview_unavailable_payload(page, days, reason="page_overview_warming")
+            payload["degraded"] = True
+            payload["degraded_reason"] = "page_overview_warming"
+            _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_DEGRADED_CACHE_TTL)
+            return _normalize_page_overview_payload_contract(payload, page, days)
 
     try:
         payload = _normalize_page_overview_payload_contract(_builder(), page, days)
