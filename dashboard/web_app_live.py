@@ -1662,6 +1662,68 @@ def _enrich_signal_like_row(row: Any) -> Dict[str, Any]:
     item.update(_extract_opportunity_fields(source))
     item.update(_extract_signal_intelligence_fields(source))
     item.update(_extract_market_data_provenance_fields(source, asset=asset, category=category))
+
+    if item.get("confidence") in (None, "", 0, 0.0):
+        for key in ("final_confidence", "final_conf", "confidence_score", "final_policy_score", "opportunity_score"):
+            try:
+                value = item.get(key)
+                if value not in (None, ""):
+                    item["confidence"] = float(value)
+                    break
+            except Exception:
+                continue
+
+    if not item.get("direction"):
+        item["direction"] = str(item.get("signal") or item.get("side") or "").upper()
+    if not item.get("signal") and item.get("direction"):
+        item["signal"] = str(item.get("direction") or "").upper()
+
+    playbook_name = _playbook_name_from_payload(item)
+    if not playbook_name:
+        raw_family = str(item.get("pattern_family") or "").strip()
+        playbook_name = raw_family.replace("_", " ") if raw_family else ""
+    if playbook_name and not item.get("playbook_name"):
+        item["playbook_name"] = playbook_name
+
+    display_meta = dict(metadata)
+    for key in (
+        "playbook_name",
+        "strategy_id",
+        "session_label",
+        "session",
+        "playbook_session",
+        "pattern_family",
+        "playbook_entry_style",
+        "entry_style",
+        "entry_confirmation_ready",
+        "entry_confirmation_count",
+        "entry_confirmation_bars_required",
+        "breakout_retest_ready",
+        "first_pullback_ready",
+        "failed_opposite_move_confirmed",
+        "liquidity_sweep_reclaim",
+        "elite_pattern_rank",
+        "cluster_penalty",
+        "impulse_age_bars",
+        "extension_score",
+        "candle_quality_score",
+        "session_quality_score",
+        "target_efficiency_score",
+        "regime_policy_summary",
+        "regime_policy",
+        "regime_label",
+        "execution_kill_reason",
+        "kill_reason",
+        "blocked_reason",
+        "market_review_notes",
+        "execution_review_notes",
+    ):
+        value = item.get(key)
+        if key not in display_meta and value not in (None, "", [], {}):
+            display_meta[key] = value
+    if "playbook_name" not in display_meta and playbook_name:
+        display_meta["playbook_name"] = playbook_name
+    item["metadata"] = display_meta
     return item
 
 
@@ -1977,10 +2039,57 @@ def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, A
             + max(0.0, alignment) * 0.15
             + max(0.0, final_score) * 0.1
         )
-        item = _enrich_signal_like_row(
+        confidence = row.get("confidence")
+        for confidence_key in ("final_confidence", "final_conf", "final_policy_score", "opportunity_score"):
+            if confidence not in (None, "", 0, 0.0):
+                break
+            confidence = row.get(confidence_key)
+
+        base_row = dict(row)
+        metadata = dict(base_row.get("metadata") or {})
+        for key in (
+            "playbook_name",
+            "strategy_id",
+            "session_label",
+            "session",
+            "playbook_session",
+            "pattern_family",
+            "playbook_entry_style",
+            "entry_style",
+            "entry_confirmation_ready",
+            "entry_confirmation_count",
+            "entry_confirmation_bars_required",
+            "breakout_retest_ready",
+            "first_pullback_ready",
+            "failed_opposite_move_confirmed",
+            "liquidity_sweep_reclaim",
+            "elite_pattern_rank",
+            "cluster_penalty",
+            "impulse_age_bars",
+            "extension_score",
+            "candle_quality_score",
+            "session_quality_score",
+            "target_efficiency_score",
+            "regime_policy_summary",
+            "regime_policy",
+            "regime_label",
+            "market_review_notes",
+            "execution_review_notes",
+            "blocked_reason",
+            "kill_reason",
+        ):
+            value = base_row.get(key)
+            if key not in metadata and value not in (None, "", [], {}):
+                metadata[key] = value
+        if metadata:
+            base_row["metadata"] = metadata
+
+        base_row.update(
             {
                 "asset": asset,
-                "direction": str(row.get("direction") or "").upper(),
+                "direction": str(row.get("direction") or row.get("signal") or "").upper(),
+                "signal": str(row.get("direction") or row.get("signal") or "").upper(),
+                "confidence": confidence,
                 "killed_by": str(row.get("killed_by") or row.get("last_layer") or ""),
                 "reason": str(row.get("kill_reason") or row.get("final_policy_reason") or ""),
                 "opportunity_score": round(opportunity, 3),
@@ -1997,7 +2106,12 @@ def _summarize_near_misses(journals: Any, *, limit: int = 6) -> List[Dict[str, A
                 "rank_score": round(rank_score, 4),
                 "event_time": _journal_event_iso(row),
                 "event_ts": _journal_event_sort_value(row),
+                "decision_kind": "blocked",
+                "decision_state": "blocked",
             }
+        )
+        item = _enrich_signal_like_row(
+            base_row
         )
         item_key = (
             asset,
@@ -2736,6 +2850,8 @@ def _compact_command_center_for_page_overview(payload: Dict[str, Any]) -> Dict[s
         "balance": normalized.get("balance"),
         "total_pnl": normalized.get("total_pnl"),
         "daily_pnl": normalized.get("daily_pnl"),
+        "daily_trades": normalized.get("daily_trades"),
+        "win_rate": normalized.get("win_rate"),
         "open_positions": normalized.get("open_positions"),
         "total_trades": normalized.get("total_trades"),
         "engine_running": bool(normalized.get("engine_running", False)),
@@ -2743,14 +2859,27 @@ def _compact_command_center_for_page_overview(payload: Dict[str, Any]) -> Dict[s
         "sentiment_score": normalized.get("sentiment_score"),
         "whale_alerts_24h": int(normalized.get("whale_alerts_24h", 0) or 0),
         "alert_count_24h": int(normalized.get("alert_count_24h", 0) or 0),
+        "recent": _rows("recent", 8),
         "latest_signals": _rows("latest_signals", 8),
         "top_opportunities": _rows("top_opportunities", 8),
         "near_misses": _rows("near_misses", 8),
+        "weak_positions": _rows("weak_positions", 8),
         "positions": _rows("positions", 12),
         "watchlist_ladder": compact_ladder,
         "trade_lifecycle": dict(normalized.get("trade_lifecycle") or {}),
+        "trade_tape": _rows("trade_tape", 16),
         "why_not_traded": compact_why_not,
+        "session_radar": dict(normalized.get("session_radar") or {}),
+        "crypto_rejection_audit": dict(normalized.get("crypto_rejection_audit") or {}),
+        "decision_context": dict(normalized.get("decision_context") or {}),
+        "signal_quality": dict(normalized.get("signal_quality") or {}),
         "live_summary": dict(normalized.get("live_summary") or {}),
+        "pnl_curve": [
+            dict(row)
+            for row in list(normalized.get("pnl_curve") or [])
+            if isinstance(row, dict)
+        ][-96:],
+        "pnl_curve_stats": dict(normalized.get("pnl_curve_stats") or {}),
         "provider_routing": dict(normalized.get("provider_routing") or {}),
         "signal_diagnostics": dict(normalized.get("signal_diagnostics") or {}),
         "timestamp": normalized.get("timestamp") or datetime.now().isoformat(),
@@ -6255,13 +6384,76 @@ def api_ai_predictions_overview():
     }
     playbook_performance = _summarize_playbook_performance(closed_trades, days_back=days)
     near_misses = _summarize_near_misses(journals, limit=6)
-    asset_playbook_matrix = _summarize_asset_playbook_matrix(signal_list, closed_trades, limit=10)
-    failure_archetypes = _summarize_failure_archetypes(journals, closed_trades, limit=6)
-    confidence_decomposition = _summarize_confidence_decomposition(signal_list)
+    active_decisions = signal_list if signal_list else near_misses
+    if not signal_list and active_decisions:
+        live_quality.update(
+            {
+                "signal_count": len(active_decisions),
+                "avg_confidence": round(
+                    sum(float(s.get("confidence", 0.0) or 0.0) for s in active_decisions)
+                    / len(active_decisions)
+                    * 100.0,
+                    1,
+                ),
+                "avg_memory_score": round(
+                    sum(float(s.get("memory_score", 0.0) or 0.0) for s in active_decisions) / len(active_decisions),
+                    1,
+                ),
+                "avg_execution_quality": round(
+                    sum(float(s.get("execution_quality_score", 0.0) or 0.0) for s in active_decisions) / len(active_decisions),
+                    1,
+                ),
+                "avg_opportunity_score": round(
+                    sum(float(s.get("opportunity_score", 0.0) or 0.0) for s in active_decisions) / len(active_decisions),
+                    3,
+                ),
+                "memory_ready_count": sum(1 for s in active_decisions if int(s.get("memory_sample_count", 0) or 0) > 0),
+                "execution_ready_count": sum(1 for s in active_decisions if int(s.get("execution_feedback_sample_count", 0) or 0) > 0),
+            }
+        )
+        live_leaders = {
+            "memory": [
+                {
+                    "asset": s.get("asset", ""),
+                    "direction": s.get("direction", ""),
+                    "score": round(float(s.get("memory_score", 0.0) or 0.0), 1),
+                    "samples": int(s.get("memory_sample_count", 0) or 0),
+                    "subtitle": str(s.get("memory_setup_style") or s.get("memory_regime") or s.get("category", "")),
+                }
+                for s in sorted(
+                    active_decisions,
+                    key=lambda item: (
+                        float(item.get("memory_score", 0.0) or 0.0),
+                        int(item.get("memory_sample_count", 0) or 0),
+                    ),
+                    reverse=True,
+                )[:5]
+            ],
+            "execution": [
+                {
+                    "asset": s.get("asset", ""),
+                    "direction": s.get("direction", ""),
+                    "score": round(float(s.get("execution_quality_score", 0.0) or 0.0), 1),
+                    "samples": int(s.get("execution_feedback_sample_count", 0) or 0),
+                    "subtitle": str(_playbook_name_from_payload(s) or s.get("category", "")),
+                }
+                for s in sorted(
+                    active_decisions,
+                    key=lambda item: (
+                        float(item.get("execution_quality_score", 0.0) or 0.0),
+                        int(item.get("execution_feedback_sample_count", 0) or 0),
+                    ),
+                    reverse=True,
+                )[:5]
+            ],
+        }
+    asset_playbook_matrix = _summarize_asset_playbook_matrix(active_decisions, closed_trades, limit=10)
+    failure_archetypes = _summarize_failure_archetypes(active_decisions or journals, closed_trades, limit=6)
+    confidence_decomposition = _summarize_confidence_decomposition(active_decisions)
     payload = {
         "success": True,
         "accuracy": accuracy,
-        "signals": signal_list,
+        "signals": active_decisions,
         "near_misses": near_misses,
         "asset_playbook_matrix": asset_playbook_matrix,
         "failure_archetypes": failure_archetypes,

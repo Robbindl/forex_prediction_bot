@@ -527,7 +527,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   </div>
 </div>
 
-<script src="/static/dashboard_auth.js?v=20260402c"></script>
+<script src="/static/dashboard_auth.js?v=20260502a"></script>
 <script>
 setInterval(()=>{document.getElementById('clock').textContent=new Date(Date.now()+3*3600000).toUTCString().substring(17,25)+' EAT';},1000);
 
@@ -999,6 +999,58 @@ let _liveBookPending = null;
 let _liveBookSource = null;
 let _liveBookReconnect = null;
 let _commandCenterLastClosedTradeCount = null;
+const COMMAND_CENTER_LAST_GOOD_KEY = 'robbindl:command-center:last-good:v2';
+const COMMAND_CENTER_LAST_GOOD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+function normalizeCommandCenterPayload(payload){
+  const raw = payload && typeof payload === 'object' ? payload : {};
+  const nested = raw.command_center && typeof raw.command_center === 'object' ? raw.command_center : null;
+  const data = nested || raw;
+  if(!data || typeof data !== 'object')return {success:false,error:'bad_payload'};
+  const normalized = Object.assign({}, data);
+  if(raw.stale && normalized.stale == null)normalized.stale = true;
+  if(raw.degraded && normalized.degraded == null)normalized.degraded = true;
+  if(raw.degraded_reason && !normalized.degraded_reason)normalized.degraded_reason = raw.degraded_reason;
+  return normalized;
+}
+function isUsefulCommandCenterPayload(payload){
+  if(!payload || payload.success !== true)return false;
+  const degradedReason = String(payload.degraded_reason || '').toLowerCase();
+  if(payload.degraded && /refreshing|warming|unavailable|build_failed|timed out|timeout/.test(degradedReason))return false;
+  return !!(
+    payload.live_summary ||
+    payload.why_not_traded ||
+    payload.watchlist_ladder ||
+    payload.session_radar ||
+    payload.decision_context ||
+    (Array.isArray(payload.near_misses) && payload.near_misses.length) ||
+    (Array.isArray(payload.latest_signals) && payload.latest_signals.length) ||
+    (Array.isArray(payload.positions) && payload.positions.length) ||
+    payload.balance != null
+  );
+}
+function rememberCommandCenterPayload(payload){
+  if(!isUsefulCommandCenterPayload(payload))return;
+  try{
+    localStorage.setItem(COMMAND_CENTER_LAST_GOOD_KEY, JSON.stringify({stored: Date.now(), payload}));
+  }catch(_){}
+}
+function readRememberedCommandCenterPayload(){
+  try{
+    const raw = localStorage.getItem(COMMAND_CENTER_LAST_GOOD_KEY);
+    if(!raw)return null;
+    const parsed = JSON.parse(raw);
+    const ageMs = Math.max(0, Date.now() - Number(parsed.stored || Date.now()));
+    if(ageMs > COMMAND_CENTER_LAST_GOOD_MAX_AGE_MS)return null;
+    const payload = normalizeCommandCenterPayload(parsed && parsed.payload);
+    if(!payload || payload.success !== true)return null;
+    payload.stale = true;
+    payload.degraded = true;
+    payload.degraded_reason = 'browser_last_good';
+    payload.browser_cache_age_ms = ageMs;
+    return payload;
+  }catch(_){return null;}
+}
 
 function setCommandCenterUnavailable(message){
   const msg = message || 'Command center data unavailable';
@@ -1045,10 +1097,28 @@ async function fetchCommandCenterOverview(){
   if(_commandCenterCache && now - _commandCenterCache.fetched < 5000)return _commandCenterCache.data;
   if(_commandCenterPending)return _commandCenterPending;
   _commandCenterPending = (async () => {
+    let lastError = '';
     try{
-      const page = await fetchProtectedJson('/api/command-center?live=1', {timeoutMs: 15000});
-      if(page && page.success){if(!page.degraded)_commandCenterCache = {fetched: Date.now(), data: page};return page;}
-      return {success:false};
+      const endpoints = [
+        {url:'/api/page-overview?page=command_center&days=30', timeoutMs: 7000},
+        {url:'/api/command-center', timeoutMs: 7000},
+      ];
+      for(const endpoint of endpoints){
+        const response = await fetchProtectedJson(endpoint.url, {timeoutMs: endpoint.timeoutMs});
+        const page = normalizeCommandCenterPayload(response);
+        if(page && page.success){
+          _commandCenterCache = {fetched: Date.now(), data: page};
+          rememberCommandCenterPayload(page);
+          return page;
+        }
+        lastError = String((response && (response.error || response.reason || response.degraded_reason)) || 'request_failed');
+      }
+      const remembered = readRememberedCommandCenterPayload();
+      if(remembered){
+        _commandCenterCache = {fetched: Date.now(), data: remembered};
+        return remembered;
+      }
+      return {success:false,error:lastError||'request_failed'};
     } finally {_commandCenterPending = null;}
   })();
   return _commandCenterPending;
@@ -1257,8 +1327,9 @@ async function loadMain(){
   let d;
   try{
     const page = await fetchCommandCenterOverview();
-    if(page.success){d = page || {};} else {setCommandCenterUnavailable('Command center timed out');return;}
+    if(page.success){d = normalizeCommandCenterPayload(page) || {};} else {setCommandCenterUnavailable('Command center data unavailable');return;}
     if(!d||!d.success){setCommandCenterUnavailable('Command center data unavailable');return;}
+    rememberCommandCenterPayload(d);
   }catch(e){console.error('[CC] fetch:',e);return;}
 
   const providerRouting=d.provider_routing||{};
