@@ -505,6 +505,38 @@ class _NewsSentiment:
         "war OR attack OR missile OR invasion OR sanctions OR tariff OR intervention OR emergency OR ceasefire",
         "fomc OR fed OR ecb OR boe OR boj OR emergency meeting OR surprise rate OR verbal intervention",
     )
+    _RISK_OFF_CCY_STRENGTH = {
+        "USD": 0.35,
+        "JPY": 1.00,
+        "CHF": 0.72,
+        "EUR": 0.00,
+        "GBP": -0.20,
+        "CAD": -0.24,
+        "AUD": -0.78,
+        "NZD": -0.78,
+    }
+    _RISK_ON_CCY_STRENGTH = {
+        "USD": -0.35,
+        "JPY": -1.00,
+        "CHF": -0.72,
+        "EUR": 0.18,
+        "GBP": 0.26,
+        "CAD": 0.34,
+        "AUD": 0.82,
+        "NZD": 0.82,
+    }
+    _CENTRAL_BANK_CCY = {
+        "fed": "USD",
+        "fomc": "USD",
+        "powell": "USD",
+        "ecb": "EUR",
+        "boe": "GBP",
+        "boj": "JPY",
+        "rba": "AUD",
+        "rbnz": "NZD",
+        "boc": "CAD",
+        "snb": "CHF",
+    }
 
     @classmethod
     def get(cls, asset: str) -> Optional[float]:
@@ -625,6 +657,16 @@ class _NewsSentiment:
         policy = sum(float(item.get("policy", 0.0) or 0.0) for item in top)
         intervention = sum(float(item.get("intervention", 0.0) or 0.0) for item in top)
         strength = _clamp(max(risk_off, risk_on, policy, intervention))
+        directional = cls._headline_directional_impact(
+            asset=asset,
+            category=cat,
+            top=top,
+            risk_off=risk_off,
+            risk_on=risk_on,
+            policy=policy,
+            intervention=intervention,
+            strength=strength,
+        )
 
         label = "geopolitical_risk_off"
         if intervention >= max(risk_off, risk_on, policy):
@@ -637,11 +679,183 @@ class _NewsSentiment:
         return {
             "score": round(strength, 3),
             "label": label,
+            "direction": directional["direction"],
+            "directional_score": directional["score"],
+            "directional_confidence": directional["confidence"],
+            "direction_reasons": directional["reasons"],
             "article_count": len(top),
             "fresh": True,
             "headlines": [str(item.get("headline") or "")[:160] for item in top],
             "sources": sorted({str(item.get("source_type") or "") for item in top if item.get("source_type")}),
         }
+
+    @classmethod
+    def _headline_directional_impact(
+        cls,
+        *,
+        asset: str,
+        category: str,
+        top: List[Dict[str, Any]],
+        risk_off: float,
+        risk_on: float,
+        policy: float,
+        intervention: float,
+        strength: float,
+    ) -> Dict[str, Any]:
+        canonical = _canon_asset(asset)
+        text_blob = " ".join(str(item.get("headline") or "") for item in top).lower()
+        risk_off_strength = _clamp(float(risk_off or 0.0))
+        risk_on_strength = _clamp(float(risk_on or 0.0))
+        policy_strength = _clamp(float(policy or 0.0))
+        intervention_strength = _clamp(float(intervention or 0.0))
+        impact = 0.0
+        reasons: List[str] = []
+
+        if category == "forex":
+            off_beta = cls._forex_regime_beta(canonical, risk_on=False)
+            on_beta = cls._forex_regime_beta(canonical, risk_on=True)
+            if risk_off_strength:
+                impact += risk_off_strength * off_beta
+                reasons.append(f"risk_off_fx_beta={off_beta:+.2f}")
+            if risk_on_strength:
+                impact += risk_on_strength * on_beta
+                reasons.append(f"risk_on_fx_beta={on_beta:+.2f}")
+            policy_beta = cls._policy_currency_beta(canonical, text_blob)
+            if policy_strength and policy_beta:
+                impact += policy_strength * policy_beta
+                reasons.append(f"policy_currency_beta={policy_beta:+.2f}")
+            intervention_beta = cls._intervention_currency_beta(canonical, text_blob)
+            if intervention_strength and intervention_beta:
+                impact += intervention_strength * intervention_beta
+                reasons.append(f"intervention_beta={intervention_beta:+.2f}")
+        elif category == "commodities":
+            off_beta = cls._commodity_risk_off_beta(canonical, text_blob)
+            on_beta = cls._commodity_risk_on_beta(canonical)
+            if risk_off_strength:
+                impact += risk_off_strength * off_beta
+                reasons.append(f"risk_off_commodity_beta={off_beta:+.2f}")
+            if risk_on_strength:
+                impact += risk_on_strength * on_beta
+                reasons.append(f"risk_on_commodity_beta={on_beta:+.2f}")
+            policy_beta = cls._commodity_policy_beta(canonical, text_blob)
+            if policy_strength and policy_beta:
+                impact += policy_strength * policy_beta
+                reasons.append(f"policy_commodity_beta={policy_beta:+.2f}")
+        elif category == "crypto":
+            if risk_off_strength:
+                impact -= risk_off_strength * 0.90
+                reasons.append("risk_off_crypto=-0.90")
+            if risk_on_strength:
+                impact += risk_on_strength * 0.80
+                reasons.append("risk_on_crypto=+0.80")
+            fed_beta = cls._fed_policy_risk_beta(text_blob)
+            if policy_strength and fed_beta:
+                impact += policy_strength * fed_beta * 0.80
+                reasons.append(f"fed_policy_crypto={fed_beta * 0.80:+.2f}")
+        elif category == "indices":
+            if risk_off_strength:
+                impact -= risk_off_strength * 0.92
+                reasons.append("risk_off_indices=-0.92")
+            if risk_on_strength:
+                impact += risk_on_strength * 0.82
+                reasons.append("risk_on_indices=+0.82")
+            fed_beta = cls._fed_policy_risk_beta(text_blob)
+            if policy_strength and fed_beta:
+                impact += policy_strength * fed_beta * 0.72
+                reasons.append(f"fed_policy_indices={fed_beta * 0.72:+.2f}")
+
+        impact = _clamp(impact)
+        direction = "NEUTRAL"
+        if impact >= 0.12:
+            direction = "BUY"
+        elif impact <= -0.12:
+            direction = "SELL"
+        confidence = _clamp(abs(impact) * max(0.0, float(strength or 0.0)))
+        return {
+            "direction": direction,
+            "score": round(impact, 3),
+            "confidence": round(confidence, 3),
+            "reasons": reasons[:4],
+        }
+
+    @classmethod
+    def _forex_regime_beta(cls, canonical_asset: str, *, risk_on: bool) -> float:
+        if "/" not in canonical_asset:
+            return 0.0
+        base, quote = canonical_asset.split("/", 1)
+        strengths = cls._RISK_ON_CCY_STRENGTH if risk_on else cls._RISK_OFF_CCY_STRENGTH
+        return _clamp(float(strengths.get(base, 0.0)) - float(strengths.get(quote, 0.0)))
+
+    @classmethod
+    def _policy_currency_beta(cls, canonical_asset: str, text_blob: str) -> float:
+        if "/" not in canonical_asset:
+            return 0.0
+        base, quote = canonical_asset.split("/", 1)
+        biases: Dict[str, float] = {}
+        hawkish = any(term in text_blob for term in ("surprise hike", "rate hike", "hawkish", "higher rates"))
+        dovish = any(term in text_blob for term in ("surprise cut", "rate cut", "dovish", "easing", "policy pivot"))
+        if not hawkish and not dovish:
+            return 0.0
+        for token, ccy in cls._CENTRAL_BANK_CCY.items():
+            if token in text_blob:
+                biases[ccy] = 0.72 if hawkish else -0.72
+        return _clamp(float(biases.get(base, 0.0)) - float(biases.get(quote, 0.0)))
+
+    @staticmethod
+    def _intervention_currency_beta(canonical_asset: str, text_blob: str) -> float:
+        if "/" not in canonical_asset:
+            return 0.0
+        base, quote = canonical_asset.split("/", 1)
+        biases: Dict[str, float] = {}
+        if any(term in text_blob for term in ("yen", "boj", "ministry of finance", "currency support", "verbal intervention")):
+            biases["JPY"] = 1.0
+        return _clamp(float(biases.get(base, 0.0)) - float(biases.get(quote, 0.0)))
+
+    @staticmethod
+    def _commodity_risk_off_beta(canonical_asset: str, text_blob: str) -> float:
+        if canonical_asset in {"XAU/USD", "GC=F"}:
+            return 0.88
+        if canonical_asset in {"XAG/USD", "SI=F"}:
+            return 0.55
+        if canonical_asset == "WTI":
+            supply_terms = {
+                "oil", "crude", "brent", "wti", "opec", "supply", "pipeline",
+                "sanctions", "middle east", "iran", "russia", "inventory",
+            }
+            return 0.72 if any(term in text_blob for term in supply_terms) else -0.35
+        return 0.0
+
+    @staticmethod
+    def _commodity_risk_on_beta(canonical_asset: str) -> float:
+        if canonical_asset in {"XAU/USD", "GC=F"}:
+            return -0.60
+        if canonical_asset in {"XAG/USD", "SI=F"}:
+            return -0.30
+        if canonical_asset == "WTI":
+            return 0.35
+        return 0.0
+
+    @classmethod
+    def _commodity_policy_beta(cls, canonical_asset: str, text_blob: str) -> float:
+        fed_beta = cls._fed_policy_risk_beta(text_blob)
+        if canonical_asset in {"XAU/USD", "GC=F"}:
+            return 0.70 * fed_beta
+        if canonical_asset in {"XAG/USD", "SI=F"}:
+            return 0.45 * fed_beta
+        if canonical_asset == "WTI":
+            return 0.25 * fed_beta
+        return 0.0
+
+    @staticmethod
+    def _fed_policy_risk_beta(text_blob: str) -> float:
+        fed_related = any(term in text_blob for term in ("fed", "fomc", "powell", "interest rate", "rate decision"))
+        if not fed_related:
+            return 0.0
+        if any(term in text_blob for term in ("surprise hike", "rate hike", "hawkish", "higher rates")):
+            return -0.85
+        if any(term in text_blob for term in ("surprise cut", "rate cut", "dovish", "easing", "policy pivot")):
+            return 0.65
+        return 0.0
 
     @classmethod
     def _fetch_reddit_scored(cls, asset: str) -> List[Tuple[float, float]]:

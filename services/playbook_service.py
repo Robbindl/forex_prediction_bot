@@ -260,7 +260,14 @@ def _shared_shock_profile(
     fresh_event_score = _clip(impact_weight * state_weight * direction_weight)
     macro_impact = str(ctx.get("macro_impact") or "").strip().upper()
     macro_score = {"HIGH": 0.60, "MEDIUM": 0.34}.get(macro_impact, 0.0)
-    headline_shock_score = _clip(_safe_float(headline_shock.get("score"), 0.0), 0.0, 1.0)
+    headline_shock_raw_score = _clip(_safe_float(headline_shock.get("score"), 0.0), 0.0, 1.0)
+    headline_shock_direction = str(headline_shock.get("direction") or "").strip().upper()
+    headline_shock_directional_score = _safe_float(headline_shock.get("directional_score"), 0.0)
+    if headline_shock_direction in {"BUY", "SELL"}:
+        headline_direction_weight = 1.0 if headline_shock_direction == direction else 0.15
+    else:
+        headline_direction_weight = 0.45 if headline_shock_raw_score > 0.0 else 0.0
+    headline_shock_score = _clip(headline_shock_raw_score * headline_direction_weight, 0.0, 1.0)
     event_score = _clip(max(fresh_event_score, macro_score, headline_shock_score * 0.92))
 
     alignment_score = _clip(_safe_float(structure.get("alignment_score"), 0.0))
@@ -371,11 +378,18 @@ def _shared_shock_profile(
         and timing_intact
         and (liquidity_clean or fresh_event or micro_support >= 0.24)
     )
+    event_label = f"{news_state}:{news_impact}" if news_state else ""
+    if not event_label and headline_shock_raw_score > 0.0:
+        event_label = f"headline:{headline_shock_direction or 'NEUTRAL'}"
 
     return {
         "score": round(shock_score, 4),
         "event_score": round(event_score, 4),
         "headline_shock_score": round(headline_shock_score, 4),
+        "headline_shock_raw_score": round(headline_shock_raw_score, 4),
+        "headline_shock_direction": headline_shock_direction,
+        "headline_shock_directional_score": round(headline_shock_directional_score, 4),
+        "headline_shock_direction_weight": round(headline_direction_weight, 4),
         "displacement_score": round(displacement_score, 4),
         "structure_score": round(structure_score, 4),
         "liquidity_score": round(liquidity_score, 4),
@@ -384,7 +398,7 @@ def _shared_shock_profile(
         "supported": bool(supported),
         "timing_intact": bool(timing_intact),
         "liquidity_clean": bool(liquidity_clean),
-        "event_label": f"{news_state}:{news_impact}" if news_state else "",
+        "event_label": event_label,
     }
 
 
@@ -1963,6 +1977,10 @@ class PlaybookService:
         candidate["shock_score"] = float(shock_profile.get("score", 0.0) or 0.0)
         candidate["shock_event_score"] = float(shock_profile.get("event_score", 0.0) or 0.0)
         candidate["headline_shock_score"] = float(shock_profile.get("headline_shock_score", 0.0) or 0.0)
+        candidate["headline_shock_raw_score"] = float(shock_profile.get("headline_shock_raw_score", 0.0) or 0.0)
+        candidate["headline_shock_direction"] = str(shock_profile.get("headline_shock_direction") or "")
+        candidate["headline_shock_directional_score"] = float(shock_profile.get("headline_shock_directional_score", 0.0) or 0.0)
+        candidate["headline_shock_direction_weight"] = float(shock_profile.get("headline_shock_direction_weight", 0.0) or 0.0)
         candidate["shock_displacement_score"] = float(shock_profile.get("displacement_score", 0.0) or 0.0)
         candidate["shock_structure_score"] = float(shock_profile.get("structure_score", 0.0) or 0.0)
         candidate["shock_liquidity_score"] = float(shock_profile.get("liquidity_score", 0.0) or 0.0)
@@ -2005,6 +2023,10 @@ class PlaybookService:
             "shock_score": round(float(shock_profile.get("score", 0.0) or 0.0), 4),
             "shock_event_score": round(float(shock_profile.get("event_score", 0.0) or 0.0), 4),
             "headline_shock_score": round(float(shock_profile.get("headline_shock_score", 0.0) or 0.0), 4),
+            "headline_shock_raw_score": round(float(shock_profile.get("headline_shock_raw_score", 0.0) or 0.0), 4),
+            "headline_shock_direction": str(shock_profile.get("headline_shock_direction") or ""),
+            "headline_shock_directional_score": round(float(shock_profile.get("headline_shock_directional_score", 0.0) or 0.0), 4),
+            "headline_shock_direction_weight": round(float(shock_profile.get("headline_shock_direction_weight", 0.0) or 0.0), 4),
             "shock_displacement_score": round(float(shock_profile.get("displacement_score", 0.0) or 0.0), 4),
             "shock_structure_score": round(float(shock_profile.get("structure_score", 0.0) or 0.0), 4),
             "shock_liquidity_score": round(float(shock_profile.get("liquidity_score", 0.0) or 0.0), 4),
