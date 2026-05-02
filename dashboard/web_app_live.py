@@ -119,6 +119,7 @@ try:
         LOCAL_CANDLE_STORE_ENABLED,
         NEWS_REDDIT_ENABLED,
         NEWS_RSS_ENABLED,
+        NEWS_SENTIMENT_EXECUTION_ENABLED,
         NEWS_SENTIMENT_ENABLED,
         PLAYBOOK_ONLY_RUNTIME,
         ROBBIE_CHAT_PROVIDER,
@@ -132,6 +133,7 @@ except Exception:
     DEVELOPMENT_MODE = False
     PLAYBOOK_ONLY_RUNTIME = False
     NEWS_SENTIMENT_ENABLED = True
+    NEWS_SENTIMENT_EXECUTION_ENABLED = False
     NEWS_REDDIT_ENABLED = False
     NEWS_RSS_ENABLED = False
     TOP_OPPORTUNITIES_LIMIT = 10
@@ -1309,10 +1311,12 @@ def _fallback_signal(asset: str) -> Optional[Dict]:
 def _prewarm_sentiment() -> None:
     time.sleep(12)
     try:
-        if not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED):
-            logger.info("[dashboard] Sentiment prewarm skipped — news sources are disabled")
-            return
-        logger.info("[dashboard] Pre-warming sentiment cache...")
+        news_enabled = bool(NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED)
+        logger.info(
+            "[dashboard] Pre-warming sentiment cache..."
+            if news_enabled
+            else "[dashboard] Pre-warming market-derived sentiment cache (news feeds disabled)"
+        )
         _get_sent()
         with app.test_request_context("/api/sentiment/dashboard"):
             try:
@@ -6304,6 +6308,8 @@ def _default_sentiment_dashboard_result() -> Dict[str, Any]:
         "sentiment_distribution": {"bullish": 0, "neutral": 0, "bearish": 0},
         "articles": [],
         "whale_alerts": [],
+        "news_sources_enabled": bool(NEWS_SENTIMENT_ENABLED or NEWS_RSS_ENABLED or NEWS_REDDIT_ENABLED),
+        "execution_sentiment_mode": "full_sentiment" if NEWS_SENTIMENT_EXECUTION_ENABLED else "reliable_components_only",
         "market_composite": {
             "score": 0.0,
             "interpretation": "Neutral",
@@ -6527,18 +6533,13 @@ def api_sentiment_dashboard():
     if cached is not None:
         return jsonify(cached)
     try:
-        if not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED):
-            result = _default_sentiment_dashboard_result()
-            result["degraded"] = True
-            result["degraded_reason"] = "sentiment_sources_disabled"
-            _cache_set("sentiment_dashboard", result, ttl=300)
-            return jsonify(result)
-
         sa = _get_sent()
         if sa is None:
             return jsonify({"success": False, "error": "Sentiment service unavailable"}), 503
 
         result = _default_sentiment_dashboard_result()
+        news_enabled = bool(NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED)
+        result["news_sources_enabled"] = news_enabled
         timed_out_tasks = 0
 
         pool = None
@@ -6550,9 +6551,10 @@ def api_sentiment_dashboard():
                 pool.submit(sa.get_comprehensive_sentiment): "market_sentiment",
                 pool.submit(sa.fetch_fear_greed_index): "fear_greed",
                 pool.submit(sa.fetch_vix): "vix",
-                pool.submit(sa.news_integrator.fetch_all_sources): "articles",
                 pool.submit(sa.fetch_whale_alerts, min_value_usd=1_000_000): "whales",
             }
+            if news_enabled:
+                futures[pool.submit(sa.news_integrator.fetch_all_sources)] = "articles"
             done, not_done = wait(tuple(futures.keys()), timeout=9.5)
             for future in done:
                 key = futures[future]
@@ -6595,11 +6597,6 @@ def api_sentiment_by_asset():
     if cached is not None:
         return jsonify(cached)
     try:
-        if not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED):
-            payload = _neutral_sentiment_by_asset_payload("sentiment_sources_disabled")
-            _cache_set(_SENTIMENT_BY_ASSET_CACHE_KEY, payload, ttl=300)
-            return jsonify(payload)
-
         mi = _get_market_intelligence()
         if not mi:
             payload = _neutral_sentiment_by_asset_payload("market_intelligence_unavailable")
@@ -8294,8 +8291,8 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload["status"] = _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10)
         payload["command_center"] = _command_center_snapshot()
     elif page == "sentiment_intelligence":
-        sentiment_sources_disabled = not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED)
-        sentiment_fallback_reason = "sentiment_sources_disabled" if sentiment_sources_disabled else "sentiment_cache_warming"
+        sentiment_news_disabled = not (NEWS_SENTIMENT_ENABLED or NEWS_REDDIT_ENABLED or NEWS_RSS_ENABLED)
+        sentiment_fallback_reason = "sentiment_news_disabled" if sentiment_news_disabled else "sentiment_cache_warming"
         payload = {
             "success": True,
             "page": page,

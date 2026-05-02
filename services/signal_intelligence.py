@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from config.config import NEWS_REDDIT_ENABLED
+from config.config import NEWS_REDDIT_ENABLED, NEWS_SENTIMENT_EXECUTION_ENABLED
 from core.asset_profiles import get_profile
 from utils.logger import get_logger
 
@@ -16,6 +16,15 @@ _CRYPTO_BULLISH_NARRATIVES = {"ETF_NEWS", "HALVING_BUZZ", "AI_TOKENS", "LAYER2_T
 _CRYPTO_BEARISH_NARRATIVES = {"REGULATION", "EXCHANGE_NEWS", "STABLECOIN_NEWS"}
 _GENERAL_BULLISH_NARRATIVES = {"MACRO_BOOM", "RISK_ON"}
 _GENERAL_BEARISH_NARRATIVES = {"MACRO_SHOCK", "RISK_OFF", "RECESSION"}
+
+_EXECUTION_SENTIMENT_COMPONENTS = {
+    "price_momentum",
+    "fear_greed",
+    "vix",
+    "ig_client_sentiment",
+    "put_call",
+    "aaii",
+}
 
 def _get_market_intelligence_service():
     try:
@@ -159,7 +168,10 @@ def _sentiment_review_sources(
 def _sentiment_review_attach_metadata(
     signal,
     *,
-    score: float,
+    raw_score: float,
+    execution_score: float,
+    execution_mode: str,
+    execution_components: Dict[str, Any],
     components: Dict[str, Any],
     weights: Dict[str, Any],
     ig_client_sentiment: Dict[str, Any] | None,
@@ -171,7 +183,12 @@ def _sentiment_review_attach_metadata(
     market_intelligence_timestamp: str,
     intelligence_timestamp: str,
 ) -> None:
-    signal.metadata["sentiment_score"] = round(score, 3)
+    signal.metadata["sentiment_score"] = round(execution_score, 3)
+    signal.metadata["sentiment_raw_score"] = round(raw_score, 3)
+    signal.metadata["sentiment_execution_mode"] = execution_mode
+    signal.metadata["sentiment_execution_components"] = {
+        str(k): round(float(v), 3) for k, v in execution_components.items()
+    }
     signal.metadata["sentiment_components"] = {str(k): round(float(v), 3) for k, v in components.items()}
     signal.metadata["sentiment_weights"] = {str(k): round(float(v), 3) for k, v in weights.items()}
 
@@ -198,6 +215,42 @@ def _sentiment_review_attach_metadata(
         signal.metadata["intelligence_timestamp"] = str(intelligence_timestamp)
     if "macro_event" in signal.metadata["sentiment_components"]:
         signal.metadata["macro_sentiment_score"] = signal.metadata["sentiment_components"]["macro_event"]
+
+
+def _resolve_execution_sentiment_score(
+    raw_score: float,
+    components: Dict[str, Any],
+    weights: Dict[str, Any],
+) -> tuple[float, str, Dict[str, Any]]:
+    if NEWS_SENTIMENT_EXECUTION_ENABLED:
+        return raw_score, "full_sentiment", dict(components)
+
+    reliable: Dict[str, Any] = {}
+    for name, value in components.items():
+        if str(name) in _EXECUTION_SENTIMENT_COMPONENTS:
+            reliable[str(name)] = value
+
+    if not reliable:
+        return 0.0, "news_dashboard_only", {}
+
+    total_weight = 0.0
+    weighted_score = 0.0
+    for name, value in reliable.items():
+        try:
+            component_value = float(value or 0.0)
+        except Exception:
+            continue
+        try:
+            weight = float(weights.get(name, 0.2) or 0.2)
+        except Exception:
+            weight = 0.2
+        total_weight += max(0.0, weight)
+        weighted_score += component_value * max(0.0, weight)
+
+    if total_weight <= 0.0:
+        return 0.0, "news_dashboard_only", reliable
+    score = max(-1.0, min(1.0, weighted_score / total_weight))
+    return score, "reliable_components_only", reliable
 
 
 def _sentiment_review_signal_adjustments(
@@ -321,9 +374,14 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
         weights = {}
 
     ig_client_sentiment = sentiment_details.get("ig_client_sentiment")
+    execution_score, execution_mode, execution_components = _resolve_execution_sentiment_score(score, components, weights)
+
     _sentiment_review_attach_metadata(
         signal,
-        score=score,
+        raw_score=score,
+        execution_score=execution_score,
+        execution_mode=execution_mode,
+        execution_components=execution_components,
         components=components,
         weights=weights,
         ig_client_sentiment=ig_client_sentiment,
@@ -349,7 +407,7 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     adjustments = _sentiment_review_adjustments(
         signal=signal,
         profile=profile,
-        score=score,
+        score=execution_score,
         components=components,
         dominant=dominant,
         nar_strength=nar_strength,
@@ -358,7 +416,9 @@ def apply_sentiment_review(signal, context: Dict[str, Any]) -> Dict[str, Any]:
     signal.metadata["sentiment_sources"] = sources_used
 
     return {
-        "score": round(score, 3),
+        "score": round(execution_score, 3),
+        "raw_score": round(score, 3),
+        "execution_mode": execution_mode,
         "sources": sources_used,
         "components": signal.metadata["sentiment_components"],
         "weights": signal.metadata["sentiment_weights"],

@@ -15,7 +15,7 @@ from services.sentiment_sources import (
     _clamp,
     _reddit_score,
 )
-from config.config import NEWS_REDDIT_ENABLED, NEWS_SENTIMENT_ENABLED
+from config.config import NEWS_REDDIT_ENABLED, NEWS_SENTIMENT_ENABLED, NEWS_SENTIMENT_EXECUTION_ENABLED
 from core.asset_profiles import get_profile
 from utils.logger import get_logger
 
@@ -54,7 +54,7 @@ class SentimentService:
         else:
             result = self._index_sentiment(asset)
 
-        if NEWS_SENTIMENT_ENABLED:
+        if NEWS_SENTIMENT_ENABLED and NEWS_SENTIMENT_EXECUTION_ENABLED:
             try:
                 shock = _NewsSentiment.headline_shock(asset)
                 if shock:
@@ -100,7 +100,7 @@ class SentimentService:
             components["price_momentum"] = pm
             weights["price_momentum"]    = 0.30
 
-        if NEWS_SENTIMENT_ENABLED:
+        if NEWS_SENTIMENT_ENABLED and NEWS_SENTIMENT_EXECUTION_ENABLED:
             # 3. News sentiment (asset-filtered)
             ns = _NewsSentiment.get(asset)
             if ns is not None:
@@ -132,7 +132,7 @@ class SentimentService:
             components["price_momentum"] = pm
             weights["price_momentum"]    = 0.35
 
-        if NEWS_SENTIMENT_ENABLED:
+        if NEWS_SENTIMENT_ENABLED and NEWS_SENTIMENT_EXECUTION_ENABLED:
             # 2. News (asset-specific — precious-metals coverage)
             ns = _NewsSentiment.get(asset)
             if ns is not None:
@@ -184,7 +184,7 @@ class SentimentService:
             components["price_momentum"] = pm
             weights["price_momentum"]    = 0.40
 
-        if NEWS_SENTIMENT_ENABLED:
+        if NEWS_SENTIMENT_ENABLED and NEWS_SENTIMENT_EXECUTION_ENABLED:
             # 2. News (asset-filtered)
             ns = _NewsSentiment.get(asset)
             if ns is not None:
@@ -231,7 +231,7 @@ class SentimentService:
             components["price_momentum"] = pm
             weights["price_momentum"]    = 0.20
 
-        if NEWS_SENTIMENT_ENABLED:
+        if NEWS_SENTIMENT_ENABLED and NEWS_SENTIMENT_EXECUTION_ENABLED:
             # 2. Reddit — equity-index subreddits via public JSON
             if NEWS_REDDIT_ENABLED:
                 rd = _reddit_score(asset)
