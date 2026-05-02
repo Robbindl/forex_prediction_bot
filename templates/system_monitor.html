@@ -353,6 +353,32 @@ function updateSpark(inst,hist,val){
 
 function barColor(pct){return pct>85?'var(--rd)':pct>70?'var(--am)':'var(--gr)'}
 function fmtUsd(n){const num=Number(n||0);return (num>=0?'+$':'-$')+Math.abs(num).toFixed(2);}
+function numericValue(value){
+  if(value == null || value === '') return null;
+  if(typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if(typeof value === 'string'){
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  }
+  if(typeof value === 'object'){
+    for(const key of ['age_secs','seconds','value','age','sec']){
+      if(Object.prototype.hasOwnProperty.call(value, key)){
+        const num = numericValue(value[key]);
+        if(num !== null) return num;
+      }
+    }
+  }
+  return null;
+}
+function fmtSeconds(value, fallback='No samples yet'){
+  const num = numericValue(value);
+  if(num === null) return fallback;
+  return `${num.toFixed ? num.toFixed(1) : num}s old`;
+}
+function fmtThreshold(value){
+  const num = numericValue(value);
+  return num === null ? 'Threshold —' : `Threshold ${num.toFixed ? num.toFixed(0) : num}s`;
+}
 function signalMeta(signal){return signal && typeof signal.metadata === 'object' && signal.metadata ? signal.metadata : {};}
 function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] !== undefined ? meta[key] : signal ? signal[key] : undefined;}
 function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
@@ -481,6 +507,7 @@ async function load(){
     const tradeLifecycle = commandCenter.trade_lifecycle || {};
     const gateCounts = deriveDecisionGateCounts(liveSignals);
     const funnel = deriveDecisionFunnel(liveSignals, tradeLifecycle, Number(d.open_positions || 0));
+    const splitMode = d.process_model === 'split' || !!d.dashboard_standalone;
 
     document.getElementById('updateTime').textContent='Updated: '+new Date(new Date(d.timestamp||Date.now()).getTime()+3*3600000).toISOString().substring(11,19)+' EAT';
     document.getElementById('sysDot').style.background=d.processes?.['TradingCore']?'var(--gr)':'var(--rd)';
@@ -521,13 +548,20 @@ async function load(){
 
     // Process list
     const procs=d.processes||{};
+    const processDetails=d.process_details||{};
     const pEl=document.getElementById('procList');
-    pEl.innerHTML=Object.entries(procs).map(([name,ok])=>`
+    pEl.innerHTML=Object.entries(procs).map(([name,rawOk])=>{
+      const detail = processDetails[name] || {};
+      const ok = detail.ok !== undefined ? !!detail.ok : !!rawOk;
+      const state = detail.state || (ok ? 'Running' : 'Stopped');
+      const meta = detail.meta ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${detail.meta}</div>` : '';
+      return `
       <div class="proc-row">
         <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
-        <div class="proc-name">${name}</div>
-        <div class="proc-status ${ok?'proc-on':'proc-off'}">${ok?'Running':'Stopped'}</div>
-      </div>`).join('');
+        <div class="proc-name">${name}${meta}</div>
+        <div class="proc-status ${ok?'proc-on':'proc-off'}">${state}</div>
+      </div>`;
+    }).join('');
 
     // Runtime services
     const services=d.phase_health||{};
@@ -539,11 +573,11 @@ async function load(){
     const okxFeed=feedConnections.okx||{};
     const igFeed=feedConnections.ig||{};
     const serviceRows=[
-      {name:'Market Data Feeds', ok:!!services.phase1_data_feeds, state:services.phase1_data_feeds?'active':'inactive', meta:'phase 1'},
-      {name:'Whale Intelligence', ok:!!services.phase2_whale_intel, state:services.phase2_whale_intel?'active':'inactive', meta:'phase 2'},
-      {name:'Order Flow', ok:!!services.phase3_order_flow, state:services.phase3_order_flow?'active':'inactive', meta:'phase 3'},
+      {name:'Market Data Feeds', ok:!!services.phase1_data_feeds, state:services.phase1_data_feeds?(splitMode?'bot-owned':'active'):'inactive', meta:splitMode?'phase 1 · forex-bot service':'phase 1'},
+      {name:'Whale Intelligence', ok:!!services.phase2_whale_intel, state:services.phase2_whale_intel?(splitMode?'bot-owned':'active'):'inactive', meta:splitMode?'phase 2 · forex-bot service':'phase 2'},
+      {name:'Order Flow', ok:!!services.phase3_order_flow, state:services.phase3_order_flow?(splitMode?'bot-owned':'active'):'inactive', meta:splitMode?'phase 3 · forex-bot service':'phase 3'},
       {name:'Narrative AI', ok:!!services.phase4_narrative_ai, state:services.phase4_narrative_ai?'active':'inactive', meta:'phase 4'},
-      {name:'Intelligence Alerts', ok:!!services.phase7_intel_alerts, state:services.phase7_intel_alerts?'active':'inactive', meta:'phase 7'},
+      {name:'Intelligence Alerts', ok:!!services.phase7_intel_alerts, state:services.phase7_intel_alerts?(splitMode?'bot-owned':'active'):'inactive', meta:splitMode?'phase 7 · forex-bot service':'phase 7'},
       {name:'cTrader Live Depth', ok:!!runtimeServices.ctrader_live_depth?.ok, state:runtimeServices.ctrader_live_depth?.state||'unknown', meta:runtimeServices.ctrader_live_depth?.meta||''},
       {name:'Dukascopy Live Depth', ok:!!runtimeServices.dukascopy_live_depth?.ok, state:runtimeServices.dukascopy_live_depth?.state||'unknown', meta:runtimeServices.dukascopy_live_depth?.meta||''},
       {name:'Dukascopy History', ok:!!runtimeServices.dukascopy_history?.ok, state:runtimeServices.dukascopy_history?.state||'unknown', meta:runtimeServices.dukascopy_history?.meta||''},
@@ -661,9 +695,9 @@ async function load(){
         <div class="train-card">
           <div class="train-top">
             <div class="train-name">Process truth</div>
-            <div class="train-state ${d.processes?.['TradingCore'] ? 'gn' : 'rd'}">${d.processes?.['TradingCore'] ? 'online' : 'offline'}</div>
+            <div class="train-state ${d.processes?.['TradingCore'] ? 'gn' : 'rd'}">${splitMode && d.processes?.['TradingCore'] ? 'split' : d.processes?.['TradingCore'] ? 'online' : 'offline'}</div>
           </div>
-          <div class="train-meta">${Object.values(procs).filter(Boolean).length}/${Object.keys(procs).length} tracked processes running</div>
+          <div class="train-meta">${Object.values(procs).filter(Boolean).length}/${Object.keys(procs).length} tracked processes running${splitMode ? ' · dashboard is separate from forex-bot' : ''}</div>
           <div class="train-issue">${issues.length ? `${issues.length} active issue flags in the monitor` : 'No monitor issue flags right now'}</div>
         </div>
         <div class="train-card">
@@ -792,8 +826,8 @@ async function load(){
         const item = freshness[key] || {};
         const ok = !!item.fresh;
         const status = item.status === 'never_seen' ? 'waiting' : ok ? 'fresh' : 'stale';
-        const age = item.age_secs == null ? 'No samples yet' : `${item.age_secs.toFixed ? item.age_secs.toFixed(1) : item.age_secs}s old`;
-        const threshold = item.threshold == null ? '—' : `Threshold ${item.threshold}s`;
+        const age = fmtSeconds(item.age_secs);
+        const threshold = fmtThreshold(item.threshold);
         return `<div class="fresh-card">
           <div class="fresh-top">
             <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
@@ -813,8 +847,8 @@ async function load(){
     }else{
       staleMapEl.innerHTML = `<div class="fresh-grid">${staleKeys.map((key) => {
         const item = freshness[key] || {};
-        const age = item.age_secs == null ? 'No samples yet' : `${item.age_secs.toFixed ? item.age_secs.toFixed(1) : item.age_secs}s old`;
-        const threshold = item.threshold == null ? 'Threshold —' : `Threshold ${item.threshold}s`;
+        const age = fmtSeconds(item.age_secs);
+        const threshold = fmtThreshold(item.threshold);
         return `<div class="fresh-card">
           <div class="fresh-top">
             <div class="proc-dot proc-dot-off"></div>
@@ -833,14 +867,14 @@ async function load(){
     const providerRouting=((overview.command_center||{}).provider_routing)||{};
     const universeCount=Number(providerRouting.asset_count||0);
     const connItems=[
-      {name:'Trading Engine',ok:procs['TradingCore']},
+      {name:'Trading Engine',ok:procs['TradingCore'], meta:splitMode ? `split service${d.external_bot_processes ? ` · ${d.external_bot_processes} proc` : ''}` : ''},
       {name:'Web Dashboard',ok:procs['Web dashboard']},
       {name:'Asset Universe',ok:universeCount>0, meta:universeCount?`${universeCount} tracked assets across routed feeds`:''},
       {name:'Deriv Routed Quotes',ok:!!derivFeed.connected, meta:derivFeed.symbol_count?`${derivFeed.symbol_count} symbols`:derivFeed.assets||''},
       {name:'Bybit Commodity Depth',ok:!!bybitFeed.connected, meta:bybitFeed.symbol_count?`${bybitFeed.symbol_count} symbols`:bybitFeed.assets||''},
       {name:'OKX Commodity Fallback',ok:!!okxFeed.connected, meta:okxFeed.symbol_count?`${okxFeed.symbol_count} symbols`:okxFeed.assets||''},
       {name:'Binance Crypto + Proxy Feed',ok:!!binanceFeed.connected, meta:binanceFeed.symbol_count?`${binanceFeed.symbol_count} symbols`:binanceFeed.assets||''},
-      {name:'Exchange Feeds',ok:services['phase1_data_feeds']},
+      {name:'Exchange Feeds',ok:services['phase1_data_feeds'], meta:splitMode && services['phase1_data_feeds'] ? 'bot-owned' : ''},
       {name:'IG Routed Quote Anchor',ok:!!igFeed.connected, meta:igFeed.symbol_count?`${igFeed.symbol_count} assets`:igFeed.assets||''},
       {name:'cTrader Depth',ok:!!runtimeServices.ctrader_live_depth?.ok, meta:runtimeServices.ctrader_live_depth?.meta||''},
       {name:'Dukascopy Depth',ok:!!runtimeServices.dukascopy_live_depth?.ok, meta:runtimeServices.dukascopy_live_depth?.meta||''},
@@ -851,7 +885,7 @@ async function load(){
       {name:'DeepSeek API',ok:!!runtimeServices.deepseek_api?.ok, meta:runtimeServices.deepseek_api?.meta||''},
       {name:'Robbie Scheduler',ok:!!runtimeServices.robbie_scheduler?.ok, meta:runtimeServices.robbie_scheduler?.meta||''},
       {name:'Outcome Tracker',ok:procs['PredTracker']},
-      {name:'Intel Alerts',ok:services['phase7_intel_alerts']},
+      {name:'Intel Alerts',ok:services['phase7_intel_alerts'], meta:splitMode && services['phase7_intel_alerts'] ? 'bot-owned' : ''},
       {name:'Local Candle Store',ok:!!runtimeServices.local_candle_store?.ok, meta:runtimeServices.local_candle_store?.meta||''},
     ];
     connEl.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px">'+

@@ -7965,7 +7965,7 @@ def _collect_database_health() -> bool:
     return db_ok
 
 
-def _collect_system_phase_health() -> Dict[str, Any]:
+def _collect_system_phase_health(*, external_bot_running: bool = False, dashboard_standalone: bool = False) -> Dict[str, Any]:
     phase_health: Dict[str, Any] = {}
     try:
         from data_ingestion.exchange_stream_manager import stream_manager as _esm
@@ -7999,6 +7999,14 @@ def _collect_system_phase_health() -> Dict[str, Any]:
         phase_health["phase7_intel_alerts"] = getattr(_as, "_running", False)
     except Exception:
         phase_health["phase7_intel_alerts"] = False
+    if dashboard_standalone and external_bot_running:
+        for key in (
+            "phase1_data_feeds",
+            "phase2_whale_intel",
+            "phase3_order_flow",
+            "phase7_intel_alerts",
+        ):
+            phase_health[key] = True
     return phase_health
 
 
@@ -8020,6 +8028,26 @@ def _process_match_count(*needles: str) -> int:
             continue
         if all(token in haystack for token in wanted):
             count += 1
+    return count
+
+
+def _external_trading_bot_process_count() -> int:
+    count = 0
+    try:
+        import psutil
+    except Exception:
+        return 0
+    for proc in psutil.process_iter(attrs=["name", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            haystack = f"{proc.info.get('name') or ''} {cmdline}".lower()
+        except Exception:
+            continue
+        if "bot.py" not in haystack:
+            continue
+        if "dashboard.web_app_live" in haystack:
+            continue
+        count += 1
     return count
 
 
@@ -8262,9 +8290,16 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
     db_ok = _collect_database_health()
     tg_ok = bool(getattr(telegram_manager, "is_running", False))
     runtime_services = _collect_runtime_service_details()
+    dashboard_standalone = core is None
+    external_bot_processes = _external_trading_bot_process_count()
+    external_bot_running = external_bot_processes > 0
+    core_running = bool(health.get("is_running", getattr(core, "is_running", False) if core else False))
+    core_ready = bool(health.get("engine_ready", getattr(core, "is_ready", False) if core else False))
+    trading_engine_ok = core_running or (dashboard_standalone and external_bot_running)
+    engine_ready_ok = core_ready or (dashboard_standalone and external_bot_running)
     processes = {
-        "TradingCore": health.get("is_running", getattr(core, "is_running", False) if core else False),
-        "Engine ready": health.get("engine_ready", getattr(core, "is_ready", False) if core else False),
+        "TradingCore": trading_engine_ok,
+        "Engine ready": engine_ready_ok,
         "Web dashboard": True,
         "Redis": redis_ok,
         "PostgreSQL": db_ok,
@@ -8275,13 +8310,32 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
         "cTrader Sidecar": bool((runtime_services.get("ctrader_live_depth") or {}).get("ok")),
         "Dukascopy Sidecar": bool((runtime_services.get("dukascopy_live_depth") or {}).get("ok")),
     }
+    process_details = {
+        "TradingCore": {
+            "ok": trading_engine_ok,
+            "state": "Running" if core_running else ("External" if external_bot_running else "Stopped"),
+            "meta": "in dashboard process" if core_running else (f"forex-bot process x{external_bot_processes}" if external_bot_running else ""),
+        },
+        "Engine ready": {
+            "ok": engine_ready_ok,
+            "state": "Ready" if core_ready else ("Bot-owned" if external_bot_running else "Stopped"),
+            "meta": "read through separate forex-bot service" if dashboard_standalone and external_bot_running else "",
+        },
+    }
     return {
+        "dashboard_standalone": dashboard_standalone,
+        "process_model": "split" if dashboard_standalone and external_bot_running else ("embedded" if core else "standalone"),
+        "external_bot_processes": external_bot_processes,
         "ram_pct": round(ram_pct, 1),
         "cpu_pct": round(cpu_pct, 1),
         "disk_pct": round(disk_pct, 1),
         "process_mem_mb": proc_mb,
         "processes": processes,
-        "phase_health": _collect_system_phase_health(),
+        "process_details": process_details,
+        "phase_health": _collect_system_phase_health(
+            external_bot_running=external_bot_running,
+            dashboard_standalone=dashboard_standalone,
+        ),
         "runtime_services": runtime_services,
         "feed_connections": _collect_system_feed_connections(),
         "performance_guard": _collect_performance_guard_snapshot(),
@@ -8317,12 +8371,27 @@ def _source_health_with_market_quiet(
 
 @app.route("/api/system/health")
 def api_system_health():
-    cached = _cache_get("system_health")
+    cached = _cache_get("system_health:v2")
     if cached is not None:
         return jsonify(cached)
     try:
         core   = _core()
-        health = core.health_report() if core else {}
+        if core:
+            health = core.health_report()
+        else:
+            perf, _daily, positions, health, _closed_trades = _load_dashboard_db_runtime_snapshot()
+            health = dict(health or {})
+            health.update(
+                {
+                    "open_positions": len(positions),
+                    "active_cooldowns": int(health.get("active_cooldowns", 0) or 0),
+                    "strategy_mode": "split-dashboard",
+                    "balance": float(perf.get("balance", _args.balance) or _args.balance),
+                    "issues": list(health.get("issues") or []),
+                    "recent_error_count": int(health.get("recent_error_count", 0) or 0),
+                    "recent_errors": list(health.get("recent_errors") or []),
+                }
+            )
         snapshot = _collect_system_health_snapshot(core, health)
         source_health, stale_sources = _source_health_with_market_quiet(
             health.get("source_health") or {},
@@ -8348,7 +8417,7 @@ def api_system_health():
             "balance":          health.get("balance", _args.balance),
             "timestamp":        datetime.now().isoformat(),
         }
-        _cache_set("system_health", payload, ttl=5)
+        _cache_set("system_health:v2", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -8403,7 +8472,7 @@ def api_monitoring_errors():
 
 @app.route("/api/system-monitor/overview")
 def api_system_monitor_overview():
-    cache_key = "system_monitor_overview"
+    cache_key = "system_monitor_overview:v2"
     cached = _cache_get(cache_key)
     if cached:
         return jsonify(cached)
