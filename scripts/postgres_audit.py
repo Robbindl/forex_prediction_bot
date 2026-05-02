@@ -110,7 +110,7 @@ def _run_audit(include_tables: bool = True) -> None:
         raise SystemExit(f"Could not load project database engine: {exc}") from exc
 
     safe_url = _mask_url(DATABASE_URL)
-    with engine.connect() as conn:
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
         conn.execute(text("SET statement_timeout = '10s'"))
         conn.execute(text("SET default_transaction_read_only = on"))
         print(f"safe_database_url={safe_url}")
