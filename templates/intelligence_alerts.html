@@ -353,7 +353,7 @@ async function checkStatus() {
   try {
     const page = await fetchIntelligenceOverview();
     const d = page.status || {};
-    const live = page.live_summary || page.command_center?.live_summary || d.live_summary || {};
+    const live = window.dashboardAccountSummary ? window.dashboardAccountSummary(page) : (page.live_summary || page.command_center?.live_summary || d.live_summary || {});
     const balance = Number(live.balance ?? d.balance);
     const delta = Number(live.balance_delta ?? d.balance_delta ?? live.total_pnl ?? d.total_pnl ?? 0);
     const topBalance = document.getElementById('topBalance');
@@ -422,18 +422,21 @@ function journalReviewNotes(journal){
 }
 function journalGateType(journal){
   const decision = journalDecision(journal);
-  if(decision === 'PASS' || decision === 'SURVIVED') return 'Review passed';
   const reason = journalReason(journal).toLowerCase();
   if(/confirm|confirmation|retest|pullback/.test(reason)) return 'Blocked by confirmation';
   if(/overextend|extension/.test(reason)) return 'Overextended';
   if(/quality|candle|session|target/.test(reason)) return 'Weak quality';
   if(/regime|policy/.test(reason)) return 'Regime blocked';
   if(/cluster/.test(reason)) return 'Cluster blocked';
+  if(/block|reject|kill|veto|hard/.test(reason)) return 'Execution blocked';
+  if(decision === 'PASS' || decision === 'SURVIVED' || decision === 'APPROVED' || decision === 'EXECUTED') return 'Review passed';
   return 'Other';
 }
 function journalActionable(journal){
   const decision = journalDecision(journal);
-  return decision === 'PASS' || decision === 'SURVIVED';
+  const gate = journalGateType(journal);
+  if(gate !== 'Review passed') return false;
+  return decision === 'PASS' || decision === 'SURVIVED' || decision === 'APPROVED' || decision === 'EXECUTED';
 }
 function journalActionabilityScore(journal){
   const raw = Number(journal?.final_policy_score || 0);
@@ -475,12 +478,32 @@ function renderAlerts() {
 async function loadAlerts() {
   try {
     const overview = await fetchIntelligenceOverview();
-    allAlerts = overview.alerts || [];
+    const commandCenter = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(overview) : (overview.command_center || {});
+    const whale = window.dashboardMergeCommandCenterWhale ? window.dashboardMergeCommandCenterWhale(overview) : {recent:[], alerts:[]};
+    const whaleRows = []
+      .concat(Array.isArray(whale.alerts) ? whale.alerts : [])
+      .concat(Array.isArray(whale.recent) ? whale.recent : [])
+      .filter(row => row && typeof row === 'object');
+    allAlerts = (overview.alerts || []).slice();
+    if(!allAlerts.length && whaleRows.length){
+      allAlerts = whaleRows.slice(0,20).map(row => ({
+        priority: Number(row.value_usd || row.usd_value || 0) >= 10000000 ? 'HIGH' : 'MEDIUM',
+        channel: row.channel || row.source || 'WHALE_TRANSFER_ALERT',
+        message: row.headline || row.message || `${row.symbol || row.asset || 'Whale'} transfer ${row.value_usd ? '$' + Number(row.value_usd).toLocaleString() : ''}`,
+        ts: row.alert_time || row.timestamp || row.time,
+        event: Object.assign({}, row, {asset: row.asset || row.symbol || row.token}),
+      }));
+    }
     const bp  = overview.by_priority || {};
-    document.getElementById('mCritical').textContent = bp.CRITICAL || 0;
-    document.getElementById('mHigh').textContent     = bp.HIGH     || 0;
-    document.getElementById('mMedium').textContent   = bp.MEDIUM   || 0;
-    document.getElementById('mTotal').textContent    = overview.alert_count || overview.count || 0;
+    const derivedPriority = allAlerts.reduce((acc, alert) => {
+      const key = String(alert.priority || '').toUpperCase();
+      if(acc[key] != null) acc[key] += 1;
+      return acc;
+    }, {CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0});
+    document.getElementById('mCritical').textContent = bp.CRITICAL || derivedPriority.CRITICAL || 0;
+    document.getElementById('mHigh').textContent     = bp.HIGH     || derivedPriority.HIGH     || 0;
+    document.getElementById('mMedium').textContent   = bp.MEDIUM   || derivedPriority.MEDIUM   || 0;
+    document.getElementById('mTotal').textContent    = overview.alert_count || overview.count || allAlerts.length || commandCenter.alert_count_24h || 0;
     renderAlerts();
   } catch(e) { document.getElementById('alertFeed').innerHTML = '<div class="empty">Unavailable</div>'; }
 }
@@ -488,7 +511,27 @@ async function loadAlerts() {
 async function loadJournal() {
   try {
     const overview = await fetchIntelligenceOverview();
-    const journals = overview.journals || [];
+    const commandCenter = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(overview) : (overview.command_center || {});
+    const contextRows = window.dashboardCollectDecisionRows
+      ? window.dashboardCollectDecisionRows(commandCenter, {includeContext:true})
+      : []
+        .concat(commandCenter.latest_signals || [])
+        .concat(commandCenter.top_opportunities || [])
+        .concat(commandCenter.near_misses || [])
+        .concat((commandCenter.decision_context || {}).rows || [])
+        .filter(row => row && row.asset);
+    const journals = (overview.journals && overview.journals.length ? overview.journals : contextRows.map(row => ({
+      asset: row.asset || row.symbol,
+      direction: row.direction || row.signal || row.side || row.action || row.decision_state || 'WATCH',
+      final_policy_decision: row.exact_kill_reason || row.execution_kill_reason || row.kill_reason || row.blocked_reason ? 'KILLED' : 'WATCH',
+      final_policy_reason: row.exact_kill_reason || row.execution_kill_reason || row.kill_reason || row.blocked_reason || row.decision_reason || row.reason || row.session_reason || 'watch context',
+      final_policy_score: row.confidence || row.opportunity_score || 0,
+      market_review_notes: row.market_review_notes,
+      execution_review_notes: row.execution_review_notes,
+      opportunity_score: row.opportunity_score,
+      setup_quality: row.setup_quality_score || row.setup_quality,
+      entries: [],
+    })));
     const status = overview.status || {};
     const diagnostics = status.signal_diagnostics || {};
     document.getElementById('journalBadge').textContent = journals.length + ' signals';

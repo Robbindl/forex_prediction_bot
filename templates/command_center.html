@@ -1012,6 +1012,33 @@ function normalizeCommandCenterPayload(payload){
   if(raw.stale && normalized.stale == null)normalized.stale = true;
   if(raw.degraded && normalized.degraded == null)normalized.degraded = true;
   if(raw.degraded_reason && !normalized.degraded_reason)normalized.degraded_reason = raw.degraded_reason;
+  const whaleSources = [raw.whale, nested && nested.whale, data.whale].filter(v=>v && typeof v === 'object');
+  if(whaleSources.length){
+    const whale = Object.assign({}, ...whaleSources);
+    const recent = []
+      .concat(Array.isArray(normalized.recent)?normalized.recent:[])
+      .concat(...whaleSources.map(src=>Array.isArray(src.recent)?src.recent:[]))
+      .concat(...whaleSources.map(src=>Array.isArray(src.alerts)?src.alerts:[]));
+    const alerts = []
+      .concat(Array.isArray(normalized.alerts)?normalized.alerts:[])
+      .concat(...whaleSources.map(src=>Array.isArray(src.alerts)?src.alerts:[]))
+      .concat(...whaleSources.map(src=>Array.isArray(src.recent)?src.recent:[]));
+    normalized.whale = whale;
+    normalized.recent = recent;
+    normalized.alerts = alerts;
+    const sourceCounts=whaleSources.map(src=>Number(src.alert_count_24h||src.whale_alerts_24h||0)).filter(Number.isFinite);
+    const whaleCount = Math.max(
+      Number(normalized.alert_count_24h||0),
+      Number(normalized.whale_alerts_24h||0),
+      ...sourceCounts,
+      recent.length,
+      alerts.length,
+      0
+    );
+    normalized.alert_count_24h = Number.isFinite(whaleCount)?whaleCount:0;
+    normalized.whale_alerts_24h = normalized.alert_count_24h;
+  }
+  if(raw.sentiment_context && !normalized.sentiment_context)normalized.sentiment_context = raw.sentiment_context;
   return normalized;
 }
 function isUsefulCommandCenterPayload(payload){
@@ -1061,12 +1088,16 @@ function buildTradeHistorySummary(rawSummary, rawTrades){
   const wins=Number(summary.winning_trades??trades.filter(t=>Number(t.pnl||0)>0).length);
   const losses=Number(summary.losing_trades??trades.filter(t=>Number(t.pnl||0)<0).length);
   const winRate=Number(summary.win_rate??(totalTrades?(wins/totalTrades*100):0));
-  const initialBalance=Number(summary.initial_balance??10000);
+  const rawBalance=Number(summary.balance??summary.realized_balance);
+  const rawInitial=Number(summary.initial_balance);
+  const initialBalance=Number.isFinite(rawInitial)?rawInitial:(Number.isFinite(rawBalance)?rawBalance-totalPnl:0);
   const balance=Number(summary.balance??summary.realized_balance??(initialBalance+totalPnl));
+  const balanceDelta=Number(summary.balance_delta??(balance-initialBalance));
   return {
     initial_balance:initialBalance,
     balance,
     realized_balance:Number(summary.realized_balance??balance),
+    balance_delta:balanceDelta,
     total_pnl:totalPnl,
     realized_total_pnl:totalPnl,
     daily_pnl:Number(summary.daily_pnl??0),
@@ -1089,7 +1120,7 @@ function shouldPreferTradeHistorySummary(live){
 function reconcileLiveSummaryWithTradeHistory(live){
   const base=live&&typeof live==='object'?live:{};
   if(!shouldPreferTradeHistorySummary(base))return base;
-  return Object.assign({}, base, _tradeHistorySummary, {
+  const merged=Object.assign({}, base, _tradeHistorySummary, {
     open_pnl:Number(base.open_pnl||0),
     open_positions:Number(base.open_positions||0),
     buy_count:Number(base.buy_count||0),
@@ -1097,6 +1128,12 @@ function reconcileLiveSummaryWithTradeHistory(live){
     balance:Number(_tradeHistorySummary.balance||0)+Number(base.open_pnl||0),
     daily_pnl:Number(_tradeHistorySummary.daily_pnl||0)+Number(base.open_pnl||0),
   });
+  const initial=Number(merged.initial_balance??0);
+  const balance=Number(merged.balance??merged.realized_balance??0);
+  merged.balance_delta=Number.isFinite(initial)&&Number.isFinite(balance)?Number((balance-initial).toFixed(2)):Number(_tradeHistorySummary.balance_delta||0);
+  merged.total_pnl=Number(_tradeHistorySummary.total_pnl||0)+Number(base.open_pnl||0);
+  merged.account_state=merged.balance_delta<0?'loss':merged.balance_delta>0?'gain':'flat';
+  return merged;
 }
 function applyTradeHistorySummaryToHeader(){
   if(!_tradeHistorySummary || Number(_tradeHistorySummary.closed_trades||0)<=0)return;
@@ -1156,13 +1193,37 @@ function setCommandCenterUnavailable(message){
   if(_pnlChart){_pnlChart.destroy();_pnlChart = null;}
 }
 function renderWhalePanel(d){
-  document.getElementById('whaleCount').textContent=d.alert_count_24h||0;
+  const whale=d.whale&&typeof d.whale==='object'?d.whale:{};
+  const rawAlerts=[]
+    .concat(Array.isArray(d.recent)?d.recent:[])
+    .concat(Array.isArray(whale.recent)?whale.recent:[])
+    .concat(Array.isArray(whale.alerts)?whale.alerts:[])
+    .concat(Array.isArray(d.alerts)?d.alerts:[]);
+  const seen=new Set();
+  const alerts=rawAlerts.filter(a=>{
+    if(!a||typeof a!=='object')return false;
+    const key=String(a.tx_hash||a.transaction_hash||a.id||a.alert_id||`${a.asset||a.symbol||''}:${a.value_usd||a.amount||''}:${a.alert_time||a.timestamp||a.time||''}`);
+    if(seen.has(key))return false;
+    seen.add(key);
+    return true;
+  });
+  const count=Number(d.alert_count_24h||d.whale_alerts_24h||whale.alert_count_24h||whale.whale_alerts_24h||alerts.length||0);
+  document.getElementById('whaleCount').textContent=count||0;
   const wEl=document.getElementById('whalePanel');
-  const alerts=d.recent||[];
   if(!alerts.length){wEl.innerHTML='<div class="empty">No whale alerts</div>';return;}
   wEl.innerHTML=alerts.slice(0,4).map(a=>{
     const killReason=knownKillReason(a);
-    return `<div class="whale-item"><div class="whale-icon">🐋</div><div class="whale-info"><div class="whale-title">${a.symbol||a.asset||'?'}</div><div class="whale-meta">${a.source||''} · ${confirmationLine(a)}</div><div class="whale-meta">${qualityBits(a).slice(0,4).join(' · ') || 'Execution quality pending'}</div>${regimeBits(a).length?`<div class="whale-meta">${regimeBits(a).join(' · ')}</div>`:''}${killReason?`<div class="note-callout bad">${killReason}</div>`:''}${reviewNotesLine(a)?`<div class="note-callout warn">${reviewNotesLine(a)}</div>`:''}</div><div class="whale-amount">$${((a.value_usd||0)/1e6).toFixed(1)}M</div></div>`;
+    const asset=a.symbol||a.asset||a.token||a.coin||'?';
+    const value=Number(a.value_usd||a.usd_value||a.value||0);
+    const amount=Number(a.amount||a.quantity||a.qty||0);
+    const amountText=value>0?`$${(value/1e6).toFixed(1)}M`:(amount>0?`${amount.toLocaleString()} ${asset}`:'Tracked');
+    const route=[a.from_exchange||a.from||a.sender||'', a.to_exchange||a.to||a.receiver||''].filter(Boolean).join(' → ');
+    const source=a.source||a.channel||a.provider||'Whale feed';
+    const when=a.time_ago||a.age||fmtDashboardTime(a.alert_time||a.timestamp||a.time||'');
+    const headline=a.headline||a.message||a.title||`${asset} large transfer`;
+    const meta=[source, route, when].filter(Boolean).join(' · ');
+    const detail=[a.direction||a.side||'', a.category||'', qualityBits(a).slice(0,3).join(' · '), regimeBits(a).join(' · ')].filter(Boolean).join(' · ');
+    return `<div class="whale-item"><div class="whale-icon">🐋</div><div class="whale-info"><div class="whale-title">${headline}</div><div class="whale-meta">${meta}</div><div class="whale-meta">${detail || 'Large transfer tracked by whale feed'}</div>${killReason?`<div class="note-callout bad">${killReason}</div>`:''}${reviewNotesLine(a)?`<div class="note-callout warn">${reviewNotesLine(a)}</div>`:''}</div><div class="whale-amount">${amountText}</div></div>`;
   }).join('');
 }
 async function fetchCommandCenterOverview(){
@@ -1195,6 +1256,26 @@ async function fetchCommandCenterOverview(){
     } finally {_commandCenterPending = null;}
   })();
   return _commandCenterPending;
+}
+function commandCenterWhaleCount(d){
+  const whale=d&&d.whale&&typeof d.whale==='object'?d.whale:{};
+  return Number(d?.alert_count_24h||d?.whale_alerts_24h||whale.alert_count_24h||whale.whale_alerts_24h||((whale.recent||[]).length)||((whale.alerts||[]).length)||((d?.recent||[]).length)||((d?.alerts||[]).length)||0);
+}
+async function ensureCommandCenterWhaleContext(d){
+  if(!d || commandCenterWhaleCount(d)>0)return d;
+  try{
+    const direct=await fetchProtectedJson('/api/whale/summary', {timeoutMs: 6000});
+    if(!direct || !direct.success || commandCenterWhaleCount(direct)<=0)return d;
+    const whale=Object.assign({}, d.whale||{}, direct.whale||{}, direct);
+    const merged=normalizeCommandCenterPayload(Object.assign({}, d, {
+      whale,
+      recent:[].concat(d.recent||[], direct.recent||[], whale.recent||[]),
+      alerts:[].concat(d.alerts||[], direct.alerts||[], whale.alerts||[]),
+      alert_count_24h:Math.max(commandCenterWhaleCount(d), commandCenterWhaleCount(direct)),
+      whale_alerts_24h:Math.max(commandCenterWhaleCount(d), commandCenterWhaleCount(direct)),
+    }));
+    return merged || d;
+  }catch(_){return d;}
 }
 async function fetchLiveBook(forceRefresh=false){
   const now = Date.now();
@@ -1364,12 +1445,57 @@ async function startCommandCenterStream(){
 function collectElitePool(d){
   return [].concat(d.latest_signals||[], d.top_opportunities||[], d.near_misses||[], (d.watchlist_ladder?.hot)||[], (d.watchlist_ladder?.almost_ready)||[], d.positions||[]).filter(isPublishedExecutionItem);
 }
+function collectDeskContextRows(d){
+  const ladder=d.watchlist_ladder||{};
+  const decisionContext=d.decision_context||{};
+  const radar=d.session_radar||{};
+  const rows=[]
+    .concat(Array.isArray(decisionContext.rows)?decisionContext.rows:[])
+    .concat(Array.isArray(ladder.hot)?ladder.hot:[])
+    .concat(Array.isArray(ladder.almost_ready)?ladder.almost_ready:[])
+    .concat(Array.isArray(ladder.blocked)?ladder.blocked:[])
+    .concat(Array.isArray(ladder.inactive)?ladder.inactive:[])
+    .concat(Array.isArray(radar.rows)?radar.rows:[]);
+  const seen=new Set();
+  return rows.filter(item=>{
+    if(!item||typeof item!=='object'||!item.asset)return false;
+    const key=[item.asset,item.decision_kind||item.kind||'',item.decision_state||item.state||'',item.direction||item.signal||'',item.current_session||'',item.reason||item.decision_reason||''].join('|');
+    if(seen.has(key))return false;
+    seen.add(key);
+    return true;
+  });
+}
 function renderEliteSummary(d){
   const pool=collectElitePool(d);
+  const decisionContext=d.decision_context||{};
+  const contextRows=collectDeskContextRows(d);
+  const radar=d.session_radar||{};
+  const whale=d.whale&&typeof d.whale==='object'?d.whale:{};
+  const whaleCount=Number(d.alert_count_24h||d.whale_alerts_24h||whale.alert_count_24h||whale.whale_alerts_24h||((whale.recent||[]).length)||((whale.alerts||[]).length)||0);
+  const signalQuality=d.signal_quality||{};
+  const signalDiagnostics=d.signal_diagnostics||{};
+  const contextMetricRows=contextRows.filter(item=>Number.isFinite(itemNum(item,'memory_score',NaN))||Number.isFinite(itemNum(item,'execution_quality_score',NaN))||Number.isFinite(itemNum(item,'opportunity_score',NaN)));
+  const contextMetricCount=Number(signalQuality.count||0)||contextMetricRows.length;
   if(!pool.length){
-    document.getElementById('eliteSummaryBadge').textContent='No live gate data';
+    const openCount=Number(radar.open_count||decisionContext.session_open_count||0);
+    const blockedCount=Number(radar.blocked_count||decisionContext.session_blocked_count||0);
+    const contextCount=contextRows.length;
+    if(contextCount || openCount || blockedCount || whaleCount || Number(signalQuality.count||0) || Number(signalDiagnostics.count||0)){
+      document.getElementById('eliteSummaryBadge').textContent=`${contextCount} context · 0 execution`;
+      renderCommandBoardCards('eliteSummaryPanel',[
+        {title:'Entry state',value:contextCount?'Watching':'No seed',valueClass:contextCount?'am':'mu',note:contextCount?`${contextCount} live context rows are visible, but none has become an execution candidate yet.`:'No playbook seed has entered the execution queue yet.'},
+        {title:'Session scan',value:`${openCount}/${blockedCount}`,valueClass:openCount?'cy':'mu',note:'Open versus session-blocked assets from the same session radar used by the desk.'},
+        {title:'Confirmation queue',value:'No execution seed',valueClass:'mu',note:'Confirmation bars only become measurable after a setup reaches the execution gate.'},
+        {title:'Path mix',value:'Watching only',valueClass:'mu',note:'Retest and first-pullback state are not active until a staged setup is published.'},
+        {title:'Whale activity',value:String(whaleCount||0),valueClass:whaleCount?'am':'mu',note:whaleCount?'Recent whale alerts are active in the shared whale feed.':'No recent whale alerts in the Command Center whale context.'},
+        {title:'Diagnostics',value:Number(signalDiagnostics.count||0)?String(signalDiagnostics.count):'No samples',valueClass:Number(signalDiagnostics.count||0)?'cy':'mu',note:Number(signalDiagnostics.count||0)?`${signalDiagnostics.summary_label||'Diagnostics'} from live signal pressure.`:'No pressure diagnostics have been published for execution rows yet.'},
+        {title:'Quality memory',value:contextMetricCount?String(contextMetricCount):'No samples',valueClass:contextMetricCount?'cy':'mu',note:contextMetricCount?'Quality or opportunity metrics are attached to the current desk context.':'No execution-backed quality samples are active right now.'},
+      ],'No execution-gate candidates yet');
+      return;
+    }
+    document.getElementById('eliteSummaryBadge').textContent='No live context';
     renderCommandBoardCards('eliteSummaryPanel',[
-      {title:'Entry state',value:'No queue',valueClass:'mu',note:'No live execution candidates are currently publishing gate state.'},
+      {title:'Entry state',value:'No queue',valueClass:'mu',note:'No live execution candidates or watch rows are currently publishing gate state.'},
       {title:'Confirmation queue',value:'No samples',valueClass:'mu',note:'Confirmation drag cannot be measured until a setup enters the queue.'},
       {title:'Path mix',value:'No samples',valueClass:'mu',note:'Retest and first-pullback state will appear when a live setup is staged.'},
       {title:'Extension pressure',value:'No samples',valueClass:'mu',note:'No active setup is publishing extension pressure.'},
@@ -1398,7 +1524,7 @@ function renderEliteSummary(d){
     const reason=exactKillReason(item).toLowerCase();
     return /regime|policy/.test(reason) || /regime|policy/.test(String(itemText(item,'regime_policy_summary') || itemText(item,'regime_policy') || itemText(item,'regime_label') || '').toLowerCase());
   });
-  document.getElementById('eliteSummaryBadge').textContent=`${ready.length} ready · ${blocked.length} blocked`;
+  document.getElementById('eliteSummaryBadge').textContent=`${ready.length} ready · ${waiting.length} waiting · ${blocked.length} blocked`;
   renderCommandBoardCards('eliteSummaryPanel',[
     {title:'Entry state',value:`${ready.length}/${waiting.length}/${blocked.length}`,valueClass:blocked.length?'am':ready.length?'gn':'mu',note:'Ready / Waiting / Blocked across live queue, near misses, watchlist, and book.'},
     {title:'Confirmation queue',value:confPending.length?`${confPending.length} waiting`:'Clear',valueClass:confPending.length?'am':'gn',note:confPending.length?'Signals are staged but still need confirmation bars or reclaim proof.':'No visible confirmation backlog right now.'},
@@ -1415,6 +1541,7 @@ async function loadMain(){
     const page = await fetchCommandCenterOverview();
     if(page.success){d = normalizeCommandCenterPayload(page) || {};} else {setCommandCenterUnavailable('Command center data unavailable');return;}
     if(!d||!d.success){setCommandCenterUnavailable('Command center data unavailable');return;}
+    d = await ensureCommandCenterWhaleContext(d);
     rememberCommandCenterPayload(d);
   }catch(e){console.error('[CC] fetch:',e);return;}
 
@@ -1422,7 +1549,9 @@ async function loadMain(){
   const signalQuality=d.signal_quality||{};
   const signalDiagnostics=d.signal_diagnostics||{};
   const decisionContext=d.decision_context||{};
-  const decisionRows=(Array.isArray(decisionContext.rows)?decisionContext.rows:[]).filter(isPublishedExecutionItem);
+  const rawDecisionRows=collectDeskContextRows(d);
+  const executionDecisionRows=rawDecisionRows.filter(isPublishedExecutionItem);
+  const decisionRows=executionDecisionRows.length?executionDecisionRows:rawDecisionRows;
   const authoritativeLiveBook = getAuthoritativeLiveBookSnapshot();
   const live = reconcileLiveSummaryWithTradeHistory(authoritativeLiveBook?.live_summary || d.live_summary || {});
   const mergedPositions = authoritativeLiveBook
@@ -1466,7 +1595,7 @@ async function loadMain(){
     document.getElementById('engineBadge').textContent=running?'Live':'Offline';
     document.getElementById('engineBadge').className='tb-badge '+(running?'badge-live':'badge-off');
     const topOpportunities = d.top_opportunities || [];
-    const lead = topOpportunities[0] || decisionRows.find(item=>item.decision_kind==='blocked'||item.decision_kind==='candidate') || null;
+    const lead = topOpportunities[0] || decisionRows.find(item=>item.decision_kind==='blocked'||item.decision_kind==='candidate') || decisionRows[0] || null;
     const positions = mergedPositions;
     const categoryCounts = positions.reduce((acc, item) => {const key = String(item.category || 'unknown');acc[key] = (acc[key] || 0) + 1;return acc;}, {});
     const leadCategory = Object.entries(categoryCounts).sort((a,b) => b[1] - a[1])[0];
@@ -1474,20 +1603,26 @@ async function loadMain(){
     const fragileCount = Number(signalDiagnostics.broker_fragile_count || 0);
     const trueDepthCount = Number(signalDiagnostics.true_depth_count || 0);
     const syntheticDepthCount = Number(signalDiagnostics.synthetic_depth_count || 0);
+    const whaleForFocus=d.whale&&typeof d.whale==='object'?d.whale:{};
+    const focusWhaleCount=Number(d.alert_count_24h||d.whale_alerts_24h||whaleForFocus.alert_count_24h||whaleForFocus.whale_alerts_24h||((whaleForFocus.recent||[]).length)||((whaleForFocus.alerts||[]).length)||0);
+    const leadDirRaw=lead?String(lead.direction || lead.signal || lead.decision_state || '').toUpperCase():'';
+    const leadDir=(leadDirRaw==='HOLD'||leadDirRaw==='WATCHING')?'WATCH':leadDirRaw;
     const focusState = lead ? (decisionContext.label || 'Armed') : posLen ? 'Managing' : (decisionContext.label || 'Quiet');
     document.getElementById('focusBadge').textContent = focusState;
     document.getElementById('focusPanel').innerHTML = [
-      {value: lead ? `${lead.asset || '—'} ${String(lead.direction || lead.signal || lead.decision_state || '').toUpperCase()}` : 'No queue',valueClass: lead ? (String(lead.direction || lead.signal || '').toUpperCase() === 'SELL' ? 'rd' : String(lead.direction || lead.signal || '').toUpperCase() === 'BUY' ? 'gn' : 'am') : 'mu',label: 'Next Decision',sub: lead ? `${lead.decision_reason || decisionContext.summary || buildEliteReason(lead)}${lead.opportunity_score?` · Opp ${Number(lead.opportunity_score || 0).toFixed(3)}`:''}` : (decisionContext.summary || 'No setup is currently strong enough to lead the desk')},
+      {value: lead ? `${lead.asset || '—'} ${leadDir}` : 'No queue',valueClass: lead ? (leadDir === 'SELL' ? 'rd' : leadDir === 'BUY' ? 'gn' : 'am') : 'mu',label: 'Next Decision',sub: lead ? `${lead.decision_reason || decisionContext.summary || buildEliteReason(lead)}${lead.opportunity_score?` · Opp ${Number(lead.opportunity_score || 0).toFixed(3)}`:''}` : (decisionContext.summary || 'No setup is currently strong enough to lead the desk')},
       {value: providerRouting.summary_label || 'Unavailable',valueClass: providerRouting.summary_label ? 'cy' : 'mu',label: 'Feed Spine',sub: providerRouting.fallback_label ? `Fallback ${providerRouting.fallback_label}` : 'No published fallback split'},
       {value: posLen ? `${posLen} open` : 'Flat',valueClass: posLen ? 'pu' : 'mu',label: 'Book State',sub: live.book_bias ? `${live.book_bias} · ${live.open_state||'Flat'}` : (leadCategory ? `${leadCategory[0]} leads with ${leadCategory[1]} positions` : 'No open exposure in the book')},
-      {value: `${supportiveCount}/${fragileCount}`,valueClass: fragileCount ? 'am' : supportiveCount ? 'gn' : 'mu',label: 'Feed Pressure',sub: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : 'No live pressure diagnostics yet'},
+      {value: signalDiagnostics.count?`${supportiveCount}/${fragileCount}`:focusWhaleCount?`${focusWhaleCount} whale`:decisionRows.length?`${decisionRows.length} watched`:'0/0',valueClass: fragileCount ? 'am' : supportiveCount ? 'gn' : focusWhaleCount ? 'am' : decisionRows.length ? 'cy' : 'mu',label: 'Feed Pressure',sub: signalDiagnostics.count ? `${trueDepthCount} true depth · ${syntheticDepthCount} synthetic depth` : focusWhaleCount ? 'Whale flow is active; no execution pressure row has published yet.' : decisionRows.length ? 'Watch/session context is active; no pressure diagnostics have published yet.' : 'No live pressure diagnostics yet'},
     ].map(item => `<div class="pulse-card"><div class="pulse-val ${item.valueClass}">${item.value}</div><div class="pulse-lbl">${item.label}</div><div class="pulse-sub">${item.sub}</div></div>`).join('');
     renderEliteSummary(d);
   }catch(e){console.error('[CC] metrics:',e);}
 
   try{
-    const sigs=(d.latest_signals||[]).filter(s=>(s.signal||s.direction||'HOLD')!=='HOLD');
-    const queueRows=sigs.length?sigs:decisionRows.filter(item=>item.asset).slice(0,8);
+    const ladder=d.watchlist_ladder||{};
+    const sigs=(d.latest_signals||[]).filter(isPublishedExecutionItem);
+    const contextQueue=collectDeskContextRows(d);
+    const queueRows=sigs.length?sigs:contextQueue.slice(0,8);
     renderTopOpportunities(d.top_opportunities||[]);
     document.getElementById('sigCount').textContent=sigs.length?String(sigs.length):`${queueRows.length} context`;
     const sEl=document.getElementById('signalsPanel');
@@ -1495,7 +1630,7 @@ async function loadMain(){
     else{
       sEl.innerHTML=queueRows.slice(0,6).map(s=>{
         const rawDir=String(s.signal||s.direction||s.decision_state||'WATCH').toUpperCase();
-        const dir=rawDir==='HOLD'?'WATCH':rawDir;
+        const dir=(rawDir==='HOLD'||rawDir==='WATCHING')?'WATCH':rawDir;
         const cRaw=Number(s.confidence||0);
         const c=Number.isFinite(cRaw)?(cRaw>1?cRaw/100:cRaw):0;
         const cp=(c*100).toFixed(0);
@@ -1562,7 +1697,7 @@ async function loadMain(){
     document.getElementById('watchlistPanel').innerHTML='<div class="board-grid">'+sections.map(section=>`<div class="board-card"><div class="board-title">${section.label}</div>${section.items && section.items.length ? section.items.slice(0,3).map(item=>`<div class="desk-meta" style="margin-top:6px"><span class="${section.cls}" style="font-weight:700">${section.text(item)}</span><br>${section.note(item)}</div>`).join('') : '<div class="board-note">No assets in this ladder state.</div>'}</div>`).join('')+'</div>';
 
     const nearMisses=d.near_misses||[];
-    const filteredRows=nearMisses.length?nearMisses:decisionRows.filter(item=>item.asset).slice(0,6);
+    const filteredRows=nearMisses.length?nearMisses:collectDeskContextRows(d).slice(0,6);
     document.getElementById('nearMissBadge').textContent=nearMisses.length?`${nearMisses.length} tracked`:filteredRows.length?`${filteredRows.length} context`:'Clear';
     renderDeskRows('nearMissPanel',filteredRows.slice(0,6).map(item=>({head:`${item.asset||'—'} ${String(item.direction||item.decision_state||'').toUpperCase() || ''}`.trim(),meta:[`${knownKillReason(item) || item.decision_reason || buildEliteReason(item)}${item.opportunity_score?` · Opp ${(Number(item.opportunity_score||0)).toFixed(3)}`:''}${item.setup_quality?` · Setup ${(Number(item.setup_quality||0)).toFixed(3)}`:''}`, readinessBits(item).join(' · '), qualityBits(item).slice(0,4).join(' · '), regimeBits(item).join(' · '), reviewNotesLine(item)].filter(Boolean).join(' · '),side:item.session_label?titleToken(item.session_label):titleToken(item.decision_state||eliteEntryState(item).label),sideClass:eliteEntryState(item).className})),'No filtered setup context right now');
 
@@ -1593,21 +1728,34 @@ async function loadMain(){
     }),'No recent crypto rejects are on the journal right now');
 
     const lifecycle=d.trade_lifecycle||{};
+    const contextOnlyRows=collectDeskContextRows(d).filter(item=>item&&item.asset&&!isPublishedExecutionItem(item));
     const lifecyclePool=[...collectElitePool(d), ...decisionRows].filter(isPublishedExecutionItem);
     const funnelSeeded=Number(lifecycle.seeded||lifecyclePool.length||0);
     const funnelStructure=Number(lifecycle.structure_valid||lifecyclePool.filter(item=>itemBool(item,'breakout_retest_ready')===true || itemBool(item,'first_pullback_ready')===true || itemBool(item,'entry_confirmation_ready')===true).length||0);
     const funnelConfirm=Number(lifecycle.confirmation_ready||lifecyclePool.filter(item=>itemBool(item,'entry_confirmation_ready')===true).length||0);
     const funnelApproved=Number(lifecycle.approved||lifecyclePool.filter(item=>eliteEntryState(item).label==='Ready').length||0);
     const funnelExecuted=Number(lifecycle.executed||lifecycle.opened||Number((d.positions||[]).length||0));
-    document.getElementById('lifecycleBadge').textContent=`${funnelSeeded} seed → ${funnelExecuted} exec`;
-    renderCommandBoardCards('lifecyclePanel',[
-      {title:'Seeded',value:String(funnelSeeded),valueClass:'cy',note:'Live decisions and journal signals currently visible to the execution stack.'},
-      {title:'Structure Valid',value:String(funnelStructure),valueClass:funnelStructure?'bl':'mu',note:'Retest or pullback structure still intact before the confirmation gate.'},
-      {title:'Confirmation Ready',value:String(funnelConfirm),valueClass:funnelConfirm?'am':'mu',note:'Signals that satisfied elite confirmation bars / reclaim checks.'},
-      {title:'Approved',value:String(funnelApproved),valueClass:funnelApproved?'gn':'mu',note:'Signals that survived the review stack.'},
-      {title:'Executed',value:String(funnelExecuted),valueClass:funnelExecuted?'pu':'mu',note:'Signals that made it from review into a live position.'},
-      {title:'Closed',value:String(lifecycle.closed||0),valueClass:(lifecycle.closed||0)?'rd':'mu',note:'Fully closed parent trades in the recent window.'},
-    ],'No lifecycle data');
+    if(!funnelSeeded && contextOnlyRows.length){
+      document.getElementById('lifecycleBadge').textContent=`${contextOnlyRows.length} watch → ${funnelExecuted} exec`;
+      renderCommandBoardCards('lifecyclePanel',[
+        {title:'Watch Context',value:String(contextOnlyRows.length),valueClass:'am',note:'Assets visible to Command Center before a playbook seed enters execution.'},
+        {title:'Execution Seeded',value:'0',valueClass:'mu',note:'No raw playbook seed has reached the execution stack yet.'},
+        {title:'Structure Valid',value:'0',valueClass:'mu',note:'Structure state is not counted until a setup is staged as an execution seed.'},
+        {title:'Confirmation Ready',value:'0',valueClass:'mu',note:'Confirmation cannot be ready before a seed is staged.'},
+        {title:'Executed',value:String(funnelExecuted),valueClass:funnelExecuted?'pu':'mu',note:'Signals that made it from review into a live position.'},
+        {title:'Closed',value:String(lifecycle.closed||0),valueClass:(lifecycle.closed||0)?'rd':'mu',note:'Fully closed parent trades in the recent window.'},
+      ],'No execution lifecycle data');
+    }else{
+      document.getElementById('lifecycleBadge').textContent=`${funnelSeeded} seed → ${funnelExecuted} exec`;
+      renderCommandBoardCards('lifecyclePanel',[
+        {title:'Seeded',value:String(funnelSeeded),valueClass:'cy',note:'Live decisions and journal signals currently visible to the execution stack.'},
+        {title:'Structure Valid',value:String(funnelStructure),valueClass:funnelStructure?'bl':'mu',note:'Retest or pullback structure still intact before the confirmation gate.'},
+        {title:'Confirmation Ready',value:String(funnelConfirm),valueClass:funnelConfirm?'am':'mu',note:'Signals that satisfied elite confirmation bars / reclaim checks.'},
+        {title:'Approved',value:String(funnelApproved),valueClass:funnelApproved?'gn':'mu',note:'Signals that survived the review stack.'},
+        {title:'Executed',value:String(funnelExecuted),valueClass:funnelExecuted?'pu':'mu',note:'Signals that made it from review into a live position.'},
+        {title:'Closed',value:String(lifecycle.closed||0),valueClass:(lifecycle.closed||0)?'rd':'mu',note:'Fully closed parent trades in the recent window.'},
+      ],'No lifecycle data');
+    }
 
     renderTradeTape(d.trade_tape||[]);
     renderPnlChart(d.pnl_curve||[], d.pnl_curve_stats||{});
@@ -1615,12 +1763,19 @@ async function loadMain(){
   }catch(e){console.error('[CC] desk panels:',e);}
 
   try{
-    const ss=Number(d.sentiment_score||0);
+    const whale=d.whale&&typeof d.whale==='object'?d.whale:{};
+    const whaleRows=[]
+      .concat(Array.isArray(d.recent)?d.recent:[])
+      .concat(Array.isArray(whale.recent)?whale.recent:[])
+      .concat(Array.isArray(whale.alerts)?whale.alerts:[]);
+    const whaleCount=Number(d.alert_count_24h||d.whale_alerts_24h||whale.alert_count_24h||whale.whale_alerts_24h||whaleRows.length||0);
+    const sentimentContext=d.sentiment_context&&typeof d.sentiment_context==='object'?d.sentiment_context:{};
+    const ss=Number(d.sentiment_score ?? sentimentContext.sentiment_score ?? sentimentContext.score ?? 0);
     const pool=collectElitePool(d);
-    const hasPulseData=Math.abs(ss)>0.001 || Number(d.alert_count_24h||0)>0 || pool.length>0 || Number(signalDiagnostics.count||0)>0 || Number(signalQuality.count||0)>0;
-    const ssLabel=!hasPulseData?'No live pulse':ss>0.2?'Bullish':ss<-0.2?'Bearish':'Neutral';
+    const hasPulseData=Math.abs(ss)>0.001 || whaleCount>0 || pool.length>0 || Number(signalDiagnostics.count||0)>0 || Number(signalQuality.count||0)>0 || sentimentContext.has_activity;
+    const ssLabel=!hasPulseData?'No live pulse':ss>0.2?'Bullish':ss<-0.2?'Bearish':whaleCount?'Whale activity':'Neutral';
     const ssColor=ss>0.2?'var(--gr)':ss<-0.2?'var(--rd)':'var(--am)';
-    document.getElementById('sentScore').textContent=(ss>=0?'+':'')+ss.toFixed(3);
+    document.getElementById('sentScore').textContent=(Math.abs(ss)>0.001 || !whaleCount)?((ss>=0?'+':'')+ss.toFixed(3)):`${whaleCount} alerts`;
     document.getElementById('sentScore').style.color=ssColor;
     document.getElementById('sentLabel').textContent=ssLabel;
     document.getElementById('sentBar').style.width=((ss+1)/2*100)+'%';
@@ -1628,14 +1783,23 @@ async function loadMain(){
     const readyCount=pool.filter(item=>eliteEntryState(item).label==='Ready').length;
     const waitingCount=pool.filter(item=>eliteEntryState(item).label==='Waiting').length;
     const blockedCount=pool.filter(item=>eliteEntryState(item).label==='Blocked').length;
+    const contextMetricRows=collectDeskContextRows(d).filter(item=>Number.isFinite(itemNum(item,'memory_score',NaN))||Number.isFinite(itemNum(item,'execution_quality_score',NaN))||Number.isFinite(itemNum(item,'opportunity_score',NaN)));
+    const avgContextMetric=(key)=>{
+      const vals=contextMetricRows.map(item=>itemNum(item,key,NaN)).filter(Number.isFinite);
+      return vals.length?vals.reduce((sum,val)=>sum+val,0)/vals.length:0;
+    };
+    const qualityCount=Number(signalQuality.count||0)||contextMetricRows.length;
+    const memoryScore=Number(signalQuality.count||0)?Number(signalQuality.avg_memory_score||0):avgContextMetric('memory_score');
+    const executionScore=Number(signalQuality.count||0)?Number(signalQuality.avg_execution_quality||0):avgContextMetric('execution_quality_score');
+    const opportunityScore=Number(signalQuality.count||0)?Number(signalQuality.avg_opportunity_score||0):avgContextMetric('opportunity_score');
     const chips = [
-      {label:`Whales ${d.alert_count_24h||0}`, cls:(d.alert_count_24h||0)?'warn':'info'},
+      {label:`Whales ${whaleCount||0}`, cls:whaleCount?'warn':'info'},
       {label:d.engine_ready?'Engine ready':'Engine warming', cls:d.engine_ready?'ok':'warn'},
-      {label:pool.length?`Elite ${readyCount}/${waitingCount}/${blockedCount}`:'No decision queue', cls:pool.length?(blockedCount?'warn':readyCount?'ok':'info'):'info'},
+      {label:pool.length?`Elite ${readyCount}/${waitingCount}/${blockedCount}`:(decisionRows.length?`Context ${decisionRows.length}`:'No decision queue'), cls:pool.length?(blockedCount?'warn':readyCount?'ok':'info'):(decisionRows.length?'warn':'info')},
       {label:`Feeds ${providerRouting.summary_label||'—'}`, cls:Object.keys(providerRouting.primary_counts||{}).length?'ok':''},
-      {label:Number(signalQuality.count||0)?`Memory ${Number(signalQuality.avg_memory_score||0).toFixed(0)}`:'Memory no samples', cls:Number(signalQuality.count||0)?(Number(signalQuality.avg_memory_score||0)>=60?'ok':'warn'):'info'},
-      {label:Number(signalQuality.count||0)?`Exec ${Number(signalQuality.avg_execution_quality||0).toFixed(0)}`:'Exec no samples', cls:Number(signalQuality.count||0)?(Number(signalQuality.avg_execution_quality||0)>=60?'ok':'warn'):'info'},
-      {label:Number(signalQuality.count||0)?`Opp ${Number(signalQuality.avg_opportunity_score||0).toFixed(3)}`:'Opp no samples', cls:Number(signalQuality.count||0)&&Number(signalQuality.avg_opportunity_score||0)>=0.7?'ok':'info'},
+      {label:qualityCount?`Memory ${memoryScore.toFixed(0)}`:'Memory no samples', cls:qualityCount?(memoryScore>=60?'ok':'warn'):'info'},
+      {label:qualityCount?`Exec ${executionScore.toFixed(0)}`:'Exec no samples', cls:qualityCount?(executionScore>=60?'ok':'warn'):'info'},
+      {label:qualityCount?`Opp ${opportunityScore.toFixed(3)}`:'Opp no samples', cls:qualityCount&&opportunityScore>=0.7?'ok':'info'},
       {label:Number(signalDiagnostics.count||0)?`Diag ${signalDiagnostics.summary_label||'—'}`:'Diag none', cls:Number(signalDiagnostics.count||0)?(Number(signalDiagnostics.broker_fragile_count||0)?'warn':'ok'):'info'},
       {label:signalQuality.top_signal_asset?`Top ${signalQuality.top_signal_asset}`:`Positions ${d.open_positions||0}`, cls:(d.open_positions||0)?'ok':''},
     ];
@@ -1656,7 +1820,7 @@ async function loadWhales(){
   try{
     const page = await fetchCommandCenterOverview();
     if(!page.success){document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';return;}
-    const d = page || {};
+    const d = await ensureCommandCenterWhaleContext(normalizeCommandCenterPayload(page) || page || {});
     if(!d||!d.success){document.getElementById('whalePanel').innerHTML='<div class="empty">Whale data unavailable</div>';return;}
     renderWhalePanel(d);
   }catch(e){}

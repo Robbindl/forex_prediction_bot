@@ -502,8 +502,10 @@ async function load(){
     const overview = await fetchSystemMonitorOverview();
     const d = overview.health || {};
     const snapshot = overview.snapshot || {};
-    const commandCenter = overview.command_center || {};
-    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+    const commandCenter = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(overview) : (overview.command_center || {});
+    const liveSignals = window.dashboardCollectDecisionRows
+      ? window.dashboardCollectDecisionRows(commandCenter, {includeContext:true})
+      : (Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : []);
     const tradeLifecycle = commandCenter.trade_lifecycle || {};
     const gateCounts = deriveDecisionGateCounts(liveSignals);
     const funnel = deriveDecisionFunnel(liveSignals, tradeLifecycle, Number(d.open_positions || 0));
@@ -535,7 +537,7 @@ async function load(){
     document.getElementById('cooldowns').textContent=d.active_cooldowns||0;
 
     // Trading stats
-    const live=overview.live_summary||overview.status?.live_summary||commandCenter.live_summary||d.live_summary||{};
+    const live=window.dashboardAccountSummary ? window.dashboardAccountSummary(overview) : (overview.live_summary||overview.status?.live_summary||commandCenter.live_summary||d.live_summary||{});
     const balance=Number(live.balance??d.balance??0);
     const balanceDelta=Number(live.balance_delta??d.balance_delta??live.total_pnl??d.total_pnl??0);
     const balanceEl=document.getElementById('sBalance');
@@ -742,7 +744,7 @@ async function load(){
             <div class="train-name">Operator trust</div>
             <div class="train-state ${integrityState === 'Stable' ? 'gn' : integrityState === 'Guarded' ? 'am' : 'bl'}">${integrityState.toLowerCase()}</div>
           </div>
-          <div class="train-meta">Mode ${runtimeMode} · balance ${(d.balance || 0).toFixed(2)}</div>
+          <div class="train-meta">Mode ${runtimeMode} · balance ${(Number(live.balance ?? d.balance ?? 0)).toFixed(2)}</div>
           <div class="train-issue">${integrityState === 'Stable' ? 'All major runtime surfaces agree with the current monitor view.' : 'Use the freshness, latency, and gate panels before trusting the desk blindly.'}</div>
         </div>
       </div>`;
@@ -848,8 +850,8 @@ async function load(){
         const ok = !!item.fresh;
         const rawStatus = String(item.status || '').trim();
         const status = rawStatus === 'never_seen' ? 'waiting' : ok ? (rawStatus && rawStatus !== 'fresh' ? rawStatus : 'fresh') : (rawStatus || 'stale');
-        const age = item.display_age || fmtSeconds(item.age_secs);
-        const threshold = item.display_threshold || fmtThreshold(item.threshold);
+        const age = typeof item.display_age === 'string' ? item.display_age : fmtSeconds(item.display_age ?? item.age_secs);
+        const threshold = typeof item.display_threshold === 'string' ? item.display_threshold : fmtThreshold(item.display_threshold ?? item.threshold);
         return `<div class="fresh-card">
           <div class="fresh-top">
             <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
@@ -869,8 +871,8 @@ async function load(){
     }else{
       staleMapEl.innerHTML = `<div class="fresh-grid">${staleKeys.map((key) => {
         const item = freshness[key] || {};
-        const age = fmtSeconds(item.age_secs);
-        const threshold = fmtThreshold(item.threshold);
+        const age = typeof item.display_age === 'string' ? item.display_age : fmtSeconds(item.display_age ?? item.age_secs);
+        const threshold = typeof item.display_threshold === 'string' ? item.display_threshold : fmtThreshold(item.display_threshold ?? item.threshold);
         return `<div class="fresh-card">
           <div class="fresh-top">
             <div class="proc-dot proc-dot-off"></div>
@@ -1018,8 +1020,10 @@ async function loadSignalPerf(){
     const d = overview || {};
     if(!d.success)return;
     const sigs=d.snapshot || {};
-    const commandCenter = d.command_center || {};
-    const liveSignals = Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [];
+    const commandCenter = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(d) : (d.command_center || {});
+    const liveSignals = window.dashboardCollectDecisionRows
+      ? window.dashboardCollectDecisionRows(commandCenter, {includeContext:true})
+      : (Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : []);
     const tradeLifecycle = commandCenter.trade_lifecycle || {};
     const gateCounts = deriveDecisionGateCounts(liveSignals);
     const funnel = deriveDecisionFunnel(liveSignals, tradeLifecycle, Number(d.health?.open_positions || 0));

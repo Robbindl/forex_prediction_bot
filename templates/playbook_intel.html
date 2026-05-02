@@ -483,7 +483,9 @@ function renderPredictions(overview){
   if(!preds.length){ grid.innerHTML = '<div class="empty">No active signal decisions</div>'; return; }
   grid.innerHTML = preds.slice(0,12).map(p => {
     const conf = Number(p.confidence || 0) <= 1 ? Number(p.confidence || 0) * 100 : Number(p.confidence || 0);
-    const isBuy = p.direction === 'BUY';
+    const dir = String(p.direction || p.signal || p.decision_state || 'WATCH').toUpperCase();
+    const cardSide = dir === 'BUY' ? 'buy' : dir === 'SELL' ? 'sell' : 'watch';
+    const isBuy = dir === 'BUY';
     const barCol = conf >= 75 ? 'var(--gr)' : conf >= 62 ? 'var(--am)' : 'var(--rd)';
     const entry = Number(p.entry_price ?? p.entry ?? 0);
     const stop = Number(p.stop_loss ?? p.sl ?? 0);
@@ -498,7 +500,7 @@ function renderPredictions(overview){
     const pressureLine = 'Ext ' + formatScore(numValue(meta.extension_score, p.extension_score),2) + ' · Cluster ' + formatScore(numValue(meta.cluster_penalty, p.cluster_penalty),2) + ' · Impulse ' + formatScore(numValue(meta.impulse_age_bars, p.impulse_age_bars),0);
     const policyLine = regimeBits(p).join(' · ');
     const notes = [marketReviewNotes(p), executionReviewNotes(p)].filter(Boolean).slice(0,2);
-    return '<div class="pred-card pc-'+(isBuy ? 'buy' : 'sell')+'"><div class="pc-header"><span class="pc-dir '+(isBuy ? 'pc-buy-badge' : 'pc-sell-badge')+'">'+p.direction+'</span><span class="pc-asset">'+(p.asset || '—')+'</span><span class="pc-cat">'+patternFamily(p)+'</span></div><div class="pc-conf"><div class="pc-conf-row"><span>Confidence</span><span style="color:'+barCol+'">'+conf.toFixed(1)+'%</span></div><div class="pc-bar"><div class="pc-bar-fill" style="width:'+Math.min(100,conf)+'%;background:'+barCol+'"></div></div></div><div class="pc-levels"><div class="pc-level"><div class="pc-level-l">Entry</div><div class="pc-level-v">'+fmt(entry)+'</div></div><div class="pc-level"><div class="pc-level-l">Stop</div><div class="pc-level-v" style="color:var(--rd)">'+fmt(stop)+'</div></div><div class="pc-level"><div class="pc-level-l">Target</div><div class="pc-level-v" style="color:var(--gr)">'+fmt(target)+'</div></div></div><div class="pc-footer"><span>'+playbookName(p)+'</span><span class="rr-badge">R:R '+(rr || '—')+'</span></div><div class="pc-footer"><span>'+statusChip(readiness.state, readiness.label)+'</span><span>'+statusChip(confirm.state === 'neutral' ? 'neutral' : confirm.state, 'Confirm '+confirm.label)+'</span></div><div class="pc-footer"><span>'+sessionName(p)+'</span><span>Rank '+elitePatternRank(p)+'</span></div><div class="pc-footer"><span>'+structureLine+'</span><span>'+readiness.detail+'</span></div><div class="pc-footer"><span>'+qualityLine+'</span><span>'+(boolValue(meta.failed_opposite_move_confirmed, p.failed_opposite_move_confirmed) ? 'Opposite fail confirmed' : 'Opposite fail n/a')+'</span></div><div class="pc-footer"><span>'+pressureLine+'</span><span>'+(exactKillReason(p) || 'No active kill reason')+'</span></div>'+(policyLine ? '<div class="pc-footer"><span style="color:var(--tx2)">'+policyLine+'</span><span></span></div>' : '') + (notes.length ? '<div class="pc-footer"><span style="color:var(--tx2)">'+notes.join(' · ')+'</span><span></span></div>' : '') + '</div>';
+    return '<div class="pred-card pc-'+cardSide+'"><div class="pc-header"><span class="pc-dir '+(dir === 'BUY' ? 'pc-buy-badge' : dir === 'SELL' ? 'pc-sell-badge' : '')+'">'+dir+'</span><span class="pc-asset">'+(p.asset || '—')+'</span><span class="pc-cat">'+patternFamily(p)+'</span></div><div class="pc-conf"><div class="pc-conf-row"><span>Confidence</span><span style="color:'+barCol+'">'+conf.toFixed(1)+'%</span></div><div class="pc-bar"><div class="pc-bar-fill" style="width:'+Math.min(100,conf)+'%;background:'+barCol+'"></div></div></div><div class="pc-levels"><div class="pc-level"><div class="pc-level-l">Entry</div><div class="pc-level-v">'+fmt(entry)+'</div></div><div class="pc-level"><div class="pc-level-l">Stop</div><div class="pc-level-v" style="color:var(--rd)">'+fmt(stop)+'</div></div><div class="pc-level"><div class="pc-level-l">Target</div><div class="pc-level-v" style="color:var(--gr)">'+fmt(target)+'</div></div></div><div class="pc-footer"><span>'+playbookName(p)+'</span><span class="rr-badge">R:R '+(rr || '—')+'</span></div><div class="pc-footer"><span>'+statusChip(readiness.state, readiness.label)+'</span><span>'+statusChip(confirm.state === 'neutral' ? 'neutral' : confirm.state, 'Confirm '+confirm.label)+'</span></div><div class="pc-footer"><span>'+sessionName(p)+'</span><span>Rank '+elitePatternRank(p)+'</span></div><div class="pc-footer"><span>'+structureLine+'</span><span>'+readiness.detail+'</span></div><div class="pc-footer"><span>'+qualityLine+'</span><span>'+(boolValue(meta.failed_opposite_move_confirmed, p.failed_opposite_move_confirmed) ? 'Opposite fail confirmed' : 'Opposite fail n/a')+'</span></div><div class="pc-footer"><span>'+pressureLine+'</span><span>'+(exactKillReason(p) || 'No active kill reason')+'</span></div>'+(policyLine ? '<div class="pc-footer"><span style="color:var(--tx2)">'+policyLine+'</span><span></span></div>' : '') + (notes.length ? '<div class="pc-footer"><span style="color:var(--tx2)">'+notes.join(' · ')+'</span><span></span></div>' : '') + '</div>';
   }).join('');
 }
 function renderConfDistribution(overview){
@@ -523,15 +525,21 @@ async function loadOverview(){
   try{
     const overview = await fetchAiPredictionsOverview(30);
     if(!overview.success){ renderAiUnavailable('Playbook intel unavailable'); return; }
-    const commandCenter = overview.command_center || {};
-    const decisionRows = []
-      .concat(overview.near_misses || [])
-      .concat(commandCenter.near_misses || [])
-      .filter(isPublishedExecutionSignal);
+    const commandCenter = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(overview) : (overview.command_center || {});
+    const decisionRows = window.dashboardCollectDecisionRows
+      ? window.dashboardCollectDecisionRows(commandCenter, {isPublished:isPublishedExecutionSignal, includeContext:true})
+      : []
+        .concat(overview.near_misses || [])
+        .concat(commandCenter.latest_signals || [])
+        .concat(commandCenter.top_opportunities || [])
+        .concat(commandCenter.near_misses || [])
+        .concat((commandCenter.decision_context || {}).rows || [])
+        .filter(item => item && item.asset);
     if((!overview.signals || !overview.signals.length) && decisionRows.length){
       overview.signals = decisionRows;
       overview.live_quality = Object.assign({signal_count:decisionRows.length}, overview.live_quality || {});
       overview.live_quality.signal_count = decisionRows.length;
+      overview.live_quality.context_only = !decisionRows.some(isPublishedExecutionSignal);
     }
     renderPredictionSummary(overview);
     renderDiagnosticsSummary(overview);

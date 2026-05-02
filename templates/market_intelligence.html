@@ -410,14 +410,18 @@ function regimeBits(signal){
 }
 function fetchPrimarySignal(page){
   const current = normalizeSignalAsset(currentAsset);
+  const commandCenter = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(page || {}) : ((page && page.command_center) || {});
   const sources = [
     page && page.signals,
-    page && page.command_center && page.command_center.latest_signals,
-    page && page.command_center && page.command_center.top_opportunities,
-    page && page.command_center && page.command_center.near_misses,
-    page && page.command_center && page.command_center.watchlist_ladder && page.command_center.watchlist_ladder.hot,
-    page && page.command_center && page.command_center.watchlist_ladder && page.command_center.watchlist_ladder.almost_ready,
-    page && page.command_center && page.command_center.positions,
+    commandCenter.latest_signals,
+    commandCenter.top_opportunities,
+    commandCenter.near_misses,
+    commandCenter.decision_context && commandCenter.decision_context.rows,
+    commandCenter.watchlist_ladder && commandCenter.watchlist_ladder.hot,
+    commandCenter.watchlist_ladder && commandCenter.watchlist_ladder.almost_ready,
+    commandCenter.watchlist_ladder && commandCenter.watchlist_ladder.blocked,
+    commandCenter.watchlist_ladder && commandCenter.watchlist_ladder.inactive,
+    commandCenter.positions,
   ];
   for(const source of sources){
     if(Array.isArray(source) && source.length){
@@ -427,8 +431,20 @@ function fetchPrimarySignal(page){
   }
   for(const source of sources){
     if(Array.isArray(source) && source.length){
+      const exactContext = source.find(s => s && (s.asset || s.symbol) && normalizeSignalAsset(s.asset || s.symbol) === current);
+      if(exactContext) return exactContext;
+    }
+  }
+  for(const source of sources){
+    if(Array.isArray(source) && source.length){
       const first = source.find(isPublishedExecutionSignal);
       if(first) return first;
+    }
+  }
+  for(const source of sources){
+    if(Array.isArray(source) && source.length){
+      const firstContext = source.find(s => s && (s.asset || s.symbol));
+      if(firstContext) return firstContext;
     }
   }
   return null;

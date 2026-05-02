@@ -2733,6 +2733,33 @@ def _build_decision_context_payload(
 def _normalize_command_center_payload_contract(payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(payload or {})
 
+    whale = payload.get("whale")
+    if not isinstance(whale, dict):
+        whale = {}
+    whale = _normalize_command_center_whale_payload(
+        {
+            **whale,
+            "recent": whale.get("recent") or payload.get("recent") or [],
+            "alerts": whale.get("alerts") or payload.get("alerts") or [],
+            "alert_count_24h": whale.get("alert_count_24h") or payload.get("alert_count_24h") or 0,
+            "whale_alerts_24h": whale.get("whale_alerts_24h") or payload.get("whale_alerts_24h") or 0,
+        }
+    )
+    payload["whale"] = whale
+    payload["recent"] = list(payload.get("recent") or whale.get("recent") or [])
+    payload["alert_count_24h"] = int(payload.get("alert_count_24h") or whale.get("alert_count_24h") or 0)
+    payload["whale_alerts_24h"] = int(payload.get("whale_alerts_24h") or whale.get("whale_alerts_24h") or 0)
+
+    sentiment_context = payload.get("sentiment_context")
+    if not isinstance(sentiment_context, dict):
+        sentiment_context = {}
+    sentiment_context = _command_center_sentiment_context(
+        {"sentiment_score": payload.get("sentiment_score", 0.0), "sentiment": sentiment_context},
+        whale,
+    )
+    payload["sentiment_context"] = sentiment_context
+    payload["sentiment_score"] = float(sentiment_context.get("sentiment_score", payload.get("sentiment_score", 0.0)) or 0.0)
+
     why_not = payload.get("why_not_traded")
     if not isinstance(why_not, dict):
         why_not = _empty_why_not_traded_payload()
@@ -2891,6 +2918,8 @@ def _compact_command_center_for_page_overview(payload: Dict[str, Any]) -> Dict[s
         "engine_running": bool(normalized.get("engine_running", False)),
         "engine_ready": bool(normalized.get("engine_ready", False)),
         "sentiment_score": normalized.get("sentiment_score"),
+        "sentiment_context": dict(normalized.get("sentiment_context") or {}),
+        "whale": dict(normalized.get("whale") or {}),
         "whale_alerts_24h": int(normalized.get("whale_alerts_24h", 0) or 0),
         "alert_count_24h": int(normalized.get("alert_count_24h", 0) or 0),
         "recent": _rows("recent", 8),
@@ -4075,9 +4104,16 @@ def _build_command_center_payload_with_budget() -> Dict[str, Any]:
 
 def _build_command_center_unavailable_payload(*, reason: str = "unavailable") -> Dict[str, Any]:
     cached_slow = dict(_cache_get("cc_slow") or {})
-    sent_score = float(cached_slow.get("sentiment_score", 0.0) or 0.0)
-    whale_alerts = int(cached_slow.get("whale_alerts_24h", cached_slow.get("alert_count_24h", 0)) or 0)
-    recent = list(cached_slow.get("recent") or [])
+    whale_context = _command_center_whale_context()
+    sentiment_context = _command_center_sentiment_context(cached_slow, whale_context)
+    sent_score = float(sentiment_context.get("sentiment_score", cached_slow.get("sentiment_score", 0.0)) or 0.0)
+    whale_alerts = int(
+        whale_context.get("whale_alerts_24h")
+        or whale_context.get("alert_count_24h")
+        or cached_slow.get("whale_alerts_24h", cached_slow.get("alert_count_24h", 0))
+        or 0
+    )
+    recent = list(whale_context.get("recent") or cached_slow.get("recent") or [])
     core = _core()
     perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core)
     live_summary = _build_command_center_live_summary(perf, daily, positions)
@@ -4095,6 +4131,8 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
         "engine_running": bool(health.get("is_running", getattr(core, "is_running", False) if core else False)),
         "engine_ready": bool(health.get("engine_ready", getattr(core, "is_ready", False) if core else False)),
         "sentiment_score": sent_score,
+        "sentiment_context": sentiment_context,
+        "whale": whale_context,
         "whale_alerts_24h": whale_alerts,
         "alert_count_24h": whale_alerts,
         "recent": recent,
@@ -4196,6 +4234,8 @@ def _fetch_command_center_slow_data() -> Dict[str, Any]:
     sent_score = 0.0
     whale_count = 0
     whale_recent: List[Dict[str, Any]] = []
+    whale_payload: Dict[str, Any] = {}
+    sentiment_payload: Dict[str, Any] = {}
     pool = None
     try:
         from concurrent.futures import ThreadPoolExecutor, wait
@@ -4223,9 +4263,11 @@ def _fetch_command_center_slow_data() -> Dict[str, Any]:
                     payload = future.result()
                     if kind == "sentiment":
                         sent_score = float((payload or {}).get("score", 0) or 0)
+                        sentiment_payload = dict(payload or {})
                     elif kind == "whales":
-                        whale_recent = list((payload or {}).get("recent", []) or [])
-                        whale_count = int((payload or {}).get("alert_count_24h", 0) or 0)
+                        whale_payload = _normalize_command_center_whale_payload(dict(payload or {}))
+                        whale_recent = list(whale_payload.get("recent", []) or [])
+                        whale_count = int(whale_payload.get("alert_count_24h", 0) or 0)
                 except Exception as exc:
                     logger.debug(f"[dashboard] command-center {kind} error: {exc}")
             for future in not_done:
@@ -4240,11 +4282,126 @@ def _fetch_command_center_slow_data() -> Dict[str, Any]:
                 pool.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
+    if not whale_count and not whale_recent:
+        whale_payload = _command_center_whale_context()
+        whale_recent = list(whale_payload.get("recent", []) or [])
+        whale_count = int(whale_payload.get("alert_count_24h", whale_payload.get("whale_alerts_24h", 0)) or 0)
+    if not sentiment_payload:
+        sentiment_payload = _command_center_sentiment_context({}, whale_payload)
+        sent_score = float(sentiment_payload.get("score", sentiment_payload.get("sentiment_score", sent_score)) or 0.0)
     return {
         "sentiment_score": round(sent_score, 3),
         "whale_alerts_24h": whale_count,
         "alert_count_24h": whale_count,
         "recent": whale_recent,
+        "whale": whale_payload,
+        "sentiment": sentiment_payload,
+    }
+
+
+def _normalize_command_center_whale_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(payload or {})
+    alerts = [dict(row) for row in list(payload.get("alerts") or []) if isinstance(row, dict)]
+    recent = [dict(row) for row in list(payload.get("recent") or []) if isinstance(row, dict)]
+    if not recent and alerts:
+        recent = alerts[:10]
+    count = int(
+        payload.get("alert_count_24h")
+        or payload.get("whale_alerts_24h")
+        or len(alerts)
+        or len(recent)
+        or 0
+    )
+    total_volume = 0.0
+    try:
+        total_volume = float(payload.get("total_volume_usd", 0.0) or 0.0)
+    except Exception:
+        total_volume = 0.0
+    if not total_volume:
+        for row in alerts or recent:
+            try:
+                total_volume += float(row.get("value_usd", 0.0) or 0.0)
+            except Exception:
+                continue
+    return {
+        **payload,
+        "success": bool(payload.get("success", True)),
+        "alerts": alerts,
+        "recent": recent,
+        "alert_count_24h": count,
+        "whale_alerts_24h": count,
+        "total_volume_usd": round(total_volume, 2),
+        "top_assets": list(payload.get("top_assets") or []),
+    }
+
+
+def _command_center_whale_context() -> Dict[str, Any]:
+    candidates: List[Dict[str, Any]] = []
+    cached_whale = _cache_get("whale_summary:v2")
+    if isinstance(cached_whale, dict):
+        candidates.append(_response_to_dict(cached_whale))
+    cached_slow = _cache_get("cc_slow")
+    if isinstance(cached_slow, dict):
+        if isinstance(cached_slow.get("whale"), dict):
+            candidates.append(dict(cached_slow.get("whale") or {}))
+        candidates.append(dict(cached_slow or {}))
+    for candidate in candidates:
+        normalized = _normalize_command_center_whale_payload(candidate)
+        if normalized.get("alert_count_24h") or normalized.get("recent") or normalized.get("alerts"):
+            return normalized
+    try:
+        payload = _db_whale_dashboard_summary(
+            min_value_usd=500_000,
+            hours=24,
+            recent_limit=10,
+            alert_limit=20,
+        )
+        normalized = _normalize_command_center_whale_payload(payload)
+        if normalized.get("alert_count_24h") or normalized.get("recent") or normalized.get("alerts"):
+            _cache_set("whale_summary:v2", normalized, ttl=300)
+            return normalized
+        _cache_set("whale_summary:v2", normalized, ttl=45)
+        return normalized
+    except Exception as exc:
+        logger.debug(f"[dashboard] command-center DB whale fallback failed: {exc}")
+    return _normalize_command_center_whale_payload({})
+
+
+def _command_center_sentiment_context(
+    slow_context: Dict[str, Any],
+    whale_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    slow_context = dict(slow_context or {})
+    whale_context = dict(whale_context or {})
+    cached = _cache_get("sentiment_dashboard")
+    payload = _response_to_dict(cached) if isinstance(cached, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    nested_slow = slow_context.get("sentiment")
+    if isinstance(nested_slow, dict):
+        merged = dict(nested_slow)
+        merged.update(payload)
+        payload = merged
+    score = payload.get("score", payload.get("sentiment_score", slow_context.get("sentiment_score", 0.0)))
+    try:
+        score = float(score or 0.0)
+    except Exception:
+        score = 0.0
+    whale_count = int(
+        whale_context.get("alert_count_24h")
+        or whale_context.get("whale_alerts_24h")
+        or len(whale_context.get("recent") or [])
+        or len(whale_context.get("alerts") or [])
+        or 0
+    )
+    return {
+        **payload,
+        "success": bool(payload.get("success", True)),
+        "score": round(score, 3),
+        "sentiment_score": round(score, 3),
+        "whale_alert_count": whale_count,
+        "has_activity": bool(abs(score) > 0.001 or whale_count),
+        "source": payload.get("source") or ("market_derived" if payload else "command_center_context"),
     }
 
 
@@ -4826,6 +4983,15 @@ def _build_command_center_payload() -> Dict[str, Any]:
     sent_score = float((_cc_slow or {}).get("sentiment_score", 0.0) or 0.0)
     if whale_recent or whale_count or sent_score:
         _cache_set("cc_slow", _cc_slow, ttl=600)
+    whale_context = _command_center_whale_context()
+    if whale_context.get("alert_count_24h") or whale_context.get("recent") or whale_context.get("alerts"):
+        whale_recent = list(whale_context.get("recent", []) or whale_recent)
+        whale_count = int(
+            whale_context.get("alert_count_24h", whale_context.get("whale_alerts_24h", whale_count))
+            or whale_count
+        )
+    sentiment_context = _command_center_sentiment_context(_cc_slow, whale_context)
+    sent_score = float(sentiment_context.get("sentiment_score", sent_score) or sent_score)
 
     live_snapshots = _fetch_command_center_live_snapshots(positions, max_age_seconds=None)
     enriched_positions = _build_command_center_enriched_positions(positions, live_snapshots)
@@ -4896,10 +5062,12 @@ def _build_command_center_payload() -> Dict[str, Any]:
         "total_trades":      int(perf.get("total_trades", 0) or 0),
         "engine_running":    health.get("is_running", core.is_running if core else False),
         "engine_ready":      health.get("engine_ready", core.is_ready if core else False),
-        "sentiment_score":   _cc_slow["sentiment_score"],
-        "whale_alerts_24h":  _cc_slow["whale_alerts_24h"],
-        "alert_count_24h":   _cc_slow["alert_count_24h"],
-        "recent":            _cc_slow["recent"],
+        "sentiment_score":   round(sent_score, 3),
+        "sentiment_context": sentiment_context,
+        "whale":             whale_context,
+        "whale_alerts_24h":  whale_count,
+        "alert_count_24h":   whale_count,
+        "recent":            whale_recent,
         "latest_signals":    signals,
         "signal_quality":    signal_quality,
         "top_opportunities": top_opportunities,
@@ -8084,8 +8252,12 @@ def api_trade_history():
                     "initial_balance": initial_balance,
                     "balance": round(initial_balance + total_pnl, 2),
                     "realized_balance": round(initial_balance + total_pnl, 2),
+                    "balance_delta": round(total_pnl, 2),
+                    "account_state": "loss" if total_pnl < -0.005 else "gain" if total_pnl > 0.005 else "flat",
                     "total_pnl": round(total_pnl, 2),
+                    "realized_total_pnl": round(total_pnl, 2),
                     "daily_pnl": round(float(summary.get("daily_pnl", 0.0) or 0.0), 2),
+                    "realized_daily_pnl": round(float(summary.get("daily_pnl", 0.0) or 0.0), 2),
                     "daily_trades": int(summary.get("daily_trades", 0) or 0),
                     "total_trades": int(summary.get("total_trades", len(trades)) or 0),
                     "closed_trades": int(summary.get("total_trades", len(trades)) or 0),
@@ -9052,12 +9224,8 @@ def _build_page_overview_unavailable_payload(page: str, days: int, reason: str =
         payload.update(
             {
                 "command_center": command_center,
-                "whale": {
-                    "success": bool(command_center.get("success", False)),
-                    "recent": list(command_center.get("recent", []) or []),
-                    "alert_count_24h": int(command_center.get("alert_count_24h", 0) or 0),
-                    "whale_alerts_24h": int(command_center.get("whale_alerts_24h", 0) or 0),
-                },
+                "whale": dict(command_center.get("whale") or {}),
+                "sentiment_context": dict(command_center.get("sentiment_context") or {}),
             }
         )
     elif page == "market_intelligence":
@@ -9287,12 +9455,8 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
             "success": True,
             "page": page,
             "command_center": command_center,
-            "whale": {
-                "success": bool(command_center.get("success", False)),
-                "recent": list(command_center.get("recent", []) or []),
-                "alert_count_24h": int(command_center.get("alert_count_24h", 0) or 0),
-                "whale_alerts_24h": int(command_center.get("whale_alerts_24h", 0) or 0),
-            },
+            "whale": dict(command_center.get("whale") or {}),
+            "sentiment_context": dict(command_center.get("sentiment_context") or {}),
         }
     elif page == "market_intelligence":
         payload = {

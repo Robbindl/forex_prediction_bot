@@ -302,9 +302,197 @@
     return requestPromise;
   }
 
+  function dashboardList(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function dashboardObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  function dashboardMergeCommandCenterWhale(payload) {
+    const root = dashboardObject(payload);
+    const commandCenter = dashboardObject(root.command_center);
+    const nested = dashboardObject(commandCenter.command_center);
+    const whaleSources = [
+      dashboardObject(root.whale),
+      dashboardObject(nested.whale),
+      dashboardObject(commandCenter.whale),
+    ].filter(source => Object.keys(source).length);
+    const whale = Object.assign({}, ...whaleSources);
+    const recent = []
+      .concat(dashboardList(root.recent))
+      .concat(dashboardList(commandCenter.recent))
+      .concat(dashboardList(nested.recent))
+      .concat(...whaleSources.map(source => dashboardList(source.recent)))
+      .concat(...whaleSources.map(source => dashboardList(source.alerts)));
+    const alerts = []
+      .concat(dashboardList(root.alerts))
+      .concat(dashboardList(commandCenter.alerts))
+      .concat(dashboardList(nested.alerts))
+      .concat(...whaleSources.map(source => dashboardList(source.alerts)))
+      .concat(...whaleSources.map(source => dashboardList(source.recent)));
+    const sourceCounts = [
+      root.alert_count_24h,
+      root.whale_alerts_24h,
+      commandCenter.alert_count_24h,
+      commandCenter.whale_alerts_24h,
+      nested.alert_count_24h,
+      nested.whale_alerts_24h,
+      ...whaleSources.flatMap(source => [source.alert_count_24h, source.whale_alerts_24h]),
+    ].map(Number).filter(Number.isFinite);
+    const count = Math.max(...sourceCounts, recent.length, alerts.length, 0);
+    return {
+      whale,
+      recent,
+      alerts,
+      alert_count_24h: Number.isFinite(count) ? count : 0,
+      whale_alerts_24h: Number.isFinite(count) ? count : 0,
+    };
+  }
+
+  function dashboardNormalizeCommandCenter(payload) {
+    const root = dashboardObject(payload);
+    const commandCenter = dashboardObject(root.command_center);
+    const nested = dashboardObject(commandCenter.command_center);
+    const normalized = Object.assign({}, nested, commandCenter);
+    const whale = dashboardMergeCommandCenterWhale(root);
+    normalized.whale = Object.assign({}, whale.whale, dashboardObject(normalized.whale));
+    normalized.recent = dashboardList(normalized.recent).concat(whale.recent);
+    normalized.alerts = dashboardList(normalized.alerts).concat(whale.alerts);
+    normalized.alert_count_24h = Math.max(Number(normalized.alert_count_24h || 0), whale.alert_count_24h || 0);
+    normalized.whale_alerts_24h = Math.max(Number(normalized.whale_alerts_24h || 0), whale.whale_alerts_24h || 0);
+    if (!normalized.sentiment_context && root.sentiment_context) normalized.sentiment_context = root.sentiment_context;
+    if (!normalized.live_summary) {
+      normalized.live_summary = root.live_summary || dashboardObject(root.status).live_summary || dashboardObject(root.risk).live_summary || {};
+    }
+    return normalized;
+  }
+
+  function dashboardDefaultPublishedSignal(signal) {
+    if (!signal || typeof signal !== 'object') return false;
+    const meta = dashboardObject(signal.metadata);
+    const value = key => meta[key] !== undefined ? meta[key] : signal[key];
+    const text = key => String(value(key) == null ? '' : value(key)).trim();
+    const kind = text('decision_kind') || text('kind');
+    const state = text('decision_state') || text('state');
+    if (/session_watch/i.test(kind) || /watching/i.test(state)) return false;
+    if (/candidate|blocked|accepted|killed|signal/i.test(kind)) return true;
+    if (text('direction') || text('signal') || text('side') || text('action')) return true;
+    return Boolean(
+      text('exact_kill_reason') ||
+      text('execution_kill_reason') ||
+      text('blocked_reason') ||
+      text('kill_reason') ||
+      value('entry_confirmation_ready') === true ||
+      Number(value('entry_confirmation_bars_required') || 0) > 0 ||
+      Number(value('entry_confirmation_count') || 0) > 0
+    );
+  }
+
+  function dashboardCollectDecisionRows(commandCenter, options) {
+    const opts = Object.assign({includeContext: true}, options || {});
+    const cc = dashboardNormalizeCommandCenter({command_center: commandCenter});
+    const ladder = dashboardObject(cc.watchlist_ladder);
+    const decisionContext = dashboardObject(cc.decision_context);
+    const radar = dashboardObject(cc.session_radar);
+    const sources = [
+      cc.latest_signals,
+      cc.top_opportunities,
+      cc.near_misses,
+      ladder.hot,
+      ladder.almost_ready,
+      ladder.blocked,
+      decisionContext.rows,
+      radar.rows,
+      ladder.inactive,
+    ];
+    const isPublished = typeof opts.isPublished === 'function' ? opts.isPublished : dashboardDefaultPublishedSignal;
+    const seen = new Set();
+    const executionRows = [];
+    const contextRows = [];
+    sources.forEach(source => {
+      dashboardList(source).forEach(item => {
+        if (!item || typeof item !== 'object') return;
+        const asset = item.asset || item.symbol;
+        if (!asset) return;
+        const key = [
+          asset,
+          item.decision_kind || item.kind || '',
+          item.decision_state || item.state || '',
+          item.direction || item.signal || item.side || item.action || '',
+          item.decision_reason || item.reason || item.exact_kill_reason || '',
+        ].join('|');
+        if (seen.has(key)) return;
+        seen.add(key);
+        if (isPublished(item)) executionRows.push(item);
+        else contextRows.push(item);
+      });
+    });
+    if (executionRows.length) return executionRows;
+    return opts.includeContext === false ? [] : contextRows;
+  }
+
+  function dashboardAccountSummary(payload) {
+    const root = dashboardObject(payload);
+    const commandCenter = dashboardNormalizeCommandCenter(root);
+    const candidates = [
+      root.live_summary,
+      commandCenter.live_summary,
+      dashboardObject(root.status).live_summary,
+      dashboardObject(root.risk).live_summary,
+      root,
+      commandCenter,
+      dashboardObject(root.status),
+      dashboardObject(root.risk),
+    ].map(dashboardObject).filter(item =>
+      Number.isFinite(Number(item.balance)) ||
+      Number.isFinite(Number(item.realized_balance)) ||
+      Number.isFinite(Number(item.total_pnl)) ||
+      Number.isFinite(Number(item.closed_trades))
+    );
+    const scoreSummary = item => {
+      const balance = Number(item.balance ?? item.realized_balance);
+      const initial = Number(item.initial_balance);
+      const totalPnl = Number(item.total_pnl ?? item.realized_total_pnl ?? item.balance_delta);
+      const closed = Number(item.closed_trades ?? item.total_trades);
+      let score = 0;
+      if (Number.isFinite(balance)) score += 1;
+      if (Number.isFinite(initial)) score += 1;
+      if (Number.isFinite(totalPnl) && Math.abs(totalPnl) >= 0.01) score += 8;
+      if (Number.isFinite(closed) && closed > 0) score += 6;
+      if (Number.isFinite(balance) && Number.isFinite(initial) && Math.abs(balance - initial) >= 0.01) score += 10;
+      if (Number.isFinite(item.balance_delta) && Math.abs(Number(item.balance_delta)) >= 0.01) score += 5;
+      return score;
+    };
+    const summary = candidates.sort((a, b) => scoreSummary(b) - scoreSummary(a))[0] || {};
+    const totalPnl = Number(summary.total_pnl ?? summary.realized_total_pnl ?? summary.balance_delta ?? root.total_pnl ?? commandCenter.total_pnl ?? 0);
+    const rawBalance = Number(summary.balance ?? summary.realized_balance ?? root.balance ?? commandCenter.balance);
+    const rawInitial = Number(summary.initial_balance ?? root.initial_balance ?? commandCenter.initial_balance);
+    const initial = Number.isFinite(rawInitial)
+      ? rawInitial
+      : (Number.isFinite(rawBalance) && Number.isFinite(totalPnl) ? rawBalance - totalPnl : NaN);
+    const realized = Number(summary.realized_balance ?? rawBalance ?? root.realized_balance ?? commandCenter.realized_balance);
+    const openPnl = Number(summary.open_pnl ?? root.open_pnl ?? commandCenter.open_pnl ?? 0);
+    const balance = Number(summary.balance ?? (Number.isFinite(realized) ? realized + openPnl : NaN));
+    const balanceDelta = Number(summary.balance_delta ?? (Number.isFinite(balance) && Number.isFinite(initial) ? balance - initial : totalPnl));
+    return Object.assign({}, summary, {
+      initial_balance: Number.isFinite(initial) ? initial : summary.initial_balance,
+      realized_balance: Number.isFinite(realized) ? realized : summary.realized_balance,
+      balance: Number.isFinite(balance) ? balance : summary.balance,
+      balance_delta: Number.isFinite(balanceDelta) ? Math.round(balanceDelta * 100) / 100 : 0,
+      total_pnl: Number.isFinite(totalPnl) ? totalPnl : 0,
+      open_pnl: Number.isFinite(openPnl) ? openPnl : 0,
+    });
+  }
+
   window.fetch = authorizedFetch;
   window.dashboardAuthReady = ensureApiToken(false).catch(() => '');
   window.dashboardFetchJson = dashboardFetchJson;
+  window.dashboardNormalizeCommandCenter = dashboardNormalizeCommandCenter;
+  window.dashboardCollectDecisionRows = dashboardCollectDecisionRows;
+  window.dashboardAccountSummary = dashboardAccountSummary;
+  window.dashboardMergeCommandCenterWhale = dashboardMergeCommandCenterWhale;
   window.dashboardGetApiToken = async function(forceRefresh) {
     return ensureApiToken(!!forceRefresh);
   };

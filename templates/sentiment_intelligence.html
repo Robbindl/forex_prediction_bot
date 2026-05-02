@@ -438,12 +438,16 @@ async function load(){
     const status = page.status || {};
     const routing = status.provider_routing || {};
     const diagnostics = status.signal_diagnostics || {};
-    const commandCenter = page.command_center || {};
-    const liveSignals = []
+    const commandCenter = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(page) : (page.command_center || {});
+    const decisionContext = commandCenter.decision_context || {};
+    const signalCandidates = []
       .concat(Array.isArray(commandCenter.latest_signals) ? commandCenter.latest_signals : [])
       .concat(Array.isArray(commandCenter.top_opportunities) ? commandCenter.top_opportunities : [])
       .concat(Array.isArray(commandCenter.near_misses) ? commandCenter.near_misses : [])
-      .filter(isPublishedExecutionSignal);
+      .concat(Array.isArray(decisionContext.rows) ? decisionContext.rows : []);
+    const executionSignals = signalCandidates.filter(isPublishedExecutionSignal);
+    const contextSignals = signalCandidates.filter(item => item && item.asset && !isPublishedExecutionSignal(item));
+    const liveSignals = executionSignals.length ? executionSignals : contextSignals;
     const leadOpportunity = Array.isArray(commandCenter.top_opportunities) ? commandCenter.top_opportunities.find(isPublishedExecutionSignal) : null;
     const leadSignal = leadOpportunity || liveSignals[0] || null;
     const leadConfirm = leadSignal ? confirmationState(leadSignal) : {state:'neutral', label:'Not published', detail:'no execution signal published'};

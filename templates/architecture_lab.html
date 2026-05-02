@@ -995,11 +995,16 @@ function routeForReplayItem(item, mode = activeOverlayMode){
 }
 
 function getReplayItems(mode = activeOverlayMode){
-  const cc = overviewSnapshot?.command_center || {};
+  const cc = window.dashboardNormalizeCommandCenter ? window.dashboardNormalizeCommandCenter(overviewSnapshot || {}) : (overviewSnapshot?.command_center || {});
   const runtime = healthSnapshot?.runtime_services || {};
   const processMap = healthSnapshot?.processes || {};
   if(mode === 'signal'){
-    const top = listify(cc.top_opportunities).slice(0, 4).map((item, index) => ({
+    const contextRows = window.dashboardCollectDecisionRows
+      ? window.dashboardCollectDecisionRows(cc, {includeContext:true})
+      : listify(cc.decision_context?.rows);
+    const topSource = listify(cc.top_opportunities).length ? listify(cc.top_opportunities) : contextRows;
+    const missSource = listify(cc.near_misses).length ? listify(cc.near_misses) : contextRows.filter(item => item.decision_kind === 'blocked' || item.decision_state === 'watching');
+    const top = topSource.slice(0, 4).map((item, index) => ({
       key:`signal-top-${index}-${item.asset || item.symbol || 'item'}`,
       label:`${item.asset || item.symbol || 'Signal'} ${item.signal || item.direction || ''}`.trim(),
       summary:`confidence ${formatNumber((item.confidence || item.final_score || item.score || 0) * 100, 0)} · ${item.playbook_name || item.playbook || item.reason || 'opportunity'}`,
@@ -1008,7 +1013,7 @@ function getReplayItems(mode = activeOverlayMode){
       direction:item.signal || item.direction,
       tone:'live'
     }));
-    const misses = listify(cc.near_misses).slice(0, 3).map((item, index) => ({
+    const misses = missSource.slice(0, 3).map((item, index) => ({
       key:`signal-miss-${index}-${item.asset || item.symbol || 'item'}`,
       label:`${item.asset || item.symbol || 'Near miss'} ${item.signal || item.direction || ''}`.trim(),
       summary:item.reason || item.headline || item.block_reason || 'filtered before execution',

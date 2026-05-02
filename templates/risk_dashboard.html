@@ -480,9 +480,9 @@ function getAuthoritativeRiskLiveBookSnapshot(){
 }
 function applyRiskLiveBook(snapshot){
   if(!snapshot || !snapshot.success)return;
-  const live = snapshot.live_summary || {};
-  const realizedBalance = Number(live.realized_balance || 0);
-  const liveBalance = Number(live.balance || realizedBalance);
+  const live = window.dashboardAccountSummary ? window.dashboardAccountSummary(snapshot) : (snapshot.live_summary || {});
+  const realizedBalance = Number(live.realized_balance ?? 0);
+  const liveBalance = Number(live.balance ?? realizedBalance);
   const openPnl = Number(live.open_pnl || 0);
   const liveTotalPnl = Number(live.total_pnl ?? live.balance_delta ?? 0);
   const realizedTotalPnl = Number(live.realized_total_pnl || 0);
@@ -581,14 +581,23 @@ function isPublishedExecutionSignal(signal){
 }
 function exactSignalReason(signal){return String(signalValue(signal, 'exact_kill_reason') || signalValue(signal, 'execution_kill_reason') || signalValue(signal, 'blocked_reason') || signalValue(signal, 'kill_reason') || signalValue(signal, 'killed_by') || signalValue(signal, 'reason') || signalList(signal, 'execution_hard_blocks')[0] || signalList(signal, 'late_entry_risk_reasons')[0] || signalList(signal, 'rejected_reasons')[0] || '').trim();}
 function collectDecisionSignals(commandCenter){
+  if(window.dashboardCollectDecisionRows){
+    return window.dashboardCollectDecisionRows(commandCenter, {isPublished:isPublishedExecutionSignal, includeContext:true});
+  }
   const ladder = commandCenter?.watchlist_ladder || {};
-  return []
+  const decisionContext = commandCenter?.decision_context || {};
+  const rows = []
     .concat(commandCenter?.latest_signals || [])
     .concat(commandCenter?.top_opportunities || [])
     .concat(commandCenter?.near_misses || [])
     .concat(ladder.hot || [])
     .concat(ladder.almost_ready || [])
-    .filter(item => item && item.asset && isPublishedExecutionSignal(item));
+    .concat(ladder.blocked || [])
+    .concat(decisionContext.rows || [])
+    .concat(ladder.inactive || [])
+    .filter(item => item && item.asset);
+  const executionRows = rows.filter(isPublishedExecutionSignal);
+  return executionRows.length ? executionRows : rows;
 }
 function overextendedSignal(signal){return signalNum(signal, 'extension_score', 0) >= 0.80 || /overextend|extension|late setup|too far/i.test(exactSignalReason(signal).toLowerCase());}
 function weakQualitySignal(signal){
@@ -682,7 +691,7 @@ async function load(){
   const d = overview.risk || {};
   const commandCenter = overview.command_center || {};
   const authoritativeLiveBook = getAuthoritativeRiskLiveBookSnapshot();
-  const live = authoritativeLiveBook?.live_summary || overview.live_summary || commandCenter.live_summary || status.live_summary || {};
+  const live = window.dashboardAccountSummary ? window.dashboardAccountSummary(authoritativeLiveBook || overview) : (authoritativeLiveBook?.live_summary || overview.live_summary || commandCenter.live_summary || status.live_summary || {});
   const decisionSignals = collectDecisionSignals(commandCenter);
   const providerRouting = status.provider_routing || {};
   const signalDiagnostics = d.signal_diagnostics || {};

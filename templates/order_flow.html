@@ -415,7 +415,7 @@ async function checkStatus() {
   try {
     const page = await fetchOrderFlowOverview();
     const d = page.status || {};
-    const live = page.live_summary || page.command_center?.live_summary || d.live_summary || {};
+    const live = window.dashboardAccountSummary ? window.dashboardAccountSummary(page) : (page.live_summary || page.command_center?.live_summary || d.live_summary || {});
     const ok = d.engine_running;
     const providerRouting = d.provider_routing || {};
     document.getElementById('engineDot').className = 'pulse' + (ok ? '' : ' off');
@@ -738,7 +738,11 @@ function buildSignalIndex(signals){
   return index;
 }
 function collectDecisionSignals(commandCenter){
+  if(window.dashboardCollectDecisionRows){
+    return window.dashboardCollectDecisionRows(commandCenter, {isPublished:isPublishedExecutionSignal, includeContext:true});
+  }
   const ladder = commandCenter?.watchlist_ladder || {};
+  const decisionContext = commandCenter?.decision_context || {};
   const sources = [
     commandCenter?.latest_signals,
     commandCenter?.top_opportunities,
@@ -746,19 +750,22 @@ function collectDecisionSignals(commandCenter){
     ladder.hot,
     ladder.almost_ready,
     ladder.blocked,
+    decisionContext.rows,
+    ladder.inactive,
   ];
   const seen = new Set();
-  const rows = [];
+  const executionRows = [];
+  const contextRows = [];
   sources.forEach((source) => {
     (Array.isArray(source) ? source : []).forEach((item) => {
       const key = normalizeFlowAsset(item?.asset || item?.symbol);
       if(!key || seen.has(key)) return;
-      if(!isPublishedExecutionSignal(item)) return;
       seen.add(key);
-      rows.push(item);
+      if(isPublishedExecutionSignal(item)) executionRows.push(item);
+      else contextRows.push(item);
     });
   });
-  return rows;
+  return executionRows.length ? executionRows : contextRows;
 }
 function signalFlowSupport(signal){
   return {
