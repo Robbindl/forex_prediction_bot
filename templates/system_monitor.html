@@ -44,10 +44,12 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
 .proc-row:last-child{border:none}
 .proc-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
 .proc-dot-on{background:var(--gr);box-shadow:0 0 6px var(--gr)}
+.proc-dot-warn{background:var(--am);box-shadow:0 0 6px rgba(255,165,0,.45)}
+.proc-dot-info{background:var(--bl);box-shadow:0 0 6px rgba(41,121,255,.45)}
 .proc-dot-off{background:var(--rd)}
 .proc-name{flex:1;font-size:13px}
 .proc-status{font-size:11px;font-weight:600}
-.proc-on{color:var(--gr)}.proc-off{color:var(--rd)}
+.proc-on{color:var(--gr)}.proc-warn{color:var(--am)}.proc-info{color:var(--bl)}.proc-off{color:var(--rd)}
 
 /* Charts for CPU/RAM history */
 .sparkline{height:60px;padding:4px 16px 10px}
@@ -379,6 +381,19 @@ function fmtThreshold(value){
   const num = numericValue(value);
   return num === null ? 'Threshold —' : `Threshold ${num.toFixed ? num.toFixed(0) : num}s`;
 }
+function runtimeStateTone(state, ok){
+  const status=String(state||'').trim().toLowerCase();
+  if(['configured','idle','bot-owned','market_closed','market quiet','market_quiet','watch','warming','starting','pending','waiting'].includes(status)){
+    return {dot:'proc-dot-warn', text:'proc-warn'};
+  }
+  if(['unknown','partial','degraded'].includes(status)){
+    return {dot:'proc-dot-info', text:'proc-info'};
+  }
+  if(ok || ['running','active','enabled','connected','authenticated','streaming','ready','fresh','online'].includes(status)){
+    return {dot:'proc-dot-on', text:'proc-on'};
+  }
+  return {dot:'proc-dot-off', text:'proc-off'};
+}
 function signalMeta(signal){return signal && typeof signal.metadata === 'object' && signal.metadata ? signal.metadata : {};}
 function signalValue(signal,key){const meta=signalMeta(signal);return meta[key] !== undefined ? meta[key] : signal ? signal[key] : undefined;}
 function signalNum(signal,key,fallback=0){const num=Number(signalValue(signal,key));return Number.isFinite(num)?num:fallback;}
@@ -634,10 +649,11 @@ async function load(){
     if(serviceEl){
       serviceEl.innerHTML=serviceRows.map((item)=>{
         const ok=!!item.ok;
+        const tone=runtimeStateTone(item.state, ok);
         return `<div class="proc-row">
-          <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
+          <div class="proc-dot ${tone.dot}"></div>
           <div class="proc-name">${item.name}${item.meta ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${item.meta}</div>` : ''}</div>
-          <div class="proc-status ${ok?'proc-on':'proc-off'}">${item.state|| (ok?'Active':'Inactive')}</div>
+          <div class="proc-status ${tone.text}">${item.state|| (ok?'Active':'Inactive')}</div>
         </div>`;
       }).join('');
     }
@@ -898,13 +914,14 @@ async function load(){
         const ok = !!item.fresh;
         const rawStatus = String(item.status || '').trim();
         const status = ok ? (rawStatus && rawStatus !== 'fresh' ? rawStatus : 'fresh') : (rawStatus || 'stale');
+        const tone = runtimeStateTone(status, ok);
         const age = typeof item.display_age === 'string' ? item.display_age : fmtSeconds(item.display_age ?? item.age_secs);
         const threshold = typeof item.display_threshold === 'string' ? item.display_threshold : fmtThreshold(item.display_threshold ?? item.threshold);
         return `<div class="fresh-card">
           <div class="fresh-top">
-            <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
+            <div class="proc-dot ${tone.dot}"></div>
             <div class="fresh-name">${freshnessNames[key]}</div>
-            <div class="fresh-state ${ok?'proc-on':'proc-off'}">${status}</div>
+            <div class="fresh-state ${tone.text}">${status}</div>
           </div>
           <div class="fresh-age">${age}</div>
           <div class="fresh-threshold">${threshold}</div>
@@ -963,7 +980,8 @@ async function load(){
     connEl.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px">'+
       connItems.map(c=>{
         const status=c.status || (c.ok?'OK':'Down');
-        const color=status==='Idle' || status==='Bot-owned' ? 'var(--am)' : c.ok ? 'var(--gr)' : 'var(--rd)';
+        const tone=runtimeStateTone(status, !!c.ok);
+        const color=tone.text==='proc-on' ? 'var(--gr)' : tone.text==='proc-warn' ? 'var(--am)' : tone.text==='proc-info' ? 'var(--bl)' : 'var(--rd)';
         return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--s2);border-radius:7px">
         <div style="width:8px;height:8px;border-radius:50%;background:${color}"></div>
         <div style="display:flex;flex-direction:column;gap:2px">
