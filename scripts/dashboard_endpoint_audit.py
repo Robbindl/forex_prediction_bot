@@ -110,9 +110,10 @@ def _summarize_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "success": payload.get("success"),
         "degraded": payload.get("degraded"),
+        "stale": payload.get("stale"),
         "partial": payload.get("partial"),
     }
-    reason = payload.get("degraded_reason") or payload.get("error")
+    reason = payload.get("degraded_reason") or payload.get("stale_reason") or payload.get("error")
     if reason:
         summary["reason"] = str(reason)[:120]
     if isinstance(payload.get("trades"), list):
@@ -208,15 +209,24 @@ def main() -> int:
     ]
     api_paths = [
         "/api/status",
+        "/api/command-center",
         "/api/system/health",
+        "/api/system-monitor/overview",
         "/api/risk/portfolio",
         "/api/trade-history?limit=50",
         "/api/trade-history?limit=200",
+        "/api/playbook-intel/overview?days=30",
         "/api/sentiment/dashboard",
         "/api/sentiment/by-asset",
         "/api/whale/summary",
         "/api/market/events",
         "/api/market/heatmap",
+        "/api/chart/assets",
+        "/api/intelligence-alerts/overview",
+        "/api/phase3/imbalance",
+        "/api/phase3/walls",
+        "/api/phase3/stop-hunts",
+        "/api/phase3/live-depth",
     ]
     api_paths.extend(
         f"/api/page-overview?{urlencode({'page': page, 'days': 30})}"

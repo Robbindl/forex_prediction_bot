@@ -629,6 +629,23 @@ def _is_degraded_dashboard_payload(payload: Any) -> bool:
     return False
 
 
+_STALE_ONLY_DEGRADED_REASONS = {"stale_fallback", "stale_refresh", "component_stale"}
+
+
+def _mark_stale_dashboard_payload(payload: Any, reason: str) -> Dict[str, Any]:
+    normalized = _response_to_dict(payload)
+    if not isinstance(normalized, dict):
+        normalized = {}
+    normalized.setdefault("success", True)
+    normalized["stale"] = True
+    normalized["stale_reason"] = str(reason or "stale")
+    degraded_reason = str(normalized.get("degraded_reason") or "")
+    if degraded_reason in _STALE_ONLY_DEGRADED_REASONS:
+        normalized.pop("degraded", None)
+        normalized.pop("degraded_reason", None)
+    return normalized
+
+
 def _get_cached_dashboard_payload(
     cache_key: str,
     *,
@@ -2668,6 +2685,15 @@ def _normalize_command_center_payload_contract(payload: Dict[str, Any]) -> Dict[
 
 def _compact_command_center_for_page_overview(payload: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _normalize_command_center_payload_contract(payload)
+    degraded_reason = str(normalized.get("degraded_reason") or "")
+    stale = bool(normalized.get("stale", False))
+    stale_reason = str(normalized.get("stale_reason") or "")
+    degraded = bool(normalized.get("degraded", False))
+    if degraded_reason in _STALE_ONLY_DEGRADED_REASONS:
+        stale = True
+        stale_reason = stale_reason or degraded_reason
+        degraded = False
+        degraded_reason = ""
 
     def _rows(name: str, limit: int) -> List[Dict[str, Any]]:
         return [
@@ -2703,8 +2729,10 @@ def _compact_command_center_for_page_overview(payload: Dict[str, Any]) -> Dict[s
 
     return {
         "success": bool(normalized.get("success", True)),
-        "degraded": bool(normalized.get("degraded", False)),
-        "degraded_reason": str(normalized.get("degraded_reason") or ""),
+        "degraded": degraded,
+        "degraded_reason": degraded_reason,
+        "stale": stale,
+        "stale_reason": stale_reason,
         "balance": normalized.get("balance"),
         "total_pnl": normalized.get("total_pnl"),
         "daily_pnl": normalized.get("daily_pnl"),
@@ -3613,7 +3641,10 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
     if not force_refresh:
         cached = _cache_get(cache_key)
         if cached is not None:
-            return _normalize_command_center_payload_contract(_response_to_dict(cached))
+            payload = _response_to_dict(cached)
+            if str(payload.get("degraded_reason") or "") in _STALE_ONLY_DEGRADED_REASONS:
+                payload = _mark_stale_dashboard_payload(payload, "cached_stale")
+            return _normalize_command_center_payload_contract(payload)
 
         fallback = _cache_get(last_good_key)
         if fallback is not None:
@@ -3625,10 +3656,7 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
                 last_good_key=last_good_key,
                 last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
             )
-            payload = _normalize_command_center_payload_contract(_response_to_dict(fallback))
-            payload["degraded"] = True
-            payload["degraded_reason"] = "stale_fallback"
-            return payload
+            return _normalize_command_center_payload_contract(_mark_stale_dashboard_payload(fallback, "stale_fallback"))
 
     fallback = _cache_get(last_good_key)
     _trigger_dashboard_payload_refresh(
@@ -3640,10 +3668,7 @@ def _get_cached_command_center_payload(*, force_refresh: bool = False) -> Dict[s
         last_good_ttl=_COMMAND_CENTER_LAST_GOOD_TTL,
     )
     if fallback is not None:
-        payload = _normalize_command_center_payload_contract(_response_to_dict(fallback))
-        payload["degraded"] = True
-        payload["degraded_reason"] = "stale_refresh"
-        return payload
+        return _normalize_command_center_payload_contract(_mark_stale_dashboard_payload(fallback, "stale_refresh"))
 
     payload = _build_command_center_unavailable_payload(reason="refreshing")
     _cache_set(cache_key, payload, ttl=_COMMAND_CENTER_DEGRADED_CACHE_TTL)
@@ -3668,10 +3693,7 @@ def _get_cached_command_center_payload_blocking(*, force_refresh: bool = False) 
         logger.warning(f"[dashboard] command-center payload build failed: {exc}")
         fallback = _cache_get(last_good_key)
         if fallback is not None:
-            payload = _normalize_command_center_payload_contract(_response_to_dict(fallback))
-            payload["degraded"] = True
-            payload["degraded_reason"] = "stale_fallback"
-            return payload
+            return _normalize_command_center_payload_contract(_mark_stale_dashboard_payload(fallback, "stale_fallback"))
         payload = _build_command_center_unavailable_payload(reason=str(exc) or "build_failed")
         _cache_set(cache_key, payload, ttl=_COMMAND_CENTER_DEGRADED_CACHE_TTL)
         return payload
@@ -8034,9 +8056,14 @@ def _page_overview_status_shell() -> Dict[str, Any]:
 
 
 def _page_overview_command_center_shell(reason: str = "page_overview_cache_miss") -> Dict[str, Any]:
-    cached = _cache_get("command_center_payload") or _cache_get("command_center_payload:last_good")
+    cached = _cache_get("command_center_payload")
+    used_last_good = False
+    if cached is None:
+        cached = _cache_get("command_center_payload:last_good")
+        used_last_good = cached is not None
     if cached:
-        return _compact_command_center_for_page_overview(_response_to_dict(cached))
+        payload = _mark_stale_dashboard_payload(cached, "command_center_stale") if used_last_good else _response_to_dict(cached)
+        return _compact_command_center_for_page_overview(payload)
     return _compact_command_center_for_page_overview(_build_command_center_unavailable_payload(reason=reason))
 
 
@@ -8152,6 +8179,15 @@ def _page_overview_cached_component(
     last_good = _cache_get(last_good_key)
     if last_good is not None:
         if builder is not None:
+            try:
+                payload = _response_to_dict(builder())
+                degraded = _is_degraded_dashboard_payload(payload)
+                _cache_set(cache_key, payload, ttl=min(ttl, _PAGE_OVERVIEW_DEGRADED_CACHE_TTL) if degraded else ttl)
+                if not degraded:
+                    _cache_set(last_good_key, payload, ttl=last_good_ttl)
+                    return payload
+            except Exception as exc:
+                logger.debug(f"[dashboard] page component {cache_key} stale refresh failed: {exc}")
             _trigger_dashboard_payload_refresh(
                 cache_key,
                 builder=builder,
@@ -8160,11 +8196,7 @@ def _page_overview_cached_component(
                 last_good_key=last_good_key,
                 last_good_ttl=last_good_ttl,
             )
-        payload = _response_to_dict(last_good)
-        payload.setdefault("success", True)
-        payload["degraded"] = True
-        payload.setdefault("degraded_reason", "component_stale")
-        return payload
+        return _mark_stale_dashboard_payload(last_good, "component_stale")
     if builder is not None:
         try:
             payload = _response_to_dict(builder())
@@ -8405,9 +8437,14 @@ def _build_page_overview_payload_with_budget(page: str, days: int) -> Dict[str, 
 
 def _normalize_page_overview_payload_contract(payload: Dict[str, Any], page: str, days: int) -> Dict[str, Any]:
     payload = _response_to_dict(payload)
+    if str(payload.get("degraded_reason") or "") in _STALE_ONLY_DEGRADED_REASONS:
+        payload = _mark_stale_dashboard_payload(payload, str(payload.get("degraded_reason") or "stale_fallback"))
     page = _normalize_page_overview_name(page or payload.get("page") or "")
     if isinstance(payload.get("command_center"), dict):
-        payload["command_center"] = _normalize_command_center_payload_contract(payload["command_center"])
+        command_center = payload["command_center"]
+        if str(command_center.get("degraded_reason") or "") in _STALE_ONLY_DEGRADED_REASONS:
+            command_center = _mark_stale_dashboard_payload(command_center, str(command_center.get("degraded_reason") or "command_center_stale"))
+        payload["command_center"] = _normalize_command_center_payload_contract(command_center)
     if page == "sentiment_intelligence":
         by_asset = payload.get("by_asset")
         if not isinstance(by_asset, dict) or not list(by_asset.get("assets") or []):
@@ -8438,6 +8475,15 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
 
         fallback = _cache_get(last_good_key)
         if fallback is not None:
+            try:
+                payload = _normalize_page_overview_payload_contract(_builder(), page, days)
+                ttl = _PAGE_OVERVIEW_DEGRADED_CACHE_TTL if _is_degraded_dashboard_payload(payload) else _PAGE_OVERVIEW_CACHE_TTL
+                _cache_set(cache_key, payload, ttl=ttl)
+                if not _is_degraded_dashboard_payload(payload):
+                    _cache_set(last_good_key, payload, ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL)
+                    return payload
+            except Exception as exc:
+                logger.debug(f"[dashboard] page overview stale refresh failed for {page}: {exc}")
             _trigger_dashboard_payload_refresh(
                 cache_key,
                 builder=_builder,
@@ -8446,11 +8492,11 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
                 last_good_key=last_good_key,
                 last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
             )
-            payload = _normalize_page_overview_payload_contract(fallback, page, days)
-            payload["success"] = True
-            payload["degraded"] = True
-            payload["degraded_reason"] = "stale_fallback"
-            return payload
+            return _normalize_page_overview_payload_contract(
+                _mark_stale_dashboard_payload(fallback, "stale_fallback"),
+                page,
+                days,
+            )
 
         try:
             payload = _normalize_page_overview_payload_contract(_builder(), page, days)
@@ -8486,10 +8532,6 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
         logger.warning(f"[dashboard] page overview build failed for {page}: {exc}")
         fallback = _cache_get(last_good_key)
         if fallback is not None:
-            payload = _normalize_page_overview_payload_contract(fallback, page, days)
-            payload["success"] = True
-            payload["degraded"] = True
-            payload["degraded_reason"] = "stale_fallback"
             _trigger_dashboard_payload_refresh(
                 cache_key,
                 builder=_builder,
@@ -8498,7 +8540,11 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
                 last_good_key=last_good_key,
                 last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
             )
-            return payload
+            return _normalize_page_overview_payload_contract(
+                _mark_stale_dashboard_payload(fallback, "stale_fallback"),
+                page,
+                days,
+            )
 
         payload = _build_page_overview_unavailable_payload(page, days, reason=str(exc) or "build_failed")
         _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_DEGRADED_CACHE_TTL)
