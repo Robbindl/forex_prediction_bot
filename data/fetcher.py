@@ -1061,6 +1061,17 @@ class DataFetcher:
         top_asks = list(snapshot.get("top_asks", []) or [])
         depth_levels = max(len(top_bids), len(top_asks))
         synthetic_only = bool(snapshot.get("synthetic_imbalance_only")) or depth_levels <= 0
+        try:
+            base_depth_levels = int(payload.get("depth_levels", 0) or 0)
+        except Exception:
+            base_depth_levels = 0
+        base_true_depth = bool(payload.get("depth_available")) and not bool(payload.get("synthetic_depth_available"))
+        base_microstructure_source = str(payload.get("microstructure_source") or "").strip().lower()
+        preserve_base_depth = bool(
+            base_true_depth
+            and base_depth_levels > depth_levels
+            and base_microstructure_source not in {"order_flow_true_depth", "order_flow_synthetic_imbalance"}
+        )
         depth_metrics: Dict[str, Any] = {}
         if not synthetic_only and (top_bids or top_asks):
             try:
@@ -1088,6 +1099,44 @@ class DataFetcher:
                 )
             except Exception:
                 depth_metrics = {}
+
+        trade_flow_score = 0.0
+        try:
+            trade_flow_score = float(snapshot.get("trade_flow_score", 0.0) or 0.0)
+        except Exception:
+            trade_flow_score = 0.0
+        if preserve_base_depth:
+            payload["orderflow_book_imbalance"] = round(imbalance, 4)
+            payload["orderflow_depth_levels"] = int(depth_levels)
+            payload["orderflow_synthetic_depth_available"] = bool(synthetic_only)
+            payload["orderflow_bid_vol"] = float(snapshot.get("bid_vol", 0.0) or 0.0)
+            payload["orderflow_ask_vol"] = float(snapshot.get("ask_vol", 0.0) or 0.0)
+            payload["orderflow_top_bids"] = top_bids
+            payload["orderflow_top_asks"] = top_asks
+            payload["orderflow_score"] = round(
+                max(-1.0, min(1.0, imbalance * 0.65 + trade_flow_score * 0.35)),
+                4,
+            )
+            payload.setdefault("orderbook_top_bids", top_bids)
+            payload.setdefault("orderbook_top_asks", top_asks)
+            for key in (
+                "trade_buy_notional",
+                "trade_sell_notional",
+                "trade_delta_notional",
+                "trade_delta_ratio",
+                "trade_cvd",
+                "trade_cvd_slope",
+                "trade_flow_score",
+                "trade_pressure_direction",
+                "trade_buy_count",
+                "trade_sell_count",
+                "trade_count",
+                "trade_ts",
+                "trade_live_age_seconds",
+            ):
+                if key in snapshot:
+                    payload[key] = snapshot[key]
+            return payload
 
         payload["book_imbalance"] = round(imbalance, 4)
         payload["depth_available"] = depth_levels > 0
@@ -1129,11 +1178,6 @@ class DataFetcher:
             pass
         if spread_pct > 0.0:
             payload["spread_bps"] = round(spread_pct * 100.0, 3)
-        trade_flow_score = 0.0
-        try:
-            trade_flow_score = float(snapshot.get("trade_flow_score", 0.0) or 0.0)
-        except Exception:
-            trade_flow_score = 0.0
         for key in (
             "trade_buy_notional",
             "trade_sell_notional",

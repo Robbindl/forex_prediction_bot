@@ -1856,7 +1856,13 @@ class SignalDecisionEngine:
         depth_quote_agreement_state = str(signal.metadata.get("depth_quote_agreement_state", "") or "").strip().lower()
         depth_quote_alignment_score = float(signal.metadata.get("depth_quote_alignment_score", 0.0) or 0.0)
         external_depth_rejected = bool(signal.metadata.get("external_depth_rejected"))
-        true_depth_sources = {"order_flow_true_depth", "dukascopy_live_depth", "ctrader_live_depth"}
+        true_depth_sources = {
+            "order_flow_true_depth",
+            "dukascopy_live_depth",
+            "ctrader_live_depth",
+            "binance_rest_depth",
+            "binance_live_depth",
+        }
         preferred_true_depth = microstructure_source in true_depth_sources
         true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
         preferred_true_depth_min_quality = float(
@@ -1864,6 +1870,9 @@ class SignalDecisionEngine:
         )
         preferred_true_depth_min_trust_score = float(
             execution_policy.get("preferred_true_depth_min_trust_score", 0.78) or 0.78
+        )
+        snapshot_true_depth_min_levels = int(
+            execution_policy.get("snapshot_true_depth_min_levels", 50) or 50
         )
         depth_sovereignty_min_directional_flow = float(
             execution_policy.get("depth_sovereignty_min_directional_flow", 0.22) or 0.22
@@ -1897,9 +1906,18 @@ class SignalDecisionEngine:
             and (not dom_ladder_ready or dom_stream_trust_metrics["sovereignty_supported"])
         )
         snapshot_true_depth_informative = bool(true_depth_informative and not dom_ladder_ready)
+        trusted_snapshot_true_depth_available = bool(
+            snapshot_true_depth_informative
+            and microstructure_source in {"binance_rest_depth", "binance_live_depth"}
+            and depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
+            and depth_levels >= snapshot_true_depth_min_levels
+            and depth_quality >= preferred_true_depth_min_quality
+            and effective_depth_provider_trust_score >= preferred_true_depth_min_trust_score
+            and depth_quote_alignment_score >= 0.80
+        )
         strong_true_depth_support = bool(
             true_depth_informative
-            and dom_ladder_ready
+            and (dom_ladder_ready or trusted_snapshot_true_depth_available)
             and directional_flow_support >= depth_sovereignty_min_directional_flow
             and aligned_book_pressure >= depth_sovereignty_min_true_depth_support
             and directional_flow_conflict > -0.10
@@ -1923,6 +1941,7 @@ class SignalDecisionEngine:
             "strong_flow_support": strong_flow_support,
             "true_depth_informative": true_depth_informative,
             "snapshot_true_depth_informative": snapshot_true_depth_informative,
+            "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
             "depth_provider_trust_score_effective": round(effective_depth_provider_trust_score, 4),
             "depth_provider_trust_decay_applied": round(
                 max(0.0, depth_provider_trust_score - effective_depth_provider_trust_score),
@@ -3511,6 +3530,9 @@ class SignalDecisionEngine:
         preferred_true_depth_min_trust_score = float(
             execution_policy.get("preferred_true_depth_min_trust_score", 0.78) or 0.78
         )
+        snapshot_true_depth_min_levels = int(
+            execution_policy.get("snapshot_true_depth_min_levels", 50) or 50
+        )
         minimum_usable_true_depth_trust_score = float(
             execution_policy.get("minimum_usable_true_depth_trust_score", 0.60) or 0.60
         )
@@ -3522,6 +3544,47 @@ class SignalDecisionEngine:
         )
         depth_sovereignty_min_component = float(
             execution_policy.get("depth_sovereignty_min_component", 0.18) or 0.18
+        )
+        guarded_force_entry_env = str(os.getenv("FORCE_ENTRY_MODE", "") or "").strip().lower()
+        guarded_force_entry_mode = guarded_force_entry_env or (
+            "live_guarded"
+            if float(execution_policy.get("guarded_force_entry_enabled", 0) or 0) > 0
+            else "off"
+        )
+        guarded_force_entry_enabled = guarded_force_entry_mode in {
+            "1",
+            "true",
+            "on",
+            "paper",
+            "guarded",
+            "live_guarded",
+        }
+        guarded_force_min_directional_flow = float(
+            execution_policy.get("guarded_force_min_directional_flow", 0.34) or 0.34
+        )
+        guarded_force_min_book_pressure = float(
+            execution_policy.get("guarded_force_min_book_pressure", 0.24) or 0.24
+        )
+        guarded_force_min_alignment = float(
+            execution_policy.get("guarded_force_min_alignment", 0.50) or 0.50
+        )
+        guarded_force_min_setup_quality = float(
+            execution_policy.get("guarded_force_min_setup_quality", 0.48) or 0.48
+        )
+        guarded_force_min_target_efficiency = float(
+            execution_policy.get("guarded_force_min_target_efficiency", 0.12) or 0.12
+        )
+        guarded_force_max_extension_score = float(
+            execution_policy.get("guarded_force_max_extension_score", 1.24) or 1.24
+        )
+        guarded_force_max_directional_extension = float(
+            execution_policy.get("guarded_force_max_directional_extension", 0.84) or 0.84
+        )
+        guarded_force_max_stop_hunt_risk = float(
+            execution_policy.get("guarded_force_max_stop_hunt_risk", 0.48) or 0.48
+        )
+        guarded_force_risk_relief = float(
+            execution_policy.get("guarded_force_risk_relief", 0.18) or 0.18
         )
         asset_edge_bonus_scale = float(execution_policy.get("asset_edge_bonus_scale", 0.08) or 0.08)
         asset_edge_penalty_scale = float(execution_policy.get("asset_edge_penalty_scale", 0.09) or 0.09)
@@ -3537,7 +3600,13 @@ class SignalDecisionEngine:
             execution_policy.get("misaligned_true_depth_penalty", 0.0) or 0.0
         )
 
-        true_depth_sources = {"order_flow_true_depth", "dukascopy_live_depth", "ctrader_live_depth"}
+        true_depth_sources = {
+            "order_flow_true_depth",
+            "dukascopy_live_depth",
+            "ctrader_live_depth",
+            "binance_rest_depth",
+            "binance_live_depth",
+        }
         true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
         preferred_true_depth = microstructure_source in true_depth_sources
         depth_update_mode = str(signal.metadata.get("depth_update_mode", "") or "").strip().lower()
@@ -3617,6 +3686,16 @@ class SignalDecisionEngine:
             usable_true_depth_available
             and not dom_ladder_ready
         )
+        trusted_snapshot_true_depth_available = bool(
+            snapshot_true_depth_available
+            and microstructure_source in {"binance_rest_depth", "binance_live_depth"}
+            and depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
+            and depth_levels >= snapshot_true_depth_min_levels
+            and depth_quality >= preferred_true_depth_min_quality
+            and depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
+            and depth_quote_alignment_score >= 0.80
+            and not depth_fragmentation_untrusted
+        )
         thin_true_depth_untrusted = bool(
             true_depth_available and preferred_true_depth and not meets_true_depth_quality_floor
         )
@@ -3639,7 +3718,7 @@ class SignalDecisionEngine:
             and not true_depth_informative
         )
         strong_true_depth_support = bool(
-            event_backed_true_depth_available
+            (event_backed_true_depth_available or trusted_snapshot_true_depth_available)
             and preferred_true_depth
             and depth_quality >= preferred_true_depth_min_quality
             and depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
@@ -3786,6 +3865,58 @@ class SignalDecisionEngine:
             context_confirmation_override = False
         depth_sovereignty_supported = bool(strong_true_depth_support or strong_flow_support)
         depth_sovereignty_source = "true_depth" if strong_true_depth_support else "flow" if strong_flow_support else ""
+        if strong_true_depth_support:
+            if trusted_snapshot_true_depth_available and not event_backed_true_depth_available:
+                depth_sovereignty_reason = "supported:trusted_snapshot_true_depth"
+            else:
+                depth_sovereignty_reason = "supported:true_depth"
+        elif strong_flow_support:
+            depth_sovereignty_reason = "supported:flow"
+        else:
+            depth_sovereignty_reasons = []
+            if event_ladder_stream_health_blocks_sovereignty:
+                depth_sovereignty_reasons.append("dom_stream_health_blocks")
+            if dom_stream_hard_floor_breached:
+                depth_sovereignty_reasons.append("dom_stream_hard_floor")
+            if not true_depth_available:
+                depth_sovereignty_reasons.append("no_true_depth")
+            elif not preferred_true_depth:
+                depth_sovereignty_reasons.append("depth_source_not_preferred")
+            else:
+                if depth_levels < 2:
+                    depth_sovereignty_reasons.append("depth_levels_too_low")
+                if not meets_true_depth_quality_floor:
+                    depth_sovereignty_reasons.append("depth_quality_too_low")
+                if not meets_true_depth_trust_floor:
+                    depth_sovereignty_reasons.append("depth_trust_too_low")
+                if not true_depth_quote_aligned:
+                    depth_sovereignty_reasons.append("depth_quote_misaligned")
+                if depth_fragmentation_untrusted:
+                    depth_sovereignty_reasons.append("depth_fragmented")
+                if (
+                    snapshot_true_depth_available
+                    and microstructure_source in {"binance_rest_depth", "binance_live_depth"}
+                    and depth_levels < snapshot_true_depth_min_levels
+                ):
+                    depth_sovereignty_reasons.append("snapshot_depth_levels_below_sovereignty_floor")
+                if true_depth_available and not dom_ladder_ready and not trusted_snapshot_true_depth_available:
+                    depth_sovereignty_reasons.append("snapshot_depth_not_event_ladder")
+                elif true_depth_available and not event_backed_true_depth_available:
+                    depth_sovereignty_reasons.append("true_depth_not_event_backed")
+                if aligned_book_pressure < depth_sovereignty_min_true_depth_support:
+                    depth_sovereignty_reasons.append("book_pressure_weak")
+            if directional_flow_support < depth_sovereignty_min_directional_flow:
+                depth_sovereignty_reasons.append("flow_support_weak")
+            if directional_flow_conflict <= -0.12:
+                depth_sovereignty_reasons.append("flow_conflict")
+            if max(
+                microstructure_alignment,
+                aligned_trade_flow,
+                aligned_book_pressure,
+                aligned_tick_pressure,
+            ) < depth_sovereignty_min_component:
+                depth_sovereignty_reasons.append("flow_component_weak")
+            depth_sovereignty_reason = ",".join(dict.fromkeys(depth_sovereignty_reasons[:4])) or "not_supported"
         snapshot_dom_requires_confirmation = bool(
             snapshot_true_depth_available
             and not strong_true_depth_support
@@ -4532,6 +4663,81 @@ class SignalDecisionEngine:
             ):
                 hard_blocks.append("regime-specific entry policy rejects the setup")
 
+        guarded_force_soft_blocks = {
+            "entry confirmation delay is still pending",
+            "pattern family ranks below elite threshold",
+        }
+        guarded_force_removed_blocks: List[str] = []
+        guarded_force_blocked_by: List[str] = []
+        guarded_force_condition_blocks: List[str] = []
+        guarded_force_applied = False
+        guarded_force_depth_ok = bool(
+            depth_sovereignty_source == "true_depth"
+            and strong_true_depth_support
+            and directional_flow_support >= guarded_force_min_directional_flow
+            and aligned_book_pressure >= guarded_force_min_book_pressure
+            and directional_flow_conflict > -0.06
+            and true_depth_directional_conflict > -0.04
+            and not has_directional_flow_conflict
+        )
+        guarded_force_structure_ok = bool(
+            alignment_score >= guarded_force_min_alignment
+            and setup_quality >= guarded_force_min_setup_quality
+            and candle_quality_score >= 0.26
+            and session_quality_score >= 0.32
+            and target_efficiency_score >= guarded_force_min_target_efficiency
+            and opposing_distance > opposing_distance_hard_floor
+            and extension_score <= guarded_force_max_extension_score
+            and directional_extension <= guarded_force_max_directional_extension
+            and impulse_age_bars <= impulse_age_hard_limit
+            and directional_extension < directional_extension_hard_limit
+            and stop_hunt_risk < guarded_force_max_stop_hunt_risk
+            and not failed_opposite_move_confirmed
+        )
+        guarded_force_market_ok = bool(
+            not depth_fragmentation_untrusted
+            and not event_ladder_cross_market_conflict
+            and not event_ladder_hostile_flow
+            and not crypto_breadth_conflict
+            and not (crypto_derivative_conflict and not crypto_derivative_support)
+            and broker_quote_quality_state not in {"stale", "delayed"}
+            and not (
+                broker_agreement_state in {"divergent", "severe_divergence"}
+                and broker_spread_regime in {"stressed", "extreme", "wide"}
+            )
+        )
+        guarded_force_candidate = bool(
+            guarded_force_entry_enabled
+            and guarded_force_depth_ok
+            and guarded_force_structure_ok
+            and guarded_force_market_ok
+        )
+        guarded_force_safety_blocks = [
+            block for block in hard_blocks if block not in guarded_force_soft_blocks
+        ]
+        if guarded_force_entry_enabled:
+            if not guarded_force_depth_ok:
+                guarded_force_condition_blocks.append("true-depth DOM support is insufficient")
+            if not guarded_force_structure_ok:
+                guarded_force_condition_blocks.append("entry structure is not forceable")
+            if not guarded_force_market_ok:
+                guarded_force_condition_blocks.append("market context is not forceable")
+            guarded_force_blocked_by = list(
+                dict.fromkeys(guarded_force_safety_blocks + guarded_force_condition_blocks)
+            )
+        if guarded_force_candidate and hard_blocks and not guarded_force_safety_blocks:
+            guarded_force_removed_blocks = [
+                block for block in hard_blocks if block in guarded_force_soft_blocks
+            ]
+            if guarded_force_removed_blocks:
+                hard_blocks = [
+                    block for block in hard_blocks if block not in guarded_force_soft_blocks
+                ]
+                risk_score = max(0.0, risk_score - guarded_force_risk_relief)
+                notes.append("guarded_force_entry")
+                reasons.append("guarded force used true-depth DOM to override soft execution gates")
+                guarded_force_applied = True
+
         risk_kill_threshold = base_risk_kill_threshold + adaptive_policy_relief * 0.70 - adaptive_policy_penalty * 0.50
         if high_conviction_continuation_supported:
             risk_kill_threshold += 0.04
@@ -4601,6 +4807,23 @@ class SignalDecisionEngine:
             "usable_true_depth_available": usable_true_depth_available,
             "event_backed_true_depth_available": event_backed_true_depth_available,
             "snapshot_true_depth_available": snapshot_true_depth_available,
+            "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "snapshot_true_depth_min_levels": int(snapshot_true_depth_min_levels),
+            "guarded_force_entry_mode": guarded_force_entry_mode,
+            "guarded_force_entry_enabled": guarded_force_entry_enabled,
+            "guarded_force_min_directional_flow": round(guarded_force_min_directional_flow, 4),
+            "guarded_force_min_book_pressure": round(guarded_force_min_book_pressure, 4),
+            "guarded_force_min_alignment": round(guarded_force_min_alignment, 4),
+            "guarded_force_min_setup_quality": round(guarded_force_min_setup_quality, 4),
+            "guarded_force_min_target_efficiency": round(guarded_force_min_target_efficiency, 4),
+            "guarded_force_max_extension_score": round(guarded_force_max_extension_score, 4),
+            "guarded_force_max_directional_extension": round(guarded_force_max_directional_extension, 4),
+            "guarded_force_max_stop_hunt_risk": round(guarded_force_max_stop_hunt_risk, 4),
+            "guarded_force_risk_relief": round(guarded_force_risk_relief, 4),
+            "guarded_force_candidate": guarded_force_candidate,
+            "guarded_force_applied": guarded_force_applied,
+            "guarded_force_removed_blocks": list(guarded_force_removed_blocks),
+            "guarded_force_blocked_by": list(guarded_force_blocked_by),
             "preferred_true_depth": preferred_true_depth,
             "minimum_usable_true_depth_quality": round(minimum_usable_true_depth_quality, 4),
             "meets_true_depth_quality_floor": meets_true_depth_quality_floor,
@@ -4685,6 +4908,7 @@ class SignalDecisionEngine:
             "context_confirmation_override": context_confirmation_override,
             "depth_sovereignty_supported": depth_sovereignty_supported,
             "depth_sovereignty_source": depth_sovereignty_source,
+            "depth_sovereignty_reason": depth_sovereignty_reason,
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
             "snapshot_dom_requires_confirmation": snapshot_dom_requires_confirmation,
@@ -4705,6 +4929,11 @@ class SignalDecisionEngine:
         signal.metadata["late_entry_risk_score"] = round(risk_score, 4)
         signal.metadata["late_entry_risk_reasons"] = list(reasons)
         signal.metadata["execution_hard_blocks"] = list(hard_blocks)
+        signal.metadata["guarded_force_entry_mode"] = guarded_force_entry_mode
+        signal.metadata["guarded_force_candidate"] = guarded_force_candidate
+        signal.metadata["guarded_force_applied"] = guarded_force_applied
+        signal.metadata["guarded_force_removed_blocks"] = list(guarded_force_removed_blocks)
+        signal.metadata["guarded_force_blocked_by"] = list(guarded_force_blocked_by)
         signal.metadata["depth_provider_trust_score_effective"] = round(
             depth_provider_trust_score_effective,
             4,
@@ -4756,8 +4985,19 @@ class SignalDecisionEngine:
             "has_directional_flow_conflict": has_directional_flow_conflict,
             "depth_sovereignty_supported": depth_sovereignty_supported,
             "depth_sovereignty_source": depth_sovereignty_source,
+            "depth_sovereignty_reason": depth_sovereignty_reason,
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
+            "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "guarded_force_entry_mode": guarded_force_entry_mode,
+            "guarded_force_entry_enabled": guarded_force_entry_enabled,
+            "guarded_force_depth_ok": guarded_force_depth_ok,
+            "guarded_force_structure_ok": guarded_force_structure_ok,
+            "guarded_force_market_ok": guarded_force_market_ok,
+            "guarded_force_candidate": guarded_force_candidate,
+            "guarded_force_applied": guarded_force_applied,
+            "guarded_force_removed_blocks": list(guarded_force_removed_blocks),
+            "guarded_force_blocked_by": list(guarded_force_blocked_by),
             "dom_stream_health_known": dom_stream_health_known,
             "dom_stream_health_score": round(dom_stream_health_score, 4),
             "dom_stream_trust_decay": round(dom_stream_trust_decay, 4),
@@ -4907,8 +5147,18 @@ class SignalDecisionEngine:
             "directional_flow_conflict": round(directional_flow_conflict, 4),
             "depth_sovereignty_supported": depth_sovereignty_supported,
             "depth_sovereignty_source": depth_sovereignty_source,
+            "depth_sovereignty_reason": depth_sovereignty_reason,
             "strong_true_depth_support": strong_true_depth_support,
             "strong_flow_support": strong_flow_support,
+            "trusted_snapshot_true_depth_available": trusted_snapshot_true_depth_available,
+            "guarded_force_entry_mode": guarded_force_entry_mode,
+            "guarded_force_depth_ok": guarded_force_depth_ok,
+            "guarded_force_structure_ok": guarded_force_structure_ok,
+            "guarded_force_market_ok": guarded_force_market_ok,
+            "guarded_force_candidate": guarded_force_candidate,
+            "guarded_force_applied": guarded_force_applied,
+            "guarded_force_removed_blocks": list(guarded_force_removed_blocks),
+            "guarded_force_blocked_by": list(guarded_force_blocked_by),
             "snapshot_dom_requires_confirmation": snapshot_dom_requires_confirmation,
             "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
             "snapshot_stream_supportive": snapshot_stream_supportive,

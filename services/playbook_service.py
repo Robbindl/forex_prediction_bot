@@ -768,7 +768,7 @@ def _near_confirmation(count: int, required: int) -> bool:
     required = max(0, int(required or 0))
     if required <= 0:
         return False
-    return max(0, int(count or 0)) >= max(0, required - 1)
+    return max(0, int(count or 0)) >= max(1, required - 1)
 
 
 def _qualify_crypto_orderflow_candidate(
@@ -834,6 +834,12 @@ def _qualify_impulse_candidate(
     entry_confirmation_ready: bool = False,
     entry_confirmation_count: int = 0,
     entry_confirmation_bars_required: int = 0,
+    target_efficiency_score: float = 0.0,
+    extension_score: float = 0.0,
+    impulse_age_bars: int = 0,
+    elite_pattern_rank: float = 0.0,
+    cluster_penalty: float = 0.0,
+    has_execution_structure: bool = False,
     liquidity_sweep_directional: bool = False,
     preferred_interval: str = "",
     trigger_trend_aligned: bool = False,
@@ -1001,6 +1007,39 @@ def _qualify_impulse_candidate(
         allow_early_trend_relief = True
     if allow_early_trend_relief:
         strong_impulse_break = True
+
+    if playbook == "aggressive_expansion" and has_execution_structure:
+        expansion_confirmed = bool(
+            entry_confirmation_ready
+            or near_confirmation
+            or fast_shock_context
+            or (
+                external_confirmation_score >= 0.20
+                and max(cross_strength, micro_strength) >= 0.18
+            )
+            or (
+                structure_promoted
+                and target_efficiency_score >= 0.24
+                and elite_pattern_rank >= 0.08
+            )
+        )
+        expansion_context_support = bool(
+            elite_pattern_rank >= 0.10
+            or external_confirmation_score >= 0.22
+            or max(cross_strength, micro_strength) >= 0.28
+            or shock_supported
+        )
+        if entry_confirmation_bars_required > 0 and not expansion_confirmed:
+            return False, f"confirmation_pending:{playbook}", strong_impulse_break, allow_early_trend_relief
+        if impulse_age_bars >= 6 and extension_score >= 1.20 and not fast_shock_context:
+            return False, f"stale_or_stretched:{playbook}", strong_impulse_break, allow_early_trend_relief
+        if target_efficiency_score <= 0.10 and not fast_shock_context:
+            return False, f"target_space_too_thin:{playbook}", strong_impulse_break, allow_early_trend_relief
+        if elite_pattern_rank <= 0.02 and not expansion_context_support:
+            return False, f"pattern_rank_too_weak:{playbook}", strong_impulse_break, allow_early_trend_relief
+        if cluster_penalty >= 0.26 and not fast_shock_context:
+            return False, f"cluster_risk_too_high:{playbook}", strong_impulse_break, allow_early_trend_relief
+
     effective_required_trends = int(plan.min_trend_agreement or 0)
     if allow_early_trend_relief:
         effective_required_trends = min(effective_required_trends, 1)
@@ -1941,6 +1980,23 @@ class PlaybookService:
         fast_entry_confirmation_ready = bool(structure.get("fast_entry_confirmation_ready"))
         fast_entry_confirmation_count = int(structure.get("fast_entry_confirmation_count", 0) or 0)
         fast_entry_confirmation_bars_required = int(structure.get("fast_entry_confirmation_bars_required", 0) or 0)
+        target_efficiency_score = float(structure.get("target_efficiency_score", 0.0) or 0.0)
+        extension_score = float(structure.get("extension_score", 0.0) or 0.0)
+        impulse_age_bars = int(structure.get("impulse_age_bars", 0) or 0)
+        elite_pattern_rank = float(structure.get("elite_pattern_rank", 0.0) or 0.0)
+        cluster_penalty = float(structure.get("cluster_penalty", 0.0) or 0.0)
+        has_execution_structure = any(
+            key in structure
+            for key in (
+                "target_efficiency_score",
+                "extension_score",
+                "impulse_age_bars",
+                "elite_pattern_rank",
+                "cluster_penalty",
+                "entry_confirmation_bars_required",
+                "fast_entry_confirmation_bars_required",
+            )
+        )
         trigger_trend_aligned = bool(structure.get("trigger_trend_aligned"))
         structure_promoted = bool(structure.get("structure_promoted"))
         external_confirmation_score = float(structure.get("external_confirmation_score", 0.0) or 0.0)
@@ -2010,6 +2066,11 @@ class PlaybookService:
             "entry_confirmation_ready": bool(entry_confirmation_ready),
             "entry_confirmation_count": int(entry_confirmation_count),
             "entry_confirmation_bars_required": int(entry_confirmation_bars_required),
+            "target_efficiency_score": round(target_efficiency_score, 4),
+            "extension_score": round(extension_score, 4),
+            "impulse_age_bars": int(impulse_age_bars),
+            "elite_pattern_rank": round(elite_pattern_rank, 4),
+            "cluster_penalty": round(cluster_penalty, 4),
             "effective_confirmation_ready": bool(effective_confirmation_ready),
             "effective_confirmation_count": int(effective_confirmation_count),
             "effective_confirmation_bars_required": int(effective_confirmation_required),
@@ -2081,6 +2142,12 @@ class PlaybookService:
                 entry_confirmation_ready=effective_confirmation_ready,
                 entry_confirmation_count=effective_confirmation_count,
                 entry_confirmation_bars_required=effective_confirmation_required,
+                target_efficiency_score=target_efficiency_score,
+                extension_score=extension_score,
+                impulse_age_bars=impulse_age_bars,
+                elite_pattern_rank=elite_pattern_rank,
+                cluster_penalty=cluster_penalty,
+                has_execution_structure=has_execution_structure,
                 liquidity_sweep_directional=liquidity_sweep_directional,
                 preferred_interval=preferred_interval,
                 trigger_trend_aligned=trigger_trend_aligned,

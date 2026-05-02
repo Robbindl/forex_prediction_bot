@@ -3658,6 +3658,7 @@ class TradingCore:
             f"entry_style={str(signal.metadata.get('playbook_entry_style') or 'n/a').lower()} "
             f"generic_flow_override={str(signal.metadata.get('generic_flow_override_source') or 'off').lower()} "
             f"depth_sovereignty_source={str(execution_relief.get('depth_sovereignty_source') or 'n/a').lower()} "
+            f"depth_sovereignty_reason={str(execution_relief.get('depth_sovereignty_reason') or 'n/a').lower()} "
             f"htf_action={str(higher_timeframe_guard.get('action') or 'n/a').lower()} "
             f"open_spike_action={str(open_spike_guard.get('action') or 'n/a').lower()} "
             f"late_risk={self._fmt_metric(signal.metadata.get('late_entry_risk_score'))} "

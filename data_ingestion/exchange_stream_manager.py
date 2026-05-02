@@ -36,6 +36,8 @@ SUBSCRIPTIONS: Dict[str, dict] = {
             "solusdt@depth@100ms", "bnbusdt@depth@100ms",
             "xrpusdt@depth@100ms",
             "btcusdt@aggTrade",
+            "ethusdt@aggTrade", "solusdt@aggTrade",
+            "bnbusdt@aggTrade", "xrpusdt@aggTrade",
         ],
         "id": 1,
     },
@@ -178,6 +180,9 @@ def _normalise_binance_events(data: dict, exchange: str) -> List[dict]:
                 "asset": inner["s"],
                 "bids": inner.get("b", []),
                 "asks": inner.get("a", []),
+                "first_update_id": inner.get("U"),
+                "final_update_id": inner.get("u"),
+                "prev_final_update_id": inner.get("pu"),
                 "ts": inner["E"],
             }
         )
@@ -437,6 +442,12 @@ class _ExchangeConnection:
         self._delay = _RECONNECT_DELAY_SECS
         session_started_at["value"] = time.monotonic()
         logger.info(f"[ExStream] {exchange} connected")
+        try:
+            from services.dom_stream_health_service import get_service as get_dom_stream_health_service
+
+            get_dom_stream_health_service().mark_connected(exchange)
+        except Exception:
+            pass
         ws.send(json.dumps(sub))
         self._start_heartbeat(ws, heartbeat_payload, heartbeat_interval, heartbeat_stop, heartbeat_thread, last_error)
 
@@ -473,6 +484,17 @@ class _ExchangeConnection:
         close_state["code"] = code
         close_state["msg"] = msg
         heartbeat_stop.set()
+        try:
+            from services.dom_stream_health_service import get_service as get_dom_stream_health_service
+
+            get_dom_stream_health_service().mark_disconnected(
+                self.exchange,
+                degraded=True,
+                reason=f"closed:{code}" if code is not None else "closed",
+                reconnect=True,
+            )
+        except Exception:
+            pass
         logger.info(f"[ExStream] {self.exchange} closed (code={code})")
 
 # ── Normalisation ──────────────────────────────────────────────────────────────
@@ -545,6 +567,7 @@ class ExchangeStreamManager:
         """Called for every normalised event from any exchange."""
         event_type = str(event.get("type", "") or "").upper()
         exchange = str(event.get("exchange", "") or "").lower()
+        self._record_live_microstructure(event, event_type=event_type, exchange=exchange)
 
         if event_type in {"MARKET_DATA_UPDATE", "TRADE_UPDATE"}:
             _ping_health("trades")
@@ -585,6 +608,40 @@ class ExchangeStreamManager:
                 fn(event)
             except Exception as e:
                 logger.debug(f"[ExStream] Handler error: {e}")
+
+    @staticmethod
+    def _record_live_microstructure(event: dict, *, event_type: str, exchange: str) -> None:
+        if exchange != "binance":
+            return
+        try:
+            from services.binance_market_bridge import binance_market_bridge
+
+            symbol = str(event.get("asset") or "").strip().upper()
+            if event_type == "ORDER_BOOK_UPDATE":
+                binance_market_bridge.record_stream_depth_delta(
+                    symbol,
+                    list(event.get("bids") or []),
+                    list(event.get("asks") or []),
+                    timestamp=event.get("ts"),
+                    first_update_id=event.get("first_update_id"),
+                    final_update_id=event.get("final_update_id"),
+                )
+            elif event_type == "TRADE_UPDATE":
+                binance_market_bridge.record_stream_trade(
+                    symbol,
+                    price=event.get("price"),
+                    qty=event.get("qty"),
+                    side=event.get("side"),
+                    timestamp=event.get("ts"),
+                )
+            elif event_type == "MARKET_DATA_UPDATE":
+                binance_market_bridge.record_stream_quote(
+                    symbol,
+                    price=event.get("price"),
+                    timestamp=event.get("ts"),
+                )
+        except Exception as exc:
+            logger.debug(f"[ExStream] live microstructure record error: {exc}")
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────
