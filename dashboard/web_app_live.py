@@ -7625,7 +7625,7 @@ def api_phase7_signal_journal():
 
 @app.route("/api/intelligence-alerts/overview")
 def api_intelligence_alerts_overview():
-    cache_key = "intelligence_alerts_overview"
+    cache_key = "intelligence_alerts_overview:v2"
     cached = _cache_get(cache_key)
     if cached:
         return jsonify(cached)
@@ -8191,6 +8191,27 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
     return services
 
 
+def _collect_ig_broker_snapshot() -> Dict[str, Any]:
+    cached = _cache_get("ig_broker_snapshot:v1")
+    if cached is not None:
+        payload = _response_to_dict(cached)
+        return dict(payload or {}) if isinstance(payload, dict) else {}
+    try:
+        from services.ig_market_bridge import ig_market_bridge
+
+        payload = dict(ig_market_bridge.get_account_summary() or {})
+    except Exception as exc:
+        payload = {
+            "enabled": True,
+            "authenticated": False,
+            "provider": "IG",
+            "error_code": "summary_failed",
+            "error_message": str(exc),
+        }
+    _cache_set("ig_broker_snapshot:v1", payload, ttl=30)
+    return payload
+
+
 def _collect_performance_guard_snapshot() -> Dict[str, Any]:
     cache_key = "performance_guard_snapshot:v1"
     cached = _cache_get(cache_key)
@@ -8288,11 +8309,18 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
     ram_pct, cpu_pct, disk_pct, proc_mb = _collect_system_resource_stats()
     redis_ok = _collect_redis_health()
     db_ok = _collect_database_health()
-    tg_ok = bool(getattr(telegram_manager, "is_running", False))
     runtime_services = _collect_runtime_service_details()
     dashboard_standalone = core is None
     external_bot_processes = _external_trading_bot_process_count()
     external_bot_running = external_bot_processes > 0
+    telegram_local_ok = bool(getattr(telegram_manager, "is_running", False))
+    tg_ok = telegram_local_ok or (dashboard_standalone and external_bot_running)
+    if dashboard_standalone and external_bot_running and not bool((runtime_services.get("command_telegram") or {}).get("ok")):
+        runtime_services["command_telegram"] = {
+            "ok": True,
+            "state": "bot-owned",
+            "meta": "forex-bot service",
+        }
     core_running = bool(health.get("is_running", getattr(core, "is_running", False) if core else False))
     core_ready = bool(health.get("engine_ready", getattr(core, "is_ready", False) if core else False))
     trading_engine_ok = core_running or (dashboard_standalone and external_bot_running)
@@ -8320,6 +8348,11 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
             "ok": engine_ready_ok,
             "state": "Ready" if core_ready else ("Bot-owned" if external_bot_running else "Stopped"),
             "meta": "read through separate forex-bot service" if dashboard_standalone and external_bot_running else "",
+        },
+        "Telegram": {
+            "ok": tg_ok,
+            "state": "Running" if telegram_local_ok else ("Bot-owned" if dashboard_standalone and external_bot_running else "Stopped"),
+            "meta": "read through separate forex-bot service" if dashboard_standalone and external_bot_running and not telegram_local_ok else "",
         },
     }
     return {
@@ -8371,7 +8404,7 @@ def _source_health_with_market_quiet(
 
 @app.route("/api/system/health")
 def api_system_health():
-    cached = _cache_get("system_health:v2")
+    cached = _cache_get("system_health:v3")
     if cached is not None:
         return jsonify(cached)
     try:
@@ -8409,7 +8442,7 @@ def api_system_health():
             "stale_source_count": len(stale_sources),
             "never_seen_sources": list(health.get("never_seen_sources") or []),
             "never_seen_source_count": int(health.get("never_seen_source_count", 0) or 0),
-            "ig_broker":       dict(health.get("ig_broker") or {}),
+            "ig_broker":       dict(health.get("ig_broker") or _collect_ig_broker_snapshot()),
             "recent_error_count": int(health.get("recent_error_count", 0) or 0),
             "recent_errors":    list(health.get("recent_errors") or []),
             "issues":           health.get("issues", []),
@@ -8417,7 +8450,7 @@ def api_system_health():
             "balance":          health.get("balance", _args.balance),
             "timestamp":        datetime.now().isoformat(),
         }
-        _cache_set("system_health:v2", payload, ttl=5)
+        _cache_set("system_health:v3", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -8472,7 +8505,7 @@ def api_monitoring_errors():
 
 @app.route("/api/system-monitor/overview")
 def api_system_monitor_overview():
-    cache_key = "system_monitor_overview:v2"
+    cache_key = "system_monitor_overview:v3"
     cached = _cache_get(cache_key)
     if cached:
         return jsonify(cached)
@@ -8774,7 +8807,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
             payload["near_misses"] = list(payload["command_center"].get("near_misses") or [])
     elif page == "intelligence_alerts":
         payload = _page_overview_view_component(
-            "page_component:v4:intelligence_alerts",
+            "page_component:v5:intelligence_alerts",
             "/api/intelligence-alerts/overview",
             api_intelligence_alerts_overview,
             {"success": True, "alerts": [], "journals": []},
@@ -8785,7 +8818,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
         payload["command_center"] = _command_center_snapshot()
     elif page == "system_monitor":
         payload = _page_overview_view_component(
-            "page_component:v4:system_monitor",
+            "page_component:v5:system_monitor",
             "/api/system-monitor/overview",
             api_system_monitor_overview,
             {"success": True, "health": {}, "metrics": {}, "errors": {}, "snapshot": {}},
@@ -8879,8 +8912,8 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
             "success": True,
             "page": page,
             "status": _page_overview_view_component("page_component:v4:status", "/api/status", api_status, fallback_payload.get("status", {}), ttl=10),
-            "health": _page_overview_view_component("page_component:v4:system_health", "/api/system/health", api_system_health, fallback_payload.get("health", {}), ttl=10),
-            "system_monitor": _page_overview_view_component("page_component:v4:system_monitor", "/api/system-monitor/overview", api_system_monitor_overview, fallback_payload.get("system_monitor", {}), ttl=10),
+            "health": _page_overview_view_component("page_component:v5:system_health", "/api/system/health", api_system_health, fallback_payload.get("health", {}), ttl=10),
+            "system_monitor": _page_overview_view_component("page_component:v5:system_monitor", "/api/system-monitor/overview", api_system_monitor_overview, fallback_payload.get("system_monitor", {}), ttl=10),
             "command_center": _command_center_snapshot(),
         }
     else:

@@ -572,6 +572,12 @@ async function load(){
     const bybitFeed=feedConnections.bybit||{};
     const okxFeed=feedConnections.okx||{};
     const igFeed=feedConnections.ig||{};
+    const feedConfigured = feed => !!(feed && (feed.connected || feed.symbol_count || String(feed.assets||'').trim() || feed.configured));
+    const feedState = feed => feed?.connected ? 'streaming' : feedConfigured(feed) ? 'idle' : 'down';
+    const bybitConfigured = feedConfigured(bybitFeed);
+    const okxConfigured = feedConfigured(okxFeed);
+    const telegramRuntime = runtimeServices.command_telegram || {};
+    const telegramOk = !!(procs['Telegram'] || telegramRuntime.ok || runtimeServices.deepseek_bot?.ok || (splitMode && services.phase7_intel_alerts));
     const serviceRows=[
       {name:'Market Data Feeds', ok:!!services.phase1_data_feeds, state:services.phase1_data_feeds?(splitMode?'bot-owned':'active'):'inactive', meta:splitMode?'phase 1 · forex-bot service':'phase 1'},
       {name:'Whale Intelligence', ok:!!services.phase2_whale_intel, state:services.phase2_whale_intel?(splitMode?'bot-owned':'active'):'inactive', meta:splitMode?'phase 2 · forex-bot service':'phase 2'},
@@ -585,8 +591,8 @@ async function load(){
       {name:'IG Routed Data', ok:!!runtimeServices.ig_routed_data?.ok, state:runtimeServices.ig_routed_data?.state||'unknown', meta:runtimeServices.ig_routed_data?.meta||''},
       {name:'Deriv Public Data', ok:!!runtimeServices.deriv_public_data?.ok, state:runtimeServices.deriv_public_data?.state||'unknown', meta:runtimeServices.deriv_public_data?.meta||''},
       {name:'Binance Crypto + Proxy Data', ok:!!runtimeServices.binance_public_data?.ok, state:runtimeServices.binance_public_data?.state||'unknown', meta:runtimeServices.binance_public_data?.meta||''},
-      {name:'Bybit Commodity Depth', ok:!!bybitFeed.connected, state:bybitFeed.connected?'streaming':'idle', meta:bybitFeed.symbol_count?`${bybitFeed.symbol_count} symbols`:bybitFeed.assets||''},
-      {name:'OKX Commodity Depth', ok:!!okxFeed.connected, state:okxFeed.connected?'streaming':'idle', meta:okxFeed.symbol_count?`${okxFeed.symbol_count} symbols`:okxFeed.assets||''},
+      {name:'Bybit Commodity Depth', ok:bybitConfigured, state:feedState(bybitFeed), meta:bybitFeed.symbol_count?`${bybitFeed.symbol_count} symbols`:bybitFeed.assets||''},
+      {name:'OKX Commodity Depth', ok:okxConfigured, state:feedState(okxFeed), meta:okxFeed.symbol_count?`${okxFeed.symbol_count} symbols`:okxFeed.assets||''},
       {name:'Robbie Chat Bot', ok:!!runtimeServices.deepseek_bot?.ok, state:runtimeServices.deepseek_bot?.state||'unknown', meta:runtimeServices.deepseek_bot?.meta||''},
       {name:'DeepSeek API', ok:!!runtimeServices.deepseek_api?.ok, state:runtimeServices.deepseek_api?.state||'unknown', meta:runtimeServices.deepseek_api?.meta||''},
       {name:'Robbie Scheduler', ok:!!runtimeServices.robbie_scheduler?.ok, state:runtimeServices.robbie_scheduler?.state||'unknown', meta:runtimeServices.robbie_scheduler?.meta||''},
@@ -672,12 +678,22 @@ async function load(){
         </div>`;
     }
 
-    const freshness = snapshot.source_health || {};
+    const freshness = {...(snapshot.source_health || {})};
+    if(!freshness.telegram_alerts){
+      const telegramState = telegramRuntime.state || (telegramOk ? (splitMode ? 'bot-owned' : 'running') : 'stopped');
+      freshness.telegram_alerts = {
+        fresh: telegramOk,
+        status: telegramOk ? telegramState : 'stopped',
+        display_age: telegramOk ? telegramState : 'No Telegram process seen',
+        display_threshold: 'Command/alert channel',
+      };
+    }
     const freshnessNames = {
       technicals: 'Technicals',
       order_book: 'Order Book',
       liquidations: 'Liquidations',
       funding_rate: 'Funding & OI',
+      telegram_alerts: 'Telegram Alerts',
     };
     const freshnessKeys = Object.keys(freshnessNames);
     const seenFreshness = freshnessKeys.filter(k => freshness[k] && freshness[k].status !== 'never_seen');
@@ -825,9 +841,10 @@ async function load(){
       freshEl.innerHTML = `<div class="fresh-grid">${freshnessKeys.map((key)=>{
         const item = freshness[key] || {};
         const ok = !!item.fresh;
-        const status = item.status === 'never_seen' ? 'waiting' : ok ? 'fresh' : 'stale';
-        const age = fmtSeconds(item.age_secs);
-        const threshold = fmtThreshold(item.threshold);
+        const rawStatus = String(item.status || '').trim();
+        const status = rawStatus === 'never_seen' ? 'waiting' : ok ? (rawStatus && rawStatus !== 'fresh' ? rawStatus : 'fresh') : (rawStatus || 'stale');
+        const age = item.display_age || fmtSeconds(item.age_secs);
+        const threshold = item.display_threshold || fmtThreshold(item.threshold);
         return `<div class="fresh-card">
           <div class="fresh-top">
             <div class="proc-dot ${ok?'proc-dot-on':'proc-dot-off'}"></div>
@@ -871,8 +888,8 @@ async function load(){
       {name:'Web Dashboard',ok:procs['Web dashboard']},
       {name:'Asset Universe',ok:universeCount>0, meta:universeCount?`${universeCount} tracked assets across routed feeds`:''},
       {name:'Deriv Routed Quotes',ok:!!derivFeed.connected, meta:derivFeed.symbol_count?`${derivFeed.symbol_count} symbols`:derivFeed.assets||''},
-      {name:'Bybit Commodity Depth',ok:!!bybitFeed.connected, meta:bybitFeed.symbol_count?`${bybitFeed.symbol_count} symbols`:bybitFeed.assets||''},
-      {name:'OKX Commodity Fallback',ok:!!okxFeed.connected, meta:okxFeed.symbol_count?`${okxFeed.symbol_count} symbols`:okxFeed.assets||''},
+      {name:'Bybit Commodity Depth',ok:bybitConfigured, status:bybitFeed.connected?'OK':bybitConfigured?'Idle':'Down', meta:bybitFeed.symbol_count?`${bybitFeed.symbol_count} symbols`:bybitFeed.assets||''},
+      {name:'OKX Commodity Fallback',ok:okxConfigured, status:okxFeed.connected?'OK':okxConfigured?'Idle':'Down', meta:okxFeed.symbol_count?`${okxFeed.symbol_count} symbols`:okxFeed.assets||''},
       {name:'Binance Crypto + Proxy Feed',ok:!!binanceFeed.connected, meta:binanceFeed.symbol_count?`${binanceFeed.symbol_count} symbols`:binanceFeed.assets||''},
       {name:'Exchange Feeds',ok:services['phase1_data_feeds'], meta:splitMode && services['phase1_data_feeds'] ? 'bot-owned' : ''},
       {name:'IG Routed Quote Anchor',ok:!!igFeed.connected, meta:igFeed.symbol_count?`${igFeed.symbol_count} assets`:igFeed.assets||''},
@@ -880,7 +897,7 @@ async function load(){
       {name:'Dukascopy Depth',ok:!!runtimeServices.dukascopy_live_depth?.ok, meta:runtimeServices.dukascopy_live_depth?.meta||''},
       {name:'PostgreSQL',ok:procs['PostgreSQL']},
       {name:'Redis',ok:procs['Redis']},
-      {name:'Command Bot',ok:procs['Telegram']},
+      {name:'Command Bot',ok:telegramOk, status:telegramOk?(telegramRuntime.state === 'bot-owned' || splitMode ? 'Bot-owned':'OK'):'Down', meta:telegramRuntime.meta||''},
       {name:'Robbie Chat Bot',ok:!!runtimeServices.deepseek_bot?.ok, meta:runtimeServices.deepseek_bot?.meta||''},
       {name:'DeepSeek API',ok:!!runtimeServices.deepseek_api?.ok, meta:runtimeServices.deepseek_api?.meta||''},
       {name:'Robbie Scheduler',ok:!!runtimeServices.robbie_scheduler?.ok, meta:runtimeServices.robbie_scheduler?.meta||''},
@@ -889,18 +906,29 @@ async function load(){
       {name:'Local Candle Store',ok:!!runtimeServices.local_candle_store?.ok, meta:runtimeServices.local_candle_store?.meta||''},
     ];
     connEl.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px">'+
-      connItems.map(c=>`<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--s2);border-radius:7px">
-        <div style="width:8px;height:8px;border-radius:50%;background:${c.ok?'var(--gr)':'var(--rd)'}"></div>
+      connItems.map(c=>{
+        const status=c.status || (c.ok?'OK':'Down');
+        const color=status==='Idle' || status==='Bot-owned' ? 'var(--am)' : c.ok ? 'var(--gr)' : 'var(--rd)';
+        return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--s2);border-radius:7px">
+        <div style="width:8px;height:8px;border-radius:50%;background:${color}"></div>
         <div style="display:flex;flex-direction:column;gap:2px">
           <span style="font-size:12px">${c.name}</span>
           ${c.meta ? `<span style="font-size:10px;color:var(--tx3)">${c.meta}</span>` : ''}
         </div>
-        <span style="margin-left:auto;font-size:11px;color:${c.ok?'var(--gr)':'var(--rd)'};font-weight:600">${c.ok?'OK':'Down'}</span>
-      </div>`).join('')+'</div>';
+        <span style="margin-left:auto;font-size:11px;color:${color};font-weight:600">${status}</span>
+      </div>`;
+      }).join('')+'</div>';
 
     // IG broker panel
     const igPanel=document.getElementById('igPanel');
     const igBadge=document.getElementById('igBadge');
+    if(!igBroker.enabled && runtimeServices.ig_routed_data?.ok){
+      igBroker.enabled=true;
+      igBroker.authenticated=true;
+      igBroker.provider='IG';
+      igBroker.environment=runtimeServices.ig_routed_data?.meta||'';
+      igBroker.routed_assets=String(igFeed.assets||'').split(',').map(v=>v.trim()).filter(Boolean);
+    }
     if(!igBroker.enabled){
       igBadge.textContent='disabled';
       igPanel.innerHTML='<div class="empty">IG routing is disabled</div>';
