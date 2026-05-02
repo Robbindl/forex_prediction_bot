@@ -87,6 +87,17 @@ def _context_directional_confluence(
             "dom_stream_trust_decay": 0.0,
             "dom_stream_degraded": False,
             "depth_update_mode": "none",
+            "microstructure_source": "none",
+            "depth_provider": "",
+            "depth_provider_class": "",
+            "depth_environment": "",
+            "depth_provider_trust_score": 0.0,
+            "depth_quote_alignment_score": 0.0,
+            "depth_quote_agreement_state": "",
+            "external_depth_rejected": False,
+            "depth_levels": 0,
+            "depth_quality": 0.0,
+            "depth_quality_tier": "none",
             "whale_dominant": "",
             "whale_ratio": 0.0,
         }
@@ -147,6 +158,66 @@ def _context_directional_confluence(
     dom_stream_trust_decay = _clip(_safe_float(micro.get("dom_stream_trust_decay"), 0.0), 0.0, 1.0)
     dom_stream_degraded = bool(micro.get("dom_stream_degraded"))
     depth_update_mode = str(micro.get("depth_update_mode") or "").strip().lower() or "none"
+    microstructure_source = str(micro.get("microstructure_source") or "").strip().lower() or "none"
+    depth_provider = str(
+        micro.get("depth_provider")
+        or micro.get("provider")
+        or micro.get("source")
+        or micro.get("exchange")
+        or ""
+    ).strip()
+    depth_provider_key = depth_provider.lower()
+    depth_provider_class = str(
+        micro.get("depth_provider_class") or micro.get("source_class") or ""
+    ).strip().lower()
+    depth_environment = str(micro.get("depth_environment") or micro.get("environment") or "").strip().lower()
+    depth_provider_trust_score = _clip(_safe_float(micro.get("depth_provider_trust_score"), 0.0), 0.0, 1.0)
+    if depth_provider_trust_score <= 0.0:
+        if depth_provider_class == "exchange_depth" or any(
+            token in depth_provider_key for token in ("binance", "bybit", "okx")
+        ):
+            depth_provider_trust_score = 0.86
+        elif "dukascopy" in depth_provider_key:
+            depth_provider_trust_score = 0.92
+        elif "ctrader" in depth_provider_key:
+            depth_provider_trust_score = 0.58 if depth_environment and depth_environment != "live" else 0.78
+        elif depth_provider_class == "redis_subscriber" or "orderflow" in depth_provider_key:
+            depth_provider_trust_score = 0.90
+    depth_quote_alignment_score = _clip(_safe_float(micro.get("depth_quote_alignment_score"), 0.0), 0.0, 1.0)
+    depth_quote_agreement_state = str(micro.get("depth_quote_agreement_state") or "").strip().lower()
+    external_depth_rejected = bool(micro.get("external_depth_rejected"))
+    depth_levels = int(
+        micro.get("depth_levels")
+        or max(int(micro.get("bid_level_count", micro.get("visible_bid_levels", 0)) or 0), int(micro.get("ask_level_count", micro.get("visible_ask_levels", 0)) or 0))
+        or 0
+    )
+    depth_quality = _clip(_safe_float(micro.get("depth_quality"), 0.0), 0.0, 1.0)
+    depth_quality_tier = str(micro.get("depth_quality_tier") or "").strip().lower() or "none"
+    if depth_levels <= 0:
+        depth_levels = {
+            "full": 10,
+            "strong": 8,
+            "solid": 6,
+            "partial": 4,
+            "thin": 2,
+            "top_only": 1,
+        }.get(depth_quality_tier, 0)
+    if depth_quality <= 0.0 and depth_levels > 0:
+        depth_quality = (
+            1.0
+            if depth_levels >= 10
+            else 0.82
+            if depth_levels >= 8
+            else 0.66
+            if depth_levels >= 6
+            else 0.48
+            if depth_levels >= 4
+            else 0.30
+        )
+    if depth_quote_alignment_score <= 0.0 and depth_available and not external_depth_rejected:
+        depth_quote_alignment_score = 0.86 if depth_provider_class == "exchange_depth" else 0.80
+    if not depth_quote_agreement_state and depth_quote_alignment_score > 0.0:
+        depth_quote_agreement_state = "aligned"
     depth_bias = (
         0.10
         if dom_ladder_ready
@@ -202,6 +273,17 @@ def _context_directional_confluence(
         "dom_stream_trust_decay": round(dom_stream_trust_decay, 4),
         "dom_stream_degraded": dom_stream_degraded,
         "depth_update_mode": depth_update_mode,
+        "microstructure_source": microstructure_source,
+        "depth_provider": depth_provider,
+        "depth_provider_class": depth_provider_class,
+        "depth_environment": depth_environment,
+        "depth_provider_trust_score": round(depth_provider_trust_score, 4),
+        "depth_quote_alignment_score": round(depth_quote_alignment_score, 4),
+        "depth_quote_agreement_state": depth_quote_agreement_state,
+        "external_depth_rejected": external_depth_rejected,
+        "depth_levels": int(depth_levels),
+        "depth_quality": round(depth_quality, 4),
+        "depth_quality_tier": depth_quality_tier,
         "whale_dominant": whale_dominant,
         "whale_ratio": round(whale_ratio, 4),
     }
@@ -1484,6 +1566,161 @@ def _build_seed_state(
     )
 
 
+def _depth_context_pressure_profile(
+    category: str,
+    context_confluence: Dict[str, Any],
+) -> Dict[str, Any]:
+    category_key = str(category or "").strip().lower()
+    source = str(context_confluence.get("microstructure_source") or "").strip().lower()
+    provider = str(context_confluence.get("depth_provider") or "").strip().lower()
+    provider_class = str(context_confluence.get("depth_provider_class") or "").strip().lower()
+    environment = str(context_confluence.get("depth_environment") or "").strip().lower()
+    depth_levels = int(context_confluence.get("depth_levels", 0) or 0)
+    depth_quality = _clip(_safe_float(context_confluence.get("depth_quality"), 0.0), 0.0, 1.0)
+    provider_trust = _clip(_safe_float(context_confluence.get("depth_provider_trust_score"), 0.0), 0.0, 1.0)
+    quote_alignment = _clip(_safe_float(context_confluence.get("depth_quote_alignment_score"), 0.0), 0.0, 1.0)
+    quote_state = str(context_confluence.get("depth_quote_agreement_state") or "").strip().lower()
+    update_mode = str(context_confluence.get("depth_update_mode") or "").strip().lower()
+    synthetic_depth = bool(context_confluence.get("synthetic_depth"))
+    depth_available = bool(context_confluence.get("depth_available"))
+    fragmented = bool(context_confluence.get("dom_fragmented_market")) or str(
+        context_confluence.get("dom_authority_tier") or ""
+    ).strip().lower() in {"fragmented_event_ladder", "degraded_event_ladder"}
+    stream_degraded = bool(context_confluence.get("dom_stream_degraded")) and bool(
+        context_confluence.get("dom_ladder_ready")
+    )
+    exchange_depth = bool(
+        provider_class == "exchange_depth"
+        or any(token in provider for token in ("binance", "bybit", "okx"))
+        or source in {"binance_rest_depth", "binance_live_depth"}
+        or (source == "live_store_depth" and provider in {"binance", "bybit", "okx"})
+    )
+    sidecar_depth = bool(
+        any(token in provider for token in ("dukascopy", "ctrader"))
+        or source in {"dukascopy_live_depth", "ctrader_live_depth"}
+        or (provider_class == "sidecar" and category_key in {"forex", "indices", "commodities"})
+    )
+    redis_depth = bool(provider_class == "redis_subscriber" or source == "order_flow_true_depth")
+
+    if not depth_available or synthetic_depth:
+        return {"ready": False, "reason": "depth_unavailable", "kind": "none"}
+    if bool(context_confluence.get("external_depth_rejected")) or quote_state in {"divergent", "severe_divergence"}:
+        return {"ready": False, "reason": "depth_quote_divergent", "kind": "none"}
+    if fragmented or stream_degraded:
+        return {"ready": False, "reason": "depth_stream_degraded", "kind": "none"}
+
+    kind = "exchange" if exchange_depth or redis_depth else "sidecar" if sidecar_depth else "depth"
+    if exchange_depth or redis_depth:
+        min_levels = 50 if exchange_depth else 8
+        min_quality = 0.45
+        min_trust = 0.72 if category_key == "crypto" else 0.78
+        alignment_floor = 0.30
+        setup_floor = 0.46
+        target_floor = 0.55 if category_key == "crypto" else 0.50
+        extension_ceiling = 1.05 if category_key == "crypto" else 1.12
+        flow_floor = 0.30 if category_key == "crypto" else 0.28
+        confluence_floor = 0.14
+    elif sidecar_depth:
+        min_levels = 2
+        min_quality = 0.25
+        min_trust = 0.58 if "ctrader" in provider and environment not in {"", "live", "real", "production"} else 0.60
+        alignment_floor = 0.36 if category_key == "commodities" else 0.40
+        setup_floor = 0.48 if category_key == "commodities" else 0.50
+        target_floor = 0.48
+        extension_ceiling = 1.08
+        flow_floor = 0.24 if category_key in {"forex", "indices"} else 0.26
+        confluence_floor = 0.15
+    else:
+        min_levels = 4
+        min_quality = 0.35
+        min_trust = 0.64
+        alignment_floor = 0.42
+        setup_floor = 0.50
+        target_floor = 0.50
+        extension_ceiling = 1.05
+        flow_floor = 0.28
+        confluence_floor = 0.16
+
+    if depth_levels < min_levels:
+        return {"ready": False, "reason": "depth_levels_too_low", "kind": kind}
+    if depth_quality < min_quality:
+        return {"ready": False, "reason": "depth_quality_too_low", "kind": kind}
+    if provider_trust < min_trust:
+        return {"ready": False, "reason": "depth_trust_too_low", "kind": kind}
+    if quote_alignment and quote_alignment < 0.75 and quote_state not in {"", "unconfirmed"}:
+        return {"ready": False, "reason": "depth_quote_alignment_too_low", "kind": kind}
+    if update_mode in {"none", "synthetic", "top_quote"}:
+        return {"ready": False, "reason": "depth_update_mode_weak", "kind": kind}
+
+    return {
+        "ready": True,
+        "reason": "",
+        "kind": kind,
+        "alignment_floor": alignment_floor,
+        "setup_floor": setup_floor,
+        "target_floor": target_floor,
+        "extension_ceiling": extension_ceiling,
+        "flow_floor": flow_floor,
+        "confluence_floor": confluence_floor,
+    }
+
+
+def _no_seed_probe_reason(
+    *,
+    category: str,
+    structure: Dict[str, Any],
+    plan: _AssetPlaybookPlan,
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
+    category_key = str(category or "").strip().lower()
+    if category_key not in {"crypto", "commodities", "forex", "indices"}:
+        return "no_playbook_builder_ready"
+
+    seed_state = _build_seed_state(structure=structure, plan=plan, context=context)
+    direction = seed_state.direction
+    if direction not in {"BUY", "SELL"}:
+        return "depth_context_pressure_wait:no_direction"
+    if seed_state.structure_bias not in {"buy", "sell"}:
+        return "depth_context_pressure_wait:neutral_structure"
+    if not (seed_state.pattern_family.startswith("trending_") and seed_state.pattern_family.endswith("generic")):
+        return "depth_context_pressure_wait:pattern_not_generic_trend"
+    if _pattern_family_direction(seed_state.pattern_family) != direction:
+        return "depth_context_pressure_wait:family_direction_mismatch"
+
+    context_confluence = _context_directional_confluence(context, direction)
+    depth_profile = _depth_context_pressure_profile(category_key, context_confluence)
+    if not depth_profile.get("ready"):
+        return f"depth_context_pressure_wait:{depth_profile.get('reason') or 'depth_unavailable'}"
+    if int(context_confluence.get("support_components", 0) or 0) < 1:
+        return "depth_context_pressure_wait:context_support_missing"
+    if int(context_confluence.get("conflict_components", 0) or 0) > 0:
+        return "depth_context_pressure_wait:context_conflict"
+    if _safe_float(structure.get("alignment_score"), 0.0) < _safe_float(depth_profile.get("alignment_floor"), 0.42):
+        return "depth_context_pressure_wait:alignment_too_weak"
+    if _safe_float(structure.get("setup_quality"), 0.0) < _safe_float(depth_profile.get("setup_floor"), 0.50):
+        return "depth_context_pressure_wait:setup_quality_too_weak"
+    if _safe_float(structure.get("target_efficiency_score"), 0.0) < _safe_float(depth_profile.get("target_floor"), 0.50):
+        return "depth_context_pressure_wait:target_space_too_thin"
+    if _safe_float(structure.get("extension_score"), 0.0) > _safe_float(depth_profile.get("extension_ceiling"), 1.05):
+        return "depth_context_pressure_wait:entry_extended"
+    if int(structure.get("impulse_age_bars", 0) or 0) > 6:
+        return "depth_context_pressure_wait:setup_too_old"
+    if _safe_float(structure.get("cluster_penalty"), 0.0) > 0.18:
+        return "depth_context_pressure_wait:cluster_risk"
+    if (
+        max(
+            abs(_safe_float(context_confluence.get("micro_support"), 0.0)),
+            abs(_safe_float(context_confluence.get("cross_support"), 0.0)),
+            abs(_safe_float(context_confluence.get("whale_support"), 0.0)),
+        )
+        < _safe_float(depth_profile.get("flow_floor"), 0.28)
+    ):
+        return "depth_context_pressure_wait:flow_too_weak"
+    if _safe_float(context_confluence.get("score"), 0.0) < _safe_float(depth_profile.get("confluence_floor"), 0.16):
+        return "depth_context_pressure_wait:context_too_weak"
+    return "depth_context_pressure_wait:no_builder_selected"
+
+
 _CATEGORY_PROFILES: Dict[str, _PlaybookProfile] = {
     "forex": _PlaybookProfile(0.56, 0.58, 0.57, 0.57, 0.58, 0.58, 0.52, 0.66, 0.12, 0.32, 18, "5m", ("europe", "us"), 3, 0.18, 2.25, 1.15, 0.82),
     "crypto": _PlaybookProfile(0.58, 0.60, 0.58, 0.59, 0.60, 0.60, 0.54, 0.68, 0.10, 0.36, 20, "5m", ("asia", "europe", "us"), 4, 0.25, 2.8, 1.15, 1.20),
@@ -2444,6 +2681,12 @@ class PlaybookService:
             and not context_depth_stream_degraded
         )
         context_has_stream_snapshot_depth = bool(context_confluence.get("dom_stream_snapshot_ready"))
+        context_depth_ready = bool(
+            context_has_event_backed_depth
+            or context_has_stream_snapshot_depth
+            or context_has_true_depth
+        )
+        depth_pressure_profile = _depth_context_pressure_profile(category, context_confluence)
         directional_impulse = max(0.0, directional_breakout, directional_pullback)
         strict_family_directional_match = bool(
             (direction == "BUY" and pattern_family.startswith("trending_up_"))
@@ -2706,6 +2949,28 @@ class PlaybookService:
                 or cross_context_support >= 0.30
             )
         )
+        depth_context_pressure_ready = bool(
+            bool(depth_pressure_profile.get("ready"))
+            and pattern_family.endswith("generic")
+            and family_directional_match
+            and structure_bias in {"buy", "sell"}
+            and support_components >= 1
+            and conflict_components == 0
+            and context_depth_ready
+            and confluence_score >= _safe_float(depth_pressure_profile.get("confluence_floor"), 0.16)
+            and max(
+                abs(micro_context_support),
+                abs(cross_context_support),
+                abs(whale_context_support),
+            )
+            >= _safe_float(depth_pressure_profile.get("flow_floor"), 0.28)
+            and alignment_score >= _safe_float(depth_pressure_profile.get("alignment_floor"), 0.42)
+            and setup_quality >= _safe_float(depth_pressure_profile.get("setup_floor"), 0.50)
+            and target_efficiency_score >= _safe_float(depth_pressure_profile.get("target_floor"), 0.50)
+            and extension_score <= _safe_float(depth_pressure_profile.get("extension_ceiling"), 1.05)
+            and impulse_age_bars <= 6
+            and cluster_penalty <= 0.18
+        )
         if crypto_directional_relief_ready:
             target_efficiency_floor = min(
                 target_efficiency_floor,
@@ -2741,6 +3006,27 @@ class PlaybookService:
         if pattern_driven_direction:
             alignment_floor = min(alignment_floor, 0.30)
             setup_floor = min(setup_floor, 0.24)
+        if depth_context_pressure_ready:
+            target_efficiency_floor = min(target_efficiency_floor, _safe_float(depth_pressure_profile.get("target_floor"), 0.50))
+            extension_ceiling = max(extension_ceiling, max(1.35, _safe_float(depth_pressure_profile.get("extension_ceiling"), 1.05)))
+            alignment_floor = min(alignment_floor, _safe_float(depth_pressure_profile.get("alignment_floor"), 0.42))
+            setup_floor = min(setup_floor, _safe_float(depth_pressure_profile.get("setup_floor"), 0.50))
+            if effective_candle_quality_score <= 0.0:
+                effective_candle_quality_score = min(
+                    1.0,
+                    0.20
+                    + effective_setup_quality * 0.20
+                    + max(0.0, confluence_score) * 0.16
+                    + max(0.0, abs(micro_context_support)) * 0.18,
+                )
+            if effective_session_quality_score <= 0.0 and str(session or "").lower() != "off":
+                effective_session_quality_score = min(
+                    1.0,
+                    0.22
+                    + effective_alignment_score * 0.12
+                    + max(0.0, confluence_score) * 0.16
+                    + max(0.0, target_efficiency_score) * 0.12,
+                )
 
         if effective_alignment_score < alignment_floor:
             return None
@@ -2753,6 +3039,9 @@ class PlaybookService:
             session_floor = max(0.24, session_floor - (0.04 + inactivity_relief_strength * 0.05))
         if crypto_directional_relief_ready:
             candle_floor = max(0.18, candle_floor - 0.06)
+            session_floor = max(0.20, session_floor - 0.08)
+        if depth_context_pressure_ready:
+            candle_floor = max(0.18, candle_floor - 0.08)
             session_floor = max(0.20, session_floor - 0.08)
         if context_continuation_ready:
             candle_floor = max(0.18, candle_floor - (0.04 if strong_context_continuation_ready else 0.02))
@@ -2838,6 +3127,7 @@ class PlaybookService:
             and not near_fast_confirmation
             and not directional_liquidity_sweep_ready
             and not context_fast_track_ready
+            and not depth_context_pressure_ready
         ):
             return None
         if direction == "BUY" and upside_exhaustion_score >= 0.58:
@@ -2948,6 +3238,13 @@ class PlaybookService:
             readiness_note = f"generic_flow_{live_flow_generic_override_source}"
         elif (
             "breakout_continuation" in plan.allowed_playbooks
+            and depth_context_pressure_ready
+        ):
+            playbook = "breakout_continuation"
+            entry_style = "elite_context_pressure"
+            readiness_note = f"depth_context_pressure_{depth_pressure_profile.get('kind') or 'depth'}"
+        elif (
+            "breakout_continuation" in plan.allowed_playbooks
             and context_driven_direction
             and context_pressure_execution_ready
         ):
@@ -3006,12 +3303,13 @@ class PlaybookService:
         elif entry_style == "elite_flow_continuation":
             structural_ready_bonus += 0.06 + (0.02 if context_has_event_backed_depth else 0.01 if generic_depth_override else 0.0)
         elif entry_style == "elite_context_pressure":
-            structural_ready_bonus += 0.08
+            structural_ready_bonus += 0.08 + (0.02 if depth_context_pressure_ready else 0.0)
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
             structural_ready_bonus += 0.10
         if near_confirmation:
             structural_ready_bonus += 0.05
         context_continuation_bonus = entry_style == "elite_context_continuation"
+        context_pressure_bonus = entry_style == "elite_context_pressure"
         live_flow_continuation_bonus = entry_style in {"elite_trend_continuation", "elite_flow_continuation"} and live_flow_generic_override
         score = _clip(
             abs(directional_breakout) * 0.22
@@ -3028,6 +3326,8 @@ class PlaybookService:
                     0.18
                     if context_driven_direction
                     else 0.14
+                    if context_pressure_bonus
+                    else 0.14
                     if context_continuation_bonus
                     else 0.10
                     if live_flow_continuation_bonus
@@ -3039,6 +3339,8 @@ class PlaybookService:
                 * (
                     0.10
                     if context_driven_direction
+                    else 0.10
+                    if context_pressure_bonus
                     else 0.08
                     if context_continuation_bonus
                     else 0.08
@@ -3051,6 +3353,8 @@ class PlaybookService:
                 * (
                     0.06
                     if context_driven_direction
+                    else 0.05
+                    if context_pressure_bonus
                     else 0.05
                     if context_continuation_bonus
                     else 0.04
@@ -3083,7 +3387,7 @@ class PlaybookService:
         elif entry_style == "elite_flow_continuation":
             score_floor = 0.34 if context_has_event_backed_depth else 0.35 if generic_depth_override else 0.36
         elif entry_style == "elite_context_pressure":
-            score_floor = 0.40 if confluence_score >= 0.32 else 0.44
+            score_floor = 0.40 if depth_context_pressure_ready else 0.40 if confluence_score >= 0.32 else 0.44
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
             score_floor = 0.40 if elite_pattern_rank >= 0.45 else 0.44
         if score < score_floor:
@@ -3133,6 +3437,8 @@ class PlaybookService:
                     if live_flow_generic_override
                     else "generic_flow_override=off"
                 ),
+                "depth_context_pressure=1" if depth_context_pressure_ready else "depth_context_pressure=0",
+                f"depth_profile={depth_pressure_profile.get('kind') or 'none'}",
                 f"inactivity_relief={inactivity_relief_strength:.2f}" if inactivity_seed_relief else "inactivity_relief=0.00",
             ],
         }
@@ -4708,6 +5014,14 @@ class PlaybookService:
 
         candidates.sort(key=lambda item: (float(item.get("confidence", 0.0)), float(item.get("score", 0.0))), reverse=True)
         primary = dict(candidates[0]) if candidates else None
+        blocked_reason = "" if primary else _best_rejected_reason(rejected_records)
+        if not primary and not blocked_reason:
+            blocked_reason = _no_seed_probe_reason(
+                category=category,
+                structure=structure,
+                plan=plan,
+                context=context,
+            )
         return {
             "asset": asset,
             "category": category,
@@ -4716,7 +5030,7 @@ class PlaybookService:
             "inactivity_profile": dict(inactivity_profile),
             "candidates": candidates,
             "primary": primary,
-            "blocked_reason": "" if primary else _best_rejected_reason(rejected_records),
+            "blocked_reason": blocked_reason,
             "rejected_reasons": rejected_reasons[:5],
             "rejected_details": rejected_details[:5],
             "asset_plan": {
@@ -4781,6 +5095,8 @@ class PlaybookService:
             seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.04))
         elif entry_style == "elite_context_continuation":
             seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.05))
+        elif entry_style == "elite_context_pressure":
+            seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.03))
         elif entry_style in {
             "breakout_close",
             "expansion_break",

@@ -30,6 +30,58 @@ except ImportError:
 
 logger = get_logger()
 
+_PREFERRED_TRUE_DEPTH_SOURCES = {
+    "order_flow_true_depth",
+    "dukascopy_live_depth",
+    "ctrader_live_depth",
+    "binance_rest_depth",
+    "binance_live_depth",
+}
+_EXCHANGE_TRUE_DEPTH_PROVIDERS = {"binance", "bybit", "okx"}
+_SIDECAR_TRUE_DEPTH_PROVIDERS = {"dukascopy", "ctrader"}
+
+
+def _is_preferred_true_depth_source(
+    microstructure_source: str,
+    depth_provider: str,
+    depth_provider_class: str,
+) -> bool:
+    source = str(microstructure_source or "").strip().lower()
+    provider = str(depth_provider or "").strip().lower()
+    provider_class = str(depth_provider_class or "").strip().lower()
+    if source in _PREFERRED_TRUE_DEPTH_SOURCES:
+        return True
+    if source == "live_store_depth":
+        return bool(
+            provider_class in {"exchange_depth", "redis_subscriber", "sidecar"}
+            or any(token in provider for token in (*_EXCHANGE_TRUE_DEPTH_PROVIDERS, *_SIDECAR_TRUE_DEPTH_PROVIDERS))
+        )
+    if provider_class in {"exchange_depth", "redis_subscriber"}:
+        return True
+    return any(token in provider for token in (*_EXCHANGE_TRUE_DEPTH_PROVIDERS, *_SIDECAR_TRUE_DEPTH_PROVIDERS, "orderflow"))
+
+
+def _trusted_snapshot_true_depth_source(
+    *,
+    microstructure_source: str,
+    depth_provider: str,
+    depth_provider_class: str,
+    depth_levels: int,
+    snapshot_true_depth_min_levels: int,
+) -> bool:
+    source = str(microstructure_source or "").strip().lower()
+    provider = str(depth_provider or "").strip().lower()
+    provider_class = str(depth_provider_class or "").strip().lower()
+    if source in {"binance_rest_depth", "binance_live_depth"}:
+        return depth_levels >= snapshot_true_depth_min_levels
+    if provider_class == "exchange_depth" or any(token in provider for token in _EXCHANGE_TRUE_DEPTH_PROVIDERS):
+        return depth_levels >= snapshot_true_depth_min_levels
+    if source in {"dukascopy_live_depth", "ctrader_live_depth"} or any(
+        token in provider for token in _SIDECAR_TRUE_DEPTH_PROVIDERS
+    ):
+        return depth_levels >= 2
+    return False
+
 STEP_MARKET = 1
 STEP_INTELLIGENCE = 2
 STEP_EXECUTION = 3
@@ -1840,12 +1892,25 @@ class SignalDecisionEngine:
         dom_event_backed = bool(signal.metadata.get("dom_event_backed"))
         dom_ladder_ready = bool(signal.metadata.get("dom_ladder_ready"))
         dom_source_fidelity = str(signal.metadata.get("dom_source_fidelity", "") or "").strip().lower()
-        depth_provider = str(signal.metadata.get("depth_provider", "") or "").strip().lower()
-        depth_provider_class = str(signal.metadata.get("depth_provider_class", "") or "").strip().lower()
+        depth_provider = str(
+            signal.metadata.get("depth_provider")
+            or signal.metadata.get("provider")
+            or signal.metadata.get("source")
+            or signal.metadata.get("exchange")
+            or ""
+        ).strip().lower()
+        depth_provider_class = str(
+            signal.metadata.get("depth_provider_class") or signal.metadata.get("source_class") or ""
+        ).strip().lower()
         depth_environment = str(signal.metadata.get("depth_environment", "") or "").strip().lower()
         depth_provider_trust_score = float(signal.metadata.get("depth_provider_trust_score", 0.0) or 0.0)
         if depth_provider_trust_score <= 0.0 and microstructure_source == "order_flow_true_depth":
             depth_provider_trust_score = 0.90
+        elif depth_provider_trust_score <= 0.0 and (
+            depth_provider_class == "exchange_depth"
+            or any(token in depth_provider for token in ("binance", "bybit", "okx"))
+        ):
+            depth_provider_trust_score = 0.88
         elif depth_provider_trust_score <= 0.0 and "dukascopy" in depth_provider:
             depth_provider_trust_score = 0.92
         elif depth_provider_trust_score <= 0.0 and "ctrader" in depth_provider:
@@ -1856,14 +1921,11 @@ class SignalDecisionEngine:
         depth_quote_agreement_state = str(signal.metadata.get("depth_quote_agreement_state", "") or "").strip().lower()
         depth_quote_alignment_score = float(signal.metadata.get("depth_quote_alignment_score", 0.0) or 0.0)
         external_depth_rejected = bool(signal.metadata.get("external_depth_rejected"))
-        true_depth_sources = {
-            "order_flow_true_depth",
-            "dukascopy_live_depth",
-            "ctrader_live_depth",
-            "binance_rest_depth",
-            "binance_live_depth",
-        }
-        preferred_true_depth = microstructure_source in true_depth_sources
+        preferred_true_depth = _is_preferred_true_depth_source(
+            microstructure_source,
+            depth_provider,
+            depth_provider_class,
+        )
         true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
         preferred_true_depth_min_quality = float(
             execution_policy.get("preferred_true_depth_min_quality", 0.50) or 0.50
@@ -1908,9 +1970,14 @@ class SignalDecisionEngine:
         snapshot_true_depth_informative = bool(true_depth_informative and not dom_ladder_ready)
         trusted_snapshot_true_depth_available = bool(
             snapshot_true_depth_informative
-            and microstructure_source in {"binance_rest_depth", "binance_live_depth"}
+            and _trusted_snapshot_true_depth_source(
+                microstructure_source=microstructure_source,
+                depth_provider=depth_provider,
+                depth_provider_class=depth_provider_class,
+                depth_levels=depth_levels,
+                snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
+            )
             and depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
-            and depth_levels >= snapshot_true_depth_min_levels
             and depth_quality >= preferred_true_depth_min_quality
             and effective_depth_provider_trust_score >= preferred_true_depth_min_trust_score
             and depth_quote_alignment_score >= 0.80
@@ -3031,12 +3098,25 @@ class SignalDecisionEngine:
                 "top_only": 1,
             }.get(depth_quality_tier, 0)
         microstructure_source = str(signal.metadata.get("microstructure_source", "") or "").strip().lower()
-        depth_provider = str(signal.metadata.get("depth_provider", "") or "").strip().lower()
-        depth_provider_class = str(signal.metadata.get("depth_provider_class", "") or "").strip().lower()
+        depth_provider = str(
+            signal.metadata.get("depth_provider")
+            or signal.metadata.get("provider")
+            or signal.metadata.get("source")
+            or signal.metadata.get("exchange")
+            or ""
+        ).strip().lower()
+        depth_provider_class = str(
+            signal.metadata.get("depth_provider_class") or signal.metadata.get("source_class") or ""
+        ).strip().lower()
         depth_environment = str(signal.metadata.get("depth_environment", "") or "").strip().lower()
         depth_provider_trust_score = float(signal.metadata.get("depth_provider_trust_score", 0.0) or 0.0)
         if depth_provider_trust_score <= 0.0 and microstructure_source == "order_flow_true_depth":
             depth_provider_trust_score = 0.90
+        elif depth_provider_trust_score <= 0.0 and (
+            depth_provider_class == "exchange_depth"
+            or any(token in depth_provider for token in ("binance", "bybit", "okx"))
+        ):
+            depth_provider_trust_score = 0.88
         elif depth_provider_trust_score <= 0.0 and "dukascopy" in depth_provider:
             depth_provider_trust_score = 0.92
         elif depth_provider_trust_score <= 0.0 and "ctrader" in depth_provider:
@@ -3600,15 +3680,12 @@ class SignalDecisionEngine:
             execution_policy.get("misaligned_true_depth_penalty", 0.0) or 0.0
         )
 
-        true_depth_sources = {
-            "order_flow_true_depth",
-            "dukascopy_live_depth",
-            "ctrader_live_depth",
-            "binance_rest_depth",
-            "binance_live_depth",
-        }
         true_depth_available = bool(signal.metadata.get("depth_available")) and not synthetic_depth_only
-        preferred_true_depth = microstructure_source in true_depth_sources
+        preferred_true_depth = _is_preferred_true_depth_source(
+            microstructure_source,
+            depth_provider,
+            depth_provider_class,
+        )
         depth_update_mode = str(signal.metadata.get("depth_update_mode", "") or "").strip().lower()
         dom_event_backed = bool(signal.metadata.get("dom_event_backed"))
         dom_ladder_ready = bool(signal.metadata.get("dom_ladder_ready"))
@@ -3688,9 +3765,14 @@ class SignalDecisionEngine:
         )
         trusted_snapshot_true_depth_available = bool(
             snapshot_true_depth_available
-            and microstructure_source in {"binance_rest_depth", "binance_live_depth"}
+            and _trusted_snapshot_true_depth_source(
+                microstructure_source=microstructure_source,
+                depth_provider=depth_provider,
+                depth_provider_class=depth_provider_class,
+                depth_levels=depth_levels,
+                snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
+            )
             and depth_update_mode in {"snapshot_poll", "stream_snapshot", "snapshot_stream"}
-            and depth_levels >= snapshot_true_depth_min_levels
             and depth_quality >= preferred_true_depth_min_quality
             and depth_provider_trust_score_effective >= preferred_true_depth_min_trust_score
             and depth_quote_alignment_score >= 0.80
@@ -3895,7 +3977,18 @@ class SignalDecisionEngine:
                     depth_sovereignty_reasons.append("depth_fragmented")
                 if (
                     snapshot_true_depth_available
-                    and microstructure_source in {"binance_rest_depth", "binance_live_depth"}
+                    and _is_preferred_true_depth_source(
+                        microstructure_source,
+                        depth_provider,
+                        depth_provider_class,
+                    )
+                    and not _trusted_snapshot_true_depth_source(
+                        microstructure_source=microstructure_source,
+                        depth_provider=depth_provider,
+                        depth_provider_class=depth_provider_class,
+                        depth_levels=depth_levels,
+                        snapshot_true_depth_min_levels=snapshot_true_depth_min_levels,
+                    )
                     and depth_levels < snapshot_true_depth_min_levels
                 ):
                     depth_sovereignty_reasons.append("snapshot_depth_levels_below_sovereignty_floor")

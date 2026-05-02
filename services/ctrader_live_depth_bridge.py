@@ -511,6 +511,20 @@ class CTraderLiveDepthBridge:
             "environment": str(snapshot.get("environment") or self._environment or "demo"),
             "asset": canonical,
             "depth_provider": "IC Markets cTrader",
+            "depth_provider_class": "sidecar",
+            "depth_environment": str(snapshot.get("environment") or self._environment or "demo"),
+            "depth_provider_trust_score": (
+                0.78
+                if str(snapshot.get("environment") or self._environment or "").strip().lower()
+                in {"live", "real", "production"}
+                else 0.58
+            ),
+            "depth_update_mode": "stream_snapshot",
+            "dom_stream_snapshot_ready": True,
+            "dom_event_backed": False,
+            "dom_ladder_ready": False,
+            "dom_source_fidelity": "stream_snapshot",
+            "dom_authority_tier": "snapshot_depth",
             "depth_live_age_seconds": round(age_seconds, 3),
             "depth_bid": _safe_float(bid, 0.0) if bid not in (None, "") else None,
             "depth_ask": _safe_float(ask, 0.0) if ask not in (None, "") else None,

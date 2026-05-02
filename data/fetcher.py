@@ -584,6 +584,16 @@ class DataFetcher:
         try:
             micro = bridge.get_microstructure(asset, category=category)
             if micro:
+                if bool(micro.get("depth_available")) and not bool(micro.get("synthetic_depth_available")):
+                    micro.setdefault("depth_provider", micro.get("source") or bridge_name)
+                    micro.setdefault("depth_provider_class", micro.get("source_class") or "")
+                    micro.setdefault("depth_environment", micro.get("environment") or "live")
+                    micro.setdefault(
+                        "depth_provider_trust_score",
+                        self._external_true_depth_provider_trust(micro),
+                    )
+                    micro.setdefault("depth_quote_agreement_state", "aligned")
+                    micro.setdefault("depth_quote_alignment_score", 0.86)
                 return self._merge_orderflow_snapshot(micro, orderflow_snapshot)
         except Exception as exc:
             logger.debug(f"[DataFetcher] {bridge_name} microstructure {asset}: {exc}")
@@ -665,6 +675,10 @@ class DataFetcher:
         trust = 0.65
         if source_class == "redis_subscriber" or "orderflow" in provider:
             trust = 0.90
+        elif source_class == "exchange_depth" or any(
+            token in provider for token in ("binance", "bybit", "okx")
+        ):
+            trust = 0.88
         elif "dukascopy" in provider:
             trust = 0.92
         elif "ctrader" in provider:
@@ -769,20 +783,43 @@ class DataFetcher:
         }
 
         def _attach_overlay_meta(target: Dict[str, Any]) -> Dict[str, Any]:
-            target["depth_provider"] = str(extra.get("depth_provider") or extra.get("source") or "Dukascopy")
-            target["depth_provider_class"] = str(extra.get("source_class") or "sidecar")
-            target["depth_environment"] = str(extra.get("environment") or target.get("depth_environment") or "")
-            target["depth_as_of_utc"] = str(extra.get("as_of_utc") or target.get("depth_as_of_utc") or "")
-            target["depth_live_age_seconds"] = extra.get("depth_live_age_seconds")
-            target["depth_provider_trust_score"] = provider_trust
-            target["depth_quote_agreement_state"] = str(alignment.get("state") or "unconfirmed")
-            target["depth_quote_agreement_bps"] = alignment.get("divergence_bps")
-            target["depth_quote_tolerance_bps"] = alignment.get("tolerance_bps")
-            target["depth_quote_alignment_score"] = alignment.get("score")
-            target["external_depth_rejected"] = bool(not alignment.get("usable", True))
+            external_provider = str(extra.get("depth_provider") or extra.get("source") or "Dukascopy")
+            external_class = str(extra.get("source_class") or extra.get("depth_provider_class") or "sidecar")
+            if preserve_base_depth:
+                target.setdefault("depth_provider", str(target.get("source") or target.get("provider") or ""))
+                target.setdefault("depth_provider_class", str(target.get("source_class") or ""))
+                target.setdefault("depth_environment", str(target.get("environment") or target.get("depth_environment") or ""))
+                if not target.get("depth_provider_trust_score"):
+                    target["depth_provider_trust_score"] = DataFetcher._external_true_depth_provider_trust(target)
+                target.setdefault("depth_quote_agreement_state", "aligned")
+                target.setdefault("depth_quote_alignment_score", 0.86)
+                target["external_depth_provider"] = external_provider
+                target["external_depth_provider_class"] = external_class
+                target["external_depth_environment"] = str(extra.get("environment") or "")
+                target["external_depth_as_of_utc"] = str(extra.get("as_of_utc") or "")
+                target["external_depth_live_age_seconds"] = extra.get("depth_live_age_seconds")
+                target["external_depth_provider_trust_score"] = provider_trust
+                target["external_depth_quote_agreement_state"] = str(alignment.get("state") or "unconfirmed")
+                target["external_depth_quote_agreement_bps"] = alignment.get("divergence_bps")
+                target["external_depth_quote_tolerance_bps"] = alignment.get("tolerance_bps")
+                target["external_depth_quote_alignment_score"] = alignment.get("score")
+            else:
+                target["depth_provider"] = external_provider
+                target["depth_provider_class"] = external_class
+                target["depth_environment"] = str(extra.get("environment") or target.get("depth_environment") or "")
+                target["depth_as_of_utc"] = str(extra.get("as_of_utc") or target.get("depth_as_of_utc") or "")
+                target["depth_live_age_seconds"] = extra.get("depth_live_age_seconds")
+                target["depth_provider_trust_score"] = provider_trust
+                target["depth_quote_agreement_state"] = str(alignment.get("state") or "unconfirmed")
+                target["depth_quote_agreement_bps"] = alignment.get("divergence_bps")
+                target["depth_quote_tolerance_bps"] = alignment.get("tolerance_bps")
+                target["depth_quote_alignment_score"] = alignment.get("score")
+            external_rejected = bool(not alignment.get("usable", True))
+            target["external_depth_candidate_rejected"] = external_rejected
+            target["external_depth_rejected"] = False if preserve_base_depth else external_rejected
             target["external_depth_overlay_applied"] = False
             target["external_depth_preserved_base_book"] = bool(preserve_base_depth)
-            if target["external_depth_rejected"]:
+            if external_rejected:
                 target["external_depth_rejection_reason"] = "cross_provider_quote_divergence"
             else:
                 target.pop("external_depth_rejection_reason", None)

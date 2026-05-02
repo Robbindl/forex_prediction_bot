@@ -406,6 +406,10 @@ class OkxMarketBridge:
         return {
             "source": "OKX",
             "source_class": "exchange_depth",
+            "depth_provider": "OKX",
+            "depth_provider_class": "exchange_depth",
+            "depth_environment": "live",
+            "depth_provider_trust_score": 0.86,
             "delayed": False,
             "realtime": bool(realtime),
             "from_cache": False,

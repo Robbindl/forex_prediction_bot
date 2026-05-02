@@ -405,6 +405,10 @@ class BybitMarketBridge:
         return {
             "source": "Bybit",
             "source_class": "exchange_depth",
+            "depth_provider": "Bybit",
+            "depth_provider_class": "exchange_depth",
+            "depth_environment": "live",
+            "depth_provider_trust_score": 0.88,
             "delayed": False,
             "realtime": bool(realtime),
             "from_cache": False,
