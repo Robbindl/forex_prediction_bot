@@ -8622,13 +8622,39 @@ def api_top_opportunities():
 # API — SYSTEM MONITOR + MONITORING
 # ══════════════════════════════════════════════════════════════════════════════
 
+_RESOURCE_CPU_LOCK = threading.Lock()
+_RESOURCE_CPU_PRIMED = False
+_RESOURCE_CPU_LAST_TS = 0.0
+_RESOURCE_CPU_SAMPLES: List[float] = []
+_RESOURCE_CPU_SAMPLE_WINDOW_SEC = 0.5
+_RESOURCE_CPU_CACHE_SECONDS = 2.0
+_RESOURCE_CPU_SMOOTH_SAMPLES = 3
+
+
+def _collect_stable_cpu_pct(psutil_module: Any) -> float:
+    global _RESOURCE_CPU_PRIMED, _RESOURCE_CPU_LAST_TS
+    with _RESOURCE_CPU_LOCK:
+        now = time.monotonic()
+        if _RESOURCE_CPU_SAMPLES and (now - _RESOURCE_CPU_LAST_TS) < _RESOURCE_CPU_CACHE_SECONDS:
+            return sum(_RESOURCE_CPU_SAMPLES) / max(1, len(_RESOURCE_CPU_SAMPLES))
+        if not _RESOURCE_CPU_PRIMED:
+            psutil_module.cpu_percent(interval=None)
+            _RESOURCE_CPU_PRIMED = True
+        sample = float(psutil_module.cpu_percent(interval=_RESOURCE_CPU_SAMPLE_WINDOW_SEC))
+        sample = max(0.0, min(100.0, sample))
+        _RESOURCE_CPU_SAMPLES.append(sample)
+        del _RESOURCE_CPU_SAMPLES[:-_RESOURCE_CPU_SMOOTH_SAMPLES]
+        _RESOURCE_CPU_LAST_TS = time.monotonic()
+        return sum(_RESOURCE_CPU_SAMPLES) / max(1, len(_RESOURCE_CPU_SAMPLES))
+
+
 def _collect_system_resource_stats() -> tuple[float, float, float, float]:
     ram_pct = cpu_pct = disk_pct = proc_mb = 0.0
     try:
         import psutil
 
         ram_pct = psutil.virtual_memory().percent
-        cpu_pct = psutil.cpu_percent(interval=0)
+        cpu_pct = _collect_stable_cpu_pct(psutil)
         disk_pct = psutil.disk_usage("/").percent
         proc_mb = round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 1)
     except Exception:
