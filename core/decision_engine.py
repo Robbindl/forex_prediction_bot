@@ -5391,6 +5391,131 @@ class SignalDecisionEngine:
                 )
                 context_pressure_soft_override_applied = True
 
+        breakout_momentum_late_override_removed_blocks: List[str] = []
+        breakout_momentum_late_override_blocked_by: List[str] = []
+        breakout_momentum_late_override_condition_blocks: List[str] = []
+        breakout_momentum_late_override_applied = False
+        breakout_momentum_late_override_blocks = guarded_force_soft_blocks | {
+            "setup is too old and already stretched",
+        }
+        breakout_momentum_direction_ok = bool(
+            (
+                signal.direction == "BUY"
+                and structure_bias == "buy"
+                and trend_5m == "trending_up"
+            )
+            or (
+                signal.direction == "SELL"
+                and structure_bias == "sell"
+                and trend_5m == "trending_down"
+            )
+        )
+        breakout_momentum_depth_ok = bool(
+            true_depth_available
+            and preferred_true_depth
+            and true_depth_quote_aligned
+            and not synthetic_depth_only
+            and not external_depth_rejected
+            and not depth_fragmentation_untrusted
+            and not (
+                dom_stream_hard_floor_breached
+                and not trusted_real_dom_fallback_available
+            )
+        )
+        breakout_momentum_playbook_ok = bool(
+            category_label == "crypto"
+            and entry_style in {"breakout_close", "breakout_ignition"}
+            and seed_score >= 0.84
+            and float(signal.confidence or 0.0) >= 0.66
+            and playbook_support_components >= 1
+            and playbook_conflict_components == 0
+            and playbook_context_confluence >= 0.40
+            and playbook_micro_score >= 0.80
+            and abs(playbook_cross_alignment) >= 0.05
+            and breakout_momentum_direction_ok
+        )
+        breakout_momentum_structure_ok = bool(
+            alignment_score >= 0.46
+            and setup_quality >= 0.52
+            and candle_quality_score >= 0.24
+            and session_quality_score >= 0.30
+            and target_efficiency_score >= 0.08
+            and opposing_distance > opposing_distance_hard_floor
+            and extension_score <= 2.05
+            and directional_extension <= 0.96
+            and impulse_age_bars <= 9
+            and cluster_penalty <= 0.20
+            and stop_hunt_risk < 0.48
+            and not failed_opposite_move_confirmed
+        )
+        breakout_momentum_market_ok = bool(
+            guarded_force_market_ok
+            and not crypto_flow_breadth_hard_block
+            and not event_ladder_cross_market_hard_block
+            and not event_ladder_hostile_flow
+            and not continuation_reclaim_hard_block
+            and directional_flow_conflict > -0.12
+            and true_depth_directional_conflict > -0.08
+        )
+        breakout_momentum_late_override_candidate = bool(
+            guarded_force_entry_enabled
+            and breakout_momentum_depth_ok
+            and breakout_momentum_playbook_ok
+            and breakout_momentum_structure_ok
+            and breakout_momentum_market_ok
+        )
+        breakout_momentum_late_override_safety_blocks = [
+            block for block in hard_blocks if block not in breakout_momentum_late_override_blocks
+        ]
+        if guarded_force_entry_enabled:
+            if not breakout_momentum_depth_ok:
+                breakout_momentum_late_override_condition_blocks.append(
+                    "breakout momentum depth is insufficient"
+                )
+            if not breakout_momentum_playbook_ok:
+                breakout_momentum_late_override_condition_blocks.append(
+                    "breakout momentum playbook proof is insufficient"
+                )
+            if not breakout_momentum_structure_ok:
+                breakout_momentum_late_override_condition_blocks.append(
+                    "breakout momentum structure is not forceable"
+                )
+            if not breakout_momentum_market_ok:
+                breakout_momentum_late_override_condition_blocks.append(
+                    "breakout momentum market context is not forceable"
+                )
+            breakout_momentum_late_override_blocked_by = list(
+                dict.fromkeys(
+                    breakout_momentum_late_override_safety_blocks
+                    + breakout_momentum_late_override_condition_blocks
+                )
+            )
+        if (
+            not guarded_force_applied
+            and not context_pressure_soft_override_applied
+            and breakout_momentum_late_override_candidate
+            and not breakout_momentum_late_override_safety_blocks
+            and (hard_blocks or risk_score >= 0.50)
+        ):
+            breakout_momentum_late_override_removed_blocks = [
+                block for block in hard_blocks if block in breakout_momentum_late_override_blocks
+            ]
+            if breakout_momentum_late_override_removed_blocks or risk_score >= 0.50:
+                hard_blocks = [
+                    block for block in hard_blocks if block not in breakout_momentum_late_override_blocks
+                ]
+                original_risk_score = risk_score
+                risk_score = min(risk_score, 0.49)
+                notes.append("breakout_momentum_late_entry")
+                reasons.append(
+                    "high-score breakout momentum proof overrode late-entry timing gates"
+                )
+                signal.metadata["breakout_momentum_late_override_original_risk_score"] = round(
+                    original_risk_score,
+                    4,
+                )
+                breakout_momentum_late_override_applied = True
+
         risk_kill_threshold = base_risk_kill_threshold + adaptive_policy_relief * 0.70 - adaptive_policy_penalty * 0.50
         if high_conviction_continuation_supported:
             risk_kill_threshold += 0.04
@@ -5508,6 +5633,19 @@ class SignalDecisionEngine:
             ),
             "context_pressure_soft_override_blocked_by": list(
                 context_pressure_soft_override_blocked_by
+            ),
+            "breakout_momentum_depth_ok": breakout_momentum_depth_ok,
+            "breakout_momentum_playbook_ok": breakout_momentum_playbook_ok,
+            "breakout_momentum_structure_ok": breakout_momentum_structure_ok,
+            "breakout_momentum_market_ok": breakout_momentum_market_ok,
+            "breakout_momentum_direction_ok": breakout_momentum_direction_ok,
+            "breakout_momentum_late_override_candidate": breakout_momentum_late_override_candidate,
+            "breakout_momentum_late_override_applied": breakout_momentum_late_override_applied,
+            "breakout_momentum_late_override_removed_blocks": list(
+                breakout_momentum_late_override_removed_blocks
+            ),
+            "breakout_momentum_late_override_blocked_by": list(
+                breakout_momentum_late_override_blocked_by
             ),
             "preferred_true_depth": preferred_true_depth,
             "minimum_usable_true_depth_quality": round(minimum_usable_true_depth_quality, 4),
@@ -5650,6 +5788,18 @@ class SignalDecisionEngine:
         signal.metadata["context_pressure_soft_override_blocked_by"] = list(
             context_pressure_soft_override_blocked_by
         )
+        signal.metadata["breakout_momentum_late_override_candidate"] = (
+            breakout_momentum_late_override_candidate
+        )
+        signal.metadata["breakout_momentum_late_override_applied"] = (
+            breakout_momentum_late_override_applied
+        )
+        signal.metadata["breakout_momentum_late_override_removed_blocks"] = list(
+            breakout_momentum_late_override_removed_blocks
+        )
+        signal.metadata["breakout_momentum_late_override_blocked_by"] = list(
+            breakout_momentum_late_override_blocked_by
+        )
         signal.metadata["depth_provider_trust_score_effective"] = round(
             depth_provider_trust_score_effective,
             4,
@@ -5741,6 +5891,19 @@ class SignalDecisionEngine:
             ),
             "context_pressure_soft_override_blocked_by": list(
                 context_pressure_soft_override_blocked_by
+            ),
+            "breakout_momentum_depth_ok": breakout_momentum_depth_ok,
+            "breakout_momentum_playbook_ok": breakout_momentum_playbook_ok,
+            "breakout_momentum_structure_ok": breakout_momentum_structure_ok,
+            "breakout_momentum_market_ok": breakout_momentum_market_ok,
+            "breakout_momentum_direction_ok": breakout_momentum_direction_ok,
+            "breakout_momentum_late_override_candidate": breakout_momentum_late_override_candidate,
+            "breakout_momentum_late_override_applied": breakout_momentum_late_override_applied,
+            "breakout_momentum_late_override_removed_blocks": list(
+                breakout_momentum_late_override_removed_blocks
+            ),
+            "breakout_momentum_late_override_blocked_by": list(
+                breakout_momentum_late_override_blocked_by
             ),
             "dom_stream_health_known": dom_stream_health_known,
             "dom_stream_health_score": round(dom_stream_health_score, 4),
