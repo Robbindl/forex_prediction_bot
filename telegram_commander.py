@@ -2496,7 +2496,16 @@ class TelegramCommander:
         size: float,
         direction: str,
     ) -> tuple[float, str]:
-        quote = self._fresh_position_snapshot(core, position)
+        quote = self._fresh_position_snapshot(
+            core,
+            {
+                **dict(position or {}),
+                "asset": asset,
+                "entry_price": entry,
+                "position_size": size,
+                "direction": direction,
+            },
+        )
         display_current = float(quote.get("current_price", position.get("current_price", entry)) or entry)
         pnl_str = ""
         try:
@@ -2561,6 +2570,57 @@ class TelegramCommander:
             provider_fallback=_provider_fallback,
         )
 
+    def _sync_refreshed_position_quote(
+        self,
+        core: Any,
+        position: Dict[str, Any],
+        quote: Dict[str, Any],
+    ) -> None:
+        trade_id = str(position.get("trade_id", "") or "")
+        if not core or not trade_id:
+            return
+        try:
+            current_price = float(quote.get("current_price", 0.0) or 0.0)
+        except Exception:
+            current_price = 0.0
+        if current_price <= 0.0:
+            return
+
+        try:
+            pnl = float(quote.get("pnl", position.get("pnl", 0.0)) or 0.0)
+        except Exception:
+            pnl = 0.0
+        price_source = str(quote.get("price_source", position.get("price_source", "")) or "")
+        update = {
+            "current_price": float(current_price),
+            "pnl": round(pnl, 2),
+            "price_source": price_source,
+            "current_price_source": price_source,
+            "price_age_seconds": quote.get("price_age_seconds"),
+            "price_live": bool(quote.get("price_live")),
+            "last_price_refresh": datetime.now(timezone.utc).isoformat(),
+        }
+
+        state = getattr(core, "state", None)
+        if state is not None and callable(getattr(state, "update_position_field", None)):
+            try:
+                state.update_position_field(trade_id, **update)
+            except Exception as exc:
+                logger.debug(f"[Telegram] open-position quote state sync failed for {trade_id}: {exc}")
+
+        paper_trader = getattr(core, "_paper_trader", None)
+        paper_positions = getattr(paper_trader, "open_positions", None)
+        if isinstance(paper_positions, dict) and trade_id in paper_positions:
+            try:
+                lock = getattr(paper_trader, "_lock", None)
+                if lock is not None:
+                    with lock:
+                        paper_positions[trade_id].update(update)
+                else:
+                    paper_positions[trade_id].update(update)
+            except Exception as exc:
+                logger.debug(f"[Telegram] open-position quote paper sync failed for {trade_id}: {exc}")
+
     def _repriced_open_positions(
         self,
         core: Any,
@@ -2582,6 +2642,7 @@ class TelegramCommander:
             row["price_source"] = str(quote.get("price_source", row.get("price_source", "")) or "")
             row["price_age_seconds"] = quote.get("price_age_seconds")
             row["price_live"] = bool(quote.get("price_live"))
+            self._sync_refreshed_position_quote(core, row, quote)
             refreshed.append(row)
         return refreshed
 

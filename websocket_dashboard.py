@@ -66,6 +66,101 @@ def _live_price_jump_limit(asset: str, age_seconds: float) -> float:
     return float(limits["slow"] if age > 120.0 else limits["fast"])
 
 
+def _live_price_aliases(asset: str) -> list[str]:
+    raw = str(asset or "").strip()
+    aliases: list[str] = []
+
+    def add(value: str) -> None:
+        key = str(value or "").strip()
+        if key and key not in aliases:
+            aliases.append(key)
+
+    add(raw)
+    try:
+        from core.assets import registry
+
+        canonical = registry.canonical(raw)
+        add(canonical)
+        for alias in registry.all_aliases_for(canonical):
+            add(alias)
+    except Exception:
+        pass
+    try:
+        from core.asset_profiles import canonical_asset
+
+        add(canonical_asset(raw))
+    except Exception:
+        pass
+    for key in list(aliases):
+        upper = key.upper()
+        if upper.endswith("-USD") and "/" not in upper:
+            base = upper[:-4]
+            add(f"{base}USD")
+            add(f"{base}USDT")
+    return aliases
+
+
+def _latest_memory_live_price(asset: str) -> tuple[str, float, float, str] | None:
+    keys = _live_price_aliases(asset)
+    best: tuple[str, float, float, str] | None = None
+    with live_prices_lock:
+        for key in keys:
+            row = live_prices.get(key)
+            if row is None:
+                continue
+            price, ts, source = row
+            candidate = (key, float(price), float(ts), str(source))
+            if best is None or candidate[2] > best[2]:
+                best = candidate
+    return best
+
+
+def _snapshot_from_row(price: float, ts: float, source: str) -> dict:
+    age = max(0.0, datetime.now().timestamp() - float(ts or 0.0))
+    return {
+        "price": float(price),
+        "timestamp": float(ts),
+        "source": str(source),
+        "age_seconds": age,
+    }
+
+
+def _load_live_snapshot_from_store(asset: str) -> tuple[str, float, float, str] | None:
+    keys = _live_price_aliases(asset)
+    if not keys:
+        return None
+    try:
+        _ensure_dashboard_state_schema()
+        placeholders = ",".join("?" for _ in keys)
+        with _dashboard_state_lock:
+            conn = _dashboard_state_connection()
+            row = conn.execute(
+                f"""
+                SELECT asset, price, timestamp, source
+                FROM live_price_snapshots
+                WHERE asset IN ({placeholders})
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                keys,
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    stored_asset, price, ts, source = row
+    try:
+        result = (str(stored_asset), float(price), float(ts), str(source or "Persisted"))
+    except Exception:
+        return None
+    with live_prices_lock:
+        for key in keys:
+            current = live_prices.get(key)
+            if current is None or float(current[1] or 0.0) < result[2]:
+                live_prices[key] = (result[1], result[2], result[3])
+    return result
+
+
 def _is_implausible_live_price(asset: str, price: float, now_ts: float) -> bool:
     current = live_prices.get(asset)
     if current is None:
@@ -363,27 +458,36 @@ def get_feed(source_filter: str = None, limit: int = 200) -> list:
 # ─── LIVE PRICE HELPERS (for P&L real-time updates) ─────────────────────────
 def set_live_price(asset: str, price: float, source: str = "WebSocket") -> None:
     """Store latest real-time price from WebSocket. Called by callback."""
+    keys = _live_price_aliases(asset)
+    if not keys:
+        return
+    primary_key = keys[0]
     with live_prices_lock:
         ts = datetime.now().timestamp()
-        if _is_implausible_live_price(asset, float(price), ts):
+        if _is_implausible_live_price(primary_key, float(price), ts):
             return
-        live_prices[asset] = (price, ts, source)
-        history = live_price_history.setdefault(asset, deque(maxlen=5000))
+        for key in keys:
+            live_prices[key] = (price, ts, source)
+        history = live_price_history.setdefault(primary_key, deque(maxlen=5000))
         history.append((float(price), float(ts), str(source)))
-    _persist_live_snapshot(asset, float(price), float(ts), str(source))
+    for key in keys:
+        _persist_live_snapshot(key, float(price), float(ts), str(source))
     if local_candle_store is not None:
         try:
-            local_candle_store.record_live_price(asset, float(price), source=str(source), timestamp=float(ts))
+            local_candle_store.record_live_price(primary_key, float(price), source=str(source), timestamp=float(ts))
         except Exception:
             pass
 
 
 def get_live_price(asset: str, max_age_seconds: float = 10.0) -> tuple:
     """Get latest live price if fresh enough. Returns (price, source) or (None, None)."""
-    with live_prices_lock:
-        if asset not in live_prices:
-            return (None, None)
-        price, ts, source = live_prices[asset]
+    row = _latest_memory_live_price(asset)
+    if row is None or datetime.now().timestamp() - row[2] > float(max_age_seconds or 0.0):
+        stored = _load_live_snapshot_from_store(asset)
+        if stored is not None:
+            row = stored
+    if row is not None:
+        _key, price, ts, source = row
         age = datetime.now().timestamp() - ts
         if age <= max_age_seconds:
             return (price, source)
@@ -392,19 +496,26 @@ def get_live_price(asset: str, max_age_seconds: float = 10.0) -> tuple:
 
 def get_live_price_snapshot(asset: str, max_age_seconds: float | None = None) -> dict | None:
     """Return live-price details including age, optionally requiring freshness."""
-    with live_prices_lock:
-        if asset not in live_prices:
-            return None
-        price, ts, source = live_prices[asset]
-        age = max(0.0, datetime.now().timestamp() - float(ts or 0.0))
-        if max_age_seconds is not None and age > float(max_age_seconds):
-            return None
-        return {
-            "price": float(price),
-            "timestamp": float(ts),
-            "source": str(source),
-            "age_seconds": age,
-        }
+    row = _latest_memory_live_price(asset)
+    should_check_store = row is None
+    if max_age_seconds is not None:
+        should_check_store = should_check_store or float(max_age_seconds) <= 3.0
+        if row is not None:
+            should_check_store = (
+                should_check_store
+                or datetime.now().timestamp() - row[2] > float(max_age_seconds)
+            )
+    if should_check_store:
+        stored = _load_live_snapshot_from_store(asset)
+        if stored is not None and (row is None or stored[2] >= row[2]):
+            row = stored
+    if row is None:
+        return None
+    _key, price, ts, source = row
+    snapshot = _snapshot_from_row(price, ts, source)
+    if max_age_seconds is not None and float(snapshot["age_seconds"]) > float(max_age_seconds):
+        return None
+    return snapshot
 
 
 def get_live_price_history(
@@ -444,19 +555,27 @@ def get_live_price_snapshots(
     requested = {str(asset or "") for asset in (assets or []) if str(asset or "").strip()} if assets is not None else None
     now_ts = datetime.now().timestamp()
     snapshots: dict[str, dict] = {}
-    with live_prices_lock:
-        for asset, (price, ts, source) in live_prices.items():
-            if requested is not None and asset not in requested:
+    if requested is not None:
+        for asset in requested:
+            row = _latest_memory_live_price(asset)
+            stored = _load_live_snapshot_from_store(asset)
+            if stored is not None and (row is None or stored[2] >= row[2]):
+                row = stored
+            if row is None:
                 continue
+            _key, price, ts, source = row
             age = max(0.0, now_ts - float(ts or 0.0))
             if max_age_seconds is not None and age > float(max_age_seconds):
                 continue
-            snapshots[str(asset)] = {
-                "price": float(price),
-                "timestamp": float(ts),
-                "source": str(source),
-                "age_seconds": age,
-            }
+            snapshots[str(asset)] = _snapshot_from_row(price, ts, source)
+        return snapshots
+
+    with live_prices_lock:
+        for asset, (price, ts, source) in live_prices.items():
+            age = max(0.0, now_ts - float(ts or 0.0))
+            if max_age_seconds is not None and age > float(max_age_seconds):
+                continue
+            snapshots[str(asset)] = _snapshot_from_row(float(price), float(ts), str(source))
     return snapshots
 
 

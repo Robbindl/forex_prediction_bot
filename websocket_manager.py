@@ -768,6 +768,11 @@ class WebSocketManager:
         self._bybit_degraded = False
         set_connected("bybit", True, len(self._bybit_asset_to_symbol))
         self._note_stream_depth("bybit", asset, ts=ts)
+        for callback in list(self._callbacks):
+            try:
+                callback("BybitStream", asset, price, None, None, ts)
+            except Exception as exc:
+                logger.error(f"[WSManager] callback error for {asset}: {exc}")
 
     async def _handle_okx_message(self, message: str):
         from websocket_dashboard import set_connected
@@ -942,6 +947,11 @@ class WebSocketManager:
         self._okx_degraded = False
         set_connected("okx", True, len(self._okx_asset_to_symbol))
         self._note_stream_depth("okx", asset, ts=ts)
+        for callback in list(self._callbacks):
+            try:
+                callback("OKXStream", asset, price, None, None, ts)
+            except Exception as exc:
+                logger.error(f"[WSManager] callback error for {asset}: {exc}")
 
     @staticmethod
     def _safe_int(value: Any) -> Optional[int]:
